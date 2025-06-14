@@ -1,4 +1,4 @@
-#![cfg(all(test, feature = "std"))]
+#![cfg(all(test, feature = "std", feature = "time"))]
 
 mod common;
 
@@ -23,6 +23,7 @@ use lightning::util::logger::Logger;
 
 use lightning_invoice::{Bolt11Invoice, InvoiceBuilder, RoutingFees};
 
+use lightning_liquidity::lsps5::service::DefaultTimeProvider;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 use lightning_types::payment::PaymentHash;
 
@@ -31,6 +32,7 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::Network;
 
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
@@ -46,6 +48,7 @@ fn setup_test_lsps2(
 		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: Some(lsps2_service_config),
+		lsps5_service_config: None,
 		advertise_service: true,
 	};
 
@@ -53,10 +56,15 @@ fn setup_test_lsps2(
 	let client_config = LiquidityClientConfig {
 		lsps1_client_config: None,
 		lsps2_client_config: Some(lsps2_client_config),
+		lsps5_client_config: None,
 	};
 
-	let (service_node, client_node) =
-		create_service_and_client_nodes(persist_dir, service_config, client_config);
+	let (service_node, client_node) = create_service_and_client_nodes(
+		persist_dir,
+		service_config,
+		client_config,
+		Arc::new(DefaultTimeProvider),
+	);
 
 	let secp = bitcoin::secp256k1::Secp256k1::new();
 	let service_node_id = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &signing_key);

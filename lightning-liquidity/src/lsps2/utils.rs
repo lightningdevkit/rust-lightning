@@ -28,13 +28,13 @@ pub fn is_valid_opening_fee_params(
 }
 
 /// Determines if the given parameters are expired, or still valid.
-#[cfg_attr(not(feature = "std"), allow(unused_variables))]
+#[cfg_attr(not(feature = "time"), allow(unused_variables))]
 pub fn is_expired_opening_fee_params(fee_params: &LSPS2OpeningFeeParams) -> bool {
-	#[cfg(feature = "std")]
+	#[cfg(feature = "time")]
 	{
 		fee_params.valid_until.is_past()
 	}
-	#[cfg(not(feature = "std"))]
+	#[cfg(not(feature = "time"))]
 	{
 		// TODO: We need to find a way to check expiry times in no-std builds.
 		false
