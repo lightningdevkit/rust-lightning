@@ -252,15 +252,16 @@ impl Poly1305 {
 		self.leftover = m.len();
 	}
 
-	pub fn raw_result(&mut self, output: &mut [u8]) {
-		assert!(output.len() >= 16);
+	pub fn result(&mut self) -> [u8; 16] {
 		if !self.finalized {
 			self.finish();
 		}
+		let mut output = [0; 16];
 		output[0..4].copy_from_slice(&self.h[0].to_le_bytes());
 		output[4..8].copy_from_slice(&self.h[1].to_le_bytes());
 		output[8..12].copy_from_slice(&self.h[2].to_le_bytes());
 		output[12..16].copy_from_slice(&self.h[3].to_le_bytes());
+		output
 	}
 }
 
@@ -270,10 +271,10 @@ mod test {
 
 	use super::Poly1305;
 
-	fn poly1305(key: &[u8], msg: &[u8], mac: &mut [u8]) {
+	fn poly1305(key: &[u8], msg: &[u8], mac: &mut [u8; 16]) {
 		let mut poly = Poly1305::new(key);
 		poly.input(msg);
-		poly.raw_result(mac);
+		*mac = poly.result();
 	}
 
 	#[test]
@@ -318,7 +319,7 @@ mod test {
 		poly.input(&msg[128..129]);
 		poly.input(&msg[129..130]);
 		poly.input(&msg[130..131]);
-		poly.raw_result(&mut mac);
+		let mac = poly.result();
 		assert_eq!(&mac[..], &expected[..]);
 	}
 
@@ -363,7 +364,7 @@ mod test {
 			poly1305(&key[..], &msg[0..i], &mut mac);
 			tpoly.input(&mac);
 		}
-		tpoly.raw_result(&mut mac);
+		let mac = tpoly.result();
 		assert_eq!(&mac[..], &total_mac[..]);
 	}
 

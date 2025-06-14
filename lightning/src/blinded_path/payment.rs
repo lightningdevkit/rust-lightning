@@ -675,7 +675,7 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 		tlvs.map(|tlv| BlindedPathWithPadding { tlvs: tlv, round_off: PAYMENT_PADDING_ROUND_OFF }),
 	);
 
-	utils::construct_blinded_hops(secp_ctx, path, session_priv)
+	utils::construct_blinded_hops(secp_ctx, path, session_priv, None)
 }
 
 /// `None` if underflow occurs.
