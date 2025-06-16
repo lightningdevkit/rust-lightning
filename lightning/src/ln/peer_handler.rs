@@ -1676,13 +1676,15 @@ where
 	/// Append a message to a peer's pending outbound/write buffer
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
 		let their_node_id = peer.their_node_id.map(|p| p.0);
-		let logger = WithContext::from(&self.logger, their_node_id, None, None);
-		// `unwrap` SAFETY: `their_node_id` is guaranteed to be `Some` after the handshake
-		let node_id = peer.their_node_id.unwrap().0;
-		if is_gossip_msg(message.type_id()) {
-			log_gossip!(logger, "Enqueueing message {:?} to {}", message, log_pubkey!(node_id));
+		if let Some(node_id) = their_node_id {
+			let logger = WithContext::from(&self.logger, their_node_id, None, None);
+			if is_gossip_msg(message.type_id()) {
+				log_gossip!(logger, "Enqueueing message {:?} to {}", message, log_pubkey!(node_id));
+			} else {
+				log_trace!(logger, "Enqueueing message {:?} to {}", message, log_pubkey!(node_id));
+			}
 		} else {
-			log_trace!(logger, "Enqueueing message {:?} to {}", message, log_pubkey!(node_id));
+			debug_assert!(false, "node_id should be set by the time we send a message");
 		}
 		peer.msgs_sent_since_pong += 1;
 		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message));
@@ -1785,21 +1787,26 @@ where
 
 					macro_rules! insert_node_id {
 						() => {
-							let their_node_id = peer.their_node_id.map(|p| p.0);
-							let logger = WithContext::from(&self.logger, their_node_id, None, None);
-							match self.node_id_to_descriptor.lock().unwrap().entry(peer.their_node_id.unwrap().0) {
+							let their_node_id = if let Some((node_id, _)) = peer.their_node_id {
+								node_id
+							} else {
+								debug_assert!(false, "Should have a node_id to insert");
+								return Err(PeerHandleError {});
+							};
+							let logger = WithContext::from(&self.logger, Some(their_node_id), None, None);
+							match self.node_id_to_descriptor.lock().unwrap().entry(their_node_id) {
 								hash_map::Entry::Occupied(e) => {
-									log_trace!(logger, "Got second connection with {}, closing", log_pubkey!(peer.their_node_id.unwrap().0));
+									log_trace!(logger, "Got second connection with {}, closing", log_pubkey!(their_node_id));
 									// Unset `their_node_id` so that we don't generate a peer_disconnected event
+									peer.their_node_id = None;
 									// Check that the peers map is consistent with the
 									// node_id_to_descriptor map, as this has been broken
 									// before.
-									peer.their_node_id = None;
 									debug_assert!(peers.get(e.get()).is_some());
 									return Err(PeerHandleError { })
 								},
 								hash_map::Entry::Vacant(entry) => {
-									log_debug!(logger, "Finished noise handshake for connection with {}", log_pubkey!(peer.their_node_id.unwrap().0));
+									log_debug!(logger, "Finished noise handshake for connection with {}", log_pubkey!(their_node_id));
 									entry.insert(peer_descriptor.clone())
 								},
 							};
@@ -2125,9 +2132,9 @@ where
 				peer_lock.sync_status = InitSyncTracker::ChannelsSyncing(0);
 			}
 
-			let connection = peer_lock.inbound_connection;
+			let inbound = peer_lock.inbound_connection;
 			let route_handler = &self.message_handler.route_handler;
-			if let Err(()) = route_handler.peer_connected(their_node_id, &msg, connection) {
+			if let Err(()) = route_handler.peer_connected(their_node_id, &msg, inbound) {
 				log_debug!(
 					logger,
 					"Route Handler decided we couldn't communicate with peer {}",
@@ -2136,7 +2143,7 @@ where
 				return Err(PeerHandleError {}.into());
 			}
 			let chan_handler = &self.message_handler.chan_handler;
-			if let Err(()) = chan_handler.peer_connected(their_node_id, &msg, connection) {
+			if let Err(()) = chan_handler.peer_connected(their_node_id, &msg, inbound) {
 				log_debug!(
 					logger,
 					"Channel Handler decided we couldn't communicate with peer {}",
@@ -2146,7 +2153,7 @@ where
 				return Err(PeerHandleError {}.into());
 			}
 			let onion_message_handler = &self.message_handler.onion_message_handler;
-			if let Err(()) = onion_message_handler.peer_connected(their_node_id, &msg, connection) {
+			if let Err(()) = onion_message_handler.peer_connected(their_node_id, &msg, inbound) {
 				log_debug!(
 					logger,
 					"Onion Message Handler decided we couldn't communicate with peer {}",
@@ -2157,7 +2164,7 @@ where
 				return Err(PeerHandleError {}.into());
 			}
 			let custom_handler = &self.message_handler.custom_message_handler;
-			if let Err(()) = custom_handler.peer_connected(their_node_id, &msg, connection) {
+			if let Err(()) = custom_handler.peer_connected(their_node_id, &msg, inbound) {
 				log_debug!(
 					logger,
 					"Custom Message Handler decided we couldn't communicate with peer {}",
@@ -3510,8 +3517,8 @@ where
 				debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
 				debug_assert!(peer.their_node_id.is_some());
 
+				// We use a loop as a `goto` to skip writing the Ping message:
 				loop {
-					// Used as a `goto` to skip writing a Ping message.
 					if peer.awaiting_pong_timer_tick_intervals == -1 {
 						// Magic value set in `maybe_send_extra_ping`.
 						peer.awaiting_pong_timer_tick_intervals = 1;
@@ -3844,20 +3851,7 @@ mod tests {
 		cfgs
 	}
 
-	fn create_network<'a>(
-		peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>,
-	) -> Vec<
-		PeerManager<
-			FileDescriptor,
-			&'a test_utils::TestChannelMessageHandler,
-			&'a test_utils::TestRoutingMessageHandler,
-			IgnoringMessageHandler,
-			&'a test_utils::TestLogger,
-			&'a TestCustomMessageHandler,
-			&'a test_utils::TestNodeSigner,
-			IgnoringMessageHandler,
-		>,
-	> {
+	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<TestPeer<'a>> {
 		let mut peers = Vec::new();
 		for i in 0..peer_count {
 			let ephemeral_bytes = [i as u8; 32];
