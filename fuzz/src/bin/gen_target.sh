@@ -26,6 +26,7 @@ GEN_TEST onion_hop_data
 GEN_TEST base32
 GEN_TEST fromstr_to_netaddress
 GEN_TEST feature_flags
+GEN_TEST lsps_message
 
 GEN_TEST msg_accept_channel msg_targets::
 GEN_TEST msg_announcement_signatures msg_targets::
