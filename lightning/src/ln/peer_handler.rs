@@ -2855,7 +2855,7 @@ where
 					match event {
 						MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
 							log_debug!(
-								self.logger,
+								WithContext::from(&self.logger, Some(*node_id), None, None),
 								"Handling SendPeerStorage event in peer_handler for {}",
 								log_pubkey!(node_id)
 							);
@@ -2863,7 +2863,7 @@ where
 						},
 						MessageSendEvent::SendPeerStorageRetrieval { ref node_id, ref msg } => {
 							log_debug!(
-								self.logger,
+								WithContext::from(&self.logger, Some(*node_id), None, None),
 								"Handling SendPeerStorageRetrieval event in peer_handler for {}",
 								log_pubkey!(node_id)
 							);
