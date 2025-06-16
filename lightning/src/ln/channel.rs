@@ -6417,27 +6417,46 @@ where
 		Ok(channel_monitor)
 	}
 
-	#[rustfmt::skip]
-	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
-		where L::Target: Logger
+	pub fn commitment_signed<L: Deref>(
+		&mut self, msg: &msgs::CommitmentSigned, logger: &L,
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+	where
+		L::Target: Logger,
 	{
 		self.commitment_signed_check_state()?;
+
+		if !self.pending_funding.is_empty() {
+			return Err(ChannelError::close(
+				"Got a single commitment_signed message when expecting a batch".to_owned(),
+			));
+		}
 
 		let updates = self
 			.context
 			.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)
-			.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, nondust_htlc_sources }|
-				vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-					commitment_tx, htlc_outputs, claimed_htlcs: vec![], nondust_htlc_sources,
-				}]
+			.map(
+				|LatestHolderCommitmentTXInfo {
+				     commitment_tx,
+				     htlc_outputs,
+				     nondust_htlc_sources,
+				 }| {
+					vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
+						commitment_tx,
+						htlc_outputs,
+						claimed_htlcs: vec![],
+						nondust_htlc_sources,
+					}]
+				},
 			)?;
 
 		self.commitment_signed_update_monitor(updates, logger)
 	}
 
-	#[rustfmt::skip]
-	pub fn commitment_signed_batch<L: Deref>(&mut self, batch: Vec<msgs::CommitmentSigned>, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
-		where L::Target: Logger
+	pub fn commitment_signed_batch<L: Deref>(
+		&mut self, batch: Vec<msgs::CommitmentSigned>, logger: &L,
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+	where
+		L::Target: Logger,
 	{
 		self.commitment_signed_check_state()?;
 
@@ -6446,15 +6465,22 @@ where
 			let funding_txid = match msg.funding_txid {
 				Some(funding_txid) => funding_txid,
 				None => {
-					return Err(ChannelError::close("Peer sent batched commitment_signed without a funding_txid".to_string()));
+					return Err(ChannelError::close(
+						"Peer sent batched commitment_signed without a funding_txid".to_string(),
+					));
 				},
 			};
 
 			match messages.entry(funding_txid) {
-				btree_map::Entry::Vacant(entry) => { entry.insert(msg); },
+				btree_map::Entry::Vacant(entry) => {
+					entry.insert(msg);
+				},
 				btree_map::Entry::Occupied(_) => {
-					return Err(ChannelError::close(format!("Peer sent batched commitment_signed with duplicate funding_txid {}", funding_txid)));
-				}
+					return Err(ChannelError::close(format!(
+						"Peer sent batched commitment_signed with duplicate funding_txid {}",
+						funding_txid
+					)));
+				},
 			}
 		}
 
@@ -6464,36 +6490,56 @@ where
 			.chain(self.pending_funding.iter())
 			.map(|funding| {
 				let funding_txid = funding.get_funding_txo().unwrap().txid;
-				let msg = messages
-					.get(&funding_txid)
-					.ok_or_else(|| ChannelError::close(format!("Peer did not send a commitment_signed for pending splice transaction: {}", funding_txid)))?;
+				let msg = messages.get(&funding_txid).ok_or_else(|| {
+					ChannelError::close(format!(
+						"Peer did not send a commitment_signed for pending splice transaction: {}",
+						funding_txid
+					))
+				})?;
 				self.context
 					.validate_commitment_signed(funding, &self.holder_commitment_point, msg, logger)
-					.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, nondust_htlc_sources }|
-						ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-							commitment_tx, htlc_outputs, claimed_htlcs: vec![], nondust_htlc_sources,
-						}
+					.map(
+						|LatestHolderCommitmentTXInfo {
+						     commitment_tx,
+						     htlc_outputs,
+						     nondust_htlc_sources,
+						 }| ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
+							commitment_tx,
+							htlc_outputs,
+							claimed_htlcs: vec![],
+							nondust_htlc_sources,
+						},
 					)
-				}
-			)
+			})
 			.collect::<Result<Vec<_>, ChannelError>>()?;
 
 		self.commitment_signed_update_monitor(updates, logger)
 	}
 
-	#[rustfmt::skip]
 	fn commitment_signed_check_state(&self) -> Result<(), ChannelError> {
 		if self.context.channel_state.is_quiescent() {
-			return Err(ChannelError::WarnAndDisconnect("Got commitment_signed message while quiescent".to_owned()));
+			return Err(ChannelError::WarnAndDisconnect(
+				"Got commitment_signed message while quiescent".to_owned(),
+			));
 		}
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::close("Got commitment signed message when channel was not in an operational state".to_owned()));
+			return Err(ChannelError::close(
+				"Got commitment signed message when channel was not in an operational state"
+					.to_owned(),
+			));
 		}
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::close("Peer sent commitment_signed when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close(
+				"Peer sent commitment_signed when we needed a channel_reestablish".to_owned(),
+			));
 		}
-		if self.context.channel_state.is_both_sides_shutdown() && self.context.last_sent_closing_fee.is_some() {
-			return Err(ChannelError::close("Peer sent commitment_signed after we'd started exchanging closing_signeds".to_owned()));
+		if self.context.channel_state.is_both_sides_shutdown()
+			&& self.context.last_sent_closing_fee.is_some()
+		{
+			return Err(ChannelError::close(
+				"Peer sent commitment_signed after we'd started exchanging closing_signeds"
+					.to_owned(),
+			));
 		}
 
 		Ok(())
