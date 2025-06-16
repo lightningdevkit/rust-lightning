@@ -736,37 +736,66 @@ where
 	FE::Target: FeeEstimator;
 
 impl<
-		K: Deref,
-		L: Deref,
-		ES: Deref,
-		SP: Deref,
-		BI: Deref,
-		FE: Deref,
+		K: Deref + Send + Sync + 'static,
+		L: Deref + Send + Sync + 'static,
+		ES: Deref + Send + Sync + 'static,
+		SP: Deref + Send + Sync + 'static,
+		BI: Deref + Send + Sync + 'static,
+		FE: Deref + Send + Sync + 'static,
 		ChannelSigner: EcdsaChannelSigner + Send + Sync,
 	> PersistSync<ChannelSigner> for MonitorUpdatingPersisterSync<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
 	L::Target: Logger,
 	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
+	SP::Target: SignerProvider + Sync + Sized,
 	BI::Target: BroadcasterInterface,
 	FE::Target: FeeEstimator,
 {
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> Result<(), ()> {
-		todo!()
+		let mut fut = Box::pin(self.0.persist_new_channel(monitor_name, monitor));
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				unreachable!("Can't poll a future in a sync context, this should never happen");
+			},
+		}
 	}
 
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, monitor_update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
 	) -> Result<(), ()> {
-		todo!()
+		let mut fut =
+			Box::pin(self.0.update_persisted_channel(monitor_name, monitor_update, monitor));
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				unreachable!("Can't poll a future in a sync context, this should never happen");
+			},
+		}
 	}
 
 	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
-		todo!()
+		let mut fut = Box::pin(
+			<MonitorUpdatingPersister<KVStoreSyncWrapper<K>, L, ES, SP, BI, FE> as Persist<
+				ChannelSigner,
+			>>::archive_persisted_channel(&self.0, monitor_name),
+		);
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				unreachable!("Can't poll a future in a sync context, this should never happen");
+			},
+		}
 	}
 }
 

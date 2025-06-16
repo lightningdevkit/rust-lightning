@@ -132,6 +132,7 @@ pub trait FutureSpawner: Send + Sync + 'static {
 }
 
 /// A no-op implementation of `FutureSpawner` for synchronous contexts.
+#[derive(Clone)]
 pub struct FutureSpawnerSync {}
 
 impl FutureSpawner for FutureSpawnerSync {

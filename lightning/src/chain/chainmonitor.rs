@@ -392,11 +392,13 @@ where
 	}
 
 	/// See [`ChainMonitor::get_and_clear_pending_events`].
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		self.0.get_and_clear_pending_events()
 	}
 
 	/// See [`ChainMonitor::remove_monitor`].
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn remove_monitor(&self, channel_id: &ChannelId) -> ChannelMonitor<ChannelSigner> {
 		self.0.remove_monitor(channel_id)
 	}
@@ -487,19 +489,19 @@ where
 	fn watch_channel(
 		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
 	) -> Result<ChannelMonitorUpdateStatus, ()> {
-		todo!()
+		self.0.watch_channel(channel_id, monitor)
 	}
 
 	fn update_channel(
 		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
 	) -> ChannelMonitorUpdateStatus {
-		todo!()
+		self.0.update_channel(channel_id, update)
 	}
 
 	fn release_pending_monitor_events(
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
-		todo!()
+		self.0.release_pending_monitor_events()
 	}
 }
 
