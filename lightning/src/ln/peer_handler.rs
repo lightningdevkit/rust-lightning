@@ -581,7 +581,7 @@ where
 	/// [`IgnoringMessageHandler`].
 	pub custom_message_handler: CustomM,
 
-	/// A message handler which only allows sending messages. This should generally be a
+	/// A message handler which can be used to send messages. This should generally be a
 	/// [`ChainMonitor`].
 	///
 	/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
@@ -1373,6 +1373,7 @@ where
 			| self.message_handler.route_handler.provided_init_features(their_node_id)
 			| self.message_handler.onion_message_handler.provided_init_features(their_node_id)
 			| self.message_handler.custom_message_handler.provided_init_features(their_node_id)
+			| self.message_handler.send_only_message_handler.provided_init_features(their_node_id)
 	}
 
 	/// Indicates a new outbound connection has been established to a node with the given `node_id`
@@ -2173,6 +2174,19 @@ where
 				self.message_handler.route_handler.peer_disconnected(their_node_id);
 				self.message_handler.chan_handler.peer_disconnected(their_node_id);
 				self.message_handler.onion_message_handler.peer_disconnected(their_node_id);
+				return Err(PeerHandleError {}.into());
+			}
+			let sends_handler = &self.message_handler.send_only_message_handler;
+			if let Err(()) = sends_handler.peer_connected(their_node_id, &msg, inbound) {
+				log_debug!(
+					logger,
+					"Sending-Only Message Handler decided we couldn't communicate with peer {}",
+					log_pubkey!(their_node_id)
+				);
+				self.message_handler.route_handler.peer_disconnected(their_node_id);
+				self.message_handler.chan_handler.peer_disconnected(their_node_id);
+				self.message_handler.onion_message_handler.peer_disconnected(their_node_id);
+				self.message_handler.custom_message_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError {}.into());
 			}
 
@@ -3394,6 +3408,7 @@ where
 			self.message_handler.chan_handler.peer_disconnected(node_id);
 			self.message_handler.onion_message_handler.peer_disconnected(node_id);
 			self.message_handler.custom_message_handler.peer_disconnected(node_id);
+			self.message_handler.send_only_message_handler.peer_disconnected(node_id);
 		}
 		descriptor.disconnect_socket();
 	}
@@ -3426,6 +3441,7 @@ where
 					self.message_handler.chan_handler.peer_disconnected(node_id);
 					self.message_handler.onion_message_handler.peer_disconnected(node_id);
 					self.message_handler.custom_message_handler.peer_disconnected(node_id);
+					self.message_handler.send_only_message_handler.peer_disconnected(node_id);
 				}
 			},
 		};
@@ -3611,7 +3627,8 @@ where
 		let features = self.message_handler.chan_handler.provided_node_features()
 			| self.message_handler.route_handler.provided_node_features()
 			| self.message_handler.onion_message_handler.provided_node_features()
-			| self.message_handler.custom_message_handler.provided_node_features();
+			| self.message_handler.custom_message_handler.provided_node_features()
+			| self.message_handler.send_only_message_handler.provided_node_features();
 		let announcement = msgs::UnsignedNodeAnnouncement {
 			features,
 			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel),
@@ -3735,6 +3752,7 @@ mod tests {
 		chan_handler: test_utils::TestChannelMessageHandler,
 		routing_handler: test_utils::TestRoutingMessageHandler,
 		custom_handler: TestCustomMessageHandler,
+		send_only_handler: TestBaseMsgHandler,
 		logger: test_utils::TestLogger,
 		node_signer: test_utils::TestNodeSigner,
 	}
@@ -3787,6 +3805,32 @@ mod tests {
 		}
 	}
 
+	struct TestBaseMsgHandler(test_utils::ConnectionTracker);
+
+	impl BaseMessageHandler for TestBaseMsgHandler {
+		fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+			Vec::new()
+		}
+
+		fn peer_disconnected(&self, their_node_id: PublicKey) {
+			self.0.peer_disconnected(their_node_id);
+		}
+
+		fn peer_connected(
+			&self, their_node_id: PublicKey, _msg: &Init, _inbound: bool,
+		) -> Result<(), ()> {
+			self.0.peer_connected(their_node_id)
+		}
+
+		fn provided_node_features(&self) -> NodeFeatures {
+			NodeFeatures::empty()
+		}
+
+		fn provided_init_features(&self, _: PublicKey) -> InitFeatures {
+			InitFeatures::empty()
+		}
+	}
+
 	fn create_peermgr_cfgs(peer_count: usize) -> Vec<PeerManagerCfg> {
 		let mut cfgs = Vec::new();
 		for i in 0..peer_count {
@@ -3803,6 +3847,7 @@ mod tests {
 				logger: test_utils::TestLogger::with_id(i.to_string()),
 				routing_handler: test_utils::TestRoutingMessageHandler::new(),
 				custom_handler: TestCustomMessageHandler::new(features),
+				send_only_handler: TestBaseMsgHandler(test_utils::ConnectionTracker::new()),
 				node_signer: test_utils::TestNodeSigner::new(node_secret),
 			});
 		}
@@ -3826,6 +3871,7 @@ mod tests {
 				logger: test_utils::TestLogger::new(),
 				routing_handler: test_utils::TestRoutingMessageHandler::new(),
 				custom_handler: TestCustomMessageHandler::new(features),
+				send_only_handler: TestBaseMsgHandler(test_utils::ConnectionTracker::new()),
 				node_signer: test_utils::TestNodeSigner::new(node_secret),
 			});
 		}
@@ -3844,6 +3890,7 @@ mod tests {
 				logger: test_utils::TestLogger::new(),
 				routing_handler: test_utils::TestRoutingMessageHandler::new(),
 				custom_handler: TestCustomMessageHandler::new(features),
+				send_only_handler: TestBaseMsgHandler(test_utils::ConnectionTracker::new()),
 				node_signer: test_utils::TestNodeSigner::new(node_secret),
 			});
 		}
@@ -3860,7 +3907,7 @@ mod tests {
 				route_handler: &cfgs[i].routing_handler,
 				onion_message_handler: IgnoringMessageHandler {},
 				custom_message_handler: &cfgs[i].custom_handler,
-				send_only_message_handler: IgnoringMessageHandler {},
+				send_only_message_handler: &cfgs[i].send_only_handler,
 			};
 			let peer = PeerManager::new(
 				msg_handler,
@@ -3883,7 +3930,7 @@ mod tests {
 		&'a test_utils::TestLogger,
 		&'a TestCustomMessageHandler,
 		&'a test_utils::TestNodeSigner,
-		IgnoringMessageHandler,
+		&'a TestBaseMsgHandler,
 	>;
 
 	fn try_establish_connection<'a>(
@@ -4259,6 +4306,7 @@ mod tests {
 		let chan_handler = peers[handler & 1].message_handler.chan_handler;
 		let route_handler = peers[handler & 1].message_handler.route_handler;
 		let custom_message_handler = peers[handler & 1].message_handler.custom_message_handler;
+		let send_only_msg_handler = peers[handler & 1].message_handler.send_only_message_handler;
 
 		match handler & !1 {
 			0 => {
@@ -4269,6 +4317,9 @@ mod tests {
 			},
 			4 => {
 				custom_message_handler.conn_tracker.fail_connections.store(true, Ordering::Release);
+			},
+			6 => {
+				send_only_msg_handler.0.fail_connections.store(true, Ordering::Release);
 			},
 			_ => panic!(),
 		}
@@ -4285,16 +4336,18 @@ mod tests {
 			chan_handler.conn_tracker.had_peers.load(Ordering::Acquire)
 				|| route_handler.conn_tracker.had_peers.load(Ordering::Acquire)
 				|| custom_message_handler.conn_tracker.had_peers.load(Ordering::Acquire)
+				|| send_only_msg_handler.0.had_peers.load(Ordering::Acquire)
 		);
 		// And both message handlers doing tracking should see the disconnection
 		assert!(chan_handler.conn_tracker.connected_peers.lock().unwrap().is_empty());
 		assert!(route_handler.conn_tracker.connected_peers.lock().unwrap().is_empty());
 		assert!(custom_message_handler.conn_tracker.connected_peers.lock().unwrap().is_empty());
+		assert!(send_only_msg_handler.0.connected_peers.lock().unwrap().is_empty());
 	}
 
 	#[test]
 	fn test_peer_connected_error_disconnects() {
-		for i in 0..6 {
+		for i in 0..8 {
 			do_test_peer_connected_error_disconnects(i);
 		}
 	}
