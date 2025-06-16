@@ -500,7 +500,7 @@ where
 	///   - [`MonitorUpdatingPersister`] will potentially have more listing to do if you need to run
 	/// [`MonitorUpdatingPersister::cleanup_stale_updates`].
 	///
-	/// This sets `min_monitor_size_for_updates_bytes` to 4096 bytes (4 KiB), which is a reasonable
+	/// This sets `min_monitor_size_for_updates_bytes` to 8192 bytes (8 KiB), which is a reasonable
 	/// default for most use cases. Monitors smaller than this will be persisted in full rather than
 	/// using update-based persistence. Use [`MonitorUpdatingPersister::new_with_monitor_size_threshold`]
 	/// if you need a custom threshold.
@@ -512,7 +512,7 @@ where
 			kv_store,
 			logger,
 			maximum_pending_updates,
-			4096,
+			8192,
 			entropy_source,
 			signer_provider,
 			broadcaster,
@@ -1424,7 +1424,7 @@ mod tests {
 		let store_1 = TestStore::new(false);
 		let logger_1 = TestLogger::new();
 
-		// Test the default new() constructor (uses 4096 byte threshold)
+		// Test the default new() constructor (uses 8192 byte threshold)
 		let persister_0 = MonitorUpdatingPersister::new(
 			&store_0,
 			&logger_0,
@@ -1447,7 +1447,7 @@ mod tests {
 		);
 
 		// Verify the constructors set the thresholds correctly
-		assert_eq!(persister_0.min_monitor_size_for_updates_bytes, 4096);
+		assert_eq!(persister_0.min_monitor_size_for_updates_bytes, 8192);
 		assert_eq!(persister_1.min_monitor_size_for_updates_bytes, 0);
 		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let chain_mon_0 = test_utils::TestChainMonitor::new(
