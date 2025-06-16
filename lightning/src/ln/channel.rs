@@ -2798,7 +2798,8 @@ where
 		};
 		let change_value_opt = calculate_change_output_value(
 			self.funding.is_outbound(), self.dual_funding_context.our_funding_satoshis,
-			&shared_funding_output.script_pubkey, &funding_inputs, &funding_outputs,
+			&funding_inputs, None,
+			&shared_funding_output.script_pubkey, &funding_outputs,
 			self.dual_funding_context.funding_feerate_sat_per_1000_weight,
 			change_script.minimal_non_dust().to_sat(),
 		)?;
@@ -2826,6 +2827,7 @@ where
 			is_initiator: self.funding.is_outbound(),
 			funding_tx_locktime: self.dual_funding_context.funding_tx_locktime,
 			inputs_to_contribute: funding_inputs,
+			shared_funding_input: None,
 			shared_funding_output: (shared_funding_output, self.dual_funding_context.our_funding_satoshis),
 			outputs_to_contribute: funding_outputs,
 		};
@@ -12069,6 +12071,7 @@ where
 				funding_tx_locktime: dual_funding_context.funding_tx_locktime,
 				is_initiator: false,
 				inputs_to_contribute: our_funding_inputs,
+				shared_funding_input: None,
 				shared_funding_output: (shared_funding_output, our_funding_satoshis),
 				outputs_to_contribute: Vec::new(),
 			}
