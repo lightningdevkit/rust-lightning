@@ -17,7 +17,6 @@ use crate::chain::chaininterface::BroadcasterInterface;
 use crate::chain::ClaimId;
 use crate::prelude::*;
 use crate::sign::SignerProvider;
-use crate::sync::Arc;
 use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
 
@@ -42,6 +41,18 @@ pub trait WalletSourceSync {
 pub(crate) struct WalletSourceSyncWrapper<T: Deref>(T)
 where
 	T::Target: WalletSourceSync;
+
+// Implement `Deref` directly on WalletSourceSyncWrapper so that it can be used directly
+// below, rather than via a wrapper.
+impl<T: Deref> Deref for WalletSourceSyncWrapper<T>
+where
+	T::Target: WalletSourceSync,
+{
+	type Target = Self;
+	fn deref(&self) -> &Self {
+		self
+	}
+}
 
 impl<T: Deref> WalletSource for WalletSourceSyncWrapper<T>
 where
@@ -69,7 +80,7 @@ where
 	W::Target: WalletSourceSync + MaybeSend,
 	L::Target: Logger + MaybeSend,
 {
-	wallet: Wallet<Arc<WalletSourceSyncWrapper<W>>, L>,
+	wallet: Wallet<WalletSourceSyncWrapper<W>, L>,
 }
 
 impl<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend> WalletSync<W, L>
@@ -79,7 +90,7 @@ where
 {
 	/// Constructs a new [`WalletSync`] instance.
 	pub fn new(source: W, logger: L) -> Self {
-		Self { wallet: Wallet::new(Arc::new(WalletSourceSyncWrapper(source)), logger) }
+		Self { wallet: Wallet::new(WalletSourceSyncWrapper(source), logger) }
 	}
 }
 
@@ -140,6 +151,18 @@ struct CoinSelectionSourceSyncWrapper<T: Deref>(T)
 where
 	T::Target: CoinSelectionSourceSync;
 
+// Implement `Deref` directly on CoinSelectionSourceSyncWrapper so that it can be used directly
+// below, rather than via a wrapper.
+impl<T: Deref> Deref for CoinSelectionSourceSyncWrapper<T>
+where
+	T::Target: CoinSelectionSourceSync,
+{
+	type Target = Self;
+	fn deref(&self) -> &Self {
+		self
+	}
+}
+
 impl<T: Deref> CoinSelectionSource for CoinSelectionSourceSyncWrapper<T>
 where
 	T::Target: CoinSelectionSourceSync,
@@ -172,7 +195,7 @@ where
 	L::Target: Logger,
 {
 	bump_transaction_event_handler:
-		Arc<BumpTransactionEventHandler<B, Arc<CoinSelectionSourceSyncWrapper<C>>, SP, L>>,
+		BumpTransactionEventHandler<B, CoinSelectionSourceSyncWrapper<C>, SP, L>,
 }
 
 impl<B: Deref, C: Deref, SP: Deref, L: Deref> BumpTransactionEventHandlerSync<B, C, SP, L>
@@ -184,12 +207,12 @@ where
 {
 	/// Constructs a new instance of [`BumpTransactionEventHandlerSync`].
 	pub fn new(broadcaster: B, utxo_source: C, signer_provider: SP, logger: L) -> Self {
-		let bump_transaction_event_handler = Arc::new(BumpTransactionEventHandler::new(
+		let bump_transaction_event_handler = BumpTransactionEventHandler::new(
 			broadcaster,
-			Arc::new(CoinSelectionSourceSyncWrapper(utxo_source)),
+			CoinSelectionSourceSyncWrapper(utxo_source),
 			signer_provider,
 			logger,
-		));
+		);
 		Self { bump_transaction_event_handler }
 	}
 
