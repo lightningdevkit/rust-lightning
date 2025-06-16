@@ -754,7 +754,12 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> PersistSync<Signer> for TestPersis
 		} else {
 			self.chain_sync_monitor_persistences.lock().unwrap().push_back(monitor_name);
 		}
-		ret
+
+		match ret {
+			chain::ChannelMonitorUpdateStatus::Completed => Ok(()),
+			chain::ChannelMonitorUpdateStatus::InProgress => Err(()),
+			chain::ChannelMonitorUpdateStatus::UnrecoverableError => Err(()),
+		}
 	}
 
 	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
