@@ -2206,8 +2206,7 @@ where
 			if peer_lock.message_batch.is_some() {
 				let error = format!(
 					"Peer {} sent start_batch for channel {} before previous batch completed",
-					their_node_id,
-					&msg.channel_id
+					their_node_id, &msg.channel_id
 				);
 				log_debug!(logger, "{}", error);
 				return Err(LightningError {
@@ -2223,8 +2222,7 @@ where
 			if batch_size <= 1 {
 				let error = format!(
 					"Peer {} sent start_batch for channel {} not strictly greater than 1",
-					their_node_id,
-					&msg.channel_id
+					their_node_id, &msg.channel_id
 				);
 				log_debug!(logger, "{}", error);
 				return Err(LightningError {
@@ -2241,8 +2239,7 @@ where
 			if batch_size > BATCH_SIZE_LIMIT {
 				let error = format!(
 					"Peer {} sent start_batch for channel {} exceeding the limit",
-					their_node_id,
-					&msg.channel_id
+					their_node_id, &msg.channel_id
 				);
 				log_debug!(logger, "{}", error);
 				return Err(LightningError {
@@ -2374,19 +2371,9 @@ where
 		MessageHandlingError,
 	> {
 		if is_gossip_msg(message.type_id()) {
-			log_gossip!(
-				logger,
-				"Received message {:?} from {}",
-				message,
-				their_node_id,
-			);
+			log_gossip!(logger, "Received message {:?} from {}", message, their_node_id);
 		} else {
-			log_trace!(
-				logger,
-				"Received message {:?} from {}",
-				message,
-				their_node_id,
-			);
+			log_trace!(logger, "Received message {:?} from {}", message, their_node_id);
 		}
 
 		let mut should_forward = None;
