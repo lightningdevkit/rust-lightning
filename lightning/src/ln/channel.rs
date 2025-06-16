@@ -50,9 +50,9 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, HTLCFailureMsg, HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo,
-	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT,
-	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
+	self, FundingConfirmedMessage, HTLCFailureMsg, HTLCSource, OpenChannelMessage,
+	PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus, RAACommitmentOrder, SentHTLCId,
+	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::interactivetxs::{
 	calculate_change_output_value, get_output_weight, AbortReason, HandleTxCompleteResult,
@@ -76,7 +76,7 @@ use crate::util::config::{
 };
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, Record, WithContext};
-use crate::util::scid_utils::scid_from_parts;
+use crate::util::scid_utils::{block_from_scid, scid_from_parts};
 use crate::util::ser::{
 	Readable, ReadableArgs, RequiredWrapper, TransactionU16LenLimited, Writeable, Writer,
 };
@@ -1421,6 +1421,11 @@ pub(crate) const UNFUNDED_CHANNEL_AGE_LIMIT_TICKS: usize = 60;
 /// Number of blocks needed for an output from a coinbase transaction to be spendable.
 pub(crate) const COINBASE_MATURITY: u32 = 100;
 
+/// The number of blocks to wait for a channel_announcement to propagate such that payments using an
+/// older SCID can still be relayed. Once the spend of the previous funding transaction has reached
+/// this number of confirmations, the corresponding SCID will be forgotten.
+const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 12;
+
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
 }
@@ -1852,6 +1857,10 @@ where
 			},
 		}
 	}
+
+	pub fn minimum_depth(&self) -> Option<u32> {
+		self.context().minimum_depth(self.funding())
+	}
 }
 
 impl<SP: Deref> From<OutboundV1Channel<SP>> for Channel<SP>
@@ -1960,6 +1969,14 @@ pub(super) struct FundingScope {
 	/// The transaction which funds this channel. Note that for manually-funded channels (i.e.,
 	/// [`ChannelContext::is_manual_broadcast`] is true) this will be a dummy empty transaction.
 	funding_transaction: Option<Transaction>,
+	/// The hash of the block in which the funding transaction was included.
+	funding_tx_confirmed_in: Option<BlockHash>,
+	funding_tx_confirmation_height: u32,
+	short_channel_id: Option<u64>,
+
+	/// The minimum number of confirmations before the funding is locked. If set, this will override
+	/// [`ChannelContext::minimum_depth`].
+	minimum_depth_override: Option<u32>,
 }
 
 impl Writeable for FundingScope {
@@ -1970,6 +1987,10 @@ impl Writeable for FundingScope {
 			(5, self.holder_selected_channel_reserve_satoshis, required),
 			(7, self.channel_transaction_parameters, (required: ReadableArgs, None)),
 			(9, self.funding_transaction, option),
+			(11, self.funding_tx_confirmed_in, option),
+			(13, self.funding_tx_confirmation_height, required),
+			(15, self.short_channel_id, option),
+			(17, self.minimum_depth_override, option),
 		});
 		Ok(())
 	}
@@ -1983,6 +2004,10 @@ impl Readable for FundingScope {
 		let mut holder_selected_channel_reserve_satoshis = RequiredWrapper(None);
 		let mut channel_transaction_parameters = RequiredWrapper(None);
 		let mut funding_transaction = None;
+		let mut funding_tx_confirmed_in = None;
+		let mut funding_tx_confirmation_height = RequiredWrapper(None);
+		let mut short_channel_id = None;
+		let mut minimum_depth_override = None;
 
 		read_tlv_fields!(reader, {
 			(1, value_to_self_msat, required),
@@ -1990,6 +2015,10 @@ impl Readable for FundingScope {
 			(5, holder_selected_channel_reserve_satoshis, required),
 			(7, channel_transaction_parameters, (required: ReadableArgs, None)),
 			(9, funding_transaction, option),
+			(11, funding_tx_confirmed_in, option),
+			(13, funding_tx_confirmation_height, required),
+			(15, short_channel_id, option),
+			(17, minimum_depth_override, option),
 		});
 
 		Ok(Self {
@@ -2002,6 +2031,10 @@ impl Readable for FundingScope {
 			counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
 			channel_transaction_parameters: channel_transaction_parameters.0.unwrap(),
 			funding_transaction,
+			funding_tx_confirmed_in,
+			funding_tx_confirmation_height: funding_tx_confirmation_height.0.unwrap(),
+			short_channel_id,
+			minimum_depth_override,
 			#[cfg(any(test, fuzzing))]
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, fuzzing))]
@@ -2046,6 +2079,10 @@ impl FundingScope {
 		self.channel_transaction_parameters.funding_outpoint
 	}
 
+	fn get_funding_txid(&self) -> Option<Txid> {
+		self.channel_transaction_parameters.funding_outpoint.map(|txo| txo.txid)
+	}
+
 	fn get_holder_selected_contest_delay(&self) -> u16 {
 		self.channel_transaction_parameters.holder_selected_contest_delay
 	}
@@ -2078,12 +2115,69 @@ impl FundingScope {
 	pub fn get_channel_type(&self) -> &ChannelTypeFeatures {
 		&self.channel_transaction_parameters.channel_type_features
 	}
+
+	/// Returns the height in which our funding transaction was confirmed.
+	pub fn get_funding_tx_confirmation_height(&self) -> Option<u32> {
+		let conf_height = self.funding_tx_confirmation_height;
+		if conf_height > 0 {
+			Some(conf_height)
+		} else {
+			None
+		}
+	}
+
+	/// Returns the current number of confirmations on the funding transaction.
+	pub fn get_funding_tx_confirmations(&self, height: u32) -> u32 {
+		if self.funding_tx_confirmation_height == 0 {
+			// We either haven't seen any confirmation yet, or observed a reorg.
+			return 0;
+		}
+
+		height.checked_sub(self.funding_tx_confirmation_height).map_or(0, |c| c + 1)
+	}
+
+	/// Gets the channel's `short_channel_id`.
+	///
+	/// Will return `None` if the funding hasn't been confirmed yet.
+	pub fn get_short_channel_id(&self) -> Option<u64> {
+		self.short_channel_id
+	}
 }
 
 /// Info about a pending splice, used in the pre-splice channel
 #[cfg(splicing)]
 struct PendingSplice {
 	pub our_funding_contribution: i64,
+
+	/// The funding txid used in the `splice_locked` sent to the counterparty.
+	sent_funding_txid: Option<Txid>,
+
+	/// The funding txid used in the `splice_locked` received from the counterparty.
+	received_funding_txid: Option<Txid>,
+}
+
+/// Wrapper around a [`Transaction`] useful for caching the result of [`Transaction::compute_txid`].
+struct ConfirmedTransaction<'a> {
+	tx: &'a Transaction,
+	txid: Option<Txid>,
+}
+
+impl<'a> ConfirmedTransaction<'a> {
+	/// Returns the underlying [`Transaction`].
+	pub fn tx(&self) -> &'a Transaction {
+		self.tx
+	}
+
+	/// Returns the [`Txid`], computing and caching it if necessary.
+	pub fn txid(&mut self) -> Txid {
+		*self.txid.get_or_insert_with(|| self.tx.compute_txid())
+	}
+}
+
+impl<'a> From<&'a Transaction> for ConfirmedTransaction<'a> {
+	fn from(tx: &'a Transaction) -> Self {
+		ConfirmedTransaction { tx, txid: None }
+	}
 }
 
 /// Contains everything about the channel including state, and various flags.
@@ -2239,10 +2333,6 @@ where
 	/// milliseconds, so any accidental force-closes here should be exceedingly rare.
 	expecting_peer_commitment_signed: bool,
 
-	/// The hash of the block in which the funding transaction was included.
-	funding_tx_confirmed_in: Option<BlockHash>,
-	funding_tx_confirmation_height: u32,
-	short_channel_id: Option<u64>,
 	/// Either the height at which this channel was created or the height at which it was last
 	/// serialized if it was serialized by versions prior to 0.0.103.
 	/// We use this to close if funding is never broadcasted.
@@ -2340,14 +2430,18 @@ where
 	// blinded paths instead of simple scid+node_id aliases.
 	outbound_scid_alias: u64,
 
+	/// Short channel ids used by any prior FundingScope. These are maintained such that
+	/// ChannelManager can look up the channel for any pending HTLCs.
+	historical_scids: Vec<u64>,
+
 	// We track whether we already emitted a `ChannelPending` event.
 	channel_pending_event_emitted: bool,
 
 	// We track whether we already emitted a `FundingTxBroadcastSafe` event.
 	funding_tx_broadcast_safe_event_emitted: bool,
 
-	// We track whether we already emitted a `ChannelReady` event.
-	channel_ready_event_emitted: bool,
+	// We track whether we already emitted an initial `ChannelReady` event.
+	initial_channel_ready_event_emitted: bool,
 
 	/// Some if we initiated to shut down the channel.
 	local_initiated_shutdown: Option<()>,
@@ -3088,6 +3182,10 @@ where
 				channel_value_satoshis,
 			},
 			funding_transaction: None,
+			funding_tx_confirmed_in: None,
+			funding_tx_confirmation_height: 0,
+			short_channel_id: None,
+			minimum_depth_override: None,
 		};
 		let channel_context = ChannelContext {
 			user_id,
@@ -3151,9 +3249,6 @@ where
 			closing_fee_limits: None,
 			target_closing_feerate_sats_per_kw: None,
 
-			funding_tx_confirmed_in: None,
-			funding_tx_confirmation_height: 0,
-			short_channel_id: None,
 			channel_creation_height: current_chain_height,
 
 			feerate_per_kw: open_channel_fields.commitment_feerate_sat_per_1000_weight,
@@ -3189,10 +3284,11 @@ where
 
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias: 0,
+			historical_scids: Vec::new(),
 
 			channel_pending_event_emitted: false,
 			funding_tx_broadcast_safe_event_emitted: false,
-			channel_ready_event_emitted: false,
+			initial_channel_ready_event_emitted: false,
 
 			channel_keys_id,
 
@@ -3329,6 +3425,10 @@ where
 				channel_value_satoshis,
 			},
 			funding_transaction: None,
+			funding_tx_confirmed_in: None,
+			funding_tx_confirmation_height: 0,
+			short_channel_id: None,
+			minimum_depth_override: None,
 		};
 		let channel_context = Self {
 			user_id,
@@ -3390,9 +3490,6 @@ where
 			closing_fee_limits: None,
 			target_closing_feerate_sats_per_kw: None,
 
-			funding_tx_confirmed_in: None,
-			funding_tx_confirmation_height: 0,
-			short_channel_id: None,
 			channel_creation_height: current_chain_height,
 
 			feerate_per_kw: commitment_feerate,
@@ -3430,10 +3527,11 @@ where
 
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias,
+			historical_scids: Vec::new(),
 
 			channel_pending_event_emitted: false,
 			funding_tx_broadcast_safe_event_emitted: false,
-			channel_ready_event_emitted: false,
+			initial_channel_ready_event_emitted: false,
 
 			channel_keys_id,
 
@@ -3606,21 +3704,14 @@ where
 		self.temporary_channel_id
 	}
 
-	pub fn minimum_depth(&self) -> Option<u32> {
-		self.minimum_depth
+	pub(super) fn minimum_depth(&self, funding: &FundingScope) -> Option<u32> {
+		funding.minimum_depth_override.or(self.minimum_depth)
 	}
 
 	/// Gets the "user_id" value passed into the construction of this channel. It has no special
 	/// meaning and exists only to allow users to have a persistent identifier of a channel.
 	pub fn get_user_id(&self) -> u128 {
 		self.user_id
-	}
-
-	/// Gets the channel's `short_channel_id`.
-	///
-	/// Will return `None` if the channel hasn't been confirmed yet.
-	pub fn get_short_channel_id(&self) -> Option<u64> {
-		self.short_channel_id
 	}
 
 	/// Allowed in any state (including after shutdown)
@@ -3645,16 +3736,6 @@ where
 	pub fn set_outbound_scid_alias(&mut self, outbound_scid_alias: u64) {
 		debug_assert_eq!(self.outbound_scid_alias, 0);
 		self.outbound_scid_alias = outbound_scid_alias;
-	}
-
-	/// Returns the height in which our funding transaction was confirmed.
-	pub fn get_funding_tx_confirmation_height(&self) -> Option<u32> {
-		let conf_height = self.funding_tx_confirmation_height;
-		if conf_height > 0 {
-			Some(conf_height)
-		} else {
-			None
-		}
 	}
 
 	/// Performs checks against necessary constraints after receiving either an `accept_channel` or
@@ -3798,21 +3879,6 @@ where
 		Ok(())
 	}
 
-	/// Returns the block hash in which our funding transaction was confirmed.
-	pub fn get_funding_tx_confirmed_in(&self) -> Option<BlockHash> {
-		self.funding_tx_confirmed_in
-	}
-
-	/// Returns the current number of confirmations on the funding transaction.
-	pub fn get_funding_tx_confirmations(&self, height: u32) -> u32 {
-		if self.funding_tx_confirmation_height == 0 {
-			// We either haven't seen any confirmation yet, or observed a reorg.
-			return 0;
-		}
-
-		height.checked_sub(self.funding_tx_confirmation_height).map_or(0, |c| c + 1)
-	}
-
 	/// Allowed in any state (including after shutdown)
 	pub fn get_counterparty_node_id(&self) -> PublicKey {
 		self.counterparty_node_id
@@ -3893,14 +3959,14 @@ where
 		self.channel_pending_event_emitted = true;
 	}
 
-	// Checks whether we should emit a `ChannelReady` event.
-	pub(crate) fn should_emit_channel_ready_event(&mut self) -> bool {
-		self.is_usable() && !self.channel_ready_event_emitted
+	// Checks whether we should emit an initial `ChannelReady` event.
+	pub(crate) fn should_emit_initial_channel_ready_event(&mut self) -> bool {
+		self.is_usable() && !self.initial_channel_ready_event_emitted
 	}
 
 	// Remembers that we already emitted a `ChannelReady` event.
-	pub(crate) fn set_channel_ready_event_emitted(&mut self) {
-		self.channel_ready_event_emitted = true;
+	pub(crate) fn set_initial_channel_ready_event_emitted(&mut self) {
+		self.initial_channel_ready_event_emitted = true;
 	}
 
 	// Remembers that we already emitted a `FundingTxBroadcastSafe` event.
@@ -5458,6 +5524,113 @@ where
 		self.counterparty_cur_commitment_point = Some(counterparty_cur_commitment_point_override);
 		self.get_initial_counterparty_commitment_signature(funding, logger)
 	}
+
+	#[rustfmt::skip]
+	fn check_for_funding_tx_confirmed<L: Deref>(
+		&mut self, funding: &mut FundingScope, block_hash: &BlockHash, height: u32,
+		index_in_block: usize, tx: &mut ConfirmedTransaction, logger: &L,
+	) -> Result<bool, ClosureReason>
+	where
+		L::Target: Logger,
+	{
+		let funding_txo = match funding.get_funding_txo() {
+			Some(funding_txo) => funding_txo,
+			None => {
+				debug_assert!(false);
+				return Ok(false);
+			},
+		};
+
+		// Check if the transaction is the expected funding transaction, and if it is,
+		// check that it pays the right amount to the right script.
+		if funding.funding_tx_confirmation_height == 0 {
+			if tx.txid() == funding_txo.txid {
+				let tx = tx.tx();
+				let txo_idx = funding_txo.index as usize;
+				if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != funding.get_funding_redeemscript().to_p2wsh() ||
+						tx.output[txo_idx].value.to_sat() != funding.get_value_satoshis() {
+					if funding.is_outbound() {
+						// If we generated the funding transaction and it doesn't match what it
+						// should, the client is really broken and we should just panic and
+						// tell them off. That said, because hash collisions happen with high
+						// probability in fuzzing mode, if we're fuzzing we just close the
+						// channel and move on.
+						#[cfg(not(fuzzing))]
+						panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+					}
+					self.update_time_counter += 1;
+					let err_reason = "funding tx had wrong script/value or output index";
+					return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
+				} else {
+					if funding.is_outbound() {
+						if !tx.is_coinbase() {
+							for input in tx.input.iter() {
+								if input.witness.is_empty() {
+									// We generated a malleable funding transaction, implying we've
+									// just exposed ourselves to funds loss to our counterparty.
+									#[cfg(not(fuzzing))]
+									panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+								}
+							}
+						}
+					}
+
+					funding.funding_tx_confirmation_height = height;
+					funding.funding_tx_confirmed_in = Some(*block_hash);
+					funding.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
+						Ok(scid) => Some(scid),
+						Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
+					};
+
+					log_info!(
+						logger,
+						"Funding txid {} for channel {} confirmed in block {}",
+						funding_txo.txid,
+						&self.channel_id(),
+						block_hash,
+					);
+
+					return Ok(true);
+				}
+			}
+		}
+
+		Ok(false)
+	}
+
+	#[rustfmt::skip]
+	fn check_for_funding_tx_spent<L: Deref>(
+		&mut self, funding: &FundingScope, tx: &Transaction, logger: &L,
+	) -> Result<(), ClosureReason>
+	where
+		L::Target: Logger,
+	{
+		let funding_txo = match funding.get_funding_txo() {
+			Some(funding_txo) => funding_txo,
+			None => {
+				debug_assert!(false);
+				return Ok(());
+			},
+		};
+
+		for input in tx.input.iter() {
+			if input.previous_output == funding_txo.into_bitcoin_outpoint() {
+				log_info!(
+					logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}",
+					tx.compute_txid(), input.previous_output.txid, input.previous_output.vout,
+					&self.channel_id(),
+				);
+				return Err(ClosureReason::CommitmentTxConfirmed);
+			}
+		}
+
+		Ok(())
+	}
+
+	/// Returns SCIDs that have been associated with the channel's funding transactions.
+	pub fn historical_scids(&self) -> &[u64] {
+		&self.historical_scids[..]
+	}
 }
 
 // Internal utility functions for channels
@@ -5656,6 +5829,19 @@ where
 	pending_splice: Option<PendingSplice>,
 }
 
+#[cfg(splicing)]
+macro_rules! promote_splice_funding {
+	($self: expr, $funding: expr) => {
+		if let Some(scid) = $self.funding.short_channel_id {
+			$self.context.historical_scids.push(scid);
+		}
+		core::mem::swap(&mut $self.funding, $funding);
+		$self.pending_splice = None;
+		$self.pending_funding.clear();
+		$self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
+	};
+}
+
 #[cfg(any(test, fuzzing))]
 struct CommitmentTxInfoCached {
 	fee: u64,
@@ -5735,7 +5921,7 @@ impl FailHTLCMessageName for msgs::UpdateFailMalformedHTLC {
 }
 
 type BestBlockUpdatedRes = (
-	Option<msgs::ChannelReady>,
+	Option<FundingConfirmedMessage>,
 	Vec<(HTLCSource, PaymentHash)>,
 	Option<msgs::AnnouncementSignatures>,
 );
@@ -6189,7 +6375,7 @@ where
 		}
 
 		if let Some(scid_alias) = msg.short_channel_id_alias {
-			if Some(scid_alias) != self.context.short_channel_id {
+			if Some(scid_alias) != self.funding.short_channel_id {
 				// The scid alias provided can be used to route payments *from* our counterparty,
 				// i.e. can be used for inbound payments and provided in invoices, but is not used
 				// when routing outbound payments.
@@ -7409,7 +7595,7 @@ where
 				matches!(self.context.channel_state, ChannelState::ChannelReady(_)))
 			{
 				// Broadcast only if not yet confirmed
-				if self.context.get_funding_tx_confirmation_height().is_none() {
+				if self.funding.get_funding_tx_confirmation_height().is_none() {
 					funding_broadcastable = Some(funding_transaction.clone())
 				}
 			}
@@ -8818,16 +9004,7 @@ where
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
-		if self.context.funding_tx_confirmation_height == 0 && self.context.minimum_depth != Some(0) {
-			return None;
-		}
-
-		let funding_tx_confirmations = height as i64 - self.context.funding_tx_confirmation_height as i64 + 1;
-		if funding_tx_confirmations <= 0 {
-			self.context.funding_tx_confirmation_height = 0;
-		}
-
-		if funding_tx_confirmations < self.context.minimum_depth.unwrap_or(0) as i64 {
+		if !self.check_funding_meets_minimum_depth(&self.funding, height) {
 			return None;
 		}
 
@@ -8844,7 +9021,7 @@ where
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
-			if self.context.funding_tx_confirmation_height != 0 &&
+			if self.funding.funding_tx_confirmation_height != 0 &&
 				self.context.channel_state < ChannelState::ChannelReady(ChannelReadyFlags::new())
 			{
 				// We should never see a funding transaction on-chain until we've received
@@ -8897,6 +9074,100 @@ where
 		}
 	}
 
+	#[cfg(splicing)]
+	fn check_get_splice_locked(
+		&self, pending_splice: &PendingSplice, funding: &FundingScope, height: u32,
+	) -> Option<msgs::SpliceLocked> {
+		if !self.check_funding_meets_minimum_depth(funding, height) {
+			return None;
+		}
+
+		let confirmed_funding_txid = match funding.get_funding_txid() {
+			Some(funding_txid) => funding_txid,
+			None => {
+				debug_assert!(false);
+				return None;
+			},
+		};
+
+		match pending_splice.sent_funding_txid {
+			Some(sent_funding_txid) if confirmed_funding_txid == sent_funding_txid => None,
+			_ => Some(msgs::SpliceLocked {
+				channel_id: self.context.channel_id(),
+				splice_txid: confirmed_funding_txid,
+			}),
+		}
+	}
+
+	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
+		let minimum_depth = self
+			.context
+			.minimum_depth(funding)
+			.expect("ChannelContext::minimum_depth should be set for FundedChannel");
+
+		// Zero-conf channels always meet the minimum depth.
+		if minimum_depth == 0 {
+			return true;
+		}
+
+		if funding.funding_tx_confirmation_height == 0 {
+			return false;
+		}
+
+		let funding_tx_confirmations =
+			height as i64 - funding.funding_tx_confirmation_height as i64 + 1;
+		if funding_tx_confirmations < minimum_depth as i64 {
+			return false;
+		}
+
+		return true;
+	}
+
+	#[cfg(splicing)]
+	fn maybe_promote_splice_funding<L: Deref>(
+		&mut self, splice_txid: Txid, confirmed_funding_index: usize, logger: &L,
+	) -> bool
+	where
+		L::Target: Logger,
+	{
+		debug_assert!(self.pending_splice.is_some());
+		debug_assert!(confirmed_funding_index < self.pending_funding.len());
+
+		let pending_splice = self.pending_splice.as_mut().unwrap();
+		pending_splice.sent_funding_txid = Some(splice_txid);
+
+		if pending_splice.sent_funding_txid == pending_splice.received_funding_txid {
+			log_info!(
+				logger,
+				"Promoting splice funding txid {} for channel {}",
+				splice_txid,
+				&self.context.channel_id,
+			);
+
+			let funding = self.pending_funding.get_mut(confirmed_funding_index).unwrap();
+			promote_splice_funding!(self, funding);
+
+			return true;
+		} else if let Some(received_funding_txid) = pending_splice.received_funding_txid {
+			log_warn!(
+				logger,
+				"Mismatched splice_locked txid for channel {}; sent txid {}; received txid {}",
+				&self.context.channel_id,
+				splice_txid,
+				received_funding_txid,
+			);
+		} else {
+			log_info!(
+				logger,
+				"Waiting on splice_locked txid {} for channel {}",
+				splice_txid,
+				&self.context.channel_id,
+			);
+		}
+
+		return false;
+	}
+
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
 	/// In the first case, we store the confirmation height and calculating the short channel id.
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
@@ -8904,79 +9175,108 @@ where
 	pub fn transactions_confirmed<NS: Deref, L: Deref>(
 		&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData,
 		chain_hash: ChainHash, node_signer: &NS, user_config: &UserConfig, logger: &L
-	) -> Result<(Option<msgs::ChannelReady>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	) -> Result<(Option<FundingConfirmedMessage>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
-		let mut msgs = (None, None);
-		if let Some(funding_txo) = self.funding.get_funding_txo() {
-			for &(index_in_block, tx) in txdata.iter() {
-				// Check if the transaction is the expected funding transaction, and if it is,
-				// check that it pays the right amount to the right script.
-				if self.context.funding_tx_confirmation_height == 0 {
-					if tx.compute_txid() == funding_txo.txid {
-						let txo_idx = funding_txo.index as usize;
-						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.funding.get_funding_redeemscript().to_p2wsh() ||
-								tx.output[txo_idx].value.to_sat() != self.funding.get_value_satoshis() {
-							if self.funding.is_outbound() {
-								// If we generated the funding transaction and it doesn't match what it
-								// should, the client is really broken and we should just panic and
-								// tell them off. That said, because hash collisions happen with high
-								// probability in fuzzing mode, if we're fuzzing we just close the
-								// channel and move on.
-								#[cfg(not(fuzzing))]
-								panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
-							}
-							self.context.update_time_counter += 1;
-							let err_reason = "funding tx had wrong script/value or output index";
-							return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
-						} else {
-							if self.funding.is_outbound() {
-								if !tx.is_coinbase() {
-									for input in tx.input.iter() {
-										if input.witness.is_empty() {
-											// We generated a malleable funding transaction, implying we've
-											// just exposed ourselves to funds loss to our counterparty.
-											#[cfg(not(fuzzing))]
-											panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
-										}
-									}
-								}
-							}
-							self.context.funding_tx_confirmation_height = height;
-							self.context.funding_tx_confirmed_in = Some(*block_hash);
-							self.context.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
-								Ok(scid) => Some(scid),
-								Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
-							}
-						}
-						// If this is a coinbase transaction and not a 0-conf channel
-						// we should update our min_depth to 100 to handle coinbase maturity
-						if tx.is_coinbase() &&
-							self.context.minimum_depth.unwrap_or(0) > 0 &&
-							self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
-							self.context.minimum_depth = Some(COINBASE_MATURITY);
-						}
-					}
-					// If we allow 1-conf funding, we may need to check for channel_ready here and
-					// send it immediately instead of waiting for a best_block_updated call (which
-					// may have already happened for this block).
-					if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
-						log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
-						let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
-						msgs = (Some(channel_ready), announcement_sigs);
-					}
+		for &(index_in_block, tx) in txdata.iter() {
+			let mut confirmed_tx = ConfirmedTransaction::from(tx);
+
+			// If we allow 1-conf funding, we may need to check for channel_ready or splice_locked here
+			// and send it immediately instead of waiting for a best_block_updated call (which may have
+			// already happened for this block).
+			let is_funding_tx_confirmed = self.context.check_for_funding_tx_confirmed(
+				&mut self.funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
+			)?;
+
+			if is_funding_tx_confirmed {
+				// If this is a coinbase transaction and not a 0-conf channel
+				// we should update our min_depth to 100 to handle coinbase maturity
+				if tx.is_coinbase() &&
+					self.context.minimum_depth.unwrap_or(0) > 0 &&
+					self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
+					self.funding.minimum_depth_override = Some(COINBASE_MATURITY);
 				}
-				for inp in tx.input.iter() {
-					if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
-						log_info!(logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.compute_txid(), inp.previous_output.txid, inp.previous_output.vout, &self.context.channel_id());
-						return Err(ClosureReason::CommitmentTxConfirmed);
+
+				if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
+					for &(idx, tx) in txdata.iter() {
+						if idx > index_in_block {
+							self.context.check_for_funding_tx_spent(&self.funding, tx, logger)?;
+						}
 					}
+
+					log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
+					let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
+					return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), announcement_sigs));
 				}
 			}
+
+			#[cfg(splicing)]
+			let mut confirmed_funding_index = None;
+			#[cfg(splicing)]
+			let mut funding_already_confirmed = false;
+			#[cfg(splicing)]
+			for (index, funding) in self.pending_funding.iter_mut().enumerate() {
+				if self.context.check_for_funding_tx_confirmed(
+					funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
+				)? {
+					if funding_already_confirmed || confirmed_funding_index.is_some() {
+						let err_reason = "splice tx of another pending funding already confirmed";
+						return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
+					}
+
+					confirmed_funding_index = Some(index);
+				} else if funding.funding_tx_confirmation_height != 0 {
+					funding_already_confirmed = true;
+				}
+			}
+
+			#[cfg(splicing)]
+			if let Some(confirmed_funding_index) = confirmed_funding_index {
+				let pending_splice = match self.pending_splice.as_ref() {
+					Some(pending_splice) => pending_splice,
+					None => {
+						// TODO: Move pending_funding into pending_splice
+						debug_assert!(false);
+						let err = "expected a pending splice".to_string();
+						return Err(ClosureReason::ProcessingError { err });
+					},
+				};
+				let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
+
+				if let Some(splice_locked) = self.check_get_splice_locked(pending_splice, funding, height) {
+					for &(idx, tx) in txdata.iter() {
+						if idx > index_in_block {
+							self.context.check_for_funding_tx_spent(funding, tx, logger)?;
+						}
+					}
+
+					log_info!(
+						logger,
+						"Sending splice_locked txid {} to our peer for channel {}",
+						splice_locked.splice_txid,
+						&self.context.channel_id,
+					);
+
+					let announcement_sigs = self
+						.maybe_promote_splice_funding(splice_locked.splice_txid, confirmed_funding_index, logger)
+						.then(|| self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger))
+						.flatten();
+
+					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked)), announcement_sigs));
+				}
+			}
+
+			self.context.check_for_funding_tx_spent(&self.funding, tx, logger)?;
+			#[cfg(splicing)]
+			for funding in self.pending_funding.iter() {
+				self.context.check_for_funding_tx_spent(funding, tx, logger)?;
+			}
+
 		}
-		Ok(msgs)
+
+		Ok((None, None))
 	}
 
 	/// When a new block is connected, we check the height of the block against outbound holding
@@ -9010,7 +9310,7 @@ where
 	fn do_best_block_updated<NS: Deref, L: Deref>(
 		&mut self, height: u32, highest_header_time: u32,
 		chain_node_signer: Option<(ChainHash, &NS, &UserConfig)>, logger: &L
-	) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	) -> Result<(Option<FundingConfirmedMessage>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger
@@ -9034,23 +9334,22 @@ where
 
 		self.context.update_time_counter = cmp::max(self.context.update_time_counter, highest_header_time);
 
+		// Check if the funding transaction was unconfirmed
+		let funding_tx_confirmations = self.funding.get_funding_tx_confirmations(height);
+		if funding_tx_confirmations == 0 {
+			self.funding.funding_tx_confirmation_height = 0;
+		}
+
 		if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
 			let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
 				self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 			} else { None };
 			log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
-			return Ok((Some(channel_ready), timed_out_htlcs, announcement_sigs));
+			return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), timed_out_htlcs, announcement_sigs));
 		}
 
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) ||
 			self.context.channel_state.is_our_channel_ready() {
-			let mut funding_tx_confirmations = height as i64 - self.context.funding_tx_confirmation_height as i64 + 1;
-			if self.context.funding_tx_confirmation_height == 0 {
-				// Note that check_get_channel_ready may reset funding_tx_confirmation_height to
-				// zero if it has been reorged out, however in either case, our state flags
-				// indicate we've already sent a channel_ready
-				funding_tx_confirmations = 0;
-			}
 
 			// If we've sent channel_ready (or have both sent and received channel_ready), and
 			// the funding transaction has become unconfirmed,
@@ -9061,12 +9360,12 @@ where
 			// 0-conf channel, but not doing so may lead to the
 			// `ChannelManager::short_to_chan_info` map  being inconsistent, so we currently have
 			// to.
-			if funding_tx_confirmations == 0 && self.context.funding_tx_confirmed_in.is_some() {
+			if funding_tx_confirmations == 0 && self.funding.funding_tx_confirmed_in.is_some() {
 				let err_reason = format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.",
 					self.context.minimum_depth.unwrap(), funding_tx_confirmations);
 				return Err(ClosureReason::ProcessingError { err: err_reason });
 			}
-		} else if !self.funding.is_outbound() && self.context.funding_tx_confirmed_in.is_none() &&
+		} else if !self.funding.is_outbound() && self.funding.funding_tx_confirmed_in.is_none() &&
 				height >= self.context.channel_creation_height + FUNDING_CONF_DEADLINE_BLOCKS {
 			log_info!(logger, "Closing channel {} due to funding timeout", &self.context.channel_id);
 			// If funding_tx_confirmed_in is unset, the channel must not be active
@@ -9075,36 +9374,133 @@ where
 			return Err(ClosureReason::FundingTimedOut);
 		}
 
+		#[cfg(splicing)]
+		let mut confirmed_funding_index = None;
+		#[cfg(splicing)]
+		for (index, funding) in self.pending_funding.iter().enumerate() {
+			if funding.funding_tx_confirmation_height != 0 {
+				if confirmed_funding_index.is_some() {
+					let err_reason = "splice tx of another pending funding already confirmed";
+					return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
+				}
+
+				confirmed_funding_index = Some(index);
+			}
+		}
+
+		#[cfg(splicing)]
+		if let Some(confirmed_funding_index) = confirmed_funding_index {
+			let pending_splice = match self.pending_splice.as_mut() {
+				Some(pending_splice) => pending_splice,
+				None => {
+					// TODO: Move pending_funding into pending_splice
+					debug_assert!(false);
+					let err = "expected a pending splice".to_string();
+					return Err(ClosureReason::ProcessingError { err });
+				},
+			};
+			let funding = self.pending_funding.get_mut(confirmed_funding_index).unwrap();
+
+			// Check if the splice funding transaction was unconfirmed
+			if funding.get_funding_tx_confirmations(height) == 0 {
+				funding.funding_tx_confirmation_height = 0;
+				if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
+					if Some(sent_funding_txid) == funding.get_funding_txid() {
+						log_warn!(
+							logger,
+							"Unconfirming sent splice_locked txid {} for channel {}",
+							sent_funding_txid,
+							&self.context.channel_id,
+						);
+						pending_splice.sent_funding_txid = None;
+					}
+				}
+			}
+
+			let pending_splice = self.pending_splice.as_ref().unwrap();
+			let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
+			if let Some(splice_locked) = self.check_get_splice_locked(pending_splice, funding, height) {
+				log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
+
+				let announcement_sigs = self
+					.maybe_promote_splice_funding(splice_locked.splice_txid, confirmed_funding_index, logger)
+					.then(|| chain_node_signer
+						.and_then(|(chain_hash, node_signer, user_config)|
+							self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
+						)
+					)
+					.flatten();
+
+				return Ok((Some(FundingConfirmedMessage::Splice(splice_locked)), timed_out_htlcs, announcement_sigs));
+			}
+		}
+
 		let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
 			self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 		} else { None };
 		Ok((None, timed_out_htlcs, announcement_sigs))
 	}
 
-	/// Indicates the funding transaction is no longer confirmed in the main chain. This may
+	pub fn get_relevant_txids(&self) -> impl Iterator<Item = (Txid, u32, Option<BlockHash>)> + '_ {
+		core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.map(|funding| {
+				(
+					funding.get_funding_txid(),
+					funding.get_funding_tx_confirmation_height(),
+					funding.funding_tx_confirmed_in,
+				)
+			})
+			.filter_map(|(txid_opt, height_opt, hash_opt)| {
+				if let (Some(funding_txid), Some(conf_height), Some(block_hash)) =
+					(txid_opt, height_opt, hash_opt)
+				{
+					Some((funding_txid, conf_height, Some(block_hash)))
+				} else {
+					None
+				}
+			})
+	}
+
+	/// Checks if any funding transaction is no longer confirmed in the main chain. This may
 	/// force-close the channel, but may also indicate a harmless reorganization of a block or two
-	/// before the channel has reached channel_ready and we can just wait for more blocks.
+	/// before the channel has reached channel_ready or splice_locked, and we can just wait for more
+	/// blocks.
 	#[rustfmt::skip]
-	pub fn funding_transaction_unconfirmed<L: Deref>(&mut self, logger: &L) -> Result<(), ClosureReason> where L::Target: Logger {
-		if self.context.funding_tx_confirmation_height != 0 {
-			// We handle the funding disconnection by calling best_block_updated with a height one
-			// below where our funding was connected, implying a reorg back to conf_height - 1.
-			let reorg_height = self.context.funding_tx_confirmation_height - 1;
-			// We use the time field to bump the current time we set on channel updates if its
-			// larger. If we don't know that time has moved forward, we can just set it to the last
-			// time we saw and it will be ignored.
-			let best_time = self.context.update_time_counter;
-			match self.do_best_block_updated(reorg_height, best_time, None::<(ChainHash, &&dyn NodeSigner, &UserConfig)>, logger) {
-				Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
-					assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
-					assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
-					assert!(announcement_sigs.is_none(), "We can't generate an announcement_sigs with 0 confirmations?");
-					Ok(())
-				},
-				Err(e) => Err(e)
+	pub fn transaction_unconfirmed<L: Deref>(
+		&mut self, txid: &Txid, logger: &L,
+	) -> Result<(), ClosureReason>
+	where
+		L::Target: Logger,
+	{
+		let unconfirmed_funding = core::iter::once(&mut self.funding)
+			.chain(self.pending_funding.iter_mut())
+			.find(|funding| funding.get_funding_txid() == Some(*txid));
+
+		if let Some(funding) = unconfirmed_funding {
+			if funding.funding_tx_confirmation_height != 0 {
+				// We handle the funding disconnection by calling best_block_updated with a height one
+				// below where our funding was connected, implying a reorg back to conf_height - 1.
+				let reorg_height = funding.funding_tx_confirmation_height - 1;
+				// We use the time field to bump the current time we set on channel updates if its
+				// larger. If we don't know that time has moved forward, we can just set it to the last
+				// time we saw and it will be ignored.
+				let best_time = self.context.update_time_counter;
+
+				match self.do_best_block_updated(reorg_height, best_time, None::<(ChainHash, &&dyn NodeSigner, &UserConfig)>, logger) {
+					Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
+						assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
+						assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
+						assert!(announcement_sigs.is_none(), "We can't generate an announcement_sigs with 0 confirmations?");
+						Ok(())
+					},
+					Err(e) => Err(e),
+				}
+			} else {
+				// We never learned about the funding confirmation anyway, just ignore
+				Ok(())
 			}
 		} else {
-			// We never learned about the funding confirmation anyway, just ignore
 			Ok(())
 		}
 	}
@@ -9134,7 +9530,7 @@ where
 			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement if the channel is not currently usable".to_owned()));
 		}
 
-		let short_channel_id = self.context.get_short_channel_id()
+		let short_channel_id = self.funding.get_short_channel_id()
 			.ok_or(ChannelError::Ignore("Cannot get a ChannelAnnouncement if the channel has not been confirmed yet".to_owned()))?;
 		let node_id = NodeId::from_pubkey(&node_signer.get_node_id(Recipient::Node)
 			.map_err(|_| ChannelError::Ignore("Failed to retrieve own public key".to_owned()))?);
@@ -9164,7 +9560,7 @@ where
 		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
-		if self.context.funding_tx_confirmation_height == 0 || self.context.funding_tx_confirmation_height + 5 > best_block_height {
+		if self.funding.funding_tx_confirmation_height == 0 || self.funding.funding_tx_confirmation_height + 5 > best_block_height {
 			return None;
 		}
 
@@ -9207,7 +9603,7 @@ where
 					},
 					Ok(v) => v
 				};
-				let short_channel_id = match self.context.get_short_channel_id() {
+				let short_channel_id = match self.funding.get_short_channel_id() {
 					Some(scid) => scid,
 					None => return None,
 				};
@@ -9287,7 +9683,7 @@ where
 		}
 
 		self.context.announcement_sigs = Some((msg.node_signature, msg.bitcoin_signature));
-		if self.context.funding_tx_confirmation_height == 0 || self.context.funding_tx_confirmation_height + 5 > best_block_height {
+		if self.funding.funding_tx_confirmation_height == 0 || self.funding.funding_tx_confirmation_height + 5 > best_block_height {
 			return Err(ChannelError::Ignore(
 				"Got announcement_signatures prior to the required six confirmations - we may not have received a block yet that our peer has".to_owned()));
 		}
@@ -9301,7 +9697,7 @@ where
 	pub fn get_signed_channel_announcement<NS: Deref>(
 		&self, node_signer: &NS, chain_hash: ChainHash, best_block_height: u32, user_config: &UserConfig
 	) -> Option<msgs::ChannelAnnouncement> where NS::Target: NodeSigner {
-		if self.context.funding_tx_confirmation_height == 0 || self.context.funding_tx_confirmation_height + 5 > best_block_height {
+		if self.funding.funding_tx_confirmation_height == 0 || self.funding.funding_tx_confirmation_height + 5 > best_block_height {
 			return None;
 		}
 		let announcement = match self.get_channel_announcement(node_signer, chain_hash, user_config) {
@@ -9434,6 +9830,8 @@ where
 
 		self.pending_splice = Some(PendingSplice {
 			our_funding_contribution: our_funding_contribution_satoshis,
+			sent_funding_txid: None,
+			received_funding_txid: None,
 		});
 
 		let msg = self.get_splice_init(our_funding_contribution_satoshis, funding_feerate_per_kw, locktime);
@@ -9521,6 +9919,76 @@ where
 		// TODO(splicing): Pre-check for reserve requirement
 		// (Note: It should also be checked later at tx_complete)
 		Ok(())
+	}
+
+	#[cfg(splicing)]
+	pub fn splice_locked<NS: Deref, L: Deref>(
+		&mut self, msg: &msgs::SpliceLocked, node_signer: &NS, chain_hash: ChainHash,
+		user_config: &UserConfig, best_block: &BestBlock, logger: &L,
+	) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError>
+	where
+		NS::Target: NodeSigner,
+		L::Target: Logger,
+	{
+		log_info!(
+			logger,
+			"Received splice_locked txid {} from our peer for channel {}",
+			msg.splice_txid,
+			&self.context.channel_id,
+		);
+
+		let pending_splice = match self.pending_splice.as_mut() {
+			Some(pending_splice) => pending_splice,
+			None => {
+				return Err(ChannelError::Ignore(format!("Channel is not in pending splice")));
+			},
+		};
+
+		if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
+			if sent_funding_txid == msg.splice_txid {
+				if let Some(funding) = self
+					.pending_funding
+					.iter_mut()
+					.find(|funding| funding.get_funding_txid() == Some(sent_funding_txid))
+				{
+					log_info!(
+						logger,
+						"Promoting splice funding txid {} for channel {}",
+						msg.splice_txid,
+						&self.context.channel_id,
+					);
+					promote_splice_funding!(self, funding);
+					return Ok(self.get_announcement_sigs(
+						node_signer,
+						chain_hash,
+						user_config,
+						best_block.height,
+						logger,
+					));
+				}
+
+				let err = "unknown splice funding txid";
+				return Err(ChannelError::close(err.to_string()));
+			} else {
+				log_warn!(
+					logger,
+					"Mismatched splice_locked txid for channel {}; sent txid {}; received txid {}",
+					&self.context.channel_id,
+					sent_funding_txid,
+					msg.splice_txid,
+				);
+			}
+		} else {
+			log_info!(
+				logger,
+				"Waiting for enough confirmations to send splice_locked txid {} for channel {}",
+				msg.splice_txid,
+				&self.context.channel_id,
+			);
+		}
+
+		pending_splice.received_funding_txid = Some(msg.splice_txid);
+		Ok(None)
 	}
 
 	// Send stuff to our remote peers:
@@ -10246,6 +10714,35 @@ where
 			false
 		}
 	}
+
+	#[cfg(splicing)]
+	pub fn has_pending_splice(&self) -> bool {
+		self.pending_splice.is_some()
+	}
+
+	pub fn remove_legacy_scids_before_block(&mut self, height: u32) -> alloc::vec::Drain<u64> {
+		let end = self
+			.funding
+			.get_short_channel_id()
+			.and_then(|current_scid| {
+				let historical_scids = &self.context.historical_scids;
+				historical_scids
+					.iter()
+					.zip(historical_scids.iter().skip(1).chain(core::iter::once(&current_scid)))
+					.map(|(_, next_scid)| {
+						let funding_height = block_from_scid(*next_scid);
+						let retain_scid =
+							funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY - 1 > height;
+						retain_scid
+					})
+					.position(|retain_scid| retain_scid)
+			})
+			.unwrap_or(0);
+
+		// Drains the oldest historical SCIDs until reaching one without
+		// CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY confirmations.
+		self.context.historical_scids.drain(0..end)
+	}
 }
 
 /// A not-yet-funded outbound (from holder) channel using V1 channel establishment.
@@ -10393,7 +10890,7 @@ where
 		if funding_transaction.is_coinbase() &&
 			self.context.minimum_depth.unwrap_or(0) > 0 &&
 			self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
-			self.context.minimum_depth = Some(COINBASE_MATURITY);
+			self.funding.minimum_depth_override = Some(COINBASE_MATURITY);
 		}
 
 		debug_assert!(self.funding.funding_transaction.is_none());
@@ -11547,9 +12044,9 @@ where
 		// consider the stale state on reload.
 		0u8.write(writer)?;
 
-		self.context.funding_tx_confirmed_in.write(writer)?;
-		self.context.funding_tx_confirmation_height.write(writer)?;
-		self.context.short_channel_id.write(writer)?;
+		self.funding.funding_tx_confirmed_in.write(writer)?;
+		self.funding.funding_tx_confirmation_height.write(writer)?;
+		self.funding.short_channel_id.write(writer)?;
 
 		self.context.counterparty_dust_limit_satoshis.write(writer)?;
 		self.context.holder_dust_limit_satoshis.write(writer)?;
@@ -11610,7 +12107,7 @@ where
 			{ Some(self.context.holder_max_htlc_value_in_flight_msat) } else { None };
 
 		let channel_pending_event_emitted = Some(self.context.channel_pending_event_emitted);
-		let channel_ready_event_emitted = Some(self.context.channel_ready_event_emitted);
+		let initial_channel_ready_event_emitted = Some(self.context.initial_channel_ready_event_emitted);
 		let funding_tx_broadcast_safe_event_emitted = Some(self.context.funding_tx_broadcast_safe_event_emitted);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -11654,7 +12151,7 @@ where
 			(17, self.context.announcement_sigs_state, required),
 			(19, self.context.latest_inbound_scid_alias, option),
 			(21, self.context.outbound_scid_alias, required),
-			(23, channel_ready_event_emitted, option),
+			(23, initial_channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, self.context.channel_keys_id, required),
 			(28, holder_max_accepted_htlcs, option),
@@ -11674,7 +12171,9 @@ where
 			(54, self.pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
-			(58, self.interactive_tx_signing_session, option) // Added in 0.2
+			(58, self.interactive_tx_signing_session, option), // Added in 0.2
+			(59, self.funding.minimum_depth_override, option), // Added in 0.2
+			(60, self.context.historical_scids, optional_vec), // Added in 0.2
 		});
 
 		Ok(())
@@ -11961,7 +12460,7 @@ where
 		let mut latest_inbound_scid_alias = None;
 		let mut outbound_scid_alias = 0u64;
 		let mut channel_pending_event_emitted = None;
-		let mut channel_ready_event_emitted = None;
+		let mut initial_channel_ready_event_emitted = None;
 		let mut funding_tx_broadcast_safe_event_emitted = None;
 
 		let mut user_id_high_opt: Option<u64> = None;
@@ -11992,8 +12491,11 @@ where
 		let mut is_manual_broadcast = None;
 
 		let mut pending_funding = Some(Vec::new());
+		let mut historical_scids = Some(Vec::new());
 
 		let mut interactive_tx_signing_session: Option<InteractiveTxSigningSession> = None;
+
+		let mut minimum_depth_override: Option<u32> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -12013,7 +12515,7 @@ where
 			(17, announcement_sigs_state, required),
 			(19, latest_inbound_scid_alias, option),
 			(21, outbound_scid_alias, required),
-			(23, channel_ready_event_emitted, option),
+			(23, initial_channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, channel_keys_id, required),
 			(28, holder_max_accepted_htlcs, option),
@@ -12034,6 +12536,8 @@ where
 			(55, removed_htlc_failure_attribution_data, optional_vec),
 			(57, holding_cell_failure_attribution_data, optional_vec),
 			(58, interactive_tx_signing_session, option), // Added in 0.2
+			(59, minimum_depth_override, option), // Added in 0.2
+			(60, historical_scids, optional_vec), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -12206,6 +12710,10 @@ where
 
 				channel_transaction_parameters: channel_parameters,
 				funding_transaction,
+				funding_tx_confirmed_in,
+				funding_tx_confirmation_height,
+				short_channel_id,
+				minimum_depth_override,
 			},
 			pending_funding: pending_funding.unwrap(),
 			context: ChannelContext {
@@ -12269,9 +12777,6 @@ where
 				closing_fee_limits: None,
 				target_closing_feerate_sats_per_kw,
 
-				funding_tx_confirmed_in,
-				funding_tx_confirmation_height,
-				short_channel_id,
 				channel_creation_height,
 
 				counterparty_dust_limit_satoshis,
@@ -12306,10 +12811,11 @@ where
 				latest_inbound_scid_alias,
 				// Later in the ChannelManager deserialization phase we scan for channels and assign scid aliases if its missing
 				outbound_scid_alias,
+				historical_scids: historical_scids.unwrap(),
 
 				funding_tx_broadcast_safe_event_emitted: funding_tx_broadcast_safe_event_emitted.unwrap_or(false),
 				channel_pending_event_emitted: channel_pending_event_emitted.unwrap_or(true),
-				channel_ready_event_emitted: channel_ready_event_emitted.unwrap_or(true),
+				initial_channel_ready_event_emitted: initial_channel_ready_event_emitted.unwrap_or(true),
 
 				channel_keys_id,
 

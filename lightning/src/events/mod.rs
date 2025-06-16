@@ -1353,10 +1353,13 @@ pub enum Event {
 		/// Will be `None` for channels created prior to LDK version 0.0.122.
 		channel_type: Option<ChannelTypeFeatures>,
 	},
-	/// Used to indicate that a channel with the given `channel_id` is ready to
-	/// be used. This event is emitted either when the funding transaction has been confirmed
-	/// on-chain, or, in case of a 0conf channel, when both parties have confirmed the channel
-	/// establishment.
+	/// Used to indicate that a channel with the given `channel_id` is ready to be used. This event
+	/// is emitted when
+	/// - the initial funding transaction has been confirmed on-chain to an acceptable depth
+	///   according to both parties (i.e., `channel_ready` messages were exchanged),
+	/// - a splice funding transaction has been confirmed on-chain to an acceptable depth according
+	///   to both parties (i.e., `splice_locked` messages were exchanged), or,
+	/// - in case of a 0conf channel, when both parties have confirmed the channel establishment.
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
@@ -1375,6 +1378,11 @@ pub enum Event {
 		user_channel_id: u128,
 		/// The `node_id` of the channel counterparty.
 		counterparty_node_id: PublicKey,
+		/// The outpoint of the channel's funding transaction.
+		///
+		/// Will be `None` if the channel's funding transaction reached an acceptable depth prior to
+		/// version 0.2.
+		funding_txo: Option<OutPoint>,
 		/// The features that this channel will operate with.
 		channel_type: ChannelTypeFeatures,
 	},
@@ -1926,11 +1934,13 @@ impl Writeable for Event {
 				ref channel_id,
 				ref user_channel_id,
 				ref counterparty_node_id,
+				ref funding_txo,
 				ref channel_type,
 			} => {
 				29u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
+					(1, funding_txo, option),
 					(2, user_channel_id, required),
 					(4, counterparty_node_id, required),
 					(6, channel_type, required),
@@ -2437,9 +2447,11 @@ impl MaybeReadable for Event {
 					let mut channel_id = ChannelId::new_zero();
 					let mut user_channel_id: u128 = 0;
 					let mut counterparty_node_id = RequiredWrapper(None);
+					let mut funding_txo = None;
 					let mut channel_type = RequiredWrapper(None);
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
+						(1, funding_txo, option),
 						(2, user_channel_id, required),
 						(4, counterparty_node_id, required),
 						(6, channel_type, required),
@@ -2449,6 +2461,7 @@ impl MaybeReadable for Event {
 						channel_id,
 						user_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						funding_txo,
 						channel_type: channel_type.0.unwrap(),
 					}))
 				};
