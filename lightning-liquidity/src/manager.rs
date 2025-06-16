@@ -140,7 +140,7 @@ where
 	lsps0_client_handler: LSPS0ClientHandler<ES>,
 	lsps0_service_handler: Option<LSPS0ServiceHandler>,
 	#[cfg(lsps1_service)]
-	lsps1_service_handler: Option<LSPS1ServiceHandler<ES, CM, C>>,
+	lsps1_service_handler: Option<LSPS1ServiceHandler<ES>>,
 	lsps1_client_handler: Option<LSPS1ClientHandler<ES>>,
 	lsps2_service_handler: Option<LSPS2ServiceHandler<CM>>,
 	lsps2_client_handler: Option<LSPS2ClientHandler<ES>>,
@@ -212,7 +212,7 @@ where {
 		#[cfg(lsps1_service)]
 		let lsps1_service_handler = service_config.as_ref().and_then(|config| {
 			if let Some(number) =
-				<LSPS1ServiceHandler<ES, CM, C> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
+				<LSPS1ServiceHandler<ES> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
 			{
 				supported_protocols.push(number);
 			}
@@ -221,8 +221,6 @@ where {
 					entropy_source.clone(),
 					Arc::clone(&pending_messages),
 					Arc::clone(&pending_events),
-					channel_manager.clone(),
-					chain_source.clone(),
 					config.clone(),
 				)
 			})
@@ -279,7 +277,7 @@ where {
 
 	/// Returns a reference to the LSPS1 server-side handler.
 	#[cfg(lsps1_service)]
-	pub fn lsps1_service_handler(&self) -> Option<&LSPS1ServiceHandler<ES, CM, C>> {
+	pub fn lsps1_service_handler(&self) -> Option<&LSPS1ServiceHandler<ES>> {
 		self.lsps1_service_handler.as_ref()
 	}
 
