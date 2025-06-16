@@ -5252,18 +5252,14 @@ where
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
 			if !self.channel_state.is_pre_funded_state() {
 				self.latest_monitor_update_id += 1;
-				Some((
-					self.get_counterparty_node_id(),
-					funding_txo,
-					self.channel_id(),
-					ChannelMonitorUpdate {
-						update_id: self.latest_monitor_update_id,
-						updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
-							should_broadcast,
-						}],
-						channel_id: Some(self.channel_id()),
-					},
-				))
+				let update = ChannelMonitorUpdate {
+					update_id: self.latest_monitor_update_id,
+					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
+						should_broadcast,
+					}],
+					channel_id: Some(self.channel_id()),
+				};
+				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), update))
 			} else {
 				None
 			}
@@ -8539,14 +8535,12 @@ where
 				let sighash = closing_tx
 					.trust()
 					.get_sighash_all(&funding_redeemscript, self.funding.get_value_satoshis());
-				secp_check!(
-					self.context.secp_ctx.verify_ecdsa(
-						&sighash,
-						&msg.signature,
-						self.funding.counterparty_funding_pubkey()
-					),
-					"Invalid closing tx signature from peer".to_owned()
+				let res = self.context.secp_ctx.verify_ecdsa(
+					&sighash,
+					&msg.signature,
+					self.funding.counterparty_funding_pubkey(),
 				);
+				secp_check!(res, "Invalid closing tx signature from peer".to_owned());
 			},
 		};
 
@@ -12635,14 +12629,16 @@ mod tests {
 		let keys_provider = TestKeysInterface::new(&seed, network);
 		keys_provider
 			.expect(OnGetShutdownScriptpubkey { returns: non_v0_segwit_shutdown_script.clone() });
+		let fee_estimator = TestFeeEstimator::new(253);
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
 		let logger = TestLogger::new();
 
 		let secp_ctx = Secp256k1::new();
 		let node_id =
 			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		match OutboundV1Channel::<&TestKeysInterface>::new(
-			&LowerBoundedFeeEstimator::new(&TestFeeEstimator::new(253)),
+		let res = OutboundV1Channel::new(
+			&bounded_fee_estimator,
 			&&keys_provider,
 			&&keys_provider,
 			node_id,
@@ -12655,7 +12651,8 @@ mod tests {
 			42,
 			None,
 			&logger,
-		) {
+		);
+		match res {
 			Err(APIError::IncompatibleShutdownScript { script }) => {
 				assert_eq!(script.into_inner(), non_v0_segwit_shutdown_script.into_inner());
 			},
