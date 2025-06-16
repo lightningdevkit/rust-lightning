@@ -11055,6 +11055,22 @@ where
 		)
 	}
 
+	/// Sets the [`BlindedMessagePath`]s that we will use as an async recipient to interactively build
+	/// [`Offer`]s with a static invoice server, so the server can serve [`StaticInvoice`]s to payers
+	/// on our behalf when we're offline.
+	///
+	/// This method only needs to be called once when the server first takes on the recipient as a
+	/// client, or when the paths change, e.g. if the paths are set to expire at a particular time.
+	#[cfg(async_payments)]
+	pub fn set_paths_to_static_invoice_server(
+		&self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
+	) -> Result<(), ()> {
+		self.flow.set_paths_to_static_invoice_server(paths_to_static_invoice_server)?;
+
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		Ok(())
+	}
+
 	/// Pays for an [`Offer`] using the given parameters by creating an [`InvoiceRequest`] and
 	/// enqueuing it to be sent via an onion message. [`ChannelManager`] will pay the actual
 	/// [`Bolt12Invoice`] once it is received.

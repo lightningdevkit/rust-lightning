@@ -23,6 +23,7 @@ use crate::util::ser::{Readable, Writeable, Writer};
 use core::time::Duration;
 
 /// The status of this offer in the cache.
+#[derive(Clone)]
 enum OfferStatus {
 	/// This offer has been returned to the user from the cache, so it needs to be stored until it
 	/// expires and its invoice needs to be kept updated.
@@ -42,6 +43,7 @@ enum OfferStatus {
 	Pending,
 }
 
+#[derive(Clone)]
 struct AsyncReceiveOffer {
 	offer: Offer,
 	/// Whether this offer is used, ready for use, or pending invoice persistence with the static
@@ -141,7 +143,34 @@ impl AsyncReceiveOfferCache {
 	pub(super) fn paths_to_static_invoice_server(&self) -> Vec<BlindedMessagePath> {
 		self.paths_to_static_invoice_server.clone()
 	}
+
+	/// Sets the [`BlindedMessagePath`]s that we will use as an async recipient to interactively build
+	/// [`Offer`]s with a static invoice server, so the server can serve [`StaticInvoice`]s to payers
+	/// on our behalf when we're offline.
+	///
+	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+	#[cfg(async_payments)]
+	pub fn set_paths_to_static_invoice_server(
+		&mut self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
+	) -> Result<(), ()> {
+		if paths_to_static_invoice_server.is_empty() {
+			return Err(());
+		}
+
+		self.paths_to_static_invoice_server = paths_to_static_invoice_server;
+		if self.offers.is_empty() {
+			// See `AsyncReceiveOfferCache::offers`.
+			self.offers = vec![None; MAX_CACHED_OFFERS_TARGET];
+		}
+		Ok(())
+	}
 }
+
+// The target number of offers we want to have cached at any given time, to mitigate too much
+// reuse of the same offer while also limiting the amount of space our offers take up on the
+// server's end.
+#[cfg(async_payments)]
+const MAX_CACHED_OFFERS_TARGET: usize = 10;
 
 impl Writeable for AsyncReceiveOfferCache {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {

@@ -158,6 +158,27 @@ where
 		self
 	}
 
+	/// Sets the [`BlindedMessagePath`]s that we will use as an async recipient to interactively build
+	/// [`Offer`]s with a static invoice server, so the server can serve [`StaticInvoice`]s to payers
+	/// on our behalf when we're offline.
+	///
+	/// This method only needs to be called once when the server first takes on the recipient as a
+	/// client, or when the paths change, e.g. if the paths are set to expire at a particular time.
+	#[cfg(async_payments)]
+	pub(crate) fn set_paths_to_static_invoice_server(
+		&self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
+	) -> Result<(), ()> {
+		// Store the paths in the async receive cache so they are persisted with the cache, but also
+		// store them in-memory in the `OffersMessageFlow` so the flow has access to them when building
+		// onion messages to send to the static invoice server, without introducing undesirable lock
+		// dependencies with the cache.
+		*self.paths_to_static_invoice_server.lock().unwrap() =
+			paths_to_static_invoice_server.clone();
+
+		let mut cache = self.async_receive_offer_cache.lock().unwrap();
+		cache.set_paths_to_static_invoice_server(paths_to_static_invoice_server)
+	}
+
 	/// Gets the node_id held by this [`OffersMessageFlow`]`
 	fn get_our_node_id(&self) -> PublicKey {
 		self.our_network_pubkey
