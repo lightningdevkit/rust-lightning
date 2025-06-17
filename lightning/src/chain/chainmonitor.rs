@@ -1305,57 +1305,34 @@ mod tests {
 		// fail either way but if it fails intermittently it's depending on the ordering of updates.
 		let mut update_iter = updates.iter();
 		let next_update = update_iter.next().unwrap().clone();
+		let node_b_mon = &nodes[1].chain_monitor.chain_monitor;
+
 		// Should contain next_update when pending updates listed.
+		let pending_updates = node_b_mon.list_pending_monitor_updates();
 		#[cfg(not(c_bindings))]
-		assert!(nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.list_pending_monitor_updates()
-			.get(&channel_id)
-			.unwrap()
-			.contains(&next_update));
+		let pending_chan_updates = pending_updates.get(&channel_id).unwrap();
 		#[cfg(c_bindings)]
-		assert!(nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.list_pending_monitor_updates()
-			.iter()
-			.find(|(chan_id, _)| *chan_id == channel_id)
-			.unwrap()
-			.1
-			.contains(&next_update));
-		nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.channel_monitor_updated(channel_id, next_update.clone())
-			.unwrap();
+		let pending_chan_updates =
+			&pending_updates.iter().find(|(chan_id, _)| *chan_id == channel_id).unwrap().1;
+		assert!(pending_chan_updates.contains(&next_update));
+
+		node_b_mon.channel_monitor_updated(channel_id, next_update.clone()).unwrap();
+
 		// Should not contain the previously pending next_update when pending updates listed.
+		let pending_updates = node_b_mon.list_pending_monitor_updates();
 		#[cfg(not(c_bindings))]
-		assert!(!nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.list_pending_monitor_updates()
-			.get(&channel_id)
-			.unwrap()
-			.contains(&next_update));
+		let pending_chan_updates = pending_updates.get(&channel_id).unwrap();
 		#[cfg(c_bindings)]
-		assert!(!nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.list_pending_monitor_updates()
-			.iter()
-			.find(|(chan_id, _)| *chan_id == channel_id)
-			.unwrap()
-			.1
-			.contains(&next_update));
+		let pending_chan_updates =
+			&pending_updates.iter().find(|(chan_id, _)| *chan_id == channel_id).unwrap().1;
+		assert!(!pending_chan_updates.contains(&next_update));
+
 		assert!(nodes[1].chain_monitor.release_pending_monitor_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
-		nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.channel_monitor_updated(channel_id, update_iter.next().unwrap().clone())
-			.unwrap();
+
+		let next_update = update_iter.next().unwrap().clone();
+		node_b_mon.channel_monitor_updated(channel_id, next_update).unwrap();
 
 		let claim_events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(claim_events.len(), 2);
