@@ -10166,10 +10166,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						&self.best_block.read().unwrap(),
 						&&logger,
 					);
-					let announcement_sigs_opt =
+					let (funding_txo, announcement_sigs_opt) =
 						try_channel_entry!(self, peer_state, result, chan_entry);
 
-					if !chan.has_pending_splice() {
+					if funding_txo.is_some() {
 						let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
 						insert_short_channel_id!(short_to_chan_info, chan);
 
@@ -10179,9 +10179,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								channel_id: chan.context.channel_id(),
 								user_channel_id: chan.context.get_user_id(),
 								counterparty_node_id: chan.context.get_counterparty_node_id(),
-								funding_txo: chan
-									.funding
-									.get_funding_txo()
+								funding_txo: funding_txo
 									.map(|outpoint| outpoint.into_bitcoin_outpoint()),
 								channel_type: chan.funding.get_channel_type().clone(),
 							},
@@ -12224,7 +12222,7 @@ where
 pub(super) enum FundingConfirmedMessage {
 	Establishment(msgs::ChannelReady),
 	#[cfg(splicing)]
-	Splice(msgs::SpliceLocked),
+	Splice(msgs::SpliceLocked, Option<OutPoint>),
 }
 
 impl<
@@ -12298,8 +12296,8 @@ where
 										}
 									},
 									#[cfg(splicing)]
-									Some(FundingConfirmedMessage::Splice(splice_locked)) => {
-										if !funded_channel.has_pending_splice() {
+									Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)) => {
+										if funding_txo.is_some() {
 											let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
 											insert_short_channel_id!(short_to_chan_info, funded_channel);
 
@@ -12308,7 +12306,7 @@ where
 												channel_id: funded_channel.context.channel_id(),
 												user_channel_id: funded_channel.context.get_user_id(),
 												counterparty_node_id: funded_channel.context.get_counterparty_node_id(),
-												funding_txo: funded_channel.funding.get_funding_txo().map(|outpoint| outpoint.into_bitcoin_outpoint()),
+												funding_txo: funding_txo.map(|outpoint| outpoint.into_bitcoin_outpoint()),
 												channel_type: funded_channel.funding.get_channel_type().clone(),
 											}, None));
 										}
