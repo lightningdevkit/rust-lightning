@@ -82,8 +82,8 @@ use crate::ln::our_peer_storage::EncryptedOurPeerStorage;
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{
-	Bolt11PaymentError, OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest,
-	SendAlongPathArgs, StaleExpiration,
+	OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs,
+	StaleExpiration,
 };
 use crate::ln::types::ChannelId;
 use crate::offers::flow::OffersMessageFlow;
@@ -187,7 +187,8 @@ use core::{cmp, mem};
 #[cfg(any(test, feature = "_externalize_tests"))]
 pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
 pub use crate::ln::outbound_payment::{
-	Bolt12PaymentError, ProbeSendFailure, RecipientOnionFields, Retry, RetryableSendFailure,
+	Bolt11PaymentError, Bolt12PaymentError, ProbeSendFailure, RecipientOnionFields, Retry,
+	RetryableSendFailure,
 };
 use crate::ln::script::ShutdownScript;
 
@@ -5142,10 +5143,11 @@ where
 	///
 	/// # Handling Invoice Amounts
 	/// Some invoices include a specific amount, while others require you to specify one.
-	/// - If the invoice **includes** an amount, user must not provide `amount_msats`.
+	/// - If the invoice **includes** an amount, user may provide an amount greater or equal to it
+	/// to allow for overpayments.
 	/// - If the invoice **doesn't include** an amount, you'll need to specify `amount_msats`.
 	///
-	/// If these conditions aren’t met, the function will return `Bolt11PaymentError::InvalidAmount`.
+	/// If these conditions aren’t met, the function will return [`Bolt11PaymentError::InvalidAmount`].
 	///
 	/// # Custom Routing Parameters
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
