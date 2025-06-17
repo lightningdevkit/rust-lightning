@@ -1424,7 +1424,7 @@ pub(crate) const COINBASE_MATURITY: u32 = 100;
 /// The number of blocks to wait for a channel_announcement to propagate such that payments using an
 /// older SCID can still be relayed. Once the spend of the previous funding transaction has reached
 /// this number of confirmations, the corresponding SCID will be forgotten.
-const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 12;
+const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
