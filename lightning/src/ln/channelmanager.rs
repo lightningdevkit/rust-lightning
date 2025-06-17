@@ -10148,42 +10148,65 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
+			hash_map::Entry::Vacant(_) => {
+				let err = format!(
 					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
-					counterparty_node_id
-				), msg.channel_id)),
+					counterparty_node_id,
+				);
+				return Err(MsgHandleErrInternal::send_err_msg_no_close(err, msg.channel_id));
+			},
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 					let result = chan.splice_locked(
-						msg, &self.node_signer, self.chain_hash, &self.default_configuration,
-						&self.best_block.read().unwrap(), &&logger,
+						msg,
+						&self.node_signer,
+						self.chain_hash,
+						&self.default_configuration,
+						&self.best_block.read().unwrap(),
+						&&logger,
 					);
-					let announcement_sigs_opt = try_channel_entry!(self, peer_state, result, chan_entry);
+					let announcement_sigs_opt =
+						try_channel_entry!(self, peer_state, result, chan_entry);
 
 					if !chan.has_pending_splice() {
 						let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
 						insert_short_channel_id!(short_to_chan_info, chan);
 
 						let mut pending_events = self.pending_events.lock().unwrap();
-						pending_events.push_back((events::Event::ChannelReady {
-							channel_id: chan.context.channel_id(),
-							user_channel_id: chan.context.get_user_id(),
-							counterparty_node_id: chan.context.get_counterparty_node_id(),
-							funding_txo: chan.funding.get_funding_txo().map(|outpoint| outpoint.into_bitcoin_outpoint()),
-							channel_type: chan.funding.get_channel_type().clone(),
-						}, None));
+						pending_events.push_back((
+							events::Event::ChannelReady {
+								channel_id: chan.context.channel_id(),
+								user_channel_id: chan.context.get_user_id(),
+								counterparty_node_id: chan.context.get_counterparty_node_id(),
+								funding_txo: chan
+									.funding
+									.get_funding_txo()
+									.map(|outpoint| outpoint.into_bitcoin_outpoint()),
+								channel_type: chan.funding.get_channel_type().clone(),
+							},
+							None,
+						));
 					}
 
 					if let Some(announcement_sigs) = announcement_sigs_opt {
-						log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
-						peer_state.pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
-							node_id: counterparty_node_id.clone(),
-							msg: announcement_sigs,
-						});
+						log_trace!(
+							logger,
+							"Sending announcement_signatures for channel {}",
+							chan.context.channel_id()
+						);
+						peer_state.pending_msg_events.push(
+							MessageSendEvent::SendAnnouncementSignatures {
+								node_id: counterparty_node_id.clone(),
+								msg: announcement_sigs,
+							},
+						);
 					}
 				} else {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot splice".to_owned(), msg.channel_id));
+					return Err(MsgHandleErrInternal::send_err_msg_no_close(
+						"Channel is not funded, cannot splice".to_owned(),
+						msg.channel_id,
+					));
 				}
 			},
 		};
