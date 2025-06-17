@@ -695,10 +695,13 @@ where
 		result
 	}
 
-	/// Used by LSP to provide client with the intercept scid and cltv_expiry_delta to use in their invoice.
+	/// Used by LSP to provide the client with the intercept scid and
+	/// `cltv_expiry_delta` to include in their invoice. The intercept scid
+	/// must be retrieved from [`ChannelManager::get_intercept_scid`].
 	///
 	/// Should be called in response to receiving a [`LSPS2ServiceEvent::BuyRequest`] event.
 	///
+	/// [`ChannelManager::get_intercept_scid`]: lightning::ln::channelmanager::ChannelManager::get_intercept_scid
 	/// [`LSPS2ServiceEvent::BuyRequest`]: crate::lsps2::event::LSPS2ServiceEvent::BuyRequest
 	pub fn invoice_parameters_generated(
 		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId, intercept_scid: u64,
