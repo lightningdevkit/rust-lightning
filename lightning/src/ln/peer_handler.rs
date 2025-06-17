@@ -2227,19 +2227,13 @@ where
 					MessageBatchImpl::CommitmentSigned(messages)
 				},
 				_ => {
-					let error = format!(
-						"Peer {} sent start_batch for channel {} without a known message type",
+					log_debug!(
+						logger,
+						"Peer {} sent start_batch for channel {} without a known message type; ignoring",
 						log_pubkey!(their_node_id),
-						&msg.channel_id
+						&msg.channel_id,
 					);
-					log_debug!(logger, "{}", error);
-					return Err(LightningError {
-						err: error.clone(),
-						action: msgs::ErrorAction::DisconnectPeerWithWarning {
-							msg: msgs::WarningMessage { channel_id: msg.channel_id, data: error },
-						},
-					}
-					.into());
+					return Ok(None);
 				},
 			};
 
