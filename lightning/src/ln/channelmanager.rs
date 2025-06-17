@@ -10155,12 +10155,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					let announcement_sigs_opt = try_channel_entry!(
-						self, peer_state, chan.splice_locked(
-							msg, &self.node_signer, self.chain_hash, &self.default_configuration,
-							&self.best_block.read().unwrap(), &&logger,
-						), chan_entry
+					let result = chan.splice_locked(
+						msg, &self.node_signer, self.chain_hash, &self.default_configuration,
+						&self.best_block.read().unwrap(), &&logger,
 					);
+					let announcement_sigs_opt = try_channel_entry!(self, peer_state, result, chan_entry);
 
 					if !chan.has_pending_splice() {
 						let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
