@@ -2204,8 +2204,8 @@ where
 				.into());
 			}
 
-			const COMMITMENT_SIGNED_BATCH_LIMIT: usize = 20;
-			if batch_size > COMMITMENT_SIGNED_BATCH_LIMIT {
+			const BATCH_SIZE_LIMIT: usize = 20;
+			if batch_size > BATCH_SIZE_LIMIT {
 				let error = format!(
 					"Peer {} sent start_batch for channel {} exceeding the limit",
 					log_pubkey!(their_node_id),
