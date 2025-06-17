@@ -62,7 +62,9 @@ use crate::ln::interactivetxs::{
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
-use crate::ln::onion_utils::{AttributionData, HTLCFailReason, LocalHTLCFailureReason};
+use crate::ln::onion_utils::{
+	AttributionData, HTLCFailReason, LocalHTLCFailureReason, HOLD_TIME_UNIT_MILLIS,
+};
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::NodeId;
@@ -7168,9 +7170,9 @@ where
 					// We really want take() here, but, again, non-mut ref :(
 					if let OutboundHTLCOutcome::Failure(mut reason) = outcome.clone() {
 						if let (Some(timestamp), Some(now)) = (htlc.send_timestamp, now) {
-							let hold_time =
-								u32::try_from(now.saturating_sub(timestamp).as_millis())
-									.unwrap_or(u32::MAX);
+							let elapsed_millis = now.saturating_sub(timestamp).as_millis();
+							let elapsed_units = elapsed_millis / HOLD_TIME_UNIT_MILLIS;
+							let hold_time = u32::try_from(elapsed_units).unwrap_or(u32::MAX);
 							reason.set_hold_time(hold_time);
 						}
 

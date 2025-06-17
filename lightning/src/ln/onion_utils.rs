@@ -44,6 +44,9 @@ use crate::prelude::*;
 
 const DEFAULT_MIN_FAILURE_PACKET_LEN: usize = 256;
 
+/// The unit size of the hold time. This is used to reduce the hold time resolution to improve privacy.
+pub(crate) const HOLD_TIME_UNIT_MILLIS: u128 = 100;
+
 pub(crate) struct OnionKeys {
 	#[cfg(test)]
 	pub(crate) shared_secret: SharedSecret,
@@ -1223,7 +1226,7 @@ where
 							logger,
 							"Htlc hold time at pos {}: {} ms",
 							route_hop_idx,
-							hold_time
+							hold_time * HOLD_TIME_UNIT_MILLIS as u32
 						);
 
 						// Shift attribution data to prepare for processing the next hop.
