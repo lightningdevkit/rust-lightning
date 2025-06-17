@@ -2156,6 +2156,41 @@ struct PendingSplice {
 	received_funding_txid: Option<Txid>,
 }
 
+#[cfg(splicing)]
+impl PendingSplice {
+	fn check_get_splice_locked<SP: Deref>(
+		&mut self, context: &ChannelContext<SP>, funding: &FundingScope, height: u32,
+	) -> Option<msgs::SpliceLocked>
+	where
+		SP::Target: SignerProvider,
+	{
+		if !context.check_funding_meets_minimum_depth(funding, height) {
+			return None;
+		}
+
+		let confirmed_funding_txid = match funding.get_funding_txid() {
+			Some(funding_txid) => funding_txid,
+			None => {
+				debug_assert!(false);
+				return None;
+			},
+		};
+
+		match self.sent_funding_txid {
+			Some(sent_funding_txid) if confirmed_funding_txid == sent_funding_txid => None,
+			_ => {
+				let splice_locked = msgs::SpliceLocked {
+					channel_id: context.channel_id(),
+					splice_txid: confirmed_funding_txid,
+				};
+				self.sent_funding_txid = Some(splice_locked.splice_txid);
+				Some(splice_locked)
+			},
+		}
+	}
+
+}
+
 /// Wrapper around a [`Transaction`] useful for caching the result of [`Transaction::compute_txid`].
 struct ConfirmedTransaction<'a> {
 	tx: &'a Transaction,
@@ -5523,6 +5558,29 @@ where
 	{
 		self.counterparty_cur_commitment_point = Some(counterparty_cur_commitment_point_override);
 		self.get_initial_counterparty_commitment_signature(funding, logger)
+	}
+
+	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
+		let minimum_depth = self
+			.minimum_depth(funding)
+			.expect("ChannelContext::minimum_depth should be set for FundedChannel");
+
+		// Zero-conf channels always meet the minimum depth.
+		if minimum_depth == 0 {
+			return true;
+		}
+
+		if funding.funding_tx_confirmation_height == 0 {
+			return false;
+		}
+
+		let funding_tx_confirmations =
+			height as i64 - funding.funding_tx_confirmation_height as i64 + 1;
+		if funding_tx_confirmations < minimum_depth as i64 {
+			return false;
+		}
+
+		return true;
 	}
 
 	#[rustfmt::skip]
@@ -9074,58 +9132,13 @@ where
 		}
 	}
 
-	#[cfg(splicing)]
-	fn check_get_splice_locked(
-		&self, pending_splice: &PendingSplice, funding: &FundingScope, height: u32,
-	) -> Option<msgs::SpliceLocked> {
-		if !self.check_funding_meets_minimum_depth(funding, height) {
-			return None;
-		}
-
-		let confirmed_funding_txid = match funding.get_funding_txid() {
-			Some(funding_txid) => funding_txid,
-			None => {
-				debug_assert!(false);
-				return None;
-			},
-		};
-
-		match pending_splice.sent_funding_txid {
-			Some(sent_funding_txid) if confirmed_funding_txid == sent_funding_txid => None,
-			_ => Some(msgs::SpliceLocked {
-				channel_id: self.context.channel_id(),
-				splice_txid: confirmed_funding_txid,
-			}),
-		}
-	}
-
 	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
-		let minimum_depth = self
-			.context
-			.minimum_depth(funding)
-			.expect("ChannelContext::minimum_depth should be set for FundedChannel");
-
-		// Zero-conf channels always meet the minimum depth.
-		if minimum_depth == 0 {
-			return true;
-		}
-
-		if funding.funding_tx_confirmation_height == 0 {
-			return false;
-		}
-
-		let funding_tx_confirmations =
-			height as i64 - funding.funding_tx_confirmation_height as i64 + 1;
-		if funding_tx_confirmations < minimum_depth as i64 {
-			return false;
-		}
-
-		return true;
+		self.context.check_funding_meets_minimum_depth(funding, height)
 	}
 
 	#[cfg(splicing)]
 	fn maybe_promote_splice_funding<L: Deref>(
-		&mut self, splice_txid: Txid, confirmed_funding_index: usize, logger: &L,
+		&mut self, confirmed_funding_index: usize, logger: &L,
 	) -> bool
 	where
 		L::Target: Logger,
@@ -9134,7 +9147,13 @@ where
 		debug_assert!(confirmed_funding_index < self.pending_funding.len());
 
 		let pending_splice = self.pending_splice.as_mut().unwrap();
-		pending_splice.sent_funding_txid = Some(splice_txid);
+		let splice_txid = match pending_splice.sent_funding_txid {
+			Some(sent_funding_txid) => sent_funding_txid,
+			None => {
+				debug_assert!(false);
+				return false;
+			},
+		};
 
 		if pending_splice.sent_funding_txid == pending_splice.received_funding_txid {
 			log_info!(
@@ -9145,6 +9164,7 @@ where
 			);
 
 			let funding = self.pending_funding.get_mut(confirmed_funding_index).unwrap();
+			debug_assert_eq!(Some(splice_txid), funding.get_funding_txid());
 			promote_splice_funding!(self, funding);
 
 			return true;
@@ -9234,7 +9254,7 @@ where
 
 			#[cfg(splicing)]
 			if let Some(confirmed_funding_index) = confirmed_funding_index {
-				let pending_splice = match self.pending_splice.as_ref() {
+				let pending_splice = match self.pending_splice.as_mut() {
 					Some(pending_splice) => pending_splice,
 					None => {
 						// TODO: Move pending_funding into pending_splice
@@ -9245,7 +9265,7 @@ where
 				};
 				let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
 
-				if let Some(splice_locked) = self.check_get_splice_locked(pending_splice, funding, height) {
+				if let Some(splice_locked) = pending_splice.check_get_splice_locked(&self.context, funding, height) {
 					for &(idx, tx) in txdata.iter() {
 						if idx > index_in_block {
 							self.context.check_for_funding_tx_spent(funding, tx, logger)?;
@@ -9260,7 +9280,7 @@ where
 					);
 
 					let announcement_sigs = self
-						.maybe_promote_splice_funding(splice_locked.splice_txid, confirmed_funding_index, logger)
+						.maybe_promote_splice_funding(confirmed_funding_index, logger)
 						.then(|| self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger))
 						.flatten();
 
@@ -9417,13 +9437,13 @@ where
 				}
 			}
 
-			let pending_splice = self.pending_splice.as_ref().unwrap();
+			let pending_splice = self.pending_splice.as_mut().unwrap();
 			let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
-			if let Some(splice_locked) = self.check_get_splice_locked(pending_splice, funding, height) {
+			if let Some(splice_locked) = pending_splice.check_get_splice_locked(&self.context, funding, height) {
 				log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
 
 				let announcement_sigs = self
-					.maybe_promote_splice_funding(splice_locked.splice_txid, confirmed_funding_index, logger)
+					.maybe_promote_splice_funding(confirmed_funding_index, logger)
 					.then(|| chain_node_signer
 						.and_then(|(chain_hash, node_signer, user_config)|
 							self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
