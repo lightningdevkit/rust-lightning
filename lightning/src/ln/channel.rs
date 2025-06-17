@@ -2765,12 +2765,13 @@ where
 	///   default destination address is used.
 	/// If error occurs, it is caused by our side, not the counterparty.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
-	#[rustfmt::skip]
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
-		change_destination_opt: Option<ScriptBuf>,
+		is_initiator: bool, change_destination_opt: Option<ScriptBuf>,
+		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
 	) -> Result<Option<InteractiveTxMessageSend>, AbortReason>
-	where ES::Target: EntropySource
+	where
+		ES::Target: EntropySource,
 	{
 		debug_assert!(matches!(self.context.channel_state, ChannelState::NegotiatingFunding(_)));
 		debug_assert!(self.interactive_tx_constructor.is_none());
@@ -2778,7 +2779,11 @@ where
 		let mut funding_inputs = Vec::new();
 		mem::swap(&mut self.funding_negotiation_context.our_funding_inputs, &mut funding_inputs);
 
-		// TODO(splicing): Add prev funding tx as input, must be provided as a parameter
+		if is_initiator {
+			if let Some(prev_funding_input) = prev_funding_input {
+				funding_inputs.push(prev_funding_input);
+			}
+		}
 
 		// Add output for funding tx
 		// Note: For the error case when the inputs are insufficient, it will be handled after
@@ -2791,12 +2796,11 @@ where
 			script_pubkey: self.funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
-		if self.funding.is_outbound() {
-			funding_outputs.push(
-				OutputOwned::Shared(SharedOwnedOutput::new(
-					shared_funding_output, self.funding_negotiation_context.our_funding_satoshis,
-				))
-			);
+		if is_initiator {
+			funding_outputs.push(OutputOwned::Shared(SharedOwnedOutput::new(
+				shared_funding_output,
+				self.funding_negotiation_context.our_funding_satoshis,
+			)));
 		} else {
 			let TxOut { value, script_pubkey } = shared_funding_output;
 			expected_remote_shared_funding_output = Some((script_pubkey, value.to_sat()));
@@ -2806,22 +2810,26 @@ where
 		let change_script = if let Some(script) = change_destination_opt {
 			script
 		} else {
-			signer_provider.get_destination_script(self.context.channel_keys_id)
+			signer_provider
+				.get_destination_script(self.context.channel_keys_id)
 				.map_err(|_err| AbortReason::InternalError("Error getting destination script"))?
 		};
 		let change_value_opt = calculate_change_output_value(
-			self.funding.is_outbound(), self.funding_negotiation_context.our_funding_satoshis,
-			&funding_inputs, &funding_outputs,
+			is_initiator,
+			self.funding_negotiation_context.our_funding_satoshis,
+			&funding_inputs,
+			&funding_outputs,
 			self.funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 			change_script.minimal_non_dust().to_sat(),
 		)?;
 		if let Some(change_value) = change_value_opt {
-			let mut change_output = TxOut {
-				value: Amount::from_sat(change_value),
-				script_pubkey: change_script,
-			};
+			let mut change_output =
+				TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
 			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
-			let change_output_fee = fee_for_weight(self.funding_negotiation_context.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_output_fee = fee_for_weight(
+				self.funding_negotiation_context.funding_feerate_sat_per_1000_weight,
+				change_output_weight,
+			);
 			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
 			// Check dust limit again
 			if change_value_decreased_with_fee > self.context.holder_dust_limit_satoshis {
@@ -2835,8 +2843,10 @@ where
 			holder_node_id,
 			counterparty_node_id: self.context.counterparty_node_id,
 			channel_id: self.context.channel_id(),
-			feerate_sat_per_kw: self.funding_negotiation_context.funding_feerate_sat_per_1000_weight,
-			is_initiator: self.funding.is_outbound(),
+			feerate_sat_per_kw: self
+				.funding_negotiation_context
+				.funding_feerate_sat_per_1000_weight,
+			is_initiator,
 			funding_tx_locktime: self.funding_negotiation_context.funding_tx_locktime,
 			inputs_to_contribute: funding_inputs,
 			outputs_to_contribute: funding_outputs,
