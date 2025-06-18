@@ -126,8 +126,11 @@ pub enum LSPS2ServiceEvent {
 	/// If `payment_size_msat` is [`Option::Some`] then the payer is allowed to use MPP.
 	/// If `payment_size_msat` is [`Option::None`] then the payer cannot use MPP.
 	///
-	/// You must generate an intercept scid and `cltv_expiry_delta` for them to use
-	/// and call [`LSPS2ServiceHandler::invoice_parameters_generated`].
+	/// You must generate a `cltv_expiry_delta` and obtain an intercept scid using
+	/// [`ChannelManager::get_intercept_scid`] for them to use and then call
+	/// [`LSPS2ServiceHandler::invoice_parameters_generated`].
+	///
+	/// [`ChannelManager::get_intercept_scid`]: lightning::ln::channelmanager::ChannelManager::get_intercept_scid
 	///
 	/// [`LSPS2ServiceHandler::invoice_parameters_generated`]: crate::lsps2::service::LSPS2ServiceHandler::invoice_parameters_generated
 	BuyRequest {
