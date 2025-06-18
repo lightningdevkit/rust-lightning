@@ -96,6 +96,7 @@ fn run_onion_failure_test<F1, F2>(
 // 3: final node fails backward (but tamper onion payloads from node0)
 // 100: trigger error in the intermediate node and tamper returning fail_htlc
 // 200: trigger error in the final node and tamper returning fail_htlc
+// 201: trigger error in the final node and delay
 fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 	_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash,
 	payment_secret: &PaymentSecret, mut callback_msg: F1, mut callback_fail: F2,
@@ -160,11 +161,11 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 			assert!(fail_len + malformed_len == 1 && (fail_len == 1 || malformed_len == 1));
 			update_1_0
 		},
-		1 | 2 | 3 | 200 => {
+		1 | 2 | 3 | 200 | 201 => {
 			// final node failure; forwarding to 2
 			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 			// forwarding on 1
-			if test_case != 200 {
+			if test_case != 200 && test_case != 201 {
 				callback_node();
 			}
 			expect_htlc_forward!(&nodes[1]);
@@ -182,20 +183,26 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 			nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &update_add_1);
 			commitment_signed_dance!(nodes[2], nodes[1], update_1.commitment_signed, false, true);
 
-			if test_case == 2 || test_case == 200 {
-				expect_htlc_forward!(&nodes[2]);
-				expect_event!(&nodes[2], Event::PaymentClaimable);
-				callback_node();
-				expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
-					nodes[2],
-					vec![HTLCHandlingFailureType::Receive { payment_hash: payment_hash.clone() }]
-				);
-			} else if test_case == 1 || test_case == 3 {
-				expect_htlc_forward!(&nodes[2]);
-				expect_htlc_handling_failed_destinations!(
-					nodes[2].node.get_and_clear_pending_events(),
-					vec![expected_failure_type.clone().unwrap()]
-				);
+			match test_case {
+				2 | 200 | 201 => {
+					expect_htlc_forward!(&nodes[2]);
+					expect_event!(&nodes[2], Event::PaymentClaimable);
+					callback_node();
+					expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+						nodes[2],
+						vec![HTLCHandlingFailureType::Receive {
+							payment_hash: payment_hash.clone()
+						}]
+					);
+				},
+				1 | 3 => {
+					expect_htlc_forward!(&nodes[2]);
+					expect_htlc_handling_failed_destinations!(
+						nodes[2].node.get_and_clear_pending_events(),
+						vec![expected_failure_type.clone().unwrap()]
+					);
+				},
+				_ => {},
 			}
 			check_added_monitors!(&nodes[2], 1);
 
@@ -203,8 +210,14 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 			assert!(update_2_1.update_fail_htlcs.len() == 1);
 
 			let mut fail_msg = update_2_1.update_fail_htlcs[0].clone();
-			if test_case == 200 {
-				callback_fail(&mut fail_msg);
+			match test_case {
+				// Trigger error in the final node and tamper returning fail_htlc.
+				200 => callback_fail(&mut fail_msg),
+				// Trigger error in the final node and delay.
+				201 => {
+					std::thread::sleep(std::time::Duration::from_millis(200));
+				},
+				_ => {},
 			}
 
 			// 2 => 1
@@ -242,9 +255,17 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 		ref short_channel_id,
 		ref error_code,
 		failure: PathFailure::OnPath { ref network_update },
+		ref hold_times,
 		..
 	} = &events[0]
 	{
+		// When resolution is delayed, we expect that to show up in the hold times. Hold times are only reported in std.
+		if test_case == 201 {
+			#[cfg(feature = "std")]
+			assert!(hold_times.iter().any(|ht| *ht > 0));
+			#[cfg(not(feature = "std"))]
+			assert!(hold_times.iter().all(|ht| *ht == 0));
+		}
 		assert_eq!(*payment_failed_permanently, !expected_retryable);
 		assert_eq!(error_code.is_none(), expected_error_reason.is_none());
 		if let Some(expected_reason) = expected_error_reason {
@@ -1489,6 +1510,23 @@ fn test_onion_failure() {
 			is_permanent: false,
 		}),
 		Some(channels[1].0.contents.short_channel_id),
+		None,
+	);
+	run_onion_failure_test(
+		"delayed_fail",
+		201,
+		&nodes,
+		&route,
+		&payment_hash,
+		&payment_secret,
+		|_| {},
+		|| {
+			nodes[2].node.fail_htlc_backwards(&payment_hash);
+		},
+		false,
+		Some(LocalHTLCFailureReason::IncorrectPaymentDetails),
+		None,
+		None,
 		None,
 	);
 }
