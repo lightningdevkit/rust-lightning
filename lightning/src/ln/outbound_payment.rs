@@ -1650,6 +1650,8 @@ impl OutboundPayments {
 					error_code: None,
 					#[cfg(any(test, feature = "_test_utils"))]
 					error_data: None,
+					#[cfg(any(test, feature = "_test_utils"))]
+					hold_times: Vec::new(),
 				};
 				events.push_back((event, None));
 			}
@@ -2278,6 +2280,7 @@ impl OutboundPayments {
 			onion_error_code,
 			onion_error_data,
 			failed_within_blinded_path,
+			hold_times,
 			..
 		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 		#[cfg(not(any(test, feature = "_test_utils")))]
@@ -2414,6 +2417,8 @@ impl OutboundPayments {
 					error_code: onion_error_code.map(|f| f.failure_code()),
 					#[cfg(any(test, feature = "_test_utils"))]
 					error_data: onion_error_data,
+					#[cfg(any(test, feature = "_test_utils"))]
+					hold_times,
 				}
 			}
 		};
