@@ -1280,6 +1280,9 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+
 		// Route two payments to be claimed at the same time.
 		let (payment_preimage_1, payment_hash_1, ..) =
 			route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
@@ -1305,57 +1308,34 @@ mod tests {
 		// fail either way but if it fails intermittently it's depending on the ordering of updates.
 		let mut update_iter = updates.iter();
 		let next_update = update_iter.next().unwrap().clone();
+		let node_b_mon = &nodes[1].chain_monitor.chain_monitor;
+
 		// Should contain next_update when pending updates listed.
+		let pending_updates = node_b_mon.list_pending_monitor_updates();
 		#[cfg(not(c_bindings))]
-		assert!(nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.list_pending_monitor_updates()
-			.get(&channel_id)
-			.unwrap()
-			.contains(&next_update));
+		let pending_chan_updates = pending_updates.get(&channel_id).unwrap();
 		#[cfg(c_bindings)]
-		assert!(nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.list_pending_monitor_updates()
-			.iter()
-			.find(|(chan_id, _)| *chan_id == channel_id)
-			.unwrap()
-			.1
-			.contains(&next_update));
-		nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.channel_monitor_updated(channel_id, next_update.clone())
-			.unwrap();
+		let pending_chan_updates =
+			&pending_updates.iter().find(|(chan_id, _)| *chan_id == channel_id).unwrap().1;
+		assert!(pending_chan_updates.contains(&next_update));
+
+		node_b_mon.channel_monitor_updated(channel_id, next_update.clone()).unwrap();
+
 		// Should not contain the previously pending next_update when pending updates listed.
+		let pending_updates = node_b_mon.list_pending_monitor_updates();
 		#[cfg(not(c_bindings))]
-		assert!(!nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.list_pending_monitor_updates()
-			.get(&channel_id)
-			.unwrap()
-			.contains(&next_update));
+		let pending_chan_updates = pending_updates.get(&channel_id).unwrap();
 		#[cfg(c_bindings)]
-		assert!(!nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.list_pending_monitor_updates()
-			.iter()
-			.find(|(chan_id, _)| *chan_id == channel_id)
-			.unwrap()
-			.1
-			.contains(&next_update));
+		let pending_chan_updates =
+			&pending_updates.iter().find(|(chan_id, _)| *chan_id == channel_id).unwrap().1;
+		assert!(!pending_chan_updates.contains(&next_update));
+
 		assert!(nodes[1].chain_monitor.release_pending_monitor_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
-		nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.channel_monitor_updated(channel_id, update_iter.next().unwrap().clone())
-			.unwrap();
+
+		let next_update = update_iter.next().unwrap().clone();
+		node_b_mon.channel_monitor_updated(channel_id, next_update).unwrap();
 
 		let claim_events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(claim_events.len(), 2);
@@ -1375,63 +1355,40 @@ mod tests {
 		// Now manually walk the commitment signed dance - because we claimed two payments
 		// back-to-back it doesn't fit into the neat walk commitment_signed_dance does.
 
-		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_update_fulfill_htlc(
-			nodes[1].node.get_our_node_id(),
-			&updates.update_fulfill_htlcs[0],
-		);
+		let updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+		nodes[0].node.handle_update_fulfill_htlc(node_b_id, &updates.update_fulfill_htlcs[0]);
 		expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
-		nodes[0].node.handle_commitment_signed_batch_test(
-			nodes[1].node.get_our_node_id(),
-			&updates.commitment_signed,
-		);
+		nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
-		let (as_first_raa, as_first_update) =
-			get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		let (as_first_raa, as_first_update) = get_revoke_commit_msgs!(nodes[0], node_b_id);
 
-		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
+		nodes[1].node.handle_revoke_and_ack(node_a_id, &as_first_raa);
 		check_added_monitors!(nodes[1], 1);
-		let bs_second_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-		nodes[1]
+		let bs_second_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+		nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_first_update);
+		check_added_monitors!(nodes[1], 1);
+		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
+
+		nodes[0]
 			.node
-			.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_first_update);
-		check_added_monitors!(nodes[1], 1);
-		let bs_first_raa = get_event_msg!(
-			nodes[1],
-			MessageSendEvent::SendRevokeAndACK,
-			nodes[0].node.get_our_node_id()
-		);
-
-		nodes[0].node.handle_update_fulfill_htlc(
-			nodes[1].node.get_our_node_id(),
-			&bs_second_updates.update_fulfill_htlcs[0],
-		);
+			.handle_update_fulfill_htlc(node_b_id, &bs_second_updates.update_fulfill_htlcs[0]);
 		expect_payment_sent(&nodes[0], payment_preimage_2, None, false, false);
-		nodes[0].node.handle_commitment_signed_batch_test(
-			nodes[1].node.get_our_node_id(),
-			&bs_second_updates.commitment_signed,
-		);
+		nodes[0]
+			.node
+			.handle_commitment_signed_batch_test(node_b_id, &bs_second_updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
-		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
+		nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_first_raa);
 		expect_payment_path_successful!(nodes[0]);
 		check_added_monitors!(nodes[0], 1);
-		let (as_second_raa, as_second_update) =
-			get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		let (as_second_raa, as_second_update) = get_revoke_commit_msgs!(nodes[0], node_b_id);
 
-		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
+		nodes[1].node.handle_revoke_and_ack(node_a_id, &as_second_raa);
 		check_added_monitors!(nodes[1], 1);
-		nodes[1].node.handle_commitment_signed_batch_test(
-			nodes[0].node.get_our_node_id(),
-			&as_second_update,
-		);
+		nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_second_update);
 		check_added_monitors!(nodes[1], 1);
-		let bs_second_raa = get_event_msg!(
-			nodes[1],
-			MessageSendEvent::SendRevokeAndACK,
-			nodes[0].node.get_our_node_id()
-		);
+		let bs_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
 
-		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_second_raa);
+		nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_second_raa);
 		expect_payment_path_successful!(nodes[0]);
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -1442,6 +1399,9 @@ mod tests {
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_c_id = nodes[2].node.get_our_node_id();
 
 		// Use FullBlockViaListen to avoid duplicate calls to process_chain_data and skips_blocks() in
 		// case of other connect_styles.
@@ -1480,15 +1440,10 @@ mod tests {
 		// Now, close channel_2 i.e. b/w node-0 and node-2 to create pending_claim in node[0].
 		nodes[0]
 			.node
-			.force_close_broadcasting_latest_txn(
-				&channel_2,
-				&nodes[2].node.get_our_node_id(),
-				"Channel force-closed".to_string(),
-			)
+			.force_close_broadcasting_latest_txn(&channel_2, &node_c_id, "closed".to_string())
 			.unwrap();
 		let closure_reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
-		let node_c_id = nodes[2].node.get_our_node_id();
 		check_closed_event!(&nodes[0], 1, closure_reason, false, [node_c_id], 1000000);
 		check_closed_broadcast(&nodes[0], 1, true);
 		let close_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -1498,7 +1453,6 @@ mod tests {
 		check_added_monitors(&nodes[2], 1);
 		check_closed_broadcast(&nodes[2], 1, true);
 		let closure_reason = ClosureReason::CommitmentTxConfirmed;
-		let node_a_id = nodes[0].node.get_our_node_id();
 		check_closed_event!(&nodes[2], 1, closure_reason, false, [node_a_id], 1000000);
 
 		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
