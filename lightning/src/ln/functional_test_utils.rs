@@ -196,6 +196,9 @@ pub enum ConnectStyle {
 	/// Provides the full block via the `chain::Listen` interface. In the current code this is
 	/// equivalent to `TransactionsFirst` with some additional assertions.
 	FullBlockViaListen,
+	/// Provides the full block via the `chain::Listen` interface, condensing multiple block
+	/// disconnections into a single `blocks_disconnected` call.
+	FullBlockDisconnectionsSkippingViaListen,
 }
 
 impl ConnectStyle {
@@ -210,6 +213,7 @@ impl ConnectStyle {
 			ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks => true,
 			ConnectStyle::TransactionsFirstReorgsOnlyTip => true,
 			ConnectStyle::FullBlockViaListen => false,
+			ConnectStyle::FullBlockDisconnectionsSkippingViaListen => false,
 		}
 	}
 
@@ -224,6 +228,7 @@ impl ConnectStyle {
 			ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks => false,
 			ConnectStyle::TransactionsFirstReorgsOnlyTip => false,
 			ConnectStyle::FullBlockViaListen => false,
+			ConnectStyle::FullBlockDisconnectionsSkippingViaListen => false,
 		}
 	}
 
@@ -231,7 +236,7 @@ impl ConnectStyle {
 		use core::hash::{BuildHasher, Hasher};
 		// Get a random value using the only std API to do so - the DefaultHasher
 		let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
-		let res = match rand_val % 9 {
+		let res = match rand_val % 10 {
 			0 => ConnectStyle::BestBlockFirst,
 			1 => ConnectStyle::BestBlockFirstSkippingBlocks,
 			2 => ConnectStyle::BestBlockFirstReorgsOnlyTip,
@@ -241,6 +246,7 @@ impl ConnectStyle {
 			6 => ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks,
 			7 => ConnectStyle::TransactionsFirstReorgsOnlyTip,
 			8 => ConnectStyle::FullBlockViaListen,
+			9 => ConnectStyle::FullBlockDisconnectionsSkippingViaListen,
 			_ => unreachable!(),
 		};
 		eprintln!("Using Block Connection Style: {:?}", res);
@@ -371,7 +377,8 @@ fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(
 				node.node.transactions_confirmed(&block.header, &txdata, height);
 				node.node.best_block_updated(&block.header, height);
 			},
-			ConnectStyle::FullBlockViaListen => {
+			ConnectStyle::FullBlockViaListen
+			| ConnectStyle::FullBlockDisconnectionsSkippingViaListen => {
 				node.chain_monitor.chain_monitor.block_connected(&block, height);
 				node.node.block_connected(&block, height);
 			},
@@ -431,6 +438,13 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 				let best_block = BestBlock::new(orig.0.header.prev_blockhash, orig.1 - 1);
 				node.chain_monitor.chain_monitor.blocks_disconnected(best_block);
 				Listen::blocks_disconnected(node.node, best_block);
+			},
+			ConnectStyle::FullBlockDisconnectionsSkippingViaListen => {
+				if i == count - 1 {
+					let best_block = BestBlock::new(orig.0.header.prev_blockhash, orig.1 - 1);
+					node.chain_monitor.chain_monitor.blocks_disconnected(best_block);
+					Listen::blocks_disconnected(node.node, best_block);
+				}
 			},
 			ConnectStyle::BestBlockFirstSkippingBlocks
 			| ConnectStyle::TransactionsFirstSkippingBlocks
