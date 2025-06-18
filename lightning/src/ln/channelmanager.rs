@@ -3726,12 +3726,12 @@ where
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	///
 	/// Users need to notify the new `ChannelManager` when a new block is connected or
-	/// disconnected using its [`block_connected`] and [`block_disconnected`] methods, starting
+	/// disconnected using its [`block_connected`] and [`blocks_disconnected`] methods, starting
 	/// from after [`params.best_block.block_hash`]. See [`chain::Listen`] and [`chain::Confirm`] for
 	/// more details.
 	///
 	/// [`block_connected`]: chain::Listen::block_connected
-	/// [`block_disconnected`]: chain::Listen::block_disconnected
+	/// [`blocks_disconnected`]: chain::Listen::blocks_disconnected
 	/// [`params.best_block.block_hash`]: chain::BestBlock::block_hash
 	#[rustfmt::skip]
 	pub fn new(
@@ -12021,26 +12021,21 @@ where
 		self.best_block_updated(header, height);
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
+	fn blocks_disconnected(&self, new_best_block: BestBlock) {
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self,
 				|| -> NotifyOption { NotifyOption::DoPersist },
 			);
-		let new_height = height - 1;
 		{
 			let mut best_block = self.best_block.write().unwrap();
-			assert_eq!(best_block.block_hash, header.block_hash(),
-				"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
-			assert_eq!(best_block.height, height,
-				"Blocks must be disconnected in chain-order - the disconnected block must have the correct height");
-			*best_block = BestBlock::new(header.prev_blockhash, new_height)
+			*best_block = new_best_block;
 		}
 
-		self.do_chain_event(Some(new_height), |channel| {
+		self.do_chain_event(Some(new_best_block.height), |channel| {
 			channel.best_block_updated(
-				new_height,
-				header.time,
+				new_best_block.height,
+				0,
 				self.chain_hash,
 				&self.node_signer,
 				&self.default_configuration,
