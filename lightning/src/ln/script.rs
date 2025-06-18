@@ -203,9 +203,9 @@ impl TryFrom<(ScriptBuf, &InitFeatures)> for ShutdownScript {
 	}
 }
 
-impl Into<ScriptBuf> for ShutdownScript {
-	fn into(self) -> ScriptBuf {
-		match self.0 {
+impl From<ShutdownScript> for ScriptBuf {
+	fn from(value: ShutdownScript) -> Self {
+		match value.0 {
 			ShutdownScriptImpl::Legacy(pubkey) => {
 				ScriptBuf::new_p2wpkh(&WPubkeyHash::hash(&pubkey.serialize()))
 			},
