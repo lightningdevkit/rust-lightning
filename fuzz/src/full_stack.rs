@@ -343,8 +343,9 @@ impl<'a> MoneyLossDetector<'a> {
 				self.header_hashes[self.height - 1].0,
 				self.header_hashes[self.height].1,
 			);
-			self.manager.block_disconnected(&header, self.height as u32);
-			self.monitor.block_disconnected(&header, self.height as u32);
+			let best_block = BestBlock::new(header.prev_blockhash, self.height as u32 - 1);
+			self.manager.blocks_disconnected(best_block);
+			self.monitor.blocks_disconnected(best_block);
 			self.height -= 1;
 			let removal_height = self.height;
 			self.txids_confirmed.retain(|_, height| removal_height != *height);

@@ -428,8 +428,9 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 
 		match *node.connect_style.borrow() {
 			ConnectStyle::FullBlockViaListen => {
-				node.chain_monitor.chain_monitor.block_disconnected(&orig.0.header, orig.1);
-				Listen::block_disconnected(node.node, &orig.0.header, orig.1);
+				let best_block = BestBlock::new(orig.0.header.prev_blockhash, orig.1 - 1);
+				node.chain_monitor.chain_monitor.blocks_disconnected(best_block);
+				Listen::blocks_disconnected(node.node, best_block);
 			},
 			ConnectStyle::BestBlockFirstSkippingBlocks
 			| ConnectStyle::TransactionsFirstSkippingBlocks
