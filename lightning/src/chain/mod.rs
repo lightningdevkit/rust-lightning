@@ -84,8 +84,13 @@ pub trait Listen {
 		self.filtered_block_connected(&block.header, &txdata, height);
 	}
 
-	/// Notifies the listener that a block was removed at the given height.
-	fn block_disconnected(&self, header: &Header, height: u32);
+	/// Notifies the listener that one or more blocks were removed in anticipation of a reorg.
+	///
+	/// The provided [`BestBlock`] is the new best block after disconnecting blocks in the reorg
+	/// but before connecting new ones (i.e. the "fork point" block). For backwards compatibility,
+	/// you may instead walk the chain backwards, calling `blocks_disconnected` for each block
+	/// that is disconnected in a reorg.
+	fn blocks_disconnected(&self, fork_point_block: BestBlock);
 }
 
 /// The `Confirm` trait is used to notify LDK when relevant transactions have been confirmed on
@@ -272,7 +277,7 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	///
 	/// Implementations are responsible for watching the chain for the funding transaction along
 	/// with any spends of outputs returned by [`get_outputs_to_watch`]. In practice, this means
-	/// calling [`block_connected`] and [`block_disconnected`] on the monitor.
+	/// calling [`block_connected`] and [`blocks_disconnected`] on the monitor.
 	///
 	/// A return of `Err(())` indicates that the channel should immediately be force-closed without
 	/// broadcasting the funding transaction.
@@ -282,7 +287,7 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	///
 	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor::ChannelMonitor::block_connected
-	/// [`block_disconnected`]: channelmonitor::ChannelMonitor::block_disconnected
+	/// [`blocks_disconnected`]: channelmonitor::ChannelMonitor::blocks_disconnected
 	fn watch_channel(
 		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
 	) -> Result<ChannelMonitorUpdateStatus, ()>;
@@ -393,8 +398,8 @@ impl<T: Listen> Listen for dyn core::ops::Deref<Target = T> {
 		(**self).filtered_block_connected(header, txdata, height);
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
-		(**self).block_disconnected(header, height);
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		(**self).blocks_disconnected(fork_point);
 	}
 }
 
@@ -408,9 +413,9 @@ where
 		self.1.filtered_block_connected(header, txdata, height);
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
-		self.0.block_disconnected(header, height);
-		self.1.block_disconnected(header, height);
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		self.0.blocks_disconnected(fork_point);
+		self.1.blocks_disconnected(fork_point);
 	}
 }
 
