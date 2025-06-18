@@ -13,6 +13,7 @@ use bitcoin::transaction;
 use bitcoin::Transaction;
 
 use lightning::chain;
+use lightning::chain::BestBlock;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -203,7 +204,7 @@ impl chain::Listen for NullChainListener {
 		&self, _header: &Header, _txdata: &chain::transaction::TransactionData, _height: u32,
 	) {
 	}
-	fn block_disconnected(&self, _header: &Header, _height: u32) {}
+	fn blocks_disconnected(&self, _fork_point: BestBlock) {}
 }
 
 pub struct MockChainListener {
@@ -231,8 +232,8 @@ impl MockChainListener {
 		self
 	}
 
-	pub fn expect_block_disconnected(self, block: BlockHeaderData) -> Self {
-		self.expected_blocks_disconnected.borrow_mut().push_back(block);
+	pub fn expect_blocks_disconnected(self, fork_point: BlockHeaderData) -> Self {
+		self.expected_blocks_disconnected.borrow_mut().push_back(fork_point);
 		self
 	}
 }
@@ -264,14 +265,17 @@ impl chain::Listen for MockChainListener {
 		}
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
 		match self.expected_blocks_disconnected.borrow_mut().pop_front() {
 			None => {
-				panic!("Unexpected block disconnected: {:?}", header.block_hash());
+				panic!(
+					"Unexpected block(s) disconnected {} at height {}",
+					fork_point.block_hash, fork_point.height,
+				);
 			},
-			Some(expected_block) => {
-				assert_eq!(header.block_hash(), expected_block.header.block_hash());
-				assert_eq!(height, expected_block.height);
+			Some(expected) => {
+				assert_eq!(fork_point.block_hash, expected.header.block_hash());
+				assert_eq!(fork_point.height, expected.height);
 			},
 		}
 	}
