@@ -10786,12 +10786,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+						let features = &peer_state.latest_features;
 						// Currently, we expect all holding cell update_adds to be dropped on peer
 						// disconnect, so Channel's reestablish will never hand us any holding cell
 						// freed HTLCs to fail backwards. If in the future we no longer drop pending
 						// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
 						let responses = try_channel_entry!(self, peer_state, chan.channel_reestablish(
-							msg, &&logger, &self.node_signer, self.chain_hash,
+							msg, &&logger, &self.node_signer, self.chain_hash, features,
 							&self.default_configuration, &*self.best_block.read().unwrap()), chan_entry);
 						let mut channel_update = None;
 						if let Some(msg) = responses.shutdown_msg {
