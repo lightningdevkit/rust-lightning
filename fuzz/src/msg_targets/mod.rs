@@ -3,6 +3,8 @@ mod utils;
 pub mod msg_accept_channel;
 pub mod msg_announcement_signatures;
 pub mod msg_closing_signed;
+pub mod msg_closing_complete;
+pub mod msg_closing_sig;
 pub mod msg_commitment_signed;
 pub mod msg_funding_created;
 pub mod msg_channel_ready;

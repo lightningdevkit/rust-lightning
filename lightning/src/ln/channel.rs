@@ -3580,37 +3580,50 @@ where
 	}
 
 	/// shutdown state returns the state of the channel in its various stages of shutdown
-	#[rustfmt::skip]
 	pub fn shutdown_state(&self) -> ChannelShutdownState {
 		match self.channel_state {
-			ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_) =>
-				if self.channel_state.is_local_shutdown_sent() && !self.channel_state.is_remote_shutdown_sent() {
+			ChannelState::AwaitingChannelReady(_) | ChannelState::ChannelReady(_) => {
+				if self.channel_state.is_local_shutdown_sent()
+					&& !self.channel_state.is_remote_shutdown_sent()
+				{
 					ChannelShutdownState::ShutdownInitiated
-				} else if (self.channel_state.is_local_shutdown_sent() || self.channel_state.is_remote_shutdown_sent()) && !self.closing_negotiation_ready() {
+				} else if (self.channel_state.is_local_shutdown_sent()
+					|| self.channel_state.is_remote_shutdown_sent())
+					&& !self.closing_negotiation_ready()
+				{
 					ChannelShutdownState::ResolvingHTLCs
-				} else if (self.channel_state.is_local_shutdown_sent() || self.channel_state.is_remote_shutdown_sent()) && self.closing_negotiation_ready() {
+				} else if (self.channel_state.is_local_shutdown_sent()
+					|| self.channel_state.is_remote_shutdown_sent())
+					&& self.closing_negotiation_ready()
+				{
 					ChannelShutdownState::NegotiatingClosingFee
 				} else {
 					ChannelShutdownState::NotShuttingDown
-				},
+				}
+			},
 			ChannelState::ShutdownComplete => ChannelShutdownState::ShutdownComplete,
 			_ => ChannelShutdownState::NotShuttingDown,
 		}
 	}
 
-	#[rustfmt::skip]
 	fn closing_negotiation_ready(&self) -> bool {
 		let is_ready_to_close = match self.channel_state {
-			ChannelState::AwaitingChannelReady(flags) =>
-				flags & FundedStateFlags::ALL == FundedStateFlags::LOCAL_SHUTDOWN_SENT | FundedStateFlags::REMOTE_SHUTDOWN_SENT,
-			ChannelState::ChannelReady(flags) =>
-				flags == FundedStateFlags::LOCAL_SHUTDOWN_SENT | FundedStateFlags::REMOTE_SHUTDOWN_SENT,
+			ChannelState::AwaitingChannelReady(flags) => {
+				flags & FundedStateFlags::ALL
+					== FundedStateFlags::LOCAL_SHUTDOWN_SENT
+						| FundedStateFlags::REMOTE_SHUTDOWN_SENT
+			},
+			ChannelState::ChannelReady(flags) => {
+				flags
+					== FundedStateFlags::LOCAL_SHUTDOWN_SENT
+						| FundedStateFlags::REMOTE_SHUTDOWN_SENT
+			},
 			_ => false,
 		};
-		self.pending_inbound_htlcs.is_empty() &&
-			self.pending_outbound_htlcs.is_empty() &&
-			self.pending_update_fee.is_none() &&
-			is_ready_to_close
+		self.pending_inbound_htlcs.is_empty()
+			&& self.pending_outbound_htlcs.is_empty()
+			&& self.pending_update_fee.is_none()
+			&& is_ready_to_close
 	}
 
 	/// Returns true if this channel is currently available for use. This is a superset of
@@ -5269,8 +5282,9 @@ where
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	#[rustfmt::skip]
-	pub fn force_shutdown(&mut self, funding: &FundingScope, should_broadcast: bool, closure_reason: ClosureReason) -> ShutdownResult {
+	pub fn force_shutdown(
+		&mut self, funding: &FundingScope, should_broadcast: bool, closure_reason: ClosureReason,
+	) -> ShutdownResult {
 		// Note that we MUST only generate a monitor update that indicates force-closure - we're
 		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
 		// being fully configured in some cases. Thus, its likely any monitor events we generate will
@@ -5284,9 +5298,14 @@ where
 		for htlc_update in self.holding_cell_htlc_updates.drain(..) {
 			match htlc_update {
 				HTLCUpdateAwaitingACK::AddHTLC { source, payment_hash, .. } => {
-					dropped_outbound_htlcs.push((source, payment_hash, counterparty_node_id, self.channel_id));
+					dropped_outbound_htlcs.push((
+						source,
+						payment_hash,
+						counterparty_node_id,
+						self.channel_id,
+					));
 				},
-				_ => {}
+				_ => {},
 			}
 		}
 		let monitor_update = if let Some(funding_txo) = funding.get_funding_txo() {
@@ -5299,13 +5318,20 @@ where
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
 			if !self.channel_state.is_pre_funded_state() {
 				self.latest_monitor_update_id += 1;
-				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), ChannelMonitorUpdate {
+				let update = ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
-					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
+					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
+						should_broadcast,
+					}],
 					channel_id: Some(self.channel_id()),
-				}))
-			} else { None }
-		} else { None };
+				};
+				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), update))
+			} else {
+				None
+			}
+		} else {
+			None
+		};
 		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid(funding);
 		let unbroadcasted_funding_tx = self.unbroadcasted_funding(funding);
 
@@ -5980,10 +6006,10 @@ where
 	}
 
 	#[inline]
-	#[rustfmt::skip]
-	fn get_closing_transaction_weight(&self, a_scriptpubkey: Option<&Script>, b_scriptpubkey: Option<&Script>) -> u64 {
-		let mut ret =
-		(4 +                                                   // version
+	fn get_closing_transaction_weight(
+		&self, a_scriptpubkey: Option<&Script>, b_scriptpubkey: Option<&Script>,
+	) -> u64 {
+		let mut ret = (4 +                                                   // version
 		 1 +                                                   // input count
 		 36 +                                                  // prevout
 		 1 +                                                   // script length (0)
@@ -5995,28 +6021,34 @@ where
 		1 +                                                    // witness element count
 		4 +                                                    // 4 element lengths (2 sigs, multisig dummy, and witness script)
 		self.funding.get_funding_redeemscript().len() as u64 + // funding witness script
-		2*(1 + 71);                                            // two signatures + sighash type flags
+		2*(1 + 71); // two signatures + sighash type flags
 		if let Some(spk) = a_scriptpubkey {
 			ret += ((8+1) +                                    // output values and script length
-				spk.len() as u64) * 4;                         // scriptpubkey and witness multiplier
+				spk.len() as u64)
+				* 4; // scriptpubkey and witness multiplier
 		}
 		if let Some(spk) = b_scriptpubkey {
 			ret += ((8+1) +                                    // output values and script length
-				spk.len() as u64) * 4;                         // scriptpubkey and witness multiplier
+				spk.len() as u64)
+				* 4; // scriptpubkey and witness multiplier
 		}
 		ret
 	}
 
 	#[inline]
-	#[rustfmt::skip]
-	fn build_closing_transaction(&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool) -> Result<(ClosingTransaction, u64), ChannelError> {
+	fn build_closing_transaction(
+		&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool,
+	) -> Result<(ClosingTransaction, u64), ChannelError> {
 		assert!(self.context.pending_inbound_htlcs.is_empty());
 		assert!(self.context.pending_outbound_htlcs.is_empty());
 		assert!(self.context.pending_update_fee.is_none());
 
 		let mut total_fee_satoshis = proposed_total_fee_satoshis;
-		let mut value_to_holder: i64 = (self.funding.value_to_self_msat as i64) / 1000 - if self.funding.is_outbound() { total_fee_satoshis as i64 } else { 0 };
-		let mut value_to_counterparty: i64 = ((self.funding.get_value_satoshis() * 1000 - self.funding.value_to_self_msat) as i64 / 1000) - if self.funding.is_outbound() { 0 } else { total_fee_satoshis as i64 };
+		let mut value_to_holder: i64 = (self.funding.value_to_self_msat as i64) / 1000
+			- if self.funding.is_outbound() { total_fee_satoshis as i64 } else { 0 };
+		let mut value_to_counterparty: i64 =
+			((self.funding.get_value_satoshis() * 1000 - self.funding.value_to_self_msat) as i64
+				/ 1000) - if self.funding.is_outbound() { 0 } else { total_fee_satoshis as i64 };
 
 		if value_to_holder < 0 {
 			assert!(self.funding.is_outbound());
@@ -6028,15 +6060,23 @@ where
 
 		debug_assert!(value_to_counterparty >= 0);
 		if value_to_counterparty < 0 {
-			return Err(ChannelError::close(format!("Value to counterparty below 0: {}", value_to_counterparty)))
+			return Err(ChannelError::close(format!(
+				"Value to counterparty below 0: {}",
+				value_to_counterparty
+			)));
 		}
-		if skip_remote_output || value_to_counterparty as u64 <= self.context.holder_dust_limit_satoshis {
+		if skip_remote_output
+			|| value_to_counterparty as u64 <= self.context.holder_dust_limit_satoshis
+		{
 			value_to_counterparty = 0;
 		}
 
 		debug_assert!(value_to_holder >= 0);
 		if value_to_holder < 0 {
-			return Err(ChannelError::close(format!("Value to holder below 0: {}", value_to_holder)))
+			return Err(ChannelError::close(format!(
+				"Value to holder below 0: {}",
+				value_to_holder
+			)));
 		}
 		if value_to_holder as u64 <= self.context.holder_dust_limit_satoshis {
 			value_to_holder = 0;
@@ -6044,10 +6084,17 @@ where
 
 		assert!(self.context.shutdown_scriptpubkey.is_some());
 		let holder_shutdown_script = self.get_closing_scriptpubkey();
-		let counterparty_shutdown_script = self.context.counterparty_shutdown_scriptpubkey.clone().unwrap();
+		let counterparty_shutdown_script =
+			self.context.counterparty_shutdown_scriptpubkey.clone().unwrap();
 		let funding_outpoint = self.funding_outpoint().into_bitcoin_outpoint();
 
-		let closing_transaction = ClosingTransaction::new(value_to_holder as u64, value_to_counterparty as u64, holder_shutdown_script, counterparty_shutdown_script, funding_outpoint);
+		let closing_transaction = ClosingTransaction::new(
+			value_to_holder as u64,
+			value_to_counterparty as u64,
+			holder_shutdown_script,
+			counterparty_shutdown_script,
+			funding_outpoint,
+		);
 		Ok((closing_transaction, total_fee_satoshis))
 	}
 
@@ -8246,21 +8293,27 @@ where
 	/// Calculates and returns our minimum and maximum closing transaction fee amounts, in whole
 	/// satoshis. The amounts remain consistent unless a peer disconnects/reconnects or we restart,
 	/// at which point they will be recalculated.
-	#[rustfmt::skip]
-	fn calculate_closing_fee_limits<F: Deref>(&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>)
-		-> (u64, u64)
-		where F::Target: FeeEstimator
+	fn calculate_closing_fee_limits<F: Deref>(
+		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> (u64, u64)
+	where
+		F::Target: FeeEstimator,
 	{
-		if let Some((min, max)) = self.context.closing_fee_limits { return (min, max); }
+		if let Some((min, max)) = self.context.closing_fee_limits {
+			return (min, max);
+		}
 
 		// Propose a range from our current Background feerate to our Normal feerate plus our
 		// force_close_avoidance_max_fee_satoshis.
 		// If we fail to come to consensus, we'll have to force-close.
-		let mut proposed_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::ChannelCloseMinimum);
+		let mut proposed_feerate =
+			fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::ChannelCloseMinimum);
 		// Use NonAnchorChannelFee because this should be an estimate for a channel close
 		// that we don't expect to need fee bumping
-		let normal_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
-		let mut proposed_max_feerate = if self.funding.is_outbound() { normal_feerate } else { u32::max_value() };
+		let normal_feerate =
+			fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
+		let mut proposed_max_feerate =
+			if self.funding.is_outbound() { normal_feerate } else { u32::max_value() };
 
 		// The spec requires that (when the channel does not have anchors) we only send absolute
 		// channel fees no greater than the absolute channel fee on the current commitment
@@ -8269,7 +8322,11 @@ where
 		// some force-closure by old nodes, but we wanted to close the channel anyway.
 
 		if let Some(target_feerate) = self.context.target_closing_feerate_sats_per_kw {
-			let min_feerate = if self.funding.is_outbound() { target_feerate } else { cmp::min(self.context.feerate_per_kw, target_feerate) };
+			let min_feerate = if self.funding.is_outbound() {
+				target_feerate
+			} else {
+				cmp::min(self.context.feerate_per_kw, target_feerate)
+			};
 			proposed_feerate = cmp::max(proposed_feerate, min_feerate);
 			proposed_max_feerate = cmp::max(proposed_max_feerate, min_feerate);
 		}
@@ -8281,19 +8338,26 @@ where
 		// come to consensus with our counterparty on appropriate fees, however it should be a
 		// relatively rare case. We can revisit this later, though note that in order to determine
 		// if the funders' output is dust we have to know the absolute fee we're going to use.
-		let tx_weight = self.get_closing_transaction_weight(Some(&self.get_closing_scriptpubkey()), Some(self.context.counterparty_shutdown_scriptpubkey.as_ref().unwrap()));
+		let tx_weight = self.get_closing_transaction_weight(
+			Some(&self.get_closing_scriptpubkey()),
+			Some(self.context.counterparty_shutdown_scriptpubkey.as_ref().unwrap()),
+		);
 		let proposed_total_fee_satoshis = proposed_feerate as u64 * tx_weight / 1000;
 		let proposed_max_total_fee_satoshis = if self.funding.is_outbound() {
-				// We always add force_close_avoidance_max_fee_satoshis to our normal
-				// feerate-calculated fee, but allow the max to be overridden if we're using a
-				// target feerate-calculated fee.
-				cmp::max(normal_feerate as u64 * tx_weight / 1000 + self.context.config.options.force_close_avoidance_max_fee_satoshis,
-					proposed_max_feerate as u64 * tx_weight / 1000)
-			} else {
-				self.funding.get_value_satoshis() - (self.funding.value_to_self_msat + 999) / 1000
-			};
+			// We always add force_close_avoidance_max_fee_satoshis to our normal
+			// feerate-calculated fee, but allow the max to be overridden if we're using a
+			// target feerate-calculated fee.
+			cmp::max(
+				normal_feerate as u64 * tx_weight / 1000
+					+ self.context.config.options.force_close_avoidance_max_fee_satoshis,
+				proposed_max_feerate as u64 * tx_weight / 1000,
+			)
+		} else {
+			self.funding.get_value_satoshis() - (self.funding.value_to_self_msat + 999) / 1000
+		};
 
-		self.context.closing_fee_limits = Some((proposed_total_fee_satoshis, proposed_max_total_fee_satoshis));
+		self.context.closing_fee_limits =
+			Some((proposed_total_fee_satoshis, proposed_max_total_fee_satoshis));
 		self.context.closing_fee_limits.clone().unwrap()
 	}
 
@@ -8321,11 +8385,15 @@ where
 		Ok(())
 	}
 
-	#[rustfmt::skip]
 	pub fn maybe_propose_closing_signed<F: Deref, L: Deref>(
-		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
-		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>), ChannelError>
-		where F::Target: FeeEstimator, L::Target: Logger
+		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+	) -> Result<
+		(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>),
+		ChannelError,
+	>
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
 		// If we're waiting on a monitor persistence, that implies we're also waiting to send some
 		// message to our counterparty (probably a `revoke_and_ack`). In such a case, we shouldn't
@@ -8351,11 +8419,19 @@ where
 		let (our_min_fee, our_max_fee) = self.calculate_closing_fee_limits(fee_estimator);
 
 		assert!(self.context.shutdown_scriptpubkey.is_some());
-		let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(our_min_fee, false)?;
+		let (closing_tx, total_fee_satoshis) =
+			self.build_closing_transaction(our_min_fee, false)?;
 		log_trace!(logger, "Proposing initial closing_signed for our counterparty with a fee range of {}-{} sat (with initial proposal {} sats)",
 			our_min_fee, our_max_fee, total_fee_satoshis);
 
-		let closing_signed = self.get_closing_signed_msg(&closing_tx, false, total_fee_satoshis, our_min_fee, our_max_fee, logger);
+		let closing_signed = self.get_closing_signed_msg(
+			&closing_tx,
+			false,
+			total_fee_satoshis,
+			our_min_fee,
+			our_max_fee,
+			logger,
+		);
 		Ok((closing_signed, None, None))
 	}
 
@@ -8397,23 +8473,30 @@ where
 		}
 	}
 
-	#[rustfmt::skip]
 	pub fn shutdown(
-		&mut self, signer_provider: &SP, their_features: &InitFeatures, msg: &msgs::Shutdown
-	) -> Result<(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
-	{
+		&mut self, signer_provider: &SP, their_features: &InitFeatures, msg: &msgs::Shutdown,
+	) -> Result<
+		(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>),
+		ChannelError,
+	> {
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::close("Peer sent shutdown when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close(
+				"Peer sent shutdown when we needed a channel_reestablish".to_owned(),
+			));
 		}
 		if self.context.channel_state.is_pre_funded_state() {
 			// Spec says we should fail the connection, not the channel, but that's nonsense, there
 			// are plenty of reasons you may want to fail a channel pre-funding, and spec says you
 			// can do that via error message without getting a connection fail anyway...
-			return Err(ChannelError::close("Peer sent shutdown pre-funding generation".to_owned()));
+			return Err(ChannelError::close(
+				"Peer sent shutdown pre-funding generation".to_owned(),
+			));
 		}
 		for htlc in self.context.pending_inbound_htlcs.iter() {
 			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
-				return Err(ChannelError::close("Got shutdown with remote pending HTLCs".to_owned()));
+				return Err(ChannelError::close(
+					"Got shutdown with remote pending HTLCs".to_owned(),
+				));
 			}
 		}
 		assert!(!matches!(self.context.channel_state, ChannelState::ShutdownComplete));
@@ -8423,11 +8506,16 @@ where
 			|| self.context.channel_state.is_remote_stfu_sent()
 			|| self.context.channel_state.is_quiescent()
 		{
-			return Err(ChannelError::WarnAndDisconnect("Got shutdown request while quiescent".to_owned()));
+			return Err(ChannelError::WarnAndDisconnect(
+				"Got shutdown request while quiescent".to_owned(),
+			));
 		}
 
 		if !script::is_bolt2_compliant(&msg.scriptpubkey, their_features) {
-			return Err(ChannelError::Warn(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_hex_string())));
+			return Err(ChannelError::Warn(format!(
+				"Got a nonstandard scriptpubkey ({}) from remote peer",
+				msg.scriptpubkey.to_hex_string()
+			)));
 		}
 
 		if self.context.counterparty_shutdown_scriptpubkey.is_some() {
@@ -8449,10 +8537,17 @@ where
 				assert!(send_shutdown);
 				let shutdown_scriptpubkey = match signer_provider.get_shutdown_scriptpubkey() {
 					Ok(scriptpubkey) => scriptpubkey,
-					Err(_) => return Err(ChannelError::close("Failed to get shutdown scriptpubkey".to_owned())),
+					Err(_) => {
+						return Err(ChannelError::close(
+							"Failed to get shutdown scriptpubkey".to_owned(),
+						))
+					},
 				};
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
-					return Err(ChannelError::close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
+					return Err(ChannelError::close(format!(
+						"Provided a scriptpubkey format not accepted by peer: {}",
+						shutdown_scriptpubkey
+					)));
 				}
 				self.context.shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
 				true
@@ -8480,27 +8575,30 @@ where
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)
-		} else { None };
+		} else {
+			None
+		};
 		let shutdown = if send_shutdown {
 			Some(msgs::Shutdown {
 				channel_id: self.context.channel_id,
 				scriptpubkey: self.get_closing_scriptpubkey(),
 			})
-		} else { None };
+		} else {
+			None
+		};
 
 		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
 		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
 		// cell HTLCs and return them to fail the payment.
 		self.context.holding_cell_update_fee = None;
-		let mut dropped_outbound_htlcs = Vec::with_capacity(self.context.holding_cell_htlc_updates.len());
-		self.context.holding_cell_htlc_updates.retain(|htlc_update| {
-			match htlc_update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
-					dropped_outbound_htlcs.push((source.clone(), payment_hash.clone()));
-					false
-				},
-				_ => true
-			}
+		let mut dropped_outbound_htlcs =
+			Vec::with_capacity(self.context.holding_cell_htlc_updates.len());
+		self.context.holding_cell_htlc_updates.retain(|htlc_update| match htlc_update {
+			&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
+				dropped_outbound_htlcs.push((source.clone(), payment_hash.clone()));
+				false
+			},
+			_ => true,
 		});
 
 		self.context.channel_state.set_local_shutdown_sent();
@@ -8534,18 +8632,24 @@ where
 		tx
 	}
 
-	#[rustfmt::skip]
 	fn get_closing_signed_msg<L: Deref>(
-		&mut self, closing_tx: &ClosingTransaction, skip_remote_output: bool,
-		fee_satoshis: u64, min_fee_satoshis: u64, max_fee_satoshis: u64, logger: &L
+		&mut self, closing_tx: &ClosingTransaction, skip_remote_output: bool, fee_satoshis: u64,
+		min_fee_satoshis: u64, max_fee_satoshis: u64, logger: &L,
 	) -> Option<msgs::ClosingSigned>
-		where L::Target: Logger
+	where
+		L::Target: Logger,
 	{
 		let sig = match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.sign_closing_transaction(&self.funding.channel_transaction_parameters, closing_tx, &self.context.secp_ctx).ok(),
+			ChannelSignerType::Ecdsa(ecdsa) => ecdsa
+				.sign_closing_transaction(
+					&self.funding.channel_transaction_parameters,
+					closing_tx,
+					&self.context.secp_ctx,
+				)
+				.ok(),
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
-			_ => todo!()
+			_ => todo!(),
 		};
 		if sig.is_none() {
 			log_trace!(logger, "Closing transaction signature unavailable, waiting on signer");
@@ -8554,7 +8658,8 @@ where
 			self.context.signer_pending_closing = false;
 		}
 		let fee_range = msgs::ClosingSignedFeeRange { min_fee_satoshis, max_fee_satoshis };
-		self.context.last_sent_closing_fee = Some((fee_satoshis, skip_remote_output, fee_range.clone(), sig.clone()));
+		self.context.last_sent_closing_fee =
+			Some((fee_satoshis, skip_remote_output, fee_range.clone(), sig.clone()));
 		sig.map(|signature| msgs::ClosingSigned {
 			channel_id: self.context.channel_id,
 			fee_satoshis,
@@ -8563,7 +8668,6 @@ where
 		})
 	}
 
-	#[rustfmt::skip]
 	fn shutdown_result_coop_close(&self) -> ShutdownResult {
 		let closure_reason = if self.initiated_shutdown() {
 			ClosureReason::LocallyInitiatedCooperativeClosure
@@ -8574,7 +8678,9 @@ where
 			closure_reason,
 			monitor_update: None,
 			dropped_outbound_htlcs: Vec::new(),
-			unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(&self.funding),
+			unbroadcasted_batch_funding_txid: self
+				.context
+				.unbroadcasted_batch_funding_txid(&self.funding),
 			channel_id: self.context.channel_id,
 			user_channel_id: self.context.user_id,
 			channel_capacity_satoshis: self.funding.get_value_satoshis(),
@@ -8586,26 +8692,44 @@ where
 		}
 	}
 
-	#[rustfmt::skip]
 	pub fn closing_signed<F: Deref, L: Deref>(
-		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::ClosingSigned, logger: &L)
-		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>), ChannelError>
-		where F::Target: FeeEstimator, L::Target: Logger
+		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::ClosingSigned,
+		logger: &L,
+	) -> Result<
+		(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>),
+		ChannelError,
+	>
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
 		if self.is_shutdown_pending_signature() {
 			return Err(ChannelError::Warn(String::from("Remote end sent us a closing_signed while fully shutdown and just waiting on the final closing signature")));
 		}
 		if !self.context.channel_state.is_both_sides_shutdown() {
-			return Err(ChannelError::close("Remote end sent us a closing_signed before both sides provided a shutdown".to_owned()));
+			return Err(ChannelError::close(
+				"Remote end sent us a closing_signed before both sides provided a shutdown"
+					.to_owned(),
+			));
 		}
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::close("Peer sent closing_signed when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close(
+				"Peer sent closing_signed when we needed a channel_reestablish".to_owned(),
+			));
 		}
-		if !self.context.pending_inbound_htlcs.is_empty() || !self.context.pending_outbound_htlcs.is_empty() {
-			return Err(ChannelError::close("Remote end sent us a closing_signed while there were still pending HTLCs".to_owned()));
+		if !self.context.pending_inbound_htlcs.is_empty()
+			|| !self.context.pending_outbound_htlcs.is_empty()
+		{
+			return Err(ChannelError::close(
+				"Remote end sent us a closing_signed while there were still pending HTLCs"
+					.to_owned(),
+			));
 		}
-		if msg.fee_satoshis > TOTAL_BITCOIN_SUPPLY_SATOSHIS { // this is required to stop potential overflow in build_closing_transaction
-			return Err(ChannelError::close("Remote tried to send us a closing tx with > 21 million BTC fee".to_owned()));
+		if msg.fee_satoshis > TOTAL_BITCOIN_SUPPLY_SATOSHIS {
+			// this is required to stop potential overflow in build_closing_transaction
+			return Err(ChannelError::close(
+				"Remote tried to send us a closing tx with > 21 million BTC fee".to_owned(),
+			));
 		}
 
 		if self.funding.is_outbound() && self.context.last_sent_closing_fee.is_none() {
@@ -8619,26 +8743,43 @@ where
 
 		let funding_redeemscript = self.funding.get_funding_redeemscript();
 		let mut skip_remote_output = false;
-		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, skip_remote_output)?;
+		let (mut closing_tx, used_total_fee) =
+			self.build_closing_transaction(msg.fee_satoshis, skip_remote_output)?;
 		if used_total_fee != msg.fee_satoshis {
 			return Err(ChannelError::close(format!("Remote sent us a closing_signed with a fee other than the value they can claim. Fee in message: {}. Actual closing tx fee: {}", msg.fee_satoshis, used_total_fee)));
 		}
-		let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.funding.get_value_satoshis());
+		let sighash = closing_tx
+			.trust()
+			.get_sighash_all(&funding_redeemscript, self.funding.get_value_satoshis());
 
-		match self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.funding.get_counterparty_pubkeys().funding_pubkey) {
+		match self.context.secp_ctx.verify_ecdsa(
+			&sighash,
+			&msg.signature,
+			&self.funding.get_counterparty_pubkeys().funding_pubkey,
+		) {
 			Ok(_) => {},
 			Err(_e) => {
 				// The remote end may have decided to revoke their output due to inconsistent dust
 				// limits, so check for that case by re-checking the signature here.
 				skip_remote_output = true;
-				closing_tx = self.build_closing_transaction(msg.fee_satoshis, skip_remote_output)?.0;
-				let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.funding.get_value_satoshis());
-				secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, self.funding.counterparty_funding_pubkey()), "Invalid closing tx signature from peer".to_owned());
+				closing_tx =
+					self.build_closing_transaction(msg.fee_satoshis, skip_remote_output)?.0;
+				let sighash = closing_tx
+					.trust()
+					.get_sighash_all(&funding_redeemscript, self.funding.get_value_satoshis());
+				let res = self.context.secp_ctx.verify_ecdsa(
+					&sighash,
+					&msg.signature,
+					self.funding.counterparty_funding_pubkey(),
+				);
+				secp_check!(res, "Invalid closing tx signature from peer".to_owned());
 			},
 		};
 
 		for outp in closing_tx.trust().built_transaction().output.iter() {
-			if !outp.script_pubkey.is_witness_program() && outp.value < Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS) {
+			if !outp.script_pubkey.is_witness_program()
+				&& outp.value < Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS)
+			{
 				return Err(ChannelError::close("Remote sent us a closing_signed with a dust output. Always use segwit closing scripts!".to_owned()));
 			}
 		}
@@ -8647,7 +8788,8 @@ where
 		if let Some((last_fee, _, _, Some(sig))) = self.context.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
 				let shutdown_result = self.shutdown_result_coop_close();
-				let tx = self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
+				let tx =
+					self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
 				self.context.channel_state = ChannelState::ShutdownComplete;
 				self.context.update_time_counter += 1;
 				return Ok((None, Some(tx), Some(shutdown_result)));
@@ -8665,26 +8807,40 @@ where
 					self.build_closing_transaction($new_fee, skip_remote_output)?
 				};
 
-				let closing_signed = self.get_closing_signed_msg(&closing_tx, skip_remote_output, used_fee, our_min_fee, our_max_fee, logger);
+				let closing_signed = self.get_closing_signed_msg(
+					&closing_tx,
+					skip_remote_output,
+					used_fee,
+					our_min_fee,
+					our_max_fee,
+					logger,
+				);
 				let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
-					let shutdown_result = closing_signed.as_ref()
-						.map(|_| self.shutdown_result_coop_close());
+					let shutdown_result =
+						closing_signed.as_ref().map(|_| self.shutdown_result_coop_close());
 					if closing_signed.is_some() {
 						self.context.channel_state = ChannelState::ShutdownComplete;
 					}
 					self.context.update_time_counter += 1;
 					self.context.last_received_closing_sig = Some(msg.signature.clone());
-					let tx = closing_signed.as_ref().map(|ClosingSigned { signature, .. }|
-						self.build_signed_closing_transaction(&closing_tx, &msg.signature, signature));
+					let tx = closing_signed.as_ref().map(|ClosingSigned { signature, .. }| {
+						self.build_signed_closing_transaction(
+							&closing_tx,
+							&msg.signature,
+							signature,
+						)
+					});
 					(tx, shutdown_result)
 				} else {
 					(None, None)
 				};
 				return Ok((closing_signed, signed_tx, shutdown_result))
-			}
+			};
 		}
 
-		if let Some(msgs::ClosingSignedFeeRange { min_fee_satoshis, max_fee_satoshis }) = msg.fee_range {
+		if let Some(msgs::ClosingSignedFeeRange { min_fee_satoshis, max_fee_satoshis }) =
+			msg.fee_range
+		{
 			if msg.fee_satoshis < min_fee_satoshis || msg.fee_satoshis > max_fee_satoshis {
 				return Err(ChannelError::close(format!("Peer sent a bogus closing_signed - suggested fee of {} sat was not in their desired range of {} sat - {} sat", msg.fee_satoshis, min_fee_satoshis, max_fee_satoshis)));
 			}
@@ -8698,7 +8854,11 @@ where
 			if !self.funding.is_outbound() {
 				// They have to pay, so pick the highest fee in the overlapping range.
 				// We should never set an upper bound aside from their full balance
-				debug_assert_eq!(our_max_fee, self.funding.get_value_satoshis() - (self.funding.value_to_self_msat + 999) / 1000);
+				debug_assert_eq!(
+					our_max_fee,
+					self.funding.get_value_satoshis()
+						- (self.funding.value_to_self_msat + 999) / 1000
+				);
 				propose_fee!(cmp::min(max_fee_satoshis, our_max_fee));
 			} else {
 				if msg.fee_satoshis < our_min_fee || msg.fee_satoshis > our_max_fee {
@@ -10385,33 +10545,48 @@ where
 
 	/// Begins the shutdown process, getting a message for the remote peer and returning all
 	/// holding cell HTLCs for payment failure.
-	#[rustfmt::skip]
-	pub fn get_shutdown(&mut self, signer_provider: &SP, their_features: &InitFeatures,
-		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>)
-	-> Result<(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), APIError>
-	{
+	pub fn get_shutdown(
+		&mut self, signer_provider: &SP, their_features: &InitFeatures,
+		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>,
+	) -> Result<
+		(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>),
+		APIError,
+	> {
 		if self.context.channel_state.is_local_stfu_sent()
 			|| self.context.channel_state.is_remote_stfu_sent()
 			|| self.context.channel_state.is_quiescent()
 		{
-			return Err(APIError::APIMisuseError { err: "Cannot begin shutdown while quiescent".to_owned() });
+			return Err(APIError::APIMisuseError {
+				err: "Cannot begin shutdown while quiescent".to_owned(),
+			});
 		}
 		for htlc in self.context.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
-				return Err(APIError::APIMisuseError{err: "Cannot begin shutdown with pending HTLCs. Process pending events first".to_owned()});
+				return Err(APIError::APIMisuseError {
+					err: "Cannot begin shutdown with pending HTLCs. Process pending events first"
+						.to_owned(),
+				});
 			}
 		}
 		if self.context.channel_state.is_local_shutdown_sent() {
-			return Err(APIError::APIMisuseError{err: "Shutdown already in progress".to_owned()});
-		}
-		else if self.context.channel_state.is_remote_shutdown_sent() {
-			return Err(APIError::ChannelUnavailable{err: "Shutdown already in progress by remote".to_owned()});
+			return Err(APIError::APIMisuseError {
+				err: "Shutdown already in progress".to_owned(),
+			});
+		} else if self.context.channel_state.is_remote_shutdown_sent() {
+			return Err(APIError::ChannelUnavailable {
+				err: "Shutdown already in progress by remote".to_owned(),
+			});
 		}
 		if self.context.shutdown_scriptpubkey.is_some() && override_shutdown_script.is_some() {
-			return Err(APIError::APIMisuseError{err: "Cannot override shutdown script for a channel with one already set".to_owned()});
+			return Err(APIError::APIMisuseError {
+				err: "Cannot override shutdown script for a channel with one already set"
+					.to_owned(),
+			});
 		}
 		assert!(!matches!(self.context.channel_state, ChannelState::ShutdownComplete));
-		if self.context.channel_state.is_peer_disconnected() || self.context.channel_state.is_monitor_update_in_progress() {
+		if self.context.channel_state.is_peer_disconnected()
+			|| self.context.channel_state.is_monitor_update_in_progress()
+		{
 			return Err(APIError::ChannelUnavailable{err: "Cannot begin shutdown while peer is disconnected or we're waiting on a monitor update, maybe force-close instead?".to_owned()});
 		}
 
@@ -10425,12 +10600,18 @@ where
 						// otherwise, use the shutdown scriptpubkey provided by the signer
 						match signer_provider.get_shutdown_scriptpubkey() {
 							Ok(scriptpubkey) => scriptpubkey,
-							Err(_) => return Err(APIError::ChannelUnavailable{err: "Failed to get shutdown scriptpubkey".to_owned()}),
+							Err(_) => {
+								return Err(APIError::ChannelUnavailable {
+									err: "Failed to get shutdown scriptpubkey".to_owned(),
+								})
+							},
 						}
 					},
 				};
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
-					return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
+					return Err(APIError::IncompatibleShutdownScript {
+						script: shutdown_scriptpubkey.clone(),
+					});
 				}
 				self.context.shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
 				true
@@ -10457,7 +10638,9 @@ where
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)
-		} else { None };
+		} else {
+			None
+		};
 		let shutdown = msgs::Shutdown {
 			channel_id: self.context.channel_id,
 			scriptpubkey: self.get_closing_scriptpubkey(),
@@ -10466,19 +10649,20 @@ where
 		// Go ahead and drop holding cell updates as we'd rather fail payments than wait to send
 		// our shutdown until we've committed all of the pending changes.
 		self.context.holding_cell_update_fee = None;
-		let mut dropped_outbound_htlcs = Vec::with_capacity(self.context.holding_cell_htlc_updates.len());
-		self.context.holding_cell_htlc_updates.retain(|htlc_update| {
-			match htlc_update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
-					dropped_outbound_htlcs.push((source.clone(), payment_hash.clone()));
-					false
-				},
-				_ => true
-			}
+		let mut dropped_outbound_htlcs =
+			Vec::with_capacity(self.context.holding_cell_htlc_updates.len());
+		self.context.holding_cell_htlc_updates.retain(|htlc_update| match htlc_update {
+			&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
+				dropped_outbound_htlcs.push((source.clone(), payment_hash.clone()));
+				false
+			},
+			_ => true,
 		});
 
-		debug_assert!(!self.is_shutdown() || monitor_update.is_none(),
-			"we can't both complete shutdown and return a monitor update");
+		debug_assert!(
+			!self.is_shutdown() || monitor_update.is_none(),
+			"we can't both complete shutdown and return a monitor update"
+		);
 
 		Ok((shutdown, monitor_update, dropped_outbound_htlcs))
 	}
@@ -12984,26 +13168,43 @@ mod tests {
 	}
 
 	#[test]
-	#[rustfmt::skip]
 	fn upfront_shutdown_script_incompatibility() {
 		let mut features = channelmanager::provided_init_features(&UserConfig::default());
 		features.clear_shutdown_anysegwit();
 		let non_v0_segwit_shutdown_script = ShutdownScript::new_witness_program(
 			&WitnessProgram::new(WitnessVersion::V16, &[0, 40]).unwrap(),
-		).unwrap();
+		)
+		.unwrap();
 
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let keys_provider = TestKeysInterface::new(&seed, network);
-		keys_provider.expect(OnGetShutdownScriptpubkey {
-			returns: non_v0_segwit_shutdown_script.clone(),
-		});
+		keys_provider
+			.expect(OnGetShutdownScriptpubkey { returns: non_v0_segwit_shutdown_script.clone() });
+		let fee_estimator = TestFeeEstimator::new(253);
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
 		let logger = TestLogger::new();
 
 		let secp_ctx = Secp256k1::new();
-		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let node_id =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		match OutboundV1Channel::<&TestKeysInterface>::new(&LowerBoundedFeeEstimator::new(&TestFeeEstimator::new(253)), &&keys_provider, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config, 0, 42, None, &logger) {
+		let res = OutboundV1Channel::new(
+			&bounded_fee_estimator,
+			&&keys_provider,
+			&&keys_provider,
+			node_id,
+			&features,
+			10000000,
+			100000,
+			42,
+			&config,
+			0,
+			42,
+			None,
+			&logger,
+		);
+		match res {
 			Err(APIError::IncompatibleShutdownScript { script }) => {
 				assert_eq!(script.into_inner(), non_v0_segwit_shutdown_script.into_inner());
 			},

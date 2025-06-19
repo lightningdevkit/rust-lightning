@@ -155,4 +155,6 @@ RUSTFLAGS="--cfg=splicing" cargo test --verbose --color always -p lightning
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 RUSTFLAGS="--cfg=async_payments" cargo test --verbose --color always -p lightning
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
+RUSTFLAGS="--cfg=simple_close" cargo test --verbose --color always -p lightning
+[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 RUSTFLAGS="--cfg=lsps1_service" cargo test --verbose --color always -p lightning-liquidity

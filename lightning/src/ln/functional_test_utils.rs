@@ -937,6 +937,12 @@ pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &mut 
 		MessageSendEvent::SendClosingSigned { node_id, .. } => {
 			node_id == msg_node_id
 		},
+		MessageSendEvent::SendClosingComplete { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendClosingSig { node_id, .. } => {
+			node_id == msg_node_id
+		},
 		MessageSendEvent::SendShutdown { node_id, .. } => {
 			node_id == msg_node_id
 		},

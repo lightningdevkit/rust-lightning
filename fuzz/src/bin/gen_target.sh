@@ -32,6 +32,8 @@ GEN_TEST msg_accept_channel msg_targets::
 GEN_TEST msg_announcement_signatures msg_targets::
 GEN_TEST msg_channel_reestablish msg_targets::
 GEN_TEST msg_closing_signed msg_targets::
+GEN_TEST msg_closing_complete msg_targets::
+GEN_TEST msg_closing_sig msg_targets::
 GEN_TEST msg_commitment_signed msg_targets::
 GEN_TEST msg_decoded_onion_error_packet msg_targets::
 GEN_TEST msg_funding_created msg_targets::

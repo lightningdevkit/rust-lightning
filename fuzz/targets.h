@@ -24,6 +24,8 @@ void msg_accept_channel_run(const unsigned char* data, size_t data_len);
 void msg_announcement_signatures_run(const unsigned char* data, size_t data_len);
 void msg_channel_reestablish_run(const unsigned char* data, size_t data_len);
 void msg_closing_signed_run(const unsigned char* data, size_t data_len);
+void msg_closing_complete_run(const unsigned char* data, size_t data_len);
+void msg_closing_sig_run(const unsigned char* data, size_t data_len);
 void msg_commitment_signed_run(const unsigned char* data, size_t data_len);
 void msg_decoded_onion_error_packet_run(const unsigned char* data, size_t data_len);
 void msg_funding_created_run(const unsigned char* data, size_t data_len);

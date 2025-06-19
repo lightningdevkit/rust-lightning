@@ -369,6 +369,8 @@ impl BaseMessageHandler for ErroringMessageHandler {
 		features.set_scid_privacy_optional();
 		features.set_zero_conf_optional();
 		features.set_route_blinding_optional();
+		#[cfg(simple_close)]
+		features.set_simple_close_optional();
 		features
 	}
 
@@ -408,6 +410,14 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
 	fn handle_closing_signed(&self, their_node_id: PublicKey, msg: &msgs::ClosingSigned) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	#[cfg(simple_close)]
+	fn handle_closing_complete(&self, their_node_id: PublicKey, msg: msgs::ClosingComplete) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	#[cfg(simple_close)]
+	fn handle_closing_sig(&self, their_node_id: PublicKey, msg: msgs::ClosingSig) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
 	fn handle_stfu(&self, their_node_id: PublicKey, msg: &msgs::Stfu) {
@@ -2486,6 +2496,14 @@ where
 			wire::Message::ClosingSigned(msg) => {
 				self.message_handler.chan_handler.handle_closing_signed(their_node_id, &msg);
 			},
+			#[cfg(simple_close)]
+			wire::Message::ClosingComplete(msg) => {
+				self.message_handler.chan_handler.handle_closing_complete(their_node_id, msg);
+			},
+			#[cfg(simple_close)]
+			wire::Message::ClosingSig(msg) => {
+				self.message_handler.chan_handler.handle_closing_sig(their_node_id, msg);
+			},
 
 			// Commitment messages:
 			wire::Message::UpdateAddHTLC(msg) => {
@@ -3037,6 +3055,18 @@ where
 						},
 						MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendClosingSigned event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
+						},
+						MessageSendEvent::SendClosingComplete { ref node_id, ref msg } => {
+							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendClosingComplete event in peer_handler for node {} for channel {}",
+									log_pubkey!(node_id),
+									&msg.channel_id);
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
+						},
+						MessageSendEvent::SendClosingSig { ref node_id, ref msg } => {
+							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendClosingSig event in peer_handler for node {} for channel {}",
 									log_pubkey!(node_id),
 									&msg.channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);

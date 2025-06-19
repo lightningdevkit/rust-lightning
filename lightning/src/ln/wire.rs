@@ -81,6 +81,10 @@ pub(crate) enum Message<T: core::fmt::Debug + Type + TestEq> {
 	ChannelReady(msgs::ChannelReady),
 	Shutdown(msgs::Shutdown),
 	ClosingSigned(msgs::ClosingSigned),
+	#[cfg(simple_close)]
+	ClosingComplete(msgs::ClosingComplete),
+	#[cfg(simple_close)]
+	ClosingSig(msgs::ClosingSig),
 	OnionMessage(msgs::OnionMessage),
 	StartBatch(msgs::StartBatch),
 	UpdateAddHTLC(msgs::UpdateAddHTLC),
@@ -142,6 +146,10 @@ impl<T: core::fmt::Debug + Type + TestEq> Writeable for Message<T> {
 			&Message::ChannelReady(ref msg) => msg.write(writer),
 			&Message::Shutdown(ref msg) => msg.write(writer),
 			&Message::ClosingSigned(ref msg) => msg.write(writer),
+			#[cfg(simple_close)]
+			&Message::ClosingComplete(ref msg) => msg.write(writer),
+			#[cfg(simple_close)]
+			&Message::ClosingSig(ref msg) => msg.write(writer),
 			&Message::OnionMessage(ref msg) => msg.write(writer),
 			&Message::StartBatch(ref msg) => msg.write(writer),
 			&Message::UpdateAddHTLC(ref msg) => msg.write(writer),
@@ -203,6 +211,10 @@ impl<T: core::fmt::Debug + Type + TestEq> Type for Message<T> {
 			&Message::ChannelReady(ref msg) => msg.type_id(),
 			&Message::Shutdown(ref msg) => msg.type_id(),
 			&Message::ClosingSigned(ref msg) => msg.type_id(),
+			#[cfg(simple_close)]
+			&Message::ClosingComplete(ref msg) => msg.type_id(),
+			#[cfg(simple_close)]
+			&Message::ClosingSig(ref msg) => msg.type_id(),
 			&Message::OnionMessage(ref msg) => msg.type_id(),
 			&Message::StartBatch(ref msg) => msg.type_id(),
 			&Message::UpdateAddHTLC(ref msg) => msg.type_id(),
@@ -349,6 +361,14 @@ where
 		},
 		msgs::ClosingSigned::TYPE => {
 			Ok(Message::ClosingSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		#[cfg(simple_close)]
+		msgs::ClosingComplete::TYPE => {
+			Ok(Message::ClosingComplete(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		#[cfg(simple_close)]
+		msgs::ClosingSig::TYPE => {
+			Ok(Message::ClosingSig(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::OnionMessage::TYPE => {
 			Ok(Message::OnionMessage(LengthReadable::read_from_fixed_length_buffer(buffer)?))
@@ -533,6 +553,14 @@ impl Encode for msgs::Shutdown {
 
 impl Encode for msgs::ClosingSigned {
 	const TYPE: u16 = 39;
+}
+
+impl Encode for msgs::ClosingComplete {
+	const TYPE: u16 = 40;
+}
+
+impl Encode for msgs::ClosingSig {
+	const TYPE: u16 = 41;
 }
 
 impl Encode for msgs::OpenChannelV2 {
