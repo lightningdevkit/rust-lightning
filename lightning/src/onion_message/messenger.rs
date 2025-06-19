@@ -541,7 +541,7 @@ pub trait MessageRouter {
 /// # Privacy
 ///
 /// Creating [`BlindedMessagePath`]s may affect privacy since, if a suitable path cannot be found,
-/// it will create a one-hop path using the recipient as the introduction node if it is a announced
+/// it will create a one-hop path using the recipient as the introduction node if it is an announced
 /// node. Otherwise, there is no way to find a path to the introduction node in order to send a
 /// message, and thus an `Err` is returned.
 pub struct DefaultMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref>
@@ -584,6 +584,10 @@ where
 
 		let has_one_peer = peers.len() == 1;
 		let mut peer_info = peers
+			.map(|peer| MessageForwardNode {
+				short_channel_id: if compact_paths { peer.short_channel_id } else { None },
+				..peer
+			})
 			// Limit to peers with announced channels unless the recipient is unannounced.
 			.filter_map(|peer| {
 				network_graph
