@@ -4368,11 +4368,11 @@ where
 	/// user closes, which will be re-exposed as the `ChannelClosed` reason.
 	#[rustfmt::skip]
 	fn force_close_channel_with_peer(&self, channel_id: &ChannelId, peer_node_id: &PublicKey, peer_msg: Option<&String>, broadcast: bool)
-	-> Result<PublicKey, APIError> {
+	-> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(peer_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", peer_node_id) })?;
-		let (update_opt, counterparty_node_id) = {
+		let update_opt = {
 			let mut peer_state = peer_state_mutex.lock().unwrap();
 			let closure_reason = if let Some(peer_msg) = peer_msg {
 				ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(peer_msg.to_string()) }
@@ -4394,17 +4394,17 @@ where
 						(chan_entry.get_mut().force_shutdown(false, closure_reason), None)
 					},
 				};
-				let chan = remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
+				remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
 				mem::drop(peer_state);
 				mem::drop(per_peer_state);
 				self.finish_close_channel(shutdown_res);
-				(update_opt, chan.context().get_counterparty_node_id())
+				update_opt
 			} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
 				log_error!(logger, "Force-closing channel {}", &channel_id);
 				// N.B. that we don't send any channel close event here: we
 				// don't have a user_channel_id, and we never sent any opening
 				// events anyway.
-				(None, *peer_node_id)
+				None
 			} else {
 				return Err(APIError::ChannelUnavailable{ err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id, peer_node_id) });
 			}
@@ -4416,8 +4416,7 @@ where
 				msg: update
 			});
 		}
-
-		Ok(counterparty_node_id)
+		Ok(())
 	}
 
 	#[rustfmt::skip]
@@ -4427,13 +4426,13 @@ where
 		log_debug!(self.logger,
 			"Force-closing channel, The error message sent to the peer : {}", error_message);
 		match self.force_close_channel_with_peer(channel_id, &counterparty_node_id, None, broadcast) {
-			Ok(counterparty_node_id) => {
+			Ok(()) => {
 				let per_peer_state = self.per_peer_state.read().unwrap();
-				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+				if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 					let mut peer_state = peer_state_mutex.lock().unwrap();
 					peer_state.pending_msg_events.push(
 						MessageSendEvent::HandleError {
-							node_id: counterparty_node_id,
+							node_id: *counterparty_node_id,
 							action: msgs::ErrorAction::SendErrorMessage {
 								msg: msgs::ErrorMessage { channel_id: *channel_id, data: error_message }
 							},
