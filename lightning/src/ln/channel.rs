@@ -6024,13 +6024,13 @@ where
 		2*(1 + 71); // two signatures + sighash type flags
 		if let Some(spk) = a_scriptpubkey {
 			ret += ((8+1) +                                    // output values and script length
-				spk.len() as u64)
-				* 4; // scriptpubkey and witness multiplier
+				spk.len() as u64)                              // scriptpubkey
+				* 4; // witness multiplier
 		}
 		if let Some(spk) = b_scriptpubkey {
 			ret += ((8+1) +                                    // output values and script length
-				spk.len() as u64)
-				* 4; // scriptpubkey and witness multiplier
+				spk.len() as u64)                              // scriptpubkey
+				* 4; // witness multiplier
 		}
 		ret
 	}
