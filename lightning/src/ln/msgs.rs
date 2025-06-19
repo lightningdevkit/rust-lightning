@@ -242,10 +242,8 @@ pub struct CommonOpenChannelFields {
 	/// Optionally, a request to pre-set the to-channel-initiator output's scriptPubkey for when we
 	/// collaboratively close
 	pub shutdown_scriptpubkey: Option<ScriptBuf>,
-	/// The channel type that this channel will represent
-	///
-	/// If this is `None`, we derive the channel type from the intersection of our
-	/// feature bits with our counterparty's feature bits from the [`Init`] message.
+	/// The channel type that this channel will represent. As defined in the latest
+	/// specification, this field is required. However, it is an `Option` for legacy reasons.
 	pub channel_type: Option<ChannelTypeFeatures>,
 }
 
@@ -356,9 +354,8 @@ pub struct CommonAcceptChannelFields {
 	/// Optionally, a request to pre-set the to-channel-acceptor output's scriptPubkey for when we
 	/// collaboratively close
 	pub shutdown_scriptpubkey: Option<ScriptBuf>,
-	/// The channel type that this channel will represent. If none is set, we derive the channel
-	/// type from the intersection of our feature bits with our counterparty's feature bits from
-	/// the Init message.
+	/// The channel type that this channel will represent. As defined in the latest
+	/// specification, this field is required. However, it is an `Option` for legacy reasons.
 	///
 	/// This is required to match the equivalent field in [`OpenChannel`] or [`OpenChannelV2`]'s
 	/// [`CommonOpenChannelFields::channel_type`].
