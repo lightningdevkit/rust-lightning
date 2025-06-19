@@ -8277,7 +8277,8 @@ where
 	#[rustfmt::skip]
 	pub fn channel_reestablish<L: Deref, NS: Deref>(
 		&mut self, msg: &msgs::ChannelReestablish, logger: &L, node_signer: &NS,
-		chain_hash: ChainHash, user_config: &UserConfig, best_block: &BestBlock
+		chain_hash: ChainHash, their_features: &InitFeatures, user_config: &UserConfig,
+		best_block: &BestBlock,
 	) -> Result<ReestablishResponses, ChannelError>
 	where
 		L::Target: Logger,
@@ -8401,9 +8402,19 @@ where
 		let is_awaiting_remote_revoke = self.context.channel_state.is_awaiting_remote_revoke();
 		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.context.cur_counterparty_commitment_transaction_number + if is_awaiting_remote_revoke { 1 } else { 0 };
 
-		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.transaction_number() == 1 {
+		let splicing_negotiated = their_features.supports_splicing();
+		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.transaction_number() == 1 && !splicing_negotiated {
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
 			self.get_channel_ready(logger)
+		} else if splicing_negotiated {
+			// A node:
+			//   - if `option_splice` was negotiated and `your_last_funding_locked` is not
+			//     set in the `channel_reestablish` it received:
+			//     - MUST retransmit `channel_ready`.
+			msg.your_last_funding_locked_txid
+				.is_none()
+				.then(|| ())
+				.and_then(|_| self.get_channel_ready(logger))
 		} else { None };
 
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
