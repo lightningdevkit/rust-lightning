@@ -12557,7 +12557,7 @@ where
 		self.do_chain_event(Some(new_best_block.height), |channel| {
 			channel.best_block_updated(
 				new_best_block.height,
-				0,
+				None,
 				self.chain_hash,
 				&self.node_signer,
 				&self.default_configuration,
@@ -12607,7 +12607,17 @@ where
 		let last_best_block_height = self.best_block.read().unwrap().height;
 		if height < last_best_block_height {
 			let timestamp = self.highest_seen_timestamp.load(Ordering::Acquire);
-			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None)));
+			let do_update = |channel: &mut FundedChannel<SP>| {
+				channel.best_block_updated(
+					last_best_block_height,
+					Some(timestamp as u32),
+					self.chain_hash,
+					&self.node_signer,
+					&self.default_configuration,
+					&&WithChannelContext::from(&self.logger, &channel.context, None)
+				)
+			};
+			self.do_chain_event(Some(last_best_block_height), do_update);
 		}
 	}
 
@@ -12667,7 +12677,14 @@ where
 				}
 			}
 
-			channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None))
+			channel.best_block_updated(
+				height,
+				Some(header.time),
+				self.chain_hash,
+				&self.node_signer,
+				&self.default_configuration,
+				&&WithChannelContext::from(&self.logger, &channel.context, None)
+			)
 		});
 
 		macro_rules! max_time {
