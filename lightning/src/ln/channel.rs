@@ -7165,8 +7165,8 @@ where
 						" ...removing outbound AwaitingRemovedRemoteRevoke {}",
 						&htlc.payment_hash
 					);
+					// We really want take() here, but, again, non-mut ref :(
 					if let OutboundHTLCOutcome::Failure(mut reason) = outcome.clone() {
-						// We really want take() here, but, again, non-mut ref :(
 						if let (Some(timestamp), Some(now)) = (htlc.send_timestamp, now) {
 							let hold_time =
 								u32::try_from(now.saturating_sub(timestamp).as_millis())

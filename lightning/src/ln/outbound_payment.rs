@@ -1639,21 +1639,19 @@ impl OutboundPayments {
 					failed_scid = Some(scid);
 					route_params.payment_params.previously_failed_channels.push(scid);
 				}
-				events.push_back((
-					events::Event::PaymentPathFailed {
-						payment_id: Some(payment_id),
-						payment_hash,
-						payment_failed_permanently: false,
-						failure: events::PathFailure::InitialSend { err: e },
-						path,
-						short_channel_id: failed_scid,
-						#[cfg(any(test, feature = "_test_utils"))]
-						error_code: None,
-						#[cfg(any(test, feature = "_test_utils"))]
-						error_data: None,
-					},
-					None,
-				));
+				let event = events::Event::PaymentPathFailed {
+					payment_id: Some(payment_id),
+					payment_hash,
+					payment_failed_permanently: false,
+					failure: events::PathFailure::InitialSend { err: e },
+					path,
+					short_channel_id: failed_scid,
+					#[cfg(any(test, feature = "_test_utils"))]
+					error_code: None,
+					#[cfg(any(test, feature = "_test_utils"))]
+					error_data: None,
+				};
+				events.push_back((event, None));
 			}
 		}
 	}
