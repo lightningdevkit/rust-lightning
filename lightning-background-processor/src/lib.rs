@@ -1039,6 +1039,7 @@ pub struct BackgroundProcessorConfigAsync<
 	sleeper: Sleeper,
 	mobile_interruptable_platform: bool,
 	fetch_time: FetchTime,
+	/// Phantom data to ensure proper lifetime and type parameter constraints.
 	_phantom: PhantomData<&'a ()>,
 }
 
@@ -1110,6 +1111,7 @@ pub struct BackgroundProcessorConfigAsyncBuilder<
 	sleeper: Sleeper,
 	mobile_interruptable_platform: bool,
 	fetch_time: FetchTime,
+	/// Phantom data to ensure proper lifetime and type parameter constraints.
 	_phantom: PhantomData<&'a ()>,
 }
 
@@ -1225,19 +1227,19 @@ impl<
 		self
 	}
 
-	/// Sets the optional liquidity manager component
+	/// Sets the optional liquidity manager component.
 	pub fn with_liquidity_manager(&mut self, liquidity_manager: LM) -> &mut Self {
 		self.liquidity_manager = Some(liquidity_manager);
 		self
 	}
 
-	/// Sets the optional sweeper component
+	/// Sets the optional sweeper component.
 	pub fn with_sweeper(&mut self, sweeper: OS) -> &mut Self {
 		self.sweeper = Some(sweeper);
 		self
 	}
 
-	/// Sets the optional scorer component,
+	/// Sets the optional scorer component.
 	pub fn with_scorer(&mut self, scorer: S) -> &mut Self {
 		self.scorer = Some(scorer);
 		self
@@ -1301,51 +1303,14 @@ impl BackgroundProcessor {
 	/// Start a background thread that takes care of responsibilities enumerated in the [top-level
 	/// documentation].
 	///
-	/// The thread runs indefinitely unless the object is dropped, [`stop`] is called, or
+	/// The thread runs indefinitely unless the object is dropped, [`Self::stop`] is called, or
 	/// [`Persister::persist_manager`] returns an error. In case of an error, the error is retrieved by calling
-	/// either [`join`] or [`stop`].
+	/// either [`Self::join`] or [`Self::stop`].
 	///
 	/// This method takes a [`BackgroundProcessorConfig`] object that contains all necessary components for
 	/// background processing. To build this configuration, you can use the [`BackgroundProcessorConfigBuilder`]
 	/// which provides a convenient builder pattern for setting up both required and optional components.
 	///
-	/// # Data Persistence
-	///
-	/// [`Persister::persist_manager`] is responsible for writing out the [`ChannelManager`] to disk, and/or
-	/// uploading to one or more backup services. See [`ChannelManager::write`] for writing out a
-	/// [`ChannelManager`]. See the `lightning-persister` crate for LDK's
-	/// provided implementation.
-	///
-	/// [`Persister::persist_graph`] is responsible for writing out the [`NetworkGraph`] to disk, if
-	/// [`GossipSync`] is supplied. See [`NetworkGraph::write`] for writing out a [`NetworkGraph`].
-	/// See the `lightning-persister` crate for LDK's provided implementation.
-	///
-	/// Typically, users should either implement [`Persister::persist_manager`] to never return an
-	/// error or call [`join`] and handle any error that may arise. For the latter case,
-	/// `BackgroundProcessor` must be restarted by calling `start` again after handling the error.
-	///
-	/// # Event Handling
-	///
-	/// The `event_handler` in the configuration is responsible for handling events that users should be notified of (e.g.,
-	/// payment failed). [`BackgroundProcessor`] may decorate the given [`EventHandler`] with common
-	/// functionality implemented by other handlers.
-	/// * [`P2PGossipSync`] if given will update the [`NetworkGraph`] based on payment failures.
-	///
-	/// # Rapid Gossip Sync
-	///
-	/// If rapid gossip sync is meant to run at startup, pass [`RapidGossipSync`] via `gossip_sync`
-	/// to indicate that the [`BackgroundProcessor`] should not prune the [`NetworkGraph`] instance
-	/// until the [`RapidGossipSync`] instance completes its first sync.
-	///
-	/// [top-level documentation]: BackgroundProcessor
-	/// [`join`]: Self::join
-	/// [`stop`]: Self::stop
-	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
-	/// [`ChannelManager::write`]: lightning::ln::channelmanager::ChannelManager#impl-Writeable
-	/// [`Persister::persist_manager`]: lightning::util::persist::Persister::persist_manager
-	/// [`Persister::persist_graph`]: lightning::util::persist::Persister::persist_graph
-	/// [`NetworkGraph`]: lightning::routing::gossip::NetworkGraph
-	/// [`NetworkGraph::write`]: lightning::routing::gossip::NetworkGraph#impl-Writeable
 	pub fn start<
 		'a,
 		UL: 'static + Deref,
@@ -1566,6 +1531,44 @@ impl BackgroundProcessor {
 ///
 /// The configuration can be constructed using [`BackgroundProcessorConfigBuilder`], which provides
 /// a convenient builder pattern for setting up both required and optional components.
+///
+/// # Data Persistence
+///
+/// [`Persister::persist_manager`] is responsible for writing out the [`ChannelManager`] to disk, and/or
+/// uploading to one or more backup services. See [`ChannelManager::write`] for writing out a
+/// [`ChannelManager`]. See the `lightning-persister` crate for LDK's
+/// provided implementation.
+///
+/// [`Persister::persist_graph`] is responsible for writing out the [`NetworkGraph`] to disk, if
+/// [`GossipSync`] is supplied. See [`NetworkGraph::write`] for writing out a [`NetworkGraph`].
+/// See the `lightning-persister` crate for LDK's provided implementation.
+///
+/// Typically, users should either implement [`Persister::persist_manager`] to never return an
+/// error or call [`BackgroundProcessor::join`] and handle any error that may arise. For the latter case,
+/// `BackgroundProcessor` must be restarted by calling `start` again after handling the error.
+///
+/// # Event Handling
+///
+/// The `event_handler` in the configuration is responsible for handling events that users should be notified of (e.g.,
+/// payment failed). [`BackgroundProcessor`] may decorate the given [`EventHandler`] with common
+/// functionality implemented by other handlers.
+/// * [`P2PGossipSync`] if given will update the [`NetworkGraph`] based on payment failures.
+///
+/// # Rapid Gossip Sync
+///
+/// If rapid gossip sync is meant to run at startup, pass [`RapidGossipSync`] via `gossip_sync`
+/// to indicate that the [`BackgroundProcessor`] should not prune the [`NetworkGraph`] instance
+/// until the [`RapidGossipSync`] instance completes its first sync.
+///
+/// [top-level documentation]: BackgroundProcessor
+/// [`BackgroundProcessor::join`]: BackgroundProcessor::join
+/// [`BackgroundProcessor::stop`]: BackgroundProcessor::stop
+/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
+/// [`ChannelManager::write`]: lightning::ln::channelmanager::ChannelManager#impl-Writeable
+/// [`Persister::persist_manager`]: lightning::util::persist::Persister::persist_manager
+/// [`Persister::persist_graph`]: lightning::util::persist::Persister::persist_graph
+/// [`NetworkGraph`]: lightning::routing::gossip::NetworkGraph
+/// [`NetworkGraph::write`]: lightning::routing::gossip::NetworkGraph#impl-Writeable
 #[cfg(feature = "std")]
 pub struct BackgroundProcessorConfig<
 	'a,
@@ -1623,6 +1626,7 @@ pub struct BackgroundProcessorConfig<
 	sweeper: Option<OS>,
 	logger: L,
 	scorer: Option<S>,
+	/// Phantom data to ensure proper lifetime and type parameter constraints.
 	_phantom: PhantomData<(&'a (), CF, T, F, P)>,
 }
 
@@ -1688,6 +1692,7 @@ pub struct BackgroundProcessorConfigBuilder<
 	sweeper: Option<OS>,
 	logger: L,
 	scorer: Option<S>,
+	/// Phantom data to ensure proper lifetime and type parameter constraints.
 	_phantom: PhantomData<(&'a (), CF, T, F, P)>,
 }
 
