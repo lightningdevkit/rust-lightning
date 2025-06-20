@@ -17,7 +17,8 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use super::message::BlindedMessagePath;
 use super::{BlindedHop, BlindedPath};
-use crate::crypto::streams::ChaChaPolyWriteAdapter;
+use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
+use crate::crypto::streams::chachapoly_encrypt_with_swapped_aad;
 use crate::io;
 use crate::ln::onion_utils;
 use crate::onion_message::messenger::Destination;
@@ -38,7 +39,7 @@ macro_rules! build_keys_helper {
 		let mut onion_packet_pubkey = msg_blinding_point.clone();
 
 		macro_rules! build_keys {
-			($hop: expr, $blinded: expr, $encrypted_payload: expr) => {{
+			($hop: expr, $blinded: expr, $encrypted_payload: expr, $node_recv_key: expr) => {{
 				let pk = *$hop.borrow();
 				let encrypted_data_ss = SharedSecret::new(&pk, &msg_blinding_point_priv);
 
@@ -65,6 +66,7 @@ macro_rules! build_keys_helper {
 					onion_packet_pubkey,
 					rho,
 					unblinded_hop_opt,
+					$node_recv_key,
 					$encrypted_payload,
 				);
 				(encrypted_data_ss, onion_packet_ss)
@@ -72,9 +74,9 @@ macro_rules! build_keys_helper {
 		}
 
 		macro_rules! build_keys_in_loop {
-			($pk: expr, $blinded: expr, $encrypted_payload: expr) => {
+			($pk: expr, $blinded: expr, $encrypted_payload: expr, $node_recv_key: expr) => {
 				let (encrypted_data_ss, onion_packet_ss) =
-					build_keys!($pk, $blinded, $encrypted_payload);
+					build_keys!($pk, $blinded, $encrypted_payload, $node_recv_key);
 
 				let msg_blinding_point_blinding_factor = {
 					let mut sha = Sha256::engine();
@@ -105,7 +107,6 @@ macro_rules! build_keys_helper {
 	};
 }
 
-#[inline]
 pub(crate) fn construct_keys_for_onion_message<'a, T, I, F>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: I, destination: Destination, session_priv: &SecretKey,
 	mut callback: F,
@@ -113,40 +114,45 @@ pub(crate) fn construct_keys_for_onion_message<'a, T, I, F>(
 where
 	T: secp256k1::Signing + secp256k1::Verification,
 	I: Iterator<Item = PublicKey>,
-	F: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>),
+	F: FnMut(SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>),
 {
-	build_keys_helper!(session_priv, secp_ctx, callback);
+	let mut callback_wrapper = |_, ss, pk, encrypted_payload_rho, unblinded_hop_data, _: Option<()>, encrypted_payload| {
+		callback(ss, pk, encrypted_payload_rho, unblinded_hop_data, encrypted_payload);
+	};
+	build_keys_helper!(session_priv, secp_ctx, callback_wrapper);
 
 	for pk in unblinded_path {
-		build_keys_in_loop!(pk, false, None);
+		build_keys_in_loop!(pk, false, None, None);
 	}
 	match destination {
 		Destination::Node(pk) => {
-			build_keys!(pk, false, None);
+			build_keys!(pk, false, None, None);
 		},
 		Destination::BlindedPath(BlindedMessagePath(BlindedPath { blinded_hops, .. })) => {
 			for hop in blinded_hops {
-				build_keys_in_loop!(hop.blinded_node_id, true, Some(hop.encrypted_payload));
+				build_keys_in_loop!(hop.blinded_node_id, true, Some(hop.encrypted_payload), None);
 			}
 		},
 	}
 	Ok(())
 }
 
-#[inline]
-pub(super) fn construct_keys_for_blinded_path<'a, T, I, F, H>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: I, session_priv: &SecretKey, mut callback: F,
+fn construct_keys_for_blinded_path<'a, T, I, F, H>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: I, session_priv:  &SecretKey,
+	mut last_hop_receive_key: Option<[u8; 32]>, mut callback: F,
 ) -> Result<(), secp256k1::Error>
 where
 	T: secp256k1::Signing + secp256k1::Verification,
 	H: Borrow<PublicKey>,
 	I: Iterator<Item = H>,
-	F: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<H>, Option<Vec<u8>>),
+	F: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<H>, Option<[u8; 32]>, Option<Vec<u8>>),
 {
 	build_keys_helper!(session_priv, secp_ctx, callback);
 
-	for pk in unblinded_path {
-		build_keys_in_loop!(pk, false, None);
+	let mut iter = unblinded_path.peekable();
+	while let Some(pk) = iter.next() {
+		let receive_key = if iter.peek().is_none() { last_hop_receive_key.take() } else { None };
+		build_keys_in_loop!(pk, false, None, receive_key);
 	}
 	Ok(())
 }
@@ -164,6 +170,7 @@ impl<W: Writeable> Borrow<PublicKey> for PublicKeyWithTlvs<W> {
 
 pub(crate) fn construct_blinded_hops<'a, T, I, W>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: I, session_priv: &SecretKey,
+	last_hop_receive_key: Option<[u8; 32]>,
 ) -> Result<Vec<BlindedHop>, secp256k1::Error>
 where
 	T: secp256k1::Signing + secp256k1::Verification,
@@ -175,12 +182,14 @@ where
 		secp_ctx,
 		unblinded_path.map(|(pubkey, tlvs)| PublicKeyWithTlvs { pubkey, tlvs }),
 		session_priv,
-		|blinded_node_id, _, _, encrypted_payload_rho, unblinded_hop_data, _| {
+		last_hop_receive_key,
+		|blinded_node_id, _, _, encrypted_payload_rho, unblinded_hop_data, hop_recv_key, _| {
 			blinded_hops.push(BlindedHop {
 				blinded_node_id,
 				encrypted_payload: encrypt_payload(
 					unblinded_hop_data.unwrap().tlvs,
 					encrypted_payload_rho,
+					hop_recv_key,
 				),
 			});
 		},
@@ -189,9 +198,17 @@ where
 }
 
 /// Encrypt TLV payload to be used as a [`crate::blinded_path::BlindedHop::encrypted_payload`].
-fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32]) -> Vec<u8> {
-	let write_adapter = ChaChaPolyWriteAdapter::new(encrypted_tlvs_rho, &payload);
-	write_adapter.encode()
+fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32], hop_recv_key: Option<[u8; 32]>) -> Vec<u8> {
+	let mut payload_data = payload.encode();
+	if let Some(hop_recv_key) = hop_recv_key {
+		chachapoly_encrypt_with_swapped_aad(payload_data, encrypted_tlvs_rho, hop_recv_key)
+	} else {
+		let mut chacha = ChaCha20Poly1305RFC::new(&encrypted_tlvs_rho, &[0; 12], &[]);
+		let mut tag = [0; 16];
+		chacha.encrypt_full_message_in_place(&mut payload_data, &mut tag);
+		payload_data.extend_from_slice(&tag);
+		payload_data
+	}
 }
 
 /// A data structure used exclusively to pad blinded path payloads, ensuring they are of
