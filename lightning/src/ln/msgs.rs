@@ -1933,9 +1933,11 @@ pub trait BaseMessageHandler {
 
 	/// Handle a peer (re)connecting.
 	///
-	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
-	/// with us. Implementors should be somewhat conservative about doing so, however, as other
-	/// message handlers may still wish to communicate with this peer.
+	/// May return an `Err(())` to indicate that we should immediately disconnect from the peer
+	/// (e.g. because the features they support are not sufficient to communicate with us).
+	///
+	/// Note, of course, that other message handlers may wish to communicate with the peer, which
+	/// disconnecting them will prevent.
 	///
 	/// [`Self::peer_disconnected`] will not be called if `Err(())` is returned.
 	fn peer_connected(&self, their_node_id: PublicKey, msg: &Init, inbound: bool)
