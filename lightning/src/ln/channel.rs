@@ -1216,6 +1216,7 @@ pub(super) struct ReestablishResponses {
 	pub shutdown_msg: Option<msgs::Shutdown>,
 	pub tx_signatures: Option<msgs::TxSignatures>,
 	pub tx_abort: Option<msgs::TxAbort>,
+	pub splice_locked: Option<msgs::SpliceLocked>,
 }
 
 /// The first message we send to our peer after connection
@@ -2171,6 +2172,10 @@ impl FundingScope {
 	/// Will return `None` if the funding hasn't been confirmed yet.
 	pub fn get_short_channel_id(&self) -> Option<u64> {
 		self.short_channel_id
+	}
+
+	fn is_splice(&self) -> bool {
+		self.channel_transaction_parameters.splice_parent_funding_txid.is_some()
 	}
 }
 
@@ -8350,6 +8355,7 @@ where
 					shutdown_msg, announcement_sigs,
 					tx_signatures: None,
 					tx_abort: None,
+					splice_locked: None,
 				});
 			}
 
@@ -8361,6 +8367,7 @@ where
 				shutdown_msg, announcement_sigs,
 				tx_signatures: None,
 				tx_abort: None,
+				splice_locked: None,
 			});
 		}
 
@@ -8405,6 +8412,25 @@ where
 				.then(|| ())
 				.and_then(|_| self.get_channel_ready(logger))
 		} else { None };
+
+		// A receiving node:
+		//   - if `your_last_funding_locked` is set and it does not match the most recent
+		//     `splice_locked` it has sent:
+		//     - MUST retransmit `splice_locked`.
+		let sent_splice_txid = self
+			.maybe_get_my_current_funding_locked()
+			.filter(|funding| funding.is_splice())
+			.map(|funding| {
+				funding.get_funding_txid().expect("Splice funding_txid should always be set")
+			});
+		let splice_locked = msg.your_last_funding_locked_txid.and_then(|last_funding_txid| {
+			sent_splice_txid
+				.filter(|sent_splice_txid| last_funding_txid != *sent_splice_txid)
+				.map(|splice_txid| msgs::SpliceLocked {
+					channel_id: self.context.channel_id,
+					splice_txid,
+				})
+		});
 
 		let mut commitment_update = None;
 		let mut tx_signatures = None;
@@ -8518,6 +8544,7 @@ where
 				order: self.context.resend_order.clone(),
 				tx_signatures,
 				tx_abort,
+				splice_locked,
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
 			// We've made an update so we must have exchanged `tx_signatures`, implying that
@@ -8539,6 +8566,7 @@ where
 					order: self.context.resend_order.clone(),
 					tx_signatures,
 					tx_abort,
+					splice_locked,
 				})
 			} else {
 				let commitment_update = if self.context.resend_order == RAACommitmentOrder::RevokeAndACKFirst
@@ -8563,6 +8591,7 @@ where
 					order: self.context.resend_order.clone(),
 					tx_signatures,
 					tx_abort,
+					splice_locked,
 				})
 			}
 		} else if msg.next_local_commitment_number < next_counterparty_commitment_number {
@@ -10193,6 +10222,24 @@ where
 	}
 	#[cfg(not(splicing))]
 	fn maybe_get_your_last_funding_locked_txid(&self) -> Option<Txid> {
+		None
+	}
+
+	#[cfg(splicing)]
+	fn maybe_get_my_current_funding_locked(&self) -> Option<&FundingScope> {
+		self.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.sent_funding_txid)
+			.and_then(|funding_txid| {
+				self.pending_funding
+					.iter()
+					.find(|funding| funding.get_funding_txid() == Some(funding_txid))
+			})
+			.or_else(|| self.is_our_channel_ready().then(|| &self.funding))
+	}
+
+	#[cfg(not(splicing))]
+	fn maybe_get_my_current_funding_locked(&self) -> Option<&FundingScope> {
 		None
 	}
 
