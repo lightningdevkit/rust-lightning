@@ -158,7 +158,7 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 			let update_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 			let fail_len = update_1_0.update_fail_htlcs.len();
 			let malformed_len = update_1_0.update_fail_malformed_htlcs.len();
-			assert!(fail_len + malformed_len == 1 && (fail_len == 1 || malformed_len == 1));
+			assert!(fail_len + malformed_len == 1);
 			update_1_0
 		},
 		1 | 2 | 3 | 200 | 201 => {
