@@ -2157,9 +2157,8 @@ where
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
-/// # let absolute_expiry = None;
 /// let offer = channel_manager
-///     .create_offer_builder(absolute_expiry)?
+///     .create_offer_builder()?
 /// # ;
 /// # // Needed for compiling for c_bindings
 /// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
@@ -11465,9 +11464,8 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the offer based on the given
-	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications.
+	/// Uses the [`MessageRouter`] provided to the [`ChannelManager`] at construction to build a
+	/// [`BlindedMessagePath`] for the offer. See those docs for privacy implications.
 	///
 	/// Also, uses a derived signing pubkey in the offer for recipient privacy.
 	///
@@ -11477,17 +11475,40 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Errors
 	///
-	/// Errors if the parameterized [`Router`] is unable to create a blinded path for the offer.
+	/// Errors if the parameterized [`MessageRouter`] is unable to create a blinded path for the offer.
 	///
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	pub fn create_offer_builder(
-		&$self, absolute_expiry: Option<Duration>
-	) -> Result<$builder, Bolt12SemanticError> {
-		let entropy = &*$self.entropy_source;
+	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
+		let builder = $self.flow.create_offer_builder(
+			&*$self.entropy_source, $self.get_peers_for_blinded_path()
+		)?;
 
-		let builder = $self.flow.create_offer_builder(entropy, absolute_expiry, $self.get_peers_for_blinded_path())?;
+		Ok(builder.into())
+	}
+
+	/// Same as [`Self::create_offer_builder`], but allows specifying a custom [`MessageRouter`]
+	/// instead of using the [`MessageRouter`] provided to the [`ChannelManager`] at construction.
+	///
+	/// This gives users full control over how the [`BlindedMessagePath`] is constructed,
+	/// including the option to omit it entirely.
+	///
+	/// See [`Self::create_offer_builder`] for details on offer construction, privacy, and limitations.
+	///
+	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	pub fn create_offer_builder_using_router<ME: Deref>(
+		&$self,
+		router: ME,
+	) -> Result<$builder, Bolt12SemanticError>
+	where
+		ME::Target: MessageRouter,
+	{
+		let builder = $self.flow.create_offer_builder_using_router(
+			router, &*$self.entropy_source, $self.get_peers_for_blinded_path()
+		)?;
 
 		Ok(builder.into())
 	}

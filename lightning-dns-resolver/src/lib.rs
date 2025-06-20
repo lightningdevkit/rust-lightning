@@ -493,7 +493,7 @@ mod test {
 
 		let name = HumanReadableName::from_encoded("matt@mattcorallo.com").unwrap();
 
-		let bs_offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
+		let bs_offer = nodes[1].node.create_offer_builder().unwrap().build().unwrap();
 		let resolvers = vec![Destination::Node(resolver_id)];
 		let retry = Retry::Attempts(0);
 		let amt = 42_000;

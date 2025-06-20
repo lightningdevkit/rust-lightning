@@ -836,11 +836,13 @@ where
 /// since [`ChannelManager`] requires a functioning [`MessageRouter`] to create blinded paths,
 /// which are necessary for constructing reply paths in onion message communication.
 /// However, [`NullMessageRouter`] *can* still be passed as an argument to [`ChannelManager`]
-/// methods that accept a router when blinded paths are not needed.
+/// methods that accepts a [`MessageRouter`], such as [`ChannelManager::create_offer_builder_using_router`],
+/// when blinded paths are not needed.
 ///
 /// [`Offer`]: crate::offers::offer::Offer
 /// [`Refund`]: crate::offers::refund::Refund
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+/// [`ChannelManager::create_offer_builder_using_router`]: crate::ln::channelmanager::ChannelManager::create_offer_builder_using_router
 pub struct NullMessageRouter {}
 
 impl MessageRouter for NullMessageRouter {
