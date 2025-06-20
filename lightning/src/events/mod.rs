@@ -1131,6 +1131,8 @@ pub enum Event {
 		error_code: Option<u16>,
 		#[cfg(any(test, feature = "_test_utils"))]
 		error_data: Option<Vec<u8>>,
+		#[cfg(any(test, feature = "_test_utils"))]
+		hold_times: Vec<u32>,
 	},
 	/// Indicates that a probe payment we sent returned successful, i.e., only failed at the destination.
 	///
@@ -1696,12 +1698,16 @@ impl Writeable for Event {
 				ref error_code,
 				#[cfg(any(test, feature = "_test_utils"))]
 				ref error_data,
+				#[cfg(any(test, feature = "_test_utils"))]
+				ref hold_times,
 			} => {
 				3u8.write(writer)?;
 				#[cfg(any(test, feature = "_test_utils"))]
 				error_code.write(writer)?;
 				#[cfg(any(test, feature = "_test_utils"))]
 				error_data.write(writer)?;
+				#[cfg(any(test, feature = "_test_utils"))]
+				hold_times.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(1, None::<NetworkUpdate>, option), // network_update in LDK versions prior to 0.0.114
@@ -2121,6 +2127,8 @@ impl MaybeReadable for Event {
 					let error_code = Readable::read(reader)?;
 					#[cfg(any(test, feature = "_test_utils"))]
 					let error_data = Readable::read(reader)?;
+					#[cfg(any(test, feature = "_test_utils"))]
+					let hold_times = Readable::read(reader)?;
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_failed_permanently = false;
 					let mut network_update = None;
@@ -2154,6 +2162,8 @@ impl MaybeReadable for Event {
 						error_code,
 						#[cfg(any(test, feature = "_test_utils"))]
 						error_data,
+						#[cfg(any(test, feature = "_test_utils"))]
+						hold_times,
 					}))
 				};
 				f()

@@ -1616,17 +1616,23 @@ impl OutboundPayments {
 		}
 	}
 
-	#[rustfmt::skip]
-	fn push_path_failed_evs_and_scids<I: ExactSizeIterator + Iterator<Item = Result<(), APIError>>, L: Deref>(
+	fn push_path_failed_evs_and_scids<
+		I: ExactSizeIterator + Iterator<Item = Result<(), APIError>>,
+		L: Deref,
+	>(
 		payment_id: PaymentId, payment_hash: PaymentHash, route_params: &mut RouteParameters,
 		paths: Vec<Path>, path_results: I, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
-	) where L::Target: Logger {
+	) where
+		L::Target: Logger,
+	{
 		let mut events = pending_events.lock().unwrap();
 		debug_assert_eq!(paths.len(), path_results.len());
 		for (path, path_res) in paths.into_iter().zip(path_results) {
 			if let Err(e) = path_res {
-				if let APIError::MonitorUpdateInProgress = e { continue }
+				if let APIError::MonitorUpdateInProgress = e {
+					continue;
+				}
 				log_error!(logger, "Failed to send along path due to error: {:?}", e);
 				let mut failed_scid = None;
 				if let APIError::ChannelUnavailable { .. } = e {
@@ -1634,7 +1640,7 @@ impl OutboundPayments {
 					failed_scid = Some(scid);
 					route_params.payment_params.previously_failed_channels.push(scid);
 				}
-				events.push_back((events::Event::PaymentPathFailed {
+				let event = events::Event::PaymentPathFailed {
 					payment_id: Some(payment_id),
 					payment_hash,
 					payment_failed_permanently: false,
@@ -1645,7 +1651,10 @@ impl OutboundPayments {
 					error_code: None,
 					#[cfg(any(test, feature = "_test_utils"))]
 					error_data: None,
-				}, None));
+					#[cfg(any(test, feature = "_test_utils"))]
+					hold_times: Vec::new(),
+				};
+				events.push_back((event, None));
 			}
 		}
 	}
@@ -2254,21 +2263,34 @@ impl OutboundPayments {
 	}
 
 	// Returns a bool indicating whether a PendingHTLCsForwardable event should be generated.
-	#[rustfmt::skip]
 	pub(super) fn fail_htlc<L: Deref>(
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
 		path: &Path, session_priv: &SecretKey, payment_id: &PaymentId,
 		probing_cookie_secret: [u8; 32], secp_ctx: &Secp256k1<secp256k1::All>,
-		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, logger: &L,
-	) -> bool where L::Target: Logger {
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		logger: &L,
+	) -> bool
+	where
+		L::Target: Logger,
+	{
 		#[cfg(any(test, feature = "_test_utils"))]
 		let DecodedOnionFailure {
-			network_update, short_channel_id, payment_failed_permanently, onion_error_code,
-			onion_error_data, failed_within_blinded_path, ..
+			network_update,
+			short_channel_id,
+			payment_failed_permanently,
+			onion_error_code,
+			onion_error_data,
+			failed_within_blinded_path,
+			hold_times,
+			..
 		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 		#[cfg(not(any(test, feature = "_test_utils")))]
 		let DecodedOnionFailure {
-			network_update, short_channel_id, payment_failed_permanently, failed_within_blinded_path, ..
+			network_update,
+			short_channel_id,
+			payment_failed_permanently,
+			failed_within_blinded_path,
+			..
 		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 
 		let payment_is_probe = payment_is_probe(payment_hash, &payment_id, probing_cookie_secret);
@@ -2281,7 +2303,8 @@ impl OutboundPayments {
 		let already_awaiting_retry = outbounds.iter().any(|(_, pmt)| {
 			let mut awaiting_retry = false;
 			if pmt.is_auto_retryable_now() {
-				if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, .. } = pmt {
+				if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, .. } = pmt
+				{
 					if pending_amt_msat < total_msat {
 						awaiting_retry = true;
 					}
@@ -2292,55 +2315,72 @@ impl OutboundPayments {
 
 		let mut full_failure_ev = None;
 		let mut pending_retry_ev = false;
-		let attempts_remaining = if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
-			if !payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
-				log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", &payment_hash);
-				return false
-			}
-			if payment.get().is_fulfilled() {
-				log_trace!(logger, "Received failure of HTLC with payment_hash {} after payment completion", &payment_hash);
-				return false
-			}
-			let mut is_retryable_now = payment.get().is_auto_retryable_now();
-			if let Some(scid) = short_channel_id {
-				// TODO: If we decided to blame ourselves (or one of our channels) in
-				// process_onion_failure we should close that channel as it implies our
-				// next-hop is needlessly blaming us!
-				payment.get_mut().insert_previously_failed_scid(scid);
-			}
-			if failed_within_blinded_path {
-				debug_assert!(short_channel_id.is_none());
-				if let Some(bt) = &path.blinded_tail {
-					payment.get_mut().insert_previously_failed_blinded_path(&bt);
-				} else { debug_assert!(false); }
-			}
-
-			if payment_is_probe || !is_retryable_now || payment_failed_permanently {
-				let reason = if payment_failed_permanently {
-					PaymentFailureReason::RecipientRejected
-				} else {
-					PaymentFailureReason::RetriesExhausted
-				};
-				payment.get_mut().mark_abandoned(reason);
-				is_retryable_now = false;
-			}
-			if payment.get().remaining_parts() == 0 {
-				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = payment.get() {
-					if !payment_is_probe {
-						full_failure_ev = Some(events::Event::PaymentFailed {
-							payment_id: *payment_id,
-							payment_hash: Some(*payment_hash),
-							reason: *reason,
-						});
-					}
-					payment.remove();
+		let attempts_remaining =
+			if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
+				if !payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
+					log_trace!(
+						logger,
+						"Received duplicative fail for HTLC with payment_hash {}",
+						&payment_hash
+					);
+					return false;
 				}
-			}
-			is_retryable_now
-		} else {
-			log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", &payment_hash);
-			return false
-		};
+				if payment.get().is_fulfilled() {
+					log_trace!(
+						logger,
+						"Received failure of HTLC with payment_hash {} after payment completion",
+						&payment_hash
+					);
+					return false;
+				}
+				let mut is_retryable_now = payment.get().is_auto_retryable_now();
+				if let Some(scid) = short_channel_id {
+					// TODO: If we decided to blame ourselves (or one of our channels) in
+					// process_onion_failure we should close that channel as it implies our
+					// next-hop is needlessly blaming us!
+					payment.get_mut().insert_previously_failed_scid(scid);
+				}
+				if failed_within_blinded_path {
+					debug_assert!(short_channel_id.is_none());
+					if let Some(bt) = &path.blinded_tail {
+						payment.get_mut().insert_previously_failed_blinded_path(&bt);
+					} else {
+						debug_assert!(false);
+					}
+				}
+
+				if payment_is_probe || !is_retryable_now || payment_failed_permanently {
+					let reason = if payment_failed_permanently {
+						PaymentFailureReason::RecipientRejected
+					} else {
+						PaymentFailureReason::RetriesExhausted
+					};
+					payment.get_mut().mark_abandoned(reason);
+					is_retryable_now = false;
+				}
+				if payment.get().remaining_parts() == 0 {
+					if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } =
+						payment.get()
+					{
+						if !payment_is_probe {
+							full_failure_ev = Some(events::Event::PaymentFailed {
+								payment_id: *payment_id,
+								payment_hash: Some(*payment_hash),
+								reason: *reason,
+							});
+						}
+						payment.remove();
+					}
+				}
+				is_retryable_now
+			} else {
+				log_trace!(
+					logger,
+					"Received duplicative fail for HTLC with payment_hash {}",
+					&payment_hash
+				);
+				return false;
+			};
 		core::mem::drop(outbounds);
 		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", &payment_hash);
 
@@ -2377,13 +2417,17 @@ impl OutboundPayments {
 					#[cfg(any(test, feature = "_test_utils"))]
 					error_code: onion_error_code.map(|f| f.failure_code()),
 					#[cfg(any(test, feature = "_test_utils"))]
-					error_data: onion_error_data
+					error_data: onion_error_data,
+					#[cfg(any(test, feature = "_test_utils"))]
+					hold_times,
 				}
 			}
 		};
 		let mut pending_events = pending_events.lock().unwrap();
 		pending_events.push_back((path_failure, None));
-		if let Some(ev) = full_failure_ev { pending_events.push_back((ev, None)); }
+		if let Some(ev) = full_failure_ev {
+			pending_events.push_back((ev, None));
+		}
 		pending_retry_ev
 	}
 
