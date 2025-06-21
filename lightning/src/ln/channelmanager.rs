@@ -11577,6 +11577,55 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 
 		Ok(builder.into())
 	}
+
+	/// Same as [`Self::create_refund_builder`], but allows specifying a custom [`MessageRouter`]
+	/// instead of using the one provided during [`ChannelManager`] construction for
+	/// [`BlindedMessagePath`] creation.
+	///
+	/// This gives users full control over how the [`BlindedMessagePath`] is constructed for the
+	/// refund, including the option to omit it entirely. This is useful for testing or when
+	/// alternative privacy strategies are needed.
+	///
+	/// See [`Self::create_refund_builder`] for:
+	/// - refund recognition by [`ChannelManager`] via [`Bolt12Invoice`] handling,
+	/// - `payment_id` rules and expiration behavior,
+	/// - invoice revocation and refund failure handling,
+	/// - defaulting behavior for `max_total_routing_fee_msat`,
+	/// - and detailed payment and privacy semantics.
+	///
+	/// # Errors
+	///
+	/// In addition to the errors in [`Self::create_refund_builder`], this returns an error if
+	/// the provided [`MessageRouter`] fails to construct a valid [`BlindedMessagePath`] for the refund.
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	pub fn create_refund_builder_using_router<ME: Deref>(
+		&$self, router: ME, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
+		retry_strategy: Retry, route_params_config: RouteParametersConfig
+	) -> Result<$builder, Bolt12SemanticError>
+	where
+		ME::Target: MessageRouter,
+	{
+		let entropy = &*$self.entropy_source;
+
+		let builder = $self.flow.create_refund_builder_using_router(
+			router, entropy, amount_msats, absolute_expiry,
+			payment_id, $self.get_peers_for_blinded_path()
+		)?;
+
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop($self);
+
+		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
+		$self.pending_outbound_payments
+			.add_new_awaiting_invoice(
+				payment_id, expiration, retry_strategy, route_params_config, None,
+			)
+			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
+
+		Ok(builder.into())
+	}
 } }
 
 impl<

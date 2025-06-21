@@ -467,7 +467,7 @@ fn creates_short_lived_refund() {
 #[test]
 fn creates_long_lived_refund() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs_with_node_id_message_router(2, &chanmon_cfgs);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -479,8 +479,10 @@ fn creates_long_lived_refund() {
 	let absolute_expiry = bob.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY
 		+ Duration::from_secs(1);
 	let payment_id = PaymentId([1; 32]);
+
+	let router = NodeIdMessageRouter::new(bob.network_graph, bob.keys_manager);
 	let refund = bob.node
-		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), RouteParametersConfig::default())
+		.create_refund_builder_using_router(&router, 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), RouteParametersConfig::default())
 		.unwrap()
 		.build().unwrap();
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
