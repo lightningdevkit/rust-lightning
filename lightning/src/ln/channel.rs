@@ -2511,49 +2511,79 @@ where
 
 	fn received_msg(&self) -> &'static str;
 
-	#[rustfmt::skip]
 	fn initial_commitment_signed<L: Deref>(
-		&mut self, channel_id: ChannelId, counterparty_signature: Signature, holder_commitment_point: &mut HolderCommitmentPoint,
-		best_block: BestBlock, signer_provider: &SP, logger: &L,
-	) -> Result<(ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, CommitmentTransaction), ChannelError>
+		&mut self, channel_id: ChannelId, counterparty_signature: Signature,
+		holder_commitment_point: &mut HolderCommitmentPoint, best_block: BestBlock,
+		signer_provider: &SP, logger: &L,
+	) -> Result<
+		(ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, CommitmentTransaction),
+		ChannelError,
+	>
 	where
-		L::Target: Logger
+		L::Target: Logger,
 	{
 		let context = self.context();
 
-		let initial_commitment_tx = context.build_commitment_transaction(self.funding(),
-			holder_commitment_point.transaction_number(), &holder_commitment_point.current_point(),
-			true, false, logger).tx;
+		let initial_commitment_tx = context
+			.build_commitment_transaction(
+				self.funding(),
+				holder_commitment_point.transaction_number(),
+				&holder_commitment_point.current_point(),
+				true,
+				false,
+				logger,
+			)
+			.tx;
 		let holder_commitment_tx = HolderCommitmentTransaction::new(
 			initial_commitment_tx,
 			counterparty_signature,
 			Vec::new(),
 			&self.funding().get_holder_pubkeys().funding_pubkey,
-			&self.funding().counterparty_funding_pubkey()
+			&self.funding().counterparty_funding_pubkey(),
 		);
 
-		log_trace!(logger, "Validating {} commitment in channel {}", self.received_msg(), context.channel_id());
-		if context.holder_signer.as_ref().validate_holder_commitment(
-			&self.funding().channel_transaction_parameters,
-			&holder_commitment_tx,
-			Vec::new(),
-			&context.secp_ctx,
-		).is_err() {
+		log_trace!(
+			logger,
+			"Validating {} commitment in channel {}",
+			self.received_msg(),
+			context.channel_id()
+		);
+		if context
+			.holder_signer
+			.as_ref()
+			.validate_holder_commitment(
+				&self.funding().channel_transaction_parameters,
+				&holder_commitment_tx,
+				Vec::new(),
+				&context.secp_ctx,
+			)
+			.is_err()
+		{
 			if !self.funding().is_outbound() {
 				self.funding_mut().channel_transaction_parameters.funding_outpoint = None;
 			}
 			return Err(ChannelError::close("Failed to validate our commitment".to_owned()));
 		}
 
-		let commitment_data = context.build_commitment_transaction(self.funding(),
+		let commitment_data = context.build_commitment_transaction(
+			self.funding(),
 			context.cur_counterparty_commitment_transaction_number,
-			&context.counterparty_cur_commitment_point.unwrap(), false, false, logger);
+			&context.counterparty_cur_commitment_point.unwrap(),
+			false,
+			false,
+			logger,
+		);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
 
-		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
-			&context.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
+		log_trace!(
+			logger,
+			"Initial counterparty tx for channel {} is: txid {} tx {}",
+			&context.channel_id(),
+			counterparty_initial_bitcoin_tx.txid,
+			encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction)
+		);
 
 		// Now that we're past error-generating stuff, update our local state:
 
@@ -2564,35 +2594,61 @@ where
 		assert!(!context.channel_state.is_monitor_update_in_progress()); // We have not had any monitor(s) yet to fail update!
 		if !is_v2_established {
 			if context.is_batch_funding() {
-				context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::WAITING_FOR_BATCH);
+				context.channel_state = ChannelState::AwaitingChannelReady(
+					AwaitingChannelReadyFlags::WAITING_FOR_BATCH,
+				);
 			} else {
-				context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+				context.channel_state =
+					ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			}
 		}
-		if holder_commitment_point.advance(&context.holder_signer, &context.secp_ctx, logger).is_err() {
+		if holder_commitment_point
+			.advance(&context.holder_signer, &context.secp_ctx, logger)
+			.is_err()
+		{
 			// We only fail to advance our commitment point/number if we're currently
 			// waiting for our signer to unblock and provide a commitment point.
 			// We cannot send accept_channel/open_channel before this has occurred, so if we
 			// err here by the time we receive funding_created/funding_signed, something has gone wrong.
-			debug_assert!(false, "We should be ready to advance our commitment point by the time we receive {}", self.received_msg());
-			return Err(ChannelError::close("Failed to advance holder commitment point".to_owned()));
+			debug_assert!(
+				false,
+				"We should be ready to advance our commitment point by the time we receive {}",
+				self.received_msg()
+			);
+			return Err(ChannelError::close(
+				"Failed to advance holder commitment point".to_owned(),
+			));
 		}
 
 		let context = self.context();
 		let funding = self.funding();
-		let obscure_factor = get_commitment_transaction_number_obscure_factor(&funding.get_holder_pubkeys().payment_point, &funding.get_counterparty_pubkeys().payment_point, funding.is_outbound());
-		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
+		let obscure_factor = get_commitment_transaction_number_obscure_factor(
+			&funding.get_holder_pubkeys().payment_point,
+			&funding.get_counterparty_pubkeys().payment_point,
+			funding.is_outbound(),
+		);
+		let shutdown_script =
+			context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
 		let monitor_signer = signer_provider.derive_channel_signer(context.channel_keys_id);
 		// TODO(RBF): When implementing RBF, the funding_txo passed here must only update
 		// ChannelMonitorImp::first_confirmed_funding_txo during channel establishment, not splicing
 		let channel_monitor = ChannelMonitor::new(
-			context.secp_ctx.clone(), monitor_signer, shutdown_script,
-			funding.get_holder_selected_contest_delay(), &context.destination_script,
-			&funding.channel_transaction_parameters, funding.is_outbound(), obscure_factor,
-			holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id(),
+			context.secp_ctx.clone(),
+			monitor_signer,
+			shutdown_script,
+			funding.get_holder_selected_contest_delay(),
+			&context.destination_script,
+			&funding.channel_transaction_parameters,
+			funding.is_outbound(),
+			obscure_factor,
+			holder_commitment_tx,
+			best_block,
+			context.counterparty_node_id,
+			context.channel_id(),
 		);
 		channel_monitor.provide_initial_counterparty_commitment_tx(
-			counterparty_initial_commitment_tx.clone(), logger,
+			counterparty_initial_commitment_tx.clone(),
+			logger,
 		);
 
 		self.context_mut().cur_counterparty_commitment_transaction_number -= 1;
@@ -4173,7 +4229,6 @@ where
 		Ok(())
 	}
 
-	#[rustfmt::skip]
 	fn validate_commitment_signed<L: Deref>(
 		&self, funding: &FundingScope, holder_commitment_point: &HolderCommitmentPoint,
 		msg: &msgs::CommitmentSigned, logger: &L,
@@ -4181,12 +4236,21 @@ where
 	where
 		L::Target: Logger,
 	{
-		let commitment_data = self.build_commitment_transaction(funding,
-			holder_commitment_point.transaction_number(), &holder_commitment_point.current_point(),
-			true, false, logger);
+		let commitment_data = self.build_commitment_transaction(
+			funding,
+			holder_commitment_point.transaction_number(),
+			&holder_commitment_point.current_point(),
+			true,
+			false,
+			logger,
+		);
 
 		if msg.htlc_signatures.len() != commitment_data.tx.nondust_htlcs().len() {
-			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_data.tx.nondust_htlcs().len())));
+			return Err(ChannelError::close(format!(
+				"Got wrong number of HTLC signatures ({}) from remote. It must be {}",
+				msg.htlc_signatures.len(),
+				commitment_data.tx.nondust_htlcs().len()
+			)));
 		}
 
 		let holder_commitment_tx = HolderCommitmentTransaction::new(
@@ -4194,50 +4258,71 @@ where
 			msg.signature,
 			msg.htlc_signatures.clone(),
 			&funding.get_holder_pubkeys().funding_pubkey,
-			funding.counterparty_funding_pubkey()
+			funding.counterparty_funding_pubkey(),
 		);
 
-		log_trace!(logger, "Validating commitment_signed commitment in channel {}", self.channel_id());
-		self.holder_signer.as_ref().validate_holder_commitment(
-			&funding.channel_transaction_parameters,
-			&holder_commitment_tx,
-			commitment_data.outbound_htlc_preimages,
-			&self.secp_ctx,
-		)
+		log_trace!(
+			logger,
+			"Validating commitment_signed commitment in channel {}",
+			self.channel_id()
+		);
+		self.holder_signer
+			.as_ref()
+			.validate_holder_commitment(
+				&funding.channel_transaction_parameters,
+				&holder_commitment_tx,
+				commitment_data.outbound_htlc_preimages,
+				&self.secp_ctx,
+			)
 			.map_err(|_| ChannelError::close("Failed to validate our commitment".to_owned()))?;
 
 		// If our counterparty updated the channel fee in this commitment transaction, check that
 		// they can actually afford the new fee now.
 		let update_fee = if let Some((_, update_state)) = self.pending_update_fee {
 			update_state == FeeUpdateState::RemoteAnnounced
-		} else { false };
+		} else {
+			false
+		};
 		if update_fee {
 			debug_assert!(!funding.is_outbound());
-			let counterparty_reserve_we_require_msat = funding.holder_selected_channel_reserve_satoshis * 1000;
-			if commitment_data.stats.remote_balance_before_fee_anchors_msat < commitment_data.stats.total_fee_sat * 1000 + commitment_data.stats.total_anchors_sat * 1000 + counterparty_reserve_we_require_msat {
-				return Err(ChannelError::close("Funding remote cannot afford proposed new fee".to_owned()));
+			let counterparty_reserve_we_require_msat =
+				funding.holder_selected_channel_reserve_satoshis * 1000;
+			if commitment_data.stats.remote_balance_before_fee_anchors_msat
+				< commitment_data.stats.total_fee_sat * 1000
+					+ commitment_data.stats.total_anchors_sat * 1000
+					+ counterparty_reserve_we_require_msat
+			{
+				return Err(ChannelError::close(
+					"Funding remote cannot afford proposed new fee".to_owned(),
+				));
 			}
 		}
 		#[cfg(any(test, fuzzing))]
 		{
 			if funding.is_outbound() {
-				let projected_commit_tx_info = funding.next_local_commitment_tx_fee_info_cached.lock().unwrap().take();
+				let projected_commit_tx_info =
+					funding.next_local_commitment_tx_fee_info_cached.lock().unwrap().take();
 				*funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
 				if let Some(info) = projected_commit_tx_info {
-					let total_pending_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len()
+					let total_pending_htlcs = self.pending_inbound_htlcs.len()
+						+ self.pending_outbound_htlcs.len()
 						+ self.holding_cell_htlc_updates.len();
 					if info.total_pending_htlcs == total_pending_htlcs
 						&& info.next_holder_htlc_id == self.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.next_counterparty_htlc_id
-						&& info.feerate == self.feerate_per_kw {
-							assert_eq!(commitment_data.stats.total_fee_sat, info.fee / 1000);
-						}
+						&& info.feerate == self.feerate_per_kw
+					{
+						assert_eq!(commitment_data.stats.total_fee_sat, info.fee / 1000);
+					}
 				}
 			}
 		}
 
-		let mut nondust_htlc_sources = Vec::with_capacity(holder_commitment_tx.nondust_htlcs().len());
-		let mut dust_htlcs = Vec::with_capacity(commitment_data.htlcs_included.len() - holder_commitment_tx.nondust_htlcs().len());
+		let mut nondust_htlc_sources =
+			Vec::with_capacity(holder_commitment_tx.nondust_htlcs().len());
+		let mut dust_htlcs = Vec::with_capacity(
+			commitment_data.htlcs_included.len() - holder_commitment_tx.nondust_htlcs().len(),
+		);
 		for (htlc, mut source_opt) in commitment_data.htlcs_included.into_iter() {
 			if let Some(_) = htlc.transaction_output_index {
 				if htlc.offered {
