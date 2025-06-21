@@ -21,6 +21,7 @@ use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Wei
 
 use crate::chain::chaininterface::fee_for_weight;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
+use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::msgs;
 use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
@@ -1925,7 +1926,7 @@ pub(super) fn calculate_change_output_value(
 		total_input_satoshis = total_input_satoshis.saturating_add(shared_input);
 		if is_initiator {
 			our_funding_inputs_weight =
-				our_funding_inputs_weight.saturating_add(P2WSH_INPUT_WEIGHT_LOWER_BOUND);
+				our_funding_inputs_weight.saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT);
 		}
 	}
 
