@@ -4525,7 +4525,7 @@ where
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let result = self.internal_splice_channel(
-				channel_id, counterparty_node_id, our_funding_contribution_satoshis, &our_funding_inputs, funding_feerate_per_kw, locktime
+				channel_id, counterparty_node_id, our_funding_contribution_satoshis, our_funding_inputs.clone(), funding_feerate_per_kw, locktime
 			);
 			res = result;
 			match res {
@@ -4538,16 +4538,22 @@ where
 
 	/// See [`splice_channel`]
 	#[cfg(splicing)]
-	#[rustfmt::skip]
 	fn internal_splice_channel(
-		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: &Vec<(TxIn, Transaction, Weight)>,
-		funding_feerate_per_kw: u32, locktime: Option<u32>,
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		our_funding_contribution_satoshis: i64,
+		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, funding_feerate_per_kw: u32,
+		locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
-		let peer_state_mutex = match per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) }) {
+		let peer_state_mutex = match per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			APIError::ChannelUnavailable {
+				err: format!(
+					"Can't find a peer matching the passed counterparty node_id {}",
+					counterparty_node_id
+				),
+			}
+		}) {
 			Ok(p) => p,
 			Err(e) => return Err(e),
 		};
@@ -4560,7 +4566,12 @@ where
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let locktime = locktime.unwrap_or_else(|| self.current_best_block().height);
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let msg = chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_per_kw, locktime)?;
+					let msg = chan.splice_channel(
+						our_funding_contribution_satoshis,
+						our_funding_inputs,
+						funding_feerate_per_kw,
+						locktime,
+					)?;
 					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceInit {
 						node_id: *counterparty_node_id,
 						msg,
@@ -4571,18 +4582,16 @@ where
 						err: format!(
 							"Channel with id {} is not funded, cannot splice it",
 							channel_id
-						)
+						),
 					})
 				}
 			},
-			hash_map::Entry::Vacant(_) => {
-				Err(APIError::ChannelUnavailable {
-					err: format!(
-						"Channel with id {} not found for the passed counterparty node_id {}",
-						channel_id, counterparty_node_id,
-					)
-				})
-			},
+			hash_map::Entry::Vacant(_) => Err(APIError::ChannelUnavailable {
+				err: format!(
+					"Channel with id {} not found for the passed counterparty node_id {}",
+					channel_id, counterparty_node_id,
+				),
+			}),
 		}
 	}
 
@@ -8484,7 +8493,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 					// Inbound V2 channels with contributed inputs are not considered unfunded.
 					if let Some(unfunded_chan) = chan.as_unfunded_v2() {
-						if unfunded_chan.dual_funding_context.our_funding_satoshis != 0 {
+						if unfunded_chan.funding_negotiation_context.our_funding_satoshis != 0 {
 							continue;
 						}
 					}
@@ -8885,18 +8894,23 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	#[rustfmt::skip]
-	fn internal_tx_msg<HandleTxMsgFn: Fn(&mut Channel<SP>) -> Result<MessageSendEvent, &'static str>>(
-		&self, counterparty_node_id: &PublicKey, channel_id: ChannelId, tx_msg_handler: HandleTxMsgFn
+	fn internal_tx_msg<
+		HandleTxMsgFn: Fn(&mut Channel<SP>) -> Result<MessageSendEvent, ChannelError>,
+	>(
+		&self, counterparty_node_id: &PublicKey, channel_id: ChannelId,
+		tx_msg_handler: HandleTxMsgFn,
 	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
-					channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::send_err_msg_no_close(
+				format!(
+					"Can't find a peer matching the passed counterparty node_id {}",
+					counterparty_node_id
+				),
+				channel_id,
+			)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(channel_id) {
@@ -8904,9 +8918,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let channel = chan_entry.get_mut();
 				let msg_send_event = match tx_msg_handler(channel) {
 					Ok(msg_send_event) => msg_send_event,
-					Err(tx_msg_str) =>  return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
-						format!("Got a {tx_msg_str} message with no interactive transaction construction expected or in-progress")
-					), channel_id)),
+					Err(err) =>  return Err(MsgHandleErrInternal::from_chan_no_close(err, channel_id)),
 				};
 				peer_state.pending_msg_events.push(msg_send_event);
 				Ok(())
@@ -8924,12 +8936,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => {
-					Ok(unfunded_channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id))
-				},
-				None => Err("tx_add_input"),
-			}
+			Ok(channel
+				.as_negotiating_channel()?
+				.tx_add_input(msg)
+				.into_msg_send_event(counterparty_node_id))
 		})
 	}
 
@@ -8937,15 +8947,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => {
-					let msg_send_event = unfunded_channel
-						.tx_add_output(msg)
-						.into_msg_send_event(counterparty_node_id);
-					Ok(msg_send_event)
-				},
-				None => Err("tx_add_output"),
-			}
+			Ok(channel
+				.as_negotiating_channel()?
+				.tx_add_output(msg)
+				.into_msg_send_event(counterparty_node_id))
 		})
 	}
 
@@ -8953,15 +8958,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => {
-					let msg_send_event = unfunded_channel
-						.tx_remove_input(msg)
-						.into_msg_send_event(counterparty_node_id);
-					Ok(msg_send_event)
-				},
-				None => Err("tx_remove_input"),
-			}
+			Ok(channel
+				.as_negotiating_channel()?
+				.tx_remove_input(msg)
+				.into_msg_send_event(counterparty_node_id))
 		})
 	}
 
@@ -8969,15 +8969,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => {
-					let msg_send_event = unfunded_channel
-						.tx_remove_output(msg)
-						.into_msg_send_event(counterparty_node_id);
-					Ok(msg_send_event)
-				},
-				None => Err("tx_remove_output"),
-			}
+			Ok(channel
+				.as_negotiating_channel()?
+				.tx_remove_output(msg)
+				.into_msg_send_event(counterparty_node_id))
 		})
 	}
 
@@ -8995,14 +8990,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				let (msg_send_event_opt, signing_session_opt) = match chan_entry.get_mut().as_unfunded_v2_mut() {
-					Some(chan) => chan.tx_complete(msg)
+				let (msg_send_event_opt, signing_session_opt) = match chan_entry.get_mut().as_negotiating_channel() {
+					Ok(mut negotiating_channel) => negotiating_channel
+						.tx_complete(msg)
 						.into_msg_send_event_or_signing_session(counterparty_node_id),
-					None => try_channel_entry!(self, peer_state, Err(ChannelError::Close(
-						(
-							"Got a tx_complete message with no interactive transaction construction expected or in-progress".into(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						))), chan_entry)
+					Err(err) => {
+						try_channel_entry!(self, peer_state, Err(err), chan_entry)
+					}
 				};
 				if let Some(msg_send_event) = msg_send_event_opt {
 					peer_state.pending_msg_events.push(msg_send_event);
@@ -10120,6 +10114,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
+		// TODO(splicing): Currently not possible to contribute on the splicing-acceptor side
+		let our_funding_contribution = 0i64;
+
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
@@ -10127,24 +10124,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					counterparty_node_id, msg.channel_id,
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					let splice_ack_msg = try_channel_entry!(self, peer_state, chan.splice_init(msg), chan_entry);
+				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let init_res = funded_channel.splice_init(
+						msg, our_funding_contribution, &self.signer_provider, &self.entropy_source,
+						&self.get_our_node_id(), &self.logger
+					);
+					let splice_ack_msg = try_channel_entry!(self, peer_state, init_res, chan_entry);
 					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
 						node_id: *counterparty_node_id,
 						msg: splice_ack_msg,
 					});
+					Ok(())
 				} else {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot be spliced".to_owned(), msg.channel_id));
+					try_channel_entry!(self, peer_state, Err(ChannelError::close("Channel is not funded, cannot be spliced".into())), chan_entry)
 				}
 			},
-		};
-
-		// TODO(splicing):
-		//  Change channel, change phase (remove and add)
-		//  Create new post-splice channel
-		//  etc.
-
-		Ok(())
+		}
 	}
 
 	/// Handle incoming splice request ack, transition channel to splice-pending (unless some check fails).
@@ -10162,26 +10157,26 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
 					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
 					counterparty_node_id
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					try_channel_entry!(self, peer_state, chan.splice_ack(msg), chan_entry);
+				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let tx_msg_opt = try_channel_entry!(self, peer_state,
+						funded_channel.splice_ack(
+							msg, &self.signer_provider, &self.entropy_source,
+							&self.get_our_node_id(), &self.logger
+						), chan_entry);
+					if let Some(tx_msg) = tx_msg_opt {
+						peer_state.pending_msg_events.push(tx_msg.into_msg_send_event(counterparty_node_id.clone()));
+					}
+					Ok(())
 				} else {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot splice".to_owned(), msg.channel_id));
+					try_channel_entry!(self, peer_state, Err(ChannelError::close("Channel is not funded, cannot be spliced".into())), chan_entry)
 				}
 			},
-		};
-
-		// TODO(splicing):
-		//  Change channel, change phase (remove and add)
-		//  Create new post-splice channel
-		//  Start splice funding transaction negotiation
-		//  etc.
-
-		Err(MsgHandleErrInternal::send_err_msg_no_close("TODO(splicing): Splicing is not implemented (splice_ack)".to_owned(), msg.channel_id))
+		}
 	}
 
 	#[cfg(splicing)]
