@@ -23,6 +23,8 @@
 //! an LSP will open a "just-in-time" channel. This is useful for the initial on-boarding of
 //! clients as the channel opening fees are deducted from the incoming payment, i.e., no funds are
 //! required client-side to initiate this flow.
+//! - [bLIP-55 / LSPS5] defines a protocol for sending webhook notifications to clients. This is
+//! useful for notifying clients about incoming payments, channel expiries, etc.
 //!
 //! To get started, you'll want to setup a [`LiquidityManager`] and configure it to be the
 //! [`CustomMessageHandler`] of your LDK node. You can then for example call
@@ -37,6 +39,7 @@
 //! [bLIP-50 / LSPS0]: https://github.com/lightning/blips/blob/master/blip-0050.md
 //! [bLIP-51 / LSPS1]: https://github.com/lightning/blips/blob/master/blip-0051.md
 //! [bLIP-52 / LSPS2]: https://github.com/lightning/blips/blob/master/blip-0052.md
+//! [bLIP-55 / LSPS5]: https://github.com/lightning/blips/pull/55/files
 //! [`CustomMessageHandler`]: lightning::ln::peer_handler::CustomMessageHandler
 //! [`LiquidityManager::next_event`]: crate::LiquidityManager::next_event
 #![deny(missing_docs)]
@@ -59,6 +62,7 @@ pub mod events;
 pub mod lsps0;
 pub mod lsps1;
 pub mod lsps2;
+pub mod lsps5;
 mod manager;
 pub mod message_queue;
 #[allow(dead_code)]
