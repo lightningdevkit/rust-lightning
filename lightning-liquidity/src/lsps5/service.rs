@@ -61,11 +61,11 @@ pub trait TimeProvider {
 	/// Get the current time as a duration since the Unix epoch.
 	fn duration_since_epoch(&self) -> Duration;
 
-	// TODO: only on tests
+	#[cfg(feature = "_test_utils")]
 	/// Advance the time by a specified number of seconds.
 	fn advance_time(&self, _seconds: u64);
 
-	// TODO: only on tests
+	#[cfg(feature = "_test_utils")]
 	/// Rewind the time by a specified number of seconds.
 	fn rewind_time(&self, _seconds: u64);
 }
@@ -80,14 +80,6 @@ impl TimeProvider for DefaultTimeProvider {
 	fn duration_since_epoch(&self) -> Duration {
 		use std::time::{SystemTime, UNIX_EPOCH};
 		SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before Unix epoch")
-	}
-
-	fn advance_time(&self, _seconds: u64) {
-		// No op for non-mock implementations
-	}
-
-	fn rewind_time(&self, _seconds: u64) {
-		// No op for non-mock implementations
 	}
 }
 

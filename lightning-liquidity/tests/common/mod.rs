@@ -132,7 +132,7 @@ pub(crate) struct Node {
 					Arc<KeysManager>,
 					Arc<ChannelManager>,
 					Arc<dyn Filter + Send + Sync>,
-					Arc<dyn TimeProvider>,
+					Arc<dyn TimeProvider + Send + Sync>,
 				>,
 			>,
 			Arc<KeysManager>,
@@ -144,7 +144,7 @@ pub(crate) struct Node {
 			Arc<KeysManager>,
 			Arc<ChannelManager>,
 			Arc<dyn Filter + Send + Sync>,
-			Arc<dyn TimeProvider>,
+			Arc<dyn TimeProvider + Send + Sync>,
 		>,
 	>,
 	pub(crate) chain_monitor: Arc<ChainMonitor>,
@@ -413,7 +413,8 @@ fn get_full_filepath(filepath: String, filename: String) -> String {
 
 pub(crate) fn create_liquidity_node(
 	i: usize, persist_dir: &str, network: Network, service_config: Option<LiquidityServiceConfig>,
-	client_config: Option<LiquidityClientConfig>, time_provider: Arc<dyn TimeProvider>,
+	client_config: Option<LiquidityClientConfig>,
+	time_provider: Arc<dyn TimeProvider + Send + Sync>,
 ) -> Node {
 	let tx_broadcaster = Arc::new(test_utils::TestBroadcaster::new(network));
 	let fee_estimator = Arc::new(test_utils::TestFeeEstimator::new(253));
@@ -506,7 +507,7 @@ pub(crate) fn create_liquidity_node(
 
 pub(crate) fn create_service_and_client_nodes(
 	persist_dir: &str, service_config: LiquidityServiceConfig,
-	client_config: LiquidityClientConfig, time_provider: Arc<dyn TimeProvider>,
+	client_config: LiquidityClientConfig, time_provider: Arc<dyn TimeProvider + Send + Sync>,
 ) -> (Node, Node) {
 	let persist_temp_path = env::temp_dir().join(persist_dir);
 	let persist_dir = persist_temp_path.to_string_lossy().to_string();

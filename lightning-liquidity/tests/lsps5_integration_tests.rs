@@ -1,4 +1,4 @@
-#![cfg(all(test, feature = "time"))]
+#![cfg(all(test, feature = "time", feature = "_test_utils"))]
 
 mod common;
 
@@ -768,9 +768,10 @@ fn replay_prevention_test() {
 
 #[test]
 fn stale_webhooks() {
-	let mock_time_provider: Arc<dyn TimeProvider> = Arc::new(MockTimeProvider::new(1000));
+	let mock_time_provider = Arc::new(MockTimeProvider::new(1000));
+	let time_provider: Arc<dyn TimeProvider> = Arc::<MockTimeProvider>::clone(&mock_time_provider);
 	let (service_node_id, client_node_id, service_node, client_node) =
-		lsps5_test_setup(Arc::clone(&mock_time_provider), None);
+		lsps5_test_setup(time_provider, None);
 
 	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
 
@@ -982,14 +983,15 @@ fn test_bad_signature_notification() {
 
 #[test]
 fn test_timestamp_notification_window_validation() {
-	let mock_time_provider: Arc<dyn TimeProvider> = Arc::new(MockTimeProvider::new(
+	let mock_time_provider = Arc::new(MockTimeProvider::new(
 		SystemTime::now()
 			.duration_since(UNIX_EPOCH)
 			.expect("system time before Unix epoch")
 			.as_secs(),
 	));
+	let time_provider: Arc<dyn TimeProvider> = Arc::<MockTimeProvider>::clone(&mock_time_provider);
 	let (service_node_id, client_node_id, service_node, client_node) =
-		lsps5_test_setup(Arc::clone(&mock_time_provider), None);
+		lsps5_test_setup(time_provider, None);
 
 	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
 	let service_handler = service_node.liquidity_manager.lsps5_service_handler().unwrap();
