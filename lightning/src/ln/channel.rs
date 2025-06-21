@@ -2858,13 +2858,16 @@ where
 	interactive_tx_constructor: &'a mut Option<InteractiveTxConstructor>,
 	interactive_tx_signing_session: &'a mut Option<InteractiveTxSigningSession>,
 	holder_commitment_transaction_number: u64,
-	is_splice: bool,
 }
 
 impl<'a, SP: Deref> NegotiatingChannelView<'a, SP>
 where
 	SP::Target: SignerProvider,
 {
+	fn is_splice(&self) -> bool {
+		self.funding.channel_transaction_parameters.splice_parent_funding_txid.is_some()
+	}
+
 	/// Prepare and start interactive transaction negotiation.
 	/// `change_destination_opt` - Optional destination for optional change; if None,
 	///   default destination address is used.
@@ -2878,7 +2881,7 @@ where
 	where
 		ES::Target: EntropySource,
 	{
-		if self.is_splice {
+		if self.is_splice() {
 			debug_assert!(matches!(self.context.channel_state, ChannelState::ChannelReady(_)));
 		} else {
 			debug_assert!(matches!(
@@ -3087,7 +3090,7 @@ where
 		self.funding
 			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 
-		if self.is_splice {
+		if self.is_splice() {
 			// TODO(splicing) Forced error, as the use case is not complete
 			return Err(ChannelError::Close((
 				"TODO Forced error, incomplete implementation".into(),
@@ -6207,7 +6210,6 @@ where
 						holder_commitment_transaction_number: self
 							.holder_commitment_point
 							.transaction_number(),
-						is_splice: true,
 					})
 				} else {
 					Err("Received unexpected interactive transaction negotiation message: \
@@ -10419,7 +10421,6 @@ where
 			interactive_tx_constructor: &mut pending_splice_mut.interactive_tx_constructor,
 			interactive_tx_signing_session: &mut pending_splice_mut.interactive_tx_signing_session,
 			holder_commitment_transaction_number: self.holder_commitment_point.transaction_number(),
-			is_splice: true,
 		};
 
 		// Start interactive funding negotiation. TODO(splicing): Add current funding as extra input, once shared inputs are supported, see #3842.
@@ -10541,7 +10542,6 @@ where
 			interactive_tx_constructor: &mut pending_splice.interactive_tx_constructor,
 			interactive_tx_signing_session: &mut pending_splice.interactive_tx_signing_session,
 			holder_commitment_transaction_number: self.holder_commitment_point.transaction_number(),
-			is_splice: true,
 		};
 
 		// Start interactive funding negotiation, with the previous funding transaction as an extra shared input
@@ -12429,7 +12429,6 @@ where
 			interactive_tx_constructor: &mut self.interactive_tx_constructor,
 			interactive_tx_signing_session: &mut self.interactive_tx_signing_session,
 			holder_commitment_transaction_number: self.unfunded_context.transaction_number(),
-			is_splice: false,
 		}
 	}
 }
