@@ -10125,11 +10125,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
-					let splice_ack_msg = try_channel_entry!(self, peer_state,
-						funded_channel.splice_init(
-							msg, our_funding_contribution, &self.signer_provider, &self.entropy_source,
-							&self.get_our_node_id(), &self.logger
-						), chan_entry);
+					let init_res = funded_channel.splice_init(
+						msg, our_funding_contribution, &self.signer_provider, &self.entropy_source,
+						&self.get_our_node_id(), &self.logger
+					);
+					let splice_ack_msg = try_channel_entry!(self, peer_state, init_res, chan_entry);
 					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
 						node_id: *counterparty_node_id,
 						msg: splice_ack_msg,
