@@ -1781,13 +1781,10 @@ where
 		L::Target: Logger,
 	{
 		let logger = WithChannelContext::from(logger, self.context(), None);
-		if let Ok(mut negotiating_channel) = self.as_negotiating_channel() {
-			let (commitment_signed, event) =
-				negotiating_channel.funding_tx_constructed(signing_session, &&logger)?;
-			Ok((commitment_signed, event))
-		} else {
-			Err(ChannelError::Warn("Got a tx_complete message with no interactive transaction construction expected or in-progress".to_owned()))
-		}
+		let mut negotiating_channel = self.as_negotiating_channel()?;
+		let (commitment_signed, event) =
+			negotiating_channel.funding_tx_constructed(signing_session, &&logger)?;
+		Ok((commitment_signed, event))
 	}
 
 	pub fn force_shutdown(
@@ -2171,45 +2168,26 @@ impl FundingScope {
 	{
 		let post_value_to_self_msat_signed = (prev_funding.value_to_self_msat as i64)
 			.saturating_add(our_funding_contribution_sats * 1000);
-		if post_value_to_self_msat_signed < 0 {
-			// Splice out and more than our balance, error
-			return Err(ChannelError::Warn(format!(
-				"Cannot splice out more than the current balance, {} sats, {} msats",
-				post_value_to_self_msat_signed, prev_funding.value_to_self_msat
-			)));
-		}
 		debug_assert!(post_value_to_self_msat_signed >= 0);
 		let post_value_to_self_msat = post_value_to_self_msat_signed as u64;
 
-		let prev_funding_txid = prev_funding
-			.channel_transaction_parameters
-			.funding_outpoint
-			.map(|outpoint| outpoint.txid);
+		let prev_funding_txid = prev_funding.get_funding_txid();
 		let holder_pubkeys = match &context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.pubkeys(prev_funding_txid, &context.secp_ctx),
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
 			_ => todo!(),
 		};
+		let channel_parameters = &prev_funding.channel_transaction_parameters;
 		let mut post_channel_transaction_parameters = ChannelTransactionParameters {
 			holder_pubkeys,
-			holder_selected_contest_delay: prev_funding
-				.channel_transaction_parameters
-				.holder_selected_contest_delay,
+			holder_selected_contest_delay: channel_parameters.holder_selected_contest_delay,
 			// The 'outbound' attribute doesn't change, even if the splice initiator is the other node
-			is_outbound_from_holder: prev_funding
-				.channel_transaction_parameters
-				.is_outbound_from_holder,
-			counterparty_parameters: prev_funding
-				.channel_transaction_parameters
-				.counterparty_parameters
-				.clone(),
+			is_outbound_from_holder: channel_parameters.is_outbound_from_holder,
+			counterparty_parameters: channel_parameters.counterparty_parameters.clone(),
 			funding_outpoint: None, // filled later
 			splice_parent_funding_txid: prev_funding_txid,
-			channel_type_features: prev_funding
-				.channel_transaction_parameters
-				.channel_type_features
-				.clone(),
+			channel_type_features: channel_parameters.channel_type_features.clone(),
 			channel_value_satoshis: post_channel_value,
 		};
 		// Update the splicing 'tweak', this will rotate the keys in the signer
@@ -2870,7 +2848,7 @@ where
 /// Can be produced by:
 /// - [`PendingV2Channel`], at V2 channel open, and
 /// - [`FundedChannel`], when splicing.
-pub struct NegotiatingChannelView<'a, SP: Deref>
+pub(super) struct NegotiatingChannelView<'a, SP: Deref>
 where
 	SP::Target: SignerProvider,
 {
