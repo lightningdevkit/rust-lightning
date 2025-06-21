@@ -1691,22 +1691,30 @@ impl TransactionU16LenLimited {
 	}
 }
 
-impl Writeable for TransactionU16LenLimited {
+impl Writeable for Option<TransactionU16LenLimited> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.0.serialized_length() as u16).write(w)?;
-		self.0.write(w)
+		match self {
+			Some(tx) => {
+				(tx.0.serialized_length() as u16).write(w)?;
+				tx.0.write(w)
+			},
+			None => 0u16.write(w),
+		}
 	}
 }
 
-impl Readable for TransactionU16LenLimited {
+impl Readable for Option<TransactionU16LenLimited> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len = <u16 as Readable>::read(r)?;
+		if len == 0 {
+			return Ok(None);
+		}
 		let mut tx_reader = FixedLengthReader::new(r, len as u64);
 		let tx: Transaction = Readable::read(&mut tx_reader)?;
 		if tx_reader.bytes_remain() {
 			Err(DecodeError::BadLengthDescriptor)
 		} else {
-			Ok(Self(tx))
+			Ok(Some(TransactionU16LenLimited(tx)))
 		}
 	}
 }
