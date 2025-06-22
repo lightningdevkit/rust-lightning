@@ -640,12 +640,17 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 			std::mem::forget(nodes);
 		}
 	} else {
-		let error_message = "Channel force-closed";
+		let message = "Channel force-closed".to_owned();
 		assert!(!not_stale, "We only care about the stale case when not testing panicking");
 
-		nodes[0].node.force_close_without_broadcasting_txn(&chan.2, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
+		nodes[0]
+			.node
+			.force_close_without_broadcasting_txn(&chan.2, &nodes[1].node.get_our_node_id(), message.clone())
+			.unwrap();
 		check_added_monitors!(nodes[0], 1);
-		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }, [nodes[1].node.get_our_node_id()], 1000000);
+		let reason =
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false), message };
+		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 1000000);
 		{
 			let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 			assert_eq!(node_txn.len(), 0);
@@ -1066,14 +1071,18 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	assert!(nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 
 	let _ = nodes[2].node.get_and_clear_pending_msg_events();
-	let error_message = "Channel force-closed";
+	let message = "Channel force-closed".to_owned();
 
-	nodes[2].node.force_close_broadcasting_latest_txn(&chan_id_2, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
+	nodes[2]
+		.node
+		.force_close_broadcasting_latest_txn(&chan_id_2, &nodes[1].node.get_our_node_id(), message.clone())
+		.unwrap();
 	let cs_commitment_tx = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(cs_commitment_tx.len(), if claim_htlc { 2 } else { 1 });
 
 	check_added_monitors!(nodes[2], 1);
-	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event!(nodes[2], 1, reason, [nodes[1].node.get_our_node_id()], 100000);
 	check_closed_broadcast!(nodes[2], true);
 
 	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();

@@ -137,6 +137,8 @@ pub(crate) fn do_test_store<K: KVStore + Sync>(store_0: &K, store_1: &K) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+	let node_b_id = nodes[1].node.get_our_node_id();
+
 	// Check that the persisted channel data is empty before any channels are
 	// open.
 	let mut persisted_chan_data_0 =
@@ -178,22 +180,14 @@ pub(crate) fn do_test_store<K: KVStore + Sync>(store_0: &K, store_1: &K) {
 
 	// Force close because cooperative close doesn't result in any persisted
 	// updates.
-	let error_message = "Channel force-closed";
+	let message = "Channel force-closed".to_owned();
+	let chan_id = nodes[0].node.list_channels()[0].channel_id;
 	nodes[0]
 		.node
-		.force_close_broadcasting_latest_txn(
-			&nodes[0].node.list_channels()[0].channel_id,
-			&nodes[1].node.get_our_node_id(),
-			error_message.to_string(),
-		)
+		.force_close_broadcasting_latest_txn(&chan_id, &node_b_id, message.clone())
 		.unwrap();
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) },
-		[nodes[1].node.get_our_node_id()],
-		100000
-	);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 

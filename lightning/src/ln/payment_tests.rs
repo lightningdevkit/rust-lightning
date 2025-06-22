@@ -1199,15 +1199,18 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
-	let error_message = "Channel force-closed".to_string();
+	let message = "Channel force-closed".to_owned();
 
 	// Route a payment, but force-close the channel before the HTLC fulfill message arrives at
 	// nodes[0].
 	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &node_b_id, error_message).unwrap();
+	nodes[0]
+		.node
+		.force_close_broadcasting_latest_txn(&chan_id, &node_b_id, message.clone())
+		.unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
 
 	nodes[0].node.peer_disconnected(node_b_id);
@@ -4199,9 +4202,13 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		let reason = PaymentFailureReason::RecipientRejected;
 		pass_failed_payment_back(&nodes[0], &[path_a, path_b], false, hash, reason);
 	} else {
-		let err = "Channel force-closed".to_string();
-		nodes[1].node.force_close_broadcasting_latest_txn(&chan_bd, &node_d_id, err).unwrap();
-		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		let message = "Channel force-closed".to_owned();
+		nodes[1]
+			.node
+			.force_close_broadcasting_latest_txn(&chan_bd, &node_d_id, message.clone())
+			.unwrap();
+		let reason =
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 		check_closed_event!(&nodes[1], 1, reason, false, [node_d_id], 1000000);
 		check_closed_broadcast(&nodes[1], 1, true);
 		let bs_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);

@@ -318,9 +318,11 @@ pub enum ClosureReason {
 		/// [`UntrustedString`]: crate::util::string::UntrustedString
 		peer_msg: UntrustedString,
 	},
-	/// Closure generated from [`ChannelManager::force_close_channel`], called by the user.
+	/// Closure generated from [`ChannelManager::force_close_broadcasting_latest_txn`] or
+	/// [`ChannelManager::force_close_all_channels_broadcasting_latest_txn`], called by the user.
 	///
-	/// [`ChannelManager::force_close_channel`]: crate::ln::channelmanager::ChannelManager::force_close_channel.
+	/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
+	/// [`ChannelManager::force_close_all_channels_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_all_channels_broadcasting_latest_txn
 	HolderForceClosed {
 		/// Whether or not the latest transaction was broadcasted when the channel was force
 		/// closed.
@@ -335,6 +337,14 @@ pub enum ClosureReason {
 		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn.
 		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn.
 		broadcasted_latest_txn: Option<bool>,
+		/// The error message provided to [`ChannelManager::force_close_broadcasting_latest_txn`] or
+		/// [`ChannelManager::force_close_all_channels_broadcasting_latest_txn`].
+		///
+		/// This will be the empty string for objects generated or written by LDK 0.1 and earlier.
+		///
+		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
+		/// [`ChannelManager::force_close_all_channels_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_all_channels_broadcasting_latest_txn
+		message: String,
 	},
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. Note the shutdown may have been initiated by us.
@@ -419,12 +429,13 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::CounterpartyForceClosed { peer_msg } => {
 				f.write_fmt(format_args!("counterparty force-closed with message: {}", peer_msg))
 			},
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn } => {
-				f.write_str("user force-closed the channel")?;
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn, message } => {
+				f.write_str("user force-closed the channel with the message \"")?;
+				f.write_str(message)?;
 				if let Some(brodcasted) = broadcasted_latest_txn {
 					write!(
 						f,
-						" and {} the latest transaction",
+						"\" and {} the latest transaction",
 						if *brodcasted { "broadcasted" } else { "elected not to broadcast" }
 					)
 				} else {
@@ -482,7 +493,10 @@ impl core::fmt::Display for ClosureReason {
 impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(0, CounterpartyForceClosed) => { (1, peer_msg, required) },
 	(1, FundingTimedOut) => {},
-	(2, HolderForceClosed) => { (1, broadcasted_latest_txn, option) },
+	(2, HolderForceClosed) => {
+		(1, broadcasted_latest_txn, option),
+		(3, message, (default_value, String::new())),
+	},
 	(6, CommitmentTxConfirmed) => {},
 	(4, LegacyCooperativeClosure) => {},
 	(8, ProcessingError) => { (1, err, required) },
