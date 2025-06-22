@@ -4126,7 +4126,7 @@ where
 						}
 					} else {
 						let mut shutdown_res = chan_entry.get_mut()
-							.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
+							.force_shutdown(false, ClosureReason::LocallyCoopClosedUnfundedChannel);
 						remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
 						shutdown_result = Some(shutdown_res);
 					}

@@ -383,6 +383,12 @@ pub enum ClosureReason {
 	/// The counterparty requested a cooperative close of a channel that had not been funded yet.
 	/// The channel has been immediately closed.
 	CounterpartyCoopClosedUnfundedChannel,
+	/// We requested a cooperative close of a channel that had not been funded yet.
+	/// The channel has been immediately closed.
+	///
+	/// Note that events containing this variant will be lost on downgrade to a version of LDK
+	/// prior to 0.2.
+	LocallyCoopClosedUnfundedChannel,
 	/// Another channel in the same funding batch closed before the funding transaction
 	/// was ready to be broadcast.
 	FundingBatchClosure,
@@ -454,6 +460,9 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::CounterpartyCoopClosedUnfundedChannel => {
 				f.write_str("the peer requested the unfunded channel be closed")
 			},
+			ClosureReason::LocallyCoopClosedUnfundedChannel => {
+				f.write_str("we requested the unfunded channel be closed")
+			},
 			ClosureReason::FundingBatchClosure => {
 				f.write_str("another channel in the same funding batch closed")
 			},
@@ -487,6 +496,7 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 		(0, peer_feerate_sat_per_kw, required),
 		(2, required_feerate_sat_per_kw, required),
 	},
+	(25, LocallyCoopClosedUnfundedChannel) => {},
 );
 
 /// The type of HTLC handling performed in [`Event::HTLCHandlingFailed`].

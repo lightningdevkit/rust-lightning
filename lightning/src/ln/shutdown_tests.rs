@@ -337,7 +337,7 @@ fn close_on_unfunded_channel() {
 	let _open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[0].node.close_channel(&chan_id, &node_b_id).unwrap();
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) };
+	let reason = ClosureReason::LocallyCoopClosedUnfundedChannel;
 	check_closed_event!(nodes[0], 1, reason, [node_b_id], 1_000_000);
 }
 
