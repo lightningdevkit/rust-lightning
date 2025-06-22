@@ -2957,9 +2957,9 @@ where
 		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => commitment_signed,
-			Err(err) => {
+			Err(e) => {
 				self.funding.channel_transaction_parameters.funding_outpoint = None;
-				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })));
+				return Err(e)
 			},
 		};
 

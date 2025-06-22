@@ -11003,7 +11003,7 @@ pub fn test_remove_expired_outbound_unfunded_channels() {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) };
+	let reason = ClosureReason::FundingTimedOut;
 	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 100000);
 }
 
@@ -11067,7 +11067,7 @@ pub fn test_remove_expired_inbound_unfunded_channels() {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) };
+	let reason = ClosureReason::FundingTimedOut;
 	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
 }
 
@@ -11106,7 +11106,7 @@ pub fn test_channel_close_when_not_timely_accepted() {
 
 	// Since we disconnected from peer and did not connect back within time,
 	// we should have forced-closed the channel by now.
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) };
+	let reason = ClosureReason::FundingTimedOut;
 	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 

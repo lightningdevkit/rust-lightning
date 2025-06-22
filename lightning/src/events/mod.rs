@@ -356,7 +356,8 @@ pub enum ClosureReason {
 	/// commitment transaction came from our counterparty, but it may also have come from
 	/// a copy of our own `ChannelMonitor`.
 	CommitmentTxConfirmed,
-	/// The funding transaction failed to confirm in a timely manner on an inbound channel.
+	/// The funding transaction failed to confirm in a timely manner on an inbound channel or the
+	/// counterparty failed to fund the channel in a timely manner.
 	FundingTimedOut,
 	/// Closure generated from processing an event, likely a HTLC forward/relay/reception.
 	ProcessingError {

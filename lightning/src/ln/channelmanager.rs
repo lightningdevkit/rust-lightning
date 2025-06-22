@@ -7139,7 +7139,7 @@ where
 									log_error!(logger,
 										"Force-closing pending channel with ID {} for not establishing in a timely manner",
 										context.channel_id());
-									let mut close_res = chan.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
+									let mut close_res = chan.force_shutdown(false, ClosureReason::FundingTimedOut);
 									let (funding, context) = chan.funding_and_context_mut();
 									locked_close_channel!(self, peer_state, context, funding, close_res);
 									shutdown_channels.push(close_res);
@@ -8368,14 +8368,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							&open_channel_msg,
 							user_channel_id, &config, best_block_height,
 							&self.logger,
-						).map_err(|_| MsgHandleErrInternal::from_chan_no_close(
-							ChannelError::Close(
-								(
-									"V2 channel rejected due to sender error".into(),
-									ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-								)
-							), *temporary_channel_id)
-						).map(|channel| {
+						).map_err(|e| {
+							let channel_id = open_channel_msg.common_fields.temporary_channel_id;
+							MsgHandleErrInternal::from_chan_no_close(e, channel_id)
+						}).map(|channel| {
 							let message_send_event =  MessageSendEvent::SendAcceptChannelV2 {
 								node_id: channel.context.get_counterparty_node_id(),
 								msg: channel.accept_inbound_dual_funded_channel()
