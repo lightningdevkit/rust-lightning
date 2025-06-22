@@ -877,7 +877,6 @@ struct MsgHandleErrInternal {
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
 }
 impl MsgHandleErrInternal {
-	#[inline]
 	fn send_err_msg_no_close(err: String, channel_id: ChannelId) -> Self {
 		Self {
 			err: LightningError {
@@ -890,11 +889,11 @@ impl MsgHandleErrInternal {
 			shutdown_finish: None,
 		}
 	}
-	#[inline]
+
 	fn from_no_close(err: msgs::LightningError) -> Self {
 		Self { err, closes_channel: false, shutdown_finish: None }
 	}
-	#[inline]
+
 	fn from_finish_shutdown(
 		err: String, channel_id: ChannelId, shutdown_res: ShutdownResult,
 		channel_update: Option<msgs::ChannelUpdate>,
@@ -914,47 +913,33 @@ impl MsgHandleErrInternal {
 			shutdown_finish: Some((shutdown_res, channel_update)),
 		}
 	}
-	#[inline]
-	#[rustfmt::skip]
+
 	fn from_chan_no_close(err: ChannelError, channel_id: ChannelId) -> Self {
-		Self {
-			err: match err {
-				ChannelError::Warn(msg) =>  LightningError {
-					err: msg.clone(),
-					action: msgs::ErrorAction::SendWarningMessage {
-						msg: msgs::WarningMessage {
-							channel_id,
-							data: msg
-						},
-						log_level: Level::Warn,
-					},
-				},
-				ChannelError::WarnAndDisconnect(msg) =>  LightningError {
-					err: msg.clone(),
-					action: msgs::ErrorAction::DisconnectPeerWithWarning {
-						msg: msgs::WarningMessage {
-							channel_id,
-							data: msg
-						},
-					},
-				},
-				ChannelError::Ignore(msg) => LightningError {
-					err: msg,
-					action: msgs::ErrorAction::IgnoreError,
-				},
-				ChannelError::Close((msg, _)) | ChannelError::SendError(msg) => LightningError {
-					err: msg.clone(),
-					action: msgs::ErrorAction::SendErrorMessage {
-						msg: msgs::ErrorMessage {
-							channel_id,
-							data: msg
-						},
-					},
+		let err = match err {
+			ChannelError::Warn(msg) => LightningError {
+				err: msg.clone(),
+				action: msgs::ErrorAction::SendWarningMessage {
+					msg: msgs::WarningMessage { channel_id, data: msg },
+					log_level: Level::Warn,
 				},
 			},
-			closes_channel: false,
-			shutdown_finish: None,
-		}
+			ChannelError::WarnAndDisconnect(msg) => LightningError {
+				err: msg.clone(),
+				action: msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage { channel_id, data: msg },
+				},
+			},
+			ChannelError::Ignore(msg) => {
+				LightningError { err: msg, action: msgs::ErrorAction::IgnoreError }
+			},
+			ChannelError::Close((msg, _)) | ChannelError::SendError(msg) => LightningError {
+				err: msg.clone(),
+				action: msgs::ErrorAction::SendErrorMessage {
+					msg: msgs::ErrorMessage { channel_id, data: msg },
+				},
+			},
+		};
+		Self { err, closes_channel: false, shutdown_finish: None }
 	}
 
 	fn closes_channel(&self) -> bool {
