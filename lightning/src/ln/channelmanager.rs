@@ -9026,11 +9026,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let (msg_send_event_opt, signing_session_opt) = match chan_entry.get_mut().as_unfunded_v2_mut() {
 					Some(chan) => chan.tx_complete(msg)
 						.into_msg_send_event_or_signing_session(counterparty_node_id),
-					None => try_channel_entry!(self, peer_state, Err(ChannelError::Close(
-						(
-							"Got a tx_complete message with no interactive transaction construction expected or in-progress".into(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						))), chan_entry)
+					None => {
+						let msg = "Got a tx_complete message with no interactive transaction construction expected or in-progress";
+						let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+						let err = ChannelError::Close((msg.to_owned(), reason));
+						try_channel_entry!(self, peer_state, Err(err), chan_entry)
+					},
 				};
 				if let Some(msg_send_event) = msg_send_event_opt {
 					peer_state.pending_msg_events.push(msg_send_event);
@@ -9098,11 +9099,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							}
 						}
 					},
-					None => try_channel_entry!(self, peer_state, Err(ChannelError::Close(
-						(
-							"Got an unexpected tx_signatures message".into(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						))), chan_entry)
+					None => {
+						let msg = "Got an unexpected tx_signatures message";
+						let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+						let err = ChannelError::Close((msg.to_owned(), reason));
+						try_channel_entry!(self, peer_state, Err(err), chan_entry)
+					},
 				}
 				Ok(())
 			},
@@ -9588,12 +9590,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						} else {
 							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 							log_error!(logger, "Persisting initial ChannelMonitor failed, implying the channel ID was duplicated");
-							try_channel_entry!(self, peer_state, Err(ChannelError::Close(
-								(
-									"Channel ID was a duplicate".to_owned(),
-									ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-								)
-							)), chan_entry)
+							let msg = "Channel ID was a duplicate";
+							let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+							let err = ChannelError::Close((msg.to_owned(), reason));
+							try_channel_entry!(self, peer_state, Err(err), chan_entry)
 						}
 					} else if let Some(monitor_update) = monitor_update_opt {
 						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,

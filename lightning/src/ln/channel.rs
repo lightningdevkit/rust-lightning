@@ -2937,11 +2937,9 @@ where
 		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
 			if outp.script_pubkey() == &expected_spk && outp.value() == self.funding.get_value_satoshis() {
 				if output_index.is_some() {
-					return Err(ChannelError::Close(
-						(
-							"Multiple outputs matched the expected script and value".to_owned(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						)));
+					let msg = "Multiple outputs matched the expected script and value";
+					let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+					return Err(ChannelError::Close((msg.to_owned(), reason)));
 				}
 				output_index = Some(idx as u16);
 			}
@@ -2949,11 +2947,9 @@ where
 		let outpoint = if let Some(output_index) = output_index {
 			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
 		} else {
-			return Err(ChannelError::Close(
-				(
-					"No output matched the funding script_pubkey".to_owned(),
-					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-				)));
+			let msg = "No output matched the funding script_pubkey";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		};
 		self.funding.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 
@@ -2974,10 +2970,9 @@ where
 					false,
 					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
 				);
-				return Err(ChannelError::Close((
-					"V2 channel rejected due to sender error".into(),
-					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
-				)));
+				let msg = "V2 channel rejected due to sender error";
+				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+				return Err(ChannelError::Close((msg.to_owned(), reason)));
 			}
 			None
 		} else {
@@ -2999,10 +2994,9 @@ where
 				false,
 				"We don't support users providing inputs but somehow we had more than zero inputs",
 			);
-			return Err(ChannelError::Close((
-				"V2 channel rejected due to sender error".into(),
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
-			)));
+			let msg = "V2 channel rejected due to sender error";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		};
 
 		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
@@ -5556,11 +5550,11 @@ where
 				let channel_parameters = &funding.channel_transaction_parameters;
 				ecdsa.sign_counterparty_commitment(channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
 					.map(|(signature, _)| signature)
-					.map_err(|_| ChannelError::Close(
-						(
-							"Failed to get signatures for new commitment_signed".to_owned(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						)))
+					.map_err(|()| {
+						let msg = "Failed to get signatures for new commitment_signed";
+						let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+						ChannelError::Close((msg.to_owned(), reason))
+					})
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
@@ -5581,10 +5575,10 @@ where
 			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
 		) {
 			debug_assert!(false);
-			return Err(ChannelError::Close(("Tried to get an initial commitment_signed messsage at a time other than \
-				immediately after initial handshake completion (or tried to get funding_created twice)".to_string(),
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
-			)));
+			let msg = "Tried to get an initial commitment_signed messsage at a time other than \
+				immediately after initial handshake completion (or tried to get funding_created twice)";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		}
 
 		let signature = match self.get_initial_counterparty_commitment_signature(funding, logger) {
@@ -6713,11 +6707,9 @@ where
 		if !self.context.channel_state.is_interactive_signing()
 			|| self.context.channel_state.is_their_tx_signatures_sent()
 		{
-			return Err(ChannelError::Close(
-				(
-					"Received initial commitment_signed before funding transaction constructed or after peer's tx_signatures received!".to_owned(),
-					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-				)));
+			let msg = "Received initial commitment_signed before funding transaction constructed or after peer's tx_signatures received!";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		}
 
 		let holder_commitment_point = &mut self.holder_commitment_point.clone();
@@ -7652,22 +7644,18 @@ where
 
 		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
 			if msg.tx_hash != signing_session.unsigned_tx().compute_txid() {
-				return Err(ChannelError::Close(
-					(
-						"The txid for the transaction does not match".to_string(),
-						ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-					)));
+				let msg = "The txid for the transaction does not match";
+				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+				return Err(ChannelError::Close((msg.to_owned(), reason)));
 			}
 
 			// We need to close the channel if our peer hasn't sent their commitment signed already.
 			// Technically we'd wait on having an initial monitor persisted, so we shouldn't be broadcasting
 			// the transaction, but this may risk losing funds for a manual broadcast if we continue.
 			if !signing_session.has_received_commitment_signed() {
-				return Err(ChannelError::Close(
-					(
-						"Received tx_signatures before initial commitment_signed".to_string(),
-						ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-					)));
+				let msg = "Received tx_signatures before initial commitment_signed";
+				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+				return Err(ChannelError::Close((msg.to_owned(), reason)));
 			}
 
 			if msg.witnesses.len() != signing_session.remote_inputs_count() {
@@ -7678,11 +7666,9 @@ where
 
 			for witness in &msg.witnesses {
 				if witness.is_empty() {
-					return Err(ChannelError::Close(
-						(
-							"Unexpected empty witness in tx_signatures received".to_string(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						)));
+					let msg = "Unexpected empty witness in tx_signatures received";
+					let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+					return Err(ChannelError::Close((msg.to_owned(), reason)));
 				}
 
 				// TODO(dual_funding): Check all sigs are SIGHASH_ALL.
@@ -7718,10 +7704,9 @@ where
 			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			Ok((funding_tx_opt, holder_tx_signatures_opt))
 		} else {
-			Err(ChannelError::Close((
-				"Unexpected tx_signatures. No funding transaction awaiting signatures".to_string(),
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-			)))
+			let msg = "Unexpected tx_signatures. No funding transaction awaiting signatures";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		}
 	}
 
@@ -12056,10 +12041,10 @@ where
 				outputs_to_contribute: Vec::new(),
 				expected_remote_shared_funding_output: Some((funding.get_funding_redeemscript().to_p2wsh(), funding.get_value_satoshis())),
 			}
-		).map_err(|_| ChannelError::Close((
-			"V2 channel rejected due to sender error".into(),
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
-		)))?);
+		).map_err(|err| {
+			let reason = ClosureReason::ProcessingError { err: err.to_string() };
+			ChannelError::Close((err.to_string(), reason))
+		})?);
 
 		let unfunded_context = UnfundedChannelContext {
 			unfunded_channel_age_ticks: 0,
