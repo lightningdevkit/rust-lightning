@@ -82,3 +82,5 @@ GEN_TEST msg_stfu msg_targets::
 GEN_TEST msg_splice_init msg_targets::
 GEN_TEST msg_splice_ack msg_targets::
 GEN_TEST msg_splice_locked msg_targets::
+
+GEN_TEST msg_blinded_message_path msg_targets::
