@@ -33,7 +33,7 @@ use crate::ln::chan_utils::{
 	self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::msgs::DecodeError;
-use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, HTLCDescriptor, SignerProvider};
+use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, HTLCDescriptor, SignerProvider, ChannelKeysId};
 use crate::util::logger::Logger;
 use crate::util::ser::{
 	MaybeReadable, Readable, ReadableArgs, UpgradableRequired, Writeable, Writer,
@@ -222,7 +222,7 @@ pub(crate) enum FeerateStrategy {
 #[derive(Clone)]
 pub struct OnchainTxHandler<ChannelSigner: EcdsaChannelSigner> {
 	channel_value_satoshis: u64,   // Deprecated as of 0.2.
-	channel_keys_id: [u8; 32],     // Deprecated as of 0.2.
+	channel_keys_id: ChannelKeysId,     // Deprecated as of 0.2.
 	destination_script: ScriptBuf, // Deprecated as of 0.2.
 	holder_commitment: HolderCommitmentTransaction,
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
@@ -379,7 +379,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			bytes_read += bytes_to_read;
 		}
 
-		let signer = signer_provider.derive_channel_signer(channel_keys_id);
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
 		let mut pending_claim_requests = hash_map_with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
@@ -416,7 +415,17 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			}
 		}
 
+		// FIXME: Bump some serialization for this, or read this field elsewhere
+		let channel_keys_version: u8 = Readable::read(reader)?;
+
 		read_tlv_fields!(reader, {});
+
+		let channel_keys_id = ChannelKeysId {
+			id: channel_keys_id,
+			version: channel_keys_version,
+		};
+
+		let signer = signer_provider.derive_channel_signer(channel_keys_id);
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -441,7 +450,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn new(
-		channel_value_satoshis: u64, channel_keys_id: [u8; 32], destination_script: ScriptBuf,
+		channel_value_satoshis: u64, channel_keys_id: ChannelKeysId, destination_script: ScriptBuf,
 		signer: ChannelSigner, channel_parameters: ChannelTransactionParameters,
 		holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>,
 	) -> Self {
@@ -1222,7 +1231,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	}
 
 	// Deprecated as of 0.2, only use in cases where it was not previously available.
-	pub(crate) fn channel_keys_id(&self) -> [u8; 32] {
+	pub(crate) fn channel_keys_id(&self) -> ChannelKeysId {
 		self.channel_keys_id
 	}
 }

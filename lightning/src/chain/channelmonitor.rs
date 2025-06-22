@@ -59,9 +59,9 @@ use crate::ln::channelmanager::{HTLCSource, PaymentClaimDetails, SentHTLCId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::types::ChannelId;
 use crate::sign::{
-	ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, DelayedPaymentOutputDescriptor,
-	EntropySource, HTLCDescriptor, SignerProvider, SpendableOutputDescriptor,
-	StaticPaymentOutputDescriptor,
+	ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, ChannelKeysId,
+	DelayedPaymentOutputDescriptor, EntropySource, HTLCDescriptor, SignerProvider,
+	SpendableOutputDescriptor, StaticPaymentOutputDescriptor,
 };
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
@@ -1036,7 +1036,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	counterparty_payment_script: ScriptBuf,
 	shutdown_script: Option<ScriptBuf>,
 
-	channel_keys_id: [u8; 32],
+	channel_keys_id: ChannelKeysId,
 	holder_revocation_basepoint: RevocationBasepoint,
 	channel_id: ChannelId,
 	first_confirmed_funding_txo: OutPoint,
@@ -1297,7 +1297,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			None => ScriptBuf::new().write(writer)?,
 		}
 
-		self.channel_keys_id.write(writer)?;
+		self.channel_keys_id.id.write(writer)?;
 		self.holder_revocation_basepoint.write(writer)?;
 		let funding_outpoint = self.get_funding_txo();
 		writer.write_all(&funding_outpoint.txid[..])?;
@@ -1461,6 +1461,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(15, self.counterparty_fulfilled_htlcs, required),
 			(17, self.initial_counterparty_commitment_info, option),
 			(19, self.channel_id, required),
+			(20, self.channel_keys_id.version, (no_write_default, 0)),
 			(21, self.balances_empty_height, option),
 			(23, self.holder_pays_commitment_tx_fee, option),
 			(25, self.payment_preimages, required),
@@ -5126,7 +5127,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
 					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
 					output: outp.clone(),
-					channel_keys_id: Some(self.channel_keys_id),
+					channel_keys_id: Some(self.channel_keys_id.id),
+					channel_keys_version: self.channel_keys_id.version,
 				});
 			}
 			if let Some(ref broadcasted_holder_revokable_script) = self.broadcasted_holder_revokable_script {
@@ -5156,7 +5158,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
 					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
 					output: outp.clone(),
-					channel_keys_id: Some(self.channel_keys_id),
+					channel_keys_id: Some(self.channel_keys_id.id),
+					channel_keys_version: self.channel_keys_id.version,
 				});
 			}
 		}
@@ -5438,6 +5441,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut payment_preimages_with_info: Option<HashMap<_, _>> = None;
 		let mut first_confirmed_funding_txo = RequiredWrapper(None);
 		let mut channel_parameters = None;
+		let mut channel_keys_version = RequiredWrapper(None);
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -5449,6 +5453,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(15, counterparty_fulfilled_htlcs, option),
 			(17, initial_counterparty_commitment_info, option),
 			(19, channel_id, option),
+			(20, channel_keys_version, (default_value, 0)),
 			(21, balances_empty_height, option),
 			(23, holder_pays_commitment_tx_fee, option),
 			(25, payment_preimages_with_info, option),
@@ -5456,6 +5461,12 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(29, initial_counterparty_commitment_tx, option),
 			(31, channel_parameters, (option: ReadableArgs, None)),
 		});
+
+		let channel_keys_id = ChannelKeysId {
+			id: channel_keys_id,
+			version: channel_keys_version.0.unwrap(),
+		};
+
 		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
 			if payment_preimages_with_info.len() != payment_preimages.len() {
 				return Err(DecodeError::InvalidValue);

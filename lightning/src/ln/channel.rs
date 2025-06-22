@@ -67,7 +67,9 @@ use crate::ln::script::{self, ShutdownScript};
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::NodeId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::sign::{ChannelSigner, EntropySource, NodeSigner, Recipient, SignerProvider};
+use crate::sign::{
+	ChannelKeysId, ChannelSigner, EntropySource, NodeSigner, Recipient, SignerProvider,
+};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::config::{
@@ -2483,9 +2485,9 @@ where
 	/// The unique identifier used to re-derive the private key material for the channel through
 	/// [`SignerProvider::derive_channel_signer`].
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	channel_keys_id: [u8; 32],
+	channel_keys_id: ChannelKeysId,
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub channel_keys_id: [u8; 32],
+	pub channel_keys_id: ChannelKeysId,
 
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
@@ -3353,7 +3355,7 @@ where
 		outbound_scid_alias: u64,
 		temporary_channel_id_fn: Option<impl Fn(&ChannelPublicKeys) -> ChannelId>,
 		holder_selected_channel_reserve_satoshis: u64,
-		channel_keys_id: [u8; 32],
+		channel_keys_id: ChannelKeysId,
 		holder_signer: <SP::Target as SignerProvider>::EcdsaSigner,
 		_logger: L,
 	) -> Result<(FundingScope, ChannelContext<SP>), APIError>
@@ -12368,7 +12370,7 @@ where
 			(21, self.context.outbound_scid_alias, required),
 			(23, initial_channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
-			(27, self.context.channel_keys_id, required),
+			(27, self.context.channel_keys_id.id, required),
 			(28, holder_max_accepted_htlcs, option),
 			(29, self.context.temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
@@ -12389,6 +12391,7 @@ where
 			(58, self.interactive_tx_signing_session, option), // Added in 0.2
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
+			(62, self.context.channel_keys_id.version, (no_write_default, 0)), // Added in 0.2
 		});
 
 		Ok(())
@@ -12680,6 +12683,7 @@ where
 
 		let mut user_id_high_opt: Option<u64> = None;
 		let mut channel_keys_id = [0u8; 32];
+		let mut channel_keys_version =  RequiredWrapper(None);
 		let mut temporary_channel_id: Option<ChannelId> = None;
 		let mut holder_max_accepted_htlcs: Option<u16> = None;
 
@@ -12753,7 +12757,13 @@ where
 			(58, interactive_tx_signing_session, option), // Added in 0.2
 			(59, minimum_depth_override, option), // Added in 0.2
 			(60, historical_scids, optional_vec), // Added in 0.2
+			(62, channel_keys_version, (default_value, 0)), // Added in 0.2
 		});
+
+		let channel_keys_id = ChannelKeysId {
+			id: channel_keys_id,
+			version: channel_keys_version.0.unwrap(),
+		};
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
 

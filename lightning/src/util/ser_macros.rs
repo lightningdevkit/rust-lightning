@@ -45,6 +45,13 @@ macro_rules! _encode_tlv {
 			field.write($stream)?;
 		}
 	};
+	($stream: expr, $optional_type: expr, $optional_field: expr, (no_write_default, $default: expr) $(, $self: ident)?) => {
+		if $optional_field != &$default {
+			BigSize($optional_type).write($stream)?;
+			BigSize($optional_field.serialized_length() as u64).write($stream)?;
+			$optional_field.write($stream)?;
+		}
+	};
 	($stream: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr) $(, $self: ident)?) => { {
 		let value: Option<_> = $write($($self)?);
 		#[cfg(debug_assertions)]
@@ -223,6 +230,18 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 				.write(&mut $len)
 				.expect("No in-memory data may fail to serialize");
 			let field_len = field.serialized_length();
+			BigSize(field_len as u64)
+				.write(&mut $len)
+				.expect("No in-memory data may fail to serialize");
+			$len.0 += field_len;
+		}
+	};
+	($len: expr, $optional_type: expr, $optional_field: expr, (no_write_default, $default: expr) $(, $self: ident)?) => {
+		if $optional_field != &$default {
+			BigSize($optional_type)
+				.write(&mut $len)
+				.expect("No in-memory data may fail to serialize");
+			let field_len = $optional_field.serialized_length();
 			BigSize(field_len as u64)
 				.write(&mut $len)
 				.expect("No in-memory data may fail to serialize");
