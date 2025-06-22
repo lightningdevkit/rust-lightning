@@ -645,15 +645,15 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 
 		nodes[0]
 			.node
-			.force_close_without_broadcasting_txn(&chan.2, &nodes[1].node.get_our_node_id(), message.clone())
+			.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id(), message.clone())
 			.unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let reason =
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false), message };
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 1000000);
 		{
-			let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-			assert_eq!(node_txn.len(), 0);
+			let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+			assert_eq!(node_txn.len(), 1);
 		}
 
 		for msg in nodes[0].node.get_and_clear_pending_msg_events() {
