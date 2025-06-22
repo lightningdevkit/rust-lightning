@@ -4377,7 +4377,10 @@ where
 			let closure_reason = if let Some(peer_msg) = peer_msg {
 				ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(peer_msg.to_string()) }
 			} else {
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(broadcast) }
+				ClosureReason::HolderForceClosed {
+					broadcasted_latest_txn: Some(broadcast),
+					message: "Channel force-closed".to_owned(), // TODO
+				}
 			};
 			let logger = WithContext::from(&self.logger, Some(*peer_node_id), Some(*channel_id), None);
 			if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
@@ -10330,7 +10333,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								let reason = if let MonitorEvent::HolderForceClosedWithInfo { reason, .. } = monitor_event {
 									reason
 								} else {
-									ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
+									ClosureReason::HolderForceClosed {
+										broadcasted_latest_txn: Some(true),
+										message: "Legacy ChannelMonitor closure".to_owned()
+									}
 								};
 								let mut shutdown_res = chan_entry.get_mut().force_shutdown(false, reason.clone());
 								let chan = remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
@@ -16494,7 +16500,9 @@ mod tests {
 
 		nodes[0].node.force_close_channel_with_peer(&chan.2, &nodes[1].node.get_our_node_id(), None, true).unwrap();
 		check_added_monitors!(nodes[0], 1);
-		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
+		let message = "Channel force-closed".to_owned();
+		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 100000);
 
 		// Confirm that the channel_update was not sent immediately to node[1] but was cached.
 		let node_1_events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -16551,10 +16559,14 @@ mod tests {
 		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 		let chan_id = nodes[0].node.list_channels()[0].channel_id;
-		let error_message = "Channel force-closed";
-		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
+		let message = "Channel force-closed".to_owned();
+		nodes[0]
+			.node
+			.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone())
+			.unwrap();
 		check_added_monitors!(nodes[0], 1);
-		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 1_000_000);
+		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 1_000_000);
 
 		{
 			// Assert that nodes[1] is awaiting removal for nodes[0] once nodes[1] has been
@@ -17029,16 +17041,20 @@ mod tests {
 		let user_config = test_default_channel_config();
 		let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[Some(user_config.clone()), Some(user_config)]);
 		let nodes = create_network(2, &node_cfg, &node_chanmgr);
-		let error_message = "Channel force-closed";
+		let message = "Channel force-closed".to_owned();
 
 		// Open a channel, immediately disconnect each other, and broadcast Alice's latest state.
 		let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
 		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
-		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
+		nodes[0]
+			.node
+			.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone())
+			.unwrap();
 		check_closed_broadcast(&nodes[0], 1, true);
 		check_added_monitors(&nodes[0], 1);
-		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
+		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 100000);
 		{
 			let txn = nodes[0].tx_broadcaster.txn_broadcast();
 			assert_eq!(txn.len(), 1);

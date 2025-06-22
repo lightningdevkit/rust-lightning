@@ -351,14 +351,14 @@ fn expect_channel_shutdown_state_with_force_closure() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
-	let error_message = "Channel force-closed";
+	let message = "Channel force-closed".to_owned();
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::NotShuttingDown);
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NotShuttingDown);
 
 	nodes[1]
 		.node
-		.force_close_broadcasting_latest_txn(&chan_1.2, &node_a_id, error_message.to_string())
+		.force_close_broadcasting_latest_txn(&chan_1.2, &node_a_id, message.clone())
 		.unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
@@ -376,7 +376,7 @@ fn expect_channel_shutdown_state_with_force_closure() {
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[0], true);
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [node_b_id], 100000);
-	let reason_b = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let reason_b = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
 }
 

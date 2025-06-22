@@ -999,7 +999,7 @@ fn test_0conf_close_no_early_chan_update() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_b_id = nodes[1].node.get_our_node_id();
-	let error_message = "Channel force-closed";
+	let message = "Channel force-closed".to_owned();
 
 	// This is the default but we force it on anyway
 	chan_config.channel_handshake_config.announce_for_forwarding = true;
@@ -1008,9 +1008,9 @@ fn test_0conf_close_no_early_chan_update() {
 	// We can use the channel immediately, but won't generate a channel_update until we get confs
 	send_payment(&nodes[0], &[&nodes[1]], 100_000);
 
-	nodes[0].node.force_close_all_channels_broadcasting_latest_txn(error_message.to_string());
+	nodes[0].node.force_close_all_channels_broadcasting_latest_txn(message.clone());
 	check_added_monitors!(nodes[0], 1);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(&nodes[0], 1, reason, [node_b_id], 100000);
 	let _ = get_err_msg(&nodes[0], &node_b_id);
 }
