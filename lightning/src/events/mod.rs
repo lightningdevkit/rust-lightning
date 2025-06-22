@@ -327,15 +327,10 @@ pub enum ClosureReason {
 		/// Whether or not the latest transaction was broadcasted when the channel was force
 		/// closed.
 		///
-		/// Channels closed using [`ChannelManager::force_close_broadcasting_latest_txn`] will have
-		/// this field set to true, whereas channels closed using [`ChannelManager::force_close_without_broadcasting_txn`]
-		/// or force-closed prior to being funded will have this field set to false.
+		/// TODO: Update docs on when this will happen!
 		///
 		/// This will be `None` for objects generated or written by LDK 0.0.123 and
 		/// earlier.
-		///
-		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn.
-		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn.
 		broadcasted_latest_txn: Option<bool>,
 		/// The error message provided to [`ChannelManager::force_close_broadcasting_latest_txn`] or
 		/// [`ChannelManager::force_close_all_channels_broadcasting_latest_txn`].
@@ -1486,7 +1481,7 @@ pub enum Event {
 	///
 	/// To accept the request (and in the case of a dual-funded channel, not contribute funds),
 	/// call [`ChannelManager::accept_inbound_channel`].
-	/// To reject the request, call [`ChannelManager::force_close_without_broadcasting_txn`].
+	/// To reject the request, call [`ChannelManager::force_close_broadcasting_latest_txn`].
 	/// Note that a ['ChannelClosed`] event will _not_ be triggered if the channel is rejected.
 	///
 	/// The event is only triggered when a new open channel request is received and the
@@ -1497,27 +1492,27 @@ pub enum Event {
 	/// returning `Err(ReplayEvent ())`) and won't be persisted across restarts.
 	///
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-	/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+	/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
 	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 	OpenChannelRequest {
 		/// The temporary channel ID of the channel requested to be opened.
 		///
 		/// When responding to the request, the `temporary_channel_id` should be passed
 		/// back to the ChannelManager through [`ChannelManager::accept_inbound_channel`] to accept,
-		/// or through [`ChannelManager::force_close_without_broadcasting_txn`] to reject.
+		/// or through [`ChannelManager::force_close_broadcasting_latest_txn`] to reject.
 		///
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
 		temporary_channel_id: ChannelId,
 		/// The node_id of the counterparty requesting to open the channel.
 		///
 		/// When responding to the request, the `counterparty_node_id` should be passed
 		/// back to the `ChannelManager` through [`ChannelManager::accept_inbound_channel`] to
-		/// accept the request, or through [`ChannelManager::force_close_without_broadcasting_txn`] to reject the
-		/// request.
+		/// accept the request, or through [`ChannelManager::force_close_broadcasting_latest_txn`]
+		/// to reject the request.
 		///
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
 		counterparty_node_id: PublicKey,
 		/// The channel value of the requested channel.
 		funding_satoshis: u64,

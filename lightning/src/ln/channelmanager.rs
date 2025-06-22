@@ -942,6 +942,16 @@ impl MsgHandleErrInternal {
 		Self { err, closes_channel: false, shutdown_finish: None }
 	}
 
+	fn dont_send_error_message(&mut self) {
+		match &mut self.err.action {
+			msgs::ErrorAction::DisconnectPeer { msg } => *msg = None,
+			msgs::ErrorAction::SendErrorMessage { msg: _ } => {
+				self.err.action = msgs::ErrorAction::IgnoreError;
+			},
+			_ => {},
+		}
+	}
+
 	fn closes_channel(&self) -> bool {
 		self.closes_channel
 	}
@@ -1992,7 +2002,7 @@ where
 ///     match event {
 ///         Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, ..  } => {
 ///             if !is_trusted(counterparty_node_id) {
-///                 match channel_manager.force_close_without_broadcasting_txn(
+///                 match channel_manager.force_close_broadcasting_latest_txn(
 ///                     &temporary_channel_id, &counterparty_node_id, error_message.to_string()
 ///                 ) {
 ///                     Ok(()) => println!("Rejecting channel {}", temporary_channel_id),
@@ -4352,85 +4362,66 @@ where
 	/// `peer_msg` should be set when we receive a message from a peer, but not set when the
 	/// user closes, which will be re-exposed as the `ChannelClosed` reason.
 	#[rustfmt::skip]
-	fn force_close_channel_with_peer(&self, channel_id: &ChannelId, peer_node_id: &PublicKey, peer_msg: Option<&String>, broadcast: bool)
+	fn force_close_channel_with_peer(&self, channel_id: &ChannelId, peer_node_id: &PublicKey, reason: ClosureReason)
 	-> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(peer_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", peer_node_id) })?;
-		let update_opt = {
-			let mut peer_state = peer_state_mutex.lock().unwrap();
-			let closure_reason = if let Some(peer_msg) = peer_msg {
-				ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(peer_msg.to_string()) }
-			} else {
-				ClosureReason::HolderForceClosed {
-					broadcasted_latest_txn: Some(broadcast),
-					message: "Channel force-closed".to_owned(), // TODO
-				}
-			};
-			let logger = WithContext::from(&self.logger, Some(*peer_node_id), Some(*channel_id), None);
-			if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
-				log_error!(logger, "Force-closing channel {}", channel_id);
-				let (mut shutdown_res, update_opt) = match chan_entry.get_mut().as_funded_mut() {
-					Some(chan) => {
-						(
-							chan.context.force_shutdown(&chan.funding, broadcast, closure_reason),
-							self.get_channel_update_for_broadcast(&chan).ok(),
-						)
-					},
-					None => {
-						// Unfunded channel has no update
-						(chan_entry.get_mut().force_shutdown(false, closure_reason), None)
-					},
-				};
-				remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
-				mem::drop(peer_state);
-				mem::drop(per_peer_state);
-				self.finish_close_channel(shutdown_res);
-				update_opt
-			} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
-				log_error!(logger, "Force-closing channel {}", &channel_id);
-				// N.B. that we don't send any channel close event here: we
-				// don't have a user_channel_id, and we never sent any opening
-				// events anyway.
-				None
-			} else {
-				return Err(APIError::ChannelUnavailable{ err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id, peer_node_id) });
-			}
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		let logger = WithContext::from(&self.logger, Some(*peer_node_id), Some(*channel_id), None);
+
+		let is_from_counterparty = matches!(reason, ClosureReason::CounterpartyForceClosed { .. });
+		let message = match &reason {
+			ClosureReason::HolderForceClosed { message, .. } => message.clone(),
+			_ => reason.to_string(),
 		};
-		if let Some(update) = update_opt {
-			// If we have some Channel Update to broadcast, we cache it and broadcast it later.
-			let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-			pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
-				msg: update
-			});
+
+		if let Some(mut chan) = peer_state.channel_by_id.remove(channel_id) {
+			log_error!(logger, "Force-closing channel {}", channel_id);
+			let err = ChannelError::Close((message, reason));
+			let (_, mut e) = convert_channel_err!(self, peer_state, err, chan, channel_id);
+			mem::drop(peer_state_lock);
+			mem::drop(per_peer_state);
+			if is_from_counterparty {
+				// If the peer is the one who asked us to force-close, don't reply with a fresh
+				// error message.
+				e.dont_send_error_message();
+			}
+			let _ = handle_error!(self, Err::<(), _>(e), *peer_node_id);
+			Ok(())
+		} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
+			log_error!(logger, "Force-closing inbound channel request {}", &channel_id);
+			if !is_from_counterparty {
+				peer_state.pending_msg_events.push(
+					MessageSendEvent::HandleError {
+						node_id: *peer_node_id,
+						action: msgs::ErrorAction::SendErrorMessage {
+							msg: msgs::ErrorMessage { channel_id: *channel_id, data: message }
+						},
+					}
+				);
+			}
+			// N.B. that we don't send any channel close event here: we
+			// don't have a user_channel_id, and we never sent any opening
+			// events anyway.
+			Ok(())
+		} else {
+			Err(APIError::ChannelUnavailable{ err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id, peer_node_id) })
 		}
-		Ok(())
 	}
 
 	#[rustfmt::skip]
-	fn force_close_sending_error(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, broadcast: bool, error_message: String)
+	fn force_close_sending_error(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String)
 	-> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		log_debug!(self.logger,
 			"Force-closing channel, The error message sent to the peer : {}", error_message);
-		match self.force_close_channel_with_peer(channel_id, &counterparty_node_id, None, broadcast) {
-			Ok(()) => {
-				let per_peer_state = self.per_peer_state.read().unwrap();
-				if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
-					let mut peer_state = peer_state_mutex.lock().unwrap();
-					peer_state.pending_msg_events.push(
-						MessageSendEvent::HandleError {
-							node_id: *counterparty_node_id,
-							action: msgs::ErrorAction::SendErrorMessage {
-								msg: msgs::ErrorMessage { channel_id: *channel_id, data: error_message }
-							},
-						}
-					);
-				}
-				Ok(())
-			},
-			Err(e) => Err(e)
-		}
+		let reason = ClosureReason::HolderForceClosed {
+			broadcasted_latest_txn: Some(true),
+			message: error_message,
+		};
+		self.force_close_channel_with_peer(channel_id, &counterparty_node_id, reason)
 	}
 
 	/// Force closes a channel, immediately broadcasting the latest local transaction(s),
@@ -4444,23 +4435,7 @@ where
 	pub fn force_close_broadcasting_latest_txn(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String,
 	) -> Result<(), APIError> {
-		self.force_close_sending_error(channel_id, counterparty_node_id, true, error_message)
-	}
-
-	/// Force closes a channel, rejecting new HTLCs on the given channel but skips broadcasting
-	/// the latest local transaction(s).
-	///
-	/// The provided `error_message` is sent to connected peers for closing channels and should
-	/// be a human-readable description of what went wrong.
-	///
-	/// Fails if `channel_id` is unknown to the manager, or if the
-	/// `counterparty_node_id` isn't the counterparty of the corresponding channel.
-	/// You can always broadcast the latest local transaction(s) via
-	/// [`ChannelMonitor::broadcast_latest_holder_commitment_txn`].
-	pub fn force_close_without_broadcasting_txn(
-		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String,
-	) -> Result<(), APIError> {
-		self.force_close_sending_error(channel_id, counterparty_node_id, false, error_message)
+		self.force_close_sending_error(channel_id, counterparty_node_id, error_message)
 	}
 
 	/// Force close all channels, immediately broadcasting the latest local commitment transaction
@@ -4471,21 +4446,6 @@ where
 	pub fn force_close_all_channels_broadcasting_latest_txn(&self, error_message: String) {
 		for chan in self.list_channels() {
 			let _ = self.force_close_broadcasting_latest_txn(
-				&chan.channel_id,
-				&chan.counterparty.node_id,
-				error_message.clone(),
-			);
-		}
-	}
-
-	/// Force close all channels rejecting new HTLCs on each but without broadcasting the latest
-	/// local transaction(s).
-	///
-	/// The provided `error_message` is sent to connected peers for closing channels and
-	/// should be a human-readable description of what went wrong.
-	pub fn force_close_all_channels_without_broadcasting_txn(&self, error_message: String) {
-		for chan in self.list_channels() {
-			let _ = self.force_close_without_broadcasting_txn(
 				&chan.channel_id,
 				&chan.counterparty.node_id,
 				error_message.clone(),
@@ -13069,6 +13029,9 @@ where
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
+		let peer_msg = UntrustedString(msg.data.clone());
+		let reason = ClosureReason::CounterpartyForceClosed { peer_msg };
+
 		if msg.channel_id.is_zero() {
 			let channel_ids: Vec<ChannelId> = {
 				let per_peer_state = self.per_peer_state.read().unwrap();
@@ -13083,7 +13046,7 @@ where
 			};
 			for channel_id in channel_ids {
 				// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-				let _ = self.force_close_channel_with_peer(&channel_id, &counterparty_node_id, Some(&msg.data), true);
+				let _ = self.force_close_channel_with_peer(&channel_id, &counterparty_node_id, reason.clone());
 			}
 		} else {
 			{
@@ -13119,7 +13082,7 @@ where
 			}
 
 			// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-			let _ = self.force_close_channel_with_peer(&msg.channel_id, &counterparty_node_id, Some(&msg.data), true);
+			let _ = self.force_close_channel_with_peer(&msg.channel_id, &counterparty_node_id, reason);
 		}
 	}
 
@@ -16483,9 +16446,9 @@ mod tests {
 
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
-		nodes[0].node.force_close_channel_with_peer(&chan.2, &nodes[1].node.get_our_node_id(), None, true).unwrap();
-		check_added_monitors!(nodes[0], 1);
 		let message = "Channel force-closed".to_owned();
+		nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
+		check_added_monitors!(nodes[0], 1);
 		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 100000);
 
@@ -16689,8 +16652,6 @@ mod tests {
 
 		check_unkown_peer_error(nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &unkown_public_key, error_message.to_string()), unkown_public_key);
 
-		check_unkown_peer_error(nodes[0].node.force_close_without_broadcasting_txn(&channel_id, &unkown_public_key, error_message.to_string()), unkown_public_key);
-
 		check_unkown_peer_error(nodes[0].node.forward_intercepted_htlc(intercept_id, &channel_id, unkown_public_key, 1_000_000), unkown_public_key);
 
 		check_unkown_peer_error(nodes[0].node.update_channel_config(&unkown_public_key, &[channel_id], &ChannelConfig::default()), unkown_public_key);
@@ -16720,8 +16681,6 @@ mod tests {
 		check_channel_unavailable_error(nodes[0].node.close_channel(&channel_id, &counterparty_node_id), channel_id, counterparty_node_id);
 
 		check_channel_unavailable_error(nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &counterparty_node_id, error_message.to_string()), channel_id, counterparty_node_id);
-
-		check_channel_unavailable_error(nodes[0].node.force_close_without_broadcasting_txn(&channel_id, &counterparty_node_id, error_message.to_string()), channel_id, counterparty_node_id);
 
 		check_channel_unavailable_error(nodes[0].node.forward_intercepted_htlc(InterceptId([0; 32]), &channel_id, counterparty_node_id, 1_000_000), channel_id, counterparty_node_id);
 
