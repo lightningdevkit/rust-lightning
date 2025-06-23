@@ -1837,10 +1837,10 @@ mod tests {
 				kv_store,
 				logger,
 				11,
-				node_cfgs[0].keys_manager,
-				node_cfgs[0].keys_manager,
-				node_cfgs[0].tx_broadcaster,
-				node_cfgs[0].fee_estimator,
+				Arc::clone(&chanmon_cfgs[0].keys_manager),
+				Arc::clone(&chanmon_cfgs[0].keys_manager),
+				Arc::clone(&chanmon_cfgs[0].tx_broadcaster),
+				Arc::clone(&chanmon_cfgs[0].fee_estimator),
 			);
 			let monitor_name = added_monitors[0].1.persistence_key();
 			match ro_persister.persist_new_channel(monitor_name, &added_monitors[0].1).await {
@@ -1851,18 +1851,18 @@ mod tests {
 					panic!("Completed persisting new channel when shouldn't have")
 				},
 			}
-			// match ro_persister
-			// 	.update_persisted_channel(monitor_name, Some(cmu), &added_monitors[0].1)
-			// 	.await
-			// {
-			// 	Err(()) => {
-			// 		// correct result
-			// 	},
-			// 	Ok(()) => {
-			// 		panic!("Completed updating channel when shouldn't have")
-			// 	},
-			// }
-			// added_monitors.clear();
+			match ro_persister
+				.update_persisted_channel(monitor_name, Some(cmu), &added_monitors[0].1)
+				.await
+			{
+				Err(()) => {
+					// correct result
+				},
+				Ok(()) => {
+					panic!("Completed updating channel when shouldn't have")
+				},
+			}
+			added_monitors.clear();
 		}
 		nodes[1].node.get_and_clear_pending_msg_events();
 	}
