@@ -327,7 +327,9 @@ pub enum ClosureReason {
 		/// Whether or not the latest transaction was broadcasted when the channel was force
 		/// closed.
 		///
-		/// TODO: Update docs on when this will happen!
+		/// This will be set to `Some(true)` for any channels closed after their funding
+		/// transaction was (or might have been) broadcasted, and `Some(false)` for any channels
+		/// closed prior to their funding transaction being broadcasted.
 		///
 		/// This will be `None` for objects generated or written by LDK 0.0.123 and
 		/// earlier.

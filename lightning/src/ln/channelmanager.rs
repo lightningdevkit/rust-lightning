@@ -3245,7 +3245,7 @@ macro_rules! convert_channel_err {
 	($self: ident, $peer_state: expr, $err: expr, $funded_channel: expr, $channel_id: expr, FUNDED_CHANNEL) => { {
 		let mut do_close = |reason| {
 			(
-				$funded_channel.force_shutdown(reason, true),
+				$funded_channel.force_shutdown(reason),
 				$self.get_channel_update_for_broadcast(&$funded_channel).ok(),
 			)
 		};
@@ -3255,7 +3255,7 @@ macro_rules! convert_channel_err {
 		convert_channel_err!($self, $peer_state, $err, $funded_channel, do_close, locked_close, $channel_id, _internal)
 	} };
 	($self: ident, $peer_state: expr, $err: expr, $channel: expr, $channel_id: expr, UNFUNDED_CHANNEL) => { {
-		let mut do_close = |reason| { ($channel.force_shutdown(true, reason), None) };
+		let mut do_close = |reason| { ($channel.force_shutdown(reason), None) };
 		let locked_close = |_, chan: &mut Channel<_>| { locked_close_channel!($self, chan.context(), UNFUNDED); };
 		convert_channel_err!($self, $peer_state, $err, $channel, do_close, locked_close, $channel_id, _internal)
 	} };
@@ -4435,6 +4435,8 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		log_debug!(self.logger,
 			"Force-closing channel, The error message sent to the peer : {}", error_message);
+		// No matter what value for `broadcast_latest_txn` we set here, `Channel` will override it
+		// and set the appropriate value.
 		let reason = ClosureReason::HolderForceClosed {
 			broadcasted_latest_txn: Some(true),
 			message: error_message,
@@ -5550,12 +5552,12 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
-		macro_rules! close_chan { ($err: expr, $api_err: expr, $chan: expr) => { {
+		macro_rules! abandon_chan { ($err: expr, $api_err: expr, $chan: expr) => { {
 			let counterparty;
 			let err = if let ChannelError::Close((msg, reason)) = $err {
 				let channel_id = $chan.context.channel_id();
 				counterparty = $chan.context.get_counterparty_node_id();
-				let shutdown_res = $chan.context.force_shutdown(&$chan.funding, false, reason);
+				let shutdown_res = $chan.abandon_unfunded_chan(reason);
 				MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, None)
 			} else { unreachable!(); };
 
@@ -5575,7 +5577,7 @@ where
 					Err(err) => {
 						let chan_err = ChannelError::close(err.to_owned());
 						let api_err = APIError::APIMisuseError { err: err.to_owned() };
-						return close_chan!(chan_err, api_err, chan);
+						return abandon_chan!(chan_err, api_err, chan);
 					},
 				}
 
@@ -5585,7 +5587,7 @@ where
 					Ok(funding_msg) => (chan, funding_msg),
 					Err((mut chan, chan_err)) => {
 						let api_err = APIError::ChannelUnavailable { err: "Signer refused to sign the initial commitment transaction".to_owned() };
-						return close_chan!(chan_err, api_err, chan);
+						return abandon_chan!(chan_err, api_err, chan);
 					}
 				}
 			},
@@ -5614,7 +5616,7 @@ where
 				let chan_err = ChannelError::close(err.to_owned());
 				let api_err = APIError::APIMisuseError { err: err.to_owned() };
 				chan.unset_funding_info();
-				return close_chan!(chan_err, api_err, chan);
+				return abandon_chan!(chan_err, api_err, chan);
 			},
 			hash_map::Entry::Vacant(e) => {
 				if let Some(msg) = msg_opt {
@@ -14632,7 +14634,7 @@ where
 						log_error!(logger, " The ChannelMonitor for channel {} is at counterparty commitment transaction number {} but the ChannelManager is at counterparty commitment transaction number {}.",
 							&channel.context.channel_id(), monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
 					}
-					let mut shutdown_result = channel.context.force_shutdown(&channel.funding, true, ClosureReason::OutdatedChannelManager);
+					let mut shutdown_result = channel.force_shutdown(ClosureReason::OutdatedChannelManager);
 					if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}
@@ -14705,7 +14707,6 @@ where
 				// If we were persisted and shut down while the initial ChannelMonitor persistence
 				// was in-progress, we never broadcasted the funding transaction and can still
 				// safely discard the channel.
-				let _ = channel.context.force_shutdown(&channel.funding, false, ClosureReason::DisconnectedPeer);
 				channel_closures.push_back((events::Event::ChannelClosed {
 					channel_id: channel.context.channel_id(),
 					user_channel_id: channel.context.get_user_id(),

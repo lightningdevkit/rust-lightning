@@ -1775,11 +1775,9 @@ where
 		}
 	}
 
-	pub fn force_shutdown(
-		&mut self, should_broadcast: bool, closure_reason: ClosureReason,
-	) -> ShutdownResult {
+	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
 		let (funding, context) = self.funding_and_context_mut();
-		context.force_shutdown(funding, should_broadcast, closure_reason)
+		context.force_shutdown(funding, closure_reason)
 	}
 
 	#[rustfmt::skip]
@@ -5340,19 +5338,18 @@ where
 		self.unbroadcasted_funding_txid(funding).filter(|_| self.is_batch_funding())
 	}
 
-	/// Gets the latest commitment transaction and any dependent transactions for relay (forcing
-	/// shutdown of this channel - no more calls into this Channel may be made afterwards except
-	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
-	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
-	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(
-		&mut self, funding: &FundingScope, should_broadcast: bool, closure_reason: ClosureReason,
+	/// Shuts down this Channel (no more calls into this Channel may be made afterwards except
+	/// those explicitly stated to be alowed after shutdown, e.g. some simple getters).
+	fn force_shutdown(
+		&mut self, funding: &FundingScope, mut closure_reason: ClosureReason,
 	) -> ShutdownResult {
 		// Note that we MUST only generate a monitor update that indicates force-closure - we're
 		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
 		// being fully configured in some cases. Thus, its likely any monitor events we generate will
 		// be delayed in being processed! See the docs for `ChannelManagerReadArgs` for more.
 		assert!(!matches!(self.channel_state, ChannelState::ShutdownComplete));
+
+		let broadcast = self.is_funding_broadcast();
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
 		// return them to fail the payment.
@@ -5384,7 +5381,7 @@ where
 				let update = ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
-						should_broadcast,
+						should_broadcast: broadcast,
 					}],
 					channel_id: Some(self.channel_id()),
 				};
@@ -5397,6 +5394,12 @@ where
 		};
 		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid(funding);
 		let unbroadcasted_funding_tx = self.unbroadcasted_funding(funding);
+
+		if let ClosureReason::HolderForceClosed { ref mut broadcasted_latest_txn, .. } =
+			&mut closure_reason
+		{
+			*broadcasted_latest_txn = Some(broadcast);
+		}
 
 		self.channel_state = ChannelState::ShutdownComplete;
 		self.update_time_counter += 1;
@@ -6047,10 +6050,8 @@ where
 		&self.context
 	}
 
-	pub fn force_shutdown(
-		&mut self, closure_reason: ClosureReason, should_broadcast: bool,
-	) -> ShutdownResult {
-		self.context.force_shutdown(&self.funding, should_broadcast, closure_reason)
+	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
+		self.context.force_shutdown(&self.funding, closure_reason)
 	}
 
 	#[rustfmt::skip]
@@ -8124,7 +8125,7 @@ where
 						(closing_signed, signed_tx, shutdown_result)
 					}
 					Err(err) => {
-						let shutdown = self.context.force_shutdown(&self.funding, true, ClosureReason::ProcessingError {err: err.to_string()});
+						let shutdown = self.context.force_shutdown(&self.funding, ClosureReason::ProcessingError {err: err.to_string()});
 						(None, None, Some(shutdown))
 					}
 				}
@@ -11200,6 +11201,10 @@ impl<SP: Deref> OutboundV1Channel<SP>
 where
 	SP::Target: SignerProvider,
 {
+	pub fn abandon_unfunded_chan(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
+		self.context.force_shutdown(&self.funding, closure_reason)
+	}
+
 	#[allow(dead_code)] // TODO(dual_funding): Remove once opending V2 channels is enabled.
 	#[rustfmt::skip]
 	pub fn new<ES: Deref, F: Deref, L: Deref>(
