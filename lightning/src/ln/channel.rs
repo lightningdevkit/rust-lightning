@@ -6043,6 +6043,16 @@ where
 	SP::Target: SignerProvider,
 	<SP::Target as SignerProvider>::EcdsaSigner: EcdsaChannelSigner,
 {
+	pub fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+
+	pub fn force_shutdown(
+		&mut self, closure_reason: ClosureReason, should_broadcast: bool,
+	) -> ShutdownResult {
+		self.context.force_shutdown(&self.funding, should_broadcast, closure_reason)
+	}
+
 	#[rustfmt::skip]
 	fn check_remote_fee<F: Deref, L: Deref>(
 		channel_type: &ChannelTypeFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
