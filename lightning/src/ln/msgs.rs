@@ -919,13 +919,13 @@ pub struct ChannelReestablish {
 	/// removed it from its state.
 	///
 	/// If we've sent `commtiment_signed` for an interactively constructed transaction
-	/// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
+	/// during a signing session, but have not received `tx_signatures` we MUST set `next_funding`
 	/// to the txid of that interactive transaction, else we MUST NOT set it.
 	///
 	/// See the spec for further details on this:
 	///   * `channel_reestablish`-sending node: https:///github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2466-L2470
 	///   * `channel_reestablish`-receiving node: https:///github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2520-L2531
-	pub next_funding_txid: Option<Txid>,
+	pub next_funding: Option<NextFunding>,
 	/// The last funding txid sent by the sending node, which may be:
 	/// - the txid of the last `splice_locked` it sent, otherwise
 	/// - the txid of the funding transaction if it sent `channel_ready`, or else
@@ -933,6 +933,38 @@ pub struct ChannelReestablish {
 	///
 	/// Also contains a bitfield indicating which messages should be retransmitted.
 	pub my_current_funding_locked: Option<FundingLocked>,
+}
+
+/// Information exchanged during channel reestablishment about the next funding from interactive
+/// transaction construction.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct NextFunding {
+	/// The txid of the interactive transaction construction.
+	pub txid: Txid,
+
+	/// A bitfield indicating which messages should be retransmitted by the receiving node.
+	///
+	/// See [`NextFundingFlag`] for details.
+	pub retransmit_flags: u8,
+}
+
+impl NextFunding {
+	/// Sets the bit in `retransmit_flags` for retransmitting the message corresponding to `flag`.
+	pub fn retransmit(&mut self, flag: NextFundingFlag) {
+		self.retransmit_flags |= 1 << flag as u8;
+	}
+
+	/// Returns whether the message corresponding to `flag` should be retransmitted.
+	pub fn should_retransmit(&self, flag: NextFundingFlag) -> bool {
+		self.retransmit_flags & (1 << flag as u8) != 0
+	}
+}
+
+/// Bit positions used in [`NextFunding::retransmit_flags`] for requesting message retransmission.
+#[repr(u8)]
+pub enum NextFundingFlag {
+	/// Retransmit `commitment_signed`.
+	CommitmentSigned = 0,
 }
 
 /// Information exchanged during channel reestablishment about the last funding locked.
@@ -2873,8 +2905,13 @@ impl_writeable_msg!(ChannelReestablish, {
 	your_last_per_commitment_secret,
 	my_current_per_commitment_point,
 }, {
-	(0, next_funding_txid, option),
+	(1, next_funding, option),
 	(5, my_current_funding_locked, option),
+});
+
+impl_writeable!(NextFunding, {
+	txid,
+	retransmit_flags
 });
 
 impl_writeable!(FundingLocked, {
@@ -4348,7 +4385,7 @@ mod tests {
 			next_remote_commitment_number: 4,
 			your_last_per_commitment_secret: [9; 32],
 			my_current_per_commitment_point: public_key,
-			next_funding_txid: None,
+			next_funding: None,
 			my_current_funding_locked: None,
 		};
 
@@ -4394,13 +4431,16 @@ mod tests {
 			next_remote_commitment_number: 4,
 			your_last_per_commitment_secret: [9; 32],
 			my_current_per_commitment_point: public_key,
-			next_funding_txid: Some(Txid::from_raw_hash(
-				bitcoin::hashes::Hash::from_slice(&[
-					48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80,
-					4, 12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124,
-				])
-				.unwrap(),
-			)),
+			next_funding: Some(msgs::NextFunding {
+				txid: Txid::from_raw_hash(
+					bitcoin::hashes::Hash::from_slice(&[
+						48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15,
+						80, 4, 12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124,
+					])
+					.unwrap(),
+				),
+				retransmit_flags: 1,
+			}),
 			my_current_funding_locked: None,
 		};
 
@@ -4417,10 +4457,10 @@ mod tests {
 				3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30,
 				24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7,
 				143, // my_current_per_commitment_point
-				0,   // Type (next_funding_txid)
-				32,  // Length
+				1,   // Type (next_funding)
+				33,  // Length
 				48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80, 4,
-				12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124, // Value
+				12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124, 1, // Value
 			]
 		);
 	}
@@ -4450,7 +4490,7 @@ mod tests {
 			next_remote_commitment_number: 4,
 			your_last_per_commitment_secret: [9; 32],
 			my_current_per_commitment_point: public_key,
-			next_funding_txid: None,
+			next_funding: None,
 			my_current_funding_locked: Some(msgs::FundingLocked {
 				txid: Txid::from_raw_hash(
 					bitcoin::hashes::Hash::from_slice(&[
