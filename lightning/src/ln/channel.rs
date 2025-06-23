@@ -8835,10 +8835,7 @@ where
 
 	pub fn maybe_propose_closing_signed<F: Deref, L: Deref>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> Result<
-		(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>),
-		ChannelError,
-	>
+	) -> Result<(Option<msgs::ClosingSigned>, Option<(Transaction, ShutdownResult)>), ChannelError>
 	where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
@@ -8848,20 +8845,20 @@ where
 		// initiate `closing_signed` negotiation until we're clear of all pending messages. Note
 		// that closing_negotiation_ready checks this case (as well as a few others).
 		if self.context.last_sent_closing_fee.is_some() || !self.closing_negotiation_ready() {
-			return Ok((None, None, None));
+			return Ok((None, None));
 		}
 
 		if !self.funding.is_outbound() {
 			if let Some(msg) = &self.context.pending_counterparty_closing_signed.take() {
 				return self.closing_signed(fee_estimator, &msg, logger);
 			}
-			return Ok((None, None, None));
+			return Ok((None, None));
 		}
 
 		// If we're waiting on a counterparty `commitment_signed` to clear some updates from our
 		// local commitment transaction, we can't yet initiate `closing_signed` negotiation.
 		if self.context.expecting_peer_commitment_signed {
-			return Ok((None, None, None));
+			return Ok((None, None));
 		}
 
 		let (our_min_fee, our_max_fee) = self.calculate_closing_fee_limits(fee_estimator);
@@ -8880,7 +8877,7 @@ where
 			our_max_fee,
 			logger,
 		);
-		Ok((closing_signed, None, None))
+		Ok((closing_signed, None))
 	}
 
 	fn mark_response_received(&mut self) {
@@ -9143,10 +9140,7 @@ where
 	pub fn closing_signed<F: Deref, L: Deref>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::ClosingSigned,
 		logger: &L,
-	) -> Result<
-		(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>),
-		ChannelError,
-	>
+	) -> Result<(Option<msgs::ClosingSigned>, Option<(Transaction, ShutdownResult)>), ChannelError>
 	where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
@@ -9186,7 +9180,7 @@ where
 
 		if self.context.channel_state.is_monitor_update_in_progress() {
 			self.context.pending_counterparty_closing_signed = Some(msg.clone());
-			return Ok((None, None, None));
+			return Ok((None, None));
 		}
 
 		let funding_redeemscript = self.funding.get_funding_redeemscript();
@@ -9240,7 +9234,7 @@ where
 					self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
 				self.context.channel_state = ChannelState::ShutdownComplete;
 				self.context.update_time_counter += 1;
-				return Ok((None, Some(tx), Some(shutdown_result)));
+				return Ok((None, Some((tx, shutdown_result))));
 			}
 		}
 
@@ -9263,26 +9257,25 @@ where
 					our_max_fee,
 					logger,
 				);
-				let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
-					let shutdown_result =
-						closing_signed.as_ref().map(|_| self.shutdown_result_coop_close());
-					if closing_signed.is_some() {
-						self.context.channel_state = ChannelState::ShutdownComplete;
-					}
+				let signed_tx_shutdown = if $new_fee == msg.fee_satoshis {
 					self.context.update_time_counter += 1;
 					self.context.last_received_closing_sig = Some(msg.signature.clone());
-					let tx = closing_signed.as_ref().map(|ClosingSigned { signature, .. }| {
-						self.build_signed_closing_transaction(
+					if let Some(ClosingSigned { signature, .. }) = &closing_signed {
+						let shutdown_result = self.shutdown_result_coop_close();
+						self.context.channel_state = ChannelState::ShutdownComplete;
+						let tx = self.build_signed_closing_transaction(
 							&closing_tx,
 							&msg.signature,
 							signature,
-						)
-					});
-					(tx, shutdown_result)
+						);
+						Some((tx, shutdown_result))
+					} else {
+						None
+					}
 				} else {
-					(None, None)
+					None
 				};
-				return Ok((closing_signed, signed_tx, shutdown_result))
+				return Ok((closing_signed, signed_tx_shutdown))
 			};
 		}
 

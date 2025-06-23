@@ -9795,26 +9795,26 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						let (closing_signed, tx, shutdown_result) = try_channel_entry!(self, peer_state, chan.closing_signed(&self.fee_estimator, &msg, &&logger), chan_entry);
-						debug_assert_eq!(shutdown_result.is_some(), chan.is_shutdown());
+						let res = chan.closing_signed(&self.fee_estimator, &msg, &&logger);
+						let (closing_signed, tx_shutdown_result) =
+							try_channel_entry!(self, peer_state, res, chan_entry);
+						debug_assert_eq!(tx_shutdown_result.is_some(), chan.is_shutdown());
 						if let Some(msg) = closing_signed {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendClosingSigned {
 								node_id: counterparty_node_id.clone(),
 								msg,
 							});
 						}
-						if let Some(mut close_res) = shutdown_result {
+						if let Some((tx, mut close_res)) = tx_shutdown_result {
 							// We're done with this channel, we've got a signed closing transaction and
 							// will send the closing_signed back to the remote peer upon return. This
 							// also implies there are no pending HTLCs left on the channel, so we can
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
-							debug_assert!(tx.is_some());
 							locked_close_channel!(self, peer_state, chan, close_res, FUNDED);
-							(tx, Some(chan_entry.remove()), Some(close_res))
+							(Some(tx), Some(chan_entry.remove()), Some(close_res))
 						} else {
-							debug_assert!(tx.is_none());
-							(tx, None, None)
+							(None, None, None)
 						}
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
@@ -11121,19 +11121,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						Some(funded_chan) => {
 							let logger = WithChannelContext::from(&self.logger, &funded_chan.context, None);
 							match funded_chan.maybe_propose_closing_signed(&self.fee_estimator, &&logger) {
-								Ok((msg_opt, tx_opt, shutdown_result_opt)) => {
+								Ok((msg_opt, tx_shutdown_result_opt)) => {
 									if let Some(msg) = msg_opt {
 										has_update = true;
 										pending_msg_events.push(MessageSendEvent::SendClosingSigned {
 											node_id: funded_chan.context.get_counterparty_node_id(), msg,
 										});
 									}
-									debug_assert_eq!(shutdown_result_opt.is_some(), funded_chan.is_shutdown());
-									if let Some(mut shutdown_result) = shutdown_result_opt {
-										locked_close_channel!(self, peer_state, funded_chan, shutdown_result, FUNDED);
-										shutdown_results.push(shutdown_result);
-									}
-									if let Some(tx) = tx_opt {
+									debug_assert_eq!(tx_shutdown_result_opt.is_some(), funded_chan.is_shutdown());
+									if let Some((tx, mut shutdown_res)) = tx_shutdown_result_opt {
+										locked_close_channel!(self, peer_state, funded_chan, shutdown_res, FUNDED);
+										shutdown_results.push(shutdown_res);
 										// We're done with this channel. We got a closing_signed and sent back
 										// a closing_signed with a closing transaction to broadcast.
 										if let Ok(update) = self.get_channel_update_for_broadcast(&funded_chan) {
