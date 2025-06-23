@@ -1811,61 +1811,61 @@ mod tests {
 
 	// Test that if the `MonitorUpdatingPersister`'s can't actually write, trying to persist a
 	// monitor or update with it results in the persister returning an UnrecoverableError status.
-	// #[tokio::test]
-	// async fn unrecoverable_error_on_write_failure() {
-	// 	// Set up a dummy channel and force close. This will produce a monitor
-	// 	// that we can then use to test persistence.
-	// 	let chanmon_cfgs = create_chanmon_cfgs_with_keys_arc(2, None);
-	// 	let node_cfgs = create_node_cfgs_arc(2, &chanmon_cfgs);
-	// 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	// 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	// 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-	// 	let err_msg = "Channel force-closed".to_string();
-	// 	let node_id_0 = nodes[0].node.get_our_node_id();
-	// 	nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &node_id_0, err_msg).unwrap();
-	// 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
-	// 	check_closed_event(&nodes[1], 1, reason, false, &[node_id_0], 100000);
-	// 	{
-	// 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
-	// 		let cmu_map = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
-	// 		let cmu = &cmu_map.get(&added_monitors[0].1.channel_id()).unwrap()[0];
+	#[tokio::test]
+	async fn unrecoverable_error_on_write_failure() {
+		// Set up a dummy channel and force close. This will produce a monitor
+		// that we can then use to test persistence.
+		let chanmon_cfgs = create_chanmon_cfgs_with_keys_arc(2, None);
+		let node_cfgs = create_node_cfgs_arc(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let err_msg = "Channel force-closed".to_string();
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &node_id_0, err_msg).unwrap();
+		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		check_closed_event(&nodes[1], 1, reason, false, &[node_id_0], 100000);
+		{
+			let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
+			let cmu_map = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
+			let cmu = &cmu_map.get(&added_monitors[0].1.channel_id()).unwrap()[0];
 
-	// 		let kv_store_sync = Arc::new(TestStore::new(true));
-	// 		let kv_store = KVStoreSyncWrapper::new(kv_store_sync);
-	// 		let logger = Arc::new(TestLogger::new());
-	// 		let ro_persister = MonitorUpdatingPersister::new(
-	// 			kv_store,
-	// 			logger,
-	// 			11,
-	// 			node_cfgs[0].keys_manager,
-	// 			node_cfgs[0].keys_manager,
-	// 			node_cfgs[0].tx_broadcaster,
-	// 			node_cfgs[0].fee_estimator,
-	// 		);
-	// 		let monitor_name = added_monitors[0].1.persistence_key();
-	// 		match ro_persister.persist_new_channel(monitor_name, &added_monitors[0].1).await {
-	// 			Err(()) => {
-	// 				// correct result
-	// 			},
-	// 			Ok(()) => {
-	// 				panic!("Completed persisting new channel when shouldn't have")
-	// 			},
-	// 		}
-	// 		match ro_persister
-	// 			.update_persisted_channel(monitor_name, Some(cmu), &added_monitors[0].1)
-	// 			.await
-	// 		{
-	// 			Err(()) => {
-	// 				// correct result
-	// 			},
-	// 			Ok(()) => {
-	// 				panic!("Completed updating channel when shouldn't have")
-	// 			},
-	// 		}
-	// 		added_monitors.clear();
-	// 	}
-	// 	nodes[1].node.get_and_clear_pending_msg_events();
-	// }
+			let kv_store_sync = Arc::new(TestStore::new(true));
+			let kv_store = KVStoreSyncWrapper::new(kv_store_sync);
+			let logger = Arc::new(TestLogger::new());
+			let ro_persister = MonitorUpdatingPersister::new(
+				kv_store,
+				logger,
+				11,
+				node_cfgs[0].keys_manager,
+				node_cfgs[0].keys_manager,
+				node_cfgs[0].tx_broadcaster,
+				node_cfgs[0].fee_estimator,
+			);
+			let monitor_name = added_monitors[0].1.persistence_key();
+			match ro_persister.persist_new_channel(monitor_name, &added_monitors[0].1).await {
+				Err(()) => {
+					// correct result
+				},
+				Ok(()) => {
+					panic!("Completed persisting new channel when shouldn't have")
+				},
+			}
+			// match ro_persister
+			// 	.update_persisted_channel(monitor_name, Some(cmu), &added_monitors[0].1)
+			// 	.await
+			// {
+			// 	Err(()) => {
+			// 		// correct result
+			// 	},
+			// 	Ok(()) => {
+			// 		panic!("Completed updating channel when shouldn't have")
+			// 	},
+			// }
+			// added_monitors.clear();
+		}
+		nodes[1].node.get_and_clear_pending_msg_events();
+	}
 
 	// Confirm that the `clean_stale_updates` function finds and deletes stale updates.
 	// #[tokio::test]
