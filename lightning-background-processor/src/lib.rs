@@ -2699,6 +2699,7 @@ mod tests {
 				short_channel_id: Some(scored_scid),
 				error_code: None,
 				error_data: None,
+				hold_times: Vec::new(),
 			});
 			let event = $receive.expect("PaymentPathFailed not handled within deadline");
 			match event {
@@ -2718,6 +2719,7 @@ mod tests {
 				short_channel_id: None,
 				error_code: None,
 				error_data: None,
+				hold_times: Vec::new(),
 			});
 			let event = $receive.expect("PaymentPathFailed not handled within deadline");
 			match event {

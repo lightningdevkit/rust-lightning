@@ -62,7 +62,9 @@ use crate::ln::interactivetxs::{
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
-use crate::ln::onion_utils::{AttributionData, HTLCFailReason, LocalHTLCFailureReason};
+use crate::ln::onion_utils::{
+	AttributionData, HTLCFailReason, LocalHTLCFailureReason, HOLD_TIME_UNIT_MILLIS,
+};
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::NodeId;
@@ -7110,29 +7112,48 @@ where
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	#[rustfmt::skip]
-	pub fn revoke_and_ack<F: Deref, L: Deref>(&mut self, msg: &msgs::RevokeAndACK,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L, hold_mon_update: bool,
+	pub fn revoke_and_ack<F: Deref, L: Deref>(
+		&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		logger: &L, hold_mon_update: bool,
 	) -> Result<(Vec<(HTLCSource, PaymentHash)>, Option<ChannelMonitorUpdate>), ChannelError>
-	where F::Target: FeeEstimator, L::Target: Logger,
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
 		if self.context.channel_state.is_quiescent() {
-			return Err(ChannelError::WarnAndDisconnect("Got revoke_and_ack message while quiescent".to_owned()));
+			return Err(ChannelError::WarnAndDisconnect(
+				"Got revoke_and_ack message while quiescent".to_owned(),
+			));
 		}
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::close("Got revoke/ACK message when channel was not in an operational state".to_owned()));
+			return Err(ChannelError::close(
+				"Got revoke/ACK message when channel was not in an operational state".to_owned(),
+			));
 		}
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::close("Peer sent revoke_and_ack when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close(
+				"Peer sent revoke_and_ack when we needed a channel_reestablish".to_owned(),
+			));
 		}
-		if self.context.channel_state.is_both_sides_shutdown() && self.context.last_sent_closing_fee.is_some() {
-			return Err(ChannelError::close("Peer sent revoke_and_ack after we'd started exchanging closing_signeds".to_owned()));
+		if self.context.channel_state.is_both_sides_shutdown()
+			&& self.context.last_sent_closing_fee.is_some()
+		{
+			return Err(ChannelError::close(
+				"Peer sent revoke_and_ack after we'd started exchanging closing_signeds".to_owned(),
+			));
 		}
 
-		let secret = secp_check!(SecretKey::from_slice(&msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret".to_owned());
+		let secret = secp_check!(
+			SecretKey::from_slice(&msg.per_commitment_secret),
+			"Peer provided an invalid per_commitment_secret".to_owned()
+		);
 
-		if let Some(counterparty_prev_commitment_point) = self.context.counterparty_prev_commitment_point {
-			if PublicKey::from_secret_key(&self.context.secp_ctx, &secret) != counterparty_prev_commitment_point {
+		if let Some(counterparty_prev_commitment_point) =
+			self.context.counterparty_prev_commitment_point
+		{
+			if PublicKey::from_secret_key(&self.context.secp_ctx, &secret)
+				!= counterparty_prev_commitment_point
+			{
 				return Err(ChannelError::close("Got a revoke commitment secret which didn't correspond to their current pubkey".to_owned()));
 			}
 		}
@@ -7150,7 +7171,9 @@ where
 
 		#[cfg(any(test, fuzzing))]
 		{
-			for funding in core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut()) {
+			for funding in
+				core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut())
+			{
 				*funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
 				*funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
 			}
@@ -7158,18 +7181,29 @@ where
 
 		match &self.context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.validate_counterparty_revocation(
-					self.context.cur_counterparty_commitment_transaction_number + 1,
-					&secret
-				).map_err(|_| ChannelError::close("Failed to validate revocation from peer".to_owned()))?;
+				ecdsa
+					.validate_counterparty_revocation(
+						self.context.cur_counterparty_commitment_transaction_number + 1,
+						&secret,
+					)
+					.map_err(|_| {
+						ChannelError::close("Failed to validate revocation from peer".to_owned())
+					})?;
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
-			_ => todo!()
+			_ => todo!(),
 		};
 
-		self.context.commitment_secrets.provide_secret(self.context.cur_counterparty_commitment_transaction_number + 1, msg.per_commitment_secret)
-			.map_err(|_| ChannelError::close("Previous secrets did not match new one".to_owned()))?;
+		self.context
+			.commitment_secrets
+			.provide_secret(
+				self.context.cur_counterparty_commitment_transaction_number + 1,
+				msg.per_commitment_secret,
+			)
+			.map_err(|_| {
+				ChannelError::close("Previous secrets did not match new one".to_owned())
+			})?;
 		self.context.latest_monitor_update_id += 1;
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
@@ -7186,7 +7220,8 @@ where
 		// channel based on that, but stepping stuff here should be safe either way.
 		self.context.channel_state.clear_awaiting_remote_revoke();
 		self.mark_response_received();
-		self.context.counterparty_prev_commitment_point = self.context.counterparty_cur_commitment_point;
+		self.context.counterparty_prev_commitment_point =
+			self.context.counterparty_cur_commitment_point;
 		self.context.counterparty_cur_commitment_point = Some(msg.next_per_commitment_point);
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 
@@ -7194,7 +7229,11 @@ where
 			self.context.announcement_sigs_state = AnnouncementSigsState::PeerReceived;
 		}
 
-		log_trace!(logger, "Updating HTLCs on receipt of RAA in channel {}...", &self.context.channel_id());
+		log_trace!(
+			logger,
+			"Updating HTLCs on receipt of RAA in channel {}...",
+			&self.context.channel_id()
+		);
 		let mut to_forward_infos = Vec::new();
 		let mut pending_update_adds = Vec::new();
 		let mut revoked_htlcs = Vec::new();
@@ -7208,7 +7247,8 @@ where
 			// Take references explicitly so that we can hold multiple references to self.context.
 			let pending_inbound_htlcs: &mut Vec<_> = &mut self.context.pending_inbound_htlcs;
 			let pending_outbound_htlcs: &mut Vec<_> = &mut self.context.pending_outbound_htlcs;
-			let expecting_peer_commitment_signed = &mut self.context.expecting_peer_commitment_signed;
+			let expecting_peer_commitment_signed =
+				&mut self.context.expecting_peer_commitment_signed;
 
 			// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
 			pending_inbound_htlcs.retain(|htlc| {
@@ -7219,15 +7259,24 @@ where
 					}
 					*expecting_peer_commitment_signed = true;
 					false
-				} else { true }
+				} else {
+					true
+				}
 			});
 			let now = duration_since_epoch();
 			pending_outbound_htlcs.retain(|htlc| {
 				if let &OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) = &htlc.state {
-					log_trace!(logger, " ...removing outbound AwaitingRemovedRemoteRevoke {}", &htlc.payment_hash);
-					if let OutboundHTLCOutcome::Failure(mut reason) = outcome.clone() { // We really want take() here, but, again, non-mut ref :(
+					log_trace!(
+						logger,
+						" ...removing outbound AwaitingRemovedRemoteRevoke {}",
+						&htlc.payment_hash
+					);
+					// We really want take() here, but, again, non-mut ref :(
+					if let OutboundHTLCOutcome::Failure(mut reason) = outcome.clone() {
 						if let (Some(timestamp), Some(now)) = (htlc.send_timestamp, now) {
-							let hold_time = u32::try_from(now.saturating_sub(timestamp).as_millis()).unwrap_or(u32::MAX);
+							let elapsed_millis = now.saturating_sub(timestamp).as_millis();
+							let elapsed_units = elapsed_millis / HOLD_TIME_UNIT_MILLIS;
+							let hold_time = u32::try_from(elapsed_units).unwrap_or(u32::MAX);
 							reason.set_hold_time(hold_time);
 						}
 
@@ -7238,14 +7287,19 @@ where
 						value_to_self_msat_diff -= htlc.amount_msat as i64;
 					}
 					false
-				} else { true }
+				} else {
+					true
+				}
 			});
 			for htlc in pending_inbound_htlcs.iter_mut() {
-				let swap = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) = &htlc.state {
+				let swap = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) = &htlc.state
+				{
 					true
 				} else if let &InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) = &htlc.state {
 					true
-				} else { false };
+				} else {
+					false
+				};
 				if swap {
 					let mut state = InboundHTLCState::Committed;
 					mem::swap(&mut state, &mut htlc.state);
@@ -7254,20 +7308,31 @@ where
 						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
 						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution);
 						require_commitment = true;
-					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution) = state {
+					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution) =
+						state
+					{
 						match resolution {
-							InboundHTLCResolution::Resolved { pending_htlc_status } =>
+							InboundHTLCResolution::Resolved { pending_htlc_status } => {
 								match pending_htlc_status {
 									PendingHTLCStatus::Fail(fail_msg) => {
 										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", &htlc.payment_hash);
 										require_commitment = true;
 										match fail_msg {
 											HTLCFailureMsg::Relay(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.clone().into()));
+												htlc.state = InboundHTLCState::LocalRemoved(
+													InboundHTLCRemovalReason::FailRelay(
+														msg.clone().into(),
+													),
+												);
 												update_fail_htlcs.push(msg)
 											},
 											HTLCFailureMsg::Malformed(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code)));
+												htlc.state = InboundHTLCState::LocalRemoved(
+													InboundHTLCRemovalReason::FailMalformed((
+														msg.sha256_of_onion,
+														msg.failure_code,
+													)),
+												);
 												update_fail_malformed_htlcs.push(msg)
 											},
 										}
@@ -7276,24 +7341,31 @@ where
 										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed, attempting to forward", &htlc.payment_hash);
 										to_forward_infos.push((forward_info, htlc.htlc_id));
 										htlc.state = InboundHTLCState::Committed;
-									}
+									},
 								}
+							},
 							InboundHTLCResolution::Pending { update_add_htlc } => {
 								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
 								pending_update_adds.push(update_add_htlc);
 								htlc.state = InboundHTLCState::Committed;
-							}
+							},
 						}
 					}
 				}
 			}
 			for htlc in pending_outbound_htlcs.iter_mut() {
 				if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
-					log_trace!(logger, " ...promoting outbound LocalAnnounced {} to Committed", &htlc.payment_hash);
+					log_trace!(
+						logger,
+						" ...promoting outbound LocalAnnounced {} to Committed",
+						&htlc.payment_hash
+					);
 					htlc.state = OutboundHTLCState::Committed;
 					*expecting_peer_commitment_signed = true;
 				}
-				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
+				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) =
+					&mut htlc.state
+				{
 					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
 					// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
 					let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
@@ -7305,19 +7377,26 @@ where
 		}
 
 		for funding in core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut()) {
-			funding.value_to_self_msat = (funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
+			funding.value_to_self_msat =
+				(funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 		}
 
 		if let Some((feerate, update_state)) = self.context.pending_update_fee {
 			match update_state {
 				FeeUpdateState::Outbound => {
 					debug_assert!(self.funding.is_outbound());
-					log_trace!(logger, " ...promoting outbound fee update {} to Committed", feerate);
+					log_trace!(
+						logger,
+						" ...promoting outbound fee update {} to Committed",
+						feerate
+					);
 					self.context.feerate_per_kw = feerate;
 					self.context.pending_update_fee = None;
 					self.context.expecting_peer_commitment_signed = true;
 				},
-				FeeUpdateState::RemoteAnnounced => { debug_assert!(!self.funding.is_outbound()); },
+				FeeUpdateState::RemoteAnnounced => {
+					debug_assert!(!self.funding.is_outbound());
+				},
 				FeeUpdateState::AwaitingRemoteRevokeToAnnounce => {
 					debug_assert!(!self.funding.is_outbound());
 					log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce fee update {} to Committed", feerate);
@@ -7329,19 +7408,24 @@ where
 		}
 
 		let release_monitor = self.context.blocked_monitor_updates.is_empty() && !hold_mon_update;
-		let release_state_str =
-			if hold_mon_update { "Holding" } else if release_monitor { "Releasing" } else { "Blocked" };
+		let release_state_str = if hold_mon_update {
+			"Holding"
+		} else if release_monitor {
+			"Releasing"
+		} else {
+			"Blocked"
+		};
 		macro_rules! return_with_htlcs_to_fail {
 			($htlcs_to_fail: expr) => {
 				if !release_monitor {
-					self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
-						update: monitor_update,
-					});
+					self.context
+						.blocked_monitor_updates
+						.push(PendingChannelMonitorUpdate { update: monitor_update });
 					return Ok(($htlcs_to_fail, None));
 				} else {
 					return Ok(($htlcs_to_fail, Some(monitor_update)));
 				}
-			}
+			};
 		}
 
 		self.context.monitor_pending_update_adds.append(&mut pending_update_adds);
@@ -7356,7 +7440,14 @@ where
 				log_debug!(logger, "Received a valid revoke_and_ack for channel {} with holding cell HTLCs freed. {} monitor update.",
 					&self.context.channel_id(), release_state_str);
 
-				self.monitor_updating_paused(false, true, false, to_forward_infos, revoked_htlcs, finalized_claimed_htlcs);
+				self.monitor_updating_paused(
+					false,
+					true,
+					false,
+					to_forward_infos,
+					revoked_htlcs,
+					finalized_claimed_htlcs,
+				);
 				return_with_htlcs_to_fail!(htlcs_to_fail);
 			},
 			(None, htlcs_to_fail) => {
@@ -7373,8 +7464,12 @@ where
 					self.context.latest_monitor_update_id = monitor_update.update_id;
 					monitor_update.updates.append(&mut additional_update.updates);
 
-					log_debug!(logger, "Received a valid revoke_and_ack for channel {}. {} monitor update.",
-						&self.context.channel_id(), release_state_str);
+					log_debug!(
+						logger,
+						"Received a valid revoke_and_ack for channel {}. {} monitor update.",
+						&self.context.channel_id(),
+						release_state_str
+					);
 					if self.context.channel_state.can_generate_new_commitment() {
 						log_debug!(logger, "Responding with a commitment update with {} HTLCs failed for channel {}",
 							update_fail_htlcs.len() + update_fail_malformed_htlcs.len(),
@@ -7388,20 +7483,38 @@ where
 						} else {
 							"can continue progress"
 						};
-						log_debug!(logger, "Holding back commitment update until channel {} {}",
-							&self.context.channel_id, reason);
+						log_debug!(
+							logger,
+							"Holding back commitment update until channel {} {}",
+							&self.context.channel_id,
+							reason
+						);
 					}
 
-					self.monitor_updating_paused(false, true, false, to_forward_infos, revoked_htlcs, finalized_claimed_htlcs);
+					self.monitor_updating_paused(
+						false,
+						true,
+						false,
+						to_forward_infos,
+						revoked_htlcs,
+						finalized_claimed_htlcs,
+					);
 					return_with_htlcs_to_fail!(htlcs_to_fail);
 				} else {
 					log_debug!(logger, "Received a valid revoke_and_ack for channel {} with no reply necessary. {} monitor update.",
 						&self.context.channel_id(), release_state_str);
 
-					self.monitor_updating_paused(false, false, false, to_forward_infos, revoked_htlcs, finalized_claimed_htlcs);
+					self.monitor_updating_paused(
+						false,
+						false,
+						false,
+						to_forward_infos,
+						revoked_htlcs,
+						finalized_claimed_htlcs,
+					);
 					return_with_htlcs_to_fail!(htlcs_to_fail);
 				}
-			}
+			},
 		}
 	}
 
