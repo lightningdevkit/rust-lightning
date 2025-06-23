@@ -57,6 +57,7 @@ use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
 };
+use crate::util::errors::APIError;
 use crate::util::logger::{Logger, Record};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
@@ -82,6 +83,7 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning_invoice::RawBolt11Invoice;
+use tokio::sync::oneshot;
 
 use crate::io;
 use crate::prelude::*;
@@ -720,53 +722,78 @@ pub struct TestPersister {
 	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
 	/// monitor's funding outpoint here.
 	pub chain_sync_monitor_persistences: Mutex<VecDeque<MonitorName>>,
-	// Map<channelid, updateid> -> single shot tokio channels tokio sync one shot
+
+	pub pending_persists: Mutex<HashMap<(ChannelId, u64), tokio::sync::oneshot::Sender<()>>>,
 }
+
 impl TestPersister {
 	pub fn new() -> Self {
 		let update_rets = Mutex::new(VecDeque::new());
 		let offchain_monitor_updates = Mutex::new(new_hash_map());
 		let chain_sync_monitor_persistences = Mutex::new(VecDeque::new());
-		Self { update_rets, offchain_monitor_updates, chain_sync_monitor_persistences }
+		Self {
+			update_rets,
+			offchain_monitor_updates,
+			chain_sync_monitor_persistences,
+			pending_persists: Mutex::new(new_hash_map()),
+		}
 	}
 
 	/// Queue an update status to return.
 	pub fn set_update_ret(&self, next_ret: chain::ChannelMonitorUpdateStatus) {
 		self.update_rets.lock().unwrap().push_back(next_ret);
 	}
-}
-impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister {
-	fn persist_new_channel(
-		&self, _monitor_name: MonitorName, _data: &ChannelMonitor<Signer>,
+
+	/// Signal completion of a channel monitor update.
+	pub fn channel_monitor_updated(
+		&self, channel_id: ChannelId, update_id: u64,
+	) -> Result<(), APIError> {
+		let tx = self.pending_persists.lock().unwrap().remove(&(channel_id, update_id));
+		tx.unwrap().send(()).map_err(|_| APIError::APIMisuseError {
+			err: format!(
+				"Failed to send channel monitor update completion for channel {}, update {}",
+				channel_id, update_id
+			),
+		})
+	}
+
+	fn handle_update_rets(
+		&self, channel_id: ChannelId, update_id: u64,
 	) -> AsyncResult<'static, ()> {
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			match update_ret {
 				chain::ChannelMonitorUpdateStatus::Completed => {},
 				chain::ChannelMonitorUpdateStatus::InProgress => {
-					return Box::pin(async move {
-						tokio::task::yield_now().await;
+					let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
-						Ok(())
-					});
+					self.pending_persists.lock().unwrap().insert((channel_id, update_id), tx);
+
+					return Box::pin(async { rx.await.map_err(|_| ()) });
 				},
 				chain::ChannelMonitorUpdateStatus::UnrecoverableError => {
-					return Box::pin(async move { Err(()) })
+					return Box::pin(async { Err(()) })
 				},
 			}
 		}
 
-		Box::pin(async move { Ok(()) })
+		Box::pin(async { Ok(()) })
+	}
+}
+
+impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister {
+	fn persist_new_channel(
+		&self, _monitor_name: MonitorName, data: &ChannelMonitor<Signer>,
+	) -> AsyncResult<'static, ()> {
+		let update_id = data.get_latest_update_id();
+		let channel_id = data.channel_id();
+
+		self.handle_update_rets(channel_id, update_id)
 	}
 
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		_data: &ChannelMonitor<Signer>,
 	) -> AsyncResult<'static, ()> {
-		let mut ret = chain::ChannelMonitorUpdateStatus::Completed;
-		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
-			ret = update_ret;
-		}
-
 		if let Some(update) = update {
 			self.offchain_monitor_updates
 				.lock()
@@ -774,20 +801,13 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister 
 				.entry(monitor_name)
 				.or_insert(new_hash_set())
 				.insert(update.update_id);
-		} else {
-			self.chain_sync_monitor_persistences.lock().unwrap().push_back(monitor_name);
+
+			return self.handle_update_rets(update.channel_id.unwrap(), update.update_id);
 		}
 
-		match ret {
-			chain::ChannelMonitorUpdateStatus::Completed => Box::pin(async move { Ok(()) }),
-			chain::ChannelMonitorUpdateStatus::InProgress => Box::pin(async move {
-				tokio::task::yield_now().await;
-				Ok(())
-			}),
-			chain::ChannelMonitorUpdateStatus::UnrecoverableError => {
-				Box::pin(async move { Err(()) })
-			},
-		}
+		self.chain_sync_monitor_persistences.lock().unwrap().push_back(monitor_name);
+
+		return self.persist_new_channel(monitor_name, _data);
 	}
 
 	fn archive_persisted_channel(&self, monitor_name: MonitorName) -> AsyncVoid {
