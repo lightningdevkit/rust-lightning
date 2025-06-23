@@ -5347,11 +5347,7 @@ where
 		&mut self, funding: &FundingScope, mut closure_reason: ClosureReason,
 	) -> ShutdownResult {
 		assert!(!matches!(self.channel_state, ChannelState::ShutdownComplete));
-		let pre_funding = matches!(self.channel_state, ChannelState::NegotiatingFunding(_));
-		let funded = matches!(self.channel_state, ChannelState::FundingNegotiated(_));
-		let awaiting_ready = matches!(self.channel_state, ChannelState::AwaitingChannelReady(_));
-		// TODO: allow pre-initial-monitor-storage but post-lock-in (is that a thing) closure?
-		assert!(pre_funding || funded || awaiting_ready);
+		assert!(!self.is_funding_broadcast());
 
 		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid(funding);
 		let unbroadcasted_funding_tx = self.unbroadcasted_funding(funding);
