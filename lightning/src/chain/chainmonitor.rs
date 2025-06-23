@@ -716,7 +716,7 @@ where
 				persist_res,
 				move || {
 					// TODO: Log error if the monitor is not persisted.
-					let _ = ChainMonitor::<ChannelSigner, C, T, F, L, P, ES, FS>::channel_monitor_updated_internal(&monitors, &pending_monitor_updates_cb, &event_notifier,
+					let _ = ChainMonitor::<ChannelSigner, C, T, F, L, P, ES, FS>::channel_monitor_updated(&monitors, &pending_monitor_updates_cb, &event_notifier,
 						channel_id, max_update_id);
 				},
 				future_spawner.deref(),
@@ -895,56 +895,7 @@ where
 	///
 	/// Returns an [`APIError::APIMisuseError`] if `funding_txo` does not match any currently
 	/// registered [`ChannelMonitor`]s.
-	pub fn channel_monitor_updated(
-		&self, channel_id: ChannelId, completed_update_id: u64,
-	) -> Result<(), APIError> {
-		let monitors = self.monitors.read().unwrap();
-		let monitor_data = if let Some(mon) = monitors.get(&channel_id) {
-			mon
-		} else {
-			return Err(APIError::APIMisuseError {
-				err: format!("No ChannelMonitor matching channel ID {} found", channel_id),
-			});
-		};
-		let mut pending_monitor_updates = monitor_data.pending_monitor_updates.lock().unwrap();
-		pending_monitor_updates.retain(|update_id| *update_id != completed_update_id);
-
-		// Note that we only check for pending non-chainsync monitor updates and we don't track monitor
-		// updates resulting from chainsync in `pending_monitor_updates`.
-		let monitor_is_pending_updates = monitor_data.has_pending_updates(&pending_monitor_updates);
-		log_debug!(
-			self.logger,
-			"Completed off-chain monitor update {} for channel with channel ID {}, {}",
-			completed_update_id,
-			channel_id,
-			if monitor_is_pending_updates {
-				"still have pending off-chain updates"
-			} else {
-				"all off-chain updates complete, returning a MonitorEvent"
-			}
-		);
-		if monitor_is_pending_updates {
-			// If there are still monitor updates pending, we cannot yet construct a
-			// Completed event.
-			return Ok(());
-		}
-		let funding_txo = monitor_data.monitor.get_funding_txo();
-		self.pending_monitor_events.lock().unwrap().push((
-			funding_txo,
-			channel_id,
-			vec![MonitorEvent::Completed {
-				funding_txo,
-				channel_id,
-				monitor_update_id: monitor_data.monitor.get_latest_update_id(),
-			}],
-			monitor_data.monitor.get_counterparty_node_id(),
-		));
-
-		self.event_notifier.notify();
-		Ok(())
-	}
-
-	fn channel_monitor_updated_internal(
+	fn channel_monitor_updated(
 		monitors: &RwLock<HashMap<ChannelId, MonitorHolder<ChannelSigner>>>,
 		pending_monitor_events: &Mutex<Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>>,
 		event_notifier: &Notifier, channel_id: ChannelId, completed_update_id: u64,
@@ -1423,8 +1374,14 @@ where
 			persist_res,
 			move || {
 				// TODO: Log error if the monitor is not persisted.
-				let _ = ChainMonitor::<ChannelSigner, C, T, F, L, P, ES, FS>::channel_monitor_updated_internal(&monitors, &pending_monitor_updates_cb, &event_notifier,
-				channel_id, update_id);
+				let _ =
+					ChainMonitor::<ChannelSigner, C, T, F, L, P, ES, FS>::channel_monitor_updated(
+						&monitors,
+						&pending_monitor_updates_cb,
+						&event_notifier,
+						channel_id,
+						update_id,
+					);
 			},
 			future_spawner.deref(),
 		) {
@@ -1535,7 +1492,7 @@ where
 					persist_res,
 					move || {
 						// TODO: Log error if the monitor is not persisted.
-						let _ = ChainMonitor::<ChannelSigner, C, T, F, L, P, ES, FS>::channel_monitor_updated_internal(&monitors, &pending_monitor_updates_cb, &event_notifier,
+						let _ = ChainMonitor::<ChannelSigner, C, T, F, L, P, ES, FS>::channel_monitor_updated(&monitors, &pending_monitor_updates_cb, &event_notifier,
 						channel_id, update_id);
 					},
 					future_spawner.deref(),

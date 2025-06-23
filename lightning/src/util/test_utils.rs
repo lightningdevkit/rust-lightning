@@ -463,11 +463,11 @@ impl<'a> TestChainMonitor<'a> {
 		}
 	}
 
-	pub fn complete_sole_pending_chan_update(&self, channel_id: &ChannelId) {
-		let (_, latest_update) =
-			self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
-		self.chain_monitor.channel_monitor_updated(*channel_id, latest_update).unwrap();
-	}
+	// pub fn complete_sole_pending_chan_update(&self, channel_id: &ChannelId) {
+	// 	let (_, latest_update) =
+	// 		self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
+	// 	self.chain_monitor.channel_monitor_updated(*channel_id, latest_update).unwrap();
+	// }
 }
 impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn watch_channel(
