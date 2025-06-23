@@ -829,7 +829,7 @@ pub(crate) fn build_htlc_output(
 	} else {
 		htlc_success_tx_weight(channel_type_features)
 	};
-	let output_value = if channel_type_features.supports_anchors_zero_fee_htlc_tx() && !channel_type_features.supports_anchors_nonzero_fee_htlc_tx() {
+	let output_value = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 		htlc.to_bitcoin_amount()
 	} else {
 		let total_fee = Amount::from_sat(feerate_per_kw as u64 * weight / 1000);
