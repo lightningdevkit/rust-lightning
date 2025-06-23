@@ -10572,6 +10572,21 @@ where
 		self.sign_channel_announcement(node_signer, announcement).ok()
 	}
 
+	fn get_next_local_commitment_number(&self) -> u64 {
+		let next_local_commitment_number =
+			INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.transaction_number();
+
+		if let Some(session) = &self.interactive_tx_signing_session {
+			if !self.context.channel_state.is_their_tx_signatures_sent()
+				&& !session.has_received_commitment_signed()
+			{
+				return next_local_commitment_number + 1;
+			}
+		}
+
+		next_local_commitment_number
+	}
+
 	#[rustfmt::skip]
 	fn maybe_get_next_funding_txid(&self) -> Option<Txid> {
 		// If we've sent `commtiment_signed` for an interactively constructed transaction
@@ -10660,7 +10675,7 @@ where
 
 			// next_local_commitment_number is the next commitment_signed number we expect to
 			// receive (indicating if they need to resend one that we missed).
-			next_local_commitment_number: INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.transaction_number(),
+			next_local_commitment_number: self.get_next_local_commitment_number(),
 			// We have to set next_remote_commitment_number to the next revoke_and_ack we expect to
 			// receive, however we track it by the next commitment number for a remote transaction
 			// (which is one further, as they always revoke previous commitment transaction, not
