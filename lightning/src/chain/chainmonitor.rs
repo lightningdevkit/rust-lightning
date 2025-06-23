@@ -1669,8 +1669,8 @@ mod tests {
 
 	const CHAINSYNC_MONITOR_PARTITION_FACTOR: u32 = 5;
 
-	#[test]
-	fn test_async_ooo_offchain_updates() {
+	#[tokio::test]
+	async fn test_async_ooo_offchain_updates() {
 		// Test that if we have multiple offchain updates being persisted and they complete
 		// out-of-order, the ChainMonitor waits until all have completed before informing the
 		// ChannelManager.
@@ -1724,12 +1724,21 @@ mod tests {
 			.unwrap()
 			.1
 			.contains(&next_update));
+
 		// TODO: RE-ENABLE
 		// nodes[1]
 		// 	.chain_monitor
 		// 	.chain_monitor
 		// 	.channel_monitor_updated(channel_id, next_update.clone())
 		// 	.unwrap();
+
+		// Race condition here?
+		chanmon_cfgs[1].persister.channel_monitor_updated(channel_id, next_update.clone()).unwrap();
+
+		// Sleep 1s
+		// tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+		tokio::task::yield_now().await;
+
 		// Should not contain the previously pending next_update when pending updates listed.
 		#[cfg(not(c_bindings))]
 		assert!(!nodes[1]
@@ -1758,6 +1767,13 @@ mod tests {
 		// 	.chain_monitor
 		// 	.channel_monitor_updated(channel_id, update_iter.next().unwrap().clone())
 		// 	.unwrap();
+		chanmon_cfgs[1]
+			.persister
+			.channel_monitor_updated(channel_id, update_iter.next().unwrap().clone())
+			.unwrap();
+
+		tokio::task::yield_now().await;
+		//tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
 		let claim_events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(claim_events.len(), 2);
