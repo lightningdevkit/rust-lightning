@@ -3379,12 +3379,6 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	create_node_cfgs_with_persisters(node_count, chanmon_cfgs, chanmon_cfgs.iter().map(|c| &c.persister).collect())
 }
 
-pub fn create_node_cfgs_arc<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfgArc>) -> Vec<NodeCfg<'a>> {
-	let persisters = chanmon_cfgs.iter().map(|c| Arc::clone(&c.persister)).collect();
-
-	create_node_cfgs_with_persisters_arc(node_count, chanmon_cfgs, persisters)
-}
-
 pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>, persisters: Vec<&'a impl test_utils::SyncPersist>) -> Vec<NodeCfg<'a>> {
 	let mut nodes = Vec::new();
 
@@ -3411,12 +3405,16 @@ pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a
 }
 
 
-pub fn create_node_cfgs_with_persisters_arc<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfgArc>, persisters: Vec<Arc<test_utils::TestPersister>>) -> Vec<NodeCfg<'a>> {
+
+pub fn create_node_cfgs_arc<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfgArc>) -> Vec<NodeCfg<'a>> {
 	let mut nodes = Vec::new();
 
 	for i in 0..node_count {
-		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &*Arc::clone(&chanmon_cfgs[i].tx_broadcaster), &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator, &*persisters[i], &chanmon_cfgs[i].keys_manager);
-		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &*Arc::clone(&chanmon_cfgs[i].logger)));
+		let chain_monitor = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[i].chain_source), &*chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger,
+			&chanmon_cfgs[i].fee_estimator, &*chanmon_cfgs[i].persister, &chanmon_cfgs[i].keys_manager
+		);
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &*chanmon_cfgs[i].logger));
 		let seed = [i as u8; 32];
 		nodes.push(NodeCfg {
 			chain_source: &chanmon_cfgs[i].chain_source,
