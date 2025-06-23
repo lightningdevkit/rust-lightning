@@ -390,6 +390,16 @@ pub struct TestChanMonCfg {
 	pub scorer: RwLock<test_utils::TestScorer>,
 }
 
+pub struct TestChanMonCfgArc {
+	pub tx_broadcaster: Arc<test_utils::TestBroadcaster>,
+	pub fee_estimator: Arc<test_utils::TestFeeEstimator>,
+	pub chain_source: Arc<test_utils::TestChainSource>,
+	pub persister: Arc<test_utils::TestPersister>,
+	pub logger: Arc<test_utils::TestLogger>,
+	pub keys_manager: Arc<test_utils::TestKeysInterface>,
+	pub scorer: Arc<RwLock<test_utils::TestScorer>>,
+}
+
 pub struct NodeCfg<'a> {
 	pub chain_source: &'a test_utils::TestChainSource,
 	pub tx_broadcaster: &'a test_utils::TestBroadcaster,
@@ -3339,8 +3349,40 @@ pub fn create_chanmon_cfgs_with_keys(node_count: usize, predefined_keys_ids: Opt
 	chan_mon_cfgs
 }
 
+
+pub fn create_chanmon_cfgs_with_keys_arc(node_count: usize, predefined_keys_ids: Option<Vec<[u8; 32]>>) -> Vec<TestChanMonCfgArc> {
+	let mut chan_mon_cfgs = Vec::new();
+	for i in 0..node_count {
+		let tx_broadcaster = Arc::new(test_utils::TestBroadcaster::new(Network::Testnet));
+		let fee_estimator = Arc::new(test_utils::TestFeeEstimator::new(253));
+		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
+		let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
+		let persister = Arc::new(test_utils::TestPersister::new());
+		let seed = [i as u8; 32];
+		let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
+		let scorer = Arc::new(RwLock::new(test_utils::TestScorer::new()));
+
+		// Set predefined keys_id if provided
+		if let Some(keys_ids) = &predefined_keys_ids {
+			if let Some(keys_id) = keys_ids.get(i) {
+				keys_manager.set_next_keys_id(*keys_id);
+			}
+		}
+
+		chan_mon_cfgs.push(TestChanMonCfgArc { tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager, scorer });
+	}
+
+	chan_mon_cfgs
+}
+
 pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>) -> Vec<NodeCfg<'a>> {
 	create_node_cfgs_with_persisters(node_count, chanmon_cfgs, chanmon_cfgs.iter().map(|c| &c.persister).collect())
+}
+
+pub fn create_node_cfgs_arc<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfgArc>) -> Vec<NodeCfg<'a>> {
+	let persisters = chanmon_cfgs.iter().map(|c| Arc::clone(&c.persister)).collect();
+
+	create_node_cfgs_with_persisters_arc(node_count, chanmon_cfgs, persisters)
 }
 
 pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>, persisters: Vec<&'a impl test_utils::SyncPersist>) -> Vec<NodeCfg<'a>> {
@@ -3349,6 +3391,32 @@ pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a
 	for i in 0..node_count {
 		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator, persisters[i], &chanmon_cfgs[i].keys_manager);
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &chanmon_cfgs[i].logger));
+		let seed = [i as u8; 32];
+		nodes.push(NodeCfg {
+			chain_source: &chanmon_cfgs[i].chain_source,
+			logger: &chanmon_cfgs[i].logger,
+			tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster,
+			fee_estimator: &chanmon_cfgs[i].fee_estimator,
+			router: test_utils::TestRouter::new(network_graph.clone(), &chanmon_cfgs[i].logger, &chanmon_cfgs[i].scorer),
+			message_router: test_utils::TestMessageRouter::new(network_graph.clone(), &chanmon_cfgs[i].keys_manager),
+			chain_monitor,
+			keys_manager: &chanmon_cfgs[i].keys_manager,
+			node_seed: seed,
+			network_graph,
+			override_init_features: Rc::new(RefCell::new(None)),
+		});
+	}
+
+	nodes
+}
+
+
+pub fn create_node_cfgs_with_persisters_arc<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfgArc>, persisters: Vec<Arc<test_utils::TestPersister>>) -> Vec<NodeCfg<'a>> {
+	let mut nodes = Vec::new();
+
+	for i in 0..node_count {
+		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &*Arc::clone(&chanmon_cfgs[i].tx_broadcaster), &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator, &*persisters[i], &chanmon_cfgs[i].keys_manager);
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &*Arc::clone(&chanmon_cfgs[i].logger)));
 		let seed = [i as u8; 32];
 		nodes.push(NodeCfg {
 			chain_source: &chanmon_cfgs[i].chain_source,

@@ -15,7 +15,7 @@ use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
-use crate::chain::chainmonitor::{ChainMonitor, ChainMonitorSync, Persist, PersistSync};
+use crate::chain::chainmonitor::{ChainMonitor, Persist};
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 };
@@ -50,7 +50,9 @@ use crate::sign;
 use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-use crate::util::async_poll::FutureSpawnerSync;
+use crate::util::async_poll::AsyncResult;
+use crate::util::async_poll::AsyncVoid;
+use crate::util::async_poll::FutureSpawner;
 use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
@@ -85,6 +87,7 @@ use crate::io;
 use crate::prelude::*;
 use crate::sign::{EntropySource, NodeSigner, RandomBytes, Recipient, SignerProvider};
 use crate::sync::{Arc, Mutex};
+use core::future::Future;
 use core::mem;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
@@ -382,11 +385,11 @@ impl SignerProvider for OnlyReadsKeysInterface {
 #[cfg(feature = "std")]
 pub trait SyncBroadcaster: chaininterface::BroadcasterInterface + Sync {}
 #[cfg(feature = "std")]
-pub trait SyncPersist: PersistSync<TestChannelSigner> + Sync {}
+pub trait SyncPersist: Persist<TestChannelSigner> + Sync {}
 #[cfg(feature = "std")]
 impl<T: chaininterface::BroadcasterInterface + Sync> SyncBroadcaster for T {}
 #[cfg(feature = "std")]
-impl<T: PersistSync<TestChannelSigner> + Sync> SyncPersist for T {}
+impl<T: Persist<TestChannelSigner> + Sync> SyncPersist for T {}
 
 #[cfg(not(feature = "std"))]
 pub trait SyncBroadcaster: chaininterface::BroadcasterInterface {}
@@ -397,11 +400,19 @@ impl<T: chaininterface::BroadcasterInterface> SyncBroadcaster for T {}
 #[cfg(not(feature = "std"))]
 impl<T: Persist<TestChannelSigner>> SyncPersist for T {}
 
+#[derive(Clone)]
+pub struct TokioSpawner;
+impl FutureSpawner for TokioSpawner {
+	fn spawn<T: Future<Output = ()> + Send + 'static>(&self, future: T) {
+		tokio::spawn(future);
+	}
+}
+
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(ChannelId, ChannelMonitor<TestChannelSigner>)>>,
 	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<ChannelMonitorUpdate>>>,
 	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (u64, u64)>>,
-	pub chain_monitor: ChainMonitorSync<
+	pub chain_monitor: ChainMonitor<
 		TestChannelSigner,
 		&'a TestChainSource,
 		&'a dyn SyncBroadcaster,
@@ -409,6 +420,7 @@ pub struct TestChainMonitor<'a> {
 		&'a TestLogger,
 		&'a dyn SyncPersist,
 		&'a TestKeysInterface,
+		TokioSpawner,
 	>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
@@ -431,7 +443,7 @@ impl<'a> TestChainMonitor<'a> {
 			added_monitors: Mutex::new(Vec::new()),
 			monitor_updates: Mutex::new(new_hash_map()),
 			latest_monitor_update_id: Mutex::new(new_hash_map()),
-			chain_monitor: ChainMonitorSync::new(
+			chain_monitor: ChainMonitor::new(
 				chain_source,
 				broadcaster,
 				logger,
@@ -439,6 +451,7 @@ impl<'a> TestChainMonitor<'a> {
 				persister,
 				keys_manager,
 				keys_manager.get_peer_storage_key(),
+				TokioSpawner {},
 			),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
@@ -448,11 +461,11 @@ impl<'a> TestChainMonitor<'a> {
 		}
 	}
 
-	// pub fn complete_sole_pending_chan_update(&self, channel_id: &ChannelId) {
-	// 	let (_, latest_update) =
-	// 		self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
-	// 	self.chain_monitor.channel_monitor_updated(*channel_id, latest_update).unwrap();
-	// }
+	pub fn complete_sole_pending_chan_update(&self, channel_id: &ChannelId) {
+		let (_, latest_update) =
+			self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
+		self.chain_monitor.channel_monitor_updated(*channel_id, latest_update).unwrap();
+	}
 }
 impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn watch_channel(
@@ -611,10 +624,10 @@ impl WatchtowerPersister {
 }
 
 #[cfg(any(test, feature = "_externalize_tests"))]
-impl<Signer: sign::ecdsa::EcdsaChannelSigner> PersistSync<Signer> for WatchtowerPersister {
+impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPersister {
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, data: &ChannelMonitor<Signer>,
-	) -> Result<(), ()> {
+	) -> AsyncResult<'static, ()> {
 		let res = self.persister.persist_new_channel(monitor_name, data);
 
 		assert!(self
@@ -648,7 +661,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> PersistSync<Signer> for Watchtower
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		data: &ChannelMonitor<Signer>,
-	) -> Result<(), ()> {
+	) -> AsyncResult<'static, ()> {
 		let res = self.persister.update_persisted_channel(monitor_name, update, data);
 
 		if let Some(update) = update {
@@ -689,11 +702,11 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> PersistSync<Signer> for Watchtower
 		res
 	}
 
-	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
-		<TestPersister as PersistSync<TestChannelSigner>>::archive_persisted_channel(
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) -> AsyncVoid {
+		<TestPersister as Persist<TestChannelSigner>>::archive_persisted_channel(
 			&self.persister,
 			monitor_name,
-		);
+		)
 	}
 }
 
@@ -707,6 +720,7 @@ pub struct TestPersister {
 	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
 	/// monitor's funding outpoint here.
 	pub chain_sync_monitor_persistences: Mutex<VecDeque<MonitorName>>,
+	// Map<channelid, updateid> -> single shot tokio channels tokio sync one shot
 }
 impl TestPersister {
 	pub fn new() -> Self {
@@ -721,24 +735,33 @@ impl TestPersister {
 		self.update_rets.lock().unwrap().push_back(next_ret);
 	}
 }
-impl<Signer: sign::ecdsa::EcdsaChannelSigner> PersistSync<Signer> for TestPersister {
+impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister {
 	fn persist_new_channel(
 		&self, _monitor_name: MonitorName, _data: &ChannelMonitor<Signer>,
-	) -> Result<(), ()> {
+	) -> AsyncResult<'static, ()> {
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
-			return match update_ret {
-				chain::ChannelMonitorUpdateStatus::Completed => Ok(()),
-				chain::ChannelMonitorUpdateStatus::InProgress => Err(()),
-				chain::ChannelMonitorUpdateStatus::UnrecoverableError => Err(()),
-			};
+			match update_ret {
+				chain::ChannelMonitorUpdateStatus::Completed => {},
+				chain::ChannelMonitorUpdateStatus::InProgress => {
+					return Box::pin(async move {
+						tokio::task::yield_now().await;
+
+						Ok(())
+					});
+				},
+				chain::ChannelMonitorUpdateStatus::UnrecoverableError => {
+					return Box::pin(async move { Err(()) })
+				},
+			}
 		}
-		Ok(())
+
+		Box::pin(async move { Ok(()) })
 	}
 
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		_data: &ChannelMonitor<Signer>,
-	) -> Result<(), ()> {
+	) -> AsyncResult<'static, ()> {
 		let mut ret = chain::ChannelMonitorUpdateStatus::Completed;
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			ret = update_ret;
@@ -756,16 +779,23 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> PersistSync<Signer> for TestPersis
 		}
 
 		match ret {
-			chain::ChannelMonitorUpdateStatus::Completed => Ok(()),
-			chain::ChannelMonitorUpdateStatus::InProgress => Err(()),
-			chain::ChannelMonitorUpdateStatus::UnrecoverableError => Err(()),
+			chain::ChannelMonitorUpdateStatus::Completed => Box::pin(async move { Ok(()) }),
+			chain::ChannelMonitorUpdateStatus::InProgress => Box::pin(async move {
+				tokio::task::yield_now().await;
+				Ok(())
+			}),
+			chain::ChannelMonitorUpdateStatus::UnrecoverableError => {
+				Box::pin(async move { Err(()) })
+			},
 		}
 	}
 
-	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) -> AsyncVoid {
 		// remove the channel from the offchain_monitor_updates and chain_sync_monitor_persistences.
 		self.offchain_monitor_updates.lock().unwrap().remove(&monitor_name);
 		self.chain_sync_monitor_persistences.lock().unwrap().retain(|x| x != &monitor_name);
+
+		Box::pin(async move { () })
 	}
 }
 
