@@ -760,10 +760,10 @@ pub fn test_duplicate_htlc_different_direction_onchain() {
 			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 			MessageSendEvent::HandleError {
 				node_id,
-				action: msgs::ErrorAction::DisconnectPeer { ref msg },
+				action: msgs::ErrorAction::SendErrorMessage { ref msg },
 			} => {
 				assert_eq!(node_id, node_b_id);
-				assert_eq!(msg.as_ref().unwrap().data, "Channel closed because commitment or closing transaction was confirmed on chain.");
+				assert_eq!(msg.data, "Channel closed because commitment or closing transaction was confirmed on chain.");
 			},
 			MessageSendEvent::UpdateHTLCs {
 				ref node_id,
@@ -1116,7 +1116,7 @@ pub fn channel_monitor_network_test() {
 		};
 		match events[0] {
 			MessageSendEvent::HandleError {
-				action: ErrorAction::DisconnectPeer { .. },
+				action: ErrorAction::SendErrorMessage { .. },
 				node_id,
 			} => {
 				assert_eq!(node_id, node_e_id);
@@ -1151,7 +1151,7 @@ pub fn channel_monitor_network_test() {
 		};
 		match events[0] {
 			MessageSendEvent::HandleError {
-				action: ErrorAction::DisconnectPeer { .. },
+				action: ErrorAction::SendErrorMessage { .. },
 				node_id,
 			} => {
 				assert_eq!(node_id, node_d_id);
@@ -1937,7 +1937,7 @@ pub fn test_htlc_on_chain_success() {
 	let nodes_0_event = remove_first_msg_event_to_node(&node_a_id, &mut events);
 
 	match nodes_2_event {
-		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, .. } => {},
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -2513,7 +2513,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 	match nodes_2_event {
 		MessageSendEvent::HandleError {
 			action:
-				ErrorAction::DisconnectPeer { msg: Some(msgs::ErrorMessage { channel_id, ref data }) },
+				ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id, ref data } },
 			..
 		} => {
 			assert_eq!(channel_id, chan_2.2);
@@ -4393,7 +4393,7 @@ pub fn test_onchain_to_onchain_claim() {
 
 	match nodes_2_event {
 		MessageSendEvent::HandleError {
-			action: ErrorAction::DisconnectPeer { .. },
+			action: ErrorAction::SendErrorMessage { .. },
 			node_id: _,
 		} => {},
 		_ => panic!("Unexpected event"),
@@ -7324,12 +7324,12 @@ pub fn test_channel_conf_timeout() {
 	assert_eq!(close_ev.len(), 1);
 	match close_ev[0] {
 		MessageSendEvent::HandleError {
-			action: ErrorAction::DisconnectPeer { ref msg },
+			action: ErrorAction::SendErrorMessage { ref msg },
 			ref node_id,
 		} => {
 			assert_eq!(*node_id, node_a_id);
 			assert_eq!(
-				msg.as_ref().unwrap().data,
+				msg.data,
 				"Channel closed because funding transaction failed to confirm within 2016 blocks"
 			);
 		},
@@ -9269,9 +9269,9 @@ pub fn test_invalid_funding_tx() {
 	assert_eq!(events_2.len(), 1);
 	if let MessageSendEvent::HandleError { node_id, action } = &events_2[0] {
 		assert_eq!(*node_id, node_a_id);
-		if let msgs::ErrorAction::DisconnectPeer { msg } = action {
+		if let msgs::ErrorAction::SendErrorMessage { msg } = action {
 			assert_eq!(
-				msg.as_ref().unwrap().data,
+				msg.data,
 				"Channel closed because of an exception: ".to_owned() + expected_err
 			);
 		} else {
@@ -10688,11 +10688,11 @@ pub fn test_non_final_funding_tx() {
 		},
 		_ => panic!(),
 	}
-	let err = "Error in transaction funding: Misuse error: Funding transaction absolute timelock is non-final".to_owned();
-	let reason = ClosureReason::ProcessingError { err };
+	let err = "Error in transaction funding: Misuse error: Funding transaction absolute timelock is non-final";
+	let reason = ClosureReason::ProcessingError { err: err.to_owned() };
 	let event = ExpectedCloseEvent::from_id_reason(temp_channel_id, false, reason);
 	check_closed_events(&nodes[0], &[event]);
-	assert_eq!(get_err_msg(&nodes[0], &node_b_id).data, "Failed to fund channel");
+	assert_eq!(get_err_msg(&nodes[0], &node_b_id).data, err);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -11524,10 +11524,11 @@ pub fn test_batch_funding_close_after_funding_signed() {
 		_ => panic!("Unexpected message."),
 	}
 
-	// We broadcast the commitment transaction as part of the force-close.
+	// TODO: We shouldn't broadcast any commitment transaction here as we have not yet broadcasted
+	// the funding transaction.
 	{
 		let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
-		assert_eq!(broadcasted_txs.len(), 1);
+		assert_eq!(broadcasted_txs.len(), 2);
 		assert!(broadcasted_txs[0].compute_txid() != tx.compute_txid());
 		assert_eq!(broadcasted_txs[0].input.len(), 1);
 		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.compute_txid());
