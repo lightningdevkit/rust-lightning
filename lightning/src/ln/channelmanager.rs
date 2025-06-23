@@ -3169,22 +3169,33 @@ macro_rules! handle_error {
 /// directly avoids duplicate error messages.
 #[rustfmt::skip]
 macro_rules! locked_close_channel {
-	($self: ident, $peer_state: expr, $channel_context: expr, $channel_funding: expr, $shutdown_res_mut: expr) => {{
+	($self: ident, $chan_context: expr, UNFUNDED) => {{
+		$self.short_to_chan_info.write().unwrap().remove(&$chan_context.outbound_scid_alias());
+		// If the channel was never confirmed on-chain prior to its closure, remove the
+		// outbound SCID alias we used for it from the collision-prevention set. While we
+		// generally want to avoid ever re-using an outbound SCID alias across all channels, we
+		// also don't want a counterparty to be able to trivially cause a memory leak by simply
+		// opening a million channels with us which are closed before we ever reach the funding
+		// stage.
+		let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$chan_context.outbound_scid_alias());
+		debug_assert!(alias_removed);
+	}};
+	($self: ident, $peer_state: expr, $funded_chan: expr, $shutdown_res_mut: expr, FUNDED) => {{
 		if let Some((_, funding_txo, _, update)) = $shutdown_res_mut.monitor_update.take() {
 			handle_new_monitor_update!($self, funding_txo, update, $peer_state,
-				$channel_context, REMAIN_LOCKED_UPDATE_ACTIONS_PROCESSED_LATER);
+				$funded_chan.context, REMAIN_LOCKED_UPDATE_ACTIONS_PROCESSED_LATER);
 		}
 		// If there's a possibility that we need to generate further monitor updates for this
 		// channel, we need to store the last update_id of it. However, we don't want to insert
 		// into the map (which prevents the `PeerState` from being cleaned up) for channels that
 		// never even got confirmations (which would open us up to DoS attacks).
-		let update_id = $channel_context.get_latest_monitor_update_id();
-		if $channel_funding.get_funding_tx_confirmation_height().is_some() || $channel_context.minimum_depth($channel_funding) == Some(0) || update_id > 1 {
-			let chan_id = $channel_context.channel_id();
+		let update_id = $funded_chan.context.get_latest_monitor_update_id();
+		if $funded_chan.funding.get_funding_tx_confirmation_height().is_some() || $funded_chan.context.minimum_depth(&$funded_chan.funding) == Some(0) || update_id > 1 {
+			let chan_id = $funded_chan.context.channel_id();
 			$peer_state.closed_channel_monitor_update_ids.insert(chan_id, update_id);
 		}
 		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
-		if let Some(short_id) = $channel_funding.get_short_channel_id() {
+		if let Some(short_id) = $funded_chan.funding.get_short_channel_id() {
 			short_to_chan_info.remove(&short_id);
 		} else {
 			// If the channel was never confirmed on-chain prior to its closure, remove the
@@ -3193,11 +3204,11 @@ macro_rules! locked_close_channel {
 			// also don't want a counterparty to be able to trivially cause a memory leak by simply
 			// opening a million channels with us which are closed before we ever reach the funding
 			// stage.
-			let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$channel_context.outbound_scid_alias());
+			let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$funded_chan.context.outbound_scid_alias());
 			debug_assert!(alias_removed);
 		}
-		short_to_chan_info.remove(&$channel_context.outbound_scid_alias());
-		for scid in $channel_context.historical_scids() {
+		short_to_chan_info.remove(&$funded_chan.context.outbound_scid_alias());
+		for scid in $funded_chan.context.historical_scids() {
 			short_to_chan_info.remove(scid);
 		}
 	}}
@@ -3206,7 +3217,7 @@ macro_rules! locked_close_channel {
 /// Returns (boolean indicating if we should remove the Channel object from memory, a mapped error)
 #[rustfmt::skip]
 macro_rules! convert_channel_err {
-	($self: ident, $peer_state: expr, $err: expr, $context: expr, $funding: expr, $channel_id: expr, MANUAL_CHANNEL_UPDATE, $channel_update: expr) => {
+	($self: ident, $peer_state: expr, $err: expr, $chan: expr, $close: expr, $locked_close: expr, $channel_id: expr, _internal) => {
 		match $err {
 			ChannelError::Warn(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(msg), *$channel_id))
@@ -3218,12 +3229,12 @@ macro_rules! convert_channel_err {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), *$channel_id))
 			},
 			ChannelError::Close((msg, reason)) => {
-				let logger = WithChannelContext::from(&$self.logger, &$context, None);
-				log_error!(logger, "Closing channel {} due to close-required error: {}", $channel_id, msg);
-				let mut shutdown_res = $context.force_shutdown($funding, true, reason);
-				locked_close_channel!($self, $peer_state, $context, $funding, &mut shutdown_res);
+				let (mut shutdown_res, chan_update) = $close(reason);
+				let logger = WithChannelContext::from(&$self.logger, &$chan.context(), None);
+				log_error!(logger, "Closed channel {} due to close-required error: {}", $channel_id, msg);
+				$locked_close(&mut shutdown_res, $chan);
 				let err =
-					MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $channel_update);
+					MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, chan_update);
 				(true, err)
 			},
 			ChannelError::SendError(msg) => {
@@ -3231,20 +3242,30 @@ macro_rules! convert_channel_err {
 			},
 		}
 	};
-	($self: ident, $peer_state: expr, $err: expr, $funded_channel: expr, $channel_id: expr, FUNDED_CHANNEL) => {
-		convert_channel_err!($self, $peer_state, $err, $funded_channel.context, &$funded_channel.funding, $channel_id, MANUAL_CHANNEL_UPDATE, { $self.get_channel_update_for_broadcast(&$funded_channel).ok() })
-	};
-	($self: ident, $peer_state: expr, $err: expr, $context: expr, $funding: expr, $channel_id: expr, UNFUNDED_CHANNEL) => {
-		convert_channel_err!($self, $peer_state, $err, $context, $funding, $channel_id, MANUAL_CHANNEL_UPDATE, None)
-	};
+	($self: ident, $peer_state: expr, $err: expr, $funded_channel: expr, $channel_id: expr, FUNDED_CHANNEL) => { {
+		let mut do_close = |reason| {
+			(
+				$funded_channel.force_shutdown(reason, true),
+				$self.get_channel_update_for_broadcast(&$funded_channel).ok(),
+			)
+		};
+		let mut locked_close = |shutdown_res_mut: &mut ShutdownResult, funded_channel: &mut FundedChannel<_>| {
+			locked_close_channel!($self, $peer_state, funded_channel, shutdown_res_mut, FUNDED);
+		};
+		convert_channel_err!($self, $peer_state, $err, $funded_channel, do_close, locked_close, $channel_id, _internal)
+	} };
+	($self: ident, $peer_state: expr, $err: expr, $channel: expr, $channel_id: expr, UNFUNDED_CHANNEL) => { {
+		let mut do_close = |reason| { ($channel.force_shutdown(true, reason), None) };
+		let locked_close = |_, chan: &mut Channel<_>| { locked_close_channel!($self, chan.context(), UNFUNDED); };
+		convert_channel_err!($self, $peer_state, $err, $channel, do_close, locked_close, $channel_id, _internal)
+	} };
 	($self: ident, $peer_state: expr, $err: expr, $channel: expr, $channel_id: expr) => {
 		match $channel.as_funded_mut() {
 			Some(funded_channel) => {
 				convert_channel_err!($self, $peer_state, $err, funded_channel, $channel_id, FUNDED_CHANNEL)
 			},
 			None => {
-				let (funding, context) = $channel.funding_and_context_mut();
-				convert_channel_err!($self, $peer_state, $err, context, funding, $channel_id, UNFUNDED_CHANNEL)
+				convert_channel_err!($self, $peer_state, $err, $channel, $channel_id, UNFUNDED_CHANNEL)
 			},
 		}
 	};
@@ -4116,7 +4137,7 @@ where
 						let reason = ClosureReason::LocallyCoopClosedUnfundedChannel;
 						let err = ChannelError::Close((reason.to_string(), reason));
 						let mut chan = chan_entry.remove();
-						let (_, mut e) = convert_channel_err!(self, peer_state, err, chan, chan_id);
+						let (_, mut e) = convert_channel_err!(self, peer_state, err, &mut chan, chan_id);
 						e.dont_send_error_message();
 						shutdown_result = Err(e);
 					}
@@ -4313,7 +4334,7 @@ where
 					if let Some(mut chan) = peer_state.channel_by_id.remove(&channel_id) {
 						let reason = ClosureReason::FundingBatchClosure;
 						let err = ChannelError::Close((reason.to_string(), reason));
-						let (_, e) = convert_channel_err!(self, peer_state, err, chan, &channel_id);
+						let (_, e) = convert_channel_err!(self, peer_state, err, &mut chan, &channel_id);
 						shutdown_results.push((Err(e), counterparty_node_id));
 					}
 				}
@@ -4377,7 +4398,7 @@ where
 		if let Some(mut chan) = peer_state.channel_by_id.remove(channel_id) {
 			log_error!(logger, "Force-closing channel {}", channel_id);
 			let err = ChannelError::Close((message, reason));
-			let (_, mut e) = convert_channel_err!(self, peer_state, err, chan, channel_id);
+			let (_, mut e) = convert_channel_err!(self, peer_state, err, &mut chan, channel_id);
 			mem::drop(peer_state_lock);
 			mem::drop(per_peer_state);
 			if is_from_counterparty {
@@ -5834,7 +5855,7 @@ where
 							let reason = ClosureReason::ProcessingError { err: e.clone() };
 							let err = ChannelError::Close((e.clone(), reason));
 							let (_, e) =
-								convert_channel_err!(self, peer_state, err, chan, &channel_id);
+								convert_channel_err!(self, peer_state, err, &mut chan, &channel_id);
 							shutdown_results.push((Err(e), counterparty_node_id));
 						});
 				}
@@ -8655,7 +8676,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					let logger = WithChannelContext::from(&self.logger, &inbound_chan.context, None);
 					match inbound_chan.funding_created(msg, best_block, &self.signer_provider, &&logger) {
 						Ok(res) => res,
-						Err((mut inbound_chan, err)) => {
+						Err((inbound_chan, err)) => {
 							// We've already removed this inbound channel from the map in `PeerState`
 							// above so at this point we just need to clean up any lingering entries
 							// concerning this channel as it is safe to do so.
@@ -8663,7 +8684,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// Really we should be returning the channel_id the peer expects based
 							// on their funding info here, but they're horribly confused anyway, so
 							// there's not a lot we can do to save them.
-							return Err(convert_channel_err!(self, peer_state, err, inbound_chan.context, &inbound_chan.funding, &msg.temporary_channel_id, UNFUNDED_CHANNEL).1);
+							let mut chan = Channel::from(inbound_chan);
+							return Err(convert_channel_err!(self, peer_state, err, &mut chan, &msg.temporary_channel_id, UNFUNDED_CHANNEL).1);
 						},
 					}
 				},
@@ -8685,7 +8707,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			// Thus, we must first unset the funding outpoint on the channel.
 			let err = ChannelError::close($err.to_owned());
 			chan.unset_funding_info();
-			return Err(convert_channel_err!(self, peer_state, err, chan.context, &chan.funding, &funded_channel_id, UNFUNDED_CHANNEL).1);
+			let mut chan = Channel::from(chan);
+			return Err(convert_channel_err!(self, peer_state, err, &mut chan, &funded_channel_id, UNFUNDED_CHANNEL).1);
 		} } }
 
 		match peer_state.channel_by_id.entry(funded_channel_id) {
@@ -9226,7 +9249,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let err = ChannelError::Close((reason.to_string(), reason));
 						let mut chan = chan_entry.remove();
 						let (_, mut e) =
-							convert_channel_err!(self, peer_state, err, chan, &msg.channel_id);
+							convert_channel_err!(self, peer_state, err, &mut chan, &msg.channel_id);
 						e.dont_send_error_message();
 						return Err(e);
 					},
@@ -9283,7 +9306,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
 							debug_assert!(tx.is_some());
-							locked_close_channel!(self, peer_state, chan.context, &chan.funding, close_res);
+							locked_close_channel!(self, peer_state, chan, close_res, FUNDED);
 							(tx, Some(chan_entry.remove()), Some(close_res))
 						} else {
 							debug_assert!(tx.is_none());
@@ -10257,7 +10280,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								};
 								let err = ChannelError::Close((reason.to_string(), reason));
 								let mut chan = chan_entry.remove();
-								let (_, e) = convert_channel_err!(self, peer_state, err, chan, &channel_id);
+								let (_, e) = convert_channel_err!(self, peer_state, err, &mut chan, &channel_id);
 								failed_channels.push((Err(e), counterparty_node_id));
 							}
 						}
@@ -10446,10 +10469,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					_ => unblock_chan(chan, &mut peer_state.pending_msg_events),
 				};
 				if let Some(mut shutdown_result) = shutdown_result {
-					let context = &chan.context();
+					let context = chan.context();
 					let logger = WithChannelContext::from(&self.logger, context, None);
 					log_trace!(logger, "Removing channel {} now that the signer is unblocked", context.channel_id());
-					locked_close_channel!(self, peer_state, context, chan.funding(), shutdown_result);
+					if let Some(funded_channel) = chan.as_funded_mut() {
+						locked_close_channel!(self, peer_state, funded_channel, shutdown_result, FUNDED);
+					} else {
+						locked_close_channel!(self, chan.context(), UNFUNDED);
+					}
 					shutdown_results.push(shutdown_result);
 					false
 				} else {
@@ -10492,7 +10519,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									}
 									debug_assert_eq!(shutdown_result_opt.is_some(), funded_chan.is_shutdown());
 									if let Some(mut shutdown_result) = shutdown_result_opt {
-										locked_close_channel!(self, peer_state, &funded_chan.context, &funded_chan.funding, shutdown_result);
+										locked_close_channel!(self, peer_state, funded_chan, shutdown_result, FUNDED);
 										shutdown_results.push(shutdown_result);
 									}
 									if let Some(tx) = tx_opt {
