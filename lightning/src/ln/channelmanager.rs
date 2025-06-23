@@ -179,8 +179,10 @@ use crate::io::Read;
 use crate::prelude::*;
 use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, RwLock, RwLockReadGuard};
 use bitcoin::hex::impl_fmt_traits;
+
 use core::borrow::Borrow;
 use core::cell::RefCell;
+use core::convert::Infallible;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
@@ -3160,6 +3162,11 @@ macro_rules! handle_error {
 ///
 /// Note that this step can be skipped if the channel was never opened (through the creation of a
 /// [`ChannelMonitor`]/channel funding transaction) to begin with.
+///
+/// For non-coop-close cases, you should generally prefer to call `convert_channel_err` and
+/// [`handle_error`] instead (which delegate to this and [`ChannelManager::finish_close_channel`]),
+/// as they ensure the relevant messages go out as well. In a coop close case, calling this
+/// directly avoids duplicate error messages.
 #[rustfmt::skip]
 macro_rules! locked_close_channel {
 	($self: ident, $peer_state: expr, $channel_context: expr, $channel_funding: expr, $shutdown_res_mut: expr) => {{
@@ -3275,20 +3282,6 @@ macro_rules! try_channel_entry {
 			},
 		}
 	};
-}
-
-macro_rules! remove_channel_entry {
-	($self: ident, $peer_state: expr, $entry: expr, $shutdown_res_mut: expr) => {{
-		let channel = $entry.remove_entry().1;
-		locked_close_channel!(
-			$self,
-			$peer_state,
-			&channel.context(),
-			channel.funding(),
-			$shutdown_res_mut
-		);
-		channel
-	}};
 }
 
 macro_rules! send_channel_ready {
@@ -4079,11 +4072,11 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn close_channel_internal(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
+	fn close_channel_internal(&self, chan_id: &ChannelId, counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)> = Vec::new();
-		let mut shutdown_result = None;
+		let mut shutdown_result = Ok(());
 
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -4094,7 +4087,7 @@ where
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 
-			match peer_state.channel_by_id.entry(channel_id.clone()) {
+			match peer_state.channel_by_id.entry(*chan_id) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let funding_txo_opt = chan.funding.get_funding_txo();
@@ -4120,17 +4113,19 @@ where
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 					} else {
-						let mut shutdown_res = chan_entry.get_mut()
-							.force_shutdown(false, ClosureReason::LocallyCoopClosedUnfundedChannel);
-						remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
-						shutdown_result = Some(shutdown_res);
+						let reason = ClosureReason::LocallyCoopClosedUnfundedChannel;
+						let err = ChannelError::Close((reason.to_string(), reason));
+						let mut chan = chan_entry.remove();
+						let (_, mut e) = convert_channel_err!(self, peer_state, err, chan, chan_id);
+						e.dont_send_error_message();
+						shutdown_result = Err(e);
 					}
 				},
 				hash_map::Entry::Vacant(_) => {
 					return Err(APIError::ChannelUnavailable {
 						err: format!(
 							"Channel with id {} not found for the passed counterparty node_id {}",
-							channel_id, counterparty_node_id,
+							chan_id, counterparty_node_id,
 						)
 					});
 				},
@@ -4140,13 +4135,11 @@ where
 		for htlc_source in failed_htlcs.drain(..) {
 			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
-			let receiver = HTLCHandlingFailureType::Forward { node_id: Some(*counterparty_node_id), channel_id: *channel_id };
+			let receiver = HTLCHandlingFailureType::Forward { node_id: Some(*counterparty_node_id), channel_id: *chan_id };
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
 		}
 
-		if let Some(shutdown_result) = shutdown_result {
-			self.finish_close_channel(shutdown_result);
-		}
+		let _ = handle_error!(self, shutdown_result, *counterparty_node_id);
 
 		Ok(())
 	}
@@ -4258,6 +4251,9 @@ where
 	///     the channel-closing action,
 	/// (b) this needs to be called without holding any locks (except
 	///     [`ChannelManager::total_consistency_lock`].
+	///
+	/// In non-coop-close cases, this is generally accomplished by calling [`convert_channel_err`]
+	/// followed by [`handle_error`].
 	#[rustfmt::skip]
 	fn finish_close_channel(&self, mut shutdown_res: ShutdownResult) {
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
@@ -4305,7 +4301,7 @@ where
 				}
 			}
 		}
-		let mut shutdown_results = Vec::new();
+		let mut shutdown_results: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		if let Some(txid) = shutdown_res.unbroadcasted_batch_funding_txid {
 			let mut funding_batch_states = self.funding_batch_states.lock().unwrap();
 			let affected_channels = funding_batch_states.remove(&txid).into_iter().flatten();
@@ -4315,9 +4311,10 @@ where
 				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 					let mut peer_state = peer_state_mutex.lock().unwrap();
 					if let Some(mut chan) = peer_state.channel_by_id.remove(&channel_id) {
-						let mut close_res = chan.force_shutdown(false, ClosureReason::FundingBatchClosure);
-						locked_close_channel!(self, &mut *peer_state, chan.context(), chan.funding(), close_res);
-						shutdown_results.push(close_res);
+						let reason = ClosureReason::FundingBatchClosure;
+						let err = ChannelError::Close((reason.to_string(), reason));
+						let (_, e) = convert_channel_err!(self, peer_state, err, chan, &channel_id);
+						shutdown_results.push((Err(e), counterparty_node_id));
 					}
 				}
 				has_uncompleted_channel = Some(has_uncompleted_channel.map_or(!state, |v| v || !state));
@@ -4354,8 +4351,8 @@ where
 				}, None));
 			}
 		}
-		for shutdown_result in shutdown_results.drain(..) {
-			self.finish_close_channel(shutdown_result);
+		for (err, counterparty_node_id) in shutdown_results.drain(..) {
+			let _ = handle_error!(self, err, counterparty_node_id);
 		}
 	}
 
@@ -5826,7 +5823,7 @@ where
 			channels_to_remove.extend(temporary_channels.iter()
 				.map(|(&chan_id, &node_id)| (chan_id, node_id))
 			);
-			let mut shutdown_results = Vec::new();
+			let mut shutdown_results: Vec<(Result<Infallible, _>, _)> = Vec::new();
 			{
 				let per_peer_state = self.per_peer_state.read().unwrap();
 				for (channel_id, counterparty_node_id) in channels_to_remove {
@@ -5834,25 +5831,17 @@ where
 						.map(|peer_state_mutex| peer_state_mutex.lock().unwrap())
 						.and_then(|mut peer_state| peer_state.channel_by_id.remove(&channel_id).map(|chan| (chan, peer_state)))
 						.map(|(mut chan, mut peer_state)| {
-							let closure_reason = ClosureReason::ProcessingError { err: e.clone() };
-							let mut close_res = chan.force_shutdown(false, closure_reason);
-							locked_close_channel!(self, peer_state, chan.context(), chan.funding(), close_res);
-							shutdown_results.push(close_res);
-							peer_state.pending_msg_events.push(MessageSendEvent::HandleError {
-								node_id: counterparty_node_id,
-								action: msgs::ErrorAction::SendErrorMessage {
-									msg: msgs::ErrorMessage {
-										channel_id,
-										data: "Failed to fund channel".to_owned(),
-									}
-								},
-							});
+							let reason = ClosureReason::ProcessingError { err: e.clone() };
+							let err = ChannelError::Close((e.clone(), reason));
+							let (_, e) =
+								convert_channel_err!(self, peer_state, err, chan, &channel_id);
+							shutdown_results.push((Err(e), counterparty_node_id));
 						});
 				}
 			}
 			mem::drop(funding_batch_states);
-			for shutdown_result in shutdown_results.drain(..) {
-				self.finish_close_channel(shutdown_result);
+			for (err, counterparty_node_id) in shutdown_results {
+				let _ = handle_error!(self, err, counterparty_node_id);
 			}
 		}
 		result
@@ -6991,7 +6980,6 @@ where
 			let mut handle_errors: Vec<(Result<(), _>, _)> = Vec::new();
 			let mut timed_out_mpp_htlcs = Vec::new();
 			let mut pending_peers_awaiting_removal = Vec::new();
-			let mut shutdown_channels = Vec::new();
 
 			{
 				let per_peer_state = self.per_peer_state.read().unwrap();
@@ -7087,19 +7075,11 @@ where
 									log_error!(logger,
 										"Force-closing pending channel with ID {} for not establishing in a timely manner",
 										context.channel_id());
-									let mut close_res = chan.force_shutdown(false, ClosureReason::FundingTimedOut);
-									let (funding, context) = chan.funding_and_context_mut();
-									locked_close_channel!(self, peer_state, context, funding, close_res);
-									shutdown_channels.push(close_res);
-									pending_msg_events.push(MessageSendEvent::HandleError {
-										node_id: context.get_counterparty_node_id(),
-										action: msgs::ErrorAction::SendErrorMessage {
-											msg: msgs::ErrorMessage {
-												channel_id: context.channel_id(),
-												data: "Force-closing pending channel due to timeout awaiting establishment handshake".to_owned(),
-											},
-										},
-									});
+									let reason = ClosureReason::FundingTimedOut;
+									let msg = "Force-closing pending channel due to timeout awaiting establishment handshake".to_owned();
+									let err = ChannelError::Close((msg, reason));
+									let (_, e) = convert_channel_err!(self, peer_state, err, chan, chan_id);
+									handle_errors.push((Err(e), counterparty_node_id));
 									false
 								} else {
 									true
@@ -7192,12 +7172,8 @@ where
 				self.fail_htlc_backwards_internal(&source, &htlc_source.1, &reason, receiver);
 			}
 
-			for (err, counterparty_node_id) in handle_errors.drain(..) {
+			for (err, counterparty_node_id) in handle_errors {
 				let _ = handle_error!(self, err, counterparty_node_id);
-			}
-
-			for shutdown_res in shutdown_channels {
-				self.finish_close_channel(shutdown_res);
 			}
 
 			#[cfg(feature = "std")]
@@ -9180,8 +9156,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn internal_shutdown(
 		&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown,
 	) -> Result<(), MsgHandleErrInternal> {
-		let mut dropped_htlcs: Vec<(HTLCSource, PaymentHash)> = Vec::new();
-		let mut finish_shutdown = None;
+		let mut dropped_htlcs: Vec<(HTLCSource, PaymentHash)>;
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
@@ -9247,12 +9222,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							None,
 						);
 						log_error!(logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
-						let mut close_res = chan_entry.get_mut().force_shutdown(
-							false,
-							ClosureReason::CounterpartyCoopClosedUnfundedChannel,
-						);
-						remove_channel_entry!(self, peer_state, chan_entry, close_res);
-						finish_shutdown = Some(close_res);
+						let reason = ClosureReason::CounterpartyCoopClosedUnfundedChannel;
+						let err = ChannelError::Close((reason.to_string(), reason));
+						let mut chan = chan_entry.remove();
+						let (_, mut e) =
+							convert_channel_err!(self, peer_state, err, chan, &msg.channel_id);
+						e.dont_send_error_message();
+						return Err(e);
 					},
 				}
 			} else {
@@ -9266,9 +9242,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			};
 			let reason = HTLCFailReason::from_failure_code(LocalHTLCFailureReason::ChannelClosed);
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
-		}
-		if let Some(shutdown_res) = finish_shutdown {
-			self.finish_close_channel(shutdown_res);
 		}
 
 		Ok(())
@@ -9310,8 +9283,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
 							debug_assert!(tx.is_some());
-							let channel = remove_channel_entry!(self, peer_state, chan_entry, close_res);
-							(tx, Some(channel), Some(close_res))
+							locked_close_channel!(self, peer_state, chan.context, &chan.funding, close_res);
+							(tx, Some(chan_entry.remove()), Some(close_res))
 						} else {
 							debug_assert!(tx.is_none());
 							(tx, None, None)
@@ -10245,7 +10218,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn process_pending_monitor_events(&self) -> bool {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
-		let mut failed_channels = Vec::new();
+		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
 		let has_pending_monitor_events = !pending_monitor_events.is_empty();
 		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in pending_monitor_events.drain(..) {
@@ -10273,8 +10246,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 							let peer_state = &mut *peer_state_lock;
-							let pending_msg_events = &mut peer_state.pending_msg_events;
-							if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id) {
+							if let hash_map::Entry::Occupied(chan_entry) = peer_state.channel_by_id.entry(channel_id) {
 								let reason = if let MonitorEvent::HolderForceClosedWithInfo { reason, .. } = monitor_event {
 									reason
 								} else {
@@ -10283,26 +10255,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										message: "Legacy ChannelMonitor closure".to_owned()
 									}
 								};
-								let mut shutdown_res = chan_entry.get_mut().force_shutdown(false, reason.clone());
-								let chan = remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
-								failed_channels.push(shutdown_res);
-								if let Some(funded_chan) = chan.as_funded() {
-									if let Ok(update) = self.get_channel_update_for_broadcast(funded_chan) {
-										let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-										pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
-											msg: update
-										});
-									}
-									pending_msg_events.push(MessageSendEvent::HandleError {
-										node_id: counterparty_node_id,
-										action: msgs::ErrorAction::DisconnectPeer {
-											msg: Some(msgs::ErrorMessage {
-												channel_id: funded_chan.context.channel_id(),
-												data: reason.to_string()
-											})
-										},
-									});
-								}
+								let err = ChannelError::Close((reason.to_string(), reason));
+								let mut chan = chan_entry.remove();
+								let (_, e) = convert_channel_err!(self, peer_state, err, chan, &channel_id);
+								failed_channels.push((Err(e), counterparty_node_id));
 							}
 						}
 					},
@@ -10313,8 +10269,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		}
 
-		for failure in failed_channels.drain(..) {
-			self.finish_close_channel(failure);
+		for (err, counterparty_node_id) in failed_channels {
+			let _ = handle_error!(self, err, counterparty_node_id);
 		}
 
 		has_pending_monitor_events
@@ -11773,7 +11729,7 @@ where
 	fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(
 			self, || NotifyOption::SkipPersistHandleEvents);
-		let mut failed_channels = Vec::new();
+		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut per_peer_state = self.per_peer_state.write().unwrap();
 		let remove_peer = {
 			log_debug!(
@@ -11785,16 +11741,16 @@ where
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
-				peer_state.channel_by_id.retain(|_, chan| {
+				peer_state.channel_by_id.retain(|chan_id, chan| {
 					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 					if chan.peer_disconnected_is_resumable(&&logger) {
 						return true;
 					}
 					// Clean up for removal.
-					let mut close_res = chan.force_shutdown(false, ClosureReason::DisconnectedPeer);
-					let (funding, context) = chan.funding_and_context_mut();
-					locked_close_channel!(self, peer_state, &context, funding, close_res);
-					failed_channels.push(close_res);
+					let reason = ClosureReason::DisconnectedPeer;
+					let err = ChannelError::Close((reason.to_string(), reason));
+					let (_, e) = convert_channel_err!(self, peer_state, err, chan, chan_id);
+					failed_channels.push((Err(e), counterparty_node_id));
 					false
 				});
 				// Note that we don't bother generating any events for pre-accept channels -
@@ -11869,8 +11825,8 @@ where
 		}
 		mem::drop(per_peer_state);
 
-		for failure in failed_channels.drain(..) {
-			self.finish_close_channel(failure);
+		for (err, counterparty_node_id) in failed_channels.drain(..) {
+			let _ = handle_error!(self, err, counterparty_node_id);
 		}
 	}
 
@@ -12337,16 +12293,16 @@ where
 		// during initialization prior to the chain_monitor being fully configured in some cases.
 		// See the docs for `ChannelManagerReadArgs` for more.
 
-		let mut failed_channels = Vec::new();
+		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
-			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+			for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 
-				peer_state.channel_by_id.retain(|_, chan| {
+				peer_state.channel_by_id.retain(|chan_id, chan| {
 					match chan.as_funded_mut() {
 						// Retain unfunded channels.
 						None => true,
@@ -12464,25 +12420,16 @@ where
 							} else if let Err(reason) = res {
 								// It looks like our counterparty went on-chain or funding transaction was
 								// reorged out of the main chain. Close the channel.
-								let reason_message = format!("{}", reason);
-								let mut close_res = funded_channel.context.force_shutdown(&funded_channel.funding, true, reason);
-								locked_close_channel!(self, peer_state, &funded_channel.context, &funded_channel.funding, close_res);
-								failed_channels.push(close_res);
-								if let Ok(update) = self.get_channel_update_for_broadcast(&funded_channel) {
-									let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-									pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
-										msg: update
-									});
-								}
-								pending_msg_events.push(MessageSendEvent::HandleError {
-									node_id: funded_channel.context.get_counterparty_node_id(),
-									action: msgs::ErrorAction::DisconnectPeer {
-										msg: Some(msgs::ErrorMessage {
-											channel_id: funded_channel.context.channel_id(),
-											data: reason_message,
-										})
-									},
-								});
+								let err = ChannelError::Close((reason.to_string(), reason));
+								let (_, e) = convert_channel_err!(
+									self,
+									peer_state,
+									err,
+									funded_channel,
+									chan_id,
+									FUNDED_CHANNEL
+								);
+								failed_channels.push((Err(e), *counterparty_node_id));
 								return false;
 							}
 							true
@@ -12542,8 +12489,8 @@ where
 			});
 		}
 
-		for failure in failed_channels {
-			self.finish_close_channel(failure);
+		for (failure, counterparty_node_id) in failed_channels {
+			let _ = handle_error!(self, failure, counterparty_node_id);
 		}
 
 		for (source, payment_hash, reason, destination) in timed_out_htlcs.drain(..) {
