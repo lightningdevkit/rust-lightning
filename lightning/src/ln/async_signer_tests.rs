@@ -602,14 +602,11 @@ fn do_test_async_raa_peer_disconnect(
 	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
 		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, block_raa_signer_op);
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-		let (latest_update, _) = dst
-			.chain_monitor
-			.latest_monitor_update_id
-			.lock()
-			.unwrap()
-			.get(&chan_id)
-			.unwrap()
-			.clone();
+		let latest_update;
+		{
+			let channel_map = dst.chain_monitor.latest_monitor_update_id.lock().unwrap();
+			(latest_update, _) = channel_map.get(&chan_id).unwrap().clone();
+		}
 		dst.chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
 		check_added_monitors!(dst, 0);
 	}
@@ -766,14 +763,11 @@ fn do_test_async_commitment_signature_peer_disconnect(
 			SignerOp::SignCounterpartyCommitment,
 		);
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-		let (latest_update, _) = dst
-			.chain_monitor
-			.latest_monitor_update_id
-			.lock()
-			.unwrap()
-			.get(&chan_id)
-			.unwrap()
-			.clone();
+		let latest_update;
+		{
+			let channel_map = dst.chain_monitor.latest_monitor_update_id.lock().unwrap();
+			(latest_update, _) = channel_map.get(&chan_id).unwrap().clone();
+		}
 		dst.chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
 		check_added_monitors!(dst, 0);
 	}
@@ -918,14 +912,11 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 
 	if monitor_update_failure {
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-		let (latest_update, _) = nodes[0]
-			.chain_monitor
-			.latest_monitor_update_id
-			.lock()
-			.unwrap()
-			.get(&chan_id)
-			.unwrap()
-			.clone();
+		let latest_update;
+		{
+			let channel_map = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap();
+			(latest_update, _) = channel_map.get(&chan_id).unwrap().clone();
+		}
 		nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
 		check_added_monitors!(nodes[0], 0);
 	}
