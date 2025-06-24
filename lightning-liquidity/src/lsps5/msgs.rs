@@ -258,16 +258,16 @@ pub struct LSPS5AppName(UntrustedString);
 
 impl LSPS5AppName {
 	/// Create a new LSPS5 app name.
-	pub fn new(app_name: UntrustedString) -> Result<Self, LSPS5Error> {
-		if app_name.to_string().chars().count() > MAX_APP_NAME_LENGTH {
+	pub fn new(app_name: String) -> Result<Self, LSPS5Error> {
+		if app_name.chars().count() > MAX_APP_NAME_LENGTH {
 			return Err(LSPS5ProtocolError::AppNameTooLong.into());
 		}
-		Ok(Self(app_name))
+		Ok(Self(UntrustedString(app_name)))
 	}
 
 	/// Create a new LSPS5 app name from a regular String.
 	pub fn from_string(app_name: String) -> Result<Self, LSPS5Error> {
-		Self::new(UntrustedString(app_name))
+		Self::new(app_name)
 	}
 
 	/// Get the app name as a string.
@@ -305,7 +305,10 @@ impl<'de> Deserialize<'de> for LSPS5AppName {
 		D: serde::Deserializer<'de>,
 	{
 		let s = String::deserialize(deserializer)?;
-		Self::new(UntrustedString(s)).map_err(|e| serde::de::Error::custom(format!("{:?}", e)))
+		if s.chars().count() > MAX_APP_NAME_LENGTH {
+			return Err(serde::de::Error::custom("App name exceeds maximum length"));
+		}
+		Self::new(s).map_err(|e| serde::de::Error::custom(format!("{:?}", e)))
 	}
 }
 
@@ -327,19 +330,18 @@ pub struct LSPS5WebhookUrl(LSPSUrl);
 
 impl LSPS5WebhookUrl {
 	/// Create a new LSPS5 webhook URL.
-	pub fn new(url: UntrustedString) -> Result<Self, LSPS5Error> {
-		let raw_url = url.to_string();
-		if raw_url.len() > MAX_WEBHOOK_URL_LENGTH {
+	pub fn new(url: String) -> Result<Self, LSPS5Error> {
+		if url.len() > MAX_WEBHOOK_URL_LENGTH {
 			return Err(LSPS5ProtocolError::WebhookUrlTooLong.into());
 		}
-		let parsed_url = LSPSUrl::parse(url.0)?;
+		let parsed_url = LSPSUrl::parse(url)?;
 
 		Ok(Self(parsed_url))
 	}
 
 	/// Create a new LSPS5 webhook URL from a regular String.
 	pub fn from_string(url: String) -> Result<Self, LSPS5Error> {
-		Self::new(UntrustedString(url))
+		Self::new(url)
 	}
 
 	/// Get the webhook URL as a string.
@@ -377,7 +379,10 @@ impl<'de> Deserialize<'de> for LSPS5WebhookUrl {
 		D: serde::Deserializer<'de>,
 	{
 		let s = String::deserialize(deserializer)?;
-		Self::new(UntrustedString(s)).map_err(|e| serde::de::Error::custom(format!("{:?}", e)))
+		if s.len() > MAX_WEBHOOK_URL_LENGTH {
+			return Err(serde::de::Error::custom("Webhook URL exceeds maximum length"));
+		}
+		Self::new(s).map_err(|e| serde::de::Error::custom(format!("{:?}", e)))
 	}
 }
 
@@ -625,8 +630,6 @@ pub enum LSPS5Response {
 	SetWebhookError(LSPSResponseError),
 	/// Response to [`ListWebhooks`](ListWebhooksRequest) request.
 	ListWebhooks(ListWebhooksResponse),
-	/// Error response to [`ListWebhooks`](ListWebhooksRequest) request.
-	ListWebhooksError(LSPSResponseError),
 	/// Response to [`RemoveWebhook`](RemoveWebhookRequest) request.
 	RemoveWebhook(RemoveWebhookResponse),
 	/// Error response to [`RemoveWebhook`](RemoveWebhookRequest) request.
@@ -679,14 +682,10 @@ mod tests {
 	fn parse_set_webhook_request() {
 		let json_str = r#"{"app_name":"my_app","webhook":"https://example.com/webhook"}"#;
 		let request: SetWebhookRequest = serde_json::from_str(json_str).unwrap();
-		assert_eq!(
-			request.app_name,
-			LSPS5AppName::new(UntrustedString("my_app".to_string())).unwrap()
-		);
+		assert_eq!(request.app_name, LSPS5AppName::new("my_app".to_string()).unwrap());
 		assert_eq!(
 			request.webhook,
-			LSPS5WebhookUrl::new(UntrustedString("https://example.com/webhook".to_string()))
-				.unwrap()
+			LSPS5WebhookUrl::new("https://example.com/webhook".to_string()).unwrap()
 		);
 	}
 
@@ -703,8 +702,8 @@ mod tests {
 	fn parse_list_webhooks_response() {
 		let json_str = r#"{"app_names":["app1","app2"],"max_webhooks":5}"#;
 		let response: ListWebhooksResponse = serde_json::from_str(json_str).unwrap();
-		let app1 = LSPS5AppName::new(UntrustedString("app1".to_string())).unwrap();
-		let app2 = LSPS5AppName::new(UntrustedString("app2".to_string())).unwrap();
+		let app1 = LSPS5AppName::new("app1".to_string()).unwrap();
+		let app2 = LSPS5AppName::new("app2".to_string()).unwrap();
 		assert_eq!(response.app_names, vec![app1, app2]);
 		assert_eq!(response.max_webhooks, 5);
 	}
@@ -722,15 +721,14 @@ mod tests {
 		let request: SetWebhookRequest = serde_json::from_str(json_str).unwrap();
 		assert_eq!(
 			request.app_name,
-			LSPS5AppName::new(UntrustedString("My LSPS-Compliant Lightning Client".to_string()))
-				.unwrap()
+			LSPS5AppName::new("My LSPS-Compliant Lightning Client".to_string()).unwrap()
 		);
 		assert_eq!(
 			request.webhook,
-			LSPS5WebhookUrl::new(UntrustedString(
+			LSPS5WebhookUrl::new(
 				"https://www.example.org/push?l=1234567890abcdefghijklmnopqrstuv&c=best"
 					.to_string()
-			))
+			)
 			.unwrap()
 		);
 	}
@@ -748,13 +746,9 @@ mod tests {
 	fn spec_example_list_webhooks_response() {
 		let json_str = r#"{"app_names":["My LSPS-Compliant Lightning Wallet","Another Wallet With The Same Signing Device"],"max_webhooks":42}"#;
 		let response: ListWebhooksResponse = serde_json::from_str(json_str).unwrap();
-		let app1 =
-			LSPS5AppName::new(UntrustedString("My LSPS-Compliant Lightning Wallet".to_string()))
-				.unwrap();
-		let app2 = LSPS5AppName::new(UntrustedString(
-			"Another Wallet With The Same Signing Device".to_string(),
-		))
-		.unwrap();
+		let app1 = LSPS5AppName::new("My LSPS-Compliant Lightning Wallet".to_string()).unwrap();
+		let app2 =
+			LSPS5AppName::new("Another Wallet With The Same Signing Device".to_string()).unwrap();
 		assert_eq!(response.app_names, vec![app1, app2]);
 		assert_eq!(response.max_webhooks, 42);
 	}
@@ -765,10 +759,7 @@ mod tests {
 		let request: RemoveWebhookRequest = serde_json::from_str(json_str).unwrap();
 		assert_eq!(
 			request.app_name,
-			LSPS5AppName::new(UntrustedString(
-				"Another Wallet With The Same Signig Device".to_string()
-			))
-			.unwrap()
+			LSPS5AppName::new("Another Wallet With The Same Signig Device".to_string()).unwrap()
 		);
 	}
 
@@ -810,7 +801,7 @@ mod tests {
 		];
 
 		for url_str in urls_that_should_throw.iter() {
-			match LSPS5WebhookUrl::new(UntrustedString(url_str.to_string())) {
+			match LSPS5WebhookUrl::new(url_str.to_string()) {
 				Ok(_) => panic!("Expected error"),
 				Err(e) => {
 					let protocol_error = match e {
