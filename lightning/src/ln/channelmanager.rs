@@ -6350,14 +6350,7 @@ where
 
 		let mut new_events = VecDeque::new();
 		let mut failed_forwards = Vec::new();
-		let mut phantom_receives: Vec<(
-			u64,
-			Option<PublicKey>,
-			OutPoint,
-			ChannelId,
-			u128,
-			Vec<(PendingHTLCInfo, u64)>,
-		)> = Vec::new();
+		let mut phantom_receives: Vec<PerSourcePendingForward> = Vec::new();
 		{
 			let mut forward_htlcs = new_hash_map();
 			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
@@ -10042,15 +10035,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	#[inline]
 	fn forward_htlcs_without_forward_event(
-		&self,
-		per_source_pending_forwards: &mut [(
-			u64,
-			Option<PublicKey>,
-			OutPoint,
-			ChannelId,
-			u128,
-			Vec<(PendingHTLCInfo, u64)>,
-		)],
+		&self, per_source_pending_forwards: &mut [PerSourcePendingForward],
 	) -> bool {
 		let mut push_forward_event = false;
 		for &mut (
@@ -10137,7 +10122,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 											Some(prev_channel_id),
 											Some(forward_info.payment_hash),
 										);
-										log_info!(logger, "Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}", scid);
+										log_info!(
+											logger,
+											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
+											scid
+										);
 										let htlc_source =
 											HTLCSource::PreviousHopData(HTLCPreviousHopData {
 												short_channel_id: prev_short_channel_id,
