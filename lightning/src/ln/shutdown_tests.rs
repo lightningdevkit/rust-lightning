@@ -343,7 +343,6 @@ fn shutdown_on_unfunded_channel() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	nodes[0].node.create_channel(node_b_id, 1_000_000, 100_000, 0, None, None).unwrap();
@@ -375,7 +374,6 @@ fn close_on_unfunded_channel() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let chan_id =
@@ -1243,7 +1241,6 @@ fn test_segwit_v0_shutdown_script() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
-	let node_c_id = nodes[2].node.get_our_node_id();
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
@@ -1283,7 +1280,6 @@ fn test_anysegwit_shutdown_script() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
-	let node_c_id = nodes[2].node.get_our_node_id();
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
@@ -1327,7 +1323,6 @@ fn test_unsupported_anysegwit_shutdown_script() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
-	let node_c_id = nodes[2].node.get_our_node_id();
 
 	// Check that using an unsupported shutdown script fails and a supported one succeeds.
 	let supported_shutdown_script =
@@ -1375,7 +1370,6 @@ fn test_invalid_shutdown_script() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
-	let node_c_id = nodes[2].node.get_our_node_id();
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
@@ -1404,8 +1398,6 @@ fn test_user_shutdown_script() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
-	let node_b_id = nodes[1].node.get_our_node_id();
-	let node_c_id = nodes[2].node.get_our_node_id();
 
 	// Segwit v0 script of the form OP_0 <20-byte hash>
 	let script = Builder::new().push_int(0).push_slice(&[0; 20]).into_script();
@@ -1435,8 +1427,6 @@ fn test_already_set_user_shutdown_script() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
-	let node_b_id = nodes[1].node.get_our_node_id();
-	let node_c_id = nodes[2].node.get_our_node_id();
 
 	// Segwit v0 script of the form OP_0 <20-byte hash>
 	let script = Builder::new().push_int(0).push_slice(&[0; 20]).into_script();
@@ -1878,10 +1868,6 @@ fn batch_funding_failure() {
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
-	let node_b_id = nodes[1].node.get_our_node_id();
-	let node_c_id = nodes[2].node.get_our_node_id();
-	let node_d_id = nodes[3].node.get_our_node_id();
 
 	let temp_chan_id_a = exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
 	let temp_chan_id_b = exchange_open_accept_chan(&nodes[0], &nodes[2], 1_000_000, 0);
@@ -2004,8 +1990,6 @@ fn test_force_closure_on_low_stale_fee() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
-	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 

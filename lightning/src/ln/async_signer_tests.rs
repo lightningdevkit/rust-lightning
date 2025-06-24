@@ -289,8 +289,6 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
-	let node_b_id = nodes[1].node.get_our_node_id();
 	let (_, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	// Send a payment.
@@ -533,8 +531,6 @@ fn do_test_async_raa_peer_disconnect(
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
-	let node_b_id = nodes[1].node.get_our_node_id();
 	let (_, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	// Send a payment.
@@ -699,8 +695,6 @@ fn do_test_async_commitment_signature_peer_disconnect(
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
-	let node_b_id = nodes[1].node.get_our_node_id();
 	let (_, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	// Send a payment.
@@ -1422,13 +1416,10 @@ fn test_no_disconnect_while_async_revoke_and_ack_expecting_remote_commitment_sig
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
-	let node_id_0 = node_a_id;
-	let node_id_1 = node_b_id;
-
 	let payment_amount = 1_000_000;
 	send_payment(&nodes[0], &[&nodes[1]], payment_amount * 4);
 
-	nodes[1].disable_channel_signer_op(&node_id_0, &chan_id, SignerOp::ReleaseCommitmentSecret);
+	nodes[1].disable_channel_signer_op(&node_a_id, &chan_id, SignerOp::ReleaseCommitmentSecret);
 
 	// We'll send a payment from both nodes to each other.
 	let (route1, payment_hash1, _, payment_secret1) =
@@ -1445,20 +1436,20 @@ fn test_no_disconnect_while_async_revoke_and_ack_expecting_remote_commitment_sig
 	nodes[1].node.send_payment_with_route(route2, payment_hash2, onion2, payment_id2).unwrap();
 	check_added_monitors(&nodes[1], 1);
 
-	let update = get_htlc_update_msgs!(&nodes[0], node_id_1);
-	nodes[1].node.handle_update_add_htlc(node_id_0, &update.update_add_htlcs[0]);
-	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &update.commitment_signed);
+	let update = get_htlc_update_msgs!(&nodes[0], node_b_id);
+	nodes[1].node.handle_update_add_htlc(node_a_id, &update.update_add_htlcs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &update.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 
-	let update = get_htlc_update_msgs!(&nodes[1], node_id_0);
-	nodes[0].node.handle_update_add_htlc(node_id_1, &update.update_add_htlcs[0]);
-	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &update.commitment_signed);
+	let update = get_htlc_update_msgs!(&nodes[1], node_a_id);
+	nodes[0].node.handle_update_add_htlc(node_b_id, &update.update_add_htlcs[0]);
+	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &update.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 
 	// nodes[0] can only respond with a `revoke_and_ack`. The `commitment_signed` that would follow
 	// is blocked on receiving a counterparty `revoke_and_ack`, which nodes[1] is still pending on.
-	let revoke_and_ack = get_event_msg!(&nodes[0], MessageSendEvent::SendRevokeAndACK, node_id_1);
-	nodes[1].node.handle_revoke_and_ack(node_id_0, &revoke_and_ack);
+	let revoke_and_ack = get_event_msg!(&nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
+	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke_and_ack);
 	check_added_monitors(&nodes[1], 1);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1495,9 +1486,6 @@ fn test_no_disconnect_while_async_commitment_signed_expecting_remote_revoke_and_
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
-	let node_id_0 = node_a_id;
-	let node_id_1 = node_b_id;
-
 	// Route a payment and attempt to claim it.
 	let payment_amount = 1_000_000;
 	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
@@ -1505,17 +1493,17 @@ fn test_no_disconnect_while_async_commitment_signed_expecting_remote_revoke_and_
 	check_added_monitors(&nodes[1], 1);
 
 	// We'll disable signing counterparty commitments on the payment sender.
-	nodes[0].disable_channel_signer_op(&node_id_1, &chan_id, SignerOp::SignCounterpartyCommitment);
+	nodes[0].disable_channel_signer_op(&node_b_id, &chan_id, SignerOp::SignCounterpartyCommitment);
 
 	// After processing the `update_fulfill`, they'll only be able to send `revoke_and_ack` until
 	// the `commitment_signed` is no longer pending.
-	let update = get_htlc_update_msgs!(&nodes[1], node_id_0);
-	nodes[0].node.handle_update_fulfill_htlc(node_id_1, &update.update_fulfill_htlcs[0]);
-	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &update.commitment_signed);
+	let update = get_htlc_update_msgs!(&nodes[1], node_a_id);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &update.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &update.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 
-	let revoke_and_ack = get_event_msg!(&nodes[0], MessageSendEvent::SendRevokeAndACK, node_id_1);
-	nodes[1].node.handle_revoke_and_ack(node_id_0, &revoke_and_ack);
+	let revoke_and_ack = get_event_msg!(&nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
+	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke_and_ack);
 	check_added_monitors(&nodes[1], 1);
 
 	// The payment sender shouldn't disconnect the counterparty due to a missing `revoke_and_ack`

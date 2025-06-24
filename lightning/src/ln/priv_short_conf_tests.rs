@@ -351,7 +351,6 @@ fn test_routed_scid_alias() {
 	no_announce_cfg.accept_forwards_to_priv_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(no_announce_cfg), None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
 
@@ -853,8 +852,6 @@ fn test_simple_0conf_channel() {
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
-	let node_b_id = nodes[1].node.get_our_node_id();
 
 	open_zero_conf_channel(&nodes[0], &nodes[1], None);
 
@@ -876,7 +873,6 @@ fn test_0conf_channel_with_async_monitor() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
-	let node_c_id = nodes[2].node.get_our_node_id();
 
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
@@ -1080,7 +1076,6 @@ fn test_0conf_close_no_early_chan_update() {
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let error_message = "Channel force-closed";
 
