@@ -6,9 +6,9 @@ use lightning::ln::functional_test_utils::{
 	create_node_cfgs_arc, create_node_chanmgrs, send_payment,
 };
 use lightning::util::persist::{
-	migrate_kv_store_data, read_channel_monitors, read_channel_monitors_sync, KVStore, KVStoreSync,
-	KVStoreSyncWrapper, MigratableKVStore, MigratableKVStoreSync, KVSTORE_NAMESPACE_KEY_ALPHABET,
-	KVSTORE_NAMESPACE_KEY_MAX_LEN,
+	migrate_kv_store_data, migrate_kv_store_data_sync, read_channel_monitors,
+	read_channel_monitors_sync, KVStore, KVStoreSync, KVStoreSyncWrapper, MigratableKVStore,
+	MigratableKVStoreSync, KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
 };
 use lightning::util::test_utils;
 use lightning::{check_added_monitors, check_closed_broadcast, check_closed_event};
@@ -104,7 +104,7 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStoreSync, T: MigratableKVSt
 	source_list.sort();
 	assert_eq!(source_list, expected_keys);
 
-	migrate_kv_store_data(source_store, target_store).unwrap();
+	migrate_kv_store_data_sync(source_store, target_store).unwrap();
 
 	let mut target_list = target_store.list_all_keys().unwrap();
 	target_list.sort();

@@ -505,7 +505,9 @@ mod tests {
 	use lightning::events::ClosureReason;
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::BaseMessageHandler;
-	use lightning::util::persist::read_channel_monitors;
+	use lightning::util::persist::{
+		read_channel_monitors, read_channel_monitors_sync, KVStoreSyncWrapper,
+	};
 	use lightning::util::test_utils;
 
 	impl Drop for FilesystemStore {
@@ -542,7 +544,8 @@ mod tests {
 
 	#[test]
 	fn test_if_monitors_is_not_dir() {
-		let store = FilesystemStore::new("test_monitors_is_not_dir".into());
+		let store = Arc::new(FilesystemStore::new("test_monitors_is_not_dir".into()));
+		let store_async = Arc::new(KVStoreSyncWrapper(Arc::clone(&store)));
 
 		fs::create_dir_all(&store.get_data_dir()).unwrap();
 		let mut path = std::path::PathBuf::from(&store.get_data_dir());
@@ -556,7 +559,7 @@ mod tests {
 			&chanmon_cfgs[0].tx_broadcaster,
 			&chanmon_cfgs[0].logger,
 			&chanmon_cfgs[0].fee_estimator,
-			&store,
+			&store_async,
 			node_cfgs[0].keys_manager,
 		);
 		node_cfgs[0].chain_monitor = chain_mon_0;
@@ -565,9 +568,8 @@ mod tests {
 
 		// Check that read_channel_monitors() returns error if monitors/ is not a
 		// directory.
-		assert!(
-			read_channel_monitors(&store, nodes[0].keys_manager, nodes[0].keys_manager).is_err()
-		);
+		assert!(read_channel_monitors_sync(store, nodes[0].keys_manager, nodes[0].keys_manager)
+			.is_err());
 	}
 
 	#[test]
