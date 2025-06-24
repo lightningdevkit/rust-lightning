@@ -10,7 +10,7 @@ use lightning::util::persist::{
 	read_channel_monitors_sync, KVStore, KVStoreSync, KVStoreSyncWrapper, MigratableKVStore,
 	MigratableKVStoreSync, KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
 };
-use lightning::util::test_utils;
+use lightning::util::test_utils::{self, SyncPersist};
 use lightning::{check_added_monitors, check_closed_broadcast, check_closed_event};
 
 use std::panic::RefUnwindSafe;
@@ -117,7 +117,9 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStoreSync, T: MigratableKVSt
 
 // Integration-test the given KVStore implementation. Test relaying a few payments and check that
 // the persisted data is updated the appropriate number of times.
-pub(crate) fn do_test_store<K: KVStoreSync + Sync>(store_0: &K, store_1: &K) {
+pub(crate) fn do_test_store<K: KVStoreSync + Sync + Send + 'static>(
+	store_0: Arc<K>, store_1: Arc<K>,
+) {
 	let chanmon_cfgs = create_chanmon_cfgs_with_keys_arc(2, None);
 	let mut node_cfgs = create_node_cfgs_arc(2, &chanmon_cfgs);
 

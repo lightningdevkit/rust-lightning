@@ -575,9 +575,9 @@ mod tests {
 	#[test]
 	fn test_filesystem_store() {
 		// Create the nodes, giving them FilesystemStores for data stores.
-		let store_0 = FilesystemStore::new("test_filesystem_store_0".into());
-		let store_1 = FilesystemStore::new("test_filesystem_store_1".into());
-		do_test_store(&store_0, &store_1)
+		let store_0 = Arc::new(FilesystemStore::new("test_filesystem_store_0".into()));
+		let store_1 = Arc::new(FilesystemStore::new("test_filesystem_store_1".into()));
+		do_test_store(store_0, store_1)
 	}
 
 	// Test that if the store's path to channel data is read-only, writing a
