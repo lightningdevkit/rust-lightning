@@ -1052,8 +1052,6 @@ impl TryFrom<HolderSignedTx> for CommitmentHTLCData {
 
 #[derive(Clone, PartialEq)]
 struct FundingScope {
-	script_pubkey: ScriptBuf,
-	redeem_script: ScriptBuf,
 	channel_parameters: ChannelTransactionParameters,
 
 	current_counterparty_commitment_txid: Option<Txid>,
@@ -1090,53 +1088,14 @@ impl FundingScope {
 	}
 }
 
-impl Writeable for FundingScope {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		write_tlv_fields!(w, {
-			(1, self.channel_parameters, (required: ReadableArgs, None)),
-			(3, self.current_counterparty_commitment_txid, required),
-			(5, self.prev_counterparty_commitment_txid, option),
-			(7, self.current_holder_commitment_tx, required),
-			(9, self.prev_holder_commitment_tx, option),
-			(11, self.counterparty_claimable_outpoints, required),
-		});
-		Ok(())
-	}
-}
-
-impl Readable for FundingScope {
-	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let mut channel_parameters = RequiredWrapper(None);
-		let mut current_counterparty_commitment_txid = RequiredWrapper(None);
-		let mut prev_counterparty_commitment_txid = None;
-		let mut current_holder_commitment_tx = RequiredWrapper(None);
-		let mut prev_holder_commitment_tx = None;
-		let mut counterparty_claimable_outpoints = RequiredWrapper(None);
-
-		read_tlv_fields!(r, {
-			(1, channel_parameters, (required: ReadableArgs, None)),
-			(3, current_counterparty_commitment_txid, required),
-			(5, prev_counterparty_commitment_txid, option),
-			(7, current_holder_commitment_tx, required),
-			(9, prev_holder_commitment_tx, option),
-			(11, counterparty_claimable_outpoints, required),
-		});
-
-		let channel_parameters: ChannelTransactionParameters = channel_parameters.0.unwrap();
-		let redeem_script = channel_parameters.make_funding_redeemscript();
-
-		Ok(Self {
-			script_pubkey: redeem_script.to_p2wsh(),
-			redeem_script,
-			channel_parameters,
-			current_counterparty_commitment_txid: current_counterparty_commitment_txid.0.unwrap(),
-			prev_counterparty_commitment_txid,
-			current_holder_commitment_tx: current_holder_commitment_tx.0.unwrap(),
-			prev_holder_commitment_tx,
-			counterparty_claimable_outpoints: counterparty_claimable_outpoints.0.unwrap(),
-		})
-	}
-}
+impl_writeable_tlv_based!(FundingScope, {
+	(1, channel_parameters, (required: ReadableArgs, None)),
+	(3, current_counterparty_commitment_txid, required),
+	(5, prev_counterparty_commitment_txid, option),
+	(7, current_holder_commitment_tx, required),
+	(9, prev_holder_commitment_tx, option),
+	(11, counterparty_claimable_outpoints, required),
+});
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
@@ -1417,12 +1376,14 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 		let funding_outpoint = self.get_funding_txo();
 		writer.write_all(&funding_outpoint.txid[..])?;
 		writer.write_all(&funding_outpoint.index.to_be_bytes())?;
-		self.funding.script_pubkey.write(writer)?;
+		let redeem_script = self.funding.channel_parameters.make_funding_redeemscript();
+		let script_pubkey = redeem_script.to_p2wsh();
+		script_pubkey.write(writer)?;
 		self.funding.current_counterparty_commitment_txid.write(writer)?;
 		self.funding.prev_counterparty_commitment_txid.write(writer)?;
 
 		self.counterparty_commitment_params.write(writer)?;
-		self.funding.redeem_script.write(writer)?;
+		redeem_script.write(writer)?;
 		self.funding.channel_parameters.channel_value_satoshis.write(writer)?;
 
 		match self.their_cur_per_commitment_points {
@@ -1741,8 +1702,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 		Self::from_impl(ChannelMonitorImpl {
 			funding: FundingScope {
-				script_pubkey: funding_script,
-				redeem_script: funding_redeem_script,
 				channel_parameters: channel_parameters.clone(),
 
 				current_counterparty_commitment_txid: None,
@@ -1979,7 +1938,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		for funding in core::iter::once(&lock.funding).chain(&lock.pending_funding) {
 			let funding_outpoint = funding.funding_outpoint();
 			log_trace!(&logger, "Registering funding outpoint {} with the filter to monitor confirmations", &funding_outpoint);
-			filter.register_tx(&funding_outpoint.txid, &funding.script_pubkey);
+			let script_pubkey = funding.channel_parameters.make_funding_redeemscript().to_p2wsh();
+			filter.register_tx(&funding_outpoint.txid, &script_pubkey);
 		}
 		for (txid, outputs) in lock.get_outputs_to_watch().iter() {
 			for (index, script_pubkey) in outputs.iter() {
@@ -3706,8 +3666,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	where
 		L::Target: Logger,
 	{
-		let redeem_script = channel_parameters.make_funding_redeemscript();
-		let script_pubkey = redeem_script.to_p2wsh();
 		let alternative_counterparty_commitment_txid =
 			alternative_counterparty_commitment_tx.trust().txid();
 
@@ -3767,8 +3725,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		// TODO(splicing): Enforce any necessary RBF validity checks.
 		let alternative_funding = FundingScope {
-			script_pubkey: script_pubkey.clone(),
-			redeem_script,
 			channel_parameters: channel_parameters.clone(),
 			current_counterparty_commitment_txid: Some(alternative_counterparty_commitment_txid),
 			prev_counterparty_commitment_txid: None,
@@ -3810,6 +3766,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
+		let script_pubkey = channel_parameters.make_funding_redeemscript().to_p2wsh();
 		self.outputs_to_watch.insert(
 			alternative_funding_outpoint.txid,
 			vec![(alternative_funding_outpoint.index as u32, script_pubkey)],
@@ -4015,14 +3972,18 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.latest_update_id
 	}
 
+	/// Returns the outpoint we are currently monitoring the chain for spends. This will change for
+	/// every splice that has reached its intended confirmation depth.
 	#[rustfmt::skip]
 	fn get_funding_txo(&self) -> OutPoint {
 		self.funding.channel_parameters.funding_outpoint
 			.expect("Funding outpoint must be set for active monitor")
 	}
 
+	/// Returns the P2WSH script we are currently monitoring the chain for spends. This will change
+	/// for every splice that has reached its intended confirmation depth.
 	fn get_funding_script(&self) -> ScriptBuf {
-		self.funding.script_pubkey.clone()
+		self.funding.channel_parameters.make_funding_redeemscript().to_p2wsh()
 	}
 
 	pub fn channel_id(&self) -> ChannelId {
@@ -4713,7 +4674,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				&self.funding.channel_parameters, &self.funding.current_holder_commitment_tx,
 				&self.onchain_tx_handler.secp_ctx,
 			).expect("sign holder commitment");
-			self.funding.current_holder_commitment_tx.add_holder_sig(&self.funding.redeem_script, sig)
+			let redeem_script = self.funding.channel_parameters.make_funding_redeemscript();
+			self.funding.current_holder_commitment_tx.add_holder_sig(&redeem_script, sig)
 		};
 		let mut holder_transactions = vec![commitment_tx];
 		// When anchor outputs are present, the HTLC transactions are only final once the commitment
@@ -5683,12 +5645,12 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			txid: Readable::read(reader)?,
 			index: Readable::read(reader)?,
 		};
-		let funding_script = Readable::read(reader)?;
+		let _funding_script: ScriptBuf = Readable::read(reader)?;
 		let current_counterparty_commitment_txid = Readable::read(reader)?;
 		let prev_counterparty_commitment_txid = Readable::read(reader)?;
 
 		let counterparty_commitment_params = Readable::read(reader)?;
-		let funding_redeemscript = Readable::read(reader)?;
+		let _funding_redeemscript: ScriptBuf = Readable::read(reader)?;
 		let channel_value_satoshis = Readable::read(reader)?;
 
 		let their_cur_per_commitment_points = {
@@ -5969,8 +5931,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 		Ok((best_block.block_hash, ChannelMonitor::from_impl(ChannelMonitorImpl {
 			funding: FundingScope {
-				script_pubkey: funding_script,
-				redeem_script: funding_redeemscript,
 				channel_parameters,
 
 				current_counterparty_commitment_txid,
