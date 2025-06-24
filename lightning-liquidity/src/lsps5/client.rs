@@ -17,6 +17,8 @@ use crate::lsps5::msgs::{
 	LSPS5Message, LSPS5Request, LSPS5Response, ListWebhooksRequest, RemoveWebhookRequest,
 	SetWebhookRequest, WebhookNotification,
 };
+#[cfg(feature = "time")]
+use crate::lsps5::service::DefaultTimeProvider;
 use crate::message_queue::MessageQueue;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, RwLock};
@@ -174,7 +176,7 @@ where
 	TP::Target: TimeProvider,
 {
 	/// Constructs an `LSPS5ClientHandler`.
-	pub(crate) fn new(
+	pub(crate) fn new_with_time_provider(
 		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>,
 		config: LSPS5ClientConfig, time_provider: TP,
 	) -> Self {
@@ -273,13 +275,11 @@ where
 	/// A unique `LSPSRequestId` for correlating the asynchronous response.
 	///
 	/// Response from the LSP peer will be provided asynchronously through a
-	/// [`LSPS5Response::ListWebhooks`] or [`LSPS5Response::ListWebhooksError`] message, and this client
-	/// will then enqueue either a [`WebhooksListed`] or [`WebhooksListFailed`] event.
+	/// [`LSPS5Response::ListWebhooks`] message, and this client
+	/// will then enqueue a [`WebhooksListed`] event.
 	///
 	/// [`WebhooksListed`]: super::event::LSPS5ClientEvent::WebhooksListed
-	/// [`WebhooksListFailed`]: super::event::LSPS5ClientEvent::WebhooksListFailed
 	/// [`LSPS5Response::ListWebhooks`]: super::msgs::LSPS5Response::ListWebhooks
-	/// [`LSPS5Response::ListWebhooksError`]: super::msgs::LSPS5Response::ListWebhooksError
 	pub fn list_webhooks(&self, counterparty_node_id: PublicKey) -> LSPSRequestId {
 		let request_id = generate_request_id(&self.entropy_source);
 		let now =
@@ -402,14 +402,6 @@ where
 						});
 						result = Ok(());
 					},
-					LSPS5Response::ListWebhooksError(e) => {
-						event_queue_notifier.enqueue(LSPS5ClientEvent::WebhooksListFailed {
-							counterparty_node_id: *counterparty_node_id,
-							error: e.clone().into(),
-							request_id,
-						});
-						result = Ok(());
-					},
 					_ => {
 						result = Err(LightningError {
 							err: "Unexpected response type for ListWebhooks".to_string(),
@@ -509,14 +501,9 @@ where
 
 	/// Parse and validate a webhook notification received from an LSP.
 	///
-	/// Implements the bLIP-55 / LSPS5 webhook delivery rules:
-	/// 1. Parses `notification_json` into a `WebhookNotification` (JSON-RPC 2.0).
-	/// 2. Checks that `timestamp` (from `x-lsps5-timestamp`) is within ±10 minutes of local time.
-	/// 3. Ensures `signature` (from `x-lsps5-signature`) has not been replayed within the
-	///    configured retention window.
-	/// 4. Reconstructs the exact string
-	///    `"LSPS5: DO NOT SIGN THIS MESSAGE MANUALLY: LSP: At {timestamp} I notify {body}"`
-	///    and verifies the zbase32 LN-style signature against the LSP's node ID.
+	/// Verifies the webhook delivery by parsing the notification JSON-RPC 2.0 format,
+	/// checking the timestamp is within ±10 minutes, ensuring no signature replay within the retention window,
+	/// and verifying the zbase32 LN-style signature against the LSP's node ID.
 	///
 	/// # Parameters
 	/// - `counterparty_node_id`: the LSP's public key, used to verify the signature.
@@ -524,18 +511,11 @@ where
 	/// - `signature`: the zbase32-encoded LN signature over timestamp+body.
 	/// - `notification`: the [`WebhookNotification`] received from the LSP.
 	///
-	/// On success, returns the received [`WebhookNotification`].
+	/// Returns the validated [`WebhookNotification`] or an error for invalid timestamp,
+	/// replay attack, or signature verification failure.
 	///
-	/// Failure reasons include:
-	/// - Timestamp too old (drift > 10 minutes)
-	/// - Replay attack detected (signature reused)
-	/// - Invalid signature (crypto check fails)
+	/// Call this method before processing any webhook notification to ensure authenticity.
 	///
-	/// Clients should call this method upon receiving a [`LSPS5ServiceEvent::SendWebhookNotification`]
-	/// event, before taking action on the notification. This guarantees that only authentic,
-	/// non-replayed notifications reach your application.
-	///
-	/// [`LSPS5ServiceEvent::SendWebhookNotification`]: super::event::LSPS5ServiceEvent::SendWebhookNotification
 	/// [`WebhookNotification`]: super::msgs::WebhookNotification
 	pub fn parse_webhook_notification(
 		&self, counterparty_node_id: PublicKey, timestamp: &LSPSDateTime, signature: &str,
@@ -553,6 +533,27 @@ where
 		self.store_signature(signature.to_string());
 
 		Ok(notification.clone())
+	}
+}
+
+#[cfg(feature = "time")]
+impl<ES: Deref> LSPS5ClientHandler<ES, Arc<DefaultTimeProvider>>
+where
+	ES::Target: EntropySource,
+{
+	/// Constructs a `LSPS5ClientHandler` using [`DefaultTimeProvider`].
+	#[allow(dead_code)]
+	pub(crate) fn new(
+		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>,
+		config: LSPS5ClientConfig,
+	) -> Self {
+		Self::new_with_time_provider(
+			entropy_source,
+			pending_messages,
+			pending_events,
+			config,
+			Arc::new(DefaultTimeProvider),
+		)
 	}
 }
 
@@ -577,16 +578,12 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		lsps0::ser::LSPSRequestId,
-		lsps5::{msgs::SetWebhookResponse, service::DefaultTimeProvider},
-		tests::utils::TestEntropy,
+		lsps0::ser::LSPSRequestId, lsps5::msgs::SetWebhookResponse, tests::utils::TestEntropy,
 	};
 	use bitcoin::{key::Secp256k1, secp256k1::SecretKey};
 
-	fn setup_test_client(
-		time_provider: Arc<dyn TimeProvider>,
-	) -> (
-		LSPS5ClientHandler<Arc<TestEntropy>, Arc<dyn TimeProvider>>,
+	fn setup_test_client() -> (
+		LSPS5ClientHandler<Arc<TestEntropy>, Arc<DefaultTimeProvider>>,
 		Arc<MessageQueue>,
 		Arc<EventQueue>,
 		PublicKey,
@@ -600,7 +597,6 @@ mod tests {
 			Arc::clone(&message_queue),
 			Arc::clone(&event_queue),
 			LSPS5ClientConfig::default(),
-			time_provider,
 		);
 
 		let secp = Secp256k1::new();
@@ -614,7 +610,7 @@ mod tests {
 
 	#[test]
 	fn test_per_peer_state_isolation() {
-		let (client, _, _, peer_1, peer_2) = setup_test_client(Arc::new(DefaultTimeProvider));
+		let (client, _, _, peer_1, peer_2) = setup_test_client();
 
 		let req_id_1 = client
 			.set_webhook(peer_1, "test-app-1".to_string(), "https://example.com/hook1".to_string())
@@ -636,7 +632,7 @@ mod tests {
 
 	#[test]
 	fn test_pending_request_tracking() {
-		let (client, _, _, peer, _) = setup_test_client(Arc::new(DefaultTimeProvider));
+		let (client, _, _, peer, _) = setup_test_client();
 		const APP_NAME: &str = "test-app";
 		const WEBHOOK_URL: &str = "https://example.com/hook";
 		let lsps5_app_name = LSPS5AppName::from_string(APP_NAME.to_string()).unwrap();
@@ -669,7 +665,7 @@ mod tests {
 
 	#[test]
 	fn test_handle_response_clears_pending_state() {
-		let (client, _, _, peer, _) = setup_test_client(Arc::new(DefaultTimeProvider));
+		let (client, _, _, peer, _) = setup_test_client();
 
 		let req_id = client
 			.set_webhook(peer, "test-app".to_string(), "https://example.com/hook".to_string())
@@ -699,7 +695,7 @@ mod tests {
 
 	#[test]
 	fn test_cleanup_expired_responses() {
-		let (client, _, _, _, _) = setup_test_client(Arc::new(DefaultTimeProvider));
+		let (client, _, _, _, _) = setup_test_client();
 		let time_provider = &client.time_provider;
 		const OLD_APP_NAME: &str = "test-app-old";
 		const NEW_APP_NAME: &str = "test-app-new";
@@ -708,7 +704,10 @@ mod tests {
 		let lsps5_new_app_name = LSPS5AppName::from_string(NEW_APP_NAME.to_string()).unwrap();
 		let lsps5_webhook_url = LSPS5WebhookUrl::from_string(WEBHOOK_URL.to_string()).unwrap();
 		let now = time_provider.duration_since_epoch();
-		let mut peer_state = PeerState::new(Duration::from_secs(1800), Arc::clone(time_provider));
+		let mut peer_state = PeerState::<Arc<DefaultTimeProvider>>::new(
+			Duration::from_secs(1800),
+			Arc::clone(time_provider),
+		);
 		peer_state.last_cleanup = Some(LSPSDateTime::new_from_duration_since_epoch(
 			now.checked_sub(Duration::from_secs(120)).unwrap(),
 		));
@@ -756,7 +755,7 @@ mod tests {
 
 	#[test]
 	fn test_unknown_request_id_handling() {
-		let (client, _message_queue, _, peer, _) = setup_test_client(Arc::new(DefaultTimeProvider));
+		let (client, _message_queue, _, peer, _) = setup_test_client();
 
 		let _valid_req = client
 			.set_webhook(peer, "test-app".to_string(), "https://example.com/hook".to_string())
