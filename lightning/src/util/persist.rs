@@ -605,6 +605,62 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized + Sync + Send + 'sta
 	}
 }
 
+impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync> PersistSync<ChannelSigner> for K {
+	fn persist_new_channel(
+		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
+	) -> Result<(), ()> {
+		let encoded = monitor.encode();
+		self.write(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_name.to_string(),
+			&encoded,
+		)
+		.map_err(|_| ())
+	}
+
+	fn update_persisted_channel(
+		&self, monitor_name: MonitorName, _update: Option<&ChannelMonitorUpdate>,
+		monitor: &ChannelMonitor<ChannelSigner>,
+	) -> Result<(), ()> {
+		let encoded = monitor.encode();
+		self.write(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_name.to_string(),
+			&encoded,
+		)
+		.map_err(|_| ())
+	}
+
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
+		let monitor_key = monitor_name.to_string();
+		let monitor = match self.read(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_key.as_str(),
+		) {
+			Ok(monitor) => monitor,
+			Err(_) => return,
+		};
+		match self.write(
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_key.as_str(),
+			&monitor,
+		) {
+			Ok(()) => {},
+			Err(_e) => return,
+		};
+		let _ = self.remove(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_key.as_str(),
+			true,
+		);
+	}
+}
+
 /// Read previously persisted [`ChannelMonitor`]s from the store.
 pub async fn read_channel_monitors<K: Deref, ES: Deref, SP: Deref>(
 	kv_store: K, entropy_source: ES, signer_provider: SP,

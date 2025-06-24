@@ -499,15 +499,12 @@ mod tests {
 		do_read_write_remove_list_persist, do_test_data_migration, do_test_store,
 	};
 
-	use lightning::chain::chainmonitor::Persist;
-	use lightning::chain::ChannelMonitorUpdateStatus;
+	use lightning::chain::chainmonitor::PersistSync;
 	use lightning::check_closed_event;
 	use lightning::events::ClosureReason;
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::BaseMessageHandler;
-	use lightning::util::persist::{
-		read_channel_monitors, read_channel_monitors_sync, KVStoreSyncWrapper,
-	};
+	use lightning::util::persist::{read_channel_monitors_sync, KVStoreSyncWrapper};
 	use lightning::util::test_utils;
 
 	impl Drop for FilesystemStore {
@@ -624,7 +621,7 @@ mod tests {
 
 		let monitor_name = added_monitors[0].1.persistence_key();
 		match store.persist_new_channel(monitor_name, &added_monitors[0].1) {
-			ChannelMonitorUpdateStatus::UnrecoverableError => {},
+			Ok(()) => {},
 			_ => panic!("unexpected result from persisting new channel"),
 		}
 
