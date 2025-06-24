@@ -1226,7 +1226,7 @@ where
 							logger,
 							"Htlc hold time at pos {}: {} ms",
 							route_hop_idx,
-							hold_time * HOLD_TIME_UNIT_MILLIS as u32
+							(hold_time as u128) * HOLD_TIME_UNIT_MILLIS
 						);
 
 						// Shift attribution data to prepare for processing the next hop.
