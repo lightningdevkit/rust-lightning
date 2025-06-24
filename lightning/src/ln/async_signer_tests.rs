@@ -296,13 +296,10 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(
 	let dst = &nodes[1];
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
+	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
+	let payment_id = PaymentId(our_payment_hash.0);
 	src.node
-		.send_payment_with_route(
-			route,
-			our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret),
-			PaymentId(our_payment_hash.0),
-		)
+		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
 		.unwrap();
 	check_added_monitors!(src, 1);
 
@@ -538,13 +535,10 @@ fn do_test_async_raa_peer_disconnect(
 	let dst = &nodes[1];
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
+	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
+	let payment_id = PaymentId(our_payment_hash.0);
 	src.node
-		.send_payment_with_route(
-			route,
-			our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret),
-			PaymentId(our_payment_hash.0),
-		)
+		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
 		.unwrap();
 	check_added_monitors!(src, 1);
 
@@ -702,13 +696,10 @@ fn do_test_async_commitment_signature_peer_disconnect(
 	let dst = &nodes[1];
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
+	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
+	let payment_id = PaymentId(our_payment_hash.0);
 	src.node
-		.send_payment_with_route(
-			route,
-			our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret),
-			PaymentId(our_payment_hash.0),
-		)
+		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
 		.unwrap();
 	check_added_monitors!(src, 1);
 
@@ -871,14 +862,11 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	// to the peer.
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
+	let recipient_fields = RecipientOnionFields::secret_only(payment_secret_2);
+	let payment_id = PaymentId(payment_hash_2.0);
 	nodes[0]
 		.node
-		.send_payment_with_route(
-			route,
-			payment_hash_2,
-			RecipientOnionFields::secret_only(payment_secret_2),
-			PaymentId(payment_hash_2.0),
-		)
+		.send_payment_with_route(route, payment_hash_2, recipient_fields, payment_id)
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
 
