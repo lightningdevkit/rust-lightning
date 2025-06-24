@@ -6191,11 +6191,8 @@ where
 						Ok(decoded_onion) => decoded_onion,
 
 						Err((htlc_fail, reason)) => {
-							htlc_fails.push((
-								htlc_fail,
-								HTLCHandlingFailureType::InvalidOnion,
-								reason.into(),
-							));
+							let failure_type = HTLCHandlingFailureType::InvalidOnion;
+							htlc_fails.push((htlc_fail, failure_type, reason.into()));
 							continue;
 						},
 					};
@@ -6329,14 +6326,7 @@ where
 
 		let mut new_events = VecDeque::new();
 		let mut failed_forwards = Vec::new();
-		let mut phantom_receives: Vec<(
-			u64,
-			Option<PublicKey>,
-			OutPoint,
-			ChannelId,
-			u128,
-			Vec<(PendingHTLCInfo, u64)>,
-		)> = Vec::new();
+		let mut phantom_receives: Vec<PerSourcePendingForward> = Vec::new();
 		{
 			let mut forward_htlcs = new_hash_map();
 			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
@@ -6540,13 +6530,10 @@ where
 									.filter_map(|chan| {
 										let balances =
 											chan.get_available_balances(&self.fee_estimator);
-										if outgoing_amt_msat
-											<= balances.next_outbound_htlc_limit_msat
-											&& outgoing_amt_msat
-												>= balances.next_outbound_htlc_minimum_msat && chan
-											.context
-											.is_usable()
-										{
+										let is_in_range = (balances.next_outbound_htlc_minimum_msat
+											..=balances.next_outbound_htlc_limit_msat)
+											.contains(&outgoing_amt_msat);
+										if is_in_range && chan.context.is_usable() {
 											Some((chan, balances))
 										} else {
 											None
@@ -6567,10 +6554,9 @@ where
 										{
 											chan
 										} else {
-											forwarding_channel_not_found!(core::iter::once(
-												forward_info
-											)
-											.chain(draining_pending_forwards));
+											let fwd_iter = core::iter::once(forward_info)
+												.chain(draining_pending_forwards);
+											forwarding_channel_not_found!(fwd_iter);
 											break;
 										}
 									},
@@ -6610,16 +6596,15 @@ where
 										.and_then(Channel::as_funded_mut)
 									{
 										let data = self.get_htlc_inbound_temp_fail_data(reason);
+										let failure_type = HTLCHandlingFailureType::Forward {
+											node_id: Some(chan.context.get_counterparty_node_id()),
+											channel_id: forward_chan_id,
+										};
 										failed_forwards.push((
 											htlc_source,
 											payment_hash,
 											HTLCFailReason::reason(reason, data),
-											HTLCHandlingFailureType::Forward {
-												node_id: Some(
-													chan.context.get_counterparty_node_id(),
-												),
-												channel_id: forward_chan_id,
-											},
+											failure_type,
 										));
 									} else {
 										forwarding_channel_not_found!(core::iter::once(
@@ -6834,19 +6819,19 @@ where
 											$htlc.value,
 											self.best_block.read().unwrap().height,
 										);
+										let counterparty_node_id =
+											$htlc.prev_hop.counterparty_node_id;
+										let incoming_packet_shared_secret =
+											$htlc.prev_hop.incoming_packet_shared_secret;
 										failed_forwards.push((
 											HTLCSource::PreviousHopData(HTLCPreviousHopData {
 												short_channel_id: $htlc.prev_hop.short_channel_id,
 												user_channel_id: $htlc.prev_hop.user_channel_id,
-												counterparty_node_id: $htlc
-													.prev_hop
-													.counterparty_node_id,
+												counterparty_node_id,
 												channel_id: prev_channel_id,
 												outpoint: prev_funding_outpoint,
 												htlc_id: $htlc.prev_hop.htlc_id,
-												incoming_packet_shared_secret: $htlc
-													.prev_hop
-													.incoming_packet_shared_secret,
+												incoming_packet_shared_secret,
 												phantom_shared_secret,
 												blinded_failure,
 												cltv_expiry: Some(cltv_expiry),
@@ -7231,7 +7216,8 @@ where
 				for (chan_id, chan) in peer_state.channel_by_id.iter_mut()
 					.filter_map(|(chan_id, chan)| chan.as_funded_mut().map(|chan| (chan_id, chan)))
 				{
-					let new_feerate = if chan.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+					let is_anchors_chan = chan.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx();
+					let new_feerate = if is_anchors_chan {
 						anchor_feerate
 					} else {
 						non_anchor_feerate
@@ -7462,23 +7448,19 @@ where
 						// In this case we're not going to handle any timeouts of the parts here.
 						// This condition determining whether the MPP is complete here must match
 						// exactly the condition used in `process_pending_htlc_forwards`.
-						if payment.htlcs[0].total_msat
-							<= payment
-								.htlcs
-								.iter()
-								.fold(0, |total, htlc| total + htlc.sender_intended_value)
-						{
+						let htlc_total_msat =
+							payment.htlcs.iter().map(|h| h.sender_intended_value).sum();
+						if payment.htlcs[0].total_msat <= htlc_total_msat {
 							return true;
 						} else if payment.htlcs.iter_mut().any(|htlc| {
 							htlc.timer_ticks += 1;
 							return htlc.timer_ticks >= MPP_TIMEOUT_TICKS;
 						}) {
-							timed_out_mpp_htlcs.extend(
-								payment
-									.htlcs
-									.drain(..)
-									.map(|htlc: ClaimableHTLC| (htlc.prev_hop, *payment_hash)),
-							);
+							let htlcs = payment
+								.htlcs
+								.drain(..)
+								.map(|htlc: ClaimableHTLC| (htlc.prev_hop, *payment_hash));
+							timed_out_mpp_htlcs.extend(htlcs);
 							return false;
 						}
 					}
@@ -9943,15 +9925,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	#[inline]
 	fn forward_htlcs_without_forward_event(
-		&self,
-		per_source_pending_forwards: &mut [(
-			u64,
-			Option<PublicKey>,
-			OutPoint,
-			ChannelId,
-			u128,
-			Vec<(PendingHTLCInfo, u64)>,
-		)],
+		&self, per_source_pending_forwards: &mut [PerSourcePendingForward],
 	) -> bool {
 		let mut push_forward_event = false;
 		for &mut (
@@ -10038,7 +10012,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 											Some(prev_channel_id),
 											Some(forward_info.payment_hash),
 										);
-										log_info!(logger, "Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}", scid);
+										log_info!(
+											logger,
+											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
+											scid
+										);
 										let htlc_source =
 											HTLCSource::PreviousHopData(HTLCPreviousHopData {
 												short_channel_id: prev_short_channel_id,
@@ -10058,15 +10036,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 													.incoming_cltv_expiry(),
 											});
 
-										failed_intercept_forwards.push((
-											htlc_source,
-											forward_info.payment_hash,
-											HTLCFailReason::from_failure_code(
-												LocalHTLCFailureReason::UnknownNextPeer,
-											),
+										let payment_hash = forward_info.payment_hash;
+										let reason = HTLCFailReason::from_failure_code(
+											LocalHTLCFailureReason::UnknownNextPeer,
+										);
+										let failure_type =
 											HTLCHandlingFailureType::InvalidForward {
 												requested_forward_scid: scid,
-											},
+											};
+										failed_intercept_forwards.push((
+											htlc_source,
+											payment_hash,
+											reason,
+											failure_type,
 										));
 									},
 								}
