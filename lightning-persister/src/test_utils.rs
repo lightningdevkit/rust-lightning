@@ -120,11 +120,11 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStoreSync, T: MigratableKVSt
 pub(crate) fn do_test_store<K: KVStoreSync + Sync + Send + 'static>(
 	store_0: Arc<K>, store_1: Arc<K>,
 ) {
-	let chanmon_cfgs = create_chanmon_cfgs_with_keys_arc(2, None);
-	let mut node_cfgs = create_node_cfgs_arc(2, &chanmon_cfgs);
-
 	let kv_store_0 = Arc::new(KVStoreSyncWrapper::new(store_0));
 	let kv_store_1 = Arc::new(KVStoreSyncWrapper::new(store_1));
+
+	let chanmon_cfgs = create_chanmon_cfgs_with_keys_arc(2, None);
+	let mut node_cfgs = create_node_cfgs_arc(2, &chanmon_cfgs);
 
 	let chain_mon_0 = test_utils::TestChainMonitor::new(
 		Some(&chanmon_cfgs[0].chain_source),
