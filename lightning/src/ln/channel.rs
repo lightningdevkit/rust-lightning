@@ -1823,7 +1823,32 @@ where
 				res
 			},
 			ChannelPhase::Funded(mut funded_channel) => {
-				let res = funded_channel.commitment_signed(msg, logger).map(|monitor_update_opt| (None, monitor_update_opt));
+				#[cfg(splicing)]
+				let has_negotiated_pending_splice = funded_channel.pending_splice.as_ref()
+					.map(|pending_splice| pending_splice.funding.is_some())
+					.unwrap_or(false);
+				#[cfg(splicing)]
+				let session_received_commitment_signed = funded_channel
+					.interactive_tx_signing_session
+					.as_ref()
+					.map(|session| session.has_received_commitment_signed())
+					// Not having a signing session implies they've already sent `splice_locked`,
+					// which must always come after the initial commitment signed is sent.
+					.unwrap_or(true);
+				#[cfg(splicing)]
+				let res = if has_negotiated_pending_splice && !session_received_commitment_signed {
+					funded_channel
+						.splice_initial_commitment_signed(msg, logger)
+						.map(|monitor_update_opt| (None, monitor_update_opt))
+				} else {
+					funded_channel.commitment_signed(msg, logger)
+						.map(|monitor_update_opt| (None, monitor_update_opt))
+				};
+
+				#[cfg(not(splicing))]
+				let res = funded_channel.commitment_signed(msg, logger)
+					.map(|monitor_update_opt| (None, monitor_update_opt));
+
 				self.phase = ChannelPhase::Funded(funded_channel);
 				res
 			},
@@ -2150,6 +2175,7 @@ impl FundingScope {
 #[cfg(splicing)]
 struct PendingSplice {
 	pub our_funding_contribution: i64,
+	funding: Option<FundingScope>,
 
 	/// The funding txid used in the `splice_locked` sent to the counterparty.
 	sent_funding_txid: Option<Txid>,
@@ -6709,6 +6735,95 @@ where
 		Ok(channel_monitor)
 	}
 
+	/// Handles an incoming `commitment_signed` message for the first commitment transaction of the
+	/// channel's new funding transaction. This assumes our `commitment_signed` was already sent
+	/// when the [`InteractiveTxSigningSession`] was initialized, so we do not need to send one in
+	/// response. As a result, a single [`ChannelMonitorUpdate`] will get queued that tracks the new
+	/// set of channel parameters, as well as the initial holder and counterparty commitment
+	/// transactions. We hold back sending our `tx_signatures` until the monitor update is
+	/// persisted, such that we're able to enforce the holder commitment transaction onchain once
+	/// the new funding transaction is signed and broadcast.
+	///
+	/// Note that our `commitment_signed` send did not include a monitor update. This is due to:
+	///   1. Updates cannot be made since the state machine is paused until `tx_signatures`.
+	///   2. We're still able to abort negotiation until `tx_signatures`.
+	#[cfg(splicing)]
+	pub fn splice_initial_commitment_signed<L: Deref>(
+		&mut self, msg: &msgs::CommitmentSigned, logger: &L,
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+	where
+		L::Target: Logger,
+	{
+		if !self.context.channel_state.is_interactive_signing()
+			|| self.context.channel_state.is_their_tx_signatures_sent()
+		{
+			return Err(ChannelError::close(
+				"Received splice initial commitment_signed during invalid state".to_owned(),
+			));
+		}
+
+		let pending_splice_funding = self
+			.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding.as_ref())
+			.expect("Funding must exist for negotiated pending splice");
+		let holder_commitment_data = self.context.validate_commitment_signed(
+			pending_splice_funding,
+			&self.holder_commitment_point,
+			msg,
+			logger,
+		)?;
+		// This corresponds to the same `commitment_signed` we sent earlier, which we know to be the
+		// same since the state machine is paused until `tx_signatures` are exchanged.
+		let counterparty_commitment_tx = self
+			.context
+			.build_commitment_transaction(
+				pending_splice_funding,
+				self.context.cur_counterparty_commitment_transaction_number,
+				&self.context.counterparty_cur_commitment_point.unwrap(),
+				false,
+				false,
+				logger,
+			)
+			.tx;
+
+		{
+			let counterparty_trusted_tx = counterparty_commitment_tx.trust();
+			let counterparty_bitcoin_tx = counterparty_trusted_tx.built_transaction();
+			log_trace!(
+				logger,
+				"Splice initial counterparty tx for channel {} is: txid {} tx {}",
+				&self.context.channel_id(),
+				counterparty_bitcoin_tx.txid,
+				encode::serialize_hex(&counterparty_bitcoin_tx.transaction)
+			);
+		}
+
+		log_info!(logger, "Received splice initial commitment_signed from peer for channel {} with funding txid {}",
+			&self.context.channel_id(), pending_splice_funding.get_funding_txo().unwrap().txid);
+
+		self.context.latest_monitor_update_id += 1;
+		let monitor_update = ChannelMonitorUpdate {
+			update_id: self.context.latest_monitor_update_id,
+			updates: vec![ChannelMonitorUpdateStep::RenegotiatedFunding {
+				channel_parameters: pending_splice_funding.channel_transaction_parameters.clone(),
+				holder_commitment_tx: holder_commitment_data.commitment_tx,
+				counterparty_commitment_tx,
+			}],
+			channel_id: Some(self.context.channel_id()),
+		};
+
+		let tx_signatures = self
+			.interactive_tx_signing_session
+			.as_mut()
+			.expect("Signing session must exist for negotiated pending splice")
+			.received_commitment_signed();
+		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+		self.context.monitor_pending_tx_signatures = tx_signatures;
+
+		Ok(self.push_ret_blockable_mon_update(monitor_update))
+	}
+
 	pub fn commitment_signed<L: Deref>(
 		&mut self, msg: &msgs::CommitmentSigned, logger: &L,
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
@@ -10134,6 +10249,7 @@ where
 
 		self.pending_splice = Some(PendingSplice {
 			our_funding_contribution: our_funding_contribution_satoshis,
+			funding: None,
 			sent_funding_txid: None,
 			received_funding_txid: None,
 		});
