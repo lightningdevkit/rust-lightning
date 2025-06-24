@@ -1219,7 +1219,7 @@ mod tests {
 	};
 	use lightning::util::ser::Writeable;
 	use lightning::util::sweep::{OutputSpendStatus, OutputSweeperSync, PRUNE_DELAY_BLOCKS};
-	use lightning::util::test_utils;
+	use lightning::util::test_utils::{self, TokioSpawner};
 	use lightning::{get_event, get_event_msg};
 	use lightning_liquidity::LiquidityManager;
 	use lightning_persister::fs_store::FilesystemStore;
@@ -1283,6 +1283,7 @@ mod tests {
 		Arc<test_utils::TestLogger>,
 		Arc<FilesystemStore>,
 		Arc<KeysManager>,
+		TokioSpawner,
 	>;
 
 	type PGS = Arc<

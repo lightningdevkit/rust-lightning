@@ -220,7 +220,7 @@ pub trait KVStoreSync {
 }
 
 /// A wrapper around a [`KVStoreSync`] that implements the [`KVStore`] trait.
-pub struct KVStoreSyncWrapper<K: Deref>(K)
+pub struct KVStoreSyncWrapper<K: Deref>(pub K)
 where
 	K::Target: KVStoreSync;
 
@@ -291,6 +291,10 @@ pub trait MigratableKVStore: KVStore {
 	///
 	/// Must exhaustively return all entries known to the store to ensure no data is missed, but
 	/// may return the items in arbitrary order.
+	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, io::Error>;
+}
+
+pub trait MigratableKVStoreSync: KVStoreSync {
 	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, io::Error>;
 }
 
@@ -576,6 +580,27 @@ where
 		}
 	}
 	Ok(res)
+}
+
+pub fn read_channel_monitors_sync<K: Deref, ES: Deref, SP: Deref>(
+	kv_store: K, entropy_source: ES, signer_provider: SP,
+) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, io::Error>
+where
+	K::Target: KVStoreSync,
+	ES::Target: EntropySource + Sized,
+	SP::Target: SignerProvider + Sized,
+{
+	let kv_store = KVStoreSyncWrapper(kv_store);
+
+	let mut fut = Box::pin(read_channel_monitors(kv_store, entropy_source, signer_provider));
+	let mut waker = dummy_waker();
+	let mut ctx = task::Context::from_waker(&mut waker);
+	match fut.as_mut().poll(&mut ctx) {
+		task::Poll::Ready(result) => result,
+		task::Poll::Pending => {
+			unreachable!("Can't poll a future in a sync context, this should never happen");
+		},
+	}
 }
 
 /// Implements [`Persist`] in a way that writes and reads both [`ChannelMonitor`]s and

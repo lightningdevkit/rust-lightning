@@ -2,7 +2,7 @@
 use crate::utils::{check_namespace_key_validity, is_valid_kvstore_str};
 
 use lightning::util::async_poll::{AsyncResult, AsyncResultType};
-use lightning::util::persist::{KVStore, MigratableKVStore};
+use lightning::util::persist::{KVStore, KVStoreSync, MigratableKVStore, MigratableKVStoreSync};
 use lightning::util::string::PrintableString;
 
 use std::collections::HashMap;
@@ -93,7 +93,7 @@ impl FilesystemStore {
 	}
 }
 
-impl FilesystemStore {
+impl KVStoreSync for FilesystemStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 	) -> lightning::io::Result<Vec<u8>> {
@@ -204,23 +204,6 @@ impl FilesystemStore {
 		self.garbage_collect_locks();
 
 		res
-	}
-}
-
-impl KVStore for FilesystemStore {
-	fn read(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> AsyncResultType<'static, Vec<u8>, lightning::io::Error> {
-		let res = self.read(primary_namespace, secondary_namespace, key);
-		Box::pin(async move { res })
-	}
-
-	fn write(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
-	) -> AsyncResultType<'static, (), lightning::io::Error> {
-		let res = self.write(primary_namespace, secondary_namespace, key, buf);
-
-		Box::pin(async move { res })
 	}
 
 	fn remove(
@@ -443,7 +426,7 @@ fn get_key_from_dir_entry(p: &Path, base_path: &Path) -> Result<String, lightnin
 	}
 }
 
-impl MigratableKVStore for FilesystemStore {
+impl MigratableKVStoreSync for FilesystemStore {
 	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
 		let prefixed_dest = &self.data_dir;
 		if !prefixed_dest.exists() {
