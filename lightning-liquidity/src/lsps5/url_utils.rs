@@ -9,25 +9,20 @@
 
 //! URL utilities for LSPS5 webhook notifications.
 
-use crate::alloc::string::ToString;
-use alloc::string::String;
-use lightning_types::string::UntrustedString;
-
 use super::msgs::LSPS5ProtocolError;
 
-/// A URL implementation for scheme and host extraction.
-/// Simplified representation of a URL with just scheme and host components.
-/// This struct provides parsing and access to these core parts of a URL string.
+use lightning_types::string::UntrustedString;
+
+use alloc::string::String;
+
+/// Represents a parsed URL for LSPS5 webhook notifications.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LSPSUrl {
-	host: UntrustedString,
-	/// The full URL string.
 	url: UntrustedString,
 }
 
 impl LSPSUrl {
 	/// Parses a URL string into a URL instance.
-	/// Extracts the scheme and host from any standard URL.
 	///
 	/// # Arguments
 	/// * `url_str` - The URL string to parse
@@ -61,30 +56,25 @@ impl LSPSUrl {
 			.filter(|s| !s.is_empty())
 			.ok_or_else(|| (LSPS5ProtocolError::UrlParse))?;
 
-		if host_without_auth.is_empty() || host_without_auth.contains(' ') {
+		if host_without_auth.is_empty()
+			|| host_without_auth
+				.chars()
+				.any(|c| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != ':')
+		{
 			return Err(LSPS5ProtocolError::UrlParse);
 		}
 
-		let host_str = match host_without_auth.rsplit_once(':') {
-			Some((hostname, _port)) if hostname.is_empty() => {
-				return Err(LSPS5ProtocolError::UrlParse)
-			},
-			Some((hostname, port)) => {
-				if port.is_empty() {
-					hostname.to_string()
-				} else if port.parse::<u16>().is_err() {
+		match host_without_auth.rsplit_once(':') {
+			Some((hostname, _)) if hostname.is_empty() => return Err(LSPS5ProtocolError::UrlParse),
+			Some((_, port)) => {
+				if !port.is_empty() && port.parse::<u16>().is_err() {
 					return Err(LSPS5ProtocolError::UrlParse);
-				} else {
-					host_without_auth.to_string()
 				}
 			},
-			None => host_without_auth.to_string(),
+			None => {},
 		};
 
-		Ok(LSPSUrl {
-			host: UntrustedString(host_str.to_string()),
-			url: UntrustedString(url_str.to_string()),
-		})
+		Ok(LSPSUrl { url: UntrustedString(url_str) })
 	}
 
 	/// Returns URL length.
@@ -101,19 +91,19 @@ impl LSPSUrl {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::alloc::string::ToString;
 	use alloc::vec::Vec;
 	use proptest::prelude::*;
 
 	#[test]
 	fn test_extremely_long_url() {
-		let n = 1000;
-		let host = "a".repeat(n);
-		let url_str = format!("https://{}/path", host).to_string();
+		let url_str = format!("https://{}/path", "a".repeat(1000)).to_string();
+		let url_chars = url_str.chars().count();
 		let result = LSPSUrl::parse(url_str);
 
 		assert!(result.is_ok());
 		let url = result.unwrap();
-		assert_eq!(url.host.0.chars().count(), n);
+		assert_eq!(url.url.0.chars().count(), url_chars);
 	}
 
 	#[test]
@@ -125,23 +115,22 @@ mod tests {
 
 	#[test]
 	fn valid_lsps_url() {
-		let test_vec: Vec<(&'static str, &'static str)> = vec![
-			("https://www.example.org/push?l=1234567890abcopqrstuv&c=best", "www.example.org"),
-			("https://www.example.com/path", "www.example.com"),
-			("https://example.org", "example.org"),
-			("https://example.com:8080/path", "example.com:8080"),
-			("https://api.example.com/v1/resources", "api.example.com"),
-			("https://example.com/page#section1", "example.com"),
-			("https://example.com/search?q=test#results", "example.com"),
-			("https://user:pass@example.com/", "example.com"),
-			("https://192.168.1.1/admin", "192.168.1.1"),
-			("https://example.com/path with spaces", "example.com"),
-			("https://example.com://path", "example.com"),
+		let test_vec: Vec<&'static str> = vec![
+			"https://www.example.org/push?l=1234567890abcopqrstuv&c=best",
+			"https://www.example.com/path",
+			"https://example.org",
+			"https://example.com:8080/path",
+			"https://api.example.com/v1/resources",
+			"https://example.com/page#section1",
+			"https://example.com/search?q=test#results",
+			"https://user:pass@example.com/",
+			"https://192.168.1.1/admin",
+			"https://example.com/path with spaces",
+			"https://example.com://path",
 		];
-		for (url_str, expected_host) in test_vec {
+		for url_str in test_vec {
 			let url = LSPSUrl::parse(url_str.to_string());
 			assert!(url.is_ok(), "Failed to parse URL: {}", url_str);
-			assert_eq!(url.unwrap().host.0, expected_host);
 		}
 	}
 
@@ -188,47 +177,46 @@ mod tests {
 		}
 	}
 
+	fn host_strategy() -> impl Strategy<Value = String> {
+		prop_oneof![
+			proptest::string::string_regex(
+				"[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)*"
+			)
+			.unwrap(),
+			(0u8..=255u8, 0u8..=255u8, 0u8..=255u8, 0u8..=255u8)
+				.prop_map(|(a, b, c, d)| format!("{}.{}.{}.{}", a, b, c, d))
+		]
+	}
+
 	proptest! {
-		/// For any valid URL matching the regex: if it parses, then
-		/// - round-trip .url() == original,
-		/// - url_length() == .chars().count()
-		/// - host is non-empty and substring of the original,
-		/// - port (if present) is numeric,
-		/// - IPv4 hosts match expected pattern,
 		#[test]
-		fn test_url_properties(
-			url_str in proptest::string::string_regex(
-				r"([a-z][a-z0-9+.-]*)://((?:[a-z0-9._~%!$&()*+,;=-]+@)?(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[a-fA-F0-9:.]+\]|[a-z0-9._~%+-]+(?:\.[a-z0-9._~%+-]+)*))(?::\d{1,5})?(/[a-z0-9._~%!$&()*+,;=:@/-]*)?(\?[a-z0-9._~%!$&()*+,;=:@/?-]*)?(\#[a-z0-9._~%!$&()*+,;=:@/?-]*)?"
-			).unwrap()
+		fn proptest_parse_round_trip(
+			host in host_strategy(),
+			port in proptest::option::of(0u16..=65535u16),
+			path in proptest::option::of(proptest::string::string_regex("[a-zA-Z0-9._~%!$&()*+,;=:@/-]{0,20}").unwrap()),
+			query in proptest::option::of(proptest::string::string_regex("[a-zA-Z0-9._~%!$&()*+,;=:@/-]{0,20}").unwrap()),
+			fragment in proptest::option::of(proptest::string::string_regex("[a-zA-Z0-9._~%!$&()*+,;=:@/-]{0,20}").unwrap())
 		) {
-			if let Ok(u) = LSPSUrl::parse(url_str.to_string()) {
-				prop_assert_eq!(u.url(), url_str.clone());
-				prop_assert_eq!(u.url_length(), url_str.chars().count());
-
-				// Check URL starts with "https://" (since we only support HTTPS)
-				prop_assert!(url_str.starts_with("https://"));
-
-				prop_assert!(!u.host.0.is_empty());
-				prop_assert!(url_str.contains(&u.host.0));
-
-				if let Some(idx) = u.host.0.rfind(':') {
-					let (host_part, port_part) = u.host.0.split_at(idx);
-					if !host_part.is_empty() && port_part.len() > 1 {
-						let port_str = &port_part[1..];
-						prop_assert!(port_str.chars().all(|c| c.is_ascii_digit()));
-						// Port must be in 0..=u32::MAX (parseable as u32)
-						prop_assert!(port_str.parse::<u32>().is_ok());
-					}
-				}
-
-				if u.host.0.chars().all(|c| c.is_ascii_digit() || c == '.') && u.host.0.matches('.').count() == 3 {
-					let octets: Vec<_> = u.host.0.split('.').collect();
-					prop_assert_eq!(octets.len(), 4);
-					for octet in octets {
-						prop_assert!(!octet.is_empty());
-					}
-				}
+			let mut url = format!("https://{}", host);
+			if let Some(p) = port {
+				url.push_str(&format!(":{}", p));
 			}
+			if let Some(pth) = &path {
+				url.push('/');
+				url.push_str(pth);
+			}
+			if let Some(q) = &query {
+				url.push('?');
+				url.push_str(q);
+			}
+			if let Some(f) = &fragment {
+				url.push('#');
+				url.push_str(f);
+			}
+
+			let parsed = LSPSUrl::parse(url.clone()).expect("should parse");
+			prop_assert_eq!(parsed.url(), url.as_str());
+			prop_assert_eq!(parsed.url_length(), url.chars().count());
 		}
 	}
 }
