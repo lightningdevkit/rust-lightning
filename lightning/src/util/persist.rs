@@ -1868,95 +1868,95 @@ mod tests {
 	}
 
 	// Confirm that the `clean_stale_updates` function finds and deletes stale updates.
-	// #[tokio::test]
-	// async fn clean_stale_updates_works() {
-	// 	let test_max_pending_updates = 7;
-	// 	let chanmon_cfgs = create_chanmon_cfgs(3);
-	// 	let kv_store_0_sync = Arc::new(TestStore::new(false));
-	// 	let kv_store_0 = KVStoreSyncWrapper::new(kv_store_0_sync);
-	// 	let logger = Arc::new(TestLogger::new());
-	// 	let persister_0 = MonitorUpdatingPersister::new(
-	// 		kv_store_0,
-	// 		logger,
-	// 		test_max_pending_updates,
-	// 		&chanmon_cfgs[0].keys_manager,
-	// 		&chanmon_cfgs[0].keys_manager,
-	// 		&chanmon_cfgs[0].tx_broadcaster,
-	// 		&chanmon_cfgs[0].fee_estimator,
-	// 	);
-	// 	let kv_store_1_sync = &TestStore::new(false);
-	// 	let kv_store_1 = KVStoreSyncWrapper::new(kv_store_1_sync);
-	// 	let logger = &TestLogger::new();
-	// 	let persister_1 = MonitorUpdatingPersister::new(
-	// 		kv_store_1,
-	// 		logger,
-	// 		test_max_pending_updates,
-	// 		&chanmon_cfgs[1].keys_manager,
-	// 		&chanmon_cfgs[1].keys_manager,
-	// 		&chanmon_cfgs[1].tx_broadcaster,
-	// 		&chanmon_cfgs[1].fee_estimator,
-	// 	);
-	// 	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	// 	let chain_mon_0 = test_utils::TestChainMonitor::new(
-	// 		Some(&chanmon_cfgs[0].chain_source),
-	// 		&chanmon_cfgs[0].tx_broadcaster,
-	// 		&chanmon_cfgs[0].logger,
-	// 		&chanmon_cfgs[0].fee_estimator,
-	// 		&persister_0,
-	// 		&chanmon_cfgs[0].keys_manager,
-	// 	);
-	// 	let chain_mon_1 = test_utils::TestChainMonitor::new(
-	// 		Some(&chanmon_cfgs[1].chain_source),
-	// 		&chanmon_cfgs[1].tx_broadcaster,
-	// 		&chanmon_cfgs[1].logger,
-	// 		&chanmon_cfgs[1].fee_estimator,
-	// 		&persister_1,
-	// 		&chanmon_cfgs[1].keys_manager,
-	// 	);
-	// 	node_cfgs[0].chain_monitor = chain_mon_0;
-	// 	node_cfgs[1].chain_monitor = chain_mon_1;
-	// 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	// 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	#[tokio::test]
+	async fn clean_stale_updates_works() {
+		let test_max_pending_updates = 7;
+		let chanmon_cfgs = create_chanmon_cfgs_with_keys_arc(3, None);
+		let kv_store_0_sync = Arc::new(TestStore::new(false));
+		let kv_store_0 = KVStoreSyncWrapper::new(Arc::clone(&kv_store_0_sync));
+		let logger = Arc::new(TestLogger::new());
+		let persister_0 = MonitorUpdatingPersister::new(
+			kv_store_0,
+			logger,
+			test_max_pending_updates,
+			Arc::clone(&chanmon_cfgs[0].keys_manager),
+			Arc::clone(&chanmon_cfgs[0].keys_manager),
+			Arc::clone(&chanmon_cfgs[0].tx_broadcaster),
+			Arc::clone(&chanmon_cfgs[0].fee_estimator),
+		);
+		let kv_store_1_sync = Arc::new(TestStore::new(false));
+		let kv_store_1 = KVStoreSyncWrapper::new(Arc::clone(&kv_store_1_sync));
+		let logger = Arc::new(TestLogger::new());
+		let persister_1 = MonitorUpdatingPersister::new(
+			kv_store_1,
+			logger,
+			test_max_pending_updates,
+			Arc::clone(&chanmon_cfgs[1].keys_manager),
+			Arc::clone(&chanmon_cfgs[1].keys_manager),
+			Arc::clone(&chanmon_cfgs[1].tx_broadcaster),
+			Arc::clone(&chanmon_cfgs[1].fee_estimator),
+		);
+		let mut node_cfgs = create_node_cfgs_arc(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[0].chain_source),
+			&*chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].logger,
+			&chanmon_cfgs[0].fee_estimator,
+			&persister_0,
+			&chanmon_cfgs[0].keys_manager,
+		);
+		let chain_mon_1 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[1].chain_source),
+			&*chanmon_cfgs[1].tx_broadcaster,
+			&chanmon_cfgs[1].logger,
+			&chanmon_cfgs[1].fee_estimator,
+			&persister_1,
+			&chanmon_cfgs[1].keys_manager,
+		);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		node_cfgs[1].chain_monitor = chain_mon_1;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	// 	// Check that the persisted channel data is empty before any channels are
-	// 	// open.
-	// 	let persisted_chan_data =
-	// 		persister_0.read_all_channel_monitors_with_updates().await.unwrap();
-	// 	assert_eq!(persisted_chan_data.len(), 0);
+		// Check that the persisted channel data is empty before any channels are
+		// open.
+		let persisted_chan_data =
+			persister_0.read_all_channel_monitors_with_updates().await.unwrap();
+		assert_eq!(persisted_chan_data.len(), 0);
 
-	// 	// Create some initial channel
-	// 	let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
+		// Create some initial channel
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	// 	// Send a few payments to advance the updates a bit
-	// 	send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
-	// 	send_payment(&nodes[1], &vec![&nodes[0]][..], 4_000_000);
+		// Send a few payments to advance the updates a bit
+		send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
+		send_payment(&nodes[1], &vec![&nodes[0]][..], 4_000_000);
 
-	// 	// Get the monitor and make a fake stale update at update_id=1 (lowest height of an update possible)
-	// 	let persisted_chan_data =
-	// 		persister_0.read_all_channel_monitors_with_updates().await.unwrap();
-	// 	let (_, monitor) = &persisted_chan_data[0];
-	// 	let monitor_name = monitor.persistence_key();
-	// 	kv_store_0_sync
-	// 		.write(
-	// 			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-	// 			&monitor_name.to_string(),
-	// 			UpdateName::from(1).as_str(),
-	// 			&[0u8; 1],
-	// 		)
-	// 		.unwrap();
+		// Get the monitor and make a fake stale update at update_id=1 (lowest height of an update possible)
+		let persisted_chan_data =
+			persister_0.read_all_channel_monitors_with_updates().await.unwrap();
+		let (_, monitor) = &persisted_chan_data[0];
+		let monitor_name = monitor.persistence_key();
+		kv_store_0_sync
+			.write(
+				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+				&monitor_name.to_string(),
+				UpdateName::from(1).as_str(),
+				&[0u8; 1],
+			)
+			.unwrap();
 
-	// 	// Do the stale update cleanup
-	// 	persister_0.cleanup_stale_updates(false).await.unwrap();
+		// Do the stale update cleanup
+		persister_0.cleanup_stale_updates(false).await.unwrap();
 
-	// 	// Confirm the stale update is unreadable/gone
-	// 	assert!(kv_store_0_sync
-	// 		.read(
-	// 			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-	// 			&monitor_name.to_string(),
-	// 			UpdateName::from(1).as_str()
-	// 		)
-	// 		.is_err());
-	// }
+		// Confirm the stale update is unreadable/gone
+		assert!(kv_store_0_sync
+			.read(
+				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+				&monitor_name.to_string(),
+				UpdateName::from(1).as_str()
+			)
+			.is_err());
+	}
 
 	fn persist_fn<P: Deref, ChannelSigner: EcdsaChannelSigner>(_persist: P) -> bool
 	where
@@ -1965,10 +1965,11 @@ mod tests {
 		true
 	}
 
-	// TODO: RE-ENABLE
+	// // TODO: RE-ENABLE
 	// #[test]
 	// fn kvstore_trait_object_usage() {
-	// 	let store: Arc<dyn KVStoreSync + Send + Sync> = Arc::new(TestStore::new(false));
-	// 	assert!(persist_fn::<_, TestChannelSigner>(store.clone()));
+	// 	let sync_store: Arc<dyn KVStoreSync + Send + Sync> = Arc::new(TestStore::new(false));
+	// 	let persist = PersistSyncWrapper(sync_store.clone());
+	// 	assert!(persist_fn::<_, TestChannelSigner>(persist));
 	// }
 }
