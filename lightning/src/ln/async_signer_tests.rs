@@ -575,30 +575,20 @@ fn do_test_async_raa_peer_disconnect(
 	dst.node.peer_disconnected(src.node.get_our_node_id());
 
 	// do reestablish stuff
-	src.node
-		.peer_connected(
-			dst.node.get_our_node_id(),
-			&msgs::Init {
-				features: dst.node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			true,
-		)
-		.unwrap();
+	let init_msg = &msgs::Init {
+		features: dst.node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	src.node.peer_connected(dst.node.get_our_node_id(), init_msg, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(src, dst);
 	assert_eq!(reestablish_1.len(), 1);
-	dst.node
-		.peer_connected(
-			src.node.get_our_node_id(),
-			&msgs::Init {
-				features: src.node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			false,
-		)
-		.unwrap();
+	let init_msg = &msgs::Init {
+		features: src.node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	dst.node.peer_connected(src.node.get_our_node_id(), init_msg, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(dst, src);
 	assert_eq!(reestablish_2.len(), 1);
 
@@ -741,30 +731,20 @@ fn do_test_async_commitment_signature_peer_disconnect(
 	dst.node.peer_disconnected(src.node.get_our_node_id());
 
 	// do reestablish stuff
-	src.node
-		.peer_connected(
-			dst.node.get_our_node_id(),
-			&msgs::Init {
-				features: dst.node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			true,
-		)
-		.unwrap();
+	let init_msg = &msgs::Init {
+		features: dst.node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	src.node.peer_connected(dst.node.get_our_node_id(), init_msg, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(src, dst);
 	assert_eq!(reestablish_1.len(), 1);
-	dst.node
-		.peer_connected(
-			src.node.get_our_node_id(),
-			&msgs::Init {
-				features: src.node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			false,
-		)
-		.unwrap();
+	let init_msg = &msgs::Init {
+		features: src.node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	dst.node.peer_connected(src.node.get_our_node_id(), init_msg, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(dst, src);
 	assert_eq!(reestablish_2.len(), 1);
 
@@ -909,32 +889,20 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	nodes[0].node.peer_disconnected(node_b_id);
 	nodes[1].node.peer_disconnected(node_a_id);
 
-	nodes[0]
-		.node
-		.peer_connected(
-			node_b_id,
-			&msgs::Init {
-				features: nodes[1].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			true,
-		)
-		.unwrap();
+	let init_msg = &msgs::Init {
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	nodes[0].node.peer_connected(node_b_id, init_msg, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 1);
-	nodes[1]
-		.node
-		.peer_connected(
-			node_a_id,
-			&msgs::Init {
-				features: nodes[0].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			false,
-		)
-		.unwrap();
+	let init_msg = &msgs::Init {
+		features: nodes[0].node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	nodes[1].node.peer_connected(node_a_id, init_msg, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 	assert_eq!(reestablish_2.len(), 1);
 
