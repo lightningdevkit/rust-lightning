@@ -621,7 +621,7 @@ mod tests {
 
 		let monitor_name = added_monitors[0].1.persistence_key();
 		match store.persist_new_channel(monitor_name, &added_monitors[0].1) {
-			Ok(()) => {},
+			Err(()) => {},
 			_ => panic!("unexpected result from persisting new channel"),
 		}
 
