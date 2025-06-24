@@ -26,6 +26,10 @@ extern crate alloc;
 extern crate lightning;
 extern crate lightning_rapid_gossip_sync;
 
+mod fwd_batch;
+
+use fwd_batch::BatchDelay;
+
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::chainmonitor::{ChainMonitor, Persist};
@@ -328,7 +332,7 @@ macro_rules! define_run_body {
 		$peer_manager: ident, $gossip_sync: ident,
 		$process_sweeper: expr,
 		$logger: ident, $scorer: ident, $loop_exit_check: expr, $await: expr, $get_timer: expr,
-		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr,
+		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr, $batch_delay: expr,
 	) => { {
 		log_trace!($logger, "Calling ChannelManager's timer_tick_occurred on startup");
 		$channel_manager.get_cm().timer_tick_occurred();
@@ -344,6 +348,9 @@ macro_rules! define_run_body {
 		let mut last_sweeper_call = $get_timer(SWEEPER_TIMER);
 		let mut have_pruned = false;
 		let mut have_decayed_scorer = false;
+
+		let mut cur_batch_delay = $batch_delay.get();
+		let mut last_forwards_processing_call = $get_timer(cur_batch_delay);
 
 		loop {
 			$process_channel_manager_events;
@@ -362,6 +369,18 @@ macro_rules! define_run_body {
 			// generally, and as a fallback place such blocking only immediately before
 			// persistence.
 			$peer_manager.as_ref().process_events();
+
+			// Exit the loop if the background processor was requested to stop.
+			if $loop_exit_check {
+				log_trace!($logger, "Terminating background processor.");
+				break;
+			}
+
+			if $timer_elapsed(&mut last_forwards_processing_call, cur_batch_delay) {
+				$channel_manager.get_cm().process_pending_htlc_forwards();
+				cur_batch_delay = $batch_delay.next();
+				last_forwards_processing_call = $get_timer(cur_batch_delay);
+			}
 
 			// Exit the loop if the background processor was requested to stop.
 			if $loop_exit_check {
@@ -523,12 +542,14 @@ pub(crate) mod futures_util {
 		C: Future<Output = ()> + Unpin,
 		D: Future<Output = ()> + Unpin,
 		E: Future<Output = bool> + Unpin,
+		F: Future<Output = bool> + Unpin,
 	> {
 		pub a: A,
 		pub b: B,
 		pub c: C,
 		pub d: D,
 		pub e: E,
+		pub f: F,
 	}
 
 	pub(crate) enum SelectorOutput {
@@ -537,6 +558,7 @@ pub(crate) mod futures_util {
 		C,
 		D,
 		E(bool),
+		F(bool),
 	}
 
 	impl<
@@ -545,7 +567,8 @@ pub(crate) mod futures_util {
 			C: Future<Output = ()> + Unpin,
 			D: Future<Output = ()> + Unpin,
 			E: Future<Output = bool> + Unpin,
-		> Future for Selector<A, B, C, D, E>
+			F: Future<Output = bool> + Unpin,
+		> Future for Selector<A, B, C, D, E, F>
 	{
 		type Output = SelectorOutput;
 		fn poll(
@@ -578,6 +601,12 @@ pub(crate) mod futures_util {
 			match Pin::new(&mut self.e).poll(ctx) {
 				Poll::Ready(res) => {
 					return Poll::Ready(SelectorOutput::E(res));
+				},
+				Poll::Pending => {},
+			}
+			match Pin::new(&mut self.f).poll(ctx) {
+				Poll::Ready(res) => {
+					return Poll::Ready(SelectorOutput::F(res));
 				},
 				Poll::Pending => {},
 			}
@@ -863,6 +892,7 @@ where
 			event_handler(event).await
 		})
 	};
+	let batch_delay = BatchDelay::new();
 	define_run_body!(
 		persister,
 		chain_monitor,
@@ -901,7 +931,8 @@ where
 				b: chain_monitor.get_update_future(),
 				c: om_fut,
 				d: lm_fut,
-				e: sleeper(if mobile_interruptable_platform {
+				e: sleeper(batch_delay.get()),
+				f: sleeper(if mobile_interruptable_platform {
 					Duration::from_millis(100)
 				} else {
 					FASTEST_TIMER
@@ -910,6 +941,9 @@ where
 			match fut.await {
 				SelectorOutput::A | SelectorOutput::B | SelectorOutput::C | SelectorOutput::D => {},
 				SelectorOutput::E(exit) => {
+					should_break = exit;
+				},
+				SelectorOutput::F(exit) => {
 					should_break = exit;
 				},
 			}
@@ -928,6 +962,7 @@ where
 		},
 		mobile_interruptable_platform,
 		fetch_time,
+		batch_delay,
 	)
 }
 
@@ -1051,6 +1086,7 @@ impl BackgroundProcessor {
 				}
 				event_handler.handle_event(event)
 			};
+			let batch_delay = BatchDelay::new();
 			define_run_body!(
 				persister,
 				chain_monitor,
@@ -1094,7 +1130,9 @@ impl BackgroundProcessor {
 							&chain_monitor.get_update_future(),
 						),
 					};
-					sleeper.wait_timeout(Duration::from_millis(100));
+					let batch_delay = batch_delay.get();
+					let fastest_timeout = batch_delay.min(Duration::from_millis(100));
+					sleeper.wait_timeout(fastest_timeout);
 				},
 				|_| Instant::now(),
 				|time: &Instant, dur| time.elapsed() > dur,
@@ -1107,6 +1145,7 @@ impl BackgroundProcessor {
 							.expect("Time should be sometime after 1970"),
 					)
 				},
+				batch_delay,
 			)
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
