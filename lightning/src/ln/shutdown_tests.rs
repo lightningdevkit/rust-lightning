@@ -46,6 +46,8 @@ fn pre_funding_lock_shutdown_test() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 8000000, 0);
 	mine_transaction(&nodes[0], &tx);
 	mine_transaction(&nodes[1], &tx);
@@ -54,36 +56,23 @@ fn pre_funding_lock_shutdown_test() {
 		.node
 		.close_channel(
 			&ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.compute_txid(), index: 0 }),
-			&nodes[1].node.get_our_node_id(),
+			&node_b_id,
 		)
 		.unwrap();
-	let node_0_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
-	let node_1_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_1_shutdown);
 
-	let node_0_closing_signed = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendClosingSigned,
-		nodes[1].node.get_our_node_id()
-	);
-	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-	let node_1_closing_signed = get_event_msg!(
-		nodes[1],
-		MessageSendEvent::SendClosingSigned,
-		nodes[0].node.get_our_node_id()
-	);
-	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
-	let (_, node_0_2nd_closing_signed) =
-		get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_closing_signed(
-		nodes[0].node.get_our_node_id(),
-		&node_0_2nd_closing_signed.unwrap(),
-	);
-	let (_, node_1_none) =
-		get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	let node_0_closing_signed =
+		get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+	let node_1_closing_signed =
+		get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+	nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
+	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	assert!(node_1_none.is_none());
 
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -92,14 +81,14 @@ fn pre_funding_lock_shutdown_test() {
 		nodes[0],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		8000000
 	);
 	check_closed_event!(
 		nodes[1],
 		1,
 		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[nodes[0].node.get_our_node_id()],
+		[node_a_id],
 		8000000
 	);
 }
@@ -111,51 +100,40 @@ fn expect_channel_shutdown_state() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::NotShuttingDown);
 
-	nodes[0].node.close_channel(&chan_1.2, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[0].node.close_channel(&chan_1.2, &node_b_id).unwrap();
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::ShutdownInitiated);
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NotShuttingDown);
 
-	let node_0_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
 
 	// node1 goes into NegotiatingClosingFee since there are no HTLCs in flight, note that it
 	// doesnt mean that node1 has sent/recved its closing signed message
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::ShutdownInitiated);
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NegotiatingClosingFee);
 
-	let node_1_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_1_shutdown);
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::NegotiatingClosingFee);
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NegotiatingClosingFee);
 
-	let node_0_closing_signed = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendClosingSigned,
-		nodes[1].node.get_our_node_id()
-	);
-	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-	let node_1_closing_signed = get_event_msg!(
-		nodes[1],
-		MessageSendEvent::SendClosingSigned,
-		nodes[0].node.get_our_node_id()
-	);
-	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
-	let (_, node_0_2nd_closing_signed) =
-		get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_closing_signed(
-		nodes[0].node.get_our_node_id(),
-		&node_0_2nd_closing_signed.unwrap(),
-	);
-	let (_, node_1_none) =
-		get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	let node_0_closing_signed =
+		get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+	let node_1_closing_signed =
+		get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+	nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
+	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	assert!(node_1_none.is_none());
 
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -164,14 +142,14 @@ fn expect_channel_shutdown_state() {
 		nodes[0],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 	check_closed_event!(
 		nodes[1],
 		1,
 		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[nodes[0].node.get_our_node_id()],
+		[node_a_id],
 		100000
 	);
 }
@@ -183,6 +161,9 @@ fn expect_channel_shutdown_state_with_htlc() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let _chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
@@ -192,21 +173,19 @@ fn expect_channel_shutdown_state_with_htlc() {
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::NotShuttingDown);
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NotShuttingDown);
 
-	nodes[0].node.close_channel(&chan_1.2, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[0].node.close_channel(&chan_1.2, &node_b_id).unwrap();
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::ShutdownInitiated);
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NotShuttingDown);
 
-	let node_0_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::ShutdownInitiated);
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::ResolvingHTLCs);
 
-	let node_1_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_1_shutdown);
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::ResolvingHTLCs);
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::ResolvingHTLCs);
@@ -220,19 +199,16 @@ fn expect_channel_shutdown_state_with_htlc() {
 	expect_payment_claimed!(nodes[2], payment_hash_0, 100_000);
 
 	// Fulfil HTLCs on node1 and node0
-	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	let updates = get_htlc_update_msgs!(nodes[2], node_b_id);
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
 	assert!(updates.update_fee.is_none());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
-	nodes[1].node.handle_update_fulfill_htlc(
-		nodes[2].node.get_our_node_id(),
-		&updates.update_fulfill_htlcs[0],
-	);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &updates.update_fulfill_htlcs[0]);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
-	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
 
 	// Still in "resolvingHTLCs" on chan1 after htlc removed on chan2
@@ -244,10 +220,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 	assert!(updates_2.update_fail_malformed_htlcs.is_empty());
 	assert!(updates_2.update_fee.is_none());
 	assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
-	nodes[0].node.handle_update_fulfill_htlc(
-		nodes[1].node.get_our_node_id(),
-		&updates_2.update_fulfill_htlcs[0],
-	);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &updates_2.update_fulfill_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
 	expect_payment_sent!(nodes[0], payment_preimage_0);
 
@@ -256,39 +229,28 @@ fn expect_channel_shutdown_state_with_htlc() {
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NegotiatingClosingFee);
 
 	// ClosingSignNegotion process
-	let node_0_closing_signed = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendClosingSigned,
-		nodes[1].node.get_our_node_id()
-	);
-	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-	let node_1_closing_signed = get_event_msg!(
-		nodes[1],
-		MessageSendEvent::SendClosingSigned,
-		nodes[0].node.get_our_node_id()
-	);
-	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
-	let (_, node_0_2nd_closing_signed) =
-		get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_closing_signed(
-		nodes[0].node.get_our_node_id(),
-		&node_0_2nd_closing_signed.unwrap(),
-	);
-	let (_, node_1_none) =
-		get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	let node_0_closing_signed =
+		get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+	let node_1_closing_signed =
+		get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+	nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
+	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	assert!(node_1_none.is_none());
 	check_closed_event!(
 		nodes[0],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 	check_closed_event!(
 		nodes[1],
 		1,
 		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[nodes[0].node.get_our_node_id()],
+		[node_a_id],
 		100000
 	);
 
@@ -305,27 +267,25 @@ fn test_lnd_bug_6039() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	let (payment_preimage, ..) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
 
-	nodes[0].node.close_channel(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
-	let node_0_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	nodes[0].node.close_channel(&chan.2, &node_b_id).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
 
 	// Generate an lnd-like error message and check that we respond by simply screaming louder to
 	// see if LND will accept our protocol compliance.
 	let err_msg =
 		msgs::ErrorMessage { channel_id: chan.2, data: "link failed to shutdown".to_string() };
-	nodes[0].node.handle_error(nodes[1].node.get_our_node_id(), &err_msg);
+	nodes[0].node.handle_error(node_b_id, &err_msg);
 	let node_a_responses = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(
 		node_a_responses[0],
-		MessageSendEvent::SendShutdown {
-			node_id: nodes[1].node.get_our_node_id(),
-			msg: node_0_shutdown,
-		}
+		MessageSendEvent::SendShutdown { node_id: node_b_id, msg: node_0_shutdown }
 	);
 	if let MessageSendEvent::HandleError {
 		action: msgs::ErrorAction::SendWarningMessage { .. },
@@ -336,8 +296,7 @@ fn test_lnd_bug_6039() {
 		panic!();
 	}
 
-	let node_1_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -345,42 +304,31 @@ fn test_lnd_bug_6039() {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
 
 	// Assume that LND will eventually respond to our Shutdown if we clear all the remaining HTLCs
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	nodes[0].node.handle_shutdown(node_b_id, &node_1_shutdown);
 
 	// ClosingSignNegotion process
-	let node_0_closing_signed = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendClosingSigned,
-		nodes[1].node.get_our_node_id()
-	);
-	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-	let node_1_closing_signed = get_event_msg!(
-		nodes[1],
-		MessageSendEvent::SendClosingSigned,
-		nodes[0].node.get_our_node_id()
-	);
-	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
-	let (_, node_0_2nd_closing_signed) =
-		get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_closing_signed(
-		nodes[0].node.get_our_node_id(),
-		&node_0_2nd_closing_signed.unwrap(),
-	);
-	let (_, node_1_none) =
-		get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	let node_0_closing_signed =
+		get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+	let node_1_closing_signed =
+		get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+	nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
+	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	assert!(node_1_none.is_none());
 	check_closed_event!(
 		nodes[0],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 	check_closed_event!(
 		nodes[1],
 		1,
 		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[nodes[0].node.get_our_node_id()],
+		[node_a_id],
 		100000
 	);
 
@@ -395,22 +343,17 @@ fn shutdown_on_unfunded_channel() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0]
-		.node
-		.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 100_000, 0, None, None)
-		.unwrap();
-	let open_chan = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendOpenChannel,
-		nodes[1].node.get_our_node_id()
-	);
+	nodes[0].node.create_channel(node_b_id, 1_000_000, 100_000, 0, None, None).unwrap();
+	let open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	// Create a dummy P2WPKH script
 	let script = Builder::new().push_int(0).push_slice(&[0; 20]).into_script();
 
 	nodes[0].node.handle_shutdown(
-		nodes[1].node.get_our_node_id(),
+		node_b_id,
 		&msgs::Shutdown {
 			channel_id: open_chan.common_fields.temporary_channel_id,
 			scriptpubkey: script,
@@ -420,7 +363,7 @@ fn shutdown_on_unfunded_channel() {
 		nodes[0],
 		1,
 		ClosureReason::CounterpartyCoopClosedUnfundedChannel,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		1_000_000
 	);
 }
@@ -432,23 +375,19 @@ fn close_on_unfunded_channel() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 
-	let chan_id = nodes[0]
-		.node
-		.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 100_000, 0, None, None)
-		.unwrap();
-	let _open_chan = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendOpenChannel,
-		nodes[1].node.get_our_node_id()
-	);
+	let chan_id =
+		nodes[0].node.create_channel(node_b_id, 1_000_000, 100_000, 0, None, None).unwrap();
+	let _open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
-	nodes[0].node.close_channel(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[0].node.close_channel(&chan_id, &node_b_id).unwrap();
 	check_closed_event!(
 		nodes[0],
 		1,
 		ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		1_000_000
 	);
 }
@@ -460,6 +399,8 @@ fn expect_channel_shutdown_state_with_force_closure() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let error_message = "Channel force-closed";
 
@@ -468,11 +409,7 @@ fn expect_channel_shutdown_state_with_force_closure() {
 
 	nodes[1]
 		.node
-		.force_close_broadcasting_latest_txn(
-			&chan_1.2,
-			&nodes[0].node.get_our_node_id(),
-			error_message.to_string(),
-		)
+		.force_close_broadcasting_latest_txn(&chan_1.2, &node_a_id, error_message.to_string())
 		.unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
@@ -489,18 +426,12 @@ fn expect_channel_shutdown_state_with_force_closure() {
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[0], true);
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::CommitmentTxConfirmed,
-		[nodes[1].node.get_our_node_id()],
-		100000
-	);
+	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [node_b_id], 100000);
 	check_closed_event!(
 		nodes[1],
 		1,
 		ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) },
-		[nodes[0].node.get_our_node_id()],
+		[node_a_id],
 		100000
 	);
 }
@@ -512,6 +443,9 @@ fn updates_shutdown_wait() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 	let logger = test_utils::TestLogger::new();
@@ -522,26 +456,23 @@ fn updates_shutdown_wait() {
 	let (payment_preimage_0, payment_hash_0, ..) =
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
 
-	nodes[0].node.close_channel(&chan_1.2, &nodes[1].node.get_our_node_id()).unwrap();
-	let node_0_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
-	let node_1_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	nodes[0].node.close_channel(&chan_1.2, &node_b_id).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_1_shutdown);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[0]);
 
-	let payment_params_1 =
-		PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
-			.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
-			.unwrap();
+	let payment_params_1 = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
+		.unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params_1, 100_000);
 	let route_1 = get_route(
-		&nodes[0].node.get_our_node_id(),
+		&node_a_id,
 		&route_params,
 		&nodes[0].network_graph.read_only(),
 		None,
@@ -551,13 +482,12 @@ fn updates_shutdown_wait() {
 		&random_seed_bytes,
 	)
 	.unwrap();
-	let payment_params_2 =
-		PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), TEST_FINAL_CLTV)
-			.with_bolt11_features(nodes[0].node.bolt11_invoice_features())
-			.unwrap();
+	let payment_params_2 = PaymentParameters::from_node_id(node_a_id, TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[0].node.bolt11_invoice_features())
+		.unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params_2, 100_000);
 	let route_2 = get_route(
-		&nodes[1].node.get_our_node_id(),
+		&node_b_id,
 		&route_params,
 		&nodes[1].network_graph.read_only(),
 		None,
@@ -596,19 +526,16 @@ fn updates_shutdown_wait() {
 	check_added_monitors!(nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_0, 100_000);
 
-	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	let updates = get_htlc_update_msgs!(nodes[2], node_b_id);
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
 	assert!(updates.update_fee.is_none());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
-	nodes[1].node.handle_update_fulfill_htlc(
-		nodes[2].node.get_our_node_id(),
-		&updates.update_fulfill_htlcs[0],
-	);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &updates.update_fulfill_htlcs[0]);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
-	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
 
 	assert!(updates_2.update_add_htlcs.is_empty());
@@ -616,46 +543,32 @@ fn updates_shutdown_wait() {
 	assert!(updates_2.update_fail_malformed_htlcs.is_empty());
 	assert!(updates_2.update_fee.is_none());
 	assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
-	nodes[0].node.handle_update_fulfill_htlc(
-		nodes[1].node.get_our_node_id(),
-		&updates_2.update_fulfill_htlcs[0],
-	);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &updates_2.update_fulfill_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
 	expect_payment_sent!(nodes[0], payment_preimage_0);
 
-	let node_0_closing_signed = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendClosingSigned,
-		nodes[1].node.get_our_node_id()
-	);
-	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-	let node_1_closing_signed = get_event_msg!(
-		nodes[1],
-		MessageSendEvent::SendClosingSigned,
-		nodes[0].node.get_our_node_id()
-	);
-	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
-	let (_, node_0_2nd_closing_signed) =
-		get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_closing_signed(
-		nodes[0].node.get_our_node_id(),
-		&node_0_2nd_closing_signed.unwrap(),
-	);
-	let (_, node_1_none) =
-		get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	let node_0_closing_signed =
+		get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+	let node_1_closing_signed =
+		get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+	nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
+	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	assert!(node_1_none.is_none());
 	check_closed_event!(
 		nodes[0],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 	check_closed_event!(
 		nodes[1],
 		1,
 		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[nodes[0].node.get_our_node_id()],
+		[node_a_id],
 		100000
 	);
 
@@ -670,14 +583,14 @@ fn updates_shutdown_wait() {
 		nodes[1],
 		1,
 		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[nodes[2].node.get_our_node_id()],
+		[node_c_id],
 		100000
 	);
 	check_closed_event!(
 		nodes[2],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 }
@@ -694,6 +607,9 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
@@ -712,7 +628,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 		)
 	} else {
 		RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV),
+			PaymentParameters::from_node_id(node_c_id, TEST_FINAL_CLTV),
 			amt_msat,
 		)
 	};
@@ -727,50 +643,38 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 		)
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
-	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let updates = get_htlc_update_msgs!(nodes[0], node_b_id);
 	assert_eq!(updates.update_add_htlcs.len(), 1);
 	assert!(updates.update_fulfill_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
 	assert!(updates.update_fee.is_none());
 
-	nodes[1].node.close_channel(&chan_1.2, &nodes[0].node.get_our_node_id()).unwrap();
-	let node_1_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
-	let node_0_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	nodes[1].node.close_channel(&chan_1.2, &node_a_id).unwrap();
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_1_shutdown);
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
 
-	nodes[1]
-		.node
-		.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	nodes[1].node.handle_commitment_signed_batch_test(
-		nodes[0].node.get_our_node_id(),
-		&updates.commitment_signed,
-	);
+	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &updates.commitment_signed);
 	check_added_monitors!(nodes[1], 1);
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
 	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
-		&[HTLCHandlingFailureType::Forward {
-			node_id: Some(nodes[2].node.get_our_node_id()),
-			channel_id: chan_2.2
-		}]
+		&[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
 	);
 	check_added_monitors(&nodes[1], 1);
 
-	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
 	assert!(updates_2.update_add_htlcs.is_empty());
 	assert!(updates_2.update_fulfill_htlcs.is_empty());
 	assert_eq!(updates_2.update_fail_htlcs.len(), 1);
 	assert!(updates_2.update_fail_malformed_htlcs.is_empty());
 	assert!(updates_2.update_fee.is_none());
 
-	nodes[0]
-		.node
-		.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates_2.update_fail_htlcs[0]);
+	nodes[0].node.handle_update_fail_htlc(node_b_id, &updates_2.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
 
 	if blinded_recipient {
@@ -795,28 +699,20 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	assert_eq!(msg_events.len(), 1);
 	let node_0_closing_signed = match msg_events[0] {
 		MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
-			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+			assert_eq!(*node_id, node_b_id);
 			(*msg).clone()
 		},
 		_ => panic!("Unexpected event"),
 	};
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-	let node_1_closing_signed = get_event_msg!(
-		nodes[1],
-		MessageSendEvent::SendClosingSigned,
-		nodes[0].node.get_our_node_id()
-	);
-	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
-	let (_, node_0_2nd_closing_signed) =
-		get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_closing_signed(
-		nodes[0].node.get_our_node_id(),
-		&node_0_2nd_closing_signed.unwrap(),
-	);
-	let (_, node_1_none) =
-		get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+	let node_1_closing_signed =
+		get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+	nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
+	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	assert!(node_1_none.is_none());
 
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -830,13 +726,13 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 		nodes[0],
 		1,
 		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 	let event1 = ExpectedCloseEvent {
 		channel_capacity_sats: Some(100000),
 		channel_id: None,
-		counterparty_node_id: Some(nodes[0].node.get_our_node_id()),
+		counterparty_node_id: Some(node_a_id),
 		discard_funding: false,
 		reason: Some(ClosureReason::LocallyInitiatedCooperativeClosure),
 		channel_funding_txo: None,
@@ -845,7 +741,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	let event2 = ExpectedCloseEvent {
 		channel_capacity_sats: Some(100000),
 		channel_id: None,
-		counterparty_node_id: Some(nodes[2].node.get_our_node_id()),
+		counterparty_node_id: Some(node_c_id),
 		discard_funding: false,
 		reason: Some(ClosureReason::CounterpartyInitiatedCooperativeClosure),
 		channel_funding_txo: None,
@@ -856,7 +752,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 		nodes[2],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 }
@@ -868,34 +764,32 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	let (payment_preimage, payment_hash, ..) =
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
 
-	nodes[1].node.close_channel(&chan_1.2, &nodes[0].node.get_our_node_id()).unwrap();
-	let node_1_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	nodes[1].node.close_channel(&chan_1.2, &node_a_id).unwrap();
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 	if recv_count > 0 {
-		nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
-		let node_0_shutdown = get_event_msg!(
-			nodes[0],
-			MessageSendEvent::SendShutdown,
-			nodes[1].node.get_our_node_id()
-		);
+		nodes[0].node.handle_shutdown(node_b_id, &node_1_shutdown);
+		let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
 		if recv_count > 1 {
-			nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
+			nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
 		}
 	}
 
-	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
-	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+	nodes[0].node.peer_disconnected(node_b_id);
+	nodes[1].node.peer_disconnected(node_a_id);
 
 	nodes[0]
 		.node
 		.peer_connected(
-			nodes[1].node.get_our_node_id(),
+			node_b_id,
 			&msgs::Init {
 				features: nodes[1].node.init_features(),
 				networks: None,
@@ -908,7 +802,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	nodes[1]
 		.node
 		.peer_connected(
-			nodes[0].node.get_our_node_id(),
+			node_a_id,
 			&msgs::Init {
 				features: nodes[0].node.init_features(),
 				networks: None,
@@ -919,31 +813,24 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		.unwrap();
 	let node_1_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 
-	nodes[1].node.handle_channel_reestablish(nodes[0].node.get_our_node_id(), &node_0_reestablish);
-	let node_1_2nd_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	nodes[1].node.handle_channel_reestablish(node_a_id, &node_0_reestablish);
+	let node_1_2nd_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 	assert!(node_1_shutdown == node_1_2nd_shutdown);
 
-	nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), &node_1_reestablish);
+	nodes[0].node.handle_channel_reestablish(node_b_id, &node_1_reestablish);
 	let node_0_2nd_shutdown = if recv_count > 0 {
-		let node_0_2nd_shutdown = get_event_msg!(
-			nodes[0],
-			MessageSendEvent::SendShutdown,
-			nodes[1].node.get_our_node_id()
-		);
-		nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown);
+		let node_0_2nd_shutdown =
+			get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+		nodes[0].node.handle_shutdown(node_b_id, &node_1_2nd_shutdown);
 		node_0_2nd_shutdown
 	} else {
-		let node_0_chan_update = get_event_msg!(
-			nodes[0],
-			MessageSendEvent::SendChannelUpdate,
-			nodes[1].node.get_our_node_id()
-		);
+		let node_0_chan_update =
+			get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_b_id);
 		assert_eq!(node_0_chan_update.contents.channel_flags & 2, 0); // "disabled" flag must not be set as we just reconnected.
-		nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown);
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id())
+		nodes[0].node.handle_shutdown(node_b_id, &node_1_2nd_shutdown);
+		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id)
 	};
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_2nd_shutdown);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_2nd_shutdown);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -952,19 +839,16 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	check_added_monitors!(nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 100_000);
 
-	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	let updates = get_htlc_update_msgs!(nodes[2], node_b_id);
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
 	assert!(updates.update_fee.is_none());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
-	nodes[1].node.handle_update_fulfill_htlc(
-		nodes[2].node.get_our_node_id(),
-		&updates.update_fulfill_htlcs[0],
-	);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &updates.update_fulfill_htlcs[0]);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
-	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
 
 	assert!(updates_2.update_add_htlcs.is_empty());
@@ -972,42 +856,29 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert!(updates_2.update_fail_malformed_htlcs.is_empty());
 	assert!(updates_2.update_fee.is_none());
 	assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
-	nodes[0].node.handle_update_fulfill_htlc(
-		nodes[1].node.get_our_node_id(),
-		&updates_2.update_fulfill_htlcs[0],
-	);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &updates_2.update_fulfill_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
 	expect_payment_sent!(nodes[0], payment_preimage);
 
-	let node_0_closing_signed = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendClosingSigned,
-		nodes[1].node.get_our_node_id()
-	);
+	let node_0_closing_signed =
+		get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
 	if recv_count > 0 {
-		nodes[1]
-			.node
-			.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-		let node_1_closing_signed = get_event_msg!(
-			nodes[1],
-			MessageSendEvent::SendClosingSigned,
-			nodes[0].node.get_our_node_id()
-		);
-		nodes[0]
-			.node
-			.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
+		nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+		let node_1_closing_signed =
+			get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+		nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
 		let (_, node_0_2nd_closing_signed) =
-			get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+			get_closing_signed_broadcast!(nodes[0].node, node_b_id);
 		assert!(node_0_2nd_closing_signed.is_some());
 	}
 
-	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
-	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+	nodes[0].node.peer_disconnected(node_b_id);
+	nodes[1].node.peer_disconnected(node_a_id);
 
 	nodes[1]
 		.node
 		.peer_connected(
-			nodes[0].node.get_our_node_id(),
+			node_a_id,
 			&msgs::Init {
 				features: nodes[0].node.init_features(),
 				networks: None,
@@ -1020,7 +891,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	nodes[0]
 		.node
 		.peer_connected(
-			nodes[1].node.get_our_node_id(),
+			node_b_id,
 			&msgs::Init {
 				features: nodes[1].node.init_features(),
 				networks: None,
@@ -1033,9 +904,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// If all closing_signeds weren't delivered we can just resume where we left off...
 		let node_0_2nd_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
 
-		nodes[0]
-			.node
-			.handle_channel_reestablish(nodes[1].node.get_our_node_id(), &node_1_2nd_reestablish);
+		nodes[0].node.handle_channel_reestablish(node_b_id, &node_1_2nd_reestablish);
 		let node_0_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(node_0_msgs.len(), 2);
 		let node_0_2nd_closing_signed = match node_0_msgs[1] {
@@ -1055,46 +924,30 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		};
 		assert!(node_0_2nd_shutdown == node_0_3rd_shutdown);
 
-		nodes[1]
-			.node
-			.handle_channel_reestablish(nodes[0].node.get_our_node_id(), &node_0_2nd_reestablish);
-		let node_1_3rd_shutdown = get_event_msg!(
-			nodes[1],
-			MessageSendEvent::SendShutdown,
-			nodes[0].node.get_our_node_id()
-		);
+		nodes[1].node.handle_channel_reestablish(node_a_id, &node_0_2nd_reestablish);
+		let node_1_3rd_shutdown =
+			get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 		assert!(node_1_3rd_shutdown == node_1_2nd_shutdown);
 
-		nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_3rd_shutdown);
+		nodes[1].node.handle_shutdown(node_a_id, &node_0_3rd_shutdown);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-		nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_3rd_shutdown);
+		nodes[0].node.handle_shutdown(node_b_id, &node_1_3rd_shutdown);
 
-		nodes[1]
-			.node
-			.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed);
-		let node_1_closing_signed = get_event_msg!(
-			nodes[1],
-			MessageSendEvent::SendClosingSigned,
-			nodes[0].node.get_our_node_id()
-		);
-		nodes[0]
-			.node
-			.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
+		nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed);
+		let node_1_closing_signed =
+			get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+		nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
 		let (_, node_0_2nd_closing_signed) =
-			get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_closing_signed(
-			nodes[0].node.get_our_node_id(),
-			&node_0_2nd_closing_signed.unwrap(),
-		);
-		let (_, node_1_none) =
-			get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+			get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+		nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
+		let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 		assert!(node_1_none.is_none());
 		check_closed_event!(
 			nodes[1],
 			1,
 			ClosureReason::LocallyInitiatedCooperativeClosure,
-			[nodes[0].node.get_our_node_id()],
+			[node_a_id],
 			100000
 		);
 	} else {
@@ -1107,15 +960,13 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// transaction.
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-		nodes[0]
-			.node
-			.handle_channel_reestablish(nodes[1].node.get_our_node_id(), &node_1_2nd_reestablish);
+		nodes[0].node.handle_channel_reestablish(node_b_id, &node_1_2nd_reestablish);
 		let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 2);
 		if let MessageSendEvent::HandleError { ref action, .. } = msg_events[1] {
 			match action {
 				&ErrorAction::SendErrorMessage { ref msg } => {
-					nodes[1].node.handle_error(nodes[0].node.get_our_node_id(), &msg);
+					nodes[1].node.handle_error(node_a_id, &msg);
 					assert_eq!(msg.channel_id, chan_1.2);
 				},
 				_ => panic!("Unexpected event!"),
@@ -1129,8 +980,8 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// closing_signed so we do it ourselves
 		check_closed_broadcast!(nodes[1], false);
 		check_added_monitors!(nodes[1], 1);
-		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id())) }
-			, [nodes[0].node.get_our_node_id()], 100000);
+		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &node_b_id)) }
+			, [node_a_id], 100000);
 	}
 
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -1144,21 +995,21 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		nodes[0],
 		1,
 		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 	check_closed_event!(
 		nodes[1],
 		1,
 		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[nodes[2].node.get_our_node_id()],
+		[node_c_id],
 		100000
 	);
 	check_closed_event!(
 		nodes[2],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 }
@@ -1184,36 +1035,37 @@ fn test_upfront_shutdown_script() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 
 	// We test that in case of peer committing upfront to a script, if it changes at closing, we refuse to sign
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1000000, 1000000);
-	nodes[0].node.close_channel(&chan.2, &nodes[2].node.get_our_node_id()).unwrap();
-	let node_0_orig_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
+	nodes[0].node.close_channel(&chan.2, &node_c_id).unwrap();
+	let node_0_orig_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_c_id);
 	let mut node_0_shutdown = node_0_orig_shutdown.clone();
 	node_0_shutdown.scriptpubkey =
 		Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
 	// Test we enforce upfront_scriptpbukey if by providing a different one at closing that we warn
 	// the peer and ignore the message.
-	nodes[2].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	nodes[2].node.handle_shutdown(node_a_id, &node_0_shutdown);
 	assert!(regex::Regex::new(r"Got shutdown request with a scriptpubkey \([A-Fa-f0-9]+\) which did not match their previous scriptpubkey.")
-			.unwrap().is_match(&check_warn_msg!(nodes[2], nodes[0].node.get_our_node_id(), chan.2)));
+			.unwrap().is_match(&check_warn_msg!(nodes[2], node_a_id, chan.2)));
 	// This allows nodes[2] to retry the shutdown message, which should get a response:
-	nodes[2].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_orig_shutdown);
-	get_event_msg!(nodes[2], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	nodes[2].node.handle_shutdown(node_a_id, &node_0_orig_shutdown);
+	get_event_msg!(nodes[2], MessageSendEvent::SendShutdown, node_a_id);
 
 	// We test that in case of peer committing upfront to a script, if it doesn't change at closing, we sign
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1000000, 1000000);
-	nodes[0].node.close_channel(&chan.2, &nodes[2].node.get_our_node_id()).unwrap();
-	let node_0_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
+	nodes[0].node.close_channel(&chan.2, &node_c_id).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_c_id);
 	// We test that in case of peer committing upfront to a script, if it oesn't change at closing, we sign
-	nodes[2].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	nodes[2].node.handle_shutdown(node_a_id, &node_0_shutdown);
 	let events = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		MessageSendEvent::SendShutdown { node_id, .. } => {
-			assert_eq!(node_id, nodes[0].node.get_our_node_id())
+			assert_eq!(node_id, node_a_id)
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1223,16 +1075,15 @@ fn test_upfront_shutdown_script() {
 	features.clear_upfront_shutdown_script();
 	*nodes[0].override_init_features.borrow_mut() = Some(features);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000);
-	nodes[0].node.close_channel(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
-	let node_1_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_1_shutdown);
+	nodes[0].node.close_channel(&chan.2, &node_b_id).unwrap();
+	let node_1_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+	nodes[1].node.handle_shutdown(node_a_id, &node_1_shutdown);
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		MessageSendEvent::SendShutdown { node_id, .. } => {
-			assert_eq!(node_id, nodes[0].node.get_our_node_id())
+			assert_eq!(node_id, node_a_id)
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1241,16 +1092,15 @@ fn test_upfront_shutdown_script() {
 	// channel smoothly, opt-out is from channel initiator here
 	*nodes[0].override_init_features.borrow_mut() = None;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 0, 1000000, 1000000);
-	nodes[1].node.close_channel(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
+	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
 	check_added_monitors!(nodes[1], 1);
-	let node_0_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_0_shutdown);
+	let node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_0_shutdown);
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		MessageSendEvent::SendShutdown { node_id, .. } => {
-			assert_eq!(node_id, nodes[1].node.get_our_node_id())
+			assert_eq!(node_id, node_b_id)
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1258,22 +1108,21 @@ fn test_upfront_shutdown_script() {
 	//// We test that if user opt-out, we provide a zero-length script at channel opening and we are able to close
 	//// channel smoothly
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000);
-	nodes[1].node.close_channel(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
+	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
 	check_added_monitors!(nodes[1], 1);
-	let node_0_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_0_shutdown);
+	let node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_0_shutdown);
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
 		MessageSendEvent::SendShutdown { node_id, .. } => {
-			assert_eq!(node_id, nodes[1].node.get_our_node_id())
+			assert_eq!(node_id, node_b_id)
 		},
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
 		MessageSendEvent::SendClosingSigned { node_id, .. } => {
-			assert_eq!(node_id, nodes[1].node.get_our_node_id())
+			assert_eq!(node_id, node_b_id)
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1289,22 +1138,17 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	*node_cfgs[0].override_init_features.borrow_mut() = Some(features);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 
 	// Use a non-v0 segwit script supported by option_shutdown_anysegwit
 	let anysegwit_shutdown_script = Builder::new().push_int(16).push_slice(&[0, 40]).into_script();
 
 	// Check script when handling an open_channel message
-	nodes[0]
-		.node
-		.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None)
-		.unwrap();
-	let mut open_channel = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendOpenChannel,
-		nodes[1].node.get_our_node_id()
-	);
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	open_channel.common_fields.shutdown_scriptpubkey = Some(anysegwit_shutdown_script.clone());
-	nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel);
+	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1313,7 +1157,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 			action: ErrorAction::SendErrorMessage { ref msg },
 			node_id,
 		} => {
-			assert_eq!(node_id, nodes[0].node.get_our_node_id());
+			assert_eq!(node_id, node_a_id);
 			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028");
 		},
 		_ => panic!("Unexpected event"),
@@ -1327,25 +1171,17 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 
 	// Check script when handling an accept_channel message
-	nodes[0]
-		.node
-		.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None)
-		.unwrap();
-	let open_channel = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendOpenChannel,
-		nodes[1].node.get_our_node_id()
-	);
-	nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel);
-	let mut accept_channel = get_event_msg!(
-		nodes[1],
-		MessageSendEvent::SendAcceptChannel,
-		nodes[0].node.get_our_node_id()
-	);
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	let mut accept_channel =
+		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	accept_channel.common_fields.shutdown_scriptpubkey = Some(anysegwit_shutdown_script.clone());
-	nodes[0].node.handle_accept_channel(nodes[1].node.get_our_node_id(), &accept_channel);
+	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1354,13 +1190,13 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 			action: ErrorAction::SendErrorMessage { ref msg },
 			node_id,
 		} => {
-			assert_eq!(node_id, nodes[1].node.get_our_node_id());
+			assert_eq!(node_id, node_b_id);
 			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028");
 		},
 		_ => panic!("Unexpected event"),
 	}
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028".to_string() }
-		, [nodes[1].node.get_our_node_id()], 100000);
+		, [node_b_id], 100000);
 }
 
 #[test]
@@ -1369,21 +1205,16 @@ fn test_invalid_upfront_shutdown_script() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0]
-		.node
-		.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None)
-		.unwrap();
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 
 	// Use a segwit v0 script with an unsupported witness program
-	let mut open_channel = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendOpenChannel,
-		nodes[1].node.get_our_node_id()
-	);
+	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	open_channel.common_fields.shutdown_scriptpubkey =
 		Some(Builder::new().push_int(0).push_slice(&[0, 0]).into_script());
-	nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel);
+	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1392,7 +1223,7 @@ fn test_invalid_upfront_shutdown_script() {
 			action: ErrorAction::SendErrorMessage { ref msg },
 			node_id,
 		} => {
-			assert_eq!(node_id, nodes[0].node.get_our_node_id());
+			assert_eq!(node_id, node_a_id);
 			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_0 OP_PUSHBYTES_2 0000");
 		},
 		_ => panic!("Unexpected event"),
@@ -1410,28 +1241,30 @@ fn test_segwit_v0_shutdown_script() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-	nodes[1].node.close_channel(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
+	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
 	check_added_monitors!(nodes[1], 1);
 
 	// Use a segwit v0 script supported even without option_shutdown_anysegwit
-	let mut node_0_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 	node_0_shutdown.scriptpubkey = Builder::new().push_int(0).push_slice(&[0; 20]).into_script();
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_0_shutdown);
+	nodes[0].node.handle_shutdown(node_b_id, &node_0_shutdown);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
 		MessageSendEvent::SendShutdown { node_id, .. } => {
-			assert_eq!(node_id, nodes[1].node.get_our_node_id())
+			assert_eq!(node_id, node_b_id)
 		},
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
 		MessageSendEvent::SendClosingSigned { node_id, .. } => {
-			assert_eq!(node_id, nodes[1].node.get_our_node_id())
+			assert_eq!(node_id, node_b_id)
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1448,28 +1281,30 @@ fn test_anysegwit_shutdown_script() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-	nodes[1].node.close_channel(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
+	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
 	check_added_monitors!(nodes[1], 1);
 
 	// Use a non-v0 segwit script supported by option_shutdown_anysegwit
-	let mut node_0_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 	node_0_shutdown.scriptpubkey = Builder::new().push_int(16).push_slice(&[0, 0]).into_script();
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_0_shutdown);
+	nodes[0].node.handle_shutdown(node_b_id, &node_0_shutdown);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
 		MessageSendEvent::SendShutdown { node_id, .. } => {
-			assert_eq!(node_id, nodes[1].node.get_our_node_id())
+			assert_eq!(node_id, node_b_id)
 		},
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
 		MessageSendEvent::SendClosingSigned { node_id, .. } => {
-			assert_eq!(node_id, nodes[1].node.get_our_node_id())
+			assert_eq!(node_id, node_b_id)
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1490,6 +1325,9 @@ fn test_unsupported_anysegwit_shutdown_script() {
 	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 
 	// Check that using an unsupported shutdown script fails and a supported one succeeds.
 	let supported_shutdown_script =
@@ -1503,24 +1341,23 @@ fn test_unsupported_anysegwit_shutdown_script() {
 		.expect(OnGetShutdownScriptpubkey { returns: supported_shutdown_script });
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-	match nodes[1].node.close_channel(&chan.2, &nodes[0].node.get_our_node_id()) {
+	match nodes[1].node.close_channel(&chan.2, &node_a_id) {
 		Err(APIError::IncompatibleShutdownScript { script }) => {
 			assert_eq!(script.into_inner(), unsupported_shutdown_script.clone().into_inner());
 		},
 		Err(e) => panic!("Unexpected error: {:?}", e),
 		Ok(_) => panic!("Expected error"),
 	}
-	nodes[1].node.close_channel(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
+	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
 	check_added_monitors!(nodes[1], 1);
 
 	// Use a non-v0 segwit script unsupported without option_shutdown_anysegwit
-	let mut node_0_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 	node_0_shutdown.scriptpubkey = unsupported_shutdown_script.into_inner();
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_0_shutdown);
+	nodes[0].node.handle_shutdown(node_b_id, &node_0_shutdown);
 
 	assert_eq!(
-		&check_warn_msg!(nodes[0], nodes[1].node.get_our_node_id(), chan.2),
+		&check_warn_msg!(nodes[0], node_b_id, chan.2),
 		"Got a nonstandard scriptpubkey (60020028) from remote peer"
 	);
 }
@@ -1536,19 +1373,21 @@ fn test_invalid_shutdown_script() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-	nodes[1].node.close_channel(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
+	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
 	check_added_monitors!(nodes[1], 1);
 
 	// Use a segwit v0 script with an unsupported witness program
-	let mut node_0_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 	node_0_shutdown.scriptpubkey = Builder::new().push_int(0).push_slice(&[0, 0]).into_script();
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_0_shutdown);
+	nodes[0].node.handle_shutdown(node_b_id, &node_0_shutdown);
 
 	assert_eq!(
-		&check_warn_msg!(nodes[0], nodes[1].node.get_our_node_id(), chan.2),
+		&check_warn_msg!(nodes[0], node_b_id, chan.2),
 		"Got a nonstandard scriptpubkey (00020000) from remote peer"
 	);
 }
@@ -1564,6 +1403,9 @@ fn test_user_shutdown_script() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 
 	// Segwit v0 script of the form OP_0 <20-byte hash>
 	let script = Builder::new().push_int(0).push_slice(&[0; 20]).into_script();
@@ -1573,17 +1415,11 @@ fn test_user_shutdown_script() {
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 	nodes[1]
 		.node
-		.close_channel_with_feerate_and_script(
-			&chan.2,
-			&nodes[0].node.get_our_node_id(),
-			None,
-			Some(shutdown_script),
-		)
+		.close_channel_with_feerate_and_script(&chan.2, &node_a_id, None, Some(shutdown_script))
 		.unwrap();
 	check_added_monitors!(nodes[1], 1);
 
-	let mut node_0_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 
 	assert_eq!(node_0_shutdown.scriptpubkey, script);
 }
@@ -1598,6 +1434,9 @@ fn test_already_set_user_shutdown_script() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 
 	// Segwit v0 script of the form OP_0 <20-byte hash>
 	let script = Builder::new().push_int(0).push_slice(&[0; 20]).into_script();
@@ -1607,7 +1446,7 @@ fn test_already_set_user_shutdown_script() {
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let result = nodes[1].node.close_channel_with_feerate_and_script(
 		&chan.2,
-		&nodes[0].node.get_our_node_id(),
+		&node_a_id,
 		None,
 		Some(shutdown_script),
 	);
@@ -1640,17 +1479,17 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
 	send_payment(&nodes[0], &[&nodes[1]], 8_000_000);
 
-	nodes[0].node.close_channel(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
-	let node_0_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
-	let node_1_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	nodes[0].node.close_channel(&chan_id, &node_b_id).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_1_shutdown);
 
 	{
 		// Now we set nodes[1] to require a relatively high feerate for closing. This should result
@@ -1660,20 +1499,15 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		*feerate_lock *= 10;
 	}
 
-	let mut node_0_closing_signed = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendClosingSigned,
-		nodes[1].node.get_our_node_id()
-	);
+	let mut node_0_closing_signed =
+		get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
 	// nodes[0] should use a "reasonable" feerate, well under the 10 sat/vByte that nodes[1] thinks
 	// is the current prevailing feerate.
 	assert!(node_0_closing_signed.fee_satoshis <= 500);
 
 	if timeout_step != TimeoutStep::AfterShutdown {
-		nodes[1]
-			.node
-			.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-		assert!(check_warn_msg!(nodes[1], nodes[0].node.get_our_node_id(), chan_id)
+		nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+		assert!(check_warn_msg!(nodes[1], node_a_id, chan_id)
 			.starts_with("Unable to come to consensus about closing feerate"));
 
 		// Now deliver a mutated closing_signed indicating a higher acceptable fee range, which
@@ -1695,29 +1529,18 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 			.unwrap()
 			.1 *= 10;
 		}
-		nodes[1]
-			.node
-			.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-		let node_1_closing_signed = get_event_msg!(
-			nodes[1],
-			MessageSendEvent::SendClosingSigned,
-			nodes[0].node.get_our_node_id()
-		);
-		nodes[0]
-			.node
-			.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
-		let node_0_2nd_closing_signed =
-			get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+		let node_1_closing_signed =
+			get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+		nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
+		let node_0_2nd_closing_signed = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
 		if timeout_step == TimeoutStep::NoTimeout {
-			nodes[1].node.handle_closing_signed(
-				nodes[0].node.get_our_node_id(),
-				&node_0_2nd_closing_signed.1.unwrap(),
-			);
+			nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.1.unwrap());
 			check_closed_event!(
 				nodes[1],
 				1,
 				ClosureReason::CounterpartyInitiatedCooperativeClosure,
-				[nodes[0].node.get_our_node_id()],
+				[node_a_id],
 				100000
 			);
 		}
@@ -1725,7 +1548,7 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 			nodes[0],
 			1,
 			ClosureReason::LocallyInitiatedCooperativeClosure,
-			[nodes[1].node.get_our_node_id()],
+			[node_b_id],
 			100000
 		);
 	}
@@ -1759,7 +1582,7 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 				err: "closing_signed negotiation failed to finish within two timer ticks"
 					.to_string()
 			},
-			[nodes[0].node.get_our_node_id()],
+			[node_a_id],
 			100000
 		);
 	} else {
@@ -1790,6 +1613,8 @@ fn do_simple_legacy_shutdown_test(high_initiator_fee: bool) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
@@ -1800,19 +1625,14 @@ fn do_simple_legacy_shutdown_test(high_initiator_fee: bool) {
 		*feerate_lock *= 10;
 	}
 
-	nodes[0].node.close_channel(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
-	let node_0_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
-	let node_1_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	nodes[0].node.close_channel(&chan.2, &node_b_id).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_1_shutdown);
 
-	let mut node_0_closing_signed = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendClosingSigned,
-		nodes[1].node.get_our_node_id()
-	);
+	let mut node_0_closing_signed =
+		get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
 	node_0_closing_signed.fee_range = None;
 	if high_initiator_fee {
 		assert!(node_0_closing_signed.fee_satoshis > 500);
@@ -1820,29 +1640,25 @@ fn do_simple_legacy_shutdown_test(high_initiator_fee: bool) {
 		assert!(node_0_closing_signed.fee_satoshis < 500);
 	}
 
-	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-	let (_, mut node_1_closing_signed) =
-		get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+	let (_, mut node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	node_1_closing_signed.as_mut().unwrap().fee_range = None;
 
-	nodes[0]
-		.node
-		.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap());
-	let (_, node_0_none) =
-		get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+	nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed.unwrap());
+	let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
 	assert!(node_0_none.is_none());
 	check_closed_event!(
 		nodes[0],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 	check_closed_event!(
 		nodes[1],
 		1,
 		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[nodes[0].node.get_our_node_id()],
+		[node_a_id],
 		100000
 	);
 }
@@ -1860,44 +1676,30 @@ fn simple_target_feerate_shutdown() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_id = chan.2;
 
 	nodes[0]
 		.node
-		.close_channel_with_feerate_and_script(
-			&chan_id,
-			&nodes[1].node.get_our_node_id(),
-			Some(253 * 10),
-			None,
-		)
+		.close_channel_with_feerate_and_script(&chan_id, &node_b_id, Some(253 * 10), None)
 		.unwrap();
-	let node_0_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
 	nodes[1]
 		.node
-		.close_channel_with_feerate_and_script(
-			&chan_id,
-			&nodes[0].node.get_our_node_id(),
-			Some(253 * 5),
-			None,
-		)
+		.close_channel_with_feerate_and_script(&chan_id, &node_a_id, Some(253 * 5), None)
 		.unwrap();
-	let node_1_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
+	nodes[0].node.handle_shutdown(node_b_id, &node_1_shutdown);
 
-	let node_0_closing_signed = get_event_msg!(
-		nodes[0],
-		MessageSendEvent::SendClosingSigned,
-		nodes[1].node.get_our_node_id()
-	);
-	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-	let (_, node_1_closing_signed_opt) =
-		get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	let node_0_closing_signed =
+		get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+	let (_, node_1_closing_signed_opt) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	let node_1_closing_signed = node_1_closing_signed_opt.unwrap();
 
 	// nodes[1] was passed a target which was larger than the current channel feerate, which it
@@ -1926,22 +1728,21 @@ fn simple_target_feerate_shutdown() {
 	);
 	assert_eq!(node_0_closing_signed.fee_satoshis, node_1_closing_signed.fee_satoshis);
 
-	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
-	let (_, node_0_none) =
-		get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+	nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
+	let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
 	assert!(node_0_none.is_none());
 	check_closed_event!(
 		nodes[0],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 	check_closed_event!(
 		nodes[1],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[0].node.get_our_node_id()],
+		[node_a_id],
 		100000
 	);
 }
@@ -1957,6 +1758,8 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
@@ -1974,37 +1777,27 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 		*chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap() *= 10;
 		nodes[0].node.timer_tick_occurred();
 	}
-	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
+	let updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	check_added_monitors(&nodes[0], 1);
 
-	nodes[1].node.close_channel(&chan_id, &nodes[0].node.get_our_node_id()).unwrap();
-	let node_0_shutdown =
-		get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.close_channel(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
-	let node_1_shutdown =
-		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	nodes[1].node.close_channel(&chan_id, &node_a_id).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.close_channel(&chan_id, &node_b_id).unwrap();
+	let node_1_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
 
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_0_shutdown);
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_1_shutdown);
+	nodes[0].node.handle_shutdown(node_b_id, &node_0_shutdown);
+	nodes[1].node.handle_shutdown(node_a_id, &node_1_shutdown);
 
 	if use_htlc {
-		nodes[1].node.handle_update_fail_htlc(
-			nodes[0].node.get_our_node_id(),
-			&updates.update_fail_htlcs[0],
-		);
+		nodes[1].node.handle_update_fail_htlc(node_a_id, &updates.update_fail_htlcs[0]);
 	} else {
-		nodes[1]
-			.node
-			.handle_update_fee(nodes[0].node.get_our_node_id(), &updates.update_fee.unwrap());
+		nodes[1].node.handle_update_fee(node_a_id, &updates.update_fee.unwrap());
 	}
-	nodes[1].node.handle_commitment_signed_batch_test(
-		nodes[0].node.get_our_node_id(),
-		&updates.commitment_signed,
-	);
+	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &updates.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
-	let (bs_raa, bs_cs) = get_revoke_commit_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	let (bs_raa, bs_cs) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 
-	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_raa);
+	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_raa);
 	check_added_monitors(&nodes[0], 1);
 
 	// At this point the Channel on nodes[0] has no record of any HTLCs but the latest
@@ -2013,7 +1806,7 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_cs);
+	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_cs);
 	check_added_monitors(&nodes[0], 1);
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
 
@@ -2033,7 +1826,7 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 	assert_eq!(as_raa_closing_signed.len(), 2);
 
 	if let MessageSendEvent::SendRevokeAndACK { msg, .. } = &as_raa_closing_signed[0] {
-		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &msg);
+		nodes[1].node.handle_revoke_and_ack(node_a_id, &msg);
 		check_added_monitors(&nodes[1], 1);
 		if use_htlc {
 			expect_payment_failed!(nodes[1], payment_hash_opt.unwrap(), true);
@@ -2043,38 +1836,31 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 	}
 
 	if let MessageSendEvent::SendClosingSigned { msg, .. } = &as_raa_closing_signed[1] {
-		nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &msg);
+		nodes[1].node.handle_closing_signed(node_a_id, &msg);
 	} else {
 		panic!("Unexpected message {:?}", as_raa_closing_signed[1]);
 	}
 
-	let bs_closing_signed = get_event_msg!(
-		nodes[1],
-		MessageSendEvent::SendClosingSigned,
-		nodes[0].node.get_our_node_id()
-	);
-	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &bs_closing_signed);
-	let (_, as_2nd_closing_signed) =
-		get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-	nodes[1]
-		.node
-		.handle_closing_signed(nodes[0].node.get_our_node_id(), &as_2nd_closing_signed.unwrap());
-	let (_, node_1_none) =
-		get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	let bs_closing_signed =
+		get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+	nodes[0].node.handle_closing_signed(node_b_id, &bs_closing_signed);
+	let (_, as_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &as_2nd_closing_signed.unwrap());
+	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	assert!(node_1_none.is_none());
 
 	check_closed_event!(
 		nodes[0],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[1].node.get_our_node_id()],
+		[node_b_id],
 		100000
 	);
 	check_closed_event!(
 		nodes[1],
 		1,
 		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[nodes[0].node.get_our_node_id()],
+		[node_a_id],
 		100000
 	);
 }
@@ -2092,6 +1878,10 @@ fn batch_funding_failure() {
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+	let node_d_id = nodes[3].node.get_our_node_id();
 
 	let temp_chan_id_a = exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
 	let temp_chan_id_b = exchange_open_accept_chan(&nodes[0], &nodes[2], 1_000_000, 0);
@@ -2214,6 +2004,8 @@ fn test_force_closure_on_low_stale_fee() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
