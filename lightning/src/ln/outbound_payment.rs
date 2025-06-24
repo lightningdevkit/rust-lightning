@@ -1328,6 +1328,17 @@ impl OutboundPayments {
 		})
 	}
 
+	pub(super) fn needs_abandon_or_retry(&self) -> bool {
+		let outbounds = self.pending_outbound_payments.lock().unwrap();
+		outbounds.iter().any(|(_, pmt)| {
+			pmt.is_auto_retryable_now()
+				|| !pmt.is_auto_retryable_now()
+					&& pmt.remaining_parts() == 0
+					&& !pmt.is_fulfilled()
+					&& !pmt.is_awaiting_invoice()
+		})
+	}
+
 	#[rustfmt::skip]
 	fn find_initial_route<R: Deref, NS: Deref, IH, L: Deref>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, recipient_onion: &RecipientOnionFields,

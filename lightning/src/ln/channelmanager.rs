@@ -6318,6 +6318,21 @@ where
 		}
 	}
 
+	/// Returns whether we have pending HTLC forwards that need to be processed via
+	/// [`Self::process_pending_htlc_forwards`].
+	pub fn needs_pending_htlc_processing(&self) -> bool {
+		if !self.forward_htlcs.lock().unwrap().is_empty() {
+			return true;
+		}
+		if !self.decode_update_add_htlcs.lock().unwrap().is_empty() {
+			return true;
+		}
+		if self.pending_outbound_payments.needs_abandon_or_retry() {
+			return true;
+		}
+		false
+	}
+
 	/// Processes HTLCs which are pending waiting on random forward delay.
 	///
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
