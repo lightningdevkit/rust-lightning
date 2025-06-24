@@ -219,6 +219,57 @@ pub trait KVStoreSync {
 	) -> Result<Vec<String>, io::Error>;
 }
 
+/// Wrapper around a [`MigratableKVStoreSync`] that implements the [`MigratableKVStore`] trait.
+pub struct MigratableKVStoreSyncWrapper<K: Deref>(pub K)
+where
+	K::Target: MigratableKVStoreSync;
+
+impl<K: Deref> MigratableKVStore for MigratableKVStoreSyncWrapper<K>
+where
+	K::Target: MigratableKVStoreSync,
+{
+	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, io::Error> {
+		self.0.list_all_keys()
+	}
+}
+
+impl<K: Deref> KVStore for MigratableKVStoreSyncWrapper<K>
+where
+	K::Target: MigratableKVStoreSync,
+{
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> AsyncResultType<'static, Vec<u8>, io::Error> {
+		let res = self.0.read(primary_namespace, secondary_namespace, key);
+
+		Box::pin(async move { res })
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> AsyncResultType<'static, (), io::Error> {
+		let res = self.0.write(primary_namespace, secondary_namespace, key, buf);
+
+		Box::pin(async move { res })
+	}
+
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> Result<(), io::Error> {
+		let res = self.0.remove(primary_namespace, secondary_namespace, key, lazy);
+
+		return res;
+	}
+
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> Result<Vec<String>, io::Error> {
+		let res = self.0.list(primary_namespace, secondary_namespace);
+
+		return res;
+	}
+}
+
 /// A wrapper around a [`KVStoreSync`] that implements the [`KVStore`] trait.
 pub struct KVStoreSyncWrapper<K: Deref>(pub K)
 where
@@ -294,7 +345,9 @@ pub trait MigratableKVStore: KVStore {
 	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, io::Error>;
 }
 
+/// Synchronous version of the [`MigratableKVStore`] trait.
 pub trait MigratableKVStoreSync: KVStoreSync {
+	/// Synchronous version of [`MigratableKVStore::list_all_keys`].
 	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, io::Error>;
 }
 
@@ -324,6 +377,25 @@ pub async fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
 	}
 
 	Ok(())
+}
+
+/// Synchronous version of [`migrate_kv_store_data`].
+pub fn migrate_kv_store_data_sync<S: MigratableKVStoreSync, T: MigratableKVStoreSync>(
+	source_store: &mut S, target_store: &mut T,
+) -> Result<(), io::Error> {
+	let mut source_store: MigratableKVStoreSyncWrapper<&mut S> =
+		MigratableKVStoreSyncWrapper(source_store);
+	let mut target_store = MigratableKVStoreSyncWrapper(target_store);
+
+	let mut fut = Box::pin(migrate_kv_store_data(&mut source_store, &mut target_store));
+	let mut waker = dummy_waker();
+	let mut ctx = task::Context::from_waker(&mut waker);
+	match fut.as_mut().poll(&mut ctx) {
+		task::Poll::Ready(result) => result,
+		task::Poll::Pending => {
+			unreachable!("Can't poll a future in a sync context, this should never happen");
+		},
+	}
 }
 
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
@@ -582,6 +654,7 @@ where
 	Ok(res)
 }
 
+/// Synchronous version of [`read_channel_monitors`].
 pub fn read_channel_monitors_sync<K: Deref, ES: Deref, SP: Deref>(
 	kv_store: K, entropy_source: ES, signer_provider: SP,
 ) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, io::Error>

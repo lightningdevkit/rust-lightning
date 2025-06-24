@@ -1620,6 +1620,7 @@ pub trait PersistSync<ChannelSigner: EcdsaChannelSigner> {
 	fn archive_persisted_channel(&self, monitor_name: MonitorName);
 }
 
+/// Wrapper for [`PersistSync`] to implement the [`Persist`] trait
 pub struct PersistSyncWrapper<P: Deref>(pub P);
 
 impl<T: Deref> Deref for PersistSyncWrapper<T> {
