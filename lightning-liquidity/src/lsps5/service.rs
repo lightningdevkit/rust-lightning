@@ -17,6 +17,7 @@ use crate::lsps5::msgs::{
 	SetWebhookRequest, SetWebhookResponse, WebhookNotification, WebhookNotificationMethod,
 };
 use crate::message_queue::MessageQueue;
+use crate::prelude::hash_map::Entry;
 use crate::prelude::*;
 use crate::sync::{Arc, Mutex};
 
@@ -140,8 +141,8 @@ where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
 {
-	/// Constructs a `LSPS5ServiceHandler`.
-	pub(crate) fn new(
+	/// Constructs a `LSPS5ServiceHandler` using the given time provider.
+	pub(crate) fn new_with_time_provider(
 		event_queue: Arc<EventQueue>, pending_messages: Arc<MessageQueue>, channel_manager: CM,
 		config: LSPS5ServiceConfig, time_provider: TP,
 	) -> Self {
@@ -184,42 +185,48 @@ where
 		let now =
 			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
 
-		let no_change = client_webhooks
-			.get(&params.app_name)
-			.map_or(false, |webhook| webhook.url == params.webhook);
+		let num_webhooks = client_webhooks.len();
+		let mut no_change = false;
+		match client_webhooks.entry(params.app_name.clone()) {
+			Entry::Occupied(mut entry) => {
+				no_change = entry.get().url == params.webhook;
+				let (last_used, last_notification_sent) = if no_change {
+					(entry.get().last_used.clone(), entry.get().last_notification_sent.clone())
+				} else {
+					(now, new_hash_map())
+				};
+				entry.insert(StoredWebhook {
+					_app_name: params.app_name.clone(),
+					url: params.webhook.clone(),
+					_counterparty_node_id: counterparty_node_id,
+					last_used,
+					last_notification_sent,
+				});
+			},
+			Entry::Vacant(entry) => {
+				if num_webhooks >= self.config.max_webhooks_per_client as usize {
+					let error = LSPS5ProtocolError::TooManyWebhooks;
+					let msg = LSPS5Message::Response(
+						request_id,
+						LSPS5Response::SetWebhookError(error.clone().into()),
+					)
+					.into();
+					self.pending_messages.enqueue(&counterparty_node_id, msg);
+					return Err(LightningError {
+						err: error.message().into(),
+						action: ErrorAction::IgnoreAndLog(Level::Info),
+					});
+				}
 
-		if !client_webhooks.contains_key(&params.app_name)
-			&& client_webhooks.len() >= self.config.max_webhooks_per_client as usize
-		{
-			let error = LSPS5ProtocolError::TooManyWebhooks;
-			let msg = LSPS5Message::Response(
-				request_id,
-				LSPS5Response::SetWebhookError(error.clone().into()),
-			)
-			.into();
-			self.pending_messages.enqueue(&counterparty_node_id, msg);
-			return Err(LightningError {
-				err: error.message().into(),
-				action: ErrorAction::IgnoreAndLog(Level::Info),
-			});
+				entry.insert(StoredWebhook {
+					_app_name: params.app_name.clone(),
+					url: params.webhook.clone(),
+					_counterparty_node_id: counterparty_node_id,
+					last_used: now,
+					last_notification_sent: new_hash_map(),
+				});
+			},
 		}
-
-		let (last_used, last_notification_sent) = if no_change {
-			let existing_webhook = client_webhooks.get(&params.app_name).unwrap();
-			(existing_webhook.last_used.clone(), existing_webhook.last_notification_sent.clone())
-		} else {
-			(now, new_hash_map())
-		};
-
-		let stored_webhook = StoredWebhook {
-			_app_name: params.app_name.clone(),
-			url: params.webhook.clone(),
-			_counterparty_node_id: counterparty_node_id,
-			last_used,
-			last_notification_sent,
-		};
-
-		client_webhooks.insert(params.app_name.clone(), stored_webhook);
 
 		if !no_change {
 			self.send_webhook_registered_notification(
@@ -465,6 +472,27 @@ where
 	}
 }
 
+#[cfg(feature = "time")]
+impl<CM: Deref> LSPS5ServiceHandler<CM, Arc<DefaultTimeProvider>>
+where
+	CM::Target: AChannelManager,
+{
+	/// Constructs a `LSPS5ServiceHandler` using [`DefaultTimeProvider`].
+	#[allow(dead_code)]
+	pub(crate) fn new(
+		event_queue: Arc<EventQueue>, pending_messages: Arc<MessageQueue>, channel_manager: CM,
+		config: LSPS5ServiceConfig,
+	) -> Self {
+		Self::new_with_time_provider(
+			event_queue,
+			pending_messages,
+			channel_manager,
+			config,
+			Arc::new(DefaultTimeProvider),
+		)
+	}
+}
+
 impl<CM: Deref, TP: Deref> LSPSProtocolMessageHandler for LSPS5ServiceHandler<CM, TP>
 where
 	CM::Target: AChannelManager,
@@ -497,8 +525,7 @@ where
 					"Service handler received LSPS5 response message. This should never happen."
 				);
 				let err = format!(
-					"Service handler received LSPS5 response message from node {:?}. 
-				This should never happen.",
+					"Service handler received LSPS5 response message from node {:?}. This should never happen.",
 					counterparty_node_id
 				);
 				Err(LightningError { err, action: ErrorAction::IgnoreAndLog(Level::Info) })
