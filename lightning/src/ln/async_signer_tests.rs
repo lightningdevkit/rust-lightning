@@ -1049,14 +1049,8 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 			.unwrap();
 		check_added_monitors(&nodes[1], 1);
 		check_closed_broadcast(&nodes[1], 1, true);
-		check_closed_event(
-			&nodes[1],
-			1,
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) },
-			false,
-			&[node_a_id],
-			100_000,
-		);
+		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100_000);
 	} else {
 		nodes[0].disable_channel_signer_op(&node_b_id, &chan_id, SignerOp::SignHolderCommitment);
 		nodes[0].disable_channel_signer_op(
