@@ -1403,7 +1403,7 @@ struct RouteGraphNode {
 	// - how much value can channels following this node (up to the destination) can contribute,
 	//   considering their capacity and fees
 	value_contribution_msat: u64,
-	total_cltv_delta: u32,
+	total_cltv_delta: u16,
 	/// The number of hops walked up to this node.
 	path_length_to_node: u8,
 }
@@ -2697,6 +2697,16 @@ where L::Target: Logger {
 	// drop the requirement by setting this to 0.
 	let mut channel_saturation_pow_half = payment_params.max_channel_saturation_power_of_half;
 
+	// In order to already account for some of the privacy enhancing random CLTV
+	// expiry delta offset we add on top later, we subtract a rough estimate
+	// (2*MEDIAN_HOP_CLTV_EXPIRY_DELTA) here.
+	let max_total_cltv_expiry_delta: u16 =
+		(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta)
+		.checked_sub(2*MEDIAN_HOP_CLTV_EXPIRY_DELTA)
+		.unwrap_or(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta)
+		.try_into()
+		.unwrap_or(u16::MAX);
+
 	// Keep track of how much liquidity has been used in selected channels or blinded paths. Used to
 	// determine if the channel can be used by additional MPP paths or to inform path finding
 	// decisions. It is aware of direction *only* to ensure that the correct htlc_maximum_msat value
@@ -2786,15 +2796,9 @@ where L::Target: Logger {
 					let exceeds_max_path_length = path_length_to_node > max_path_length;
 
 					// Do not consider candidates that exceed the maximum total cltv expiry limit.
-					// In order to already account for some of the privacy enhancing random CLTV
-					// expiry delta offset we add on top later, we subtract a rough estimate
-					// (2*MEDIAN_HOP_CLTV_EXPIRY_DELTA) here.
-					let max_total_cltv_expiry_delta = (payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta)
-						.checked_sub(2*MEDIAN_HOP_CLTV_EXPIRY_DELTA)
-						.unwrap_or(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta);
 					let hop_total_cltv_delta = ($next_hops_cltv_delta as u32)
 						.saturating_add(cltv_expiry_delta);
-					let exceeds_cltv_delta_limit = hop_total_cltv_delta > max_total_cltv_expiry_delta;
+					let exceeds_cltv_delta_limit = hop_total_cltv_delta > max_total_cltv_expiry_delta as u32;
 
 					let value_contribution_msat = cmp::min(available_value_contribution_msat, $next_hops_value_contribution);
 					// Includes paying fees for the use of the following channels.
@@ -2999,12 +3003,13 @@ where L::Target: Logger {
 									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 									{
 										assert!(!old_entry.best_path_from_hop_selected);
+										assert!(hop_total_cltv_delta <= u16::MAX as u32);
 									}
 
 									let new_graph_node = RouteGraphNode {
 										node_counter: src_node_counter,
 										score: cmp::max(total_fee_msat, path_htlc_minimum_msat).saturating_add(path_penalty_msat),
-										total_cltv_delta: hop_total_cltv_delta,
+										total_cltv_delta: hop_total_cltv_delta as u16,
 										value_contribution_msat,
 										path_length_to_node,
 									};
