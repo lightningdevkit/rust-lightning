@@ -636,10 +636,6 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 					$curr_node.node.force_close_broadcasting_latest_txn(&$failed_chan_id, &$next_node.node.get_our_node_id(), error_message.to_string()).unwrap();
 					let events = $curr_node.node.get_and_clear_pending_events();
 					match events[0] {
-						crate::events::Event::PendingHTLCsForwardable { .. } => {},
-						_ => panic!("Unexpected event {:?}", events),
-					};
-					match events[1] {
 						crate::events::Event::ChannelClosed { .. } => {},
 						_ => panic!("Unexpected event {:?}", events),
 					}
@@ -1162,16 +1158,12 @@ fn blinded_path_retries() {
 			do_commitment_signed_dance(&nodes[0], &$intro_node, &updates.commitment_signed, false, false);
 
 			let mut events = nodes[0].node.get_and_clear_pending_events();
-			assert_eq!(events.len(), 2);
+			assert_eq!(events.len(), 1);
 			match events[0] {
 				Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently, ..  } => {
 					assert_eq!(payment_hash, ev_payment_hash);
 					assert_eq!(payment_failed_permanently, false);
 				},
-				_ => panic!("Unexpected event"),
-			}
-			match events[1] {
-				Event::PendingHTLCsForwardable { .. } => {},
 				_ => panic!("Unexpected event"),
 			}
 			nodes[0].node.process_pending_htlc_forwards();

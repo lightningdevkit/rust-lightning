@@ -1418,7 +1418,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	check_added_monitors!(nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 6);
+	assert_eq!(events.len(), 5);
 	let mut failed_payments: HashSet<_> =
 		[timeout_payment_hash, dust_payment_hash, live_payment_hash, missing_htlc_payment_hash]
 		.iter().map(|a| *a).collect();
@@ -1437,8 +1437,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 		}
 	});
 	assert!(failed_payments.is_empty());
-	if let Event::PendingHTLCsForwardable { .. } = events[0] {} else { panic!(); }
-	match &events[1] {
+	match &events[0] {
 		Event::ChannelClosed { reason: ClosureReason::HTLCsTimedOut, .. } => {},
 		_ => panic!(),
 	}
@@ -2598,18 +2597,16 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 
 	check_closed_broadcast(&nodes[0], 1, true);
 	let a_events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(a_events.len(), if have_htlcs { 3 } else { 1 });
+	assert_eq!(a_events.len(), if have_htlcs { 2 } else { 1 });
 	if have_htlcs {
-		assert!(a_events.iter().any(|ev| matches!(ev, Event::PendingHTLCsForwardable { .. })));
 		assert!(a_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
 	}
 	assert!(a_events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
 
 	check_closed_broadcast(&nodes[1], 1, true);
 	let b_events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(b_events.len(), if have_htlcs { 3 } else { 1 });
+	assert_eq!(b_events.len(), if have_htlcs { 2 } else { 1 });
 	if have_htlcs {
-		assert!(b_events.iter().any(|ev| matches!(ev, Event::PendingHTLCsForwardable { .. })));
 		assert!(b_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
 	}
 	assert!(b_events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
