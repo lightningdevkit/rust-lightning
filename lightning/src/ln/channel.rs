@@ -8818,27 +8818,56 @@ where
 			msg.your_last_funding_locked_txid
 				.is_none()
 				.then(|| ())
+				// The sending node:
+				//   - if `my_current_funding_locked` is included:
+				//     - if `announce_channel` is set for this channel:
+				//       - if it has not received `announcement_signatures` for that transaction:
+				//         - MUST retransmit `channel_ready` or `splice_locked` after exchanging `channel_reestablish`.
+				.or_else(|| {
+					self.maybe_get_my_current_funding_locked()
+						.filter(|funding| !funding.is_splice())
+						.filter(|_| self.context.config.announce_for_forwarding)
+						.filter(|_| self.context.announcement_sigs.is_none())
+						.map(|_| ())
+				})
 				.and_then(|_| self.get_channel_ready(logger))
 		} else { None };
 
-		// A receiving node:
-		//   - if `your_last_funding_locked` is set and it does not match the most recent
-		//     `splice_locked` it has sent:
-		//     - MUST retransmit `splice_locked`.
 		let sent_splice_txid = self
 			.maybe_get_my_current_funding_locked()
 			.filter(|funding| funding.is_splice())
 			.map(|funding| {
 				funding.get_funding_txid().expect("Splice funding_txid should always be set")
 			});
-		let splice_locked = msg.your_last_funding_locked_txid.and_then(|last_funding_txid| {
-			sent_splice_txid
-				.filter(|sent_splice_txid| last_funding_txid != *sent_splice_txid)
-				.map(|splice_txid| msgs::SpliceLocked {
-					channel_id: self.context.channel_id,
-					splice_txid,
-				})
-		});
+		let splice_locked = msg
+			// A receiving node:
+			//   - if `your_last_funding_locked` is set and it does not match the most recent
+			//     `splice_locked` it has sent:
+			//     - MUST retransmit `splice_locked`.
+			.your_last_funding_locked_txid
+			.and_then(|last_funding_txid| {
+				sent_splice_txid.filter(|sent_splice_txid| last_funding_txid != *sent_splice_txid)
+			})
+			// The sending node:
+			//   - if `my_current_funding_locked` is included:
+			//     - if `announce_channel` is set for this channel:
+			//       - if it has not received `announcement_signatures` for that transaction:
+			//         - MUST retransmit `channel_ready` or `splice_locked` after exchanging `channel_reestablish`.
+			.or_else(|| {
+				sent_splice_txid
+					.filter(|_| self.context.config.announce_for_forwarding)
+					.filter(|sent_splice_txid| {
+						if self.funding.get_funding_txid() == Some(*sent_splice_txid) {
+							self.context.announcement_sigs.is_none()
+						} else {
+							true
+						}
+					})
+			})
+			.map(|splice_txid| msgs::SpliceLocked {
+				channel_id: self.context.channel_id,
+				splice_txid,
+			});
 
 		let mut commitment_update = None;
 		let mut tx_signatures = None;
