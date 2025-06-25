@@ -71,8 +71,19 @@ impl_writeable_tlv_based!(BestBlock, {
 /// when needed.
 ///
 /// By using [`Listen::filtered_block_connected`] this interface supports clients fetching the
-/// entire header chain and only blocks with matching transaction data using BIP 157 filters or
+/// entire block chain and only blocks with matching transaction data using BIP 157 filters or
 /// other similar filtering.
+///
+/// Each block must be connected in chain order with one (or more, if using the [`Filter`]
+/// interface and a registration occurred during the block processing) call to either
+/// [`Listen::block_connected`] or [`Listen::filtered_block_connected`] for each block.
+///
+/// In case of a reorg, you must call [`Listen::blocks_disconnected`] once (or more, in
+/// reverse-chain order) with information on the "fork point" block, i.e. the highest block which
+/// is in both forks.
+///
+/// Note that most implementations take a [`BestBlock`] on construction and blocks only need to be
+/// applied starting from that point.
 pub trait Listen {
 	/// Notifies the listener that a block was added at the given height, with the transaction data
 	/// possibly filtered.
