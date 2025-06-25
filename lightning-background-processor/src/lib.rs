@@ -110,59 +110,59 @@ pub struct BackgroundProcessor {
 }
 
 #[cfg(not(test))]
-const FRESHNESS_TIMER: u64 = 60;
+const FRESHNESS_TIMER: Duration = Duration::from_secs(60);
 #[cfg(test)]
-const FRESHNESS_TIMER: u64 = 1;
+const FRESHNESS_TIMER: Duration = Duration::from_secs(1);
 
 #[cfg(all(not(test), not(debug_assertions)))]
-const PING_TIMER: u64 = 10;
+const PING_TIMER: Duration = Duration::from_secs(10);
 /// Signature operations take a lot longer without compiler optimisations.
 /// Increasing the ping timer allows for this but slower devices will be disconnected if the
 /// timeout is reached.
 #[cfg(all(not(test), debug_assertions))]
-const PING_TIMER: u64 = 30;
+const PING_TIMER: Duration = Duration::from_secs(30);
 #[cfg(test)]
-const PING_TIMER: u64 = 1;
+const PING_TIMER: Duration = Duration::from_secs(1);
 
 #[cfg(not(test))]
-const ONION_MESSAGE_HANDLER_TIMER: u64 = 10;
+const ONION_MESSAGE_HANDLER_TIMER: Duration = Duration::from_secs(10);
 #[cfg(test)]
-const ONION_MESSAGE_HANDLER_TIMER: u64 = 1;
+const ONION_MESSAGE_HANDLER_TIMER: Duration = Duration::from_secs(1);
 
 /// Prune the network graph of stale entries hourly.
-const NETWORK_PRUNE_TIMER: u64 = 60 * 60;
+const NETWORK_PRUNE_TIMER: Duration = Duration::from_secs(60 * 60);
 
 #[cfg(not(test))]
-const SCORER_PERSIST_TIMER: u64 = 60 * 5;
+const SCORER_PERSIST_TIMER: Duration = Duration::from_secs(60 * 5);
 #[cfg(test)]
-const SCORER_PERSIST_TIMER: u64 = 1;
+const SCORER_PERSIST_TIMER: Duration = Duration::from_secs(1);
 
 #[cfg(not(test))]
-const FIRST_NETWORK_PRUNE_TIMER: u64 = 60;
+const FIRST_NETWORK_PRUNE_TIMER: Duration = Duration::from_secs(60);
 #[cfg(test)]
-const FIRST_NETWORK_PRUNE_TIMER: u64 = 1;
+const FIRST_NETWORK_PRUNE_TIMER: Duration = Duration::from_secs(1);
 
 #[cfg(not(test))]
-const REBROADCAST_TIMER: u64 = 30;
+const REBROADCAST_TIMER: Duration = Duration::from_secs(30);
 #[cfg(test)]
-const REBROADCAST_TIMER: u64 = 1;
+const REBROADCAST_TIMER: Duration = Duration::from_secs(1);
 
 #[cfg(not(test))]
-const SWEEPER_TIMER: u64 = 30;
+const SWEEPER_TIMER: Duration = Duration::from_secs(30);
 #[cfg(test)]
-const SWEEPER_TIMER: u64 = 1;
+const SWEEPER_TIMER: Duration = Duration::from_secs(1);
 
 /// core::cmp::min is not currently const, so we define a trivial (and equivalent) replacement
-const fn min_u64(a: u64, b: u64) -> u64 {
-	if a < b {
+const fn min_duration(a: Duration, b: Duration) -> Duration {
+	if a.as_nanos() < b.as_nanos() {
 		a
 	} else {
 		b
 	}
 }
-const FASTEST_TIMER: u64 = min_u64(
-	min_u64(FRESHNESS_TIMER, PING_TIMER),
-	min_u64(SCORER_PERSIST_TIMER, min_u64(FIRST_NETWORK_PRUNE_TIMER, REBROADCAST_TIMER)),
+const FASTEST_TIMER: Duration = min_duration(
+	min_duration(FRESHNESS_TIMER, PING_TIMER),
+	min_duration(SCORER_PERSIST_TIMER, min_duration(FIRST_NETWORK_PRUNE_TIMER, REBROADCAST_TIMER)),
 );
 
 /// Either [`P2PGossipSync`] or [`RapidGossipSync`].
@@ -372,9 +372,9 @@ macro_rules! define_run_body {
 			// We wait up to 100ms, but track how long it takes to detect being put to sleep,
 			// see `await_start`'s use below.
 			let mut await_start = None;
-			if $check_slow_await { await_start = Some($get_timer(1)); }
+			if $check_slow_await { await_start = Some($get_timer(Duration::from_secs(1))); }
 			$await;
-			let await_slow = if $check_slow_await { $timer_elapsed(&mut await_start.unwrap(), 1) } else { false };
+			let await_slow = if $check_slow_await { $timer_elapsed(&mut await_start.unwrap(), Duration::from_secs(1)) } else { false };
 
 			// Exit the loop if the background processor was requested to stop.
 			if $loop_exit_check {
@@ -904,7 +904,7 @@ where
 				e: sleeper(if mobile_interruptable_platform {
 					Duration::from_millis(100)
 				} else {
-					Duration::from_secs(FASTEST_TIMER)
+					FASTEST_TIMER
 				}),
 			};
 			match fut.await {
@@ -914,7 +914,7 @@ where
 				},
 			}
 		},
-		|t| sleeper(Duration::from_secs(t)),
+		|t| sleeper(t),
 		|fut: &mut SleepFuture, _| {
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
@@ -1097,7 +1097,7 @@ impl BackgroundProcessor {
 					sleeper.wait_timeout(Duration::from_millis(100));
 				},
 				|_| Instant::now(),
-				|time: &Instant, dur| time.elapsed().as_secs() > dur,
+				|time: &Instant, dur| time.elapsed() > dur,
 				false,
 				|| {
 					use std::time::SystemTime;
@@ -1215,7 +1215,8 @@ mod tests {
 	use std::time::Duration;
 	use std::{env, fs};
 
-	const EVENT_DEADLINE: u64 = 5 * FRESHNESS_TIMER;
+	const EVENT_DEADLINE: Duration =
+		Duration::from_millis(5 * (FRESHNESS_TIMER.as_millis() as u64));
 
 	#[derive(Clone, Hash, PartialEq, Eq)]
 	struct TestDescriptor {}
@@ -2253,7 +2254,7 @@ mod tests {
 		// Open a channel and check that the FundingGenerationReady event was handled.
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
 		let (temporary_channel_id, funding_tx) = funding_generation_recv
-			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
+			.recv_timeout(EVENT_DEADLINE)
 			.expect("FundingGenerationReady not handled within deadline");
 		nodes[0]
 			.node
@@ -2265,7 +2266,7 @@ mod tests {
 		let msg_1 = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, node_0_id);
 		nodes[0].node.handle_funding_signed(node_1_id, &msg_1);
 		channel_pending_recv
-			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
+			.recv_timeout(EVENT_DEADLINE)
 			.expect("ChannelPending not handled within deadline");
 
 		// Confirm the funding transaction.
@@ -2327,9 +2328,8 @@ mod tests {
 		let commitment_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
 		confirm_transaction_depth(&mut nodes[0], &commitment_tx, BREAKDOWN_TIMEOUT as u32);
 
-		let event = receiver
-			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
-			.expect("Events not handled within deadline");
+		let event =
+			receiver.recv_timeout(EVENT_DEADLINE).expect("Events not handled within deadline");
 		match event {
 			Event::SpendableOutputs { outputs, channel_id } => {
 				nodes[0]
@@ -2481,8 +2481,8 @@ mod tests {
 
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
 		assert_eq!(
-			first_event_recv.recv_timeout(Duration::from_secs(EVENT_DEADLINE)).unwrap(),
-			second_event_recv.recv_timeout(Duration::from_secs(EVENT_DEADLINE)).unwrap()
+			first_event_recv.recv_timeout(EVENT_DEADLINE).unwrap(),
+			second_event_recv.recv_timeout(EVENT_DEADLINE).unwrap()
 		);
 
 		if !std::thread::panicking() {
@@ -2609,7 +2609,7 @@ mod tests {
 
 		do_test_not_pruning_network_graph_until_graph_sync_completion!(
 			nodes,
-			receiver.recv_timeout(Duration::from_secs(super::FIRST_NETWORK_PRUNE_TIMER * 5)),
+			receiver.recv_timeout(super::FIRST_NETWORK_PRUNE_TIMER * 5),
 			std::thread::sleep(Duration::from_millis(1))
 		);
 
@@ -2658,8 +2658,7 @@ mod tests {
 				{
 					let mut i = 0;
 					loop {
-						tokio::time::sleep(Duration::from_secs(super::FIRST_NETWORK_PRUNE_TIMER))
-							.await;
+						tokio::time::sleep(super::FIRST_NETWORK_PRUNE_TIMER).await;
 						if let Ok(()) = receiver.try_recv() {
 							break Ok::<(), ()>(());
 						}
@@ -2806,10 +2805,7 @@ mod tests {
 			Some(Arc::clone(&nodes[0].scorer)),
 		);
 
-		do_test_payment_path_scoring!(
-			nodes,
-			receiver.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
-		);
+		do_test_payment_path_scoring!(nodes, receiver.recv_timeout(EVENT_DEADLINE));
 
 		if !std::thread::panicking() {
 			bg_processor.stop().unwrap();
