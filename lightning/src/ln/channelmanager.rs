@@ -960,12 +960,6 @@ impl MsgHandleErrInternal {
 	}
 }
 
-/// We hold back HTLCs we intend to relay for a random interval greater than this (see
-/// Event::PendingHTLCsForwardable for the API guidelines indicating how long should be waited).
-/// This provides some limited amount of privacy. Ideally this would range from somewhere like one
-/// second to 30 seconds, but people expect lightning to be, you know, kinda fast, sadly.
-pub(super) const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u64 = 100;
-
 /// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
 /// be sent in the order they appear in the return value, however sometimes the order needs to be
 /// variable at runtime (eg FundedChannel::channel_reestablish needs to re-send messages in the order
@@ -6315,8 +6309,7 @@ where
 
 	/// Processes HTLCs which are pending waiting on random forward delay.
 	///
-	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
-	/// Will likely generate further events.
+	/// Will regularly be called by the background processor.
 	pub fn process_pending_htlc_forwards(&self) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -7721,15 +7714,12 @@ where
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
 		destination: HTLCHandlingFailureType,
 	) {
-		let push_forward_event = self.fail_htlc_backwards_internal_without_forward_event(
+		self.fail_htlc_backwards_internal_without_forward_event(
 			source,
 			payment_hash,
 			onion_error,
 			destination,
 		);
-		if push_forward_event {
-			self.push_pending_forwards_ev();
-		}
 	}
 
 	/// Fails an HTLC backwards to the sender of it to us.
@@ -7737,7 +7727,7 @@ where
 	fn fail_htlc_backwards_internal_without_forward_event(
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
 		failure_type: HTLCHandlingFailureType,
-	) -> bool {
+	) {
 		// Ensure that no peer state channel storage lock is held when calling this function.
 		// This ensures that future code doesn't introduce a lock-order requirement for
 		// `forward_htlcs` to be locked after the `per_peer_state` peer locks, which calling
@@ -7755,10 +7745,9 @@ where
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// from block_connected which may run during initialization prior to the chain_monitor
 		// being fully configured. See the docs for `ChannelManagerReadArgs` for more.
-		let mut push_forward_event;
 		match source {
 			HTLCSource::OutboundRoute { ref path, ref session_priv, ref payment_id, .. } => {
-				push_forward_event = self.pending_outbound_payments.fail_htlc(
+				self.pending_outbound_payments.fail_htlc(
 					source,
 					payment_hash,
 					onion_error,
@@ -7814,9 +7803,7 @@ where
 					},
 				};
 
-				push_forward_event = self.decode_update_add_htlcs.lock().unwrap().is_empty();
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
-				push_forward_event &= forward_htlcs.is_empty();
 				match forward_htlcs.entry(*short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
 						entry.get_mut().push(failure);
@@ -7837,7 +7824,6 @@ where
 				));
 			},
 		}
-		push_forward_event
 	}
 
 	/// Provides a payment preimage in response to [`Event::PaymentClaimable`], generating any
@@ -9978,9 +9964,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	fn push_decode_update_add_htlcs(&self, mut update_add_htlcs: (u64, Vec<msgs::UpdateAddHTLC>)) {
-		let mut push_forward_event = self.forward_htlcs.lock().unwrap().is_empty();
 		let mut decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
-		push_forward_event &= decode_update_add_htlcs.is_empty();
 		let scid = update_add_htlcs.0;
 		match decode_update_add_htlcs.entry(scid) {
 			hash_map::Entry::Occupied(mut e) => {
@@ -9990,25 +9974,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				e.insert(update_add_htlcs.1);
 			},
 		}
-		if push_forward_event {
-			self.push_pending_forwards_ev();
-		}
 	}
 
 	#[inline]
 	fn forward_htlcs(&self, per_source_pending_forwards: &mut [PerSourcePendingForward]) {
-		let push_forward_event =
-			self.forward_htlcs_without_forward_event(per_source_pending_forwards);
-		if push_forward_event {
-			self.push_pending_forwards_ev()
-		}
+		self.forward_htlcs_without_forward_event(per_source_pending_forwards);
 	}
 
 	#[inline]
 	fn forward_htlcs_without_forward_event(
 		&self, per_source_pending_forwards: &mut [PerSourcePendingForward],
-	) -> bool {
-		let mut push_forward_event = false;
+	) {
 		for &mut (
 			prev_short_channel_id,
 			prev_counterparty_node_id,
@@ -10031,10 +10007,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					// Pull this now to avoid introducing a lock order with `forward_htlcs`.
 					let is_our_scid = self.short_to_chan_info.read().unwrap().contains_key(&scid);
 
-					let decode_update_add_htlcs_empty =
-						self.decode_update_add_htlcs.lock().unwrap().is_empty();
 					let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
-					let forward_htlcs_empty = forward_htlcs.is_empty();
 					match forward_htlcs.entry(scid) {
 						hash_map::Entry::Occupied(mut entry) => {
 							entry.get_mut().push(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
@@ -10130,10 +10103,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									},
 								}
 							} else {
-								// We don't want to generate a PendingHTLCsForwardable event if only intercepted
-								// payments are being processed.
-								push_forward_event |=
-									forward_htlcs_empty && decode_update_add_htlcs_empty;
 								entry.insert(vec![HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 									prev_short_channel_id,
 									prev_counterparty_node_id,
@@ -10152,7 +10121,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			for (htlc_source, payment_hash, failure_reason, destination) in
 				failed_intercept_forwards.drain(..)
 			{
-				push_forward_event |= self.fail_htlc_backwards_internal_without_forward_event(
+				self.fail_htlc_backwards_internal_without_forward_event(
 					&htlc_source,
 					&payment_hash,
 					&failure_reason,
@@ -10164,30 +10133,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let mut events = self.pending_events.lock().unwrap();
 				events.append(&mut new_intercept_events);
 			}
-		}
-		push_forward_event
-	}
-
-	fn push_pending_forwards_ev(&self) {
-		let mut pending_events = self.pending_events.lock().unwrap();
-		let is_processing_events = self.pending_events_processor.load(Ordering::Acquire);
-		let num_forward_events = pending_events
-			.iter()
-			.filter(|(ev, _)| matches!(ev, events::Event::PendingHTLCsForwardable { .. }))
-			.count();
-		// We only want to push a PendingHTLCsForwardable event if no others are queued. Processing
-		// events is done in batches and they are not removed until we're done processing each
-		// batch. Since handling a `PendingHTLCsForwardable` event will call back into the
-		// `ChannelManager`, we'll still see the original forwarding event not removed. Phantom
-		// payments will need an additional forwarding event before being claimed to make them look
-		// real by taking more time.
-		if (is_processing_events && num_forward_events <= 1) || num_forward_events < 1 {
-			pending_events.push_back((
-				Event::PendingHTLCsForwardable {
-					time_forwardable: Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS),
-				},
-				None,
-			));
 		}
 	}
 
@@ -10777,15 +10722,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 
 		has_pending_monitor_events
-	}
-
-	/// In chanmon_consistency_target, we'd like to be able to restore monitor updating without
-	/// handling all pending events (i.e. not PendingHTLCsForwardable). Thus, we expose monitor
-	/// update events as a separate process method here.
-	#[cfg(fuzzing)]
-	pub fn process_monitor_events(&self) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		self.process_pending_monitor_events();
 	}
 
 	/// Check the holding cell in each channel and free any pending HTLCs in them if possible.
@@ -15949,21 +15885,6 @@ where
 					return Err(DecodeError::InvalidValue);
 				}
 			}
-		}
-
-		if !forward_htlcs.is_empty()
-			|| !decode_update_add_htlcs.is_empty()
-			|| pending_outbounds.needs_abandon()
-		{
-			// If we have pending HTLCs to forward, assume we either dropped a
-			// `PendingHTLCsForwardable` or the user received it but never processed it as they
-			// shut down before the timer hit. Either way, set the time_forwardable to a small
-			// constant as enough time has likely passed that we should simply handle the forwards
-			// now, or at least after the user gets a chance to reconnect to our peers.
-			pending_events_read.push_back((
-				events::Event::PendingHTLCsForwardable { time_forwardable: Duration::from_secs(2) },
-				None,
-			));
 		}
 
 		let expanded_inbound_key = args.node_signer.get_inbound_payment_key();

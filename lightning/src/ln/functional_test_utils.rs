@@ -2445,7 +2445,6 @@ macro_rules! expect_htlc_handling_failed_destinations {
 		let mut num_expected_failures = $expected_failures.len();
 		for event in $events {
 			match event {
-				$crate::events::Event::PendingHTLCsForwardable { .. } => {},
 				$crate::events::Event::HTLCHandlingFailed { ref failure_type, .. } => {
 					assert!($expected_failures.contains(&failure_type));
 					num_expected_failures -= 1;
@@ -2463,12 +2462,7 @@ macro_rules! expect_htlc_handling_failed_destinations {
 pub fn expect_pending_htlcs_forwardable_conditions(
 	events: Vec<Event>, expected_failures: &[HTLCHandlingFailureType],
 ) {
-	let count = expected_failures.len() + 1;
-	assert_eq!(events.len(), count);
-	assert!(events
-		.iter()
-		.find(|event| matches!(event, Event::PendingHTLCsForwardable { .. }))
-		.is_some());
+	assert_eq!(events.len(), expected_failures.len());
 	if expected_failures.len() > 0 {
 		expect_htlc_handling_failed_destinations!(events, expected_failures)
 	}
@@ -2528,23 +2522,6 @@ macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed {
 
 		// Ensure process_pending_htlc_forwards is idempotent.
 		$node.node.process_pending_htlc_forwards();
-	}};
-}
-
-#[cfg(any(test, feature = "_externalize_tests"))]
-macro_rules! expect_pending_htlcs_forwardable_from_events {
-	($node: expr, $events: expr, $ignore: expr) => {{
-		assert_eq!($events.len(), 1);
-		match $events[0] {
-			Event::PendingHTLCsForwardable { .. } => {},
-			_ => panic!("Unexpected event"),
-		};
-		if $ignore {
-			$node.node.process_pending_htlc_forwards();
-
-			// Ensure process_pending_htlc_forwards is idempotent.
-			$node.node.process_pending_htlc_forwards();
-		}
 	}};
 }
 
@@ -3324,11 +3301,6 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 			},
 			_ => panic!("Unexpected second event"),
 		}
-	} else if conditions.retry_expected {
-		match &payment_failed_events[1] {
-			Event::PendingHTLCsForwardable { .. } => {},
-			_ => panic!("Unexpected second event"),
-		}
 	}
 }
 
@@ -3580,11 +3552,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 				}
 				event = Some(events_2[0].clone());
 			} else if let Some(ref failure) = expected_failure {
-				// If we successfully decode the HTLC onion but then fail later in
-				// process_pending_htlc_forwards, then we'll queue the failure and generate a new
-				// `ProcessPendingHTLCForwards` event. If we fail during the process of decoding the HTLC,
-				// we'll fail it immediately with no intermediate forwarding event.
-				assert!(events_2.len() == 1 || events_2.len() == 2);
+				assert!(events_2.len() == 1);
 				expect_htlc_handling_failed_destinations!(events_2, &[failure]);
 				node.node.process_pending_htlc_forwards();
 				check_added_monitors!(node, 1);

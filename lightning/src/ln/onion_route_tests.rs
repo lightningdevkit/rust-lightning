@@ -122,7 +122,6 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 
 	macro_rules! expect_htlc_forward {
 		($node: expr) => {{
-			expect_event!($node, Event::PendingHTLCsForwardable);
 			$node.node.process_pending_htlc_forwards();
 		}};
 	}
