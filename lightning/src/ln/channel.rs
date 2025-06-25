@@ -5961,6 +5961,7 @@ macro_rules! promote_splice_funding {
 		core::mem::swap(&mut $self.funding, $funding);
 		$self.pending_splice = None;
 		$self.pending_funding.clear();
+		$self.context.announcement_sigs = None;
 		$self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
 	};
 }
