@@ -1396,7 +1396,7 @@ impl_writeable_tlv_based!(RouteHintHop, {
 #[repr(align(32))] // Force the size to 32 bytes
 struct RouteGraphNode {
 	node_counter: u32,
-	score: u64,
+	score: u128,
 	// The maximum value a yet-to-be-constructed payment path might flow through this node.
 	// This value is upper-bounded by us by:
 	// - how much is needed for a path being constructed
@@ -2122,6 +2122,22 @@ impl<'a> PaymentPath<'a> {
 		return result;
 	}
 
+	/// Gets the cost (fees plus scorer penalty in msats) of the path divided by the value we
+	/// can/will send over the path. This is also the heap score during our Dijkstra's walk.
+	fn get_cost_per_msat(&self) -> u128 {
+		let fee_cost = self.get_cost_msat();
+		let value_msat = self.get_value_msat();
+		debug_assert!(value_msat > 0, "Paths should always send more than 0 msat");
+		if fee_cost == u64::MAX || value_msat == 0 {
+			u64::MAX.into()
+		} else {
+			// In order to avoid integer division precision loss, we simply shift the costs up to
+			// the top half of a u128 and divide by the value (which is, at max, just under a u64).
+			((fee_cost as u128) << 64) / value_msat as u128
+		}
+	}
+
+	/// Gets the fees plus scorer penalty in msats of the path.
 	fn get_cost_msat(&self) -> u64 {
 		self.get_total_fee_paid_msat().saturating_add(self.get_path_penalty_msat())
 	}
@@ -2788,8 +2804,6 @@ where L::Target: Logger {
 							*used_liquidity_msat
 						});
 
-					// Verify the liquidity offered by this channel complies to the minimal contribution.
-					let contributes_sufficient_value = available_value_contribution_msat >= minimal_value_contribution_msat;
 					// Do not consider candidate hops that would exceed the maximum path length.
 					let path_length_to_node = $next_hops_path_length
 						+ if $candidate.blinded_hint_idx().is_some() { 0 } else { 1 };
@@ -2801,6 +2815,8 @@ where L::Target: Logger {
 					let exceeds_cltv_delta_limit = hop_total_cltv_delta > max_total_cltv_expiry_delta as u32;
 
 					let value_contribution_msat = cmp::min(available_value_contribution_msat, $next_hops_value_contribution);
+					// Verify the liquidity offered by this channel complies to the minimal contribution.
+					let contributes_sufficient_value = value_contribution_msat >= minimal_value_contribution_msat;
 					// Includes paying fees for the use of the following channels.
 					let amount_to_transfer_over_msat: u64 = match value_contribution_msat.checked_add($next_hops_fee_msat) {
 						Some(result) => result,
@@ -2950,7 +2966,7 @@ where L::Target: Logger {
 							// Ignore hops if augmenting the current path to them would put us over `max_total_routing_fee_msat`
 							if total_fee_msat > max_total_routing_fee_msat {
 								if should_log_candidate {
-									log_trace!(logger, "Ignoring {} due to exceeding max total routing fee limit.", LoggedCandidateHop(&$candidate));
+									log_trace!(logger, "Ignoring {} with fee {total_fee_msat} due to exceeding max total routing fee limit {max_total_routing_fee_msat}.", LoggedCandidateHop(&$candidate));
 
 									if let Some(_) = first_hop_details {
 										log_trace!(logger,
@@ -2991,15 +3007,31 @@ where L::Target: Logger {
 								// but it may require additional tracking - we don't want to double-count
 								// the fees included in $next_hops_path_htlc_minimum_msat, but also
 								// can't use something that may decrease on future hops.
-								let old_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat)
+								let old_fee_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat)
 									.saturating_add(old_entry.path_penalty_msat);
-								let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
+								let new_fee_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
 									.saturating_add(path_penalty_msat);
-								let should_replace =
-									new_cost < old_cost
-									|| (new_cost == old_cost && old_entry.value_contribution_msat < value_contribution_msat);
+								// The actual score we use for our heap is the cost divided by how
+								// much we are thinking of sending over this channel. This avoids
+								// prioritizing channels that have a very low fee because we aren't
+								// sending very much over them.
+								// In order to avoid integer division precision loss, we simply
+								// shift the costs up to the top half of a u128 and divide by the
+								// value (which is, at max, just under a u64).
+								let old_cost = if old_fee_cost != u64::MAX && old_entry.value_contribution_msat != 0 {
+									((old_fee_cost as u128) << 64) / old_entry.value_contribution_msat as u128
+								} else {
+									u128::MAX
+								};
+								let new_cost = if new_fee_cost != u64::MAX {
+									// value_contribution_msat is always >= 1, checked above via
+									// `contributes_sufficient_value`.
+									((new_fee_cost as u128) << 64) / value_contribution_msat as u128
+								} else {
+									u128::MAX
+								};
 
-								if !old_entry.was_processed && should_replace {
+								if !old_entry.was_processed && new_cost < old_cost {
 									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 									{
 										assert!(!old_entry.best_path_from_hop_selected);
@@ -3008,7 +3040,7 @@ where L::Target: Logger {
 
 									let new_graph_node = RouteGraphNode {
 										node_counter: src_node_counter,
-										score: cmp::max(total_fee_msat, path_htlc_minimum_msat).saturating_add(path_penalty_msat),
+										score: new_cost,
 										total_cltv_delta: hop_total_cltv_delta as u16,
 										value_contribution_msat,
 										path_length_to_node,
@@ -3558,10 +3590,7 @@ where L::Target: Logger {
 	// First, sort by the cost-per-value of the path, dropping the paths that cost the most for
 	// the value they contribute towards the payment amount.
 	// We sort in descending order as we will remove from the front in `retain`, next.
-	selected_route.sort_unstable_by(|a, b|
-		(((b.get_cost_msat() as u128) << 64) / (b.get_value_msat() as u128))
-			.cmp(&(((a.get_cost_msat() as u128) << 64) / (a.get_value_msat() as u128)))
-	);
+	selected_route.sort_unstable_by(|a, b| b.get_cost_per_msat().cmp(&a.get_cost_per_msat()));
 
 	// We should make sure that at least 1 path left.
 	let mut paths_left = selected_route.len();
@@ -9008,6 +9037,207 @@ mod tests {
 		assert_eq!(route.paths[0].hops.len(), 1);
 
 		assert_eq!(route.paths[0].hops[0].short_channel_id, 44);
+	}
+
+	#[test]
+	fn prefers_paths_by_cost_amt_ratio() {
+		// Previously, we preferred paths during MPP selection based on their absolute cost, rather
+		// than the cost-per-amount-transferred. This could result in selecting many MPP paths with
+		// relatively low value contribution, rather than one large path which is ultimately
+		// cheaper. While this is a tradeoff (and not universally better), in practice the old
+		// behavior was problematic, so we shifted to a proportional cost.
+		//
+		// Here we check that the proportional cost is being used in a somewhat absurd setup where
+		// we have one good path and several cheaper, but smaller paths.
+		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+		let scorer = ln_test_utils::TestScorer::new();
+		let random_seed_bytes = [42; 32];
+
+		// Enable channel 1
+		let update_1 = UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 1,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: (1 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 10_000_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new(),
+		};
+		update_channel(&gossip_sync, &secp_ctx, &our_privkey, update_1);
+
+		// Set the fee on channel 3 to 1 sat, max HTLC to 1M msat
+		let update_3 = UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 3,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: (3 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 1_000_000,
+			fee_base_msat: 1_000,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new(),
+		};
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], update_3);
+
+		// Set the fee on channel 13 to 1 sat, max HTLC to 1M msat
+		let update_13 = UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 13,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: (13 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 1_000_000,
+			fee_base_msat: 1_000,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new(),
+		};
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], update_13);
+
+		// Set the fee on channel 4 to 1 sat, max HTLC to 1M msat
+		let update_4 = UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 4,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: (4 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 1_000_000,
+			fee_base_msat: 1_000,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new(),
+		};
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], update_4);
+
+		// The router will attempt to gather 3x the requested amount, and if it finds the new path
+		// through channel 16, added below, it'll always prefer that, even prior to the changes
+		// which introduced this test.
+		// Instead, we add 6 additional channels so that the pathfinder always just gathers useless
+		// paths first.
+		for i in 0..6 {
+			// Finally, create a single channel with fee of 2 sat from node 1 to node 2 which allows
+			// for a larger payment.
+			let chan_features = ChannelFeatures::from_le_bytes(vec![]);
+			add_channel(&gossip_sync, &secp_ctx, &privkeys[7], &privkeys[2], chan_features, i + 42);
+
+			// Set the fee on channel 16 to 2 sats, max HTLC to 3M msat
+			let update_a = UnsignedChannelUpdate {
+				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+				short_channel_id: i + 42,
+				timestamp: 2,
+				message_flags: 1, // Only must_be_one
+				channel_flags: 0,
+				cltv_expiry_delta: (42 << 4) | 1,
+				htlc_minimum_msat: 0,
+				htlc_maximum_msat: 1_000_000,
+				fee_base_msat: 1_000,
+				fee_proportional_millionths: 0,
+				excess_data: Vec::new(),
+			};
+			update_channel(&gossip_sync, &secp_ctx, &privkeys[7], update_a);
+
+			// Enable channel 16 by providing an update in both directions
+			let update_b = UnsignedChannelUpdate {
+				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+				short_channel_id: i + 42,
+				timestamp: 2,
+				message_flags: 1, // Only must_be_one
+				channel_flags: 1,
+				cltv_expiry_delta: (42 << 4) | 1,
+				htlc_minimum_msat: 0,
+				htlc_maximum_msat: 10_000_000,
+				fee_base_msat: u32::MAX,
+				fee_proportional_millionths: 0,
+				excess_data: Vec::new(),
+			};
+			update_channel(&gossip_sync, &secp_ctx, &privkeys[2], update_b);
+		}
+
+		// Ensure that we can build a route for 3M msat across the three paths to node 2.
+		let config = UserConfig::default();
+		let mut payment_params = PaymentParameters::from_node_id(nodes[2], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
+		payment_params.max_channel_saturation_power_of_half = 0;
+		let route_params =
+			RouteParameters::from_payment_params_and_value(payment_params, 3_000_000);
+		let route = get_route(
+			&our_id,
+			&route_params,
+			&network_graph.read_only(),
+			None,
+			Arc::clone(&logger),
+			&scorer,
+			&Default::default(),
+			&random_seed_bytes,
+		)
+		.unwrap();
+		assert_eq!(route.paths.len(), 3);
+		for path in route.paths {
+			assert_eq!(path.hops.len(), 2);
+		}
+
+		// Finally, create a single channel with fee of 2 sat from node 1 to node 2 which allows
+		// for a larger payment.
+		let features_16 = ChannelFeatures::from_le_bytes(id_to_feature_flags(16));
+		add_channel(&gossip_sync, &secp_ctx, &privkeys[1], &privkeys[2], features_16, 16);
+
+		// Set the fee on channel 16 to 2 sats, max HTLC to 3M msat
+		let update_16_a = UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 16,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: (16 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 3_000_000,
+			fee_base_msat: 2_000,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new(),
+		};
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], update_16_a);
+
+		// Enable channel 16 by providing an update in both directions
+		let update_16_b = UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 16,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 1,
+			cltv_expiry_delta: (16 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 10_000_000,
+			fee_base_msat: u32::MAX,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new(),
+		};
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], update_16_b);
+
+		// Ensure that we now build a route for 3M msat across just the new path
+		let route = get_route(
+			&our_id,
+			&route_params,
+			&network_graph.read_only(),
+			None,
+			Arc::clone(&logger),
+			&scorer,
+			&Default::default(),
+			&random_seed_bytes,
+		)
+		.unwrap();
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.paths[0].hops.len(), 2);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 16);
 	}
 }
 
