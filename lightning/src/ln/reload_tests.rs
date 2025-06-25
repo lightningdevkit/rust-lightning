@@ -559,7 +559,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 			let raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 			nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &raa);
 			check_added_monitors(&nodes[1], 1);
-			expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+			expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 		}
 	} else {
 		send_payment(&nodes[0], &[&nodes[1]], 8000000);
@@ -712,82 +712,6 @@ fn test_data_loss_protect() {
 	do_test_data_loss_protect(true, false, false);
 	do_test_data_loss_protect(false, true, false);
 	do_test_data_loss_protect(false, false, false);
-}
-
-#[test]
-fn test_forwardable_regen() {
-	// Tests that if we reload a ChannelManager while forwards are pending we will regenerate the
-	// PendingHTLCsForwardable event automatically, ensuring we don't forget to forward/receive
-	// HTLCs.
-	// We test it for both payment receipt and payment forwarding.
-
-	let chanmon_cfgs = create_chanmon_cfgs(3);
-	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let persister;
-	let new_chain_monitor;
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let nodes_1_deserialized;
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
-	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
-
-	// First send a payment to nodes[1]
-	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
-	nodes[0].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
-	check_added_monitors!(nodes[0], 1);
-
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let payment_event = SendEvent::from_event(events.pop().unwrap());
-	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
-
-	// Next send a payment which is forwarded by nodes[1]
-	let (route_2, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[2], 200_000);
-	nodes[0].node.send_payment_with_route(route_2, payment_hash_2,
-		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
-	check_added_monitors!(nodes[0], 1);
-
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let payment_event = SendEvent::from_event(events.pop().unwrap());
-	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-
-	// Now restart nodes[1] and make sure it regenerates a single PendingHTLCsForwardable
-	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
-	nodes[2].node.peer_disconnected(nodes[1].node.get_our_node_id());
-
-	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
-	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
-	reload_node!(nodes[1], nodes[1].node.encode(), &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
-
-	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
-	// Note that nodes[1] and nodes[2] resend their channel_ready here since they haven't updated
-	// the commitment state.
-	let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
-	reconnect_args.send_channel_ready = (true, true);
-	reconnect_nodes(reconnect_args);
-
-	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-
-	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, 100_000);
-	check_added_monitors!(nodes[1], 1);
-
-	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let payment_event = SendEvent::from_event(events.pop().unwrap());
-	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
-	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false);
-	expect_pending_htlcs_forwardable!(nodes[2]);
-	expect_payment_claimable!(nodes[2], payment_hash_2, payment_secret_2, 200_000);
-
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
-	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_2);
 }
 
 fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_restart: bool) {
@@ -1031,12 +955,11 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 
-	// Store the `ChannelManager` before handling the `PendingHTLCsForwardable`/`HTLCIntercepted`
-	// events, expecting either event (and the HTLC itself) to be missing on reload even though its
-	// present when we serialized.
+	// Store the `ChannelManager` before handling the `HTLCIntercepted` events, expecting the event
+	// (and the HTLC itself) to be missing on reload even though its present when we serialized.
 	let node_encoded = nodes[1].node.encode();
 
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 
 	let mut intercept_id = None;
 	let mut expected_outbound_amount_msat = None;
@@ -1132,7 +1055,10 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	}
 
 	if !claim_htlc {
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
+		expect_and_process_pending_htlcs_and_htlc_handling_failed(
+			&nodes[1],
+			&[HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]
+		);
 	} else {
 		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, true);
 	}
@@ -1198,7 +1124,10 @@ fn removed_payment_no_manager_persistence() {
 	let node_encoded = nodes[1].node.encode();
 
 	nodes[2].node.fail_htlc_backwards(&payment_hash);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], [HTLCHandlingFailureType::Receive { payment_hash }]);
+	expect_and_process_pending_htlcs_and_htlc_handling_failed(
+		&nodes[2],
+		&[HTLCHandlingFailureType::Receive { payment_hash }]
+	);
 	check_added_monitors!(nodes[2], 1);
 	let events = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1230,7 +1159,10 @@ fn removed_payment_no_manager_persistence() {
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
+	expect_and_process_pending_htlcs_and_htlc_handling_failed(
+		&nodes[1],
+		&[HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]
+	);
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1343,7 +1275,7 @@ fn test_htlc_localremoved_persistence() {
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], &updates.commitment_signed, false);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash: mismatch_payment_hash }]);
 	check_added_monitors(&nodes[1], 1);
 

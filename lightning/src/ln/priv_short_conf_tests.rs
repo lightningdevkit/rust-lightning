@@ -87,7 +87,7 @@ fn test_priv_forwarding_rejection() {
 		SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false, true);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_id_2 }]
@@ -605,7 +605,7 @@ fn test_inbound_scid_privacy() {
 	assert_eq!(node_b_id, payment_event.node_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, true, true);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Forward {
@@ -701,14 +701,13 @@ fn test_scid_alias_returned() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_updates.update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], &as_updates.commitment_signed, false, true);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
-		nodes[1],
-		[HTLCHandlingFailureType::Forward {
-			node_id: Some(node_c_id),
-			channel_id: chan.0.channel_id
-		}]
-	);
+	expect_and_process_pending_htlcs(&nodes[1], true);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	let expected_failures = [HTLCHandlingFailureType::Forward {
+		node_id: Some(node_c_id),
+		channel_id: chan.0.channel_id,
+	}];
+	expect_pending_htlcs_forwardable_conditions(events, &expected_failures);
 	check_added_monitors!(nodes[1], 1);
 
 	let bs_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
@@ -739,7 +738,7 @@ fn test_scid_alias_returned() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_updates.update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], &as_updates.commitment_signed, false, true);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Forward {
@@ -971,13 +970,14 @@ fn test_0conf_channel_with_async_monitor() {
 		.channel_monitor_updated(bs_raa.channel_id, latest_update)
 		.unwrap();
 	check_added_monitors!(nodes[1], 0);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
 	let bs_send = SendEvent::from_node(&nodes[1]);
 	nodes[2].node.handle_update_add_htlc(node_b_id, &bs_send.msgs[0]);
 	commitment_signed_dance!(nodes[2], nodes[1], bs_send.commitment_msg, false);
-	expect_pending_htlcs_forwardable!(nodes[2]);
+	expect_and_process_pending_htlcs(&nodes[2], false);
 	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, 1_000_000);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 

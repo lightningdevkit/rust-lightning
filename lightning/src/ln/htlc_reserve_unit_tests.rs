@@ -343,13 +343,13 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors(&nodes[1], 1);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	let ref payment_event_11 = expect_forward!(nodes[1]);
 	nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event_11.msgs[0]);
 	commitment_signed_dance!(nodes[2], nodes[1], payment_event_11.commitment_msg, false);
 
-	expect_pending_htlcs_forwardable!(nodes[2]);
+	expect_and_process_pending_htlcs(&nodes[2], false);
 	expect_payment_claimable!(nodes[2], our_payment_hash_1, our_payment_secret_1, recv_value_1);
 
 	// flush the htlcs in the holding cell
@@ -357,7 +357,7 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &commitment_update_2.update_add_htlcs[0]);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &commitment_update_2.update_add_htlcs[1]);
 	commitment_signed_dance!(nodes[1], nodes[0], &commitment_update_2.commitment_signed, false);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	let ref payment_event_3 = expect_forward!(nodes[1]);
 	assert_eq!(payment_event_3.msgs.len(), 2);
@@ -365,7 +365,7 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 	nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event_3.msgs[1]);
 
 	commitment_signed_dance!(nodes[2], nodes[1], &payment_event_3.commitment_msg, false);
-	expect_pending_htlcs_forwardable!(nodes[2]);
+	expect_and_process_pending_htlcs(&nodes[2], false);
 
 	let events = nodes[2].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
@@ -553,7 +553,7 @@ pub fn channel_reserve_in_flight_removes() {
 	check_added_monitors(&nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_payment_claimable!(nodes[1], payment_hash_3, payment_secret_3, 100000);
 
 	// Note that as this RAA was generated before the delivery of the update_fulfill it shouldn't
@@ -603,7 +603,7 @@ pub fn channel_reserve_in_flight_removes() {
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_raa);
 	check_added_monitors(&nodes[0], 1);
 
-	expect_pending_htlcs_forwardable!(nodes[0]);
+	expect_and_process_pending_htlcs(&nodes[0], false);
 	expect_payment_claimable!(nodes[0], payment_hash_4, payment_secret_4, 10000);
 
 	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage_4);
@@ -675,9 +675,10 @@ pub fn holding_cell_htlc_counting() {
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 	// We have to forward pending HTLCs twice - once tries to forward the payment forward (and
 	// fails), the second will process the resulting failure and fail the HTLC backward.
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], true);
 	let fail = HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 };
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [fail]);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	expect_pending_htlcs_forwardable_conditions(events, &[fail]);
 	check_added_monitors(&nodes[1], 1);
 
 	let bs_fail_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
@@ -721,7 +722,7 @@ pub fn holding_cell_htlc_counting() {
 	nodes[2].node.handle_revoke_and_ack(node_b_id, &as_final_raa);
 	check_added_monitors(&nodes[2], 1);
 
-	expect_pending_htlcs_forwardable!(nodes[2]);
+	expect_and_process_pending_htlcs(&nodes[2], false);
 
 	let events = nodes[2].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), payments.len());
@@ -936,7 +937,7 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 		next_local_nonce: None,
 	};
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa_msg);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	if htlc_fails {
 		expect_htlc_handling_failed_destinations!(
@@ -1467,7 +1468,7 @@ pub fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increme
 		check_added_monitors(&nodes[1], 0);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_and_process_pending_htlcs(&nodes[1], false);
 		expect_payment_claimable!(nodes[1], our_payment_hash, our_payment_secret, 100000);
 	}
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
@@ -2063,7 +2064,7 @@ pub fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_me
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 	check_added_monitors(&nodes[1], 0);
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false, true);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::InvalidOnion]
@@ -2380,7 +2381,7 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 		// The HTLC actually fails here in `fn validate_commitment_signed` due to a fee spike buffer
 		// violation. It nonetheless passed all checks in `fn validate_update_add_htlc`.
 
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_and_process_pending_htlcs(&nodes[1], false);
 		expect_htlc_handling_failed_destinations!(
 			nodes[1].node.get_and_clear_pending_events(),
 			&[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_0_1 }]

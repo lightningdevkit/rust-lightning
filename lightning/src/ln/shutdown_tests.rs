@@ -567,7 +567,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	check_added_monitors!(nodes[1], 1);
 	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
 	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
@@ -1557,9 +1557,9 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 
 	if use_htlc {
 		nodes[0].node.fail_htlc_backwards(&payment_hash_opt.unwrap());
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
-			nodes[0],
-			[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_opt.unwrap() }]
+		expect_and_process_pending_htlcs_and_htlc_handling_failed(
+			&nodes[0],
+			&[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_opt.unwrap() }],
 		);
 	} else {
 		*chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap() *= 10;

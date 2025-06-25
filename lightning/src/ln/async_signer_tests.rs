@@ -956,7 +956,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[0], 1);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	check_payment_claimable(

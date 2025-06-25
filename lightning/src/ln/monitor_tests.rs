@@ -75,7 +75,7 @@ fn chanmon_fail_from_stale_commitment() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 1);
 
@@ -88,7 +88,7 @@ fn chanmon_fail_from_stale_commitment() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
+	expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
 	check_added_monitors!(nodes[1], 1);
 	let fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
@@ -864,7 +864,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, 10_000_000);
 
 	let (route_2, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 20_000_000);
@@ -876,7 +876,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 20_000_000);
 	nodes[1].node.claim_funds(payment_preimage_2);
 	get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -1182,8 +1182,8 @@ fn test_no_preimage_inbound_htlc_balances() {
 	let as_htlc_timeout_claim = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_htlc_timeout_claim.len(), 1);
 	check_spends!(as_htlc_timeout_claim[0], as_txn[0]);
-	expect_pending_htlcs_forwardable_conditions!(nodes[0],
-		[HTLCHandlingFailureType::Receive { payment_hash: to_a_failed_payment_hash }]);
+	expect_pending_htlcs_forwardable_conditions(nodes[0].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash: to_a_failed_payment_hash }]);
+	nodes[0].node.process_pending_htlc_forwards();
 
 	assert_eq!(as_pre_spend_claims,
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
@@ -1200,8 +1200,8 @@ fn test_no_preimage_inbound_htlc_balances() {
 	// The next few blocks for B look the same as for A, though for the opposite HTLC
 	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV - (ANTI_REORG_DELAY - 1));
-	expect_pending_htlcs_forwardable_conditions!(nodes[1],
-		[HTLCHandlingFailureType::Receive { payment_hash: to_b_failed_payment_hash }]);
+	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash: to_b_failed_payment_hash }]);
+	nodes[1].node.process_pending_htlc_forwards();
 	let bs_htlc_timeout_claim = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_htlc_timeout_claim.len(), 1);
 	check_spends!(bs_htlc_timeout_claim[0], as_txn[0]);
@@ -1377,7 +1377,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	check_added_monitors!(nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 6);
+	assert_eq!(events.len(), 5);
 	let mut failed_payments: HashSet<_> =
 		[timeout_payment_hash, dust_payment_hash, live_payment_hash, missing_htlc_payment_hash]
 		.iter().map(|a| *a).collect();
@@ -1396,8 +1396,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 		}
 	});
 	assert!(failed_payments.is_empty());
-	if let Event::PendingHTLCsForwardable { .. } = events[0] {} else { panic!(); }
-	match &events[1] {
+	match &events[0] {
 		Event::ChannelClosed { reason: ClosureReason::HTLCsTimedOut, .. } => {},
 		_ => panic!(),
 	}
@@ -1684,8 +1683,8 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	// `COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE` blocks, making us consider all the HTLCs
 	// pinnable claims, which the remainder of the test assumes.
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV - COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(&nodes[0],
-		[HTLCHandlingFailureType::Receive { payment_hash: failed_payment_hash }]);
+	expect_pending_htlcs_forwardable_conditions(nodes[0].node.get_and_clear_pending_events(),
+		&[HTLCHandlingFailureType::Receive { payment_hash: failed_payment_hash }]);
 	// A will generate justice tx from B's revoked commitment/HTLC tx
 	mine_transaction(&nodes[0], &revoked_local_txn[0]);
 	check_closed_broadcast!(nodes[0], true);
@@ -2506,18 +2505,16 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 
 	check_closed_broadcast(&nodes[0], 1, true);
 	let a_events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(a_events.len(), if have_htlcs { 3 } else { 1 });
+	assert_eq!(a_events.len(), if have_htlcs { 2 } else { 1 });
 	if have_htlcs {
-		assert!(a_events.iter().any(|ev| matches!(ev, Event::PendingHTLCsForwardable { .. })));
 		assert!(a_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
 	}
 	assert!(a_events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
 
 	check_closed_broadcast(&nodes[1], 1, true);
 	let b_events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(b_events.len(), if have_htlcs { 3 } else { 1 });
+	assert_eq!(b_events.len(), if have_htlcs { 2 } else { 1 });
 	if have_htlcs {
-		assert!(b_events.iter().any(|ev| matches!(ev, Event::PendingHTLCsForwardable { .. })));
 		assert!(b_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
 	}
 	assert!(b_events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
