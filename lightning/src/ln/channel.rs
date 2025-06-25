@@ -8379,6 +8379,7 @@ where
 							channel_id: self.context.channel_id(),
 							htlc_id: htlc.htlc_id,
 							payment_preimage: payment_preimage.clone(),
+							attribution_data: None,
 						});
 					},
 				}
