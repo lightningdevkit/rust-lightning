@@ -2011,23 +2011,19 @@ fn test_monitor_update_on_pending_forwards() {
 	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false, true);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 3);
-	if let Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } = events[1] {
+	assert_eq!(events.len(), 2);
+	if let Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } = events[0] {
 		assert_eq!(payment_hash, payment_hash_1);
 		assert!(payment_failed_permanently);
 	} else {
 		panic!("Unexpected event!");
 	}
-	match events[2] {
+	match events[1] {
 		Event::PaymentFailed { payment_hash, .. } => {
 			assert_eq!(payment_hash, Some(payment_hash_1));
 		},
 		_ => panic!("Unexpected event"),
 	}
-	match events[0] {
-		Event::PendingHTLCsForwardable { .. } => {},
-		_ => panic!("Unexpected event"),
-	};
 	nodes[0].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[0], payment_hash_2, payment_secret_2, 1000000);
 
@@ -2810,12 +2806,8 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PendingHTLCsForwardable { .. } => {},
-		_ => panic!("Unexpected event"),
-	};
-	match events[1] {
 		Event::PaymentPathSuccessful { .. } => {},
 		_ => panic!("Unexpected event"),
 	};

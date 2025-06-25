@@ -2435,15 +2435,11 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 		// commitment transaction for nodes[0] until process_pending_htlc_forwards().
 		check_added_monitors(&nodes[1], 1);
 		let events = nodes[1].node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 2);
+		assert_eq!(events.len(), 1);
 		match events[0] {
 			Event::HTLCHandlingFailed { .. } => {},
 			_ => panic!("Unexpected event"),
 		}
-		match events[1] {
-			Event::PendingHTLCsForwardable { .. } => {},
-			_ => panic!("Unexpected event"),
-		};
 		// Deliberately don't process the pending fail-back so they all fail back at once after
 		// block connection just like the !deliver_bs_raa case
 	}
@@ -2456,7 +2452,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), if deliver_bs_raa { 3 + nodes.len() - 1 } else { 4 + nodes.len() });
+	assert_eq!(events.len(), if deliver_bs_raa { 3 + nodes.len() - 1 } else { 3 + nodes.len() });
 	assert!(events.iter().any(|ev| matches!(
 		ev,
 		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. }
@@ -3176,21 +3172,13 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 
 	let events_1 = nodes[1].node.get_and_clear_pending_events();
 	if messages_delivered == 0 {
-		assert_eq!(events_1.len(), 2);
+		assert_eq!(events_1.len(), 1);
 		match events_1[0] {
 			Event::ChannelReady { .. } => {},
 			_ => panic!("Unexpected event"),
 		};
-		match events_1[1] {
-			Event::PendingHTLCsForwardable { .. } => {},
-			_ => panic!("Unexpected event"),
-		};
 	} else {
-		assert_eq!(events_1.len(), 1);
-		match events_1[0] {
-			Event::PendingHTLCsForwardable { .. } => {},
-			_ => panic!("Unexpected event"),
-		};
+		assert_eq!(events_1.len(), 0);
 	}
 
 	nodes[0].node.peer_disconnected(node_b_id);
@@ -4879,7 +4867,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	}
 	let events = nodes[2].node.get_and_clear_pending_events();
 	let close_event = if deliver_last_raa {
-		assert_eq!(events.len(), 2 + 6);
+		assert_eq!(events.len(), 2 + 5);
 		events.last().clone().unwrap()
 	} else {
 		assert_eq!(events.len(), 1);
@@ -4893,7 +4881,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	connect_blocks(&nodes[2], ANTI_REORG_DELAY - 1);
 	check_closed_broadcast!(nodes[2], true);
 	if deliver_last_raa {
-		expect_pending_htlcs_forwardable_from_events!(nodes[2], events[1..2], true);
+		nodes[2].node.process_pending_htlc_forwards();
 
 		let expected_destinations: Vec<HTLCHandlingFailureType> =
 			repeat(HTLCHandlingFailureType::Forward {
@@ -5797,12 +5785,6 @@ pub fn test_free_and_fail_holding_cell_htlcs() {
 	check_added_monitors(&nodes[1], 1);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::PendingHTLCsForwardable { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
 	nodes[1].node.process_pending_htlc_forwards();
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -5917,15 +5899,9 @@ pub fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	check_added_monitors(&nodes[2], 1);
 	assert!(nodes[2].node.get_and_clear_pending_msg_events().is_empty());
 
-	// nodes[1]'s ChannelManager will now signal that we have HTLC forwards to process.
+	// Call ChannelManager's process_pending_htlc_forwards
 	let process_htlc_forwards_event = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(process_htlc_forwards_event.len(), 2);
-	match &process_htlc_forwards_event[1] {
-		&Event::PendingHTLCsForwardable { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-
-	// In response, we call ChannelManager's process_pending_htlc_forwards
+	assert_eq!(process_htlc_forwards_event.len(), 1);
 	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors(&nodes[1], 1);
 
@@ -6938,7 +6914,7 @@ pub fn test_bump_penalty_txn_on_revoked_htlcs() {
 	connect_block(&nodes[0], &block_129);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	expect_pending_htlcs_forwardable_conditions(
-		events[0..2].to_vec(),
+		events[0..1].to_vec(),
 		&[HTLCHandlingFailureType::Receive { payment_hash: failed_payment_hash }],
 	);
 	match events.last().unwrap() {

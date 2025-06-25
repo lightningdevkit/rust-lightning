@@ -417,8 +417,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 
 	// The payment from nodes[0] should now be seen as failed/successful.
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 3);
-	assert!(events.iter().find(|e| matches!(e, Event::PendingHTLCsForwardable { .. })).is_some());
+	assert_eq!(events.len(), 2);
 	if fail_htlc {
 		assert!(events.iter().find(|e| matches!(e, Event::PaymentFailed { .. })).is_some());
 		assert!(events.iter().find(|e| matches!(e, Event::PaymentPathFailed { .. })).is_some());

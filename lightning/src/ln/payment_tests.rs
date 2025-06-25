@@ -170,11 +170,6 @@ fn mpp_retry() {
 	nodes[0].node.handle_update_fail_htlc(node_c_id, &htlc_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[2], htlc_updates.commitment_signed, false);
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	match events[1] {
-		Event::PendingHTLCsForwardable { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-	events.remove(1);
 
 	let conditions = PaymentFailedConditions::new().mpp_parts_remain();
 	expect_payment_failed_conditions_event(events, hash, false, conditions);
@@ -293,11 +288,6 @@ fn mpp_retry_overpay() {
 	nodes[0].node.handle_update_fail_htlc(node_c_id, &htlc_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[2], htlc_updates.commitment_signed, false);
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	match events[1] {
-		Event::PendingHTLCsForwardable { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-	events.remove(1);
 	let fail_conditions = PaymentFailedConditions::new().mpp_parts_remain();
 	expect_payment_failed_conditions_event(events, hash, false, fail_conditions);
 
@@ -1510,7 +1500,6 @@ fn failed_probe_yields_event() {
 	// node[0] <- update_fail_htlcs -- node[1]
 	check_added_monitors!(nodes[1], 1);
 	let updates = get_htlc_update_msgs!(nodes[1], node_a_id);
-	// Skip the PendingHTLCsForwardable event
 	let _events = nodes[1].node.get_and_clear_pending_events();
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
 	check_added_monitors!(nodes[0], 0);
@@ -2543,11 +2532,13 @@ fn do_automatic_retries(test: AutoRetry) {
 			commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 			expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 			nodes[1].node.process_pending_htlc_forwards();
-			expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1],
+			expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(
+				nodes[1],
 				[HTLCHandlingFailureType::Forward {
 					node_id: Some(node_c_id),
 					channel_id: $failing_channel_id,
-				}]);
+				}]
+			);
 			nodes[1].node.process_pending_htlc_forwards();
 			let update_1 = get_htlc_update_msgs!(nodes[1], node_a_id);
 			check_added_monitors!(&nodes[1], 1);
@@ -2556,22 +2547,21 @@ fn do_automatic_retries(test: AutoRetry) {
 			nodes[0].node.handle_update_fail_htlc(node_b_id, &fail_msg);
 			commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
-			// Ensure the attempt fails and a new PendingHTLCsForwardable event is generated for the retry
+			// Ensure the attempt fails
 			let mut events = nodes[0].node.get_and_clear_pending_events();
-			assert_eq!(events.len(), 2);
+			if $expect_pending_htlcs_forwardable {
+				assert_eq!(events.len(), 1);
+			} else {
+				assert_eq!(events.len(), 2);
+			}
 			match events[0] {
-				Event::PaymentPathFailed { payment_hash, payment_failed_permanently, ..  } => {
+				Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } => {
 					assert_eq!(hash, payment_hash);
 					assert_eq!(payment_failed_permanently, false);
 				},
 				_ => panic!("Unexpected event"),
 			}
-			if $expect_pending_htlcs_forwardable {
-				match events[1] {
-					Event::PendingHTLCsForwardable { .. } => {},
-					_ => panic!("Unexpected event"),
-				}
-			} else {
+			if !$expect_pending_htlcs_forwardable {
 				match events[1] {
 					Event::PaymentFailed { payment_hash, .. } => {
 						assert_eq!(Some(hash), payment_hash);
@@ -2579,7 +2569,7 @@ fn do_automatic_retries(test: AutoRetry) {
 					_ => panic!("Unexpected event"),
 				}
 			}
-		}
+		};
 	}
 
 	if test == AutoRetry::Success {
@@ -2702,8 +2692,7 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mon_ser = get_monitor!(nodes[0], channel_id_1).encode();
 		reload_node!(nodes[0], node_encoded, &[&mon_ser], persister, chain_monitor, node_a_reload);
 
-		let mut events = nodes[0].node.get_and_clear_pending_events();
-		expect_pending_htlcs_forwardable_from_events!(nodes[0], events, true);
+		nodes[0].node.process_pending_htlc_forwards();
 		// Make sure we don't retry again.
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 0);
@@ -3489,7 +3478,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	// Because we now retry payments as a batch, we simply return a single-path route in the
 	// second, batched, request, have that fail, ensure the payment was abandoned.
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 3);
+	assert_eq!(events.len(), 2);
 	match events[0] {
 		Event::PaymentPathFailed {
 			payment_hash: ev_payment_hash,
@@ -3502,10 +3491,6 @@ fn no_extra_retries_on_back_to_back_fail() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PendingHTLCsForwardable { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-	match events[2] {
 		Event::PaymentPathFailed {
 			payment_hash: ev_payment_hash,
 			payment_failed_permanently,
@@ -3729,7 +3714,7 @@ fn test_simple_partial_retry() {
 	}
 
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentPathFailed {
 			payment_hash: ev_payment_hash,
@@ -3739,10 +3724,6 @@ fn test_simple_partial_retry() {
 			assert_eq!(payment_hash, ev_payment_hash);
 			assert_eq!(payment_failed_permanently, false);
 		},
-		_ => panic!("Unexpected event"),
-	}
-	match events[1] {
-		Event::PendingHTLCsForwardable { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -3899,9 +3880,7 @@ fn test_threaded_payment_retries() {
 			let _ = &node_ref;
 			let node_a = unsafe { &*node_ref.0 };
 			while Instant::now() < end_time {
-				node_a.node.get_and_clear_pending_events(); // wipe the PendingHTLCsForwardable
-				// Ignore if we have any pending events, just always pretend we just got a
-				// PendingHTLCsForwardable
+				node_a.node.get_and_clear_pending_events();
 				node_a.node.process_pending_htlc_forwards();
 			}
 		}
@@ -3965,7 +3944,7 @@ fn test_threaded_payment_retries() {
 		}
 
 		// Make sure we have some events to handle when we go around...
-		nodes[0].node.get_and_clear_pending_events(); // wipe the PendingHTLCsForwardable
+		nodes[0].node.get_and_clear_pending_events();
 		nodes[0].node.process_pending_htlc_forwards();
 		send_msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		check_added_monitors!(nodes[0], 2);
@@ -4413,11 +4392,6 @@ fn test_retry_custom_tlvs() {
 	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false);
 
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	match events[1] {
-		Event::PendingHTLCsForwardable { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-	events.remove(1);
 	let conditions = PaymentFailedConditions::new().mpp_parts_remain();
 	expect_payment_failed_conditions_event(events, hash, false, conditions);
 
@@ -4710,12 +4684,8 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	commitment_signed_dance!(nodes[0], nodes[2], cs_fail.commitment_signed, false, true);
 
 	let payment_fail_retryable_evs = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(payment_fail_retryable_evs.len(), 2);
+	assert_eq!(payment_fail_retryable_evs.len(), 1);
 	if let Event::PaymentPathFailed { .. } = payment_fail_retryable_evs[0] {
-	} else {
-		panic!();
-	}
-	if let Event::PendingHTLCsForwardable { .. } = payment_fail_retryable_evs[1] {
 	} else {
 		panic!();
 	}
