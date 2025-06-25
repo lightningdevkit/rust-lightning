@@ -6437,6 +6437,7 @@ macro_rules! promote_splice_funding {
 		core::mem::swap(&mut $self.funding, $funding);
 		$self.interactive_tx_signing_session = None;
 		$self.pending_splice = None;
+		$self.context.announcement_sigs = None;
 		$self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
 
 		// The swap above places the previous `FundingScope` into `pending_funding`.
