@@ -1396,7 +1396,7 @@ impl_writeable_tlv_based!(RouteHintHop, {
 #[repr(align(32))] // Force the size to 32 bytes
 struct RouteGraphNode {
 	node_counter: u32,
-	score: u64,
+	score: u128,
 	// The maximum value a yet-to-be-constructed payment path might flow through this node.
 	// This value is upper-bounded by us by:
 	// - how much is needed for a path being constructed
@@ -2122,7 +2122,16 @@ impl<'a> PaymentPath<'a> {
 		return result;
 	}
 
-	fn get_cost_msat(&self) -> u64 {
+	fn get_cost(&self) -> u128 {
+		let fee_cost = self.get_fee_cost_msat();
+		if fee_cost == u64::MAX {
+			u64::MAX.into()
+		} else {
+			((fee_cost as u128) << 64) / self.get_value_msat() as u128
+		}
+	}
+
+	fn get_fee_cost_msat(&self) -> u64 {
 		self.get_total_fee_paid_msat().saturating_add(self.get_path_penalty_msat())
 	}
 
@@ -2991,15 +3000,22 @@ where L::Target: Logger {
 								// but it may require additional tracking - we don't want to double-count
 								// the fees included in $next_hops_path_htlc_minimum_msat, but also
 								// can't use something that may decrease on future hops.
-								let old_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat)
+								let old_fee_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat)
 									.saturating_add(old_entry.path_penalty_msat);
-								let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
+								let new_fee_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
 									.saturating_add(path_penalty_msat);
-								let should_replace =
-									new_cost < old_cost
-									|| (new_cost == old_cost && old_entry.value_contribution_msat < value_contribution_msat);
+								let old_cost = if old_fee_cost != u64::MAX && old_entry.value_contribution_msat != 0 {
+									((old_fee_cost as u128) << 64) / old_entry.value_contribution_msat as u128
+								} else {
+									u128::MAX
+								};
+								let new_cost = if new_fee_cost != u64::MAX {
+									((new_fee_cost as u128) << 64) / value_contribution_msat as u128
+								} else {
+									u128::MAX
+								};
 
-								if !old_entry.was_processed && should_replace {
+								if !old_entry.was_processed && new_cost < old_cost {
 									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 									{
 										assert!(!old_entry.best_path_from_hop_selected);
@@ -3008,7 +3024,7 @@ where L::Target: Logger {
 
 									let new_graph_node = RouteGraphNode {
 										node_counter: src_node_counter,
-										score: cmp::max(total_fee_msat, path_htlc_minimum_msat).saturating_add(path_penalty_msat),
+										score: new_cost,
 										total_cltv_delta: hop_total_cltv_delta as u16,
 										value_contribution_msat,
 										path_length_to_node,
@@ -3558,10 +3574,7 @@ where L::Target: Logger {
 	// First, sort by the cost-per-value of the path, dropping the paths that cost the most for
 	// the value they contribute towards the payment amount.
 	// We sort in descending order as we will remove from the front in `retain`, next.
-	selected_route.sort_unstable_by(|a, b|
-		(((b.get_cost_msat() as u128) << 64) / (b.get_value_msat() as u128))
-			.cmp(&(((a.get_cost_msat() as u128) << 64) / (a.get_value_msat() as u128)))
-	);
+	selected_route.sort_unstable_by(|a, b| b.get_cost().cmp(&a.get_cost()));
 
 	// We should make sure that at least 1 path left.
 	let mut paths_left = selected_route.len();
@@ -3587,7 +3600,7 @@ where L::Target: Logger {
 		selected_route.sort_unstable_by(|a, b| {
 			let a_f = a.hops.iter().map(|hop| hop.0.candidate.fees().proportional_millionths as u64).sum::<u64>();
 			let b_f = b.hops.iter().map(|hop| hop.0.candidate.fees().proportional_millionths as u64).sum::<u64>();
-			a_f.cmp(&b_f).then_with(|| b.get_cost_msat().cmp(&a.get_cost_msat()))
+			a_f.cmp(&b_f).then_with(|| b.get_fee_cost_msat().cmp(&a.get_fee_cost_msat()))
 		});
 		let expensive_payment_path = selected_route.first_mut().unwrap();
 
