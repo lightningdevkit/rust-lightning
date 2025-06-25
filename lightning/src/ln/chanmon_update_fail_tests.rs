@@ -2890,8 +2890,12 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		as_raa = Some(get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id));
 	}
 
-	let fulfill_msg =
-		msgs::UpdateFulfillHTLC { channel_id: chan_id_2, htlc_id: 0, payment_preimage };
+	let fulfill_msg = msgs::UpdateFulfillHTLC {
+		channel_id: chan_id_2,
+		htlc_id: 0,
+		payment_preimage,
+		attribution_data: None,
+	};
 	if second_fails {
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
@@ -2907,8 +2911,14 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 
 		let cs_updates = get_htlc_update_msgs!(nodes[2], node_b_id);
 		assert_eq!(cs_updates.update_fulfill_htlcs.len(), 1);
-		// Check that the message we're about to deliver matches the one generated:
-		assert_eq!(fulfill_msg, cs_updates.update_fulfill_htlcs[0]);
+
+		// Check that the message we're about to deliver matches the one generated. Ignore attribution data.
+		assert_eq!(fulfill_msg.channel_id, cs_updates.update_fulfill_htlcs[0].channel_id);
+		assert_eq!(fulfill_msg.htlc_id, cs_updates.update_fulfill_htlcs[0].htlc_id);
+		assert_eq!(
+			fulfill_msg.payment_preimage,
+			cs_updates.update_fulfill_htlcs[0].payment_preimage
+		);
 	}
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &fulfill_msg);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
