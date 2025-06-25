@@ -5892,7 +5892,7 @@ where
 	/// counterparty's signature(s) the funding transaction will automatically be broadcast via the
 	/// [`BroadcasterInterface`] provided when this `ChannelManager` was constructed.
 	///
-	/// SIGHASH_ALL MUST be used for all signatures when providing signatures.
+	/// `SIGHASH_ALL` MUST be used for all signatures when providing signatures.
 	///
 	/// <div class="warning">
 	/// WARNING: LDK makes no attempt to prevent the counterparty from using non-standard inputs which
@@ -7726,7 +7726,8 @@ where
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, completion_action: ComplFunc,

@@ -1582,23 +1582,29 @@ pub enum Event {
 		/// onion messages.
 		peer_node_id: PublicKey,
 	},
-	/// Indicates that a funding transaction constructed via interactive transaction construction for a
-	/// channel is ready to be signed by the client. This event will only be triggered
+	/// Indicates that a funding transaction constructed via interactive transaction construction for
+	/// a new channel or splice is ready to be signed by the client. This event will only be triggered
 	/// if at least one input was contributed by the holder and needs to be signed.
 	///
-	/// The transaction contains all inputs provided by both parties  along with the channel's funding
+	/// The transaction contains all inputs provided by both parties along with the channel's funding
 	/// output and a change output if applicable.
 	///
 	/// No part of the transaction should be changed before signing as the content of the transaction
 	/// has already been negotiated with the counterparty.
 	///
-	/// Each signature MUST use the SIGHASH_ALL flag to avoid invalidation of the initial commitment and
-	/// hence possible loss of funds.
+	/// Each signature MUST use the `SIGHASH_ALL` flag to avoid invalidation of the initial commitment
+	/// and hence possible loss of funds.
 	///
 	/// After signing, call [`ChannelManager::funding_transaction_signed`] with the (partially) signed
 	/// funding transaction.
 	///
 	/// Generated in [`ChannelManager`] message handling.
+	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts as the new channel
+	/// or spliced channel associated with the constructed funding transaction is not persisted at
+	/// this point.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
@@ -1613,17 +1619,7 @@ pub enum Event {
 		///
 		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
 		counterparty_node_id: PublicKey,
-		// TODO(dual_funding): Enable links when methods are implemented
-		/// The `user_channel_id` value passed in to `ChannelManager::create_dual_funded_channel` for outbound
-		/// channels, or to [`ChannelManager::accept_inbound_channel`] or `ChannelManager::accept_inbound_channel_with_contribution`
-		/// for inbound channels if [`UserConfig::manually_accept_inbound_channels`] config flag is set to true.
-		/// Otherwise `user_channel_id` will be randomized for an inbound channel.
-		/// This may be zero for objects serialized with LDK versions prior to 0.0.113.
-		///
-		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
-		// [`ChannelManager::create_dual_funded_channel`]: crate::ln::channelmanager::ChannelManager::create_dual_funded_channel
-		// [`ChannelManager::accept_inbound_channel_with_contribution`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_with_contribution
+		/// The `user_channel_id` value for the channel.
 		user_channel_id: u128,
 		/// The unsigned transaction to be signed and passed back to
 		/// [`ChannelManager::funding_transaction_signed`].

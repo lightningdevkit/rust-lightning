@@ -409,8 +409,8 @@ impl InteractiveTxSigningSession {
 		self.unsigned_tx.add_local_witnesses(witnesses.clone());
 		self.holder_tx_signatures = Some(TxSignatures {
 			channel_id,
+			witnesses,
 			tx_hash: self.unsigned_tx.compute_txid(),
-			witnesses: witnesses.into_iter().collect(),
 			shared_input_signature: None,
 		});
 
