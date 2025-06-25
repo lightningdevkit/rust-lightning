@@ -1393,9 +1393,8 @@ impl_writeable_tlv_based!(RouteHintHop, {
 });
 
 #[derive(Eq, PartialEq)]
-#[repr(align(64))] // Force the size to 64 bytes
+#[repr(align(32))] // Force the size to 32 bytes
 struct RouteGraphNode {
-	node_id: NodeId,
 	node_counter: u32,
 	score: u64,
 	// The maximum value a yet-to-be-constructed payment path might flow through this node.
@@ -1426,9 +1425,8 @@ impl cmp::PartialOrd for RouteGraphNode {
 }
 
 // While RouteGraphNode can be laid out with fewer bytes, performance appears to be improved
-// substantially when it is laid out at exactly 64 bytes.
-const _GRAPH_NODE_SMALL: usize = 64 - core::mem::size_of::<RouteGraphNode>();
-const _GRAPH_NODE_FIXED_SIZE: usize = core::mem::size_of::<RouteGraphNode>() - 64;
+// substantially when it is laid out at exactly 32 bytes.
+const _GRAPH_NODE_32: () = assert!(core::mem::size_of::<RouteGraphNode>() == 32);
 
 /// A [`CandidateRouteHop::FirstHop`] entry.
 #[derive(Clone, Debug)]
@@ -3004,7 +3002,6 @@ where L::Target: Logger {
 									}
 
 									let new_graph_node = RouteGraphNode {
-										node_id: src_node_id,
 										node_counter: src_node_counter,
 										score: cmp::max(total_fee_msat, path_htlc_minimum_msat).saturating_add(path_penalty_msat),
 										total_cltv_delta: hop_total_cltv_delta,
@@ -3082,7 +3079,7 @@ where L::Target: Logger {
 	// This data can later be helpful to optimize routing (pay lower fees).
 	#[rustfmt::skip]
 	macro_rules! add_entries_to_cheapest_to_target_node {
-		( $node: expr, $node_counter: expr, $node_id: expr, $next_hops_value_contribution: expr,
+		( $node_counter: expr, $node_id: expr, $next_hops_value_contribution: expr,
 		  $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => {
 			let fee_to_target_msat;
 			let next_hops_path_htlc_minimum_msat;
@@ -3138,7 +3135,7 @@ where L::Target: Logger {
 					}
 				}
 
-				if let Some(node) = $node {
+				if let Some(node) = network_nodes.get(&$node_id) {
 					let features = if let Some(node_info) = node.announcement_info.as_ref() {
 						&node_info.features()
 					} else {
@@ -3265,7 +3262,7 @@ where L::Target: Logger {
 				entry.value_contribution_msat = path_value_msat;
 			}
 			add_entries_to_cheapest_to_target_node!(
-				network_nodes.get(&payee), payee_node_counter, payee, path_value_msat, 0, 0
+				payee_node_counter, payee, path_value_msat, 0, 0
 			);
 		}
 
@@ -3340,11 +3337,11 @@ where L::Target: Logger {
 		// Both these cases (and other cases except reaching recommended_value_msat) mean that
 		// paths_collection will be stopped because found_new_path==false.
 		// This is not necessarily a routing failure.
-		'path_construction: while let Some(RouteGraphNode { node_id, node_counter, total_cltv_delta, mut value_contribution_msat, path_length_to_node, .. }) = targets.pop() {
+		'path_construction: while let Some(RouteGraphNode { node_counter, total_cltv_delta, mut value_contribution_msat, path_length_to_node, .. }) = targets.pop() {
 
 			// Since we're going payee-to-payer, hitting our node as a target means we should stop
 			// traversing the graph and arrange the path out of what we found.
-			if node_id == our_node_id {
+			if node_counter == payer_node_counter {
 				let mut new_entry = dist[payer_node_counter as usize].take().unwrap();
 				let mut ordered_hops: Vec<(PathBuildingHop, NodeFeatures)> = vec!((new_entry.clone(), default_node_features.clone()));
 
@@ -3468,13 +3465,20 @@ where L::Target: Logger {
 			// If we found a path back to the payee, we shouldn't try to process it again. This is
 			// the equivalent of the `elem.was_processed` check in
 			// add_entries_to_cheapest_to_target_node!() (see comment there for more info).
-			if node_id == maybe_dummy_payee_node_id { continue 'path_construction; }
+			if node_counter == payee_node_counter { continue 'path_construction; }
+
+			let node_id = if let Some(entry) = &dist[node_counter as usize] {
+				entry.candidate.source()
+			} else {
+				debug_assert!(false, "Best nodes in the heap should have entries in dist");
+				continue 'path_construction;
+			};
 
 			// Otherwise, since the current target node is not us,
 			// keep "unrolling" the payment graph from payee to payer by
 			// finding a way to reach the current target from the payer side.
 			add_entries_to_cheapest_to_target_node!(
-				network_nodes.get(&node_id), node_counter, node_id,
+				node_counter, node_id,
 				value_contribution_msat,
 				total_cltv_delta, path_length_to_node
 			);
