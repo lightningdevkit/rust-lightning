@@ -7224,9 +7224,9 @@ pub fn test_bump_txn_sanitize_tracking_maps() {
 
 	// Broadcast set of revoked txn on A
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + 2 - CHAN_CONFIRM_DEPTH);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(
-		nodes[0],
-		[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_2 }]
+	expect_pending_htlcs_forwardable_conditions(
+		nodes[0].node.get_and_clear_pending_events(),
+		&[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_2 }],
 	);
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
 
@@ -9516,13 +9516,13 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		// Now we go fail back the first HTLC from the user end.
 		nodes[1].node.fail_htlc_backwards(&our_payment_hash);
 
-		let expected_destinations = vec![
+		let expected_destinations = &[
 			HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash },
 			HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash },
 		];
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(
-			nodes[1],
-			expected_destinations
+		expect_pending_htlcs_forwardable_conditions(
+			nodes[1].node.get_and_clear_pending_events(),
+			expected_destinations,
 		);
 		nodes[1].node.process_pending_htlc_forwards();
 
@@ -9554,9 +9554,9 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		}
 	} else {
 		// Let the second HTLC fail and claim the first
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(
-			nodes[1],
-			[HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]
+		expect_pending_htlcs_forwardable_conditions(
+			nodes[1].node.get_and_clear_pending_events(),
+			&[HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }],
 		);
 		nodes[1].node.process_pending_htlc_forwards();
 
@@ -9687,7 +9687,10 @@ pub fn test_inconsistent_mpp_params() {
 	expect_pending_htlcs_forwardable_ignore!(nodes[3]);
 	nodes[3].node.process_pending_htlc_forwards();
 	let fail_type = HTLCHandlingFailureType::Receive { payment_hash: hash };
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[3], [fail_type]);
+	expect_pending_htlcs_forwardable_conditions(
+		nodes[3].node.get_and_clear_pending_events(),
+		&[fail_type],
+	);
 	nodes[3].node.process_pending_htlc_forwards();
 
 	check_added_monitors(&nodes[3], 1);
