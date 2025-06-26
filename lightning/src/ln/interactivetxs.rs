@@ -344,13 +344,9 @@ impl InteractiveTxSigningSession {
 		&self.holder_tx_signatures
 	}
 
-	pub fn received_commitment_signed(&mut self) -> Option<TxSignatures> {
+	pub fn received_commitment_signed(&mut self) -> bool {
 		self.has_received_commitment_signed = true;
-		if self.holder_sends_tx_signatures_first {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		}
+		self.holder_sends_tx_signatures_first && self.holder_tx_signatures.is_some()
 	}
 
 	/// Handles a `tx_signatures` message received from the counterparty.
