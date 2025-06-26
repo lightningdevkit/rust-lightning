@@ -48,7 +48,7 @@ fn rand_batch_delay_millis() -> u16 {
 // log_normal_data <- round(rlnorm(n, meanlog = meanlog, sdlog = sdlog))
 // cat(log_normal_data, file = "log_normal_data.txt", sep = ", ")
 // ```
-const FWD_DELAYS_MILLIS: [u16; 10000] = [
+static FWD_DELAYS_MILLIS: [u16; 10000] = [
 	38, 45, 109, 52, 53, 118, 63, 27, 35, 40, 92, 60, 61, 53, 38, 122, 64, 19, 71, 39, 29, 45, 30,
 	35, 37, 22, 76, 54, 28, 94, 62, 43, 78, 78, 75, 71, 66, 48, 43, 41, 35, 45, 27, 148, 91, 29,
 	41, 40, 74, 48, 57, 49, 49, 99, 45, 107, 23, 67, 53, 56, 60, 39, 42, 30, 29, 58, 63, 51, 79,
