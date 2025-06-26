@@ -2429,17 +2429,6 @@ impl SendEvent {
 }
 
 #[macro_export]
-/// Don't use this, use the identically-named function instead.
-macro_rules! expect_pending_htlcs_forwardable_conditions {
-	($node: expr, $expected_failures: expr) => {
-		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions(
-			$node.node.get_and_clear_pending_events(),
-			&$expected_failures,
-		);
-	};
-}
-
-#[macro_export]
 macro_rules! expect_htlc_handling_failed_destinations {
 	($events: expr, $expected_failures: expr) => {{
 		let mut num_expected_failures = $expected_failures.len();
