@@ -1223,8 +1223,8 @@ fn test_no_preimage_inbound_htlc_balances() {
 	let as_htlc_timeout_claim = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_htlc_timeout_claim.len(), 1);
 	check_spends!(as_htlc_timeout_claim[0], as_txn[0]);
-	expect_pending_htlcs_forwardable_conditions!(nodes[0],
-		[HTLCHandlingFailureType::Receive { payment_hash: to_a_failed_payment_hash }]);
+	expect_pending_htlcs_forwardable_conditions(nodes[0].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash: to_a_failed_payment_hash }]);
+	nodes[0].node.process_pending_htlc_forwards();
 
 	assert_eq!(as_pre_spend_claims,
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
@@ -1241,8 +1241,8 @@ fn test_no_preimage_inbound_htlc_balances() {
 	// The next few blocks for B look the same as for A, though for the opposite HTLC
 	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV - (ANTI_REORG_DELAY - 1));
-	expect_pending_htlcs_forwardable_conditions!(nodes[1],
-		[HTLCHandlingFailureType::Receive { payment_hash: to_b_failed_payment_hash }]);
+	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash: to_b_failed_payment_hash }]);
+	nodes[1].node.process_pending_htlc_forwards();
 	let bs_htlc_timeout_claim = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_htlc_timeout_claim.len(), 1);
 	check_spends!(bs_htlc_timeout_claim[0], as_txn[0]);
