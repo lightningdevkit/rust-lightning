@@ -1556,17 +1556,23 @@ fn route_blinding_spec_test_vector() {
 	let blinding_override = PublicKey::from_secret_key(&secp_ctx, &dave_eve_session_priv);
 	assert_eq!(blinding_override, pubkey_from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"));
 	// Can't use the public API here as the encrypted payloads contain unknown TLVs.
-	let path = [(dave_node_id, WithoutLength(&dave_unblinded_tlvs)), (eve_node_id, WithoutLength(&eve_unblinded_tlvs))];
+	let path = [
+		((dave_node_id, None), WithoutLength(&dave_unblinded_tlvs)),
+		((eve_node_id, None), WithoutLength(&eve_unblinded_tlvs)),
+	];
 	let mut dave_eve_blinded_hops = blinded_path::utils::construct_blinded_hops(
-		&secp_ctx, path.into_iter(), &dave_eve_session_priv
+		&secp_ctx, path.into_iter(), &dave_eve_session_priv,
 	).unwrap();
 
 	// Concatenate an additional Bob -> Carol blinded path to the Eve -> Dave blinded path.
 	let bob_carol_session_priv = secret_from_hex("0202020202020202020202020202020202020202020202020202020202020202");
 	let bob_blinding_point = PublicKey::from_secret_key(&secp_ctx, &bob_carol_session_priv);
-	let path = [(bob_node_id, WithoutLength(&bob_unblinded_tlvs)), (carol_node_id, WithoutLength(&carol_unblinded_tlvs))];
+	let path = [
+		((bob_node_id, None), WithoutLength(&bob_unblinded_tlvs)),
+		((carol_node_id, None), WithoutLength(&carol_unblinded_tlvs)),
+	];
 	let bob_carol_blinded_hops = blinded_path::utils::construct_blinded_hops(
-		&secp_ctx, path.into_iter(), &bob_carol_session_priv
+		&secp_ctx, path.into_iter(), &bob_carol_session_priv,
 	).unwrap();
 
 	let mut blinded_hops = bob_carol_blinded_hops;
@@ -2026,9 +2032,9 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 		let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 		let carol_unblinded_tlvs = payee_tlvs.encode();
 
-		let path = [(carol_node_id, WithoutLength(&carol_unblinded_tlvs))];
+		let path = [((carol_node_id, None), WithoutLength(&carol_unblinded_tlvs))];
 		blinded_path::utils::construct_blinded_hops(
-			&secp_ctx, path.into_iter(), &carol_alice_trampoline_session_priv
+			&secp_ctx, path.into_iter(), &carol_alice_trampoline_session_priv,
 		).unwrap()
 	} else {
 		let payee_tlvs = blinded_path::payment::TrampolineForwardTlvs {
@@ -2047,9 +2053,9 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 		};
 
 		let carol_unblinded_tlvs = payee_tlvs.encode();
-		let path = [(carol_node_id, WithoutLength(&carol_unblinded_tlvs))];
+		let path = [((carol_node_id, None), WithoutLength(&carol_unblinded_tlvs))];
 		blinded_path::utils::construct_blinded_hops(
-			&secp_ctx, path.into_iter(), &carol_alice_trampoline_session_priv
+			&secp_ctx, path.into_iter(), &carol_alice_trampoline_session_priv,
 		).unwrap()
 	};
 
@@ -2249,11 +2255,11 @@ fn test_trampoline_unblinded_receive() {
 	};
 
 	let carol_unblinded_tlvs = payee_tlvs.encode();
-	let path = [(carol_node_id, WithoutLength(&carol_unblinded_tlvs))];
+	let path = [((carol_node_id, None), WithoutLength(&carol_unblinded_tlvs))];
 	let carol_alice_trampoline_session_priv = secret_from_hex("a0f4b8d7b6c2d0ffdfaf718f76e9decaef4d9fb38a8c4addb95c4007cc3eee03");
 	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &carol_alice_trampoline_session_priv);
 	let carol_blinded_hops = blinded_path::utils::construct_blinded_hops(
-		&secp_ctx, path.into_iter(), &carol_alice_trampoline_session_priv
+		&secp_ctx, path.into_iter(), &carol_alice_trampoline_session_priv,
 	).unwrap();
 
 	let route = Route {

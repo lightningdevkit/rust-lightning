@@ -40,7 +40,7 @@ use crate::ln::msgs::{
 };
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkGraph, NodeId, ReadOnlyNetworkGraph};
-use crate::sign::{EntropySource, NodeSigner, Recipient};
+use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey, Recipient};
 use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::util::async_poll::{MultiResultFuturePoller, ResultFuture};
 use crate::util::logger::{Logger, WithContext};
@@ -1074,11 +1074,12 @@ where
 			},
 		}
 	};
+	let receiving_context_auth_key = ReceiveAuthKey([41; 32]); // TODO: pass this in
 	let next_hop = onion_utils::decode_next_untagged_hop(
 		onion_decode_ss,
 		&msg.onion_routing_packet.hop_data[..],
 		msg.onion_routing_packet.hmac,
-		(control_tlvs_ss, custom_handler.deref(), logger.deref()),
+		(control_tlvs_ss, custom_handler.deref(), receiving_context_auth_key, logger.deref()),
 	);
 	match next_hop {
 		Ok((
@@ -1086,10 +1087,26 @@ where
 				message,
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }),
 				reply_path,
+				control_tlvs_authenticated,
 			},
 			None,
 		)) => match (message, context) {
 			(ParsedOnionMessageContents::Offers(msg), Some(MessageContext::Offers(ctx))) => {
+				match ctx {
+					OffersContext::InvoiceRequest { .. } => {
+						// Note: We introduced the `control_tlvs_authenticated` check in LDK v0.2
+						// to simplify and standardize onion message authentication.
+						// To continue supporting offers created before v0.2, we allow
+						// unauthenticated control TLVs for these messages, as they can be
+						// verified using the legacy method.
+					},
+					_ => {
+						if !control_tlvs_authenticated {
+							log_trace!(logger, "Received an unauthenticated offers onion message");
+							return Err(());
+						}
+					},
+				}
 				Ok(PeeledOnion::Offers(msg, Some(ctx), reply_path))
 			},
 			(ParsedOnionMessageContents::Offers(msg), None) => {
@@ -1099,8 +1116,18 @@ where
 			(
 				ParsedOnionMessageContents::AsyncPayments(msg),
 				Some(MessageContext::AsyncPayments(ctx)),
-			) => Ok(PeeledOnion::AsyncPayments(msg, ctx, reply_path)),
+			) => {
+				if !control_tlvs_authenticated {
+					log_trace!(logger, "Received an unauthenticated async payments onion message");
+					return Err(());
+				}
+				Ok(PeeledOnion::AsyncPayments(msg, ctx, reply_path))
+			},
 			(ParsedOnionMessageContents::Custom(msg), Some(MessageContext::Custom(ctx))) => {
+				if !control_tlvs_authenticated {
+					log_trace!(logger, "Received an unauthenticated custom onion message");
+					return Err(());
+				}
 				Ok(PeeledOnion::Custom(msg, Some(ctx), reply_path))
 			},
 			(ParsedOnionMessageContents::Custom(msg), None) => {
@@ -1109,7 +1136,13 @@ where
 			(
 				ParsedOnionMessageContents::DNSResolver(msg),
 				Some(MessageContext::DNSResolver(ctx)),
-			) => Ok(PeeledOnion::DNSResolver(msg, Some(ctx), reply_path)),
+			) => {
+				if !control_tlvs_authenticated {
+					log_trace!(logger, "Received an unauthenticated DNS resolver onion message");
+					return Err(());
+				}
+				Ok(PeeledOnion::DNSResolver(msg, Some(ctx), reply_path))
+			},
 			(ParsedOnionMessageContents::DNSResolver(msg), None) => {
 				Ok(PeeledOnion::DNSResolver(msg, None, reply_path))
 			},
@@ -2334,7 +2367,12 @@ fn packet_payloads_and_keys<
 
 	if let Some(control_tlvs) = final_control_tlvs {
 		payloads.push((
-			Payload::Receive { control_tlvs, reply_path: reply_path.take(), message },
+			Payload::Receive {
+				control_tlvs,
+				reply_path: reply_path.take(),
+				message,
+				control_tlvs_authenticated: false,
+			},
 			prev_control_tlvs_ss.unwrap(),
 		));
 	} else {
@@ -2343,6 +2381,7 @@ fn packet_payloads_and_keys<
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context: None }),
 				reply_path: reply_path.take(),
 				message,
+				control_tlvs_authenticated: false,
 			},
 			prev_control_tlvs_ss.unwrap(),
 		));

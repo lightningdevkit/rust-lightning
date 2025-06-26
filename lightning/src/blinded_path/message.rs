@@ -26,7 +26,7 @@ use crate::offers::nonce::Nonce;
 use crate::offers::offer::OfferId;
 use crate::onion_message::packet::ControlTlvs;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
-use crate::sign::{EntropySource, NodeSigner, Recipient};
+use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey, Recipient};
 use crate::types::payment::PaymentHash;
 use crate::util::scid_utils;
 use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, Writeable, Writer};
@@ -94,6 +94,7 @@ impl BlindedMessagePath {
 				recipient_node_id,
 				context,
 				&blinding_secret,
+				ReceiveAuthKey([41; 32]), // TODO: Pass this in
 			)
 			.map_err(|_| ())?,
 		}))
@@ -661,18 +662,19 @@ pub(crate) const MESSAGE_PADDING_ROUND_OFF: usize = 100;
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[MessageForwardNode],
 	recipient_node_id: PublicKey, context: MessageContext, session_priv: &SecretKey,
+	local_node_receive_key: ReceiveAuthKey,
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
 	let pks = intermediate_nodes
 		.iter()
-		.map(|node| node.node_id)
-		.chain(core::iter::once(recipient_node_id));
+		.map(|node| (node.node_id, None))
+		.chain(core::iter::once((recipient_node_id, Some(local_node_receive_key))));
 	let is_compact = intermediate_nodes.iter().any(|node| node.short_channel_id.is_some());
 
 	let tlvs = pks
 		.clone()
 		.skip(1) // The first node's TLVs contains the next node's pubkey
 		.zip(intermediate_nodes.iter().map(|node| node.short_channel_id))
-		.map(|(pubkey, scid)| match scid {
+		.map(|((pubkey, _), scid)| match scid {
 			Some(scid) => NextMessageHop::ShortChannelId(scid),
 			None => NextMessageHop::NodeId(pubkey),
 		})
