@@ -2812,7 +2812,7 @@ pub fn test_force_close_fail_back() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 
 	let mut events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
@@ -3608,7 +3608,7 @@ pub fn test_drop_messages_peer_disconnect_dual_htlc() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors(&nodes[1], 1);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_5.len(), 1);
@@ -3775,7 +3775,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 			SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 		nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		nodes[1].node.process_pending_htlc_forwards();
 	}
 	check_added_monitors(&nodes[1], 0);
 
@@ -5873,7 +5873,7 @@ pub fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	check_added_monitors(&nodes[1], 0);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 
 	chan_stat = get_channel_value_stat!(nodes[1], nodes[2], chan_1_2.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, max_can_send);
@@ -5979,7 +5979,7 @@ pub fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	check_added_monitors(&nodes[1], 0);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	let mut events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
 	check_added_monitors(&nodes[1], 1);
@@ -5991,7 +5991,7 @@ pub fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_
 	nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event.msgs[0]);
 	check_added_monitors(&nodes[2], 0);
 	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false, true);
-	expect_pending_htlcs_forwardable!(nodes[2]);
+	nodes[2].node.process_pending_htlc_forwards();
 	expect_htlc_handling_failed_destinations!(
 		nodes[2].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::InvalidOnion]
@@ -6090,7 +6090,7 @@ pub fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors(&nodes[1], 1);
 	payment_event = SendEvent::from_node(&nodes[1]);
 	assert_eq!(payment_event.msgs.len(), 1);
@@ -6100,7 +6100,7 @@ pub fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event.msgs[0]);
 	check_added_monitors(&nodes[2], 0);
 	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false, true);
-	expect_pending_htlcs_forwardable!(nodes[2]);
+	nodes[2].node.process_pending_htlc_forwards();
 	expect_htlc_handling_failed_destinations!(
 		nodes[2].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::InvalidOnion]
@@ -6568,7 +6568,7 @@ pub fn test_check_htlc_underpaying() {
 
 	// Note that we first have to wait a random delay before processing the receipt of the HTLC,
 	// and then will wait a second random delay before failing the HTLC back:
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
 		[HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]
@@ -7779,7 +7779,7 @@ pub fn test_onion_value_mpp_set_calculation() {
 		node.node.handle_update_add_htlc(prev_node.node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors(&node, 0);
 		commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
-		expect_pending_htlcs_forwardable!(node);
+		node.node.process_pending_htlc_forwards();
 
 		if idx == 0 {
 			let mut events_2 = node.node.get_and_clear_pending_msg_events();
@@ -7955,7 +7955,7 @@ pub fn test_preimage_storage() {
 	}
 	// Note that after leaving the above scope we have no knowledge of any arguments or return
 	// values from previous calls.
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -8000,7 +8000,7 @@ pub fn test_bad_secret_hash() {
 
 			// We have to forward pending HTLCs once to process the receipt of the HTLC and then
 			// again to process the pending backwards-failure of the HTLC
-			expect_pending_htlcs_forwardable!(nodes[1]);
+			nodes[1].node.process_pending_htlc_forwards();
 			expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 				nodes[1],
 				vec![HTLCHandlingFailureType::Receive { payment_hash: $payment_hash }]
@@ -9489,7 +9489,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 	}
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], our_payment_hash, our_payment_secret, 10_000);
 
 	{
@@ -9669,7 +9669,7 @@ pub fn test_inconsistent_mpp_params() {
 		nodes[2].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 		commitment_signed_dance!(nodes[2], nodes[0], payment_event.commitment_msg, false);
 
-		expect_pending_htlcs_forwardable!(nodes[2]);
+		nodes[2].node.process_pending_htlc_forwards();
 		check_added_monitors(&nodes[2], 1);
 
 		let mut events = nodes[2].node.get_and_clear_pending_msg_events();
@@ -10032,7 +10032,7 @@ fn do_test_max_dust_htlc_exposure(
 		let payment_event = SendEvent::from_event(events.remove(0));
 		nodes[0].node.handle_update_add_htlc(node_b_id, &payment_event.msgs[0]);
 		commitment_signed_dance!(nodes[0], nodes[1], payment_event.commitment_msg, false);
-		expect_pending_htlcs_forwardable!(nodes[0]);
+		nodes[0].node.process_pending_htlc_forwards();
 		expect_htlc_handling_failed_destinations!(
 			nodes[0].node.get_and_clear_pending_events(),
 			&[HTLCHandlingFailureType::Receive { payment_hash }]
@@ -10299,7 +10299,7 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	let payment_event = SendEvent::from_event(events.remove(0));
 	nodes[0].node.handle_update_add_htlc(node_b_id, &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], payment_event.commitment_msg, false);
-	expect_pending_htlcs_forwardable!(nodes[0]);
+	nodes[0].node.process_pending_htlc_forwards();
 	expect_htlc_handling_failed_destinations!(
 		nodes[0].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash }]
@@ -10352,7 +10352,8 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	nodes[0].node.handle_update_add_htlc(node_c_id, &send.msgs[0]);
 	commitment_signed_dance!(nodes[0], nodes[2], send.commitment_msg, false, true);
 
-	expect_pending_htlcs_forwardable!(nodes[0]);
+	nodes[0].node.process_pending_htlc_forwards();
+	nodes[0].node.process_pending_htlc_forwards();
 	check_added_monitors(&nodes[0], 1);
 	let node_id_1 = node_b_id;
 	expect_htlc_handling_failed_destinations!(
@@ -10474,7 +10475,7 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 	let payment_event = SendEvent::from_event(events.remove(0));
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash }]
@@ -10746,7 +10747,7 @@ fn do_payment_with_custom_min_final_cltv_expiry(valid_delta: bool, use_user_hash
 	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 
 	if valid_delta {
 		let preimage = if use_user_hash { None } else { Some(payment_preimage) };
