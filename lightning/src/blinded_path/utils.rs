@@ -17,7 +17,8 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use super::message::BlindedMessagePath;
 use super::{BlindedHop, BlindedPath};
-use crate::crypto::streams::ChaChaPolyWriteAdapter;
+use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
+use crate::crypto::streams::chachapoly_encrypt_with_swapped_aad;
 use crate::io;
 use crate::ln::onion_utils;
 use crate::onion_message::messenger::Destination;
@@ -105,7 +106,6 @@ macro_rules! build_keys_helper {
 	};
 }
 
-#[inline]
 pub(crate) fn construct_keys_for_onion_message<'a, T, I, F>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: I, destination: Destination, session_priv: &SecretKey,
 	mut callback: F,
@@ -137,8 +137,7 @@ where
 	Ok(())
 }
 
-#[inline]
-pub(super) fn construct_keys_for_blinded_path<'a, T, I, F, H>(
+fn construct_keys_for_blinded_path<'a, T, I, F, H>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: I, session_priv: &SecretKey, mut callback: F,
 ) -> Result<(), secp256k1::Error>
 where
@@ -149,7 +148,8 @@ where
 {
 	build_keys_helper!(session_priv, secp_ctx, callback);
 
-	for pk in unblinded_path {
+	let mut iter = unblinded_path.peekable();
+	while let Some(pk) = iter.next() {
 		build_keys_in_loop!(pk, false, None);
 	}
 	Ok(())
@@ -157,6 +157,7 @@ where
 
 struct PublicKeyWithTlvs<W: Writeable> {
 	pubkey: PublicKey,
+	hop_recv_key: Option<[u8; 32]>,
 	tlvs: W,
 }
 
@@ -171,20 +172,26 @@ pub(crate) fn construct_blinded_hops<'a, T, I, W>(
 ) -> Result<Vec<BlindedHop>, secp256k1::Error>
 where
 	T: secp256k1::Signing + secp256k1::Verification,
-	I: Iterator<Item = (PublicKey, W)>,
+	I: Iterator<Item = ((PublicKey, Option<[u8; 32]>), W)>,
 	W: Writeable,
 {
 	let mut blinded_hops = Vec::with_capacity(unblinded_path.size_hint().0);
 	construct_keys_for_blinded_path(
 		secp_ctx,
-		unblinded_path.map(|(pubkey, tlvs)| PublicKeyWithTlvs { pubkey, tlvs }),
+		unblinded_path.map(|((pubkey, hop_recv_key), tlvs)| PublicKeyWithTlvs {
+			pubkey,
+			hop_recv_key,
+			tlvs,
+		}),
 		session_priv,
 		|blinded_node_id, _, _, encrypted_payload_rho, unblinded_hop_data, _| {
+			let hop_data = unblinded_hop_data.unwrap();
 			blinded_hops.push(BlindedHop {
 				blinded_node_id,
 				encrypted_payload: encrypt_payload(
-					unblinded_hop_data.unwrap().tlvs,
+					hop_data.tlvs,
 					encrypted_payload_rho,
+					hop_data.hop_recv_key,
 				),
 			});
 		},
@@ -193,9 +200,19 @@ where
 }
 
 /// Encrypt TLV payload to be used as a [`crate::blinded_path::BlindedHop::encrypted_payload`].
-fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32]) -> Vec<u8> {
-	let write_adapter = ChaChaPolyWriteAdapter::new(encrypted_tlvs_rho, &payload);
-	write_adapter.encode()
+fn encrypt_payload<P: Writeable>(
+	payload: P, encrypted_tlvs_rho: [u8; 32], hop_recv_key: Option<[u8; 32]>,
+) -> Vec<u8> {
+	let mut payload_data = payload.encode();
+	if let Some(hop_recv_key) = hop_recv_key {
+		chachapoly_encrypt_with_swapped_aad(payload_data, encrypted_tlvs_rho, hop_recv_key)
+	} else {
+		let mut chacha = ChaCha20Poly1305RFC::new(&encrypted_tlvs_rho, &[0; 12], &[]);
+		let mut tag = [0; 16];
+		chacha.encrypt_full_message_in_place(&mut payload_data, &mut tag);
+		payload_data.extend_from_slice(&tag);
+		payload_data
+	}
 }
 
 /// A data structure used exclusively to pad blinded path payloads, ensuring they are of

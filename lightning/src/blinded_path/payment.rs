@@ -664,8 +664,10 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
 	payee_tlvs: ReceiveTlvs, session_priv: &SecretKey,
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
-	let pks =
-		intermediate_nodes.iter().map(|node| node.node_id).chain(core::iter::once(payee_node_id));
+	let pks = intermediate_nodes
+		.iter()
+		.map(|node| (node.node_id, None))
+		.chain(core::iter::once((payee_node_id, None)));
 	let tlvs = intermediate_nodes
 		.iter()
 		.map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))

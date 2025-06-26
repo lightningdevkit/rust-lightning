@@ -1068,11 +1068,12 @@ where
 			},
 		}
 	};
+	let receiving_context_auth_key = [41; 32]; // TODO: pass this in
 	let next_hop = onion_utils::decode_next_untagged_hop(
 		onion_decode_ss,
 		&msg.onion_routing_packet.hop_data[..],
 		msg.onion_routing_packet.hmac,
-		(control_tlvs_ss, custom_handler.deref(), logger.deref()),
+		(control_tlvs_ss, custom_handler.deref(), receiving_context_auth_key, logger.deref()),
 	);
 	match next_hop {
 		Ok((
@@ -1080,6 +1081,7 @@ where
 				message,
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }),
 				reply_path,
+				control_tlvs_authenticated,
 			},
 			None,
 		)) => match (message, context) {
@@ -1108,6 +1110,8 @@ where
 				Ok(PeeledOnion::DNSResolver(msg, None, reply_path))
 			},
 			_ => {
+				// Hide the "`control_tlvs_authenticated` is unused warning". We'll use it here soon
+				let _ = control_tlvs_authenticated;
 				log_trace!(
 					logger,
 					"Received message was sent on a blinded path with wrong or missing context."
@@ -2294,7 +2298,12 @@ fn packet_payloads_and_keys<
 
 	if let Some(control_tlvs) = final_control_tlvs {
 		payloads.push((
-			Payload::Receive { control_tlvs, reply_path: reply_path.take(), message },
+			Payload::Receive {
+				control_tlvs,
+				reply_path: reply_path.take(),
+				message,
+				control_tlvs_authenticated: false,
+			},
 			prev_control_tlvs_ss.unwrap(),
 		));
 	} else {
@@ -2303,6 +2312,7 @@ fn packet_payloads_and_keys<
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context: None }),
 				reply_path: reply_path.take(),
 				message,
+				control_tlvs_authenticated: false,
 			},
 			prev_control_tlvs_ss.unwrap(),
 		));
