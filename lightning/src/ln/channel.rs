@@ -4433,7 +4433,8 @@ where
 		let mut non_dust_htlc_count = 0;
 		let mut remote_htlc_total_msat = 0;
 		let mut local_htlc_total_msat = 0;
-		let mut value_to_self_msat_offset = 0;
+		let mut value_to_self_claimed_msat = 0;
+		let mut value_to_remote_claimed_msat = 0;
 
 		let mut feerate_per_kw = self.feerate_per_kw;
 		if let Some((feerate, update_state)) = self.pending_update_fee {
@@ -4456,7 +4457,7 @@ where
 				remote_htlc_total_msat += htlc.amount_msat;
 			} else {
 				if htlc.state.preimage().is_some() {
-					value_to_self_msat_offset += htlc.amount_msat as i64;
+					value_to_self_claimed_msat += htlc.amount_msat;
 				}
 			}
 		};
@@ -4469,19 +4470,17 @@ where
 				local_htlc_total_msat += htlc.amount_msat;
 			} else {
 				if htlc.state.preimage().is_some() {
-					value_to_self_msat_offset -= htlc.amount_msat as i64;
+					value_to_remote_claimed_msat += htlc.amount_msat;
 				}
 			}
 		};
 
 		// # Panics
 		//
-		// While we expect `value_to_self_msat_offset` to be negative in some cases, the value going
-		// to each party MUST be 0 or positive, even if all HTLCs pending in the commitment clear by
-		// failure.
+		// After all HTLC claims have been accounted for, the local balance MUST remain greater than or equal to 0.
 
-		// TODO: When MSRV >= 1.66.0, use u64::checked_add_signed
-		let mut value_to_self_msat = (funding.value_to_self_msat as i64 + value_to_self_msat_offset).try_into().unwrap();
+		let mut value_to_self_msat = (funding.value_to_self_msat + value_to_self_claimed_msat).checked_sub(value_to_remote_claimed_msat).unwrap();
+
 		let mut value_to_remote_msat = (funding.get_value_satoshis() * 1000).checked_sub(value_to_self_msat).unwrap();
 		value_to_self_msat = value_to_self_msat.checked_sub(local_htlc_total_msat).unwrap();
 		value_to_remote_msat = value_to_remote_msat.checked_sub(remote_htlc_total_msat).unwrap();
