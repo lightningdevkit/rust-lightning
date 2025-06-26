@@ -94,7 +94,7 @@ pub enum SignError {
 }
 
 /// A function for signing a [`TaggedHash`].
-pub(super) trait SignFn<T: AsRef<TaggedHash>> {
+pub trait SignFn<T: AsRef<TaggedHash>> {
 	/// Signs a [`TaggedHash`] computed over the merkle root of `message`'s TLV stream.
 	fn sign(&self, message: &T) -> Result<Signature, ()>;
 }
@@ -117,9 +117,7 @@ where
 ///
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-pub(super) fn sign_message<F, T>(
-	f: F, message: &T, pubkey: PublicKey,
-) -> Result<Signature, SignError>
+pub fn sign_message<F, T>(f: F, message: &T, pubkey: PublicKey) -> Result<Signature, SignError>
 where
 	F: SignFn<T>,
 	T: AsRef<TaggedHash>,
@@ -136,7 +134,7 @@ where
 
 /// Verifies the signature with a pubkey over the given message using a tagged hash as the message
 /// digest.
-pub(super) fn verify_signature(
+pub fn verify_signature(
 	signature: &Signature, message: &TaggedHash, pubkey: PublicKey,
 ) -> Result<(), secp256k1::Error> {
 	let digest = message.as_digest();
