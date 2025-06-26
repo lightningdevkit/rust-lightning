@@ -503,7 +503,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
-		let example_input = vec![
+		let example_input = [
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218,
 			0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,
@@ -534,7 +534,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
-		let example_input = vec![
+		let example_input = [
 			76, 68, 75, 2, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 102, 97, 206, 240,
 			0, 0, 0, 0, 2, 63, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5,
@@ -597,7 +597,7 @@ mod tests {
 		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 
-		let example_input = vec![
+		let example_input = [
 			76, 68, 75, 2, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 102, 105, 183,
 			240, 0, 0, 0, 0, 1, 63, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186,
@@ -625,7 +625,7 @@ mod tests {
 		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 
-		let example_input = vec![
+		let example_input = [
 			76, 68, 75, 2, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 102, 106, 12, 80,
 			1, 0, 2, 23, 48, 0, 0, 0, 3, 143, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213,
@@ -700,7 +700,7 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn incremental_only_update_ignores_missing_channel() {
-		let incremental_update_input = vec![
+		let incremental_update_input = [
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 229, 183, 167,
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -721,7 +721,7 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn incremental_only_update_fails_without_prior_updates() {
-		let announced_update_input = vec![
+		let announced_update_input = [
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 229, 183, 167,
 			0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,
@@ -749,7 +749,7 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn incremental_only_update_fails_without_prior_same_direction_updates() {
-		let initialization_input = vec![
+		let initialization_input = [
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218,
 			0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,
@@ -789,7 +789,7 @@ mod tests {
 		assert!(initialized.contains("619737530008010752"));
 		assert!(initialized.contains("783241506229452801"));
 
-		let opposite_direction_incremental_update_input = vec![
+		let opposite_direction_incremental_update_input = [
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 229, 183, 167,
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -802,7 +802,7 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn incremental_update_succeeds_with_prior_announcements_and_full_updates() {
-		let initialization_input = vec![
+		let initialization_input = [
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218,
 			0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,
@@ -829,7 +829,7 @@ mod tests {
 		let initialization_result = rapid_sync.update_network_graph(&initialization_input[..]);
 		assert!(initialization_result.is_ok());
 
-		let single_direction_incremental_update_input = vec![
+		let single_direction_incremental_update_input = [
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 229, 183, 167,
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -863,7 +863,7 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn update_succeeds_when_duplicate_gossip_is_applied() {
-		let initialization_input = vec![
+		let initialization_input = [
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218,
 			0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,
@@ -890,7 +890,7 @@ mod tests {
 		let initialization_result = rapid_sync.update_network_graph(&initialization_input[..]);
 		assert!(initialization_result.is_ok());
 
-		let single_direction_incremental_update_input = vec![
+		let single_direction_incremental_update_input = [
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 229, 183, 167,
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -1023,7 +1023,7 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	pub fn update_fails_with_unknown_version() {
-		let unknown_version_input = vec![
+		let unknown_version_input = [
 			76, 68, 75, 3, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218,
 			0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,

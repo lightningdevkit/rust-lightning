@@ -5298,7 +5298,7 @@ mod tests {
 					previous_output: OutPoint { txid: Txid::from_str("305bab643ee297b8b6b76b320792c8223d55082122cb606bf89382146ced9c77").unwrap(), index: 2 }.into_bitcoin_outpoint(),
 					script_sig: ScriptBuf::new(),
 					sequence: Sequence(0xfffffffd),
-					witness: Witness::from_slice(&vec![
+					witness: Witness::from_slice(&[
 						<Vec<u8>>::from_hex("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap(),
 						<Vec<u8>>::from_hex("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap()]),
 				}],
@@ -5390,10 +5390,10 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			tx_hash: Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
 			witnesses: vec![
-				Witness::from_slice(&vec![
+				Witness::from_slice(&[
 					<Vec<u8>>::from_hex("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap(),
 					<Vec<u8>>::from_hex("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap()]),
-				Witness::from_slice(&vec![
+				Witness::from_slice(&[
 					<Vec<u8>>::from_hex("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap(),
 					<Vec<u8>>::from_hex("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap()]),
 			],

@@ -507,7 +507,7 @@ fn test_scid_alias_returned() {
 	commitment_signed_dance!(nodes[1], nodes[0], &as_updates.commitment_signed, false, true);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan.0.channel_id }]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan.0.channel_id }]);
 	check_added_monitors!(nodes[1], 1);
 
 	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());

@@ -2623,7 +2623,7 @@ mod tests {
 			),
 		}
 
-		let empty_payment_paths = vec![];
+		let empty_payment_paths = [];
 		let mut tlv_stream = invoice.as_tlv_stream();
 		tlv_stream.3.paths =
 			Some(Iterable(empty_payment_paths.iter().map(|path| path.inner_blinded_path())));

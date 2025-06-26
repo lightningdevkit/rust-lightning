@@ -1764,8 +1764,8 @@ mod tests {
 
 	#[test]
 	fn bigsize_encoding_decoding() {
-		let values = vec![0, 252, 253, 65535, 65536, 4294967295, 4294967296, 18446744073709551615];
-		let bytes = vec![
+		let values = [0, 252, 253, 65535, 65536, 4294967295, 4294967296, 18446744073709551615];
+		let bytes = [
 			"00",
 			"fc",
 			"fd00fd",
@@ -1782,7 +1782,7 @@ mod tests {
 			super::BigSize(values[i]).write(&mut stream).unwrap();
 			assert_eq!(stream.0, <Vec<u8>>::from_hex(bytes[i]).unwrap());
 		}
-		let err_bytes = vec![
+		let err_bytes = [
 			"fd00fc",
 			"fe0000ffff",
 			"ff00000000ffffffff",

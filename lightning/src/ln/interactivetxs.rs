@@ -2730,7 +2730,7 @@ mod tests {
 
 	#[test]
 	fn test_calculate_change_output_value_open() {
-		let input_prevouts = vec![
+		let input_prevouts = [
 			TxOut { value: Amount::from_sat(70_000), script_pubkey: ScriptBuf::new() },
 			TxOut { value: Amount::from_sat(60_000), script_pubkey: ScriptBuf::new() },
 		];

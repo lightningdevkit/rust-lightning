@@ -873,7 +873,7 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 	// Check that nodes[1] fails the HTLC upstream
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
+		[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
 	);
 	check_added_monitors(&nodes[1], 1);
 	let htlc_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
@@ -894,7 +894,7 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 			// Expect handling another fail back event, but the HTLC is already gone
 			expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 				nodes[1],
-				vec![HTLCHandlingFailureType::Forward {
+				[HTLCHandlingFailureType::Forward {
 					node_id: Some(node_c_id),
 					channel_id: chan_2.2
 				}]
@@ -923,7 +923,7 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 			nodes[2].node.fail_htlc_backwards(&payment_hash);
 			expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 				nodes[2],
-				vec![HTLCHandlingFailureType::Receive { payment_hash }]
+				[HTLCHandlingFailureType::Receive { payment_hash }]
 			);
 			check_added_monitors(&nodes[2], 1);
 			let commitment_update = get_htlc_update_msgs(&nodes[2], &node_b_id);
@@ -2104,7 +2104,7 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	check_added_monitors(&nodes[2], 0);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[2],
-		vec![HTLCHandlingFailureType::Receive { payment_hash: payment_hash.clone() }]
+		[HTLCHandlingFailureType::Receive { payment_hash: payment_hash.clone() }]
 	);
 	check_added_monitors(&nodes[2], 1);
 
@@ -2181,7 +2181,7 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
+		[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
 	);
 	check_added_monitors(&nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -2269,7 +2269,7 @@ pub fn test_simple_commitment_revoked_fail_backward() {
 
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
+		[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
 	);
 	check_added_monitors(&nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -2362,7 +2362,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 	nodes[2].node.fail_htlc_backwards(&first_payment_hash);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[2],
-		vec![HTLCHandlingFailureType::Receive { payment_hash: first_payment_hash }]
+		[HTLCHandlingFailureType::Receive { payment_hash: first_payment_hash }]
 	);
 	check_added_monitors(&nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], node_b_id);
@@ -2379,7 +2379,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 	nodes[2].node.fail_htlc_backwards(&second_payment_hash);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[2],
-		vec![HTLCHandlingFailureType::Receive { payment_hash: second_payment_hash }]
+		[HTLCHandlingFailureType::Receive { payment_hash: second_payment_hash }]
 	);
 	check_added_monitors(&nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], node_b_id);
@@ -2399,7 +2399,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 	nodes[2].node.fail_htlc_backwards(&third_payment_hash);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[2],
-		vec![HTLCHandlingFailureType::Receive { payment_hash: third_payment_hash }]
+		[HTLCHandlingFailureType::Receive { payment_hash: third_payment_hash }]
 	);
 	check_added_monitors(&nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], node_b_id);
@@ -3720,7 +3720,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]
+		[HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]
 	);
 
 	check_added_monitors(&nodes[1], 1);
@@ -4584,7 +4584,7 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
+		[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
 	);
 	let htlc_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
 	assert!(htlc_updates.update_add_htlcs.is_empty());
@@ -5406,7 +5406,7 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 	nodes[1].node.fail_htlc_backwards(&our_payment_hash);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]
+		[HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]
 	);
 	check_added_monitors(&nodes[1], 1);
 
@@ -6055,7 +6055,7 @@ pub fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_
 	commitment_signed_dance!(nodes[1], nodes[2], update_msg.1, false, true);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
+		[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
 	);
 	let events_4 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_4.len(), 1);
@@ -6147,7 +6147,7 @@ pub fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
+		[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
 	);
 	let events_4 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_4.len(), 1);
@@ -6229,7 +6229,7 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	check_added_monitors(&nodes[1], 0);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Receive { payment_hash: payment_hash_2 }]
+		[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_2 }]
 	);
 	check_added_monitors(&nodes[1], 1);
 
@@ -6595,7 +6595,7 @@ pub fn test_check_htlc_underpaying() {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]
+		[HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]
 	);
 
 	// Node 3 is expecting payment of 100_000 but received 10_000,
@@ -7250,7 +7250,7 @@ pub fn test_bump_txn_sanitize_tracking_maps() {
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + 2 - CHAN_CONFIRM_DEPTH);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(
 		nodes[0],
-		vec![HTLCHandlingFailureType::Receive { payment_hash: payment_hash_2 }]
+		[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_2 }]
 	);
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
 
@@ -9442,7 +9442,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		);
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 			nodes[1],
-			vec![HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id }]
+			[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id }]
 		);
 		check_added_monitors(&nodes[1], 1);
 
@@ -9472,7 +9472,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		// spurious HTLCHandlingFailed event.
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 			nodes[1],
-			vec![HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id }]
+			[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id }]
 		);
 	}
 }
@@ -9580,7 +9580,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		// Let the second HTLC fail and claim the first
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(
 			nodes[1],
-			vec![HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]
+			[HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]
 		);
 		nodes[1].node.process_pending_htlc_forwards();
 
@@ -9722,7 +9722,7 @@ pub fn test_inconsistent_mpp_params() {
 
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[2],
-		vec![HTLCHandlingFailureType::Forward { node_id: Some(node_d_id), channel_id: chan_2_3.2 }]
+		[HTLCHandlingFailureType::Forward { node_id: Some(node_d_id), channel_id: chan_2_3.2 }]
 	);
 	check_added_monitors(&nodes[2], 1);
 
