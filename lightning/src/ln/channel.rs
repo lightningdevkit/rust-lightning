@@ -11092,44 +11092,6 @@ where
 		))
 	}
 
-	/// Check that post-splicing balance meets reserve requirements, but only if it met it pre-splice as well.
-	/// In case of error, it returns the minimum channel reserve that was violated (in sats)
-	#[cfg(splicing)]
-	pub fn check_splice_balance_meets_v2_reserve_requirement(
-		&self, pre_balance_msat: u64, post_balance_msat: u64, pre_channel_value_sats: u64,
-		post_channel_value_sats: u64, dust_limit_sats: u64,
-	) -> Result<(), u64> {
-		let post_channel_reserve_sats =
-			get_v2_channel_reserve_satoshis(post_channel_value_sats, dust_limit_sats);
-		if post_balance_msat >= (post_channel_reserve_sats * 1000) {
-			return Ok(());
-		}
-		// We're not allowed to dip below the reserve once we've been above,
-		// check differently for originally v1 and v2 channels
-		if self.is_v2_established() {
-			let pre_channel_reserve_sats =
-				get_v2_channel_reserve_satoshis(pre_channel_value_sats, dust_limit_sats);
-			if pre_balance_msat >= (pre_channel_reserve_sats * 1000) {
-				return Err(post_channel_reserve_sats);
-			}
-		} else {
-			if pre_balance_msat >= (self.funding.holder_selected_channel_reserve_satoshis * 1000) {
-				return Err(post_channel_reserve_sats);
-			}
-			if let Some(cp_reserve) = self.funding.counterparty_selected_channel_reserve_satoshis {
-				if pre_balance_msat >= (cp_reserve * 1000) {
-					return Err(post_channel_reserve_sats);
-				}
-			}
-		}
-		// Make sure we either remain with the same balance or move towards the reserve.
-		if post_balance_msat >= pre_balance_msat {
-			Ok(())
-		} else {
-			Err(post_channel_reserve_sats)
-		}
-	}
-
 	/// Check that balances (self and counterparty) meet the channel reserve requirements or violates them (below reserve).
 	/// The channel value is an input as opposed to using from the FundingScope, so that this can be used in case of splicing
 	/// to check with new channel value (before being committed to it).
@@ -11166,6 +11128,44 @@ where
 			)));
 		}
 		Ok(())
+	}
+
+	/// Check that post-splicing balance meets reserve requirements, but only if it met it pre-splice as well.
+	/// In case of error, it returns the minimum channel reserve that was violated (in sats)
+	#[cfg(splicing)]
+	pub fn check_splice_balance_meets_v2_reserve_requirement(
+		&self, pre_balance_msat: u64, post_balance_msat: u64, pre_channel_value_sats: u64,
+		post_channel_value_sats: u64, dust_limit_sats: u64,
+	) -> Result<(), u64> {
+		let post_channel_reserve_sats =
+			get_v2_channel_reserve_satoshis(post_channel_value_sats, dust_limit_sats);
+		if post_balance_msat >= (post_channel_reserve_sats * 1000) {
+			return Ok(());
+		}
+		// We're not allowed to dip below the reserve once we've been above,
+		// check differently for originally v1 and v2 channels
+		if self.is_v2_established() {
+			let pre_channel_reserve_sats =
+				get_v2_channel_reserve_satoshis(pre_channel_value_sats, dust_limit_sats);
+			if pre_balance_msat >= (pre_channel_reserve_sats * 1000) {
+				return Err(post_channel_reserve_sats);
+			}
+		} else {
+			if pre_balance_msat >= (self.funding.holder_selected_channel_reserve_satoshis * 1000) {
+				return Err(post_channel_reserve_sats);
+			}
+			if let Some(cp_reserve) = self.funding.counterparty_selected_channel_reserve_satoshis {
+				if pre_balance_msat >= (cp_reserve * 1000) {
+					return Err(post_channel_reserve_sats);
+				}
+			}
+		}
+		// Make sure we either remain with the same balance or move towards the reserve.
+		if post_balance_msat >= pre_balance_msat {
+			Ok(())
+		} else {
+			Err(post_channel_reserve_sats)
+		}
 	}
 
 	// Send stuff to our remote peers:
