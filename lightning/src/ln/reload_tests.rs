@@ -1368,3 +1368,124 @@ fn test_htlc_localremoved_persistence() {
 	let htlc_fail_msg_after_reload = msgs.2.unwrap().update_fail_htlcs[0].clone();
 	assert_eq!(htlc_fail_msg, htlc_fail_msg_after_reload);
 }
+
+#[test]
+fn test_deserialize_monitor_force_closed_without_broadcasting_txn() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let logger;
+	let fee_estimator;
+	let persister;
+	let new_chain_monitor;
+	let deserialized_chanmgr;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// send a ChannelMonitorUpdateStep::ChannelForceClosed with { should_broadcast: false } to the monitor.
+	// this should persist the { should_broadcast: false } on the monitor.
+	nodes[0]
+		.node
+		.force_close_without_broadcasting_txn(
+			&channel_id,
+			&nodes[1].node.get_our_node_id(),
+			"test".to_string(),
+		)
+		.unwrap();
+	check_closed_event!(
+		nodes[0],
+		1,
+		ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+		[nodes[1].node.get_our_node_id()],
+		100000
+	);
+
+	// Serialize monitor and node
+	let mut mon_writer = test_utils::TestVecWriter(Vec::new());
+	get_monitor!(nodes[0], channel_id).write(&mut mon_writer).unwrap();
+	let monitor_bytes = mon_writer.0;
+	let manager_bytes = nodes[0].node.encode();
+
+	let keys_manager = &chanmon_cfgs[0].keys_manager;
+	logger = test_utils::TestLogger::new();
+	fee_estimator = test_utils::TestFeeEstimator::new(253);
+	persister = test_utils::TestPersister::new();
+	new_chain_monitor = test_utils::TestChainMonitor::new(
+		Some(nodes[0].chain_source),
+		nodes[0].tx_broadcaster,
+		&logger,
+		&fee_estimator,
+		&persister,
+		keys_manager,
+	);
+	nodes[0].chain_monitor = &new_chain_monitor;
+
+	// Deserialize
+	let mut mon_read = &monitor_bytes[..];
+	let (_, mut monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+		&mut mon_read,
+		(keys_manager, keys_manager),
+	)
+	.unwrap();
+	assert!(mon_read.is_empty());
+
+	let mut mgr_read = &manager_bytes[..];
+	let mut channel_monitors = new_hash_map();
+
+	// insert a channel monitor without its corresponding channel (it was force-closed before)
+	// so when the channel manager deserializes, it replays the ChannelForceClosed with { should_broadcast: true }.
+	channel_monitors.insert(monitor.channel_id(), &monitor);
+	let (_, deserialized_chanmgr_tmp) = <(
+		BlockHash,
+		ChannelManager<
+			&test_utils::TestChainMonitor,
+			&test_utils::TestBroadcaster,
+			&test_utils::TestKeysInterface,
+			&test_utils::TestKeysInterface,
+			&test_utils::TestKeysInterface,
+			&test_utils::TestFeeEstimator,
+			&test_utils::TestRouter,
+			&test_utils::TestMessageRouter,
+			&test_utils::TestLogger,
+		>,
+	)>::read(
+		&mut mgr_read,
+		ChannelManagerReadArgs {
+			default_config: UserConfig::default(),
+			entropy_source: keys_manager,
+			node_signer: keys_manager,
+			signer_provider: keys_manager,
+			fee_estimator: &fee_estimator,
+			router: nodes[0].router,
+			message_router: &nodes[0].message_router,
+			chain_monitor: &new_chain_monitor,
+			tx_broadcaster: nodes[0].tx_broadcaster,
+			logger: &logger,
+			channel_monitors,
+		},
+	)
+	.unwrap();
+	deserialized_chanmgr = deserialized_chanmgr_tmp;
+	nodes[0].node = &deserialized_chanmgr;
+
+	{
+		let txs = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert!(txs.is_empty(), "Expected no transactions to be broadcasted after deserialization, because the should_broadcast was persisted as false");
+	}
+
+	monitor.force_broadcast_latest_holder_commitment_txn_unsafe(
+		&nodes[0].tx_broadcaster,
+		&&fee_estimator,
+		&&logger,
+	);
+	{
+		let txs = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(txs.len(), 1, "Expected one transaction to be broadcasted after force_broadcast_latest_holder_commitment_txn_unsafe");
+		check_spends!(txs[0], funding_tx);
+		assert_eq!(txs[0].input[0].previous_output.txid, funding_tx.compute_txid());
+	}
+
+	assert!(nodes[0].chain_monitor.watch_channel(monitor.channel_id(), monitor).is_ok());
+	check_added_monitors!(nodes[0], 1);
+}

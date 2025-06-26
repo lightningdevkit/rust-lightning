@@ -4467,7 +4467,7 @@ where
 	/// Fails if `channel_id` is unknown to the manager, or if the
 	/// `counterparty_node_id` isn't the counterparty of the corresponding channel.
 	/// You can always broadcast the latest local transaction(s) via
-	/// [`ChannelMonitor::broadcast_latest_holder_commitment_txn`].
+	/// [`ChannelMonitor::force_broadcast_latest_holder_commitment_txn_unsafe`].
 	pub fn force_close_without_broadcasting_txn(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String,
 	) -> Result<(), APIError> {
@@ -7655,7 +7655,8 @@ where
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, completion_action: ComplFunc,
@@ -14144,7 +14145,7 @@ where
 		// LDK versions prior to 0.0.116 wrote the `pending_background_events`
 		// `MonitorUpdateRegeneratedOnStartup`s here, however there was never a reason to do so -
 		// the closing monitor updates were always effectively replayed on startup (either directly
-		// by calling `broadcast_latest_holder_commitment_txn` on a `ChannelMonitor` during
+		// by calling `force_broadcast_latest_holder_commitment_txn_unsafe` on a `ChannelMonitor` during
 		// deserialization or, in 0.0.115, by regenerating the monitor update itself).
 		0u64.write(writer)?;
 
