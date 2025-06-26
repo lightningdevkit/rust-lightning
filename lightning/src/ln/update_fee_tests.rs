@@ -719,7 +719,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	check_added_monitors(&nodes[0], 1);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	expect_pending_htlcs_forwardable!(nodes[0]);
+	nodes[0].node.process_pending_htlc_forwards();
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);

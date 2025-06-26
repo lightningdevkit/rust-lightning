@@ -658,7 +658,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	check_added_monitors!(nodes[1], 1);
 	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
 	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]

@@ -2496,21 +2496,6 @@ macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore {
 }
 
 #[macro_export]
-/// Handles a PendingHTLCsForwardable event
-macro_rules! expect_pending_htlcs_forwardable {
-	($node: expr) => {{
-		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions(
-			$node.node.get_and_clear_pending_events(),
-			&[],
-		);
-		$node.node.process_pending_htlc_forwards();
-
-		// Ensure process_pending_htlc_forwards is idempotent.
-		$node.node.process_pending_htlc_forwards();
-	}};
-}
-
-#[macro_export]
 /// Handles a PendingHTLCsForwardable and HTLCHandlingFailed event
 macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed {
 	($node: expr, $expected_failures: expr) => {{
@@ -3458,11 +3443,11 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 
 		if is_last_hop && is_probe {
 			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, true, true);
-			expect_pending_htlcs_forwardable!(node);
+			node.node.process_pending_htlc_forwards();
 			check_added_monitors(node, 1);
 		} else {
 			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
-			expect_pending_htlcs_forwardable!(node);
+			node.node.process_pending_htlc_forwards();
 		}
 
 		if is_last_hop && clear_recipient_events {
