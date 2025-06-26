@@ -2378,19 +2378,6 @@ macro_rules! expect_pending_htlcs_forwardable_ignore {
 }
 
 #[macro_export]
-/// Clears (and ignores) PendingHTLCsForwardable and HTLCHandlingFailed events
-///
-/// Don't use this, call [`expect_pending_htlcs_forwardable_conditions()`] instead.
-macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore {
-	($node: expr, $expected_failures: expr) => {
-		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions(
-			$node.node.get_and_clear_pending_events(),
-			&$expected_failures,
-		);
-	};
-}
-
-#[macro_export]
 /// Handles a PendingHTLCsForwardable and HTLCHandlingFailed event
 macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed {
 	($node: expr, $expected_failures: expr) => {{

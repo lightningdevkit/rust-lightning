@@ -2188,7 +2188,10 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		nodes[1].node.fail_intercepted_htlc(intercept_id).unwrap();
 		let fail =
 			HTLCHandlingFailureType::InvalidForward { requested_forward_scid: intercept_scid };
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], [fail]);
+		expect_pending_htlcs_forwardable_conditions(
+			nodes[1].node.get_and_clear_pending_events(),
+			&[fail],
+		);
 		nodes[1].node.process_pending_htlc_forwards();
 		let update_fail = get_htlc_update_msgs!(nodes[1], node_a_id);
 		check_added_monitors!(&nodes[1], 1);
@@ -2533,12 +2536,12 @@ fn do_automatic_retries(test: AutoRetry) {
 			commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 			expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 			nodes[1].node.process_pending_htlc_forwards();
-			expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(
-				nodes[1],
-				[HTLCHandlingFailureType::Forward {
+			expect_pending_htlcs_forwardable_conditions(
+				nodes[1].node.get_and_clear_pending_events(),
+				&[HTLCHandlingFailureType::Forward {
 					node_id: Some(node_c_id),
 					channel_id: $failing_channel_id,
-				}]
+				}],
 			);
 			nodes[1].node.process_pending_htlc_forwards();
 			let update_1 = get_htlc_update_msgs!(nodes[1], node_a_id);

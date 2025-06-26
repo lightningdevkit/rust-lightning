@@ -1742,8 +1742,8 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	// `COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE` blocks, making us consider all the HTLCs
 	// pinnable claims, which the remainder of the test assumes.
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV - COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(&nodes[0],
-		[HTLCHandlingFailureType::Receive { payment_hash: failed_payment_hash }]);
+	expect_pending_htlcs_forwardable_conditions(nodes[0].node.get_and_clear_pending_events(),
+		&[HTLCHandlingFailureType::Receive { payment_hash: failed_payment_hash }]);
 	// A will generate justice tx from B's revoked commitment/HTLC tx
 	mine_transaction(&nodes[0], &revoked_local_txn[0]);
 	check_closed_broadcast!(nodes[0], true);
