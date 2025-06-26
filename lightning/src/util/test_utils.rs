@@ -34,7 +34,7 @@ use crate::ln::types::ChannelId;
 use crate::ln::{msgs, wire};
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::onion_message::messenger::{
-	DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath,
+	DefaultMessageRouter, Destination, MessageRouter, NodeIdMessageRouter, OnionMessagePath,
 };
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::router::{
@@ -311,19 +311,35 @@ impl<'a> Drop for TestRouter<'a> {
 	}
 }
 
-pub struct TestMessageRouter<'a> {
-	inner: DefaultMessageRouter<
-		Arc<NetworkGraph<&'a TestLogger>>,
-		&'a TestLogger,
-		&'a TestKeysInterface,
-	>,
+pub enum TestMessageRouter<'a> {
+	Default {
+		inner: DefaultMessageRouter<
+			Arc<NetworkGraph<&'a TestLogger>>,
+			&'a TestLogger,
+			&'a TestKeysInterface,
+		>,
+	},
+
+	NodeId {
+		inner: NodeIdMessageRouter<
+			Arc<NetworkGraph<&'a TestLogger>>,
+			&'a TestLogger,
+			&'a TestKeysInterface,
+		>,
+	},
 }
 
 impl<'a> TestMessageRouter<'a> {
-	pub fn new(
+	pub fn new_default(
 		network_graph: Arc<NetworkGraph<&'a TestLogger>>, entropy_source: &'a TestKeysInterface,
 	) -> Self {
-		Self { inner: DefaultMessageRouter::new(network_graph, entropy_source) }
+		Self::Default { inner: DefaultMessageRouter::new(network_graph, entropy_source) }
+	}
+
+	pub fn new_node_id_router(
+		network_graph: Arc<NetworkGraph<&'a TestLogger>>, entropy_source: &'a TestKeysInterface,
+	) -> Self {
+		Self::NodeId { inner: NodeIdMessageRouter::new(network_graph, entropy_source) }
 	}
 }
 
@@ -331,21 +347,24 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 	fn find_path(
 		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination,
 	) -> Result<OnionMessagePath, ()> {
-		self.inner.find_path(sender, peers, destination)
+		match self {
+			Self::Default { inner } => inner.find_path(sender, peers, destination),
+			Self::NodeId { inner } => inner.find_path(sender, peers, destination),
+		}
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>,
-		secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		self.inner.create_blinded_paths(recipient, context, peers, secp_ctx)
-	}
-
-	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, context: MessageContext, peers: Vec<MessageForwardNode>,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
-		self.inner.create_compact_blinded_paths(recipient, context, peers, secp_ctx)
+		match self {
+			Self::Default { inner } => {
+				inner.create_blinded_paths(recipient, context, peers, secp_ctx)
+			},
+			Self::NodeId { inner } => {
+				inner.create_blinded_paths(recipient, context, peers, secp_ctx)
+			},
+		}
 	}
 }
 

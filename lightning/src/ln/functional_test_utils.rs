@@ -38,7 +38,7 @@ use crate::util::logger::Logger;
 use crate::util::scid_utils;
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_channel_signer::SignerOp;
-use crate::util::test_utils;
+use crate::util::test_utils::{self, TestLogger};
 use crate::util::test_utils::{TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::ser::{ReadableArgs, Writeable};
 
@@ -728,7 +728,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					signer_provider: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator::new(253),
 					router: &test_utils::TestRouter::new(Arc::clone(&network_graph), &self.logger, &scorer),
-					message_router: &test_utils::TestMessageRouter::new(network_graph, self.keys_manager),
+					message_router: &test_utils::TestMessageRouter::new_default(network_graph, self.keys_manager),
 					chain_monitor: self.chain_monitor,
 					tx_broadcaster: &broadcaster,
 					logger: &self.logger,
@@ -3345,26 +3345,39 @@ pub fn create_chanmon_cfgs_with_keys(node_count: usize, predefined_keys_ids: Opt
 	chan_mon_cfgs
 }
 
-pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>) -> Vec<NodeCfg<'a>> {
-	create_node_cfgs_with_persisters(node_count, chanmon_cfgs, chanmon_cfgs.iter().map(|c| &c.persister).collect())
-}
-
-pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>, persisters: Vec<&'a impl test_utils::SyncPersist>) -> Vec<NodeCfg<'a>> {
+fn create_node_cfgs_internal<'a, F>(
+	node_count: usize,
+	chanmon_cfgs: &'a Vec<TestChanMonCfg>,
+	persisters: Vec<&'a impl test_utils::SyncPersist>,
+	message_router_constructor: F,
+) -> Vec<NodeCfg<'a>>
+where
+	F: Fn(Arc<NetworkGraph<&'a TestLogger>>, &'a TestKeysInterface) -> test_utils::TestMessageRouter<'a>,
+{
 	let mut nodes = Vec::new();
 
 	for i in 0..node_count {
-		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator, persisters[i], &chanmon_cfgs[i].keys_manager);
-		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &chanmon_cfgs[i].logger));
+		let cfg = &chanmon_cfgs[i];
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &cfg.logger));
+		let chain_monitor = test_utils::TestChainMonitor::new(
+			Some(&cfg.chain_source),
+			&cfg.tx_broadcaster,
+			&cfg.logger,
+			&cfg.fee_estimator,
+			persisters[i],
+			&cfg.keys_manager,
+		);
+
 		let seed = [i as u8; 32];
 		nodes.push(NodeCfg {
-			chain_source: &chanmon_cfgs[i].chain_source,
-			logger: &chanmon_cfgs[i].logger,
-			tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster,
-			fee_estimator: &chanmon_cfgs[i].fee_estimator,
-			router: test_utils::TestRouter::new(Arc::clone(&network_graph), &chanmon_cfgs[i].logger, &chanmon_cfgs[i].scorer),
-			message_router: test_utils::TestMessageRouter::new(Arc::clone(&network_graph), &chanmon_cfgs[i].keys_manager),
+			chain_source: &cfg.chain_source,
+			logger: &cfg.logger,
+			tx_broadcaster: &cfg.tx_broadcaster,
+			fee_estimator: &cfg.fee_estimator,
+			router: test_utils::TestRouter::new(Arc::clone(&network_graph), &cfg.logger, &cfg.scorer),
+			message_router: message_router_constructor(Arc::clone(&network_graph), &cfg.keys_manager),
 			chain_monitor,
-			keys_manager: &chanmon_cfgs[i].keys_manager,
+			keys_manager: &cfg.keys_manager,
 			node_seed: seed,
 			network_graph,
 			override_init_features: Rc::new(RefCell::new(None)),
@@ -3372,6 +3385,33 @@ pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a
 	}
 
 	nodes
+}
+
+pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>) -> Vec<NodeCfg<'a>> {
+	let persisters = chanmon_cfgs.iter().map(|c| &c.persister).collect();
+	create_node_cfgs_internal(node_count, chanmon_cfgs, persisters, |graph, keys_manager| {
+		test_utils::TestMessageRouter::new_default(graph, keys_manager)
+	})
+}
+
+pub fn create_node_cfgs_with_persisters<'a>(
+	node_count: usize,
+	chanmon_cfgs: &'a Vec<TestChanMonCfg>,
+	persisters: Vec<&'a impl test_utils::SyncPersist>,
+) -> Vec<NodeCfg<'a>> {
+	create_node_cfgs_internal(node_count, chanmon_cfgs, persisters, |graph, keys_manager| {
+		test_utils::TestMessageRouter::new_default(graph, keys_manager)
+	})
+}
+
+pub fn create_node_cfgs_with_node_id_message_router<'a>(
+	node_count: usize,
+	chanmon_cfgs: &'a Vec<TestChanMonCfg>,
+) -> Vec<NodeCfg<'a>> {
+	let persisters = chanmon_cfgs.iter().map(|c| &c.persister).collect();
+	create_node_cfgs_internal(node_count, chanmon_cfgs, persisters, |graph, keys_manager| {
+		test_utils::TestMessageRouter::new_node_id_router(graph, keys_manager)
+	})
 }
 
 pub fn test_default_channel_config() -> UserConfig {

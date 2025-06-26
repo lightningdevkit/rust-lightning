@@ -2212,9 +2212,8 @@ where
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
-/// # let absolute_expiry = None;
 /// let offer = channel_manager
-///     .create_offer_builder(absolute_expiry)?
+///     .create_offer_builder()?
 /// # ;
 /// # // Needed for compiling for c_bindings
 /// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
@@ -3022,9 +3021,7 @@ const MAX_NO_CHANNEL_PEERS: usize = 250;
 /// short-lived, while anything with a greater expiration is considered long-lived.
 ///
 /// Using [`ChannelManager::create_offer_builder`] or [`ChannelManager::create_refund_builder`],
-/// will included a [`BlindedMessagePath`] created using:
-/// - [`MessageRouter::create_compact_blinded_paths`] when short-lived, and
-/// - [`MessageRouter::create_blinded_paths`] when long-lived.
+/// will include a [`BlindedMessagePath`] created using [`MessageRouter::create_blinded_paths`]
 ///
 /// Using compact [`BlindedMessagePath`]s may provide better privacy as the [`MessageRouter`] could select
 /// more hops. However, since they use short channel ids instead of pubkeys, they are more likely to
@@ -10872,10 +10869,9 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the offer based on the given
-	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications as well as those of the parameterized [`Router`], which implements
-	/// [`MessageRouter`].
+	/// Uses the [`ChannelManager`]'s [`MessageRouter`] to construct a [`BlindedMessagePath`] for
+	/// the offer. See those docs for privacy implications as well as those of the parameterized
+	/// [`Router`], which implements [`MessageRouter`].
 	///
 	/// Also, uses a derived signing pubkey in the offer for recipient privacy.
 	///
@@ -10890,12 +10886,47 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	pub fn create_offer_builder(
-		&$self, absolute_expiry: Option<Duration>
-	) -> Result<$builder, Bolt12SemanticError> {
-		let entropy = &*$self.entropy_source;
+	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
+		let builder = $self.flow.create_offer_builder(
+			&*$self.entropy_source, $self.get_peers_for_blinded_path()
+		)?;
 
-		let builder = $self.flow.create_offer_builder(entropy, absolute_expiry, $self.get_peers_for_blinded_path())?;
+		Ok(builder.into())
+	}
+
+	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by the
+	/// [`ChannelManager`] when handling [`InvoiceRequest`] messages for the offer.
+	///
+	/// # Privacy
+	///
+	/// Constructs a [`BlindedMessagePath`] for the offer using a custom [`MessageRouter`].
+	/// Users can implement a custom [`MessageRouter`] to define properties of the
+	/// [`BlindedMessagePath`] as required or opt not to create any `BlindedMessagePath`.
+	///
+	/// Also, uses a derived signing pubkey in the offer for recipient privacy.
+	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to the introduction node in the responding [`InvoiceRequest`]'s
+	/// reply path.
+	///
+	/// # Errors
+	///
+	/// Errors if the provided [`MessageRouter`] is unable to create a blinded path for the offer.
+	///
+	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	pub fn create_offer_builder_using_router<ME: Deref>(
+		&$self,
+		router: ME,
+	) -> Result<$builder, Bolt12SemanticError>
+	where
+		ME::Target: MessageRouter,
+	{
+		let builder = $self.flow.create_offer_builder_using_router(
+			router, &*$self.entropy_source, $self.get_peers_for_blinded_path()
+		)?;
 
 		Ok(builder.into())
 	}
@@ -10924,10 +10955,8 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the refund based on the given
-	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications as well as those of the parameterized [`Router`], which implements
-	/// [`MessageRouter`].
+	/// Uses the [`ChannelManager`]'s [`MessageRouter`] to construct a [`BlindedMessagePath`]
+	/// for the offer. See those docs for privacy implications.
 	///
 	/// Also, uses a derived payer id in the refund for payer privacy.
 	///
@@ -10951,6 +10980,77 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 
 		let builder = $self.flow.create_refund_builder(
 			entropy, amount_msats, absolute_expiry,
+			payment_id, $self.get_peers_for_blinded_path()
+		)?;
+
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop($self);
+
+		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
+		$self.pending_outbound_payments
+			.add_new_awaiting_invoice(
+				payment_id, expiration, retry_strategy, route_params_config, None,
+			)
+			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
+
+		Ok(builder.into())
+	}
+
+	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
+	/// [`ChannelManager`] when handling [`Bolt12Invoice`] messages for the refund.
+	///
+	/// # Payment
+	///
+	/// The provided `payment_id` is used to ensure that only one invoice is paid for the refund.
+	/// See [Avoiding Duplicate Payments] for other requirements once the payment has been sent.
+	///
+	/// The builder will have the provided expiration set. Any changes to the expiration on the
+	/// returned builder will not be honored by [`ChannelManager`]. For non-`std`, the highest seen
+	/// block time minus two hours is used for the current time when determining if the refund has
+	/// expired.
+	///
+	/// To revoke the refund, use [`ChannelManager::abandon_payment`] prior to receiving the
+	/// invoice. If abandoned, or an invoice isn't received before expiration, the payment will fail
+	/// with an [`Event::PaymentFailed`].
+	///
+	/// If `max_total_routing_fee_msat` is not specified, The default from
+	/// [`RouteParameters::from_payment_params_and_value`] is applied.
+	///
+	/// # Privacy
+	///
+	/// Constructs a [`BlindedMessagePath`] for the refund using a custom [`MessageRouter`].
+	/// Users can implement a custom [`MessageRouter`] to define properties of the
+	/// [`BlindedMessagePath`] as required or opt not to create any `BlindedMessagePath`.
+	///
+	/// Also, uses a derived payer id in the refund for payer privacy.
+	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to an introduction node in the responding
+	/// [`Bolt12Invoice::payment_paths`].
+	///
+	/// # Errors
+	///
+	/// Errors if:
+	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
+	/// - `amount_msats` is invalid, or
+	/// - the provided [`MessageRouter`] is unable to create a blinded path for the refund.
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
+	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
+	pub fn create_refund_builder_using_router<ME: Deref>(
+		&$self, router: ME, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
+		retry_strategy: Retry, route_params_config: RouteParametersConfig
+	) -> Result<$builder, Bolt12SemanticError>
+	where
+		ME::Target: MessageRouter,
+	{
+		let entropy = &*$self.entropy_source;
+
+		let builder = $self.flow.create_refund_builder_using_router(
+			router, entropy, amount_msats, absolute_expiry,
 			payment_id, $self.get_peers_for_blinded_path()
 		)?;
 
@@ -17097,7 +17197,7 @@ pub mod bench {
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let entropy = test_utils::TestKeysInterface::new(&[0u8; 32], network);
 		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &logger_a, &scorer);
-		let message_router = test_utils::TestMessageRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &entropy);
+		let message_router = test_utils::TestMessageRouter::new_default(Arc::new(NetworkGraph::new(network, &logger_a)), &entropy);
 
 		let mut config: UserConfig = Default::default();
 		config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
