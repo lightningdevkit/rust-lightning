@@ -2363,20 +2363,6 @@ pub fn expect_pending_htlcs_forwardable_conditions(
 }
 
 #[macro_export]
-/// Clears (and ignores) a PendingHTLCsForwardable event
-///
-/// Don't use this, call [`expect_pending_htlcs_forwardable_conditions()`] with an empty failure
-/// set instead.
-macro_rules! expect_pending_htlcs_forwardable_ignore {
-	($node: expr) => {
-		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions(
-			$node.node.get_and_clear_pending_events(),
-			&[],
-		);
-	};
-}
-
-#[macro_export]
 /// Handles a PendingHTLCsForwardable and HTLCHandlingFailed event
 macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed {
 	($node: expr, $expected_failures: expr) => {{
