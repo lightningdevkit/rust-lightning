@@ -37,15 +37,14 @@ use crate::ln::channelmanager::{
 };
 use crate::ln::inbound_payment;
 use crate::offers::invoice::{
-	Bolt12Invoice, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder,
-	UnsignedBolt12Invoice, DEFAULT_RELATIVE_EXPIRY,
+	Bolt12Invoice, Bolt12InvoiceAmountSource, DerivedSigningPubkey, InvoiceBuilder,
+	InvoiceBuilderVariant, DEFAULT_RELATIVE_EXPIRY,
 };
-use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{
-	InvoiceRequest, InvoiceRequestBuilder, VerifiedInvoiceRequest,
+	InvoiceRequest, InvoiceRequestAmountSource, InvoiceRequestBuilder, VerifiedInvoiceRequest,
 };
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{DerivedMetadata, Offer, OfferBuilder};
+use crate::offers::offer::{Amount, DerivedMetadata, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::onion_message::async_payments::AsyncPaymentsMessage;
@@ -53,7 +52,7 @@ use crate::onion_message::messenger::{Destination, MessageRouter, MessageSendIns
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::router::Router;
-use crate::sign::{EntropySource, NodeSigner};
+use crate::sign::EntropySource;
 use crate::sync::{Mutex, RwLock};
 use crate::types::payment::{PaymentHash, PaymentSecret};
 
@@ -61,7 +60,6 @@ use crate::types::payment::{PaymentHash, PaymentSecret};
 use {
 	crate::blinded_path::message::AsyncPaymentsContext,
 	crate::blinded_path::payment::AsyncBolt12OfferContext,
-	crate::offers::offer::Amount,
 	crate::offers::signer,
 	crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder},
 	crate::onion_message::async_payments::HeldHtlcAvailable,
@@ -72,6 +70,230 @@ use {
 	crate::blinded_path::message::DNSResolverContext,
 	crate::onion_message::dns_resolution::{DNSResolverMessage, DNSSECQuery, OMNameResolver},
 };
+
+/// Contains OfferEvents that can optionally triggered for manual
+/// handling by user based on appropriate user_config.
+pub enum OfferEvents {
+	/// Notifies that a verified [`InvoiceRequest`] has been received.
+	///
+	/// This event is triggered when a BOLT12 [`InvoiceRequest`] is received.
+	/// The `amount_source` field describes how the amount is specified — in the offer,
+	/// the invoice request, or both.
+	///
+	/// To respond, use [`OffersMessageFlow::create_invoice_builder_from_invoice_request`], providing an
+	/// amount based on the structure described in [`InvoiceRequestAmountSource`].
+	///
+	/// See the [BOLT12 spec](https://github.com/lightning/bolts/blob/master/12-offer-encoding.md#requirements-1)
+	/// for protocol-level details.
+	InvoiceRequestReceived {
+		/// The verified [`InvoiceRequest`] that was received.
+		invoice_request: VerifiedInvoiceRequest,
+
+		/// Indicates how the amount is specified across the [`InvoiceRequest`] and the associated [`Offer`] (if any).
+		///
+		/// Use this to determine what amount to pass when calling [`OffersMessageFlow::create_invoice_builder_from_invoice_request`].
+		///
+		/// ### [`InvoiceRequestAmountSource::InvoiceRequestAndOfferAmount`]
+		/// Both the [`InvoiceRequest`] and the [`Offer`] specify amounts.
+		///
+		/// - If the offer uses [`Amount::Currency`], ensure that the request amount reasonably compensates
+		///   based on conversion rates.
+		///
+		/// - If the offer uses [`Amount::Bitcoin`], this implementation ensures the request amount is
+		///   **greater than or equal to** the offer amount before constructing this variant.
+		///
+		/// In either case, use the exact request amount when calling [`OffersMessageFlow::create_invoice_builder_from_invoice_request`].
+		///
+		/// ### [`InvoiceRequestAmountSource::InvoiceRequestOnly`]
+		/// The [`InvoiceRequest`] specifies an amount, and the associated [`Offer`] does not.
+		///
+		/// - You must pass the exact request amount to [`OffersMessageFlow::create_invoice_builder_from_invoice_request`] when responding.
+		///
+		/// ### [`InvoiceRequestAmountSource::OfferOnly`]
+		/// The [`InvoiceRequest`] does not specify an amount. The amount is taken solely from the associated [`Offer`].
+		///
+		/// - If the amount is in [`Amount::Currency`], user must convert it manually into a Bitcoin-denominated amount
+		///   and then pass it to [`OffersMessageFlow::create_invoice_builder_from_invoice_request`].
+		///
+		/// - If the amount is in [`Amount::Bitcoin`], user must provide an amount that is **greater than or equal to**
+		///   the offer amount when calling the builder function.
+		///
+		/// [`Amount::Currency`]: crate::offers::offer::Amount::Currency
+		/// [`Amount::Bitcoin`]: crate::offers::offer::Amount::Bitcoin
+		amount_source: InvoiceRequestAmountSource,
+	},
+
+	/// Notified that an [`Bolt12Invoice`] was received
+	/// This event is triggered when a BOLT12 [`Bolt12Invoice`] is received.
+	///
+	/// User must use their custom logic to pay the invoice, using the exact amount specified in the invoice.
+	Bolt12InvoiceReceived {
+		/// The verified [`Bolt12Invoice`] that was received.
+		invoice: Bolt12Invoice,
+
+		/// The [`PaymentId`] associated with the invoice.
+		payment_id: PaymentId,
+
+		/// Indicates how the amount is specified in the invoice.
+		invoice_amount: u64,
+
+		/// Indicates the source of the amount: whether from Offer, Refund, or InvoiceRequest.
+		/// Useful to examine the invoice's amount before deciding to pay it.
+		///
+		/// ## [`Bolt12InvoiceAmountSource::Offer`]
+		///
+		/// If the invoice correponds to an Offer flow, it could be based on following cases:
+		///
+		/// ### [`InvoiceRequestAmountSource::InvoiceRequestAndOfferAmount`]:
+		///
+		/// - If the offer uses [`Amount::Currency`], ensure that the request amount reasonably compensates
+		///   based on conversion rates.
+		///
+		/// - If the offer uses [`Amount::Bitcoin`], this implementation ensures the request amount is
+		///   **greater than or equal to** the offer amount before constructing this variant.
+		///
+		/// In both cases, the implementation ensures that the invoice amount is exactly equal to the request amount.
+		///
+		/// ### [`InvoiceRequestAmountSource::InvoiceRequestOnly`]:
+		///
+		/// If only the [`InvoiceRequest`] amount is specified, implementation ensures that the invoice amount is exactly
+		/// equal to the request amount abiding by the spec.
+		///
+		/// ### [`InvoiceRequestAmountSource::OfferOnly`]:
+		///
+		/// - If the offer amount is in [`Amount::Currency`], the user must ensures that the invoice amount sufficiently
+		///   compensates for the offer amount post conversion.
+		/// - If the offer amount is in [`Amount::Bitcoin`], the implementation ensures that the invoice amount is exactly
+		///   equal to the offer amount.
+		///
+		/// For more details, see the [BOLT12 spec](https://github.com/lightning/bolts/blob/master/12-offer-encoding.md#requirements-1)
+		///
+		/// ## [`Bolt12InvoiceAmountSource::Refund`]
+		///
+		/// The invoice corresponds to a [`Refund`] flow, with the amount specified in the [`Refund`].
+		///
+		/// The amount is specified in the [`Refund`] and must be equal to the invoice amount, which the implementation ensures.
+		///
+		/// [`Amount::Currency`]: crate::offers::offer::Amount::Currency
+		/// [`Amount::Bitcoin`]: crate::offers::offer::Amount::Bitcoin
+		amount_source: Bolt12InvoiceAmountSource,
+	},
+}
+
+/// Configuration options for determining which [`OfferEvents`] should be generated during BOLT12 offer handling.
+///
+/// Use this to control whether events such as [`OfferEvents::InvoiceRequestReceived`] and
+/// [`OfferEvents::Bolt12InvoiceReceived`] are triggered automatically or suppressed, depending on your use case.
+///
+/// The default behavior disables all events (`NeverTrigger`) for both cases.
+pub struct FlowConfigs {
+	/// Controls whether [`OfferEvents::InvoiceRequestReceived`] is generated upon receiving an [`InvoiceRequest`].
+	invoice_request_configs: InvoiceRequestConfigs,
+
+	/// Controls whether [`OfferEvents::Bolt12InvoiceReceived`] is generated upon receiving a [`Bolt12Invoice`].
+	invoice_configs: Bolt12InvoiceConfigs,
+}
+
+impl FlowConfigs {
+	/// Creates a new [`FlowConfigs`] instance with default settings.
+	///
+	/// By default, all events are set to `NeverTrigger`, meaning no events will be generated.
+	pub fn new() -> Self {
+		Self {
+			invoice_request_configs: InvoiceRequestConfigs::NeverTrigger,
+			invoice_configs: Bolt12InvoiceConfigs::NeverTrigger,
+		}
+	}
+
+	/// Sets the configuration for invoice request events.
+	pub fn set_invoice_request_configs(self, configs: InvoiceRequestConfigs) -> Self {
+		Self { invoice_request_configs: configs, ..self }
+	}
+
+	/// Sets the configuration for invoice events.
+	pub fn set_invoice_configs(self, configs: Bolt12InvoiceConfigs) -> Self {
+		Self { invoice_configs: configs, ..self }
+	}
+
+	/// Determines whether an [`InvoiceRequest`] should be handled synchronously or dispatched as an event.
+	pub fn handle_invoice_request_asyncly(
+		&self, invoice_request: &InvoiceRequest,
+	) -> Result<bool, ()> {
+		let amount_source = invoice_request.contents.amount_source().map_err(|_| ())?;
+
+		let config = &self.invoice_request_configs;
+		Ok(match config {
+			InvoiceRequestConfigs::AlwaysTrigger => true,
+			InvoiceRequestConfigs::NeverTrigger => false,
+			InvoiceRequestConfigs::TriggerIfOfferInCurrency => match amount_source {
+				InvoiceRequestAmountSource::InvoiceRequestAndOfferAmount {
+					offer_amount, ..
+				}
+				| InvoiceRequestAmountSource::OfferOnly { amount: offer_amount } => {
+					matches!(offer_amount, Amount::Currency { .. })
+				},
+				InvoiceRequestAmountSource::InvoiceRequestOnly { .. } => false,
+			},
+		})
+	}
+
+	/// Determines whether an [`Bolt12Invoice`] should be handled synchronously or dispatched as an event.
+	pub fn handle_invoice_asyncly(&self, invoice: &Bolt12Invoice) -> Result<bool, ()> {
+		let amount_source = invoice.amount_source().map_err(|_| ())?;
+		let (ir_amount, offer_amount) = match amount_source {
+			Bolt12InvoiceAmountSource::Offer(amount) => match amount {
+				InvoiceRequestAmountSource::OfferOnly { amount } => (None, Some(amount)),
+				InvoiceRequestAmountSource::InvoiceRequestAndOfferAmount {
+					invoice_request_amount_msats,
+					offer_amount,
+				} => (Some(invoice_request_amount_msats), Some(offer_amount)),
+				InvoiceRequestAmountSource::InvoiceRequestOnly { amount_msats } => {
+					(Some(amount_msats), None)
+				},
+			},
+			Bolt12InvoiceAmountSource::Refund(_) => (None, None),
+		};
+		Ok(match self.invoice_configs {
+			Bolt12InvoiceConfigs::AlwaysTrigger => true,
+			Bolt12InvoiceConfigs::TriggerIfOfferInCurrency => {
+				matches!(offer_amount, Some(Amount::Currency { .. }))
+			},
+			Bolt12InvoiceConfigs::TriggerIfOfferInCurrencyAndNoIRAmount => {
+				matches!(offer_amount, Some(Amount::Currency { .. })) && ir_amount.is_none()
+			},
+			Bolt12InvoiceConfigs::NeverTrigger => false,
+		})
+	}
+}
+
+/// Specifies under what conditions an [`InvoiceRequest`] will generate an [`OfferEvents::InvoiceRequestReceived`] event.
+pub enum InvoiceRequestConfigs {
+	/// Always trigger the event when an [`InvoiceRequest`] is received.
+	AlwaysTrigger,
+
+	/// Trigger the event only if the corresponding [`Offer`] specifies an [`Amount::Currency`] amount.
+	TriggerIfOfferInCurrency,
+
+	/// Never trigger the event, regardless of the incoming [`InvoiceRequest`].
+	NeverTrigger,
+}
+
+/// Specifies under what conditions a [`Bolt12Invoice`] will generate an [`OfferEvents::Bolt12InvoiceReceived`] event.
+pub enum Bolt12InvoiceConfigs {
+	/// Always trigger the event when a [`Bolt12Invoice`] is received.
+	AlwaysTrigger,
+
+	/// Trigger the event only if the invoice corresponds to an [`Offer`] flow with an [`Amount::Currency`] offer.
+	TriggerIfOfferInCurrency,
+
+	/// Trigger the event only if the invoice corresponds to an [`Offer`] flow where:
+	/// - the underlying [`Offer`] amount is in [`Amount::Currency`], and
+	/// - the corresponding [`InvoiceRequest`] did **not** specify an amount.
+	TriggerIfOfferInCurrencyAndNoIRAmount,
+
+	/// Never trigger the event, regardless of the incoming [`Bolt12Invoice`].
+	NeverTrigger,
+}
 
 /// A BOLT12 offers code and flow utility provider, which facilitates
 /// BOLT12 builder generation and onion message handling.
@@ -97,12 +319,16 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 
+	pending_offers_events: Mutex<Vec<OfferEvents>>,
+
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 
 	#[cfg(feature = "dnssec")]
 	pub(crate) hrn_resolver: OMNameResolver,
 	#[cfg(feature = "dnssec")]
 	pending_dns_onion_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
+
+	user_configs: FlowConfigs,
 }
 
 impl<MR: Deref> OffersMessageFlow<MR>
@@ -113,7 +339,7 @@ where
 	pub fn new(
 		chain_hash: ChainHash, best_block: BestBlock, our_network_pubkey: PublicKey,
 		current_timestamp: u32, inbound_payment_key: inbound_payment::ExpandedKey,
-		secp_ctx: Secp256k1<secp256k1::All>, message_router: MR,
+		secp_ctx: Secp256k1<secp256k1::All>, message_router: MR, configs: FlowConfigs,
 	) -> Self {
 		Self {
 			chain_hash,
@@ -127,12 +353,15 @@ where
 			message_router,
 
 			pending_offers_messages: Mutex::new(Vec::new()),
+			pending_offers_events: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
 
 			#[cfg(feature = "dnssec")]
 			hrn_resolver: OMNameResolver::new(current_timestamp, best_block.height),
 			#[cfg(feature = "dnssec")]
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
+
+			user_configs: configs,
 		}
 	}
 
@@ -341,6 +570,62 @@ impl<MR: Deref> OffersMessageFlow<MR>
 where
 	MR::Target: MessageRouter,
 {
+	/// Determines whether the given [`VerifiedInvoiceRequest`] should be
+	/// handled synchronously or dispatched as an event, based on [`FlowConfigs`].
+	///
+	/// Returns:
+	/// - `Ok(Some(request))` if the caller should handle it now.
+	/// - `Ok(None)` if it was dispatched for async processing.
+	/// - `Err(())` in case of validation or enqueue failure.
+	pub fn determine_invoice_request_handling(
+		&self, invoice_request: VerifiedInvoiceRequest,
+	) -> Result<Option<VerifiedInvoiceRequest>, ()> {
+		if !self.user_configs.handle_invoice_request_asyncly(&invoice_request.inner)? {
+			// Synchronous path: return the request for user handling.
+			return Ok(Some(invoice_request));
+		}
+
+		let amount_source = invoice_request.inner.contents.amount_source().map_err(|_| ())?;
+
+		// Dispatch event for async handling.
+		self.enqueue_offers_event(OfferEvents::InvoiceRequestReceived {
+			invoice_request,
+			amount_source,
+		})?;
+
+		Ok(None)
+	}
+
+	/// Determines whether the given [`Bolt12Invoice`] should be handled
+	/// synchronously or dispatched as an event, based on [`FlowConfigs`].
+	///
+	/// Returns:
+	/// - `Ok(Some(request))` if the caller should handle it now.
+	/// - `Ok(None)` if it was dispatched for async processing.
+	/// - `Err(())` in case of validation or enqueue failure.
+	pub fn determine_invoice_handling(
+		&self, invoice: Bolt12Invoice, payment_id: PaymentId,
+	) -> Result<Option<Bolt12Invoice>, ()> {
+		if !self.user_configs.handle_invoice_asyncly(&invoice)? {
+			// Synchronous path: return the invoice for user handling.
+			return Ok(Some(invoice));
+		}
+
+		let invoice_amount = invoice.amount_msats();
+		let amount_source = invoice.amount_source().map_err(|_| ())?;
+
+		let event = OfferEvents::Bolt12InvoiceReceived {
+			invoice,
+			payment_id,
+			invoice_amount,
+			amount_source,
+		};
+
+		self.enqueue_offers_event(event)?;
+
+		Ok(None)
+	}
+
 	/// Verifies an [`InvoiceRequest`] using the provided [`OffersContext`] or the [`InvoiceRequest::metadata`].
 	///
 	/// - If an [`OffersContext::InvoiceRequest`] with a `nonce` is provided, verification is performed using recipient context data.
@@ -763,27 +1048,30 @@ where
 		Ok(builder.into())
 	}
 
-	/// Creates a response for the provided [`VerifiedInvoiceRequest`].
+	/// Creates an [`InvoiceBuilderVariant`] for the provided [`VerifiedInvoiceRequest`].
 	///
-	/// A response can be either an [`OffersMessage::Invoice`] with additional [`MessageContext`],
-	/// or an [`OffersMessage::InvoiceError`], depending on the [`InvoiceRequest`].
+	/// Returns the appropriate invoice builder variant (`Derived` or `Explicit`) along with a
+	/// [`MessageContext`] that can later be used to respond to the counterparty.
 	///
-	/// An [`OffersMessage::InvoiceError`] will be generated if:
-	/// - We fail to generate valid payment paths to include in the [`Bolt12Invoice`].
-	/// - We fail to generate a valid signed [`Bolt12Invoice`] for the [`InvoiceRequest`].
-	pub fn create_response_for_invoice_request<ES: Deref, NS: Deref, R: Deref>(
-		&self, signer: &NS, router: &R, entropy_source: ES,
-		invoice_request: VerifiedInvoiceRequest, amount_msats: u64, payment_hash: PaymentHash,
-		payment_secret: PaymentSecret, usable_channels: Vec<ChannelDetails>,
-	) -> (OffersMessage, Option<MessageContext>)
+	/// Use this method when you want to inspect or modify the [`InvoiceBuilder`] before signing and
+	/// generating the final [`Bolt12Invoice`].
+	///
+	/// # Errors
+	///
+	/// Returns a [`Bolt12SemanticError`] if:
+	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
+	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
+	pub fn create_invoice_builder_from_invoice_request<'a, ES: Deref, R: Deref>(
+		&'a self, router: &R, entropy_source: ES, invoice_request: &'a VerifiedInvoiceRequest,
+		amount_msats: u64, payment_hash: PaymentHash, payment_secret: PaymentSecret,
+		usable_channels: Vec<ChannelDetails>,
+	) -> Result<(InvoiceBuilderVariant<'a>, MessageContext), Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
-		NS::Target: NodeSigner,
 		R::Target: Router,
 	{
 		let entropy = &*entropy_source;
 		let expanded_key = &self.inbound_payment_key;
-		let secp_ctx = &self.secp_ctx;
 
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
@@ -792,70 +1080,51 @@ where
 			invoice_request: invoice_request.fields(),
 		});
 
-		let payment_paths = match self.create_blinded_payment_paths(
-			router,
-			entropy,
-			usable_channels,
-			Some(amount_msats),
-			payment_secret,
-			context,
-			relative_expiry,
-		) {
-			Ok(paths) => paths,
-			Err(_) => {
-				let error = InvoiceError::from(Bolt12SemanticError::MissingPaths);
-				return (OffersMessage::InvoiceError(error.into()), None);
-			},
-		};
+		let payment_paths = self
+			.create_blinded_payment_paths(
+				router,
+				entropy,
+				usable_channels,
+				Some(amount_msats),
+				payment_secret,
+				context,
+				relative_expiry,
+			)
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		#[cfg(not(feature = "std"))]
 		let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
 
-		let response = if invoice_request.keys.is_some() {
+		let builder = if invoice_request.keys.is_some() {
 			#[cfg(feature = "std")]
-			let builder = invoice_request.respond_using_derived_keys(payment_paths, payment_hash);
+			let builder = invoice_request.respond_using_derived_keys(
+				Some(amount_msats),
+				payment_paths,
+				payment_hash,
+			);
 			#[cfg(not(feature = "std"))]
 			let builder = invoice_request.respond_using_derived_keys_no_std(
+				Some(amount_msats),
 				payment_paths,
 				payment_hash,
 				created_at,
 			);
-			builder
-				.map(InvoiceBuilder::<DerivedSigningPubkey>::from)
-				.and_then(|builder| builder.allow_mpp().build_and_sign(secp_ctx))
-				.map_err(InvoiceError::from)
+
+			builder.map(|b| InvoiceBuilderVariant::Derived(InvoiceBuilder::from(b).allow_mpp()))?
 		} else {
 			#[cfg(feature = "std")]
 			let builder = invoice_request.respond_with(payment_paths, payment_hash);
 			#[cfg(not(feature = "std"))]
-			let builder = invoice_request.respond_with_no_std(payment_paths, payment_hash, created_at);
-			builder
-				.map(InvoiceBuilder::<ExplicitSigningPubkey>::from)
-				.and_then(|builder| builder.allow_mpp().build())
-				.map_err(InvoiceError::from)
-				.and_then(|invoice| {
-					#[cfg(c_bindings)]
-					let mut invoice = invoice;
-					invoice
-						.sign(|invoice: &UnsignedBolt12Invoice| signer.sign_bolt12_invoice(invoice))
-						.map_err(InvoiceError::from)
-				})
+			let builder = invoice_request.respond_with_no_std(None, payment_paths, payment_hash, created_at);
+			builder.map(|b| InvoiceBuilderVariant::Explicit(InvoiceBuilder::from(b).allow_mpp()))?
 		};
 
-		match response {
-			Ok(invoice) => {
-				let nonce = Nonce::from_entropy_source(entropy);
-				let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
-				let context = MessageContext::Offers(OffersContext::InboundPayment {
-					payment_hash,
-					nonce,
-					hmac,
-				});
+		let nonce = Nonce::from_entropy_source(entropy);
+		let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
+		let context =
+			MessageContext::Offers(OffersContext::InboundPayment { payment_hash, nonce, hmac });
 
-				(OffersMessage::Invoice(invoice), Some(context))
-			},
-			Err(error) => (OffersMessage::InvoiceError(error.into()), None),
-		}
+		Ok((builder, context))
 	}
 
 	/// Enqueues the created [`InvoiceRequest`] to be sent to the counterparty.
@@ -883,6 +1152,7 @@ where
 	/// or [`InvoiceError`].
 	///
 	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
+	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
 	pub fn enqueue_invoice_request(
 		&self, invoice_request: InvoiceRequest, payment_id: PaymentId, nonce: Nonce,
 		peers: Vec<MessageForwardNode>,
@@ -935,6 +1205,7 @@ where
 	/// to create blinded reply paths
 	///
 	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
+	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
 	pub fn enqueue_invoice<ES: Deref>(
 		&self, entropy_source: ES, invoice: Bolt12Invoice, refund: &Refund,
 		peers: Vec<MessageForwardNode>,
@@ -1063,6 +1334,13 @@ where
 		Ok(())
 	}
 
+	/// Enqueues an [`OfferEvents`] event to be processed manually by the user.
+	pub fn enqueue_offers_event(&self, event: OfferEvents) -> Result<(), ()> {
+		let mut pending_offers_events = self.pending_offers_events.lock().unwrap();
+		pending_offers_events.push(event);
+		Ok(())
+	}
+
 	/// Gets the enqueued [`OffersMessage`] with their corresponding [`MessageSendInstructions`].
 	pub fn release_pending_offers_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_offers_messages.lock().unwrap())
@@ -1081,5 +1359,10 @@ where
 		&self,
 	) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_dns_onion_messages.lock().unwrap())
+	}
+
+	/// Gets the enqueued [`OfferEvents`] events.
+	pub fn get_and_clear_pending_offers_events(&self) -> Vec<OfferEvents> {
+		core::mem::take(&mut self.pending_offers_events.lock().unwrap())
 	}
 }
