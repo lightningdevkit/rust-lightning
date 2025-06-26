@@ -2199,6 +2199,7 @@ impl FundingScope {
 		let post_value_to_self_msat = post_value_to_self_msat_signed as u64;
 
 		let prev_funding_txid = prev_funding.get_funding_txid();
+		// Update the splicing 'tweak', this will rotate the keys in the signer
 		let holder_pubkeys = match &context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.pubkeys(prev_funding_txid, &context.secp_ctx),
 			// TODO (taproot|arik)
@@ -2217,7 +2218,6 @@ impl FundingScope {
 			channel_type_features: channel_parameters.channel_type_features.clone(),
 			channel_value_satoshis: post_channel_value,
 		};
-		// Update the splicing 'tweak', this will rotate the keys in the signer
 		if let Some(ref mut counterparty_parameters) =
 			post_channel_transaction_parameters.counterparty_parameters
 		{
@@ -2880,6 +2880,8 @@ where
 	SP::Target: SignerProvider,
 {
 	context: &'a mut ChannelContext<SP>,
+	/// The funding scope being (re)negotiated.
+	/// In case of splicing it is the new spliced scope.
 	funding: &'a mut FundingScope,
 	funding_negotiation_context: &'a mut FundingNegotiationContext,
 	interactive_tx_constructor: &'a mut Option<InteractiveTxConstructor>,
@@ -3129,8 +3131,6 @@ where
 		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => {
-				self.funding
-					.funding_transaction = Some(signing_session.unsigned_tx().build_unsigned_tx());
 				commitment_signed
 			},
 			Err(err) => {
@@ -6227,28 +6227,17 @@ where
 	fn as_renegotiating_channel(&mut self) -> Result<NegotiatingChannelView<SP>, &'static str> {
 		if let Some(ref mut pending_splice) = &mut self.pending_splice {
 			if let Some(ref mut funding) = &mut pending_splice.funding {
-				if pending_splice.funding_negotiation_context.our_funding_satoshis != 0
-					|| pending_splice
-						.funding_negotiation_context
-						.their_funding_satoshis
-						.unwrap_or_default() != 0
-				{
-					Ok(NegotiatingChannelView {
-						context: &mut self.context,
-						funding,
-						funding_negotiation_context: &mut pending_splice
-							.funding_negotiation_context,
-						interactive_tx_constructor: &mut pending_splice.interactive_tx_constructor,
-						interactive_tx_signing_session: &mut pending_splice
-							.interactive_tx_signing_session,
-						holder_commitment_transaction_number: self
-							.holder_commitment_point
-							.transaction_number(),
-					})
-				} else {
-					Err("Received unexpected interactive transaction negotiation message: \
-						the channel is splicing, but splice_init/splice_ack has not been exchanged yet")
-				}
+				Ok(NegotiatingChannelView {
+					context: &mut self.context,
+					funding,
+					funding_negotiation_context: &mut pending_splice.funding_negotiation_context,
+					interactive_tx_constructor: &mut pending_splice.interactive_tx_constructor,
+					interactive_tx_signing_session: &mut pending_splice
+						.interactive_tx_signing_session,
+					holder_commitment_transaction_number: self
+						.holder_commitment_point
+						.transaction_number(),
+				})
 			} else {
 				Err("Received unexpected interactive transaction negotiation message: \
 					the channel is splicing, but splice_init/splice_ack has not been exchanged yet")
@@ -10478,9 +10467,9 @@ where
 		// Convert inputs
 		let mut funding_inputs = Vec::new();
 		for (tx_in, tx, _w) in our_funding_inputs.into_iter() {
-			let tx16 = TransactionU16LenLimited::new(tx.clone())
+			let tx16 = TransactionU16LenLimited::new(tx)
 				.map_err(|_e| APIError::APIMisuseError { err: format!("Too large transaction") })?;
-			funding_inputs.push((tx_in.clone(), tx16));
+			funding_inputs.push((tx_in, tx16));
 		}
 
 		let funding_negotiation_context = FundingNegotiationContext {
@@ -10708,9 +10697,7 @@ where
 
 		// TODO(splicing): Add check that we are the splice (quiescence) initiator
 
-		if pending_splice.funding.is_some()
-			|| pending_splice.interactive_tx_constructor.is_some()
-		{
+		if pending_splice.funding.is_some() || pending_splice.interactive_tx_constructor.is_some() {
 			return Err(ChannelError::Warn(format!(
 				"Got unexpected splice_ack, splice already negotiating"
 			)));

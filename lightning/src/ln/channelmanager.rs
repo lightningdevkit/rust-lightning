@@ -4525,7 +4525,7 @@ where
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let result = self.internal_splice_channel(
-				channel_id, counterparty_node_id, our_funding_contribution_satoshis, our_funding_inputs.clone(), funding_feerate_per_kw, locktime
+				channel_id, counterparty_node_id, our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_per_kw, locktime
 			);
 			res = result;
 			match res {
@@ -10163,11 +10163,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
-					let tx_msg_opt = try_channel_entry!(self, peer_state,
-						funded_channel.splice_ack(
-							msg, &self.signer_provider, &self.entropy_source,
-							&self.get_our_node_id(), &self.logger
-						), chan_entry);
+					let splice_ack_res = funded_channel.splice_ack(
+						msg, &self.signer_provider, &self.entropy_source,
+						&self.get_our_node_id(), &self.logger
+					);
+					let tx_msg_opt = try_channel_entry!(self, peer_state, splice_ack_res, chan_entry);
 					if let Some(tx_msg) = tx_msg_opt {
 						peer_state.pending_msg_events.push(tx_msg.into_msg_send_event(counterparty_node_id.clone()));
 					}
