@@ -10354,9 +10354,10 @@ where
 		Ok(splice_ack_msg)
 	}
 
-	/// Compute the channel balances (local & remote) by taking into account fees, anchor values, and dust limits.
+	/// Compute the channel balances (local & remote, in msats) by taking into account fees,
+	// anchor values, and dust limits.
 	/// Pending HTLCs are not taken into account, this method should be used when there is no such,
-	/// e.g. in quiscence state
+	/// e.g. in quiescence state
 	#[cfg(splicing)]
 	fn compute_balances_less_fees(
 		&self, channel_value_sats: u64, value_to_self_msat: u64, is_local: bool,
@@ -10372,12 +10373,12 @@ where
 			((channel_value_sats * 1000) as i64).saturating_sub(value_to_self_msat as i64);
 		debug_assert!(value_to_remote_msat >= 0);
 
-		let total_fee_sat = commit_tx_fee_sat(
+		let total_fee_sats = commit_tx_fee_sat(
 			feerate_per_kw,
 			0,
 			&self.funding.channel_transaction_parameters.channel_type_features,
 		);
-		let anchors_val = if self
+		let anchors_val_sats = if self
 			.funding
 			.channel_transaction_parameters
 			.channel_type_features
@@ -10389,34 +10390,37 @@ where
 		} as i64;
 
 		// consider fees and anchor values
-		let (mut value_to_self, mut value_to_remote) = if self.funding.is_outbound() {
+		let (mut new_value_to_self_msat, mut new_value_to_remote_msat) = if self
+			.funding
+			.is_outbound()
+		{
 			(
-				(value_to_self_msat as i64) / 1000 - anchors_val - total_fee_sat as i64,
-				value_to_remote_msat / 1000,
+				value_to_self_msat as i64 - anchors_val_sats * 1000 - total_fee_sats as i64 * 1000,
+				value_to_remote_msat,
 			)
 		} else {
 			(
-				(value_to_self_msat as i64) / 1000,
-				value_to_remote_msat / 1000 - anchors_val - total_fee_sat as i64,
+				value_to_self_msat as i64,
+				value_to_remote_msat - anchors_val_sats * 1000 - total_fee_sats as i64 * 1000,
 			)
 		};
 
 		// consider dust limit
-		let broadcaster_dust_limit_satoshis = if is_local {
+		let broadcaster_dust_limit_sats = if is_local {
 			self.context.holder_dust_limit_satoshis
 		} else {
 			self.context.counterparty_dust_limit_satoshis
 		} as i64;
-		if value_to_self < broadcaster_dust_limit_satoshis {
-			value_to_self = 0;
+		if new_value_to_self_msat < (broadcaster_dust_limit_sats * 1000) {
+			new_value_to_self_msat = 0;
 		}
-		debug_assert!(value_to_self >= 0);
-		if value_to_remote < broadcaster_dust_limit_satoshis {
-			value_to_remote = 0;
+		debug_assert!(new_value_to_self_msat >= 0);
+		if new_value_to_remote_msat < (broadcaster_dust_limit_sats * 1000) {
+			new_value_to_remote_msat = 0;
 		}
-		debug_assert!(value_to_remote >= 0);
+		debug_assert!(new_value_to_remote_msat >= 0);
 
-		(value_to_self as u64, value_to_remote as u64)
+		(new_value_to_self_msat as u64, new_value_to_remote_msat as u64)
 	}
 
 	/// Handle splice_ack
@@ -10431,31 +10435,31 @@ where
 
 		// Pre-check for reserve requirement
 		// (Note: It should also be checked later at tx_complete)
-		let our_funding_contribution = pending_splice.our_funding_contribution;
-		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
+		let our_funding_contribution_sats = pending_splice.our_funding_contribution;
+		let their_funding_contribution_sats = msg.funding_contribution_satoshis;
 
-		let pre_channel_value = self.funding.get_value_satoshis();
-		let post_channel_value = PendingSplice::compute_post_value(
-			pre_channel_value,
-			our_funding_contribution,
-			their_funding_contribution_satoshis,
+		let pre_channel_value_sats = self.funding.get_value_satoshis();
+		let post_channel_value_sats = PendingSplice::compute_post_value(
+			pre_channel_value_sats,
+			our_funding_contribution_sats,
+			their_funding_contribution_sats,
 		);
-		let pre_balance_self = self.funding.value_to_self_msat;
-		let post_balance_self =
-			PendingSplice::add_checked(pre_balance_self, our_funding_contribution);
-		let (pre_balance_self_less_fees, pre_balance_counterparty_less_fees) =
-			self.compute_balances_less_fees(pre_channel_value, pre_balance_self, true);
-		let (post_balance_self_less_fees, post_balance_counterparty_less_fees) =
-			self.compute_balances_less_fees(post_channel_value, post_balance_self, true);
+		let pre_balance_self_msat = self.funding.value_to_self_msat;
+		let post_balance_self_msat =
+			PendingSplice::add_checked(pre_balance_self_msat, our_funding_contribution_sats * 1000);
+		let (pre_balance_self_less_fees_msat, pre_balance_counterparty_less_fees_msat) =
+			self.compute_balances_less_fees(pre_channel_value_sats, pre_balance_self_msat, true);
+		let (post_balance_self_less_fees_msat, post_balance_counterparty_less_fees_msat) =
+			self.compute_balances_less_fees(post_channel_value_sats, post_balance_self_msat, true);
 		// Pre-check for reserve requirement
 		// This will also be checked later at tx_complete
 		let _res = self.check_splice_balances_meet_v2_reserve_requirements(
-			pre_balance_self_less_fees,
-			post_balance_self_less_fees,
-			pre_balance_counterparty_less_fees,
-			post_balance_counterparty_less_fees,
-			pre_channel_value,
-			post_channel_value,
+			pre_balance_self_less_fees_msat,
+			post_balance_self_less_fees_msat,
+			pre_balance_counterparty_less_fees_msat,
+			post_balance_counterparty_less_fees_msat,
+			pre_channel_value_sats,
+			post_channel_value_sats,
 		)?;
 		Ok(())
 	}
@@ -10535,59 +10539,58 @@ where
 		Ok((None, None))
 	}
 
-	/// Check that post-splicing balance meets reserve requirements, but only if it met it pre-splice as well
 	/// Check that post-splicing balance meets reserve requirements, but only if it met it pre-splice as well.
-	/// Returns the minimum channel reserve (sats)
+	/// In case of error, it returns the minimum channel reserve that was violated (in sats)
 	#[cfg(splicing)]
-	pub fn check_splice_balance_meets_v2_reserve_requirement_noerr(
-		&self, pre_balance: u64, post_balance: u64, pre_channel_value: u64,
-		post_channel_value: u64, dust_limit: u64,
+	pub fn check_splice_balance_meets_v2_reserve_requirement(
+		&self, pre_balance_msat: u64, post_balance_msat: u64, pre_channel_value_sats: u64,
+		post_channel_value_sats: u64, dust_limit_sats: u64,
 	) -> Result<(), u64> {
 		let post_channel_reserve_sats =
-			get_v2_channel_reserve_satoshis(post_channel_value, dust_limit);
-		if post_balance >= post_channel_reserve_sats * 1000 {
+			get_v2_channel_reserve_satoshis(post_channel_value_sats, dust_limit_sats);
+		if post_balance_msat >= (post_channel_reserve_sats * 1000) {
 			return Ok(());
 		}
 		// We're not allowed to dip below the reserve once we've been above,
 		// check differently for originally v1 and v2 channels
 		if self.is_v2_established() {
 			let pre_channel_reserve_sats =
-				get_v2_channel_reserve_satoshis(pre_channel_value, dust_limit);
-			if pre_balance >= pre_channel_reserve_sats * 1000 {
+				get_v2_channel_reserve_satoshis(pre_channel_value_sats, dust_limit_sats);
+			if pre_balance_msat >= (pre_channel_reserve_sats * 1000) {
 				return Err(post_channel_reserve_sats);
 			}
 		} else {
-			if pre_balance >= self.funding.holder_selected_channel_reserve_satoshis * 1000 {
+			if pre_balance_msat >= (self.funding.holder_selected_channel_reserve_satoshis * 1000) {
 				return Err(post_channel_reserve_sats);
 			}
 			if let Some(cp_reserve) = self.funding.counterparty_selected_channel_reserve_satoshis {
-				if pre_balance >= cp_reserve * 1000 {
+				if pre_balance_msat >= (cp_reserve * 1000) {
 					return Err(post_channel_reserve_sats);
 				}
 			}
 		}
 		// Make sure we either remain with the same balance or move towards the reserve.
-		if post_balance >= pre_balance {
+		if post_balance_msat >= pre_balance_msat {
 			Ok(())
 		} else {
 			Err(post_channel_reserve_sats)
 		}
 	}
 
-	/// Check that balances meet the channel reserve requirements or violates them (below reserve).
+	/// Check that balances (self and counterparty) meet the channel reserve requirements or violates them (below reserve).
 	/// The channel value is an input as opposed to using from the FundingScope, so that this can be used in case of splicing
 	/// to check with new channel value (before being committed to it).
 	#[cfg(splicing)]
 	pub fn check_splice_balances_meet_v2_reserve_requirements(
 		&self, self_balance_pre_msat: u64, self_balance_post_msat: u64,
 		counterparty_balance_pre_msat: u64, counterparty_balance_post_msat: u64,
-		channel_value_pre: u64, channel_value_post: u64,
+		channel_value_pre_sats: u64, channel_value_post_sats: u64,
 	) -> Result<(), ChannelError> {
-		let is_ok_self = self.check_splice_balance_meets_v2_reserve_requirement_noerr(
+		let is_ok_self = self.check_splice_balance_meets_v2_reserve_requirement(
 			self_balance_pre_msat,
 			self_balance_post_msat,
-			channel_value_pre,
-			channel_value_post,
+			channel_value_pre_sats,
+			channel_value_post_sats,
 			self.context.holder_dust_limit_satoshis,
 		);
 		if let Err(channel_reserve_self) = is_ok_self {
@@ -10596,11 +10599,11 @@ where
 				self_balance_post_msat, channel_reserve_self,
 			)));
 		}
-		let is_ok_cp = self.check_splice_balance_meets_v2_reserve_requirement_noerr(
+		let is_ok_cp = self.check_splice_balance_meets_v2_reserve_requirement(
 			counterparty_balance_pre_msat,
 			counterparty_balance_post_msat,
-			channel_value_pre,
-			channel_value_post,
+			channel_value_pre_sats,
+			channel_value_post_sats,
 			self.context.counterparty_dust_limit_satoshis,
 		);
 		if let Err(channel_reserve_cp) = is_ok_cp {
