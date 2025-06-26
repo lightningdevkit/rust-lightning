@@ -76,7 +76,7 @@ fn chanmon_fail_from_stale_commitment() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 1);
 
@@ -906,7 +906,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, 10_000_000);
 
 	let (route_2, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 20_000_000);
@@ -918,7 +918,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 20_000_000);
 	nodes[1].node.claim_funds(payment_preimage_2);
 	get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());

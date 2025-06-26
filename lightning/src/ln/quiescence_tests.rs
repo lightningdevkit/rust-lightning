@@ -141,7 +141,7 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 		get_event_msg!(local_node, MessageSendEvent::SendRevokeAndACK, remote_node_id);
 	remote_node.node.handle_revoke_and_ack(local_node_id, &last_revoke_and_ack);
 	check_added_monitors(remote_node, 1);
-	expect_pending_htlcs_forwardable!(remote_node);
+	remote_node.node.process_pending_htlc_forwards();
 	expect_htlc_handling_failed_destinations!(
 		remote_node.node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash }]
@@ -376,7 +376,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	let update_add = get_htlc_update_msgs!(&nodes[0], node_id_1);
 	nodes[1].node.handle_update_add_htlc(node_id_0, &update_add.update_add_htlcs[0]);
 	commitment_signed_dance!(&nodes[1], &nodes[0], update_add.commitment_signed, false);
-	expect_pending_htlcs_forwardable!(&nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash2, payment_secret2, payment_amount);
 
 	// Have nodes[1] attempt to fail/claim nodes[0]'s payment. Since nodes[1] already sent out
