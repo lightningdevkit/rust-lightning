@@ -569,7 +569,7 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	let update_add_1 = update_1.update_add_htlcs[0].clone();
 	nodes[3].node.handle_update_add_htlc(node_b_id, &update_add_1);
 	commitment_signed_dance!(nodes[3], nodes[1], update_1.commitment_signed, false, true);
-	expect_pending_htlcs_forwardable_ignore!(nodes[3]);
+	expect_pending_htlcs_forwardable_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
 	nodes[3].node.process_pending_update_add_htlcs();
 
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
@@ -618,7 +618,7 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	let update_add_3 = update_3.update_add_htlcs[0].clone();
 	nodes[3].node.handle_update_add_htlc(node_c_id, &update_add_3);
 	commitment_signed_dance!(nodes[3], nodes[2], update_3.commitment_signed, false, true);
-	expect_pending_htlcs_forwardable_ignore!(nodes[3]);
+	expect_pending_htlcs_forwardable_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
 	nodes[3].node.process_pending_update_add_htlcs();
 
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
@@ -2534,7 +2534,10 @@ fn do_automatic_retries(test: AutoRetry) {
 			let mut update_add = update_0.update_add_htlcs[0].clone();
 			nodes[1].node.handle_update_add_htlc(node_a_id, &update_add);
 			commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
-			expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+			expect_pending_htlcs_forwardable_conditions(
+				nodes[1].node.get_and_clear_pending_events(),
+				&[],
+			);
 			nodes[1].node.process_pending_htlc_forwards();
 			expect_pending_htlcs_forwardable_conditions(
 				nodes[1].node.get_and_clear_pending_events(),
@@ -2927,7 +2930,7 @@ fn auto_retry_partial_failure() {
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_second_raa);
 	check_added_monitors!(nodes[1], 1);
 
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, amt_msat);
 	nodes[1].node.claim_funds(payment_preimage);
@@ -4553,7 +4556,7 @@ fn do_test_custom_tlvs_consistency(
 		check_added_monitors!(nodes[3], 0);
 		commitment_signed_dance!(nodes[3], nodes[2], payment_event.commitment_msg, true, true);
 	}
-	expect_pending_htlcs_forwardable_ignore!(nodes[3]);
+	expect_pending_htlcs_forwardable_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
 	nodes[3].node.process_pending_htlc_forwards();
 
 	if let Some(expected_tlvs) = expected_receive_tlvs {
@@ -4737,7 +4740,10 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	// the payment metadata was modified, failing only the one modified HTLC and retaining the
 	// other.
 	if do_modify {
-		expect_pending_htlcs_forwardable_ignore!(nodes[3]);
+		expect_pending_htlcs_forwardable_conditions(
+			nodes[3].node.get_and_clear_pending_events(),
+			&[],
+		);
 		nodes[3].node.process_pending_htlc_forwards();
 		expect_pending_htlcs_forwardable_conditions(
 			nodes[3].node.get_and_clear_pending_events(),

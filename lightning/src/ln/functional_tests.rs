@@ -9509,7 +9509,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		// the first HTLC delivered above.
 	}
 
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_htlc_forwards();
 
 	if test_for_second_fail_panic {
@@ -9684,7 +9684,7 @@ pub fn test_inconsistent_mpp_params() {
 		// amount. It will assume the second is a privacy attack (no longer particularly relevant
 		// post-payment_secrets) and fail back the new HTLC.
 	}
-	expect_pending_htlcs_forwardable_ignore!(nodes[3]);
+	expect_pending_htlcs_forwardable_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
 	nodes[3].node.process_pending_htlc_forwards();
 	let fail_type = HTLCHandlingFailureType::Receive { payment_hash: hash };
 	expect_pending_htlcs_forwardable_conditions(
