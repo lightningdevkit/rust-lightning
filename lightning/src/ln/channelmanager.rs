@@ -7811,7 +7811,6 @@ where
 		self.claim_payment_internal(payment_preimage, true);
 	}
 
-	#[rustfmt::skip]
 	fn claim_payment_internal(&self, payment_preimage: PaymentPreimage, custom_tlvs_known: bool) {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 
@@ -7819,7 +7818,10 @@ where
 
 		let (sources, claiming_payment) = {
 			let res = self.claimable_payments.lock().unwrap().begin_claiming_payment(
-				payment_hash, &self.node_signer, &self.logger, &self.inbound_payment_id_secret,
+				payment_hash,
+				&self.node_signer,
+				&self.logger,
+				&self.inbound_payment_id_secret,
 				custom_tlvs_known,
 			);
 
@@ -7827,13 +7829,21 @@ where
 				Ok((htlcs, payment_info)) => (htlcs, payment_info),
 				Err(htlcs) => {
 					for htlc in htlcs {
-						let reason = self.get_htlc_fail_reason_from_failure_code(FailureCode::InvalidOnionPayload(None), &htlc);
+						let reason = self.get_htlc_fail_reason_from_failure_code(
+							FailureCode::InvalidOnionPayload(None),
+							&htlc,
+						);
 						let source = HTLCSource::PreviousHopData(htlc.prev_hop);
 						let receiver = HTLCHandlingFailureType::Receive { payment_hash };
-						self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
+						self.fail_htlc_backwards_internal(
+							&source,
+							&payment_hash,
+							&reason,
+							receiver,
+						);
 					}
 					return;
-				}
+				},
 			}
 		};
 		debug_assert!(!sources.is_empty());
@@ -7869,7 +7879,10 @@ where
 		mem::drop(per_peer_state);
 		if sources.is_empty() || expected_amt_msat.is_none() {
 			self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
-			log_info!(self.logger, "Attempted to claim an incomplete payment which no longer had any available HTLCs!");
+			log_info!(
+				self.logger,
+				"Attempted to claim an incomplete payment which no longer had any available HTLCs!"
+			);
 			return;
 		}
 		if claimable_amt_msat != expected_amt_msat.unwrap() {
@@ -7879,18 +7892,21 @@ where
 			return;
 		}
 		if valid_mpp {
-			let mpp_parts: Vec<_> = sources.iter().filter_map(|htlc| {
-				if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
-					Some(MPPClaimHTLCSource {
-						counterparty_node_id: cp_id,
-						funding_txo: htlc.prev_hop.outpoint,
-						channel_id: htlc.prev_hop.channel_id,
-						htlc_id: htlc.prev_hop.htlc_id,
-					})
-				} else {
-					None
-				}
-			}).collect();
+			let mpp_parts: Vec<_> = sources
+				.iter()
+				.filter_map(|htlc| {
+					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
+						Some(MPPClaimHTLCSource {
+							counterparty_node_id: cp_id,
+							funding_txo: htlc.prev_hop.outpoint,
+							channel_id: htlc.prev_hop.channel_id,
+							htlc_id: htlc.prev_hop.htlc_id,
+						})
+					} else {
+						None
+					}
+				})
+				.collect();
 			let pending_mpp_claim_ptr_opt = if sources.len() > 1 {
 				let mut channels_without_preimage = Vec::with_capacity(mpp_parts.len());
 				for part in mpp_parts.iter() {
@@ -7908,32 +7924,48 @@ where
 			};
 			let payment_info = Some(PaymentClaimDetails { mpp_parts, claiming_payment });
 			for htlc in sources {
-				let this_mpp_claim = pending_mpp_claim_ptr_opt.as_ref().and_then(|pending_mpp_claim|
-					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
-						let claim_ptr = PendingMPPClaimPointer(Arc::clone(pending_mpp_claim));
-						Some((cp_id, htlc.prev_hop.channel_id, claim_ptr))
-					} else {
-						None
-					}
-				);
+				let this_mpp_claim =
+					pending_mpp_claim_ptr_opt.as_ref().and_then(|pending_mpp_claim| {
+						if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
+							let claim_ptr = PendingMPPClaimPointer(Arc::clone(pending_mpp_claim));
+							Some((cp_id, htlc.prev_hop.channel_id, claim_ptr))
+						} else {
+							None
+						}
+					});
 				let raa_blocker = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
 					RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
 						pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
 					}
 				});
 				self.claim_funds_from_hop(
-					htlc.prev_hop, payment_preimage, payment_info.clone(),
+					htlc.prev_hop,
+					payment_preimage,
+					payment_info.clone(),
 					|_, definitely_duplicate| {
-						debug_assert!(!definitely_duplicate, "We shouldn't claim duplicatively from a payment");
-						(Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim: this_mpp_claim }), raa_blocker)
-					}
+						debug_assert!(
+							!definitely_duplicate,
+							"We shouldn't claim duplicatively from a payment"
+						);
+						(
+							Some(MonitorUpdateCompletionAction::PaymentClaimed {
+								payment_hash,
+								pending_mpp_claim: this_mpp_claim,
+							}),
+							raa_blocker,
+						)
+					},
 				);
 			}
 		} else {
 			for htlc in sources {
-				let err_data = invalid_payment_err_data(htlc.value, self.best_block.read().unwrap().height);
+				let err_data =
+					invalid_payment_err_data(htlc.value, self.best_block.read().unwrap().height);
 				let source = HTLCSource::PreviousHopData(htlc.prev_hop);
-				let reason = HTLCFailReason::reason(LocalHTLCFailureReason::IncorrectPaymentDetails, err_data);
+				let reason = HTLCFailReason::reason(
+					LocalHTLCFailureReason::IncorrectPaymentDetails,
+					err_data,
+				);
 				let receiver = HTLCHandlingFailureType::Receive { payment_hash };
 				self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 			}
@@ -7970,9 +8002,11 @@ where
 		self.claim_mpp_part(htlc_source, payment_preimage, payment_info, completion_action)
 	}
 
-	#[rustfmt::skip]
 	fn claim_mpp_part<
-		ComplFunc: FnOnce(Option<u64>, bool) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>)
+		ComplFunc: FnOnce(
+			Option<u64>,
+			bool,
+		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, completion_action: ComplFunc,
@@ -7997,33 +8031,58 @@ where
 
 		// Note here that `peer_state_opt` is always `Some` if `prev_hop.counterparty_node_id` is
 		// `Some`. This is relied on in the closed-channel case below.
-		let mut peer_state_opt = prev_hop.counterparty_node_id.as_ref().map(
-			|counterparty_node_id| per_peer_state.get(counterparty_node_id)
-				.map(|peer_mutex| peer_mutex.lock().unwrap())
-				.expect(MISSING_MON_ERROR)
-		);
+		let mut peer_state_opt =
+			prev_hop.counterparty_node_id.as_ref().map(|counterparty_node_id| {
+				per_peer_state
+					.get(counterparty_node_id)
+					.map(|peer_mutex| peer_mutex.lock().unwrap())
+					.expect(MISSING_MON_ERROR)
+			});
 
 		if let Some(peer_state_lock) = peer_state_opt.as_mut() {
 			let peer_state = &mut **peer_state_lock;
-			if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(chan_id) {
+			if let hash_map::Entry::Occupied(mut chan_entry) =
+				peer_state.channel_by_id.entry(chan_id)
+			{
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					let fulfill_res = chan.get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, payment_info, &&logger);
+					let fulfill_res = chan.get_update_fulfill_htlc_and_commit(
+						prev_hop.htlc_id,
+						payment_preimage,
+						payment_info,
+						&&logger,
+					);
 
 					match fulfill_res {
 						UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } => {
-							let (action_opt, raa_blocker_opt) = completion_action(Some(htlc_value_msat), false);
+							let (action_opt, raa_blocker_opt) =
+								completion_action(Some(htlc_value_msat), false);
 							if let Some(action) = action_opt {
 								log_trace!(logger, "Tracking monitor update completion action for channel {}: {:?}",
 									chan_id, action);
-								peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
+								peer_state
+									.monitor_update_blocked_actions
+									.entry(chan_id)
+									.or_insert(Vec::new())
+									.push(action);
 							}
 							if let Some(raa_blocker) = raa_blocker_opt {
-								peer_state.actions_blocking_raa_monitor_updates.entry(chan_id).or_insert_with(Vec::new).push(raa_blocker);
+								peer_state
+									.actions_blocking_raa_monitor_updates
+									.entry(chan_id)
+									.or_insert_with(Vec::new)
+									.push(raa_blocker);
 							}
-							handle_new_monitor_update!(self, prev_hop.funding_txo, monitor_update, peer_state_opt,
-								peer_state, per_peer_state, chan);
-						}
+							handle_new_monitor_update!(
+								self,
+								prev_hop.funding_txo,
+								monitor_update,
+								peer_state_opt,
+								peer_state,
+								per_peer_state,
+								chan
+							);
+						},
 						UpdateFulfillCommitFetch::DuplicateClaim {} => {
 							let (action_opt, raa_blocker_opt) = completion_action(None, true);
 							if let Some(raa_blocker) = raa_blocker_opt {
@@ -8035,8 +8094,14 @@ where
 								//
 								// In any other case, the RAA blocker must still be present and
 								// blocking RAAs.
-								debug_assert!(during_init ||
-									peer_state.actions_blocking_raa_monitor_updates.get(&chan_id).unwrap().contains(&raa_blocker));
+								debug_assert!(
+									during_init
+										|| peer_state
+											.actions_blocking_raa_monitor_updates
+											.get(&chan_id)
+											.unwrap()
+											.contains(&raa_blocker)
+								);
 							}
 							let action = if let Some(action) = action_opt {
 								action
@@ -8051,8 +8116,10 @@ where
 							if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
 								downstream_counterparty_node_id: node_id,
 								downstream_funding_outpoint: _,
-								blocking_action: blocker, downstream_channel_id: channel_id,
-							} = action {
+								blocking_action: blocker,
+								downstream_channel_id: channel_id,
+							} = action
+							{
 								if let Some(peer_state_mtx) = per_peer_state.get(&node_id) {
 									let mut peer_state = peer_state_mtx.lock().unwrap();
 									if let Some(blockers) = peer_state
@@ -8065,7 +8132,9 @@ where
 											// which case we need to only remove the one
 											// blocker which was added duplicatively.
 											let first_blocker = !found_blocker;
-											if *iter == blocker { found_blocker = true; }
+											if *iter == blocker {
+												found_blocker = true;
+											}
 											*iter != blocker || !first_blocker
 										});
 										debug_assert!(found_blocker);
@@ -8073,7 +8142,10 @@ where
 								} else {
 									debug_assert!(false);
 								}
-							} else if matches!(action, MonitorUpdateCompletionAction::PaymentClaimed { .. }) {
+							} else if matches!(
+								action,
+								MonitorUpdateCompletionAction::PaymentClaimed { .. }
+							) {
 								debug_assert!(during_init,
 									"Duplicate claims should always either be for forwarded payments(freeing another channel immediately) or during init (for claim replay)");
 								mem::drop(per_peer_state);
@@ -8083,7 +8155,7 @@ where
 									"Duplicate claims should always either be for forwarded payments(freeing another channel immediately) or during init (for claim replay)");
 								return;
 							};
-						}
+						},
 					}
 				}
 				return;
@@ -8098,10 +8170,14 @@ where
 				payment_preimage,
 			);
 		}
-		let counterparty_node_id = prev_hop.counterparty_node_id.expect("Checked immediately above");
-		let mut peer_state = peer_state_opt.expect("peer_state_opt is always Some when the counterparty_node_id is Some");
+		let counterparty_node_id =
+			prev_hop.counterparty_node_id.expect("Checked immediately above");
+		let mut peer_state = peer_state_opt
+			.expect("peer_state_opt is always Some when the counterparty_node_id is Some");
 
-		let update_id = if let Some(latest_update_id) = peer_state.closed_channel_monitor_update_ids.get_mut(&chan_id) {
+		let update_id = if let Some(latest_update_id) =
+			peer_state.closed_channel_monitor_update_ids.get_mut(&chan_id)
+		{
 			*latest_update_id = latest_update_id.saturating_add(1);
 			*latest_update_id
 		} else {
@@ -8129,7 +8205,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let (action_opt, raa_blocker_opt) = completion_action(None, false);
 
 		if let Some(raa_blocker) = raa_blocker_opt {
-			peer_state.actions_blocking_raa_monitor_updates
+			peer_state
+				.actions_blocking_raa_monitor_updates
 				.entry(prev_hop.channel_id)
 				.or_default()
 				.push(raa_blocker);
@@ -8138,17 +8215,37 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Given the fact that we're in a bit of a weird edge case, its worth hashing the preimage
 		// to include the `payment_hash` in the log metadata here.
 		let payment_hash = payment_preimage.into();
-		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(chan_id), Some(payment_hash));
+		let logger = WithContext::from(
+			&self.logger,
+			Some(counterparty_node_id),
+			Some(chan_id),
+			Some(payment_hash),
+		);
 
 		if let Some(action) = action_opt {
-			log_trace!(logger, "Tracking monitor update completion action for closed channel {}: {:?}",
-				chan_id, action);
-			peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
+			log_trace!(
+				logger,
+				"Tracking monitor update completion action for closed channel {}: {:?}",
+				chan_id,
+				action
+			);
+			peer_state
+				.monitor_update_blocked_actions
+				.entry(chan_id)
+				.or_insert(Vec::new())
+				.push(action);
 		}
 
 		handle_new_monitor_update!(
-			self, prev_hop.funding_txo, preimage_update, peer_state, peer_state, per_peer_state,
-			counterparty_node_id, chan_id, POST_CHANNEL_CLOSE
+			self,
+			prev_hop.funding_txo,
+			preimage_update,
+			peer_state,
+			peer_state,
+			per_peer_state,
+			counterparty_node_id,
+			chan_id,
+			POST_CHANNEL_CLOSE
 		);
 	}
 
@@ -8156,37 +8253,53 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		self.pending_outbound_payments.finalize_claims(sources, &self.pending_events);
 	}
 
-	#[rustfmt::skip]
-	fn claim_funds_internal(&self, source: HTLCSource, payment_preimage: PaymentPreimage,
+	fn claim_funds_internal(
+		&self, source: HTLCSource, payment_preimage: PaymentPreimage,
 		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
-		next_channel_outpoint: OutPoint, next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
+		next_channel_outpoint: OutPoint, next_channel_id: ChannelId,
+		next_user_channel_id: Option<u128>,
 	) {
 		match source {
-			HTLCSource::OutboundRoute { session_priv, payment_id, path, bolt12_invoice, .. } => {
+			HTLCSource::OutboundRoute {
+				session_priv, payment_id, path, bolt12_invoice, ..
+			} => {
 				debug_assert!(self.background_events_processed_since_startup.load(Ordering::Acquire),
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
 				debug_assert_eq!(next_channel_counterparty_node_id, path.hops[0].pubkey);
 				let ev_completion_action = EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-					channel_funding_outpoint: next_channel_outpoint, channel_id: next_channel_id,
+					channel_funding_outpoint: next_channel_outpoint,
+					channel_id: next_channel_id,
 					counterparty_node_id: path.hops[0].pubkey,
 				};
-				self.pending_outbound_payments.claim_htlc(payment_id, payment_preimage, bolt12_invoice,
-					session_priv, path, from_onchain, ev_completion_action, &self.pending_events,
-					&self.logger);
+				self.pending_outbound_payments.claim_htlc(
+					payment_id,
+					payment_preimage,
+					bolt12_invoice,
+					session_priv,
+					path,
+					from_onchain,
+					ev_completion_action,
+					&self.pending_events,
+					&self.logger,
+				);
 			},
 			HTLCSource::PreviousHopData(hop_data) => {
 				let prev_channel_id = hop_data.channel_id;
 				let prev_user_channel_id = hop_data.user_channel_id;
 				let prev_node_id = hop_data.counterparty_node_id;
-				let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
-				self.claim_funds_from_hop(hop_data, payment_preimage, None,
+				let completed_blocker =
+					RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
+				self.claim_funds_from_hop(
+					hop_data,
+					payment_preimage,
+					None,
 					|htlc_claim_value_msat, definitely_duplicate| {
 						let chan_to_release = Some(EventUnblockedChannel {
 							counterparty_node_id: next_channel_counterparty_node_id,
 							funding_txo: next_channel_outpoint,
 							channel_id: next_channel_id,
-							blocking_action: completed_blocker
+							blocking_action: completed_blocker,
 						});
 
 						if definitely_duplicate && startup_replay {
@@ -8203,32 +8316,45 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									downstream_channel_id: other_chan.channel_id,
 									blocking_action: other_chan.blocking_action,
 								}), None)
-							} else { (None, None) }
+							} else {
+								(None, None)
+							}
 						} else {
-							let total_fee_earned_msat = if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
-								if let Some(claimed_htlc_value) = htlc_claim_value_msat {
-									Some(claimed_htlc_value - forwarded_htlc_value)
-								} else { None }
-							} else { None };
-							debug_assert!(skimmed_fee_msat <= total_fee_earned_msat,
-								"skimmed_fee_msat must always be included in total_fee_earned_msat");
-							(Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
-								event: events::Event::PaymentForwarded {
-									prev_channel_id: Some(prev_channel_id),
-									next_channel_id: Some(next_channel_id),
-									prev_user_channel_id,
-									next_user_channel_id,
-									prev_node_id,
-									next_node_id: Some(next_channel_counterparty_node_id),
-									total_fee_earned_msat,
-									skimmed_fee_msat,
-									claim_from_onchain_tx: from_onchain,
-									outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
-								},
-								downstream_counterparty_and_funding_outpoint: chan_to_release,
-							}), None)
+							let total_fee_earned_msat =
+								if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
+									if let Some(claimed_htlc_value) = htlc_claim_value_msat {
+										Some(claimed_htlc_value - forwarded_htlc_value)
+									} else {
+										None
+									}
+								} else {
+									None
+								};
+							debug_assert!(
+								skimmed_fee_msat <= total_fee_earned_msat,
+								"skimmed_fee_msat must always be included in total_fee_earned_msat"
+							);
+							(
+								Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+									event: events::Event::PaymentForwarded {
+										prev_channel_id: Some(prev_channel_id),
+										next_channel_id: Some(next_channel_id),
+										prev_user_channel_id,
+										next_user_channel_id,
+										prev_node_id,
+										next_node_id: Some(next_channel_counterparty_node_id),
+										total_fee_earned_msat,
+										skimmed_fee_msat,
+										claim_from_onchain_tx: from_onchain,
+										outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
+									},
+									downstream_counterparty_and_funding_outpoint: chan_to_release,
+								}),
+								None,
+							)
 						}
-					});
+					},
+				);
 			},
 		}
 	}
@@ -9721,17 +9847,23 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
-	#[rustfmt::skip]
-	fn internal_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
+	fn internal_update_fulfill_htlc(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC,
+	) -> Result<(), MsgHandleErrInternal> {
 		let funding_txo;
 		let next_user_channel_id;
 		let (htlc_source, forwarded_htlc_value, skimmed_fee_msat) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
-			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-				.ok_or_else(|| {
-					debug_assert!(false);
-					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
-				})?;
+			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(
+					format!(
+						"Can't find a peer matching the passed counterparty node_id {}",
+						counterparty_node_id
+					),
+					msg.channel_id,
+				)
+			})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
@@ -9764,9 +9896,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
-		self.claim_funds_internal(htlc_source, msg.payment_preimage.clone(),
-			Some(forwarded_htlc_value), skimmed_fee_msat, false, false, *counterparty_node_id,
-			funding_txo, msg.channel_id, Some(next_user_channel_id),
+		self.claim_funds_internal(
+			htlc_source,
+			msg.payment_preimage.clone(),
+			Some(forwarded_htlc_value),
+			skimmed_fee_msat,
+			false,
+			false,
+			*counterparty_node_id,
+			funding_txo,
+			msg.channel_id,
+			Some(next_user_channel_id),
 		);
 
 		Ok(())
@@ -10636,56 +10776,102 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
-	#[rustfmt::skip]
 	fn process_pending_monitor_events(&self) -> bool {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
 		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
 		let has_pending_monitor_events = !pending_monitor_events.is_empty();
-		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in pending_monitor_events.drain(..) {
+		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in
+			pending_monitor_events.drain(..)
+		{
 			for monitor_event in monitor_events.drain(..) {
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
-						let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(channel_id), Some(htlc_update.payment_hash));
+						let logger = WithContext::from(
+							&self.logger,
+							Some(counterparty_node_id),
+							Some(channel_id),
+							Some(htlc_update.payment_hash),
+						);
 						if let Some(preimage) = htlc_update.payment_preimage {
-							log_trace!(logger, "Claiming HTLC with preimage {} from our monitor", preimage);
+							log_trace!(
+								logger,
+								"Claiming HTLC with preimage {} from our monitor",
+								preimage
+							);
 							self.claim_funds_internal(
-								htlc_update.source, preimage,
-								htlc_update.htlc_value_satoshis.map(|v| v * 1000), None, true,
-								false, counterparty_node_id, funding_outpoint, channel_id, None,
+								htlc_update.source,
+								preimage,
+								htlc_update.htlc_value_satoshis.map(|v| v * 1000),
+								None,
+								true,
+								false,
+								counterparty_node_id,
+								funding_outpoint,
+								channel_id,
+								None,
 							);
 						} else {
-							log_trace!(logger, "Failing HTLC with hash {} from our monitor", &htlc_update.payment_hash);
+							log_trace!(
+								logger,
+								"Failing HTLC with hash {} from our monitor",
+								&htlc_update.payment_hash
+							);
 							let failure_reason = LocalHTLCFailureReason::OnChainTimeout;
-							let receiver = HTLCHandlingFailureType::Forward { node_id: Some(counterparty_node_id), channel_id };
+							let receiver = HTLCHandlingFailureType::Forward {
+								node_id: Some(counterparty_node_id),
+								channel_id,
+							};
 							let reason = HTLCFailReason::from_failure_code(failure_reason);
-							self.fail_htlc_backwards_internal(&htlc_update.source, &htlc_update.payment_hash, &reason, receiver);
+							self.fail_htlc_backwards_internal(
+								&htlc_update.source,
+								&htlc_update.payment_hash,
+								&reason,
+								receiver,
+							);
 						}
 					},
-					MonitorEvent::HolderForceClosed(_) | MonitorEvent::HolderForceClosedWithInfo { .. } => {
+					MonitorEvent::HolderForceClosed(_)
+					| MonitorEvent::HolderForceClosedWithInfo { .. } => {
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 							let peer_state = &mut *peer_state_lock;
-							if let hash_map::Entry::Occupied(chan_entry) = peer_state.channel_by_id.entry(channel_id) {
-								let reason = if let MonitorEvent::HolderForceClosedWithInfo { reason, .. } = monitor_event {
+							if let hash_map::Entry::Occupied(chan_entry) =
+								peer_state.channel_by_id.entry(channel_id)
+							{
+								let reason = if let MonitorEvent::HolderForceClosedWithInfo {
+									reason,
+									..
+								} = monitor_event
+								{
 									reason
 								} else {
 									ClosureReason::HolderForceClosed {
 										broadcasted_latest_txn: Some(true),
-										message: "Legacy ChannelMonitor closure".to_owned()
+										message: "Legacy ChannelMonitor closure".to_owned(),
 									}
 								};
 								let err = ChannelError::Close((reason.to_string(), reason));
 								let mut chan = chan_entry.remove();
-								let (_, e) = convert_channel_err!(self, peer_state, err, &mut chan, &channel_id);
+								let (_, e) = convert_channel_err!(
+									self,
+									peer_state,
+									err,
+									&mut chan,
+									&channel_id
+								);
 								failed_channels.push((Err(e), counterparty_node_id));
 							}
 						}
 					},
 					MonitorEvent::Completed { channel_id, monitor_update_id, .. } => {
-						self.channel_monitor_updated(&channel_id, monitor_update_id, &counterparty_node_id);
+						self.channel_monitor_updated(
+							&channel_id,
+							monitor_update_id,
+							&counterparty_node_id,
+						);
 					},
 				}
 			}
