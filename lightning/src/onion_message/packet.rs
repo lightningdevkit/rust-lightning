@@ -110,7 +110,16 @@ impl LengthReadable for Packet {
 /// message content itself, such as an invoice request.
 pub(super) enum Payload<T: OnionMessageContents> {
 	/// This payload is for an intermediate hop.
-	Forward(ForwardControlTlvs),
+	Forward {
+		/// The [`ReceiveControlTlvs`] were authenticated with the additional key which was
+		/// provided to [`ReadableArgs::read`].
+		///
+		/// This should not happen for blinded paths built by any node but us (i.e. messages
+		/// forwarded through us to other nodes), but can be used to authenticate extra hops added
+		/// to a blinded path as padding.
+		control_tlvs_authenticated: bool,
+		control_tlvs: ForwardControlTlvs,
+	},
 	/// This payload is for the final hop.
 	Receive {
 		/// The [`ReceiveControlTlvs`] were authenticated with the additional key which was
@@ -223,7 +232,10 @@ pub(super) enum ReceiveControlTlvs {
 impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match &self.0 {
-			Payload::Forward(ForwardControlTlvs::Blinded(encrypted_bytes)) => {
+			Payload::Forward {
+				control_tlvs: ForwardControlTlvs::Blinded(encrypted_bytes),
+				control_tlvs_authenticated: _,
+			} => {
 				_encode_varint_length_prefixed_tlv!(w, { (4, encrypted_bytes, required_vec) })
 			},
 			Payload::Receive {
@@ -238,7 +250,10 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 					(message.tlv_type(), message, required)
 				})
 			},
-			Payload::Forward(ForwardControlTlvs::Unblinded(control_tlvs)) => {
+			Payload::Forward {
+				control_tlvs: ForwardControlTlvs::Unblinded(control_tlvs),
+				control_tlvs_authenticated: _,
+			} => {
 				let write_adapter = ChaChaPolyWriteAdapter::new(self.1, &control_tlvs);
 				_encode_varint_length_prefixed_tlv!(w, { (4, write_adapter, required) })
 			},
@@ -320,7 +335,10 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 				if used_aad || message_type.is_some() {
 					return Err(DecodeError::InvalidValue);
 				}
-				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
+				Ok(Payload::Forward {
+					control_tlvs: ForwardControlTlvs::Unblinded(tlvs),
+					control_tlvs_authenticated: used_aad,
+				})
 			},
 			Some(ChaChaDualPolyReadAdapter { readable: ControlTlvs::Receive(tlvs), used_aad }) => {
 				Ok(Payload::Receive {

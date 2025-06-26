@@ -1120,10 +1120,11 @@ where
 			},
 		},
 		Ok((
-			Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-				next_hop,
-				next_blinding_override,
-			})),
+			Payload::Forward {
+				control_tlvs:
+					ForwardControlTlvs::Unblinded(ForwardTlvs { next_hop, next_blinding_override }),
+				control_tlvs_authenticated,
+			},
 			Some((next_hop_hmac, new_packet_bytes)),
 		)) => {
 			// TODO: we need to check whether `next_hop` is our node, in which case this is a dummy
@@ -1131,6 +1132,17 @@ where
 			// unwrapping the onion layers to get to the final payload. Since we don't have the option
 			// of creating blinded paths with dummy hops currently, we should be ok to not handle this
 			// for now.
+			if control_tlvs_authenticated {
+				// TODO: When we start adding dummy hops, we should require the use of
+				// authenticated control TLVs, as it prevents a DoS attack where someone builds a
+				// blinded path to us which requires we decode hundreds of dummy hops only to find
+				// that we don't actually have a message inside to read.
+				// However, we should never accept a `control_tlvs_authenticated` packet which is
+				// *not* a dummy blinded hop we added, though it shouldn't be possible to reach in
+				// any case.
+				log_trace!(logger, "Received an authenticated to-forward onion message");
+				return Err(());
+			}
 			let packet_pubkey = msg.onion_routing_packet.public_key;
 			let new_pubkey_opt =
 				onion_utils::next_hop_pubkey(&secp_ctx, packet_pubkey, &onion_decode_ss);
@@ -2251,10 +2263,13 @@ fn packet_payloads_and_keys<
 			if num_unblinded_hops != 0 && unblinded_path_idx < num_unblinded_hops {
 				if let Some(ss) = prev_control_tlvs_ss.take() {
 					payloads.push((
-						Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-							next_hop: NextMessageHop::NodeId(unblinded_pk_opt.unwrap()),
-							next_blinding_override: None,
-						})),
+						Payload::Forward {
+							control_tlvs: ForwardControlTlvs::Unblinded(ForwardTlvs {
+								next_hop: NextMessageHop::NodeId(unblinded_pk_opt.unwrap()),
+								next_blinding_override: None,
+							}),
+							control_tlvs_authenticated: false,
+						},
 						ss,
 					));
 				}
@@ -2263,17 +2278,23 @@ fn packet_payloads_and_keys<
 			} else if let Some((intro_node_id, blinding_pt)) = intro_node_id_blinding_pt.take() {
 				if let Some(control_tlvs_ss) = prev_control_tlvs_ss.take() {
 					payloads.push((
-						Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-							next_hop: NextMessageHop::NodeId(intro_node_id),
-							next_blinding_override: Some(blinding_pt),
-						})),
+						Payload::Forward {
+							control_tlvs: ForwardControlTlvs::Unblinded(ForwardTlvs {
+								next_hop: NextMessageHop::NodeId(intro_node_id),
+								next_blinding_override: Some(blinding_pt),
+							}),
+							control_tlvs_authenticated: false,
+						},
 						control_tlvs_ss,
 					));
 				}
 			}
 			if blinded_path_idx < num_blinded_hops.saturating_sub(1) && enc_payload_opt.is_some() {
 				payloads.push((
-					Payload::Forward(ForwardControlTlvs::Blinded(enc_payload_opt.unwrap())),
+					Payload::Forward {
+						control_tlvs: ForwardControlTlvs::Blinded(enc_payload_opt.unwrap()),
+						control_tlvs_authenticated: false,
+					},
 					control_tlvs_ss,
 				));
 				blinded_path_idx += 1;
