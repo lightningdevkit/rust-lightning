@@ -384,7 +384,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	if fail_htlc {
 		nodes[1].node.fail_htlc_backwards(&payment_hash2);
 		let failed_payment = HTLCHandlingFailureType::Receive { payment_hash: payment_hash2 };
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[1], [failed_payment]);
+		process_htlcs_and_expect_htlc_handling_failed!(&nodes[1], [failed_payment]);
 	} else {
 		nodes[1].node.claim_funds(payment_preimage2);
 		check_added_monitors(&nodes[1], 1);
@@ -433,7 +433,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	if fail_htlc {
 		nodes[0].node.fail_htlc_backwards(&payment_hash1);
 		let failed_payment = HTLCHandlingFailureType::Receive { payment_hash: payment_hash1 };
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[0], [failed_payment]);
+		process_htlcs_and_expect_htlc_handling_failed!(&nodes[0], [failed_payment]);
 	} else {
 		nodes[0].node.claim_funds(payment_preimage1);
 	}

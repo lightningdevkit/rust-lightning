@@ -702,7 +702,7 @@ fn test_scid_alias_returned() {
 	commitment_signed_dance!(nodes[1], nodes[0], &as_updates.commitment_signed, false, true);
 
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+	process_htlcs_and_expect_htlc_handling_failed!(
 		nodes[1],
 		[HTLCHandlingFailureType::Forward {
 			node_id: Some(node_c_id),

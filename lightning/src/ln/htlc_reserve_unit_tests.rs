@@ -676,7 +676,7 @@ pub fn holding_cell_htlc_counting() {
 	// fails), the second will process the resulting failure and fail the HTLC backward.
 	nodes[1].node.process_pending_htlc_forwards();
 	let fail = HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 };
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [fail]);
+	process_htlcs_and_expect_htlc_handling_failed!(nodes[1], [fail]);
 	check_added_monitors(&nodes[1], 1);
 
 	let bs_fail_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
