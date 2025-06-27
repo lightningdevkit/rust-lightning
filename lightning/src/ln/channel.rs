@@ -1220,6 +1220,7 @@ pub(super) struct ReestablishResponses {
 	pub shutdown_msg: Option<msgs::Shutdown>,
 	pub tx_signatures: Option<msgs::TxSignatures>,
 	pub tx_abort: Option<msgs::TxAbort>,
+	pub inferred_splice_locked: Option<msgs::SpliceLocked>,
 }
 
 /// The first message we send to our peer after connection
@@ -9291,6 +9292,7 @@ where
 					shutdown_msg, announcement_sigs,
 					tx_signatures,
 					tx_abort: None,
+					inferred_splice_locked: None,
 				});
 			}
 
@@ -9303,6 +9305,7 @@ where
 				shutdown_msg, announcement_sigs,
 				tx_signatures,
 				tx_abort,
+				inferred_splice_locked: None,
 			});
 		}
 
@@ -9338,6 +9341,30 @@ where
 			self.get_channel_ready(logger)
 		} else { None };
 
+		// A receiving node:
+		//   - if splice transactions are pending and `my_current_funding_locked` matches one of
+		//     those splice transactions, for which it hasn't received `splice_locked` yet:
+		//     - MUST process `my_current_funding_locked` as if it was receiving `splice_locked`
+		//       for this `txid`.
+		#[cfg(splicing)]
+		let inferred_splice_locked = msg.my_current_funding_locked.as_ref().and_then(|funding_locked| {
+			self.pending_funding
+				.iter()
+				.find(|funding| funding.get_funding_txid() == Some(funding_locked.txid))
+				.and_then(|_| {
+					self.pending_splice.as_ref().and_then(|pending_splice| {
+						(Some(funding_locked.txid) != pending_splice.received_funding_txid)
+							.then(|| funding_locked.txid)
+					})
+				})
+				.map(|splice_txid| msgs::SpliceLocked {
+					channel_id: self.context.channel_id,
+					splice_txid,
+				})
+		});
+		#[cfg(not(splicing))]
+		let inferred_splice_locked = None;
+
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected channel {} with only lost outbound RAA", &self.context.channel_id());
@@ -9355,6 +9382,7 @@ where
 				commitment_order: self.context.resend_order.clone(),
 				tx_signatures,
 				tx_abort,
+				inferred_splice_locked,
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
 			debug_assert!(commitment_update.is_none());
@@ -9379,6 +9407,7 @@ where
 					commitment_order: self.context.resend_order.clone(),
 					tx_signatures: None,
 					tx_abort,
+					inferred_splice_locked,
 				})
 			} else {
 				let commitment_update = if self.context.resend_order == RAACommitmentOrder::RevokeAndACKFirst
@@ -9405,6 +9434,7 @@ where
 					commitment_order: self.context.resend_order.clone(),
 					tx_signatures: None,
 					tx_abort,
+					inferred_splice_locked,
 				})
 			}
 		} else if msg.next_local_commitment_number < next_counterparty_commitment_number {
