@@ -187,7 +187,7 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 					expect_htlc_forward!(&nodes[2]);
 					expect_event!(&nodes[2], Event::PaymentClaimable);
 					callback_node();
-					expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+					process_htlcs_and_expect_htlc_handling_failed!(
 						nodes[2],
 						[HTLCHandlingFailureType::Receive { payment_hash: *payment_hash }]
 					);
@@ -2294,7 +2294,7 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, payment_amount);
 	nodes[1].node.fail_htlc_backwards_with_reason(&payment_hash, failure_code);
 
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+	process_htlcs_and_expect_htlc_handling_failed!(
 		nodes[1],
 		[HTLCHandlingFailureType::Receive { payment_hash }]
 	);

@@ -1046,7 +1046,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	}
 
 	if !claim_htlc {
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
+		process_htlcs_and_expect_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
 	} else {
 		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, true);
 	}
@@ -1112,7 +1112,7 @@ fn removed_payment_no_manager_persistence() {
 	let node_encoded = nodes[1].node.encode();
 
 	nodes[2].node.fail_htlc_backwards(&payment_hash);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], [HTLCHandlingFailureType::Receive { payment_hash }]);
+	process_htlcs_and_expect_htlc_handling_failed!(nodes[2], [HTLCHandlingFailureType::Receive { payment_hash }]);
 	check_added_monitors!(nodes[2], 1);
 	let events = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1144,7 +1144,7 @@ fn removed_payment_no_manager_persistence() {
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
+	process_htlcs_and_expect_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
