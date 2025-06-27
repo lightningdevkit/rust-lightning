@@ -1217,6 +1217,7 @@ pub(super) struct ReestablishResponses {
 	pub tx_signatures: Option<msgs::TxSignatures>,
 	pub tx_abort: Option<msgs::TxAbort>,
 	pub splice_locked: Option<msgs::SpliceLocked>,
+	pub implicit_splice_locked: Option<msgs::SpliceLocked>,
 }
 
 /// The first message we send to our peer after connection
@@ -8357,6 +8358,7 @@ where
 					tx_signatures: None,
 					tx_abort: None,
 					splice_locked: None,
+					implicit_splice_locked: None,
 				});
 			}
 
@@ -8369,6 +8371,7 @@ where
 				tx_signatures: None,
 				tx_abort: None,
 				splice_locked: None,
+				implicit_splice_locked: None,
 			});
 		}
 
@@ -8479,6 +8482,30 @@ where
 				channel_id: self.context.channel_id,
 				splice_txid,
 			});
+
+		// A receiving node:
+		//   - if splice transactions are pending and `my_current_funding_locked` matches one of
+		//     those splice transactions, for which it hasn't received `splice_locked` yet:
+		//     - MUST process `my_current_funding_locked` as if it was receiving `splice_locked`
+		//       for this `txid`.
+		#[cfg(splicing)]
+		let implicit_splice_locked = msg.my_current_funding_locked_txid.and_then(|funding_txid| {
+			self.pending_funding
+				.iter()
+				.find(|funding| funding.get_funding_txid() == Some(funding_txid))
+				.and_then(|_| {
+					self.pending_splice.as_ref().and_then(|pending_splice| {
+						(Some(funding_txid) != pending_splice.received_funding_txid)
+							.then(|| funding_txid)
+					})
+				})
+				.map(|splice_txid| msgs::SpliceLocked {
+					channel_id: self.context.channel_id,
+					splice_txid,
+				})
+		});
+		#[cfg(not(splicing))]
+		let implicit_splice_locked = None;
 
 		let mut commitment_update = None;
 		let mut tx_signatures = None;
@@ -8593,6 +8620,7 @@ where
 				tx_signatures,
 				tx_abort,
 				splice_locked,
+				implicit_splice_locked,
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
 			// We've made an update so we must have exchanged `tx_signatures`, implying that
@@ -8615,6 +8643,7 @@ where
 					tx_signatures,
 					tx_abort,
 					splice_locked,
+					implicit_splice_locked,
 				})
 			} else {
 				let commitment_update = if self.context.resend_order == RAACommitmentOrder::RevokeAndACKFirst
@@ -8640,6 +8669,7 @@ where
 					tx_signatures,
 					tx_abort,
 					splice_locked,
+					implicit_splice_locked,
 				})
 			}
 		} else if msg.next_local_commitment_number < next_counterparty_commitment_number {
