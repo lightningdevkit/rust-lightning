@@ -2459,7 +2459,7 @@ pub fn expect_pending_htlcs_forwardable_conditions(
 
 #[macro_export]
 /// Handles a PendingHTLCsForwardable and HTLCHandlingFailed event
-macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed {
+macro_rules! process_htlcs_and_expect_htlc_handling_failed {
 	($node: expr, $expected_failures: expr) => {{
 		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions(
 			$node.node.get_and_clear_pending_events(),
@@ -2621,7 +2621,7 @@ pub fn do_commitment_signed_dance(
 	}
 
 	if fail_backwards {
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+		process_htlcs_and_expect_htlc_handling_failed!(
 			node_a,
 			[crate::events::HTLCHandlingFailureType::Forward {
 				node_id: Some(node_b.node.get_our_node_id()),
@@ -3985,7 +3985,7 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(
 		repeat(HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash })
 			.take(expected_paths.len())
 			.collect();
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+	process_htlcs_and_expect_htlc_handling_failed!(
 		expected_paths[0].last().unwrap(),
 		expected_destinations
 	);
@@ -4067,7 +4067,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(
 					update_next_node
 				);
 				if !update_next_node {
-					expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+					process_htlcs_and_expect_htlc_handling_failed!(
 						node,
 						[HTLCHandlingFailureType::Forward {
 							node_id: Some(prev_node.node.get_our_node_id()),

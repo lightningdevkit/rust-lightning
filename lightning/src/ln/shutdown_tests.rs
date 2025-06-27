@@ -1759,7 +1759,7 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 
 	if use_htlc {
 		nodes[0].node.fail_htlc_backwards(&payment_hash_opt.unwrap());
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+		process_htlcs_and_expect_htlc_handling_failed!(
 			nodes[0],
 			[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_opt.unwrap() }]
 		);
