@@ -1299,20 +1299,10 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[node_a_id],
-		100000
-	);
+	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
 }
 
 #[test]

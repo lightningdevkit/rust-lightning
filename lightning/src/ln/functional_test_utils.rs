@@ -799,12 +799,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			{
 				for channel_id in self.chain_monitor.chain_monitor.list_monitors() {
 					let mut w = test_utils::TestVecWriter(Vec::new());
-					self.chain_monitor
-						.chain_monitor
-						.get_monitor(channel_id)
-						.unwrap()
-						.write(&mut w)
-						.unwrap();
+					let mon = self.chain_monitor.chain_monitor.get_monitor(channel_id).unwrap();
+					mon.write(&mut w).unwrap();
 					let (_, deserialized_monitor) =
 						<(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 							&mut io::Cursor::new(&w.0),

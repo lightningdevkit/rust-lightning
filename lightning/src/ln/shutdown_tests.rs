@@ -1346,20 +1346,12 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		// nodes[1] should happily accept and respond to.
 		node_0_closing_signed.fee_range.as_mut().unwrap().max_fee_satoshis *= 10;
 		{
-			let mut node_0_per_peer_lock;
-			let mut node_0_peer_state_lock;
-			get_channel_ref!(
-				nodes[0],
-				nodes[1],
-				node_0_per_peer_lock,
-				node_0_peer_state_lock,
-				chan_id
-			)
-			.context_mut()
-			.closing_fee_limits
-			.as_mut()
-			.unwrap()
-			.1 *= 10;
+			let mut per_peer_lock;
+			let mut peer_state_lock;
+			let chan =
+				get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_id);
+
+			chan.context_mut().closing_fee_limits.as_mut().unwrap().1 *= 10;
 		}
 		nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
 		let node_1_closing_signed =
@@ -1609,14 +1601,11 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 
 	expect_channel_shutdown_state!(nodes[0], chan_id, ChannelShutdownState::ResolvingHTLCs);
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
-	let (latest_update, _) = nodes[0]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&chan_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = {
+		let latest_monitor_update_id =
+			nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap();
+		latest_monitor_update_id.get(&chan_id).unwrap().clone()
+	};
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
 
 	let as_raa_closing_signed = nodes[0].node.get_and_clear_pending_msg_events();

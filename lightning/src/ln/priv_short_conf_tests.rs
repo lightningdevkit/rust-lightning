@@ -105,13 +105,9 @@ fn test_priv_forwarding_rejection() {
 
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &htlc_fail_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], htlc_fail_updates.commitment_signed, true, true);
-	expect_payment_failed_with_update!(
-		nodes[0],
-		our_payment_hash,
-		false,
-		nodes[2].node.list_channels()[0].short_channel_id.unwrap(),
-		true
-	);
+
+	let chan_2_scid = nodes[2].node.list_channels()[0].short_channel_id.unwrap();
+	expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_2_scid, true);
 
 	// Now disconnect nodes[1] from its peers and restart with accept_forwards_to_priv_channels set
 	// to true. Sadly there is currently no way to change it at runtime.
@@ -967,14 +963,11 @@ fn test_0conf_channel_with_async_monitor() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (_, latest_update) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&bs_raa.channel_id)
-		.unwrap()
-		.clone();
+	let (_, latest_update) = {
+		let latest_monitor_update_id =
+			nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
+		latest_monitor_update_id.get(&bs_raa.channel_id).unwrap().clone()
+	};
 	nodes[1]
 		.chain_monitor
 		.chain_monitor
@@ -1020,13 +1013,8 @@ fn test_0conf_close_no_early_chan_update() {
 
 	nodes[0].node.force_close_all_channels_broadcasting_latest_txn(error_message.to_string());
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(
-		&nodes[0],
-		1,
-		ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) },
-		[node_b_id],
-		100000
-	);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	check_closed_event!(&nodes[0], 1, reason, [node_b_id], 100000);
 	let _ = get_err_msg(&nodes[0], &node_b_id);
 }
 
@@ -1138,28 +1126,18 @@ fn test_0conf_channel_reorg() {
 	// At this point the channel no longer has an SCID again. In the future we should likely
 	// support simply un-setting the SCID and waiting until the channel gets re-confirmed, but for
 	// now we force-close the channel here.
-	check_closed_event!(
-		&nodes[0],
-		1,
-		ClosureReason::ProcessingError {
-			err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
-				.to_owned()
-		},
-		[node_b_id],
-		100000
-	);
+	let reason = ClosureReason::ProcessingError {
+		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
+			.to_owned()
+	};
+	check_closed_event!(&nodes[0], 1, reason, [node_b_id], 100000);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors(&nodes[0], 1);
-	check_closed_event!(
-		&nodes[1],
-		1,
-		ClosureReason::ProcessingError {
-			err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
-				.to_owned()
-		},
-		[node_a_id],
-		100000
-	);
+	let reason = ClosureReason::ProcessingError {
+		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
+			.to_owned()
+	};
+	check_closed_event!(&nodes[1], 1, reason, [node_a_id], 100000);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors(&nodes[1], 1);
 }
