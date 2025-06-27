@@ -11034,7 +11034,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	#[rustfmt::skip]
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<NotifyOption, MsgHandleErrInternal> {
-		let need_lnd_workaround = {
+		let (inferred_splice_locked, need_lnd_workaround) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -11086,7 +11086,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if let Some(upd) = channel_update {
 							peer_state.pending_msg_events.push(upd);
 						}
-						need_lnd_workaround
+
+						(responses.inferred_splice_locked, need_lnd_workaround)
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
 							"Got a channel_reestablish message for an unfunded channel!".into())), chan_entry);
@@ -11132,6 +11133,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if let Some(channel_ready_msg) = need_lnd_workaround {
 			self.internal_channel_ready(counterparty_node_id, &channel_ready_msg)?;
 		}
+
+		#[cfg(not(splicing))]
+		let _ = inferred_splice_locked;
+		#[cfg(splicing)]
+		if let Some(splice_locked) = inferred_splice_locked {
+			self.internal_splice_locked(counterparty_node_id, &splice_locked)?;
+			return Ok(NotifyOption::DoPersist);
+		}
+
 		Ok(NotifyOption::SkipPersistHandleEvents)
 	}
 
