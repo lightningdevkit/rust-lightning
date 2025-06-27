@@ -1494,10 +1494,8 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(
 	}
 	expect_channel_pending_event(&node_b, &node_a_id);
 
-	node_a.node.handle_funding_signed(
-		node_b_id,
-		&get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a_id),
-	);
+	let bs_funding_signed = get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a_id);
+	node_a.node.handle_funding_signed(node_b_id, &bs_funding_signed);
 	{
 		let mut added_monitors = node_a.chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
@@ -1723,14 +1721,12 @@ pub fn create_chan_between_nodes_with_value_confirm_first<'a, 'b, 'c, 'd>(
 ) {
 	confirm_transaction_at(node_conf, tx, conf_height);
 	connect_blocks(node_conf, CHAN_CONFIRM_DEPTH - 1);
-	node_recv.node.handle_channel_ready(
-		node_conf.node.get_our_node_id(),
-		&get_event_msg!(
-			node_conf,
-			MessageSendEvent::SendChannelReady,
-			node_recv.node.get_our_node_id()
-		),
+	let channel_ready = get_event_msg!(
+		node_conf,
+		MessageSendEvent::SendChannelReady,
+		node_recv.node.get_our_node_id()
 	);
+	node_recv.node.handle_channel_ready(node_conf.node.get_our_node_id(), &channel_ready);
 }
 
 pub fn create_chan_between_nodes_with_value_confirm_second<'a, 'b, 'c>(
@@ -1904,14 +1900,9 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(
 			tx.clone(),
 		)
 		.unwrap();
-	nodes[b].node.handle_funding_created(
-		node_a_id,
-		&get_event_msg!(
-			nodes[a],
-			MessageSendEvent::SendFundingCreated,
-			node_b_id
-		),
-	);
+	let as_funding_created =
+		get_event_msg!(nodes[a], MessageSendEvent::SendFundingCreated, node_b_id);
+	nodes[b].node.handle_funding_created(node_a_id, &as_funding_created);
 	check_added_monitors!(nodes[b], 1);
 
 	let cs_funding_signed = get_event_msg!(
@@ -1940,14 +1931,8 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(
 		MessageSendEvent::SendChannelReady,
 		node_b_id
 	);
-	nodes[a].node.handle_channel_ready(
-		node_b_id,
-		&get_event_msg!(
-			nodes[b],
-			MessageSendEvent::SendChannelReady,
-			node_a_id
-		),
-	);
+	let bs_channel_ready = get_event_msg!(nodes[b], MessageSendEvent::SendChannelReady, node_a_id);
+	nodes[a].node.handle_channel_ready(node_b_id, &bs_channel_ready);
 	expect_channel_ready_event(&nodes[a], &node_b_id);
 	let as_update = get_event_msg!(
 		nodes[a],
@@ -2317,10 +2302,9 @@ pub fn close_channel<'a, 'b, 'c>(
 	let (tx_a, tx_b);
 
 	node_a.close_channel(channel_id, &node_b.get_our_node_id()).unwrap();
-	node_b.handle_shutdown(
-		node_a.get_our_node_id(),
-		&get_event_msg!(struct_a, MessageSendEvent::SendShutdown, node_b.get_our_node_id()),
-	);
+	let as_shutdown =
+		get_event_msg!(struct_a, MessageSendEvent::SendShutdown, node_b.get_our_node_id());
+	node_b.handle_shutdown(node_a.get_our_node_id(), &as_shutdown);
 
 	let events_1 = node_b.get_and_clear_pending_msg_events();
 	assert!(events_1.len() >= 1);
@@ -2350,14 +2334,12 @@ pub fn close_channel<'a, 'b, 'c>(
 		assert!(node_a.get_and_clear_pending_msg_events().is_empty());
 		node_a.handle_closing_signed(node_b.get_our_node_id(), &closing_signed_b.unwrap());
 
-		node_b.handle_closing_signed(
-			node_a.get_our_node_id(),
-			&get_event_msg!(
-				struct_a,
-				MessageSendEvent::SendClosingSigned,
-				node_b.get_our_node_id()
-			),
+		let as_closing_signed = get_event_msg!(
+			struct_a,
+			MessageSendEvent::SendClosingSigned,
+			node_b.get_our_node_id()
 		);
+		node_b.handle_closing_signed(node_a.get_our_node_id(), &as_closing_signed);
 		assert_eq!(broadcaster_b.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_b = broadcaster_b.txn_broadcasted.lock().unwrap().remove(0);
 		let (bs_update, closing_signed_b) =
@@ -2372,16 +2354,14 @@ pub fn close_channel<'a, 'b, 'c>(
 	} else {
 		let closing_signed_a =
 			get_event_msg!(struct_a, MessageSendEvent::SendClosingSigned, node_b.get_our_node_id());
-
 		node_b.handle_closing_signed(node_a.get_our_node_id(), &closing_signed_a);
-		node_a.handle_closing_signed(
-			node_b.get_our_node_id(),
-			&get_event_msg!(
-				struct_b,
-				MessageSendEvent::SendClosingSigned,
-				node_a.get_our_node_id()
-			),
+
+		let closing_signed_b =get_event_msg!(
+			struct_b,
+			MessageSendEvent::SendClosingSigned,
+			node_a.get_our_node_id()
 		);
+		node_a.handle_closing_signed(node_b.get_our_node_id(), &closing_signed_b);
 
 		assert_eq!(broadcaster_a.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
