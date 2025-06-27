@@ -547,7 +547,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0]
 		.node
-		.send_payment( our_payment_hash, onion, id, route_params, Retry::Attempts(0))
+		.send_payment(our_payment_hash, onion, id, route_params, Retry::Attempts(0))
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], node_b_id);
@@ -629,7 +629,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
 	assert!(nodes[1].node.list_channels().is_empty());
 	assert!(nodes[2].node.list_channels().is_empty());
-	let reason_a =  ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	let reason_a = ClosureReason::CounterpartyInitiatedCooperativeClosure;
 	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
 	let event1 = ExpectedCloseEvent {
 		channel_capacity_sats: Some(100000),
@@ -1390,8 +1390,7 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		check_closed_broadcast!(nodes[1], true);
 		check_added_monitors!(nodes[1], 1);
 		let reason = ClosureReason::ProcessingError {
-			err: "closing_signed negotiation failed to finish within two timer ticks"
-				.to_string()
+			err: "closing_signed negotiation failed to finish within two timer ticks".to_string(),
 		};
 		check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
 	} else {

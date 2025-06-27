@@ -81,10 +81,7 @@ fn test_priv_forwarding_rejection() {
 
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
-	nodes[0]
-		.node
-		.send_payment_with_route(route.clone(), our_payment_hash, onion, id)
-		.unwrap();
+	nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash, onion, id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let payment_event =
 		SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
@@ -156,7 +153,7 @@ fn test_priv_forwarding_rejection() {
 		remote_network_address: None,
 	};
 	nodes[1].node.peer_connected(node_c_id, &cs_init_msg, true).unwrap();
-	nodes[2].node.peer_connected( node_b_id, &bs_init_msg, false).unwrap();
+	nodes[2].node.peer_connected(node_b_id, &bs_init_msg, false).unwrap();
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[2]).pop().unwrap();
 	let cs_reestablish = get_chan_reestablish_msgs!(nodes[2], nodes[1]).pop().unwrap();
 	nodes[2].node.handle_channel_reestablish(node_b_id, &bs_reestablish);
@@ -1128,14 +1125,14 @@ fn test_0conf_channel_reorg() {
 	// now we force-close the channel here.
 	let reason = ClosureReason::ProcessingError {
 		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
-			.to_owned()
+			.to_owned(),
 	};
 	check_closed_event!(&nodes[0], 1, reason, [node_b_id], 100000);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError {
 		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
-			.to_owned()
+			.to_owned(),
 	};
 	check_closed_event!(&nodes[1], 1, reason, [node_a_id], 100000);
 	check_closed_broadcast!(nodes[1], true);
