@@ -8404,24 +8404,42 @@ where
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
 			self.get_channel_ready(logger)
 		} else if splicing_negotiated {
+			let funding_txid = self
+				.maybe_get_my_current_funding_locked()
+				.filter(|funding| !funding.is_splice())
+				.map(|funding| {
+					funding.get_funding_txid().expect("funding_txid should always be set")
+				});
+
 			// A node:
 			//   - if `option_splice` was negotiated and `your_last_funding_locked` is not
 			//     set in the `channel_reestablish` it received:
 			//     - MUST retransmit `channel_ready`.
 			msg.your_last_funding_locked_txid
 				.is_none()
-				.then(|| ())
+				.then(|| funding_txid)
+				.flatten()
 				// The sending node:
 				//   - if `my_current_funding_locked` is included:
 				//     - if `announce_channel` is set for this channel:
 				//       - if it has not received `announcement_signatures` for that transaction:
 				//         - MUST retransmit `channel_ready` or `splice_locked` after exchanging `channel_reestablish`.
 				.or_else(|| {
-					self.maybe_get_my_current_funding_locked()
-						.filter(|funding| !funding.is_splice())
+					funding_txid
 						.filter(|_| self.context.config.announce_for_forwarding)
 						.filter(|_| self.context.announcement_sigs.is_none())
-						.map(|_| ())
+				})
+				// TODO: The language from the spec below should be updated to be in terms of
+				// `your_last_funding_locked` received and `my_current_funding_locked` sent rather
+				// than other messages received.
+				//
+				//   - if it receives `channel_ready` for that transaction after exchanging `channel_reestablish`:
+				//     - MUST retransmit `channel_ready` in response, if not already sent since reconnecting.
+				.or_else(|| {
+					msg.your_last_funding_locked_txid
+						.and_then(|last_funding_txid| {
+							funding_txid.filter(|funding_txid| last_funding_txid != *funding_txid)
+						})
 				})
 				.and_then(|_| self.get_channel_ready(logger))
 		} else { None };
