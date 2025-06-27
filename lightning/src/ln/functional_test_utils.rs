@@ -2429,23 +2429,11 @@ impl SendEvent {
 }
 
 #[macro_export]
-/// Don't use this, use the identically-named function instead.
-macro_rules! expect_pending_htlcs_forwardable_conditions {
-	($node: expr, $expected_failures: expr) => {
-		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions(
-			$node.node.get_and_clear_pending_events(),
-			&$expected_failures,
-		);
-	};
-}
-
-#[macro_export]
 macro_rules! expect_htlc_handling_failed_destinations {
 	($events: expr, $expected_failures: expr) => {{
 		let mut num_expected_failures = $expected_failures.len();
 		for event in $events {
 			match event {
-				$crate::events::Event::PendingHTLCsForwardable { .. } => {},
 				$crate::events::Event::HTLCHandlingFailed { ref failure_type, .. } => {
 					assert!($expected_failures.contains(&failure_type));
 					num_expected_failures -= 1;
@@ -2457,70 +2445,22 @@ macro_rules! expect_htlc_handling_failed_destinations {
 	}};
 }
 
-/// Checks that an [`Event::PendingHTLCsForwardable`] is available in the given events and, if
-/// there are any [`Event::HTLCHandlingFailed`] events their [`HTLCHandlingFailureType`] is included in the
-/// `expected_failures` set.
-pub fn expect_pending_htlcs_forwardable_conditions(
+/// Checks that, if there are any [`Event::HTLCHandlingFailed`] events, their
+/// [`HTLCHandlingFailureType`] is included in the `expected_failures` set.
+pub fn expect_htlc_failure_conditions(
 	events: Vec<Event>, expected_failures: &[HTLCHandlingFailureType],
 ) {
-	let count = expected_failures.len() + 1;
-	assert_eq!(events.len(), count);
-	assert!(events
-		.iter()
-		.find(|event| matches!(event, Event::PendingHTLCsForwardable { .. }))
-		.is_some());
+	assert_eq!(events.len(), expected_failures.len());
 	if expected_failures.len() > 0 {
 		expect_htlc_handling_failed_destinations!(events, expected_failures)
 	}
 }
 
 #[macro_export]
-/// Clears (and ignores) a PendingHTLCsForwardable event
-///
-/// Don't use this, call [`expect_pending_htlcs_forwardable_conditions()`] with an empty failure
-/// set instead.
-macro_rules! expect_pending_htlcs_forwardable_ignore {
-	($node: expr) => {
-		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions(
-			$node.node.get_and_clear_pending_events(),
-			&[],
-		);
-	};
-}
-
-#[macro_export]
-/// Clears (and ignores) PendingHTLCsForwardable and HTLCHandlingFailed events
-///
-/// Don't use this, call [`expect_pending_htlcs_forwardable_conditions()`] instead.
-macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore {
-	($node: expr, $expected_failures: expr) => {
-		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions(
-			$node.node.get_and_clear_pending_events(),
-			&$expected_failures,
-		);
-	};
-}
-
-#[macro_export]
-/// Handles a PendingHTLCsForwardable event
-macro_rules! expect_pending_htlcs_forwardable {
-	($node: expr) => {{
-		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions(
-			$node.node.get_and_clear_pending_events(),
-			&[],
-		);
-		$node.node.process_pending_htlc_forwards();
-
-		// Ensure process_pending_htlc_forwards is idempotent.
-		$node.node.process_pending_htlc_forwards();
-	}};
-}
-
-#[macro_export]
-/// Handles a PendingHTLCsForwardable and HTLCHandlingFailed event
-macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed {
+/// Processes any HTLC forwards and handles an expected [`Event::HTLCHandlingFailed`].
+macro_rules! process_htlcs_and_expect_htlc_handling_failed {
 	($node: expr, $expected_failures: expr) => {{
-		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions(
+		$crate::ln::functional_test_utils::expect_htlc_failure_conditions(
 			$node.node.get_and_clear_pending_events(),
 			&$expected_failures,
 		);
@@ -2528,23 +2468,6 @@ macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed {
 
 		// Ensure process_pending_htlc_forwards is idempotent.
 		$node.node.process_pending_htlc_forwards();
-	}};
-}
-
-#[cfg(any(test, feature = "_externalize_tests"))]
-macro_rules! expect_pending_htlcs_forwardable_from_events {
-	($node: expr, $events: expr, $ignore: expr) => {{
-		assert_eq!($events.len(), 1);
-		match $events[0] {
-			Event::PendingHTLCsForwardable { .. } => {},
-			_ => panic!("Unexpected event"),
-		};
-		if $ignore {
-			$node.node.process_pending_htlc_forwards();
-
-			// Ensure process_pending_htlc_forwards is idempotent.
-			$node.node.process_pending_htlc_forwards();
-		}
 	}};
 }
 
@@ -2697,7 +2620,7 @@ pub fn do_commitment_signed_dance(
 	}
 
 	if fail_backwards {
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+		process_htlcs_and_expect_htlc_handling_failed!(
 			node_a,
 			[crate::events::HTLCHandlingFailureType::Forward {
 				node_id: Some(node_b.node.get_our_node_id()),
@@ -3324,11 +3247,6 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 			},
 			_ => panic!("Unexpected second event"),
 		}
-	} else if conditions.retry_expected {
-		match &payment_failed_events[1] {
-			Event::PendingHTLCsForwardable { .. } => {},
-			_ => panic!("Unexpected second event"),
-		}
 	}
 }
 
@@ -3486,11 +3404,11 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 
 		if is_last_hop && is_probe {
 			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, true, true);
-			expect_pending_htlcs_forwardable!(node);
+			node.node.process_pending_htlc_forwards();
 			check_added_monitors(node, 1);
 		} else {
 			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
-			expect_pending_htlcs_forwardable!(node);
+			node.node.process_pending_htlc_forwards();
 		}
 
 		if is_last_hop && clear_recipient_events {
@@ -3580,11 +3498,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 				}
 				event = Some(events_2[0].clone());
 			} else if let Some(ref failure) = expected_failure {
-				// If we successfully decode the HTLC onion but then fail later in
-				// process_pending_htlc_forwards, then we'll queue the failure and generate a new
-				// `ProcessPendingHTLCForwards` event. If we fail during the process of decoding the HTLC,
-				// we'll fail it immediately with no intermediate forwarding event.
-				assert!(events_2.len() == 1 || events_2.len() == 2);
+				assert!(events_2.len() == 1);
 				expect_htlc_handling_failed_destinations!(events_2, &[failure]);
 				node.node.process_pending_htlc_forwards();
 				check_added_monitors!(node, 1);
@@ -4070,7 +3984,7 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(
 		repeat(HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash })
 			.take(expected_paths.len())
 			.collect();
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+	process_htlcs_and_expect_htlc_handling_failed!(
 		expected_paths[0].last().unwrap(),
 		expected_destinations
 	);
@@ -4152,7 +4066,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(
 					update_next_node
 				);
 				if !update_next_node {
-					expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+					process_htlcs_and_expect_htlc_handling_failed!(
 						node,
 						[HTLCHandlingFailureType::Forward {
 							node_id: Some(prev_node.node.get_our_node_id()),

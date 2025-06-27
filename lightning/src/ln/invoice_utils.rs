@@ -1329,23 +1329,23 @@ mod test {
 		// Note that we have to "forward pending HTLCs" twice before we see the PaymentClaimable as
 		// this "emulates" the payment taking two hops, providing some privacy to make phantom node
 		// payments "look real" by taking more time.
-		let other_events = RefCell::new(Vec::new());
-		let forward_event_handler = |event: Event| {
-			if let Event::PendingHTLCsForwardable { .. } = event {
-				nodes[fwd_idx].node.process_pending_htlc_forwards();
-			} else {
-				other_events.borrow_mut().push(event);
-			}
+		nodes[fwd_idx].node.process_pending_htlc_forwards();
+		nodes[fwd_idx].node.process_pending_htlc_forwards();
+
+		let events = RefCell::new(Vec::new());
+		let event_handler = |event: Event| {
+			events.borrow_mut().push(event);
 			Ok(())
 		};
-		nodes[fwd_idx].node.process_pending_events(&forward_event_handler);
-		nodes[fwd_idx].node.process_pending_events(&forward_event_handler);
+
+		nodes[fwd_idx].node.process_pending_events(&event_handler);
+		nodes[fwd_idx].node.process_pending_events(&event_handler);
 
 		let payment_preimage_opt =
 			if user_generated_pmt_hash { None } else { Some(payment_preimage) };
-		assert_eq!(other_events.borrow().len(), 1);
+		assert_eq!(events.borrow().len(), 1);
 		check_payment_claimable(
-			&other_events.borrow()[0],
+			&events.borrow()[0],
 			payment_hash,
 			payment_secret,
 			payment_amt,
