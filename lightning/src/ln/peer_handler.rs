@@ -31,7 +31,8 @@ use crate::ln::types::ChannelId;
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
 use crate::onion_message::async_payments::{
-	AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc,
+	AsyncPaymentsMessageHandler, HeldHtlcAvailable, OfferPaths, OfferPathsRequest, ReleaseHeldHtlc,
+	ServeStaticInvoice, StaticInvoicePersisted,
 };
 use crate::onion_message::dns_resolution::{
 	DNSResolverMessage, DNSResolverMessageHandler, DNSSECProof, DNSSECQuery,
@@ -212,6 +213,26 @@ impl OffersMessageHandler for IgnoringMessageHandler {
 	}
 }
 impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
+	fn handle_offer_paths_request(
+		&self, _message: OfferPathsRequest, _context: AsyncPaymentsContext,
+		_responder: Option<Responder>,
+	) -> Option<(OfferPaths, ResponseInstruction)> {
+		None
+	}
+	fn handle_offer_paths(
+		&self, _message: OfferPaths, _context: AsyncPaymentsContext, _responder: Option<Responder>,
+	) -> Option<(ServeStaticInvoice, ResponseInstruction)> {
+		None
+	}
+	fn handle_serve_static_invoice(
+		&self, _message: ServeStaticInvoice, _context: AsyncPaymentsContext,
+		_responder: Option<Responder>,
+	) {
+	}
+	fn handle_static_invoice_persisted(
+		&self, _message: StaticInvoicePersisted, _context: AsyncPaymentsContext,
+	) {
+	}
 	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
 		_responder: Option<Responder>,
