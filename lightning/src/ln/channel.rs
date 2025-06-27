@@ -5339,7 +5339,7 @@ where
 	}
 
 	/// Shuts down this channel (no more calls into this Channel may be made afterwards except
-	/// those explicitly stated to be alowed after shutdown, eg some simple getters).
+	/// those explicitly stated to be allowed after shutdown, eg some simple getters).
 	///
 	/// Only allowed for channels which never been used (i.e. have never broadcasted their funding
 	/// transaction).
