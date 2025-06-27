@@ -54,6 +54,8 @@ pub use onion_utils::{create_payment_onion, LocalHTLCFailureReason};
 
 #[cfg(fuzzing)]
 pub use onion_utils::process_onion_failure;
+#[cfg(fuzzing)]
+pub use onion_utils::process_onion_success;
 
 #[cfg(fuzzing)]
 pub use onion_utils::AttributionData;
