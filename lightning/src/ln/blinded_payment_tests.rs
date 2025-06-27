@@ -743,7 +743,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 
 	if intercept_node_fails {
 		nodes[1].node.fail_intercepted_htlc(intercept_id).unwrap();
-		expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::InvalidForward { requested_forward_scid: intercept_scid }]);
+		expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::InvalidForward { requested_forward_scid: intercept_scid }]);
 		nodes[1].node.process_pending_htlc_forwards();
 		check_added_monitors!(&nodes[1], 1);
 		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]], false);
@@ -847,7 +847,7 @@ fn three_hop_blinded_path_fail() {
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3]]], amt_msat, payment_hash, payment_secret);
 
 	nodes[3].node.fail_htlc_backwards(&payment_hash);
-	expect_pending_htlcs_forwardable_conditions(
+	expect_htlc_failure_conditions(
 		nodes[3].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]
 	);
 	nodes[3].node.process_pending_htlc_forwards();
@@ -975,7 +975,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 				None, nodes[2].node.get_our_node_id()
 			);
 			nodes[2].node.fail_htlc_backwards(&payment_hash);
-			expect_pending_htlcs_forwardable_conditions(
+			expect_htlc_failure_conditions(
 				nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]
 			);
 			nodes[2].node.process_pending_htlc_forwards();
@@ -1042,7 +1042,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
 			nodes[2].node.process_pending_htlc_forwards();
 			nodes[2].node.process_pending_htlc_forwards();
-			expect_pending_htlcs_forwardable_conditions(nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]);
+			expect_htlc_failure_conditions(nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]);
 			check_added_monitors!(nodes[2], 1);
 		},
 		ReceiveCheckFail::PaymentConstraints => {
@@ -1138,7 +1138,7 @@ fn blinded_path_retries() {
 	macro_rules! fail_payment_back {
 		($intro_node: expr) => {
 			nodes[3].node.fail_htlc_backwards(&payment_hash);
-			expect_pending_htlcs_forwardable_conditions(
+			expect_htlc_failure_conditions(
 				nodes[3].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]
 			);
 			nodes[3].node.process_pending_htlc_forwards();
