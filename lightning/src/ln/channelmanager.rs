@@ -3164,7 +3164,7 @@ macro_rules! handle_error {
 /// [`ChannelMonitor`]/channel funding transaction) to begin with.
 ///
 /// For non-coop-close cases, you should generally prefer to call `convert_channel_err` and
-/// [`handle_error`] instead (which delgate to this and [`ChannelManager::finish_close_channel`]),
+/// [`handle_error`] instead (which delegate to this and [`ChannelManager::finish_close_channel`]),
 /// as they ensure the relevant messages go out as well. In a coop close case, calling this
 /// directly avoids duplicate error messages.
 #[rustfmt::skip]
