@@ -441,30 +441,15 @@ fn updates_shutdown_wait() {
 		&random_seed_bytes,
 	)
 	.unwrap();
-	unwrap_send_err!(
-		nodes[0],
-		nodes[0].node.send_payment_with_route(
-			route_1,
-			payment_hash,
-			RecipientOnionFields::secret_only(payment_secret),
-			PaymentId(payment_hash.0)
-		),
-		true,
-		APIError::ChannelUnavailable { .. },
-		{}
-	);
-	unwrap_send_err!(
-		nodes[1],
-		nodes[1].node.send_payment_with_route(
-			route_2,
-			payment_hash,
-			RecipientOnionFields::secret_only(payment_secret),
-			PaymentId(payment_hash.0)
-		),
-		true,
-		APIError::ChannelUnavailable { .. },
-		{}
-	);
+
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId(payment_hash.0);
+	let res = nodes[0].node.send_payment_with_route(route_1, payment_hash, onion, id);
+	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let res = nodes[1].node.send_payment_with_route(route_2, payment_hash, onion, id);
+	unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
 
 	nodes[2].node.claim_funds(payment_preimage_0);
 	check_added_monitors!(nodes[2], 1);
@@ -558,15 +543,11 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 			amt_msat,
 		)
 	};
+	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let id = PaymentId(our_payment_hash.0);
 	nodes[0]
 		.node
-		.send_payment(
-			our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret),
-			PaymentId(our_payment_hash.0),
-			route_params,
-			Retry::Attempts(0),
-		)
+		.send_payment( our_payment_hash, onion, id, route_params, Retry::Attempts(0))
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], node_b_id);
