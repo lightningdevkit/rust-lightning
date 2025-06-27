@@ -294,6 +294,9 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(
 	// Send a payment.
 	let src = &nodes[0];
 	let dst = &nodes[1];
+	let src_node_id = src.node.get_our_node_id();
+	let dst_node_id = dst.node.get_our_node_id();
+
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
 	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
@@ -309,52 +312,37 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(
 		assert_eq!(events.len(), 1);
 		SendEvent::from_event(events.remove(0))
 	};
-	assert_eq!(payment_event.node_id, dst.node.get_our_node_id());
+	assert_eq!(payment_event.node_id, dst_node_id);
 	assert_eq!(payment_event.msgs.len(), 1);
 
-	dst.node.handle_update_add_htlc(src.node.get_our_node_id(), &payment_event.msgs[0]);
+	dst.node.handle_update_add_htlc(src_node_id, &payment_event.msgs[0]);
 
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
-	dst.disable_channel_signer_op(
-		&src.node.get_our_node_id(),
-		&chan_id,
-		SignerOp::GetPerCommitmentPoint,
-	);
-	dst.disable_channel_signer_op(
-		&src.node.get_our_node_id(),
-		&chan_id,
-		SignerOp::ReleaseCommitmentSecret,
-	);
-	dst.disable_channel_signer_op(
-		&src.node.get_our_node_id(),
-		&chan_id,
-		SignerOp::SignCounterpartyCommitment,
-	);
-	dst.node.handle_commitment_signed_batch_test(
-		src.node.get_our_node_id(),
-		&payment_event.commitment_msg,
-	);
+	dst.disable_channel_signer_op(&src_node_id, &chan_id, SignerOp::GetPerCommitmentPoint);
+	dst.disable_channel_signer_op(&src_node_id, &chan_id, SignerOp::ReleaseCommitmentSecret);
+	dst.disable_channel_signer_op(&src_node_id, &chan_id, SignerOp::SignCounterpartyCommitment);
+	dst.node.handle_commitment_signed_batch_test(src_node_id, &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
 	let mut enabled_signer_ops = new_hash_set();
 	log_trace!(dst.logger, "enable_signer_op_order={:?}", enable_signer_op_order);
 	for op in enable_signer_op_order {
 		enabled_signer_ops.insert(op);
-		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, op);
-		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+		dst.enable_channel_signer_op(&src_node_id, &chan_id, op);
+		dst.node.signer_unblocked(Some((src_node_id, chan_id)));
 
 		if enabled_signer_ops.contains(&SignerOp::GetPerCommitmentPoint)
 			&& enabled_signer_ops.contains(&SignerOp::ReleaseCommitmentSecret)
 		{
 			// We are just able to send revoke_and_ack
 			if op == SignerOp::GetPerCommitmentPoint || op == SignerOp::ReleaseCommitmentSecret {
-				get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src.node.get_our_node_id());
+				get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src_node_id);
 			}
 			// We either just sent or previously sent revoke_and_ack
 			// and now we are able to send commitment_signed
 			if op == SignerOp::SignCounterpartyCommitment {
-				get_htlc_update_msgs(dst, &src.node.get_our_node_id());
+				get_htlc_update_msgs(dst, &src_node_id);
 			}
 		} else {
 			// We can't send either message until RAA is unblocked
@@ -533,6 +521,9 @@ fn do_test_async_raa_peer_disconnect(
 	// Send a payment.
 	let src = &nodes[0];
 	let dst = &nodes[1];
+	let src_node_id = src.node.get_our_node_id();
+	let dst_node_id = dst.node.get_our_node_id();
+
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
 	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
@@ -548,10 +539,10 @@ fn do_test_async_raa_peer_disconnect(
 		assert_eq!(events.len(), 1);
 		SendEvent::from_event(events.remove(0))
 	};
-	assert_eq!(payment_event.node_id, dst.node.get_our_node_id());
+	assert_eq!(payment_event.node_id, dst_node_id);
 	assert_eq!(payment_event.msgs.len(), 1);
 
-	dst.node.handle_update_add_htlc(src.node.get_our_node_id(), &payment_event.msgs[0]);
+	dst.node.handle_update_add_htlc(src_node_id, &payment_event.msgs[0]);
 
 	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
 		// Fail to persist the monitor update when handling the commitment_signed.
@@ -560,19 +551,16 @@ fn do_test_async_raa_peer_disconnect(
 
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
-	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, block_raa_signer_op);
-	dst.node.handle_commitment_signed_batch_test(
-		src.node.get_our_node_id(),
-		&payment_event.commitment_msg,
-	);
+	dst.disable_channel_signer_op(&src_node_id, &chan_id, block_raa_signer_op);
+	dst.node.handle_commitment_signed_batch_test(src_node_id, &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
 	let events = dst.node.get_and_clear_pending_msg_events();
 	assert!(events.is_empty(), "expected no message, got {}", events.len());
 
 	// Now disconnect and reconnect the peers.
-	src.node.peer_disconnected(dst.node.get_our_node_id());
-	dst.node.peer_disconnected(src.node.get_our_node_id());
+	src.node.peer_disconnected(dst_node_id);
+	dst.node.peer_disconnected(src_node_id);
 
 	// do reestablish stuff
 	let init_msg = &msgs::Init {
@@ -580,7 +568,7 @@ fn do_test_async_raa_peer_disconnect(
 		networks: None,
 		remote_network_address: None,
 	};
-	src.node.peer_connected(dst.node.get_our_node_id(), init_msg, true).unwrap();
+	src.node.peer_connected(dst_node_id, init_msg, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(src, dst);
 	assert_eq!(reestablish_1.len(), 1);
 	let init_msg = &msgs::Init {
@@ -588,19 +576,19 @@ fn do_test_async_raa_peer_disconnect(
 		networks: None,
 		remote_network_address: None,
 	};
-	dst.node.peer_connected(src.node.get_our_node_id(), init_msg, false).unwrap();
+	dst.node.peer_connected(src_node_id, init_msg, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(dst, src);
 	assert_eq!(reestablish_2.len(), 1);
 
 	if test_case == UnblockSignerAcrossDisconnectCase::BeforeReestablish {
 		// Reenable the signer before the reestablish.
-		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, block_raa_signer_op);
+		dst.enable_channel_signer_op(&src_node_id, &chan_id, block_raa_signer_op);
 	}
 
-	dst.node.handle_channel_reestablish(src.node.get_our_node_id(), &reestablish_1[0]);
+	dst.node.handle_channel_reestablish(src_node_id, &reestablish_1[0]);
 
 	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
-		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, block_raa_signer_op);
+		dst.enable_channel_signer_op(&src_node_id, &chan_id, block_raa_signer_op);
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 		let latest_update;
 		{
@@ -624,8 +612,8 @@ fn do_test_async_raa_peer_disconnect(
 	}
 
 	// Mark dst's signer as available and retry: we now expect to see dst's RAA + CS.
-	dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, block_raa_signer_op);
-	dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+	dst.enable_channel_signer_op(&src_node_id, &chan_id, block_raa_signer_op);
+	dst.node.signer_unblocked(Some((src_node_id, chan_id)));
 
 	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
 		let (_, revoke_and_ack, commitment_signed, resend_order) =
@@ -681,6 +669,9 @@ fn do_test_async_commitment_signature_peer_disconnect(
 	// Send a payment.
 	let src = &nodes[0];
 	let dst = &nodes[1];
+	let src_node_id = src.node.get_our_node_id();
+	let dst_node_id = dst.node.get_our_node_id();
+
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
 	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
@@ -696,10 +687,10 @@ fn do_test_async_commitment_signature_peer_disconnect(
 		assert_eq!(events.len(), 1);
 		SendEvent::from_event(events.remove(0))
 	};
-	assert_eq!(payment_event.node_id, dst.node.get_our_node_id());
+	assert_eq!(payment_event.node_id, dst_node_id);
 	assert_eq!(payment_event.msgs.len(), 1);
 
-	dst.node.handle_update_add_htlc(src.node.get_our_node_id(), &payment_event.msgs[0]);
+	dst.node.handle_update_add_htlc(src_node_id, &payment_event.msgs[0]);
 
 	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
 		// Fail to persist the monitor update when handling the commitment_signed.
@@ -708,24 +699,17 @@ fn do_test_async_commitment_signature_peer_disconnect(
 
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
-	dst.disable_channel_signer_op(
-		&src.node.get_our_node_id(),
-		&chan_id,
-		SignerOp::SignCounterpartyCommitment,
-	);
-	dst.node.handle_commitment_signed_batch_test(
-		src.node.get_our_node_id(),
-		&payment_event.commitment_msg,
-	);
+	dst.disable_channel_signer_op(&src_node_id, &chan_id, SignerOp::SignCounterpartyCommitment);
+	dst.node.handle_commitment_signed_batch_test(src_node_id, &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
 	if test_case != UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
-		get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src.node.get_our_node_id());
+		get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src_node_id);
 	}
 
 	// Now disconnect and reconnect the peers.
-	src.node.peer_disconnected(dst.node.get_our_node_id());
-	dst.node.peer_disconnected(src.node.get_our_node_id());
+	src.node.peer_disconnected(dst_node_id);
+	dst.node.peer_disconnected(src_node_id);
 
 	// do reestablish stuff
 	let init_msg = &msgs::Init {
@@ -733,7 +717,7 @@ fn do_test_async_commitment_signature_peer_disconnect(
 		networks: None,
 		remote_network_address: None,
 	};
-	src.node.peer_connected(dst.node.get_our_node_id(), init_msg, true).unwrap();
+	src.node.peer_connected(dst_node_id, init_msg, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(src, dst);
 	assert_eq!(reestablish_1.len(), 1);
 	let init_msg = &msgs::Init {
@@ -741,27 +725,19 @@ fn do_test_async_commitment_signature_peer_disconnect(
 		networks: None,
 		remote_network_address: None,
 	};
-	dst.node.peer_connected(src.node.get_our_node_id(), init_msg, false).unwrap();
+	dst.node.peer_connected(src_node_id, init_msg, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(dst, src);
 	assert_eq!(reestablish_2.len(), 1);
 
 	if test_case == UnblockSignerAcrossDisconnectCase::BeforeReestablish {
 		// Reenable the signer before the reestablish.
-		dst.enable_channel_signer_op(
-			&src.node.get_our_node_id(),
-			&chan_id,
-			SignerOp::SignCounterpartyCommitment,
-		);
+		dst.enable_channel_signer_op(&src_node_id, &chan_id, SignerOp::SignCounterpartyCommitment);
 	}
 
-	dst.node.handle_channel_reestablish(src.node.get_our_node_id(), &reestablish_1[0]);
+	dst.node.handle_channel_reestablish(src_node_id, &reestablish_1[0]);
 
 	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
-		dst.enable_channel_signer_op(
-			&src.node.get_our_node_id(),
-			&chan_id,
-			SignerOp::SignCounterpartyCommitment,
-		);
+		dst.enable_channel_signer_op(&src_node_id, &chan_id, SignerOp::SignCounterpartyCommitment);
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 		let latest_update;
 		{
@@ -782,12 +758,8 @@ fn do_test_async_commitment_signature_peer_disconnect(
 	}
 
 	// Mark dst's signer as available and retry: we now expect to see dst's `commitment_signed`.
-	dst.enable_channel_signer_op(
-		&src.node.get_our_node_id(),
-		&chan_id,
-		SignerOp::SignCounterpartyCommitment,
-	);
-	dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+	dst.enable_channel_signer_op(&src_node_id, &chan_id, SignerOp::SignCounterpartyCommitment);
+	dst.node.signer_unblocked(Some((src_node_id, chan_id)));
 
 	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
 		let (_, _, commitment_signed, _) = handle_chan_reestablish_msgs!(dst, src);
