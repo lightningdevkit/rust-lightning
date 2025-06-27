@@ -2353,7 +2353,7 @@ macro_rules! expect_htlc_handling_failed_destinations {
 /// Checks that an [`Event::PendingHTLCsForwardable`] is available in the given events and, if
 /// there are any [`Event::HTLCHandlingFailed`] events their [`HTLCHandlingFailureType`] is included in the
 /// `expected_failures` set.
-pub fn expect_pending_htlcs_forwardable_conditions(
+pub fn expect_htlc_failure_conditions(
 	events: Vec<Event>, expected_failures: &[HTLCHandlingFailureType],
 ) {
 	assert_eq!(events.len(), expected_failures.len());
@@ -2366,7 +2366,7 @@ pub fn expect_pending_htlcs_forwardable_conditions(
 /// Handles a PendingHTLCsForwardable and HTLCHandlingFailed event
 macro_rules! process_htlcs_and_expect_htlc_handling_failed {
 	($node: expr, $expected_failures: expr) => {{
-		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions(
+		$crate::ln::functional_test_utils::expect_htlc_failure_conditions(
 			$node.node.get_and_clear_pending_events(),
 			&$expected_failures,
 		);
