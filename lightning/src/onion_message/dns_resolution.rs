@@ -332,7 +332,8 @@ impl OMNameResolver {
 	/// Informs the [`OMNameResolver`] of the passage of time in the form of a new best Bitcoin
 	/// block.
 	///
-	/// This will call back to resolve some pending queries which have timed out.
+	/// This is used to prune stale requests (by block height) and keep track of the current time
+	/// to validate that DNSSEC proofs are current.
 	pub fn new_best_block(&self, height: u32, time: u32) {
 		self.latest_block_time.store(time as usize, Ordering::Release);
 		self.latest_block_height.store(height as usize, Ordering::Release);
