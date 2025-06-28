@@ -10,6 +10,7 @@ CLIPPY() {
 		`# Things where clippy is just wrong` \
 		-A clippy::unwrap-or-default \
 		-A clippy::upper_case_acronyms \
+		-A clippy::swap-with-temporary \
 		`# Things where we do odd stuff on purpose ` \
 		-A clippy::unusual_byte_groupings \
 		-A clippy::unit_arg \
