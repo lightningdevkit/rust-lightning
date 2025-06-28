@@ -13,7 +13,9 @@
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine};
+use bitcoin::secp256k1::PublicKey;
 
+use crate::ln::types::ChannelId;
 use crate::sign::PeerStorageKey;
 
 use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
@@ -145,6 +147,34 @@ fn derive_nonce(key: &PeerStorageKey, random_bytes: &[u8]) -> [u8; 12] {
 
 	nonce
 }
+
+/// [`PeerStorageMonitorHolder`] represents a single channel sent over the wire.
+/// This would be used inside [`ChannelManager`] to determine
+/// if the user has lost channel states so that we can do something about it.
+///
+/// The main idea here is to just enable node to figure out that it has lost some data
+/// using peer storage backups.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+///
+/// TODO(aditya): Write FundRecoverer to use `monitor_bytes` to drop onchain.
+pub(crate) struct PeerStorageMonitorHolder {
+	/// Channel Id of the channel.
+	pub(crate) channel_id: ChannelId,
+	/// Node Id of the channel partner.
+	pub(crate) counterparty_node_id: PublicKey,
+	/// Minimum seen secret to determine if we have lost state.
+	pub(crate) min_seen_secret: u64,
+	/// Whole serialised ChannelMonitor to recover funds.
+	pub(crate) monitor_bytes: Vec<u8>,
+}
+
+impl_writeable_tlv_based!(PeerStorageMonitorHolder, {
+	(0, channel_id, required),
+	(2, counterparty_node_id, required),
+	(4, min_seen_secret, required),
+	(6, monitor_bytes, required_vec),
+});
 
 #[cfg(test)]
 mod tests {
