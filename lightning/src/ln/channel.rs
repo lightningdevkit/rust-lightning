@@ -4314,8 +4314,7 @@ where
 
 	#[rustfmt::skip]
 	fn can_send_update_fee<F: Deref, L: Deref>(
-		&self, funding: &FundingScope, holder_commitment_point: &HolderCommitmentPoint,
-		feerate_per_kw: u32, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		&self, funding: &FundingScope, feerate_per_kw: u32, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> bool
 	where
 		F::Target: FeeEstimator,
@@ -4324,13 +4323,10 @@ where
 		// Before proposing a feerate update, check that we can actually afford the new fee.
 		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(&fee_estimator);
 		let htlc_stats = self.get_pending_htlc_stats(funding, Some(feerate_per_kw), dust_exposure_limiting_feerate);
-		let commitment_data = self.build_commitment_transaction(
-			funding, holder_commitment_point.transaction_number(),
-			&holder_commitment_point.current_point(), true, true, logger,
-		);
-		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_data.tx.nondust_htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, funding.get_channel_type()) * 1000;
-		let holder_balance_msat = commitment_data.stats.local_balance_before_fee_msat - htlc_stats.outbound_holding_cell_msat;
-		if holder_balance_msat < buffer_fee_msat  + funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
+		let stats = self.build_commitment_stats(funding, true, true, Some(feerate_per_kw), Some(htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize));
+		let holder_balance_msat = stats.local_balance_before_fee_msat - htlc_stats.outbound_holding_cell_msat;
+		// Note that `stats.commit_tx_fee_sat` accounts for any HTLCs that transition from non-dust to dust under a higher feerate (in the case where HTLC-transactions pay endogenous fees).
+		if holder_balance_msat < stats.commit_tx_fee_sat * 1000 + funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
 			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
 			return false;
@@ -4447,7 +4443,7 @@ where
 	/// commitment transaction. See `build_commitment_transaction` for further docs.
 	#[inline]
 	#[rustfmt::skip]
-	fn build_commitment_stats(&self, funding: &FundingScope, local: bool, generated_by_local: bool) -> CommitmentStats {
+	fn build_commitment_stats(&self, funding: &FundingScope, local: bool, generated_by_local: bool, feerate_per_kw: Option<u32>, fee_buffer_nondust_htlcs: Option<usize>) -> CommitmentStats {
 		let broadcaster_dust_limit_sat = if local { self.holder_dust_limit_satoshis } else { self.counterparty_dust_limit_satoshis };
 		let mut non_dust_htlc_count = 0;
 		let mut remote_htlc_total_msat = 0;
@@ -4455,7 +4451,7 @@ where
 		let mut value_to_self_claimed_msat = 0;
 		let mut value_to_remote_claimed_msat = 0;
 
-		let feerate_per_kw = self.get_commitment_feerate(funding, generated_by_local);
+		let feerate_per_kw = feerate_per_kw.unwrap_or_else(|| self.get_commitment_feerate(funding, generated_by_local));
 
 		for htlc in self.pending_inbound_htlcs.iter() {
 			if htlc.state.included_in_commitment(generated_by_local) {
@@ -4508,7 +4504,7 @@ where
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat);
 		}
 
-		let commit_tx_fee_sat = commit_tx_fee_sat(feerate_per_kw, non_dust_htlc_count, &funding.channel_transaction_parameters.channel_type_features);
+		let commit_tx_fee_sat = commit_tx_fee_sat(feerate_per_kw, non_dust_htlc_count + fee_buffer_nondust_htlcs.unwrap_or(0), &funding.channel_transaction_parameters.channel_type_features);
 		let total_anchors_sat = if funding.channel_transaction_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 
 		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
@@ -4552,7 +4548,7 @@ where
 		let broadcaster_dust_limit_sat = if local { self.holder_dust_limit_satoshis } else { self.counterparty_dust_limit_satoshis };
 		let feerate_per_kw = self.get_commitment_feerate(funding, generated_by_local);
 
-		let stats = self.build_commitment_stats(funding, local, generated_by_local);
+		let stats = self.build_commitment_stats(funding, local, generated_by_local, None, None);
 		let CommitmentStats {
 			commit_tx_fee_sat,
 			local_balance_before_fee_msat,
@@ -7659,7 +7655,7 @@ where
 
 		let can_send_update_fee = core::iter::once(&self.funding)
 			.chain(self.pending_funding.iter())
-			.all(|funding| self.context.can_send_update_fee(funding, &self.holder_commitment_point, feerate_per_kw, fee_estimator, logger));
+			.all(|funding| self.context.can_send_update_fee(funding, feerate_per_kw, fee_estimator, logger));
 		if !can_send_update_fee {
 			return None;
 		}
