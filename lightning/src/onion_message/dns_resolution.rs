@@ -344,6 +344,30 @@ impl OMNameResolver {
 		});
 	}
 
+	/// Removes any pending resolutions for the given `name` and `payment_id`.
+	///
+	/// Any future calls to [`Self::handle_dnssec_proof_for_offer`] or
+	/// [`Self::handle_dnssec_proof_for_uri`] will no longer return a result for the given
+	/// resolution.
+	pub fn expire_pending_resolution(&self, name: &HumanReadableName, payment_id: PaymentId) {
+		let dns_name =
+			Name::try_from(format!("{}.user._bitcoin-payment.{}.", name.user(), name.domain()));
+		debug_assert!(
+			dns_name.is_ok(),
+			"The HumanReadableName constructor shouldn't allow names which are too long"
+		);
+		if let Ok(name) = dns_name {
+			let mut pending_resolves = self.pending_resolves.lock().unwrap();
+			if let hash_map::Entry::Occupied(mut entry) = pending_resolves.entry(name) {
+				let resolutions = entry.get_mut();
+				resolutions.retain(|resolution| resolution.payment_id != payment_id);
+				if resolutions.is_empty() {
+					entry.remove();
+				}
+			}
+		}
+	}
+
 	/// Begins the process of resolving a BIP 353 Human Readable Name.
 	///
 	/// Returns a [`DNSSECQuery`] onion message and a [`DNSResolverContext`] which should be sent
@@ -483,7 +507,7 @@ impl OMNameResolver {
 
 #[cfg(test)]
 mod tests {
-	use super::HumanReadableName;
+	use super::*;
 
 	#[test]
 	fn test_hrn_display_format() {
@@ -499,5 +523,44 @@ mod tests {
 			expected_display,
 			"HumanReadableName display format mismatch"
 		);
+	}
+
+	#[test]
+	#[cfg(feature = "dnssec")]
+	fn test_expiry() {
+		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0);
+		let resolver = OMNameResolver::new(42, 42);
+		let name = HumanReadableName::new("user", "example.com").unwrap();
+
+		// Queue up a resolution
+		resolver.resolve_name(PaymentId([0; 32]), name.clone(), &keys).unwrap();
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		// and check that it expires after two blocks
+		resolver.new_best_block(44, 42);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 0);
+
+		// Queue up another resolution
+		resolver.resolve_name(PaymentId([1; 32]), name.clone(), &keys).unwrap();
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		// it won't expire after one block
+		resolver.new_best_block(45, 42);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 1);
+		// and queue up a second and third resolution of the same name
+		resolver.resolve_name(PaymentId([2; 32]), name.clone(), &keys).unwrap();
+		resolver.resolve_name(PaymentId([3; 32]), name.clone(), &keys).unwrap();
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 3);
+		// after another block the first will expire, but the second and third won't
+		resolver.new_best_block(46, 42);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 2);
+		// Check manual expiry
+		resolver.expire_pending_resolution(&name, PaymentId([3; 32]));
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 1);
+		// after one more block all the requests will have expired
+		resolver.new_best_block(47, 42);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 0);
 	}
 }
