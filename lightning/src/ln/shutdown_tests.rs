@@ -77,20 +77,10 @@ fn pre_funding_lock_shutdown_test() {
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		8000000
-	);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[node_a_id],
-		8000000
-	);
+	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 8000000);
+	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 8000000);
 }
 
 #[test]
@@ -138,20 +128,10 @@ fn expect_channel_shutdown_state() {
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[node_a_id],
-		100000
-	);
+	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
 }
 
 #[test]
@@ -239,20 +219,10 @@ fn expect_channel_shutdown_state_with_htlc() {
 	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
 	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	assert!(node_1_none.is_none());
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[node_a_id],
-		100000
-	);
+	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
 
 	// Shutdown basically removes the channelDetails, testing of shutdowncomplete state unnecessary
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -317,20 +287,11 @@ fn test_lnd_bug_6039() {
 	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
 	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	assert!(node_1_none.is_none());
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[node_a_id],
-		100000
-	);
+
+	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
 
 	// Shutdown basically removes the channelDetails, testing of shutdowncomplete state unnecessary
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -358,13 +319,8 @@ fn shutdown_on_unfunded_channel() {
 			scriptpubkey: script,
 		},
 	);
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::CounterpartyCoopClosedUnfundedChannel,
-		[node_b_id],
-		1_000_000
-	);
+	let reason = ClosureReason::CounterpartyCoopClosedUnfundedChannel;
+	check_closed_event!(nodes[0], 1, reason, [node_b_id], 1_000_000);
 }
 
 #[test]
@@ -381,13 +337,8 @@ fn close_on_unfunded_channel() {
 	let _open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[0].node.close_channel(&chan_id, &node_b_id).unwrap();
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-		[node_b_id],
-		1_000_000
-	);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) };
+	check_closed_event!(nodes[0], 1, reason, [node_b_id], 1_000_000);
 }
 
 #[test]
@@ -425,13 +376,8 @@ fn expect_channel_shutdown_state_with_force_closure() {
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[0], true);
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [node_b_id], 100000);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) },
-		[node_a_id],
-		100000
-	);
+	let reason_b = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
 }
 
 #[test]
@@ -495,30 +441,15 @@ fn updates_shutdown_wait() {
 		&random_seed_bytes,
 	)
 	.unwrap();
-	unwrap_send_err!(
-		nodes[0],
-		nodes[0].node.send_payment_with_route(
-			route_1,
-			payment_hash,
-			RecipientOnionFields::secret_only(payment_secret),
-			PaymentId(payment_hash.0)
-		),
-		true,
-		APIError::ChannelUnavailable { .. },
-		{}
-	);
-	unwrap_send_err!(
-		nodes[1],
-		nodes[1].node.send_payment_with_route(
-			route_2,
-			payment_hash,
-			RecipientOnionFields::secret_only(payment_secret),
-			PaymentId(payment_hash.0)
-		),
-		true,
-		APIError::ChannelUnavailable { .. },
-		{}
-	);
+
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId(payment_hash.0);
+	let res = nodes[0].node.send_payment_with_route(route_1, payment_hash, onion, id);
+	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let res = nodes[1].node.send_payment_with_route(route_2, payment_hash, onion, id);
+	unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
 
 	nodes[2].node.claim_funds(payment_preimage_0);
 	check_added_monitors!(nodes[2], 1);
@@ -555,42 +486,24 @@ fn updates_shutdown_wait() {
 	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
 	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	assert!(node_1_none.is_none());
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[node_a_id],
-		100000
-	);
+
+	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
 
 	assert!(nodes[0].node.list_channels().is_empty());
 
 	assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 	close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
+
 	assert!(nodes[1].node.list_channels().is_empty());
 	assert!(nodes[2].node.list_channels().is_empty());
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[node_c_id],
-		100000
-	);
-	check_closed_event!(
-		nodes[2],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
+	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[1], 1, reason_b, [node_c_id], 100000);
+	let reason_c = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[2], 1, reason_c, [node_b_id], 100000);
 }
 
 #[test]
@@ -630,15 +543,11 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 			amt_msat,
 		)
 	};
+	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let id = PaymentId(our_payment_hash.0);
 	nodes[0]
 		.node
-		.send_payment(
-			our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret),
-			PaymentId(our_payment_hash.0),
-			route_params,
-			Retry::Attempts(0),
-		)
+		.send_payment(our_payment_hash, onion, id, route_params, Retry::Attempts(0))
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], node_b_id);
@@ -720,13 +629,8 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
 	assert!(nodes[1].node.list_channels().is_empty());
 	assert!(nodes[2].node.list_channels().is_empty());
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
+	let reason_a = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
 	let event1 = ExpectedCloseEvent {
 		channel_capacity_sats: Some(100000),
 		channel_id: None,
@@ -746,13 +650,8 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 		user_channel_id: None,
 	};
 	check_closed_events(&nodes[1], &[event1, event2]);
-	check_closed_event!(
-		nodes[2],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
+	let reason_c = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[2], 1, reason_c, [node_b_id], 100000);
 }
 
 fn do_test_shutdown_rebroadcast(recv_count: u8) {
@@ -784,31 +683,14 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	nodes[0].node.peer_disconnected(node_b_id);
 	nodes[1].node.peer_disconnected(node_a_id);
 
-	nodes[0]
-		.node
-		.peer_connected(
-			node_b_id,
-			&msgs::Init {
-				features: nodes[1].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			true,
-		)
-		.unwrap();
+	let init_msg = msgs::Init {
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	nodes[0].node.peer_connected(node_b_id, &init_msg, true).unwrap();
 	let node_0_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
-	nodes[1]
-		.node
-		.peer_connected(
-			node_a_id,
-			&msgs::Init {
-				features: nodes[0].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			false,
-		)
-		.unwrap();
+	nodes[1].node.peer_connected(node_a_id, &init_msg, false).unwrap();
 	let node_1_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 
 	nodes[1].node.handle_channel_reestablish(node_a_id, &node_0_reestablish);
@@ -873,31 +755,9 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	nodes[0].node.peer_disconnected(node_b_id);
 	nodes[1].node.peer_disconnected(node_a_id);
 
-	nodes[1]
-		.node
-		.peer_connected(
-			node_a_id,
-			&msgs::Init {
-				features: nodes[0].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			true,
-		)
-		.unwrap();
+	nodes[1].node.peer_connected(node_a_id, &init_msg, true).unwrap();
 	let node_1_2nd_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
-	nodes[0]
-		.node
-		.peer_connected(
-			node_b_id,
-			&msgs::Init {
-				features: nodes[1].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			false,
-		)
-		.unwrap();
+	nodes[0].node.peer_connected(node_b_id, &init_msg, false).unwrap();
 	if recv_count == 0 {
 		// If all closing_signeds weren't delivered we can just resume where we left off...
 		let node_0_2nd_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
@@ -941,13 +801,8 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
 		let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 		assert!(node_1_none.is_none());
-		check_closed_event!(
-			nodes[1],
-			1,
-			ClosureReason::LocallyInitiatedCooperativeClosure,
-			[node_a_id],
-			100000
-		);
+		let reason = ClosureReason::LocallyInitiatedCooperativeClosure;
+		check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
 	} else {
 		// If one node, however, received + responded with an identical closing_signed we end
 		// up erroring and node[0] will try to broadcast its own latest commitment transaction.
@@ -978,8 +833,8 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// closing_signed so we do it ourselves
 		check_closed_broadcast!(nodes[1], false);
 		check_added_monitors!(nodes[1], 1);
-		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &node_b_id)) }
-			, [node_a_id], 100000);
+		let reason = ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &node_b_id)) };
+		check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
 	}
 
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -987,29 +842,16 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 	close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
+
 	assert!(nodes[1].node.list_channels().is_empty());
 	assert!(nodes[2].node.list_channels().is_empty());
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[node_c_id],
-		100000
-	);
-	check_closed_event!(
-		nodes[2],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
+
+	let reason_a = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[1], 1, reason_b, [node_c_id], 100000);
+	let reason_c = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[2], 1, reason_c, [node_b_id], 100000);
 }
 
 #[test]
@@ -1193,8 +1035,8 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028".to_string() }
-		, [node_b_id], 100000);
+	let reason = ClosureReason::ProcessingError { err: "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028".to_string() };
+	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
 }
 
 #[test]
@@ -1504,20 +1346,12 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		// nodes[1] should happily accept and respond to.
 		node_0_closing_signed.fee_range.as_mut().unwrap().max_fee_satoshis *= 10;
 		{
-			let mut node_0_per_peer_lock;
-			let mut node_0_peer_state_lock;
-			get_channel_ref!(
-				nodes[0],
-				nodes[1],
-				node_0_per_peer_lock,
-				node_0_peer_state_lock,
-				chan_id
-			)
-			.context_mut()
-			.closing_fee_limits
-			.as_mut()
-			.unwrap()
-			.1 *= 10;
+			let mut per_peer_lock;
+			let mut peer_state_lock;
+			let chan =
+				get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_id);
+
+			chan.context_mut().closing_fee_limits.as_mut().unwrap().1 *= 10;
 		}
 		nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
 		let node_1_closing_signed =
@@ -1526,21 +1360,11 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		let node_0_2nd_closing_signed = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
 		if timeout_step == TimeoutStep::NoTimeout {
 			nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.1.unwrap());
-			check_closed_event!(
-				nodes[1],
-				1,
-				ClosureReason::CounterpartyInitiatedCooperativeClosure,
-				[node_a_id],
-				100000
-			);
+			let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+			check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
 		}
-		check_closed_event!(
-			nodes[0],
-			1,
-			ClosureReason::LocallyInitiatedCooperativeClosure,
-			[node_b_id],
-			100000
-		);
+		let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
+		check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
 	}
 
 	if timeout_step != TimeoutStep::NoTimeout {
@@ -1565,16 +1389,10 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		);
 		check_closed_broadcast!(nodes[1], true);
 		check_added_monitors!(nodes[1], 1);
-		check_closed_event!(
-			nodes[1],
-			1,
-			ClosureReason::ProcessingError {
-				err: "closing_signed negotiation failed to finish within two timer ticks"
-					.to_string()
-			},
-			[node_a_id],
-			100000
-		);
+		let reason = ClosureReason::ProcessingError {
+			err: "closing_signed negotiation failed to finish within two timer ticks".to_string(),
+		};
+		check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
 	} else {
 		assert!(txn[0].output[0].script_pubkey.is_p2wpkh());
 		assert!(txn[0].output[1].script_pubkey.is_p2wpkh());
@@ -1637,20 +1455,10 @@ fn do_simple_legacy_shutdown_test(high_initiator_fee: bool) {
 	nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed.unwrap());
 	let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
 	assert!(node_0_none.is_none());
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::CounterpartyInitiatedCooperativeClosure,
-		[node_a_id],
-		100000
-	);
+	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
 }
 
 #[test]
@@ -1721,20 +1529,10 @@ fn simple_target_feerate_shutdown() {
 	nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
 	let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
 	assert!(node_0_none.is_none());
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_a_id],
-		100000
-	);
+	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	let reason_b = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
 }
 
 fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
@@ -1802,14 +1600,11 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 
 	expect_channel_shutdown_state!(nodes[0], chan_id, ChannelShutdownState::ResolvingHTLCs);
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
-	let (latest_update, _) = nodes[0]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&chan_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = {
+		let latest_monitor_update_id =
+			nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap();
+		latest_monitor_update_id.get(&chan_id).unwrap().clone()
+	};
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
 
 	let as_raa_closing_signed = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1839,20 +1634,10 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
 	assert!(node_1_none.is_none());
 
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_b_id],
-		100000
-	);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::LocallyInitiatedCooperativeClosure,
-		[node_a_id],
-		100000
-	);
+	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	let reason_b = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
 }
 
 #[test]

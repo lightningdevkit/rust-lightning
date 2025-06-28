@@ -79,15 +79,9 @@ fn test_priv_forwarding_rejection() {
 	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 10_000);
 
-	nodes[0]
-		.node
-		.send_payment_with_route(
-			route.clone(),
-			our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret),
-			PaymentId(our_payment_hash.0),
-		)
-		.unwrap();
+	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let id = PaymentId(our_payment_hash.0);
+	nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash, onion, id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let payment_event =
 		SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
@@ -108,13 +102,9 @@ fn test_priv_forwarding_rejection() {
 
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &htlc_fail_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], htlc_fail_updates.commitment_signed, true, true);
-	expect_payment_failed_with_update!(
-		nodes[0],
-		our_payment_hash,
-		false,
-		nodes[2].node.list_channels()[0].short_channel_id.unwrap(),
-		true
-	);
+
+	let chan_2_scid = nodes[2].node.list_channels()[0].short_channel_id.unwrap();
+	expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_2_scid, true);
 
 	// Now disconnect nodes[1] from its peers and restart with accept_forwards_to_priv_channels set
 	// to true. Sadly there is currently no way to change it at runtime.
@@ -137,30 +127,19 @@ fn test_priv_forwarding_rejection() {
 		nodes_1_deserialized
 	);
 
-	nodes[0]
-		.node
-		.peer_connected(
-			node_b_id,
-			&msgs::Init {
-				features: nodes[1].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			true,
-		)
-		.unwrap();
-	nodes[1]
-		.node
-		.peer_connected(
-			node_a_id,
-			&msgs::Init {
-				features: nodes[0].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			false,
-		)
-		.unwrap();
+	let bs_init_msg = msgs::Init {
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	nodes[0].node.peer_connected(node_b_id, &bs_init_msg, true).unwrap();
+
+	let as_init_msg = msgs::Init {
+		features: nodes[0].node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	nodes[1].node.peer_connected(node_a_id, &as_init_msg, false).unwrap();
 	let as_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 	nodes[1].node.handle_channel_reestablish(node_a_id, &as_reestablish);
@@ -168,30 +147,13 @@ fn test_priv_forwarding_rejection() {
 	get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_b_id);
 	get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_a_id);
 
-	nodes[1]
-		.node
-		.peer_connected(
-			node_c_id,
-			&msgs::Init {
-				features: nodes[2].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			true,
-		)
-		.unwrap();
-	nodes[2]
-		.node
-		.peer_connected(
-			node_b_id,
-			&msgs::Init {
-				features: nodes[1].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			false,
-		)
-		.unwrap();
+	let cs_init_msg = msgs::Init {
+		features: nodes[2].node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	nodes[1].node.peer_connected(node_c_id, &cs_init_msg, true).unwrap();
+	nodes[2].node.peer_connected(node_b_id, &bs_init_msg, false).unwrap();
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[2]).pop().unwrap();
 	let cs_reestablish = get_chan_reestablish_msgs!(nodes[2], nodes[1]).pop().unwrap();
 	nodes[2].node.handle_channel_reestablish(node_b_id, &bs_reestablish);
@@ -199,15 +161,9 @@ fn test_priv_forwarding_rejection() {
 	get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_c_id);
 	get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, node_b_id);
 
-	nodes[0]
-		.node
-		.send_payment_with_route(
-			route,
-			our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret),
-			PaymentId(our_payment_hash.0),
-		)
-		.unwrap();
+	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let id = PaymentId(our_payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(
 		&nodes[0],
@@ -388,15 +344,10 @@ fn test_routed_scid_alias() {
 	let (route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000);
 	assert_eq!(route.paths[0].hops[1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
-	nodes[0]
-		.node
-		.send_payment_with_route(
-			route,
-			payment_hash,
-			RecipientOnionFields::secret_only(payment_secret),
-			PaymentId(payment_hash.0),
-		)
-		.unwrap();
+
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 100_000, payment_hash, payment_secret);
@@ -623,15 +574,10 @@ fn test_inbound_scid_privacy() {
 	let (route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000);
 	assert_eq!(route.paths[0].hops[1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
-	nodes[0]
-		.node
-		.send_payment_with_route(
-			route,
-			payment_hash,
-			RecipientOnionFields::secret_only(payment_secret),
-			PaymentId(payment_hash.0),
-		)
-		.unwrap();
+
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 100_000, payment_hash, payment_secret);
@@ -649,15 +595,10 @@ fn test_inbound_scid_privacy() {
 	let (route_2, payment_hash_2, _, payment_secret_2) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params_2, 100_000);
 	assert_eq!(route_2.paths[0].hops[1].short_channel_id, last_hop[0].short_channel_id.unwrap());
-	nodes[0]
-		.node
-		.send_payment_with_route(
-			route_2,
-			payment_hash_2,
-			RecipientOnionFields::secret_only(payment_secret_2),
-			PaymentId(payment_hash_2.0),
-		)
-		.unwrap();
+
+	let onion = RecipientOnionFields::secret_only(payment_secret_2);
+	let id = PaymentId(payment_hash_2.0);
+	nodes[0].node.send_payment_with_route(route_2, payment_hash_2, onion, id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let payment_event = SendEvent::from_node(&nodes[0]);
@@ -751,15 +692,10 @@ fn test_scid_alias_returned() {
 	route.paths[0].hops[1].fee_msat = 10_000_000; // Overshoot the last channel's value
 
 	// Route the HTLC through to the destination.
-	nodes[0]
-		.node
-		.send_payment_with_route(
-			route.clone(),
-			payment_hash,
-			RecipientOnionFields::secret_only(payment_secret),
-			PaymentId(payment_hash.0),
-		)
-		.unwrap();
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, onion, id).unwrap();
+
 	check_added_monitors!(nodes[0], 1);
 	let as_updates = get_htlc_update_msgs!(nodes[0], node_b_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_updates.update_add_htlcs[0]);
@@ -794,15 +730,10 @@ fn test_scid_alias_returned() {
 	route.paths[0].hops[0].fee_msat = 0; // But set fee paid to the middle hop to 0
 
 	// Route the HTLC through to the destination.
-	nodes[0]
-		.node
-		.send_payment_with_route(
-			route,
-			payment_hash,
-			RecipientOnionFields::secret_only(payment_secret),
-			PaymentId(payment_hash.0),
-		)
-		.unwrap();
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
+
 	check_added_monitors!(nodes[0], 1);
 	let as_updates = get_htlc_update_msgs!(nodes[0], node_b_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_updates.update_add_htlcs[0]);
@@ -1003,15 +934,9 @@ fn test_0conf_channel_with_async_monitor() {
 	let (route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
 
-	nodes[0]
-		.node
-		.send_payment_with_route(
-			route,
-			payment_hash,
-			RecipientOnionFields::secret_only(payment_secret),
-			PaymentId(payment_hash.0),
-		)
-		.unwrap();
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let as_send = SendEvent::from_node(&nodes[0]);
@@ -1035,14 +960,11 @@ fn test_0conf_channel_with_async_monitor() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (_, latest_update) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&bs_raa.channel_id)
-		.unwrap()
-		.clone();
+	let (_, latest_update) = {
+		let latest_monitor_update_id =
+			nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
+		latest_monitor_update_id.get(&bs_raa.channel_id).unwrap().clone()
+	};
 	nodes[1]
 		.chain_monitor
 		.chain_monitor
@@ -1088,13 +1010,8 @@ fn test_0conf_close_no_early_chan_update() {
 
 	nodes[0].node.force_close_all_channels_broadcasting_latest_txn(error_message.to_string());
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(
-		&nodes[0],
-		1,
-		ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) },
-		[node_b_id],
-		100000
-	);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	check_closed_event!(&nodes[0], 1, reason, [node_b_id], 100000);
 	let _ = get_err_msg(&nodes[0], &node_b_id);
 }
 
@@ -1206,28 +1123,18 @@ fn test_0conf_channel_reorg() {
 	// At this point the channel no longer has an SCID again. In the future we should likely
 	// support simply un-setting the SCID and waiting until the channel gets re-confirmed, but for
 	// now we force-close the channel here.
-	check_closed_event!(
-		&nodes[0],
-		1,
-		ClosureReason::ProcessingError {
-			err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
-				.to_owned()
-		},
-		[node_b_id],
-		100000
-	);
+	let reason = ClosureReason::ProcessingError {
+		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
+			.to_owned(),
+	};
+	check_closed_event!(&nodes[0], 1, reason, [node_b_id], 100000);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors(&nodes[0], 1);
-	check_closed_event!(
-		&nodes[1],
-		1,
-		ClosureReason::ProcessingError {
-			err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
-				.to_owned()
-		},
-		[node_a_id],
-		100000
-	);
+	let reason = ClosureReason::ProcessingError {
+		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
+			.to_owned(),
+	};
+	check_closed_event!(&nodes[1], 1, reason, [node_a_id], 100000);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors(&nodes[1], 1);
 }
