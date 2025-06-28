@@ -15,7 +15,7 @@
 
 use crate::io::{self, BufRead, Read, Write};
 use crate::io_extras::{copy, sink};
-use crate::ln::interactivetxs::{InteractiveTxInput, InteractiveTxOutput};
+use crate::ln::interactivetxs::{InteractiveTxOutput, NegotiatedTxInput};
 use crate::ln::onion_utils::{HMAC_COUNT, HMAC_LEN, HOLD_TIME_LEN, MAX_HOPS};
 use crate::prelude::*;
 use crate::sync::{Mutex, RwLock};
@@ -1082,7 +1082,7 @@ impl_for_vec!(crate::ln::channelmanager::PaymentClaimDetails);
 impl_for_vec!(crate::ln::msgs::SocketAddress);
 impl_for_vec!((A, B), A, B);
 impl_for_vec!(SerialId);
-impl_for_vec!(InteractiveTxInput);
+impl_for_vec!(NegotiatedTxInput);
 impl_for_vec!(InteractiveTxOutput);
 impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
 impl_readable_for_vec!(crate::routing::router::BlindedTail);
