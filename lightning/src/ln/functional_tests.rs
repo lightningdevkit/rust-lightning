@@ -8892,7 +8892,7 @@ pub fn test_duplicate_funding_err_in_funding() {
 	funding_created_msg.funding_output_index += 10;
 	nodes[1].node.handle_funding_created(node_c_id, &funding_created_msg);
 	get_err_msg(&nodes[1], &node_c_id);
-	let err = "Invalid funding_created signature from peer".to_owned();
+	let err = "Failed to validate our commitment".to_owned();
 	let reason = ClosureReason::ProcessingError { err };
 	let expected_closing = ExpectedCloseEvent::from_id_reason(real_channel_id, false, reason);
 	check_closed_events(&nodes[1], &[expected_closing]);

@@ -763,8 +763,9 @@ pub trait ChannelSigner {
 	/// closed. If you wish to make this operation asynchronous, you should instead return `Ok(())`
 	/// and pause future signing operations until this validation completes.
 	fn validate_holder_commitment(
-		&self, holder_tx: &HolderCommitmentTransaction,
-		outbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		holder_tx: &HolderCommitmentTransaction, outbound_htlc_preimages: Vec<PaymentPreimage>,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(), ()>;
 
 	/// Validate the counterparty's revocation.
@@ -1362,9 +1363,68 @@ impl ChannelSigner for InMemorySigner {
 	}
 
 	fn validate_holder_commitment(
-		&self, _holder_tx: &HolderCommitmentTransaction,
-		_outbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		holder_tx: &HolderCommitmentTransaction, _outbound_htlc_preimages: Vec<PaymentPreimage>,
+		secp_ctx: &secp256k1::Secp256k1<secp256k1::All>,
 	) -> Result<(), ()> {
+		let counterparty_funding_pubkey =
+			&channel_parameters.counterparty_pubkeys().as_ref().unwrap().funding_pubkey;
+		let funding_script = channel_parameters.make_funding_redeemscript();
+		let channel_value_satoshis = channel_parameters.channel_value_satoshis;
+		let trusted_tx = holder_tx.trust();
+		let bitcoin_tx = trusted_tx.built_transaction();
+		let sighash = bitcoin_tx.get_sighash_all(&funding_script, channel_value_satoshis);
+
+		secp_ctx
+			.verify_ecdsa(&sighash, &holder_tx.counterparty_sig, counterparty_funding_pubkey)
+			.map_err(|_| ())?;
+
+		let holder_keys = trusted_tx.keys();
+
+		if holder_tx.nondust_htlcs().len() != holder_tx.counterparty_htlc_sigs.len() {
+			return Err(());
+		}
+		for (htlc, sig) in
+			holder_tx.nondust_htlcs().iter().zip(holder_tx.counterparty_htlc_sigs.iter())
+		{
+			let htlc_tx = chan_utils::build_htlc_transaction(
+				&bitcoin_tx.txid,
+				holder_tx.feerate_per_kw(),
+				channel_parameters.as_holder_broadcastable().contest_delay(),
+				&htlc,
+				&channel_parameters.channel_type_features,
+				&holder_keys.broadcaster_delayed_payment_key,
+				&holder_keys.revocation_key,
+			);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(
+				&htlc,
+				&channel_parameters.channel_type_features,
+				&holder_keys,
+			);
+			let htlc_sighashtype =
+				if channel_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+					EcdsaSighashType::SinglePlusAnyoneCanPay
+				} else {
+					EcdsaSighashType::All
+				};
+			let htlc_sighash = hash_to_message!(
+				&sighash::SighashCache::new(&htlc_tx)
+					.p2wsh_signature_hash(
+						0,
+						&htlc_redeemscript,
+						htlc.to_bitcoin_amount(),
+						htlc_sighashtype
+					)
+					.unwrap()[..]
+			);
+			secp_ctx
+				.verify_ecdsa(
+					&htlc_sighash,
+					&sig,
+					&holder_keys.countersignatory_htlc_key.to_public_key(),
+				)
+				.map_err(|_| ())?;
+		}
 		Ok(())
 	}
 
