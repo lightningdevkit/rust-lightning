@@ -712,7 +712,7 @@ impl NegotiationContext {
 				(
 					InputOwned::Single(SingleOwnedInput {
 						input: txin,
-						prev_tx: Some(prevtx.clone()),
+						prev_tx: prevtx.clone(),
 						prev_output: tx_out.clone(),
 					}),
 					prev_outpoint,
@@ -889,7 +889,8 @@ impl NegotiationContext {
 				sequence: Sequence(msg.sequence),
 				..Default::default()
 			};
-			let single_input = SingleOwnedInput { input: txin, prev_tx: None, prev_output };
+			let single_input =
+				SingleOwnedInput { input: txin, prev_tx: prevtx.clone(), prev_output };
 			(prev_outpoint, InputOwned::Single(single_input))
 		} else {
 			return Err(AbortReason::MissingPrevTx);
@@ -1264,7 +1265,7 @@ impl_writeable_tlv_based_enum!(AddingRole,
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SingleOwnedInput {
 	input: TxIn,
-	prev_tx: Option<TransactionU16LenLimited>,
+	prev_tx: TransactionU16LenLimited,
 	prev_output: TxOut,
 }
 
@@ -1724,11 +1725,8 @@ impl InteractiveTxConstructor {
 				let serial_id = generate_holder_serial_id(entropy_source, is_initiator);
 				let vout = txin.previous_output.vout as usize;
 				let prev_output = tx.as_transaction().output.get(vout).unwrap().clone(); // checked above
-				let input = InputOwned::Single(SingleOwnedInput {
-					input: txin,
-					prev_tx: Some(tx),
-					prev_output,
-				});
+				let input =
+					InputOwned::Single(SingleOwnedInput { input: txin, prev_tx: tx, prev_output });
 				(serial_id, input)
 			})
 			.collect();
@@ -1792,7 +1790,7 @@ impl InteractiveTxConstructor {
 				InputOwned::Single(single) => msgs::TxAddInput {
 					channel_id: self.channel_id,
 					serial_id,
-					prevtx: single.prev_tx,
+					prevtx: Some(single.prev_tx),
 					prevtx_out: single.input.previous_output.vout,
 					sequence: single.input.sequence.to_consensus_u32(),
 					shared_input_txid: None,
