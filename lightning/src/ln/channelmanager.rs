@@ -3069,7 +3069,7 @@ macro_rules! handle_error {
 					let logger = WithContext::from(
 						&$self.logger, Some(counterparty_node_id), Some(channel_id), None
 					);
-					log_error!(logger, "Force-closing channel: {}", err.err);
+					log_error!(logger, "Closing channel: {}", err.err);
 
 					$self.finish_close_channel(shutdown_res);
 					if let Some(update) = update_option {
@@ -3192,6 +3192,23 @@ macro_rules! convert_channel_err {
 			},
 		}
 	};
+	($self: ident, $peer_state: expr, $shutdown_result: expr, $funded_channel: expr, $channel_id: expr, COOP_CLOSED) => { {
+		let reason = ChannelError::Close(("Coop Closed".to_owned(), $shutdown_result.closure_reason.clone()));
+		let do_close = |_| {
+			(
+				$shutdown_result,
+				$self.get_channel_update_for_broadcast(&$funded_channel).ok(),
+			)
+		};
+		let mut locked_close = |shutdown_res_mut: &mut ShutdownResult, funded_channel: &mut FundedChannel<_>| {
+			locked_close_channel!($self, $peer_state, funded_channel, shutdown_res_mut, FUNDED);
+		};
+		let (close, mut err) =
+			convert_channel_err!($self, $peer_state, reason, $funded_channel, do_close, locked_close, $channel_id, _internal);
+		err.dont_send_error_message();
+		debug_assert!(close);
+		err
+	} };
 	($self: ident, $peer_state: expr, $err: expr, $funded_channel: expr, $channel_id: expr, FUNDED_CHANNEL) => { {
 		let mut do_close = |reason| {
 			(
@@ -9788,13 +9805,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				msg.channel_id,
 			)
 		})?;
-		let (tx, chan_option, shutdown_result) = {
+		let logger;
+		let tx_err: Option<(_, Result<Infallible, _>)> = {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						logger = WithChannelContext::from(&self.logger, &chan.context, None);
 						let res = chan.closing_signed(&self.fee_estimator, &msg, &&logger);
 						let (closing_signed, tx_shutdown_result) =
 							try_channel_entry!(self, peer_state, res, chan_entry);
@@ -9805,16 +9823,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								msg,
 							});
 						}
-						if let Some((tx, mut close_res)) = tx_shutdown_result {
+						if let Some((tx, close_res)) = tx_shutdown_result {
 							// We're done with this channel, we've got a signed closing transaction and
 							// will send the closing_signed back to the remote peer upon return. This
 							// also implies there are no pending HTLCs left on the channel, so we can
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
-							locked_close_channel!(self, peer_state, chan, close_res, FUNDED);
-							(Some(tx), Some(chan_entry.remove()), Some(close_res))
+							let err = convert_channel_err!(self, peer_state, close_res, chan, &msg.channel_id, COOP_CLOSED);
+							chan_entry.remove();
+							Some((tx, Err(err)))
 						} else {
-							(None, None, None)
+							None
 						}
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
@@ -9824,26 +9843,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
-		if let Some(broadcast_tx) = tx {
-			let channel_id = chan_option.as_ref().map(|channel| channel.context().channel_id());
-			log_info!(
-				WithContext::from(&self.logger, Some(*counterparty_node_id), channel_id, None),
-				"Broadcasting {}",
-				log_tx!(broadcast_tx)
-			);
-			self.tx_broadcaster.broadcast_transactions(&[&broadcast_tx]);
-		}
-		if let Some(chan) = chan_option.as_ref().and_then(Channel::as_funded) {
-			if let Ok(update) = self.get_channel_update_for_broadcast(chan) {
-				let mut pending_broadcast_messages =
-					self.pending_broadcast_messages.lock().unwrap();
-				pending_broadcast_messages
-					.push(MessageSendEvent::BroadcastChannelUpdate { msg: update });
-			}
-		}
 		mem::drop(per_peer_state);
-		if let Some(shutdown_result) = shutdown_result {
-			self.finish_close_channel(shutdown_result);
+		if let Some((broadcast_tx, err)) = tx_err {
+			log_info!(logger, "Broadcasting {}", log_tx!(broadcast_tx));
+			self.tx_broadcaster.broadcast_transactions(&[&broadcast_tx]);
+			let _ = handle_error!(self, err, *counterparty_node_id);
 		}
 		Ok(())
 	}
@@ -11045,12 +11049,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					if let Some(broadcast_tx) = msgs.signed_closing_tx {
 						log_info!(logger, "Broadcasting closing tx {}", log_tx!(broadcast_tx));
 						self.tx_broadcaster.broadcast_transactions(&[&broadcast_tx]);
-
-						if let Ok(update) = self.get_channel_update_for_broadcast(&funded_chan) {
-							pending_msg_events.push(MessageSendEvent::BroadcastChannelUpdate {
-								msg: update
-							});
-						}
 					}
 				} else {
 					// We don't know how to handle a channel_ready or signed_closing_tx for a
@@ -11064,14 +11062,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		};
 
-		let mut shutdown_results = Vec::new();
+		let mut shutdown_results: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let per_peer_state_iter = per_peer_state.iter().filter(|(cp_id, _)| {
 			if let Some((counterparty_node_id, _)) = channel_opt {
 				**cp_id == counterparty_node_id
 			} else { true }
 		});
-		for (_cp_id, peer_state_mutex) in per_peer_state_iter {
+		for (cp_id, peer_state_mutex) in per_peer_state_iter {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			peer_state.channel_by_id.retain(|_, chan| {
@@ -11079,16 +11077,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Some((_, channel_id)) if chan.context().channel_id() != channel_id => None,
 					_ => unblock_chan(chan, &mut peer_state.pending_msg_events),
 				};
-				if let Some(mut shutdown_result) = shutdown_result {
+				if let Some(shutdown) = shutdown_result {
 					let context = chan.context();
 					let logger = WithChannelContext::from(&self.logger, context, None);
-					log_trace!(logger, "Removing channel {} now that the signer is unblocked", context.channel_id());
-					if let Some(funded_channel) = chan.as_funded_mut() {
-						locked_close_channel!(self, peer_state, funded_channel, shutdown_result, FUNDED);
+					let chan_id = context.channel_id();
+					log_trace!(logger, "Removing channel {} now that the signer is unblocked", chan_id);
+					let (remove, err) = if let Some(funded) = chan.as_funded_mut() {
+						let err = convert_channel_err!(self, peer_state, shutdown, funded, &chan_id, COOP_CLOSED);
+						(true, err)
 					} else {
-						locked_close_channel!(self, chan.context(), UNFUNDED);
-					}
-					shutdown_results.push(shutdown_result);
+						debug_assert!(false);
+						let reason = shutdown.closure_reason.clone();
+						let err = ChannelError::Close((reason.to_string(), reason));
+						convert_channel_err!(self, peer_state, err, chan, &chan_id, UNFUNDED_CHANNEL)
+					};
+					debug_assert!(remove);
+					shutdown_results.push((Err(err), *cp_id));
 					false
 				} else {
 					true
@@ -11096,8 +11100,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			});
 		}
 		drop(per_peer_state);
-		for shutdown_result in shutdown_results.drain(..) {
-			self.finish_close_channel(shutdown_result);
+		for (err, counterparty_node_id) in shutdown_results {
+			let _ = handle_error!(self, err, counterparty_node_id);
 		}
 	}
 
@@ -11108,11 +11112,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn maybe_generate_initial_closing_signed(&self) -> bool {
 		let mut handle_errors: Vec<(PublicKey, Result<(), _>)> = Vec::new();
 		let mut has_update = false;
-		let mut shutdown_results = Vec::new();
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
-			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+			for (cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
@@ -11129,17 +11132,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										});
 									}
 									debug_assert_eq!(tx_shutdown_result_opt.is_some(), funded_chan.is_shutdown());
-									if let Some((tx, mut shutdown_res)) = tx_shutdown_result_opt {
-										locked_close_channel!(self, peer_state, funded_chan, shutdown_res, FUNDED);
-										shutdown_results.push(shutdown_res);
+									if let Some((tx, shutdown_res)) = tx_shutdown_result_opt {
 										// We're done with this channel. We got a closing_signed and sent back
 										// a closing_signed with a closing transaction to broadcast.
-										if let Ok(update) = self.get_channel_update_for_broadcast(&funded_chan) {
-											let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-											pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
-												msg: update
-											});
-										}
+										let err = convert_channel_err!(self, peer_state, shutdown_res, funded_chan, channel_id, COOP_CLOSED);
+										handle_errors.push((*cp_id, Err(err)));
 
 										log_info!(logger, "Broadcasting {}", log_tx!(tx));
 										self.tx_broadcaster.broadcast_transactions(&[&tx]);
@@ -11160,12 +11157,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		}
 
-		for (counterparty_node_id, err) in handle_errors.drain(..) {
+		for (counterparty_node_id, err) in handle_errors {
 			let _ = handle_error!(self, err, counterparty_node_id);
-		}
-
-		for shutdown_result in shutdown_results.drain(..) {
-			self.finish_close_channel(shutdown_result);
 		}
 
 		has_update
