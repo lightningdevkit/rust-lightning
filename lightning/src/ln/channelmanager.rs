@@ -83,7 +83,7 @@ use crate::ln::onion_utils::{
 	decode_fulfill_attribution_data, HTLCFailReason, LocalHTLCFailureReason,
 };
 use crate::ln::onion_utils::{process_fulfill_attribution_data, AttributionData};
-use crate::ln::our_peer_storage::EncryptedOurPeerStorage;
+use crate::ln::our_peer_storage::{EncryptedOurPeerStorage, PeerStorageMonitorHolder};
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{
@@ -2974,6 +2974,7 @@ pub(super) const MAX_UNFUNDED_CHANNEL_PEERS: usize = 50;
 /// This constant defines the upper limit for the size of data
 /// that can be stored for a peer. It is set to 1024 bytes (1 kilobyte)
 /// to prevent excessive resource consumption.
+#[cfg(not(test))]
 const MAX_PEER_STORAGE_SIZE: usize = 1024;
 
 /// The maximum number of peers which we do not have a (funded) channel with. Once we reach this
@@ -9706,7 +9707,54 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		};
 
 		log_trace!(logger, "Got valid {}-byte peer backup from {}", decrypted.len(), peer_node_id);
+		let per_peer_state = self.per_peer_state.read().unwrap();
 
+		let mut cursor = io::Cursor::new(decrypted);
+		let mon_list = <Vec<PeerStorageMonitorHolder> as Readable>::read(&mut cursor)
+			.unwrap_or_else(|e| {
+				// This should NEVER happen.
+				debug_assert!(false);
+				log_debug!(self.logger, "Unable to unpack the retrieved peer storage {:?}", e);
+				Vec::new()
+			});
+
+		for mon_holder in mon_list.iter() {
+			let peer_state_mutex = match per_peer_state.get(&mon_holder.counterparty_node_id) {
+				Some(mutex) => mutex,
+				None => {
+					log_debug!(
+						logger,
+						"Not able to find peer_state for the counterparty {}, channel_id {}",
+						log_pubkey!(mon_holder.counterparty_node_id),
+						mon_holder.channel_id
+					);
+					continue;
+				},
+			};
+
+			let peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &*peer_state_lock;
+
+			match peer_state.channel_by_id.get(&mon_holder.channel_id) {
+				Some(chan) => {
+					if let Some(funded_chan) = chan.as_funded() {
+						if funded_chan.get_revoked_counterparty_commitment_transaction_number()
+							> mon_holder.min_seen_secret
+						{
+							panic!(
+								"Lost channel state for channel {}.\n\
+								Received peer storage with a more recent state than what our node had.\n\
+								Use the FundRecoverer to initiate a force close and sweep the funds.",
+								&mon_holder.channel_id
+							);
+						}
+					}
+				},
+				None => {
+					log_debug!(logger, "Found an unknown channel {}", &mon_holder.channel_id);
+				},
+			}
+		}
 		Ok(())
 	}
 
@@ -9732,6 +9780,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			), ChannelId([0; 32])));
 		}
 
+		#[cfg(not(test))]
 		if msg.data.len() > MAX_PEER_STORAGE_SIZE {
 			log_debug!(logger, "Sending warning to peer and ignoring peer storage request from {} as its over 1KiB", log_pubkey!(counterparty_node_id));
 
