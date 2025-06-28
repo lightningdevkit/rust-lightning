@@ -113,6 +113,8 @@ pub(crate) enum AbortReason {
 	UnexpectedFundingInput,
 	/// In tx_add_input, the prev_tx field must be filled in case of non-shared input
 	MissingPrevTx,
+	/// In tx_add_input, the prev_tx field should not be filled in case of shared input
+	UnexpectedPrevTx,
 	/// No funding (shared) output found.
 	MissingFundingOutput,
 	/// More than one funding (shared) output found.
@@ -176,6 +178,9 @@ impl Display for AbortReason {
 			AbortReason::MissingPrevTx => f.write_str(
 				"In tx_add_input, the prev_tx field must be filled in case of non-shared input",
 			),
+			AbortReason::UnexpectedPrevTx => f.write_str(
+				"In tx_add_input, the prev_tx should not be filled in case of shared input",
+			),
 			AbortReason::MissingFundingOutput => f.write_str("No shared funding output found"),
 			AbortReason::DuplicateFundingOutput => {
 				f.write_str("More than one funding output found")
@@ -224,7 +229,22 @@ impl_writeable_tlv_based!(ConstructedTransaction, {
 });
 
 impl ConstructedTransaction {
-	fn new(context: NegotiationContext) -> Self {
+	fn new(context: NegotiationContext) -> Result<Self, AbortReason> {
+		if let Some(shared_funding_input) = &context.shared_funding_input {
+			if !context.inputs.iter().any(|(_, input)| {
+				input.txin().previous_output == shared_funding_input.input.previous_output
+			}) {
+				return Err(AbortReason::MissingFundingInput);
+			}
+		}
+		if !context
+			.outputs
+			.iter()
+			.any(|(_, output)| *output.tx_out() == context.shared_funding_output.tx_out)
+		{
+			return Err(AbortReason::MissingFundingOutput);
+		}
+
 		let local_inputs_value_satoshis = context
 			.inputs
 			.iter()
@@ -254,7 +274,7 @@ impl ConstructedTransaction {
 				local_inputs_value_satoshis < remote_inputs_value_satoshis
 			};
 
-		Self {
+		let constructed_tx = Self {
 			holder_is_initiator: context.holder_is_initiator,
 
 			local_inputs_value_satoshis,
@@ -268,7 +288,13 @@ impl ConstructedTransaction {
 
 			lock_time: context.tx_locktime,
 			holder_sends_tx_signatures_first,
+		};
+
+		if constructed_tx.weight().to_wu() > MAX_STANDARD_TX_WEIGHT as u64 {
+			return Err(AbortReason::TransactionTooLarge);
 		}
+
+		Ok(constructed_tx)
 	}
 
 	pub fn weight(&self) -> Weight {
@@ -631,6 +657,9 @@ impl NegotiationContext {
 			if self.holder_is_initiator {
 				return Err(AbortReason::DuplicateFundingInput);
 			}
+			if msg.prevtx.is_some() {
+				return Err(AbortReason::UnexpectedPrevTx);
+			}
 			if let Some(shared_funding_input) = &self.shared_funding_input {
 				if self.inputs.values().any(|input| matches!(input.input, InputOwned::Shared(_))) {
 					return Err(AbortReason::DuplicateFundingInput);
@@ -647,42 +676,40 @@ impl NegotiationContext {
 			} else {
 				return Err(AbortReason::UnexpectedFundingInput);
 			}
-		} else {
-			if let Some(prevtx) = &msg.prevtx {
-				let transaction = prevtx.as_transaction();
-				let txid = transaction.compute_txid();
+		} else if let Some(prevtx) = &msg.prevtx {
+			let transaction = prevtx.as_transaction();
+			let txid = transaction.compute_txid();
 
-				if let Some(tx_out) = transaction.output.get(msg.prevtx_out as usize) {
-					if !tx_out.script_pubkey.is_witness_program() {
-						// The receiving node:
-						//  - MUST fail the negotiation if:
-						//     - the `scriptPubKey` is not a witness program
-						return Err(AbortReason::PrevTxOutInvalid);
-					}
-
-					let prev_outpoint = OutPoint { txid, vout: msg.prevtx_out };
-					let txin = TxIn {
-						previous_output: prev_outpoint,
-						sequence: Sequence(msg.sequence),
-						..Default::default()
-					};
-					(
-						InputOwned::Single(SingleOwnedInput {
-							input: txin,
-							prev_tx: Some(prevtx.clone()),
-							prev_output: tx_out.clone(),
-						}),
-						prev_outpoint,
-					)
-				} else {
+			if let Some(tx_out) = transaction.output.get(msg.prevtx_out as usize) {
+				if !tx_out.script_pubkey.is_witness_program() {
 					// The receiving node:
 					//  - MUST fail the negotiation if:
-					//     - `prevtx_vout` is greater or equal to the number of outputs on `prevtx`
+					//     - the `scriptPubKey` is not a witness program
 					return Err(AbortReason::PrevTxOutInvalid);
 				}
+
+				let prev_outpoint = OutPoint { txid, vout: msg.prevtx_out };
+				let txin = TxIn {
+					previous_output: prev_outpoint,
+					sequence: Sequence(msg.sequence),
+					..Default::default()
+				};
+				(
+					InputOwned::Single(SingleOwnedInput {
+						input: txin,
+						prev_tx: Some(prevtx.clone()),
+						prev_output: tx_out.clone(),
+					}),
+					prev_outpoint,
+				)
 			} else {
-				return Err(AbortReason::MissingPrevTx);
+				// The receiving node:
+				//  - MUST fail the negotiation if:
+				//     - `prevtx_vout` is greater or equal to the number of outputs on `prevtx`
+				return Err(AbortReason::PrevTxOutInvalid);
 			}
+		} else {
+			return Err(AbortReason::MissingPrevTx);
 		};
 
 		match self.inputs.entry(msg.serial_id) {
@@ -693,11 +720,6 @@ impl NegotiationContext {
 				Err(AbortReason::DuplicateSerialId)
 			},
 			hash_map::Entry::Vacant(entry) => {
-				entry.insert(InteractiveTxInput {
-					serial_id: msg.serial_id,
-					added_by: AddingRole::Remote,
-					input,
-				});
 				if !self.prevtx_outpoints.insert(prev_outpoint) {
 					// The receiving node:
 					//  - MUST fail the negotiation if:
@@ -705,7 +727,11 @@ impl NegotiationContext {
 					//       (and not removed) input's
 					return Err(AbortReason::PrevTxOutInvalid);
 				}
-
+				entry.insert(InteractiveTxInput {
+					serial_id: msg.serial_id,
+					added_by: AddingRole::Remote,
+					input,
+				});
 				Ok(())
 			},
 		}
@@ -834,26 +860,24 @@ impl NegotiationContext {
 			} else {
 				return Err(AbortReason::UnexpectedFundingInput);
 			}
+		} else if let Some(prevtx) = &msg.prevtx {
+			let prev_txid = prevtx.as_transaction().compute_txid();
+			let prev_outpoint = OutPoint { txid: prev_txid, vout: msg.prevtx_out };
+			let prev_output = prevtx
+				.as_transaction()
+				.output
+				.get(vout)
+				.ok_or(AbortReason::PrevTxOutInvalid)?
+				.clone();
+			let txin = TxIn {
+				previous_output: prev_outpoint,
+				sequence: Sequence(msg.sequence),
+				..Default::default()
+			};
+			let single_input = SingleOwnedInput { input: txin, prev_tx: None, prev_output };
+			(prev_outpoint, InputOwned::Single(single_input))
 		} else {
-			if let Some(prevtx) = &msg.prevtx {
-				let prev_txid = prevtx.as_transaction().compute_txid();
-				let prev_outpoint = OutPoint { txid: prev_txid, vout: msg.prevtx_out };
-				let prev_output = prevtx
-					.as_transaction()
-					.output
-					.get(vout)
-					.ok_or(AbortReason::PrevTxOutInvalid)?
-					.clone();
-				let txin = TxIn {
-					previous_output: prev_outpoint,
-					sequence: Sequence(msg.sequence),
-					..Default::default()
-				};
-				let single_input = SingleOwnedInput { input: txin, prev_tx: None, prev_output };
-				(prev_outpoint, InputOwned::Single(single_input))
-			} else {
-				return Err(AbortReason::MissingPrevTx);
-			}
+			return Err(AbortReason::MissingPrevTx);
 		};
 		if !self.prevtx_outpoints.insert(prev_outpoint) {
 			// We have added an input that already exists
@@ -933,28 +957,7 @@ impl NegotiationContext {
 		// - the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee).
 		self.check_counterparty_fees(remote_inputs_value.saturating_sub(remote_outputs_value))?;
 
-		let shared_funding_output = self.shared_funding_output.clone();
-		let opt_shared_funding_input = self.shared_funding_input.clone();
-		let constructed_tx = ConstructedTransaction::new(self);
-		if let Some(shared_funding_input) = &opt_shared_funding_input {
-			if !constructed_tx.inputs.iter().any(|input| {
-				input.txin().previous_output == shared_funding_input.input.previous_output
-			}) {
-				return Err(AbortReason::MissingFundingInput);
-			}
-		}
-		if !constructed_tx
-			.outputs
-			.iter()
-			.any(|output| *output.tx_out() == shared_funding_output.tx_out)
-		{
-			return Err(AbortReason::MissingFundingOutput);
-		}
-		if constructed_tx.weight().to_wu() > MAX_STANDARD_TX_WEIGHT as u64 {
-			return Err(AbortReason::TransactionTooLarge);
-		}
-
-		Ok(constructed_tx)
+		ConstructedTransaction::new(self)
 	}
 }
 
@@ -1896,6 +1899,16 @@ impl InteractiveTxConstructor {
 ///   `Ok(None)`
 /// - Inputs are not sufficent to cover contribution and fees:
 ///   `Err(AbortReason::InsufficientFees)`
+/// Parameters:
+/// * `is_initiator` - Whether we are the negotiation initiator or not (acceptor).
+/// * `our_contribution` - The sats amount we intend to contribute to the funding
+//    transaction being negotiated.
+/// * `funding_inputs` - List of our inputs. It does not include the shared input (if there is one).
+/// * `shared_input` - Optionally, the amount of the shared input, if there is one.
+/// * `shared_output_funding_script` - The script of the shared output.
+/// * `funding_outputs` - Our funding outputs.
+/// * `funding_feerate_sat_per_1000_weight` - Fee rate to be used.
+/// * `change_output_dust_limit` - The dust limit (in sats) to consider.
 pub(super) fn calculate_change_output_value(
 	is_initiator: bool, our_contribution: u64,
 	funding_inputs: &Vec<(TxIn, TransactionU16LenLimited)>, shared_input: Option<u64>,
@@ -2313,9 +2326,12 @@ mod tests {
 	) -> (OutPoint, u64, u64) {
 		let txid = prev_funding_tx.compute_txid();
 		let value = prev_funding_tx.output.get(vout as usize).unwrap().value.to_sat();
-		if local_owned > value {
-			println!("Warning: local owned > value for shared input, {} {}", local_owned, value);
-		}
+		assert!(
+			local_owned <= value,
+			"local owned > value for shared input, {} {}",
+			local_owned,
+			value,
+		);
 		(OutPoint { txid, vout }, value, local_owned)
 	}
 
