@@ -11,6 +11,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use bitcoin::Transaction;
 
 use core::cmp::Ordering as CmpOrdering;
 use core::ops::Deref;
@@ -107,6 +108,79 @@ struct ForwardPaymentAction(ChannelId, FeePayment);
 #[derive(Debug, PartialEq)]
 struct ForwardHTLCsAction(ChannelId, Vec<InterceptedHTLC>);
 
+#[derive(Debug, Clone)]
+enum TrustModel {
+	ClientTrustsLsp {
+		funding_tx_broadcast_safe: bool,
+		htlc_claimed: bool,
+		funding_tx: Option<Transaction>,
+	},
+	LspTrustsClient,
+}
+
+impl TrustModel {
+	fn should_broadcast(&self) -> bool {
+		match self {
+			TrustModel::ClientTrustsLsp { funding_tx_broadcast_safe, htlc_claimed, funding_tx } => {
+				*funding_tx_broadcast_safe && *htlc_claimed && funding_tx.is_some()
+			},
+			TrustModel::LspTrustsClient => false,
+		}
+	}
+
+	fn new(client_trusts_lsp: bool) -> Self {
+		if client_trusts_lsp {
+			return TrustModel::ClientTrustsLsp {
+				funding_tx_broadcast_safe: false,
+				htlc_claimed: false,
+				funding_tx: None,
+			};
+		} else {
+			return TrustModel::LspTrustsClient;
+		};
+	}
+
+	fn set_funding_tx(&mut self, funding_tx: Transaction) {
+		match self {
+			TrustModel::ClientTrustsLsp { funding_tx: tx, .. } => {
+				*tx = Some(funding_tx);
+			},
+			TrustModel::LspTrustsClient => {
+				// No-op
+			},
+		}
+	}
+
+	fn set_funding_tx_broadcast_safe(&mut self, funding_tx_broadcast_safe: bool) {
+		match self {
+			TrustModel::ClientTrustsLsp { funding_tx_broadcast_safe: safe, .. } => {
+				*safe = funding_tx_broadcast_safe;
+			},
+			TrustModel::LspTrustsClient => {
+				// No-op
+			},
+		}
+	}
+
+	fn set_htlc_claimed(&mut self, htlc_claimed: bool) {
+		match self {
+			TrustModel::ClientTrustsLsp { htlc_claimed: claimed, .. } => {
+				*claimed = htlc_claimed;
+			},
+			TrustModel::LspTrustsClient => {
+				// No-op
+			},
+		}
+	}
+
+	fn get_funding_tx(&self) -> Option<Transaction> {
+		match self {
+			TrustModel::ClientTrustsLsp { funding_tx, .. } => funding_tx.clone(),
+			TrustModel::LspTrustsClient => None,
+		}
+	}
+}
+
 /// The different states a requested JIT channel can be in.
 #[derive(Debug)]
 enum OutboundJITChannelState {
@@ -115,7 +189,11 @@ enum OutboundJITChannelState {
 	PendingInitialPayment { payment_queue: PaymentQueue },
 	/// An initial payment of sufficient size was intercepted to the JIT channel SCID, triggering the
 	/// opening of the channel. We are awaiting the completion of the channel establishment.
-	PendingChannelOpen { payment_queue: PaymentQueue, opening_fee_msat: u64 },
+	PendingChannelOpen {
+		payment_queue: PaymentQueue,
+		opening_fee_msat: u64,
+		trust_model: TrustModel,
+	},
 	/// The channel is open and a payment was forwarded while skimming the JIT channel fee.
 	/// No further payments can be forwarded until the pending payment succeeds or fails, as we need
 	/// to know whether the JIT channel fee needs to be skimmed from a next payment or not.
@@ -123,15 +201,21 @@ enum OutboundJITChannelState {
 		payment_queue: PaymentQueue,
 		opening_fee_msat: u64,
 		channel_id: ChannelId,
+		trust_model: TrustModel,
 	},
 	/// The channel is open, no payment is currently being forwarded, and the JIT channel fee still
 	/// needs to be paid. This state can occur when the initial payment fails, e.g. due to a
 	/// prepayment probe. We are awaiting a next payment of sufficient size to forward and skim the
 	/// JIT channel fee.
-	PendingPayment { payment_queue: PaymentQueue, opening_fee_msat: u64, channel_id: ChannelId },
+	PendingPayment {
+		payment_queue: PaymentQueue,
+		opening_fee_msat: u64,
+		channel_id: ChannelId,
+		trust_model: TrustModel,
+	},
 	/// The channel is open and a payment was successfully forwarded while skimming the JIT channel
 	/// fee. Any subsequent HTLCs can be forwarded without additional logic.
-	PaymentForwarded { channel_id: ChannelId },
+	PaymentForwarded { channel_id: ChannelId, trust_model: TrustModel },
 }
 
 impl OutboundJITChannelState {
@@ -141,7 +225,7 @@ impl OutboundJITChannelState {
 
 	fn htlc_intercepted(
 		&mut self, opening_fee_params: &LSPS2OpeningFeeParams, payment_size_msat: &Option<u64>,
-		htlc: InterceptedHTLC,
+		htlc: InterceptedHTLC, client_trusts_lsp: bool,
 	) -> Result<Option<HTLCInterceptedAction>, ChannelStateError> {
 		match self {
 			OutboundJITChannelState::PendingInitialPayment { payment_queue } => {
@@ -193,6 +277,7 @@ impl OutboundJITChannelState {
 					*self = OutboundJITChannelState::PendingChannelOpen {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat,
+						trust_model: TrustModel::new(client_trusts_lsp),
 					};
 					let open_channel = HTLCInterceptedAction::OpenChannel(OpenChannelParams {
 						opening_fee_msat,
@@ -212,12 +297,17 @@ impl OutboundJITChannelState {
 					}
 				}
 			},
-			OutboundJITChannelState::PendingChannelOpen { payment_queue, opening_fee_msat } => {
+			OutboundJITChannelState::PendingChannelOpen {
+				payment_queue,
+				opening_fee_msat,
+				trust_model,
+			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				payment_queue.add_htlc(htlc);
 				*self = OutboundJITChannelState::PendingChannelOpen {
 					payment_queue,
 					opening_fee_msat: *opening_fee_msat,
+					trust_model: trust_model.clone(),
 				};
 				Ok(None)
 			},
@@ -225,6 +315,7 @@ impl OutboundJITChannelState {
 				payment_queue,
 				opening_fee_msat,
 				channel_id,
+				trust_model,
 			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				payment_queue.add_htlc(htlc);
@@ -232,6 +323,7 @@ impl OutboundJITChannelState {
 					payment_queue,
 					opening_fee_msat: *opening_fee_msat,
 					channel_id: *channel_id,
+					trust_model: trust_model.clone(),
 				};
 				Ok(None)
 			},
@@ -239,6 +331,7 @@ impl OutboundJITChannelState {
 				payment_queue,
 				opening_fee_msat,
 				channel_id,
+				trust_model,
 			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				payment_queue.add_htlc(htlc);
@@ -253,6 +346,7 @@ impl OutboundJITChannelState {
 						payment_queue,
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
+						trust_model: trust_model.clone(),
 					};
 					Ok(Some(forward_payment))
 				} else {
@@ -260,13 +354,17 @@ impl OutboundJITChannelState {
 						payment_queue,
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
+						trust_model: trust_model.clone(),
 					};
 					Ok(None)
 				}
 			},
-			OutboundJITChannelState::PaymentForwarded { channel_id } => {
+			OutboundJITChannelState::PaymentForwarded { channel_id, trust_model } => {
 				let forward = HTLCInterceptedAction::ForwardHTLC(*channel_id);
-				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
+				*self = OutboundJITChannelState::PaymentForwarded {
+					channel_id: *channel_id,
+					trust_model: trust_model.clone(),
+				};
 				Ok(Some(forward))
 			},
 		}
@@ -276,7 +374,11 @@ impl OutboundJITChannelState {
 		&mut self, channel_id: ChannelId,
 	) -> Result<ForwardPaymentAction, ChannelStateError> {
 		match self {
-			OutboundJITChannelState::PendingChannelOpen { payment_queue, opening_fee_msat } => {
+			OutboundJITChannelState::PendingChannelOpen {
+				payment_queue,
+				opening_fee_msat,
+				trust_model,
+			} => {
 				if let Some((_payment_hash, htlcs)) =
 					payment_queue.pop_greater_than_msat(*opening_fee_msat)
 				{
@@ -284,10 +386,12 @@ impl OutboundJITChannelState {
 						channel_id,
 						FeePayment { opening_fee_msat: *opening_fee_msat, htlcs },
 					);
+
 					*self = OutboundJITChannelState::PendingPaymentForward {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id,
+						trust_model: trust_model.clone(),
 					};
 					Ok(forward_payment)
 				} else {
@@ -310,6 +414,7 @@ impl OutboundJITChannelState {
 				payment_queue,
 				opening_fee_msat,
 				channel_id,
+				trust_model,
 			} => {
 				if let Some((_payment_hash, htlcs)) =
 					payment_queue.pop_greater_than_msat(*opening_fee_msat)
@@ -322,6 +427,7 @@ impl OutboundJITChannelState {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
+						trust_model: trust_model.clone(),
 					};
 					Ok(Some(forward_payment))
 				} else {
@@ -329,6 +435,7 @@ impl OutboundJITChannelState {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
+						trust_model: trust_model.clone(),
 					};
 					Ok(None)
 				}
@@ -337,16 +444,21 @@ impl OutboundJITChannelState {
 				payment_queue,
 				opening_fee_msat,
 				channel_id,
+				trust_model,
 			} => {
 				*self = OutboundJITChannelState::PendingPayment {
 					payment_queue: core::mem::take(payment_queue),
 					opening_fee_msat: *opening_fee_msat,
 					channel_id: *channel_id,
+					trust_model: trust_model.clone(),
 				};
 				Ok(None)
 			},
-			OutboundJITChannelState::PaymentForwarded { channel_id } => {
-				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
+			OutboundJITChannelState::PaymentForwarded { channel_id, trust_model } => {
+				*self = OutboundJITChannelState::PaymentForwarded {
+					channel_id: *channel_id,
+					trust_model: trust_model.clone(),
+				};
 				Ok(None)
 			},
 			state => Err(ChannelStateError(format!(
@@ -359,21 +471,92 @@ impl OutboundJITChannelState {
 	fn payment_forwarded(&mut self) -> Result<Option<ForwardHTLCsAction>, ChannelStateError> {
 		match self {
 			OutboundJITChannelState::PendingPaymentForward {
-				payment_queue, channel_id, ..
+				payment_queue,
+				channel_id,
+				trust_model,
+				..
 			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				let forward_htlcs = ForwardHTLCsAction(*channel_id, payment_queue.clear());
-				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
+				trust_model.set_htlc_claimed(true);
+				*self = OutboundJITChannelState::PaymentForwarded {
+					channel_id: *channel_id,
+					trust_model: trust_model.clone(),
+				};
 				Ok(Some(forward_htlcs))
 			},
-			OutboundJITChannelState::PaymentForwarded { channel_id } => {
-				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
+			OutboundJITChannelState::PaymentForwarded { channel_id, trust_model } => {
+				trust_model.set_htlc_claimed(true);
+				*self = OutboundJITChannelState::PaymentForwarded {
+					channel_id: *channel_id,
+					trust_model: trust_model.clone(),
+				};
 				Ok(None)
 			},
 			state => Err(ChannelStateError(format!(
 				"Payment forwarded when JIT Channel was in state: {:?}",
 				state
 			))),
+		}
+	}
+
+	fn store_funding_transaction(
+		&mut self, funding_tx: Transaction,
+	) -> Result<(), ChannelStateError> {
+		match self {
+			OutboundJITChannelState::PendingChannelOpen { trust_model, .. }
+			| OutboundJITChannelState::PaymentForwarded { trust_model, .. }
+			| OutboundJITChannelState::PendingPaymentForward { trust_model, .. }
+			| OutboundJITChannelState::PendingPayment { trust_model, .. } => {
+				trust_model.set_funding_tx(funding_tx);
+
+				Ok(())
+			},
+			state => Err(ChannelStateError(format!(
+				"Store funding transaction when JIT Channel was in state: {:?}",
+				state
+			))),
+		}
+	}
+
+	fn store_funding_transaction_broadcast_safe(
+		&mut self, funding_tx_broadcast_safe: bool,
+	) -> Result<(), ChannelStateError> {
+		match self {
+			OutboundJITChannelState::PendingChannelOpen { trust_model, .. }
+			| OutboundJITChannelState::PaymentForwarded { trust_model, .. }
+			| OutboundJITChannelState::PendingPaymentForward { trust_model, .. }
+			| OutboundJITChannelState::PendingPayment { trust_model, .. } => {
+				trust_model.set_funding_tx_broadcast_safe(funding_tx_broadcast_safe);
+
+				Ok(())
+			},
+			state => Err(ChannelStateError(format!(
+				"Store funding transaction broadcast safe when JIT Channel was in state: {:?}",
+				state
+			))),
+		}
+	}
+
+	fn should_broadcast_funding_transaction(&self) -> bool {
+		match self {
+			OutboundJITChannelState::PendingChannelOpen { trust_model, .. }
+			| OutboundJITChannelState::PaymentForwarded { trust_model, .. }
+			| OutboundJITChannelState::PendingPaymentForward { trust_model, .. }
+			| OutboundJITChannelState::PendingPayment { trust_model, .. } => trust_model.should_broadcast(),
+			OutboundJITChannelState::PendingInitialPayment { .. } => false,
+		}
+	}
+
+	fn client_trusts_lsp(&self) -> bool {
+		match self {
+			OutboundJITChannelState::PendingChannelOpen { trust_model, .. }
+			| OutboundJITChannelState::PaymentForwarded { trust_model, .. }
+			| OutboundJITChannelState::PendingPaymentForward { trust_model, .. }
+			| OutboundJITChannelState::PendingPayment { trust_model, .. } => {
+				matches!(trust_model, TrustModel::ClientTrustsLsp { .. })
+			},
+			OutboundJITChannelState::PendingInitialPayment { .. } => false,
 		}
 	}
 }
@@ -383,26 +566,32 @@ struct OutboundJITChannel {
 	user_channel_id: u128,
 	opening_fee_params: LSPS2OpeningFeeParams,
 	payment_size_msat: Option<u64>,
+	client_trusts_lsp: bool,
 }
 
 impl OutboundJITChannel {
 	fn new(
 		payment_size_msat: Option<u64>, opening_fee_params: LSPS2OpeningFeeParams,
-		user_channel_id: u128,
+		user_channel_id: u128, client_trusts_lsp: bool,
 	) -> Self {
 		Self {
 			user_channel_id,
 			state: OutboundJITChannelState::new(),
 			opening_fee_params,
 			payment_size_msat,
+			client_trusts_lsp,
 		}
 	}
 
 	fn htlc_intercepted(
 		&mut self, htlc: InterceptedHTLC,
 	) -> Result<Option<HTLCInterceptedAction>, LightningError> {
-		let action =
-			self.state.htlc_intercepted(&self.opening_fee_params, &self.payment_size_msat, htlc)?;
+		let action = self.state.htlc_intercepted(
+			&self.opening_fee_params,
+			&self.payment_size_msat,
+			htlc,
+			self.client_trusts_lsp,
+		)?;
 		Ok(action)
 	}
 
@@ -432,6 +621,38 @@ impl OutboundJITChannel {
 		// any HTLCs initiating the flow yet.
 		let is_expired = is_expired_opening_fee_params(&self.opening_fee_params);
 		self.is_pending_initial_payment() && is_expired
+	}
+
+	fn set_funding_tx(&mut self, funding_tx: Transaction) -> Result<(), LightningError> {
+		self.state
+			.store_funding_transaction(funding_tx)
+			.map_err(|e| LightningError::from(ChannelStateError(e.0)))
+	}
+
+	fn set_funding_tx_broadcast_safe(
+		&mut self, funding_tx_broadcast_safe: bool,
+	) -> Result<(), LightningError> {
+		self.state
+			.store_funding_transaction_broadcast_safe(funding_tx_broadcast_safe)
+			.map_err(|e| LightningError::from(ChannelStateError(e.0)))
+	}
+
+	fn should_broadcast_funding_transaction(&self) -> bool {
+		self.state.should_broadcast_funding_transaction()
+	}
+
+	fn get_funding_tx(&self) -> Option<Transaction> {
+		match &self.state {
+			OutboundJITChannelState::PendingChannelOpen { trust_model, .. }
+			| OutboundJITChannelState::PaymentForwarded { trust_model, .. }
+			| OutboundJITChannelState::PendingPaymentForward { trust_model, .. }
+			| OutboundJITChannelState::PendingPayment { trust_model, .. } => trust_model.get_funding_tx(),
+			_ => None,
+		}
+	}
+
+	fn client_trusts_lsp(&self) -> bool {
+		self.state.client_trusts_lsp()
 	}
 }
 
@@ -727,6 +948,7 @@ where
 								buy_request.payment_size_msat,
 								buy_request.opening_fee_params,
 								user_channel_id,
+								client_trusts_lsp,
 							);
 
 							peer_state_lock
@@ -973,12 +1195,14 @@ where
 								Err(e) => {
 									return Err(APIError::APIMisuseError {
 										err: format!(
-											"Forwarded payment was not applicable for JIT channel: {}",
-											e.err
-										),
+										"Forwarded payment was not applicable for JIT channel: {}",
+										e.err
+									),
 									})
 								},
 							}
+
+							self.broadcast_transaction_if_applies(&jit_channel);
 						}
 					} else {
 						return Err(APIError::APIMisuseError {
@@ -1467,6 +1691,125 @@ where
 			peer_state_lock.is_prunable() == false
 		});
 	}
+
+	/// Checks if the JIT channel with the given `user_channel_id` needs manual broadcast.
+	/// Will be true if client_trusts_lsp is set to true
+	pub fn channel_needs_manual_broadcast(
+		&self, user_channel_id: u128, counterparty_node_id: &PublicKey,
+	) -> Result<bool, APIError> {
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		let inner_state_lock =
+			outer_state_lock.get(counterparty_node_id).ok_or_else(|| APIError::APIMisuseError {
+				err: format!("No counterparty state for: {}", counterparty_node_id),
+			})?;
+		let peer_state = inner_state_lock.lock().unwrap();
+
+		let intercept_scid = peer_state
+			.intercept_scid_by_user_channel_id
+			.get(&user_channel_id)
+			.copied()
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!("Could not find a channel with user_channel_id {}", user_channel_id),
+			})?;
+
+		let jit_channel = peer_state
+			.outbound_channels_by_intercept_scid
+			.get(&intercept_scid)
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!(
+					"Failed to map intercept_scid {} for user_channel_id {} to a channel.",
+					intercept_scid, user_channel_id,
+				),
+			})?;
+
+		Ok(jit_channel.client_trusts_lsp())
+	}
+
+	/// Called to store the funding transaction for a JIT channel.
+	/// This should be called when the funding transaction is created but before it's broadcast.
+	pub fn store_funding_transaction(
+		&self, user_channel_id: u128, counterparty_node_id: &PublicKey, funding_tx: Transaction,
+	) -> Result<(), APIError> {
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		let inner_state_lock =
+			outer_state_lock.get(counterparty_node_id).ok_or_else(|| APIError::APIMisuseError {
+				err: format!("No counterparty state for: {}", counterparty_node_id),
+			})?;
+		let mut peer_state = inner_state_lock.lock().unwrap();
+
+		let intercept_scid = peer_state
+			.intercept_scid_by_user_channel_id
+			.get(&user_channel_id)
+			.copied()
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!("Could not find a channel with user_channel_id {}", user_channel_id),
+			})?;
+
+		let jit_channel = peer_state
+			.outbound_channels_by_intercept_scid
+			.get_mut(&intercept_scid)
+			.ok_or_else(|| APIError::APIMisuseError {
+			err: format!(
+				"Failed to map intercept_scid {} for user_channel_id {} to a channel.",
+				intercept_scid, user_channel_id,
+			),
+		})?;
+
+		jit_channel
+			.set_funding_tx(funding_tx)
+			.map_err(|e| APIError::APIMisuseError { err: e.err.to_string() })?;
+
+		self.broadcast_transaction_if_applies(jit_channel);
+		Ok(())
+	}
+
+	/// Called by ldk-node when the funding transaction is safe to broadcast.
+	/// This marks the funding_tx_broadcast_safe flag as true for the given user_channel_id.
+	pub fn funding_tx_broadcast_safe(
+		&self, user_channel_id: u128, counterparty_node_id: &PublicKey,
+	) -> Result<(), APIError> {
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		let inner_state_lock =
+			outer_state_lock.get(counterparty_node_id).ok_or_else(|| APIError::APIMisuseError {
+				err: format!("No counterparty state for: {}", counterparty_node_id),
+			})?;
+		let mut peer_state = inner_state_lock.lock().unwrap();
+
+		let intercept_scid = peer_state
+			.intercept_scid_by_user_channel_id
+			.get(&user_channel_id)
+			.copied()
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!("Could not find a channel with user_channel_id {}", user_channel_id),
+			})?;
+
+		let jit_channel = peer_state
+			.outbound_channels_by_intercept_scid
+			.get_mut(&intercept_scid)
+			.ok_or_else(|| APIError::APIMisuseError {
+			err: format!(
+				"Failed to map intercept_scid {} for user_channel_id {} to a channel.",
+				intercept_scid, user_channel_id,
+			),
+		})?;
+
+		jit_channel
+			.set_funding_tx_broadcast_safe(true)
+			.map_err(|e| APIError::APIMisuseError { err: e.err.to_string() })?;
+
+		self.broadcast_transaction_if_applies(jit_channel);
+		Ok(())
+	}
+
+	fn broadcast_transaction_if_applies(&self, jit_channel: &OutboundJITChannel) {
+		if jit_channel.should_broadcast_funding_transaction() {
+			let funding_tx = jit_channel.get_funding_tx();
+
+			if let Some(funding_tx) = funding_tx {
+				self.channel_manager.get_cm().unsafe_broadcast_transaction(&funding_tx);
+			}
+		}
+	}
 }
 
 impl<CM: Deref> LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM>
@@ -1661,6 +2004,7 @@ mod tests {
 						expected_outbound_amount_msat: 200_000_000,
 						payment_hash: PaymentHash([100; 32]),
 					},
+					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingInitialPayment { .. }));
@@ -1677,6 +2021,7 @@ mod tests {
 						expected_outbound_amount_msat: 1_000_000,
 						payment_hash: PaymentHash([101; 32]),
 					},
+					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingInitialPayment { .. }));
@@ -1694,6 +2039,7 @@ mod tests {
 						expected_outbound_amount_msat: 300_000_000,
 						payment_hash: PaymentHash([100; 32]),
 					},
+					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingChannelOpen { .. }));
@@ -1732,6 +2078,7 @@ mod tests {
 						expected_outbound_amount_msat: 2_000_000,
 						payment_hash: PaymentHash([102; 32]),
 					},
+					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingPaymentForward { .. }));
@@ -1755,6 +2102,7 @@ mod tests {
 						expected_outbound_amount_msat: 500_000_000,
 						payment_hash: PaymentHash([101; 32]),
 					},
+					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingPaymentForward { .. }));
@@ -1811,6 +2159,7 @@ mod tests {
 						expected_outbound_amount_msat: 200_000_000,
 						payment_hash: PaymentHash([103; 32]),
 					},
+					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PaymentForwarded { .. }));
@@ -1845,6 +2194,7 @@ mod tests {
 						expected_outbound_amount_msat: 500_000_000,
 						payment_hash: PaymentHash([100; 32]),
 					},
+					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingChannelOpen { .. }));
@@ -1861,6 +2211,7 @@ mod tests {
 						expected_outbound_amount_msat: 600_000_000,
 						payment_hash: PaymentHash([101; 32]),
 					},
+					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingChannelOpen { .. }));
@@ -1892,6 +2243,7 @@ mod tests {
 						expected_outbound_amount_msat: 500_000_000,
 						payment_hash: PaymentHash([102; 32]),
 					},
+					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingPaymentForward { .. }));
@@ -1946,6 +2298,7 @@ mod tests {
 						expected_outbound_amount_msat: 200_000_000,
 						payment_hash: PaymentHash([103; 32]),
 					},
+					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PaymentForwarded { .. }));
