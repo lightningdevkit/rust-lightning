@@ -1242,7 +1242,7 @@ impl_writeable_tlv_based!(HolderCommitmentTransaction, {
 impl HolderCommitmentTransaction {
 	#[cfg(test)]
 	#[rustfmt::skip]
-	pub fn dummy(channel_value_satoshis: u64, nondust_htlcs: Vec<HTLCOutputInCommitment>) -> Self {
+	pub fn dummy(channel_value_satoshis: u64, funding_outpoint: chain::transaction::OutPoint, nondust_htlcs: Vec<HTLCOutputInCommitment>) -> Self {
 		let secp_ctx = Secp256k1::new();
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_digest([42; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());
@@ -1259,7 +1259,7 @@ impl HolderCommitmentTransaction {
 			holder_selected_contest_delay: 0,
 			is_outbound_from_holder: false,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: channel_pubkeys.clone(), selected_contest_delay: 0 }),
-			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
+			funding_outpoint: Some(funding_outpoint),
 			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 			channel_value_satoshis,

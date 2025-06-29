@@ -1325,7 +1325,7 @@ mod tests {
 				}
 			);
 		}
-		let holder_commit = HolderCommitmentTransaction::dummy(1000000, nondust_htlcs);
+		let holder_commit = HolderCommitmentTransaction::dummy(1000000, funding_outpoint, nondust_htlcs);
 		let destination_script = ScriptBuf::new();
 		let mut tx_handler = OnchainTxHandler::new(
 			1000000,
