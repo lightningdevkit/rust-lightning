@@ -1074,11 +1074,12 @@ where
 			},
 		}
 	};
+	let receiving_context_auth_key = [41; 32]; // TODO: pass this in
 	let next_hop = onion_utils::decode_next_untagged_hop(
 		onion_decode_ss,
 		&msg.onion_routing_packet.hop_data[..],
 		msg.onion_routing_packet.hmac,
-		(control_tlvs_ss, custom_handler.deref(), logger.deref()),
+		(control_tlvs_ss, custom_handler.deref(), receiving_context_auth_key, logger.deref()),
 	);
 	match next_hop {
 		Ok((
@@ -1086,6 +1087,7 @@ where
 				message,
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }),
 				reply_path,
+				control_tlvs_authenticated,
 			},
 			None,
 		)) => match (message, context) {
@@ -1114,6 +1116,8 @@ where
 				Ok(PeeledOnion::DNSResolver(msg, None, reply_path))
 			},
 			_ => {
+				// Hide the "`control_tlvs_authenticated` is unused warning". We'll use it here soon
+				let _ = control_tlvs_authenticated;
 				log_trace!(
 					logger,
 					"Received message was sent on a blinded path with wrong or missing context."
@@ -1122,10 +1126,11 @@ where
 			},
 		},
 		Ok((
-			Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-				next_hop,
-				next_blinding_override,
-			})),
+			Payload::Forward {
+				control_tlvs:
+					ForwardControlTlvs::Unblinded(ForwardTlvs { next_hop, next_blinding_override }),
+				control_tlvs_authenticated,
+			},
 			Some((next_hop_hmac, new_packet_bytes)),
 		)) => {
 			// TODO: we need to check whether `next_hop` is our node, in which case this is a dummy
@@ -1133,6 +1138,17 @@ where
 			// unwrapping the onion layers to get to the final payload. Since we don't have the option
 			// of creating blinded paths with dummy hops currently, we should be ok to not handle this
 			// for now.
+			if control_tlvs_authenticated {
+				// TODO: When we start adding dummy hops, we should require the use of
+				// authenticated control TLVs, as it prevents a DoS attack where someone builds a
+				// blinded path to us which requires we decode hundreds of dummy hops only to find
+				// that we don't actually have a message inside to read.
+				// However, we should never accept a `control_tlvs_authenticated` packet which is
+				// *not* a dummy blinded hop we added, though it shouldn't be possible to reach in
+				// any case.
+				log_trace!(logger, "Received an authenticated to-forward onion message");
+				return Err(());
+			}
 			let packet_pubkey = msg.onion_routing_packet.public_key;
 			let new_pubkey_opt =
 				onion_utils::next_hop_pubkey(&secp_ctx, packet_pubkey, &onion_decode_ss);
@@ -2271,19 +2287,17 @@ fn packet_payloads_and_keys<
 		unblinded_path.into_iter(),
 		destination,
 		session_priv,
-		|_,
-		 onion_packet_ss,
-		 ephemeral_pubkey,
-		 control_tlvs_ss,
-		 unblinded_pk_opt,
-		 enc_payload_opt| {
+		|onion_packet_ss, ephemeral_pubkey, control_tlvs_ss, unblinded_pk_opt, enc_payload_opt| {
 			if num_unblinded_hops != 0 && unblinded_path_idx < num_unblinded_hops {
 				if let Some(ss) = prev_control_tlvs_ss.take() {
 					payloads.push((
-						Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-							next_hop: NextMessageHop::NodeId(unblinded_pk_opt.unwrap()),
-							next_blinding_override: None,
-						})),
+						Payload::Forward {
+							control_tlvs: ForwardControlTlvs::Unblinded(ForwardTlvs {
+								next_hop: NextMessageHop::NodeId(unblinded_pk_opt.unwrap()),
+								next_blinding_override: None,
+							}),
+							control_tlvs_authenticated: false,
+						},
 						ss,
 					));
 				}
@@ -2292,17 +2306,23 @@ fn packet_payloads_and_keys<
 			} else if let Some((intro_node_id, blinding_pt)) = intro_node_id_blinding_pt.take() {
 				if let Some(control_tlvs_ss) = prev_control_tlvs_ss.take() {
 					payloads.push((
-						Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-							next_hop: NextMessageHop::NodeId(intro_node_id),
-							next_blinding_override: Some(blinding_pt),
-						})),
+						Payload::Forward {
+							control_tlvs: ForwardControlTlvs::Unblinded(ForwardTlvs {
+								next_hop: NextMessageHop::NodeId(intro_node_id),
+								next_blinding_override: Some(blinding_pt),
+							}),
+							control_tlvs_authenticated: false,
+						},
 						control_tlvs_ss,
 					));
 				}
 			}
 			if blinded_path_idx < num_blinded_hops.saturating_sub(1) && enc_payload_opt.is_some() {
 				payloads.push((
-					Payload::Forward(ForwardControlTlvs::Blinded(enc_payload_opt.unwrap())),
+					Payload::Forward {
+						control_tlvs: ForwardControlTlvs::Blinded(enc_payload_opt.unwrap()),
+						control_tlvs_authenticated: false,
+					},
 					control_tlvs_ss,
 				));
 				blinded_path_idx += 1;
@@ -2327,7 +2347,12 @@ fn packet_payloads_and_keys<
 
 	if let Some(control_tlvs) = final_control_tlvs {
 		payloads.push((
-			Payload::Receive { control_tlvs, reply_path: reply_path.take(), message },
+			Payload::Receive {
+				control_tlvs,
+				reply_path: reply_path.take(),
+				message,
+				control_tlvs_authenticated: false,
+			},
 			prev_control_tlvs_ss.unwrap(),
 		));
 	} else {
@@ -2336,6 +2361,7 @@ fn packet_payloads_and_keys<
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context: None }),
 				reply_path: reply_path.take(),
 				message,
+				control_tlvs_authenticated: false,
 			},
 			prev_control_tlvs_ss.unwrap(),
 		));
