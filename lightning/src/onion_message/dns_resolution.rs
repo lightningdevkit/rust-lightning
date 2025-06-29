@@ -329,6 +329,24 @@ impl OMNameResolver {
 		}
 	}
 
+	/// Builds a new [`OMNameResolver`] which will not validate the time limits on DNSSEC proofs
+	/// (at least until [`Self::new_best_block`] is called).
+	///
+	/// If possible, you should prefer [`Self::new`] so that providing stale proofs is not
+	/// possible, however in no-std environments where there is some trust in the resolver used and
+	/// no time source is available, this may be acceptable.
+	///
+	/// Note that not calling [`Self::new_best_block`] will result in requests not timing out and
+	/// unresolved requests leaking memory. You must instead call
+	/// [`Self::expire_pending_resolution`] as unresolved requests expire.
+	pub fn new_without_expiry_validation() -> Self {
+		Self {
+			pending_resolves: Mutex::new(new_hash_map()),
+			latest_block_time: AtomicUsize::new(0),
+			latest_block_height: AtomicUsize::new(0),
+		}
+	}
+
 	/// Informs the [`OMNameResolver`] of the passage of time in the form of a new best Bitcoin
 	/// block.
 	///
@@ -461,15 +479,17 @@ impl OMNameResolver {
 				parsed_rrs.as_ref().and_then(|rrs| verify_rr_stream(rrs).map_err(|_| &()));
 			if let Ok(validated_rrs) = validated_rrs {
 				let block_time = self.latest_block_time.load(Ordering::Acquire) as u64;
-				// Block times may be up to two hours in the future and some time into the past
-				// (we assume no more than two hours, though the actual limits are rather
-				// complicated).
-				// Thus, we have to let the proof times be rather fuzzy.
-				if validated_rrs.valid_from > block_time + 60 * 2 {
-					return None;
-				}
-				if validated_rrs.expires < block_time - 60 * 2 {
-					return None;
+				if block_time != 0 {
+					// Block times may be up to two hours in the future and some time into the past
+					// (we assume no more than two hours, though the actual limits are rather
+					// complicated).
+					// Thus, we have to let the proof times be rather fuzzy.
+					if validated_rrs.valid_from > block_time + 60 * 2 {
+						return None;
+					}
+					if validated_rrs.expires < block_time - 60 * 2 {
+						return None;
+					}
 				}
 				let resolved_rrs = validated_rrs.resolve_name(&entry.key());
 				if resolved_rrs.is_empty() {
