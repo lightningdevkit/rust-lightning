@@ -48,3 +48,4 @@ pub mod msg_stfu;
 pub mod msg_splice_init;
 pub mod msg_splice_ack;
 pub mod msg_splice_locked;
+pub mod msg_blinded_message_path;

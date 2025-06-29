@@ -67,3 +67,4 @@ void msg_stfu_run(const unsigned char* data, size_t data_len);
 void msg_splice_init_run(const unsigned char* data, size_t data_len);
 void msg_splice_ack_run(const unsigned char* data, size_t data_len);
 void msg_splice_locked_run(const unsigned char* data, size_t data_len);
+void msg_blinded_message_path_run(const unsigned char* data, size_t data_len);
