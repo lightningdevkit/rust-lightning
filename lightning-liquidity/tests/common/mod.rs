@@ -27,7 +27,7 @@ use lightning::routing::scoring::{ChannelUsage, ScoreLookUp, ScoreUpdate};
 use lightning::sign::{InMemorySigner, KeysManager};
 use lightning::util::config::UserConfig;
 use lightning::util::persist::{
-	KVStore, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+	KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 	CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
 	NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 	SCORER_PERSISTENCE_KEY, SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -194,7 +194,7 @@ impl Persister {
 	}
 }
 
-impl KVStore for Persister {
+impl KVStoreSync for Persister {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 	) -> lightning::io::Result<Vec<u8>> {

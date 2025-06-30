@@ -5,7 +5,7 @@
 // licenses.
 
 //! This module contains an [`OutputSweeper`] utility that keeps track of
-//! [`SpendableOutputDescriptor`]s, i.e., persists them in a given [`KVStore`] and regularly retries
+//! [`SpendableOutputDescriptor`]s, i.e., persists them in a given [`KVStoreSync`] and regularly retries
 //! sweeping them.
 
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
@@ -23,7 +23,7 @@ use crate::sync::Arc;
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 use crate::util::persist::{
-	KVStore, OUTPUT_SWEEPER_PERSISTENCE_KEY, OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
+	KVStoreSync, OUTPUT_SWEEPER_PERSISTENCE_KEY, OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
 	OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
@@ -328,7 +328,7 @@ impl_writeable_tlv_based_enum!(OutputSpendStatus,
 );
 
 /// A utility that keeps track of [`SpendableOutputDescriptor`]s, persists them in a given
-/// [`KVStore`] and regularly retries sweeping them based on a callback given to the constructor
+/// [`KVStoreSync`] and regularly retries sweeping them based on a callback given to the constructor
 /// methods.
 ///
 /// Users should call [`Self::track_spendable_outputs`] for any [`SpendableOutputDescriptor`]s received via [`Event::SpendableOutputs`].
@@ -347,7 +347,7 @@ where
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -369,7 +369,7 @@ where
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -684,7 +684,7 @@ where
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -731,7 +731,7 @@ where
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -828,7 +828,7 @@ where
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -877,7 +877,7 @@ where
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -929,7 +929,7 @@ where
 	D::Target: ChangeDestinationSourceSync,
 	E::Target: FeeEstimator,
 	F::Target: Filter,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -943,7 +943,7 @@ where
 	D::Target: ChangeDestinationSourceSync,
 	E::Target: FeeEstimator,
 	F::Target: Filter,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -1017,7 +1017,7 @@ where
 	D::Target: ChangeDestinationSourceSync,
 	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {

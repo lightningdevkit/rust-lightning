@@ -40,7 +40,7 @@ use lightning::sign::ChangeDestinationSourceSync;
 use lightning::sign::EntropySource;
 use lightning::sign::OutputSpender;
 use lightning::util::logger::Logger;
-use lightning::util::persist::{KVStore, Persister};
+use lightning::util::persist::{KVStoreSync, Persister};
 use lightning::util::sweep::OutputSweeper;
 #[cfg(feature = "std")]
 use lightning::util::sweep::OutputSweeperSync;
@@ -822,7 +822,7 @@ where
 	LM::Target: ALiquidityManager,
 	O::Target: 'static + OutputSpender,
 	D::Target: 'static + ChangeDestinationSource,
-	K::Target: 'static + KVStore,
+	K::Target: 'static + KVStoreSync,
 {
 	let mut should_break = false;
 	let async_event_handler = |event| {
@@ -1018,7 +1018,7 @@ impl BackgroundProcessor {
 		LM::Target: ALiquidityManager,
 		D::Target: ChangeDestinationSourceSync,
 		O::Target: 'static + OutputSpender,
-		K::Target: 'static + KVStore,
+		K::Target: 'static + KVStoreSync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = Arc::clone(&stop_thread);
@@ -1186,7 +1186,8 @@ mod tests {
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
 	use lightning::util::persist::{
-		KVStore, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+		KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY,
+		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 		CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
 		NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 		SCORER_PERSISTENCE_KEY, SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -1420,7 +1421,7 @@ mod tests {
 		}
 	}
 
-	impl KVStore for Persister {
+	impl KVStoreSync for Persister {
 		fn read(
 			&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 		) -> lightning::io::Result<Vec<u8>> {
