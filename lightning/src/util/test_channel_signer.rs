@@ -191,8 +191,9 @@ impl ChannelSigner for TestChannelSigner {
 	}
 
 	fn validate_holder_commitment(
-		&self, holder_tx: &HolderCommitmentTransaction,
-		_outbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		holder_tx: &HolderCommitmentTransaction, outbound_htlc_preimages: Vec<PaymentPreimage>,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(), ()> {
 		let mut state = self.state.lock().unwrap();
 		let idx = holder_tx.commitment_number();
@@ -205,7 +206,12 @@ impl ChannelSigner for TestChannelSigner {
 			);
 		}
 		state.last_holder_commitment = idx;
-		Ok(())
+		self.inner.validate_holder_commitment(
+			channel_parameters,
+			holder_tx,
+			outbound_htlc_preimages,
+			secp_ctx,
+		)
 	}
 
 	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) -> Result<(), ()> {
