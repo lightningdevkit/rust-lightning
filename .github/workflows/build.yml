@@ -128,6 +128,7 @@ jobs:
           # Could you use this to fake the coverage report for your PR? Sure.
           # Will anyone be impressed by your amazing coverage? No
           # Maybe if codecov wasn't broken we wouldn't need to do this...
+          ./ci/ci-fuzz.sh
           bash <(curl -s https://codecov.io/bash) -f target/codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57"
 
   benchmark:

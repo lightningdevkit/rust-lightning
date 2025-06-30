@@ -158,28 +158,3 @@ RUSTFLAGS="--cfg=async_payments" cargo test --verbose --color always -p lightnin
 RUSTFLAGS="--cfg=simple_close" cargo test --verbose --color always -p lightning
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 RUSTFLAGS="--cfg=lsps1_service" cargo test --verbose --color always -p lightning-liquidity
-
-# Generate fuzz coverage report
-echo -e "\n\nGenerating fuzz coverage report"
-if [ -n "$CI" ]; then
-    # In CI, store coverage in a specific directory for artifact collection
-    COVERAGE_DIR="coverage-report"
-    mkdir -p "$COVERAGE_DIR"
-    echo "Installing cargo-llvm-cov..."
-    # Install cargo-llvm-cov if not already installed
-    cargo install cargo-llvm-cov --locked
-    echo "Running fuzz coverage generation..."
-    ./contrib/generate_fuzz_coverage.sh --output-dir "$COVERAGE_DIR"
-    echo "Coverage generation completed. Checking results..."
-    if [ -f "fuzz/$COVERAGE_DIR/html/index.html" ]; then
-        echo "✓ Coverage report successfully generated at fuzz/$COVERAGE_DIR/html/index.html"
-        ls -la "fuzz/$COVERAGE_DIR/html/"
-    else
-        echo "✗ Coverage report not found at expected location"
-        echo "Checking what was created in fuzz/$COVERAGE_DIR:"
-        ls -la "fuzz/$COVERAGE_DIR" || echo "Directory does not exist"
-    fi
-else
-    # Local development
-    ./contrib/generate_fuzz_coverage.sh
-fi
