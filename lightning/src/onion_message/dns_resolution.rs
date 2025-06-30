@@ -330,7 +330,7 @@ impl OMNameResolver {
 	}
 
 	/// Builds a new [`OMNameResolver`] which will not validate the time limits on DNSSEC proofs
-	/// (at least until [`Self::new_best_block`] is called).
+	/// (for builds without the "std" feature and until [`Self::new_best_block`] is called).
 	///
 	/// If possible, you should prefer [`Self::new`] so that providing stale proofs is not
 	/// possible, however in no-std environments where there is some trust in the resolver used and
@@ -339,7 +339,7 @@ impl OMNameResolver {
 	/// Note that not calling [`Self::new_best_block`] will result in requests not timing out and
 	/// unresolved requests leaking memory. You must instead call
 	/// [`Self::expire_pending_resolution`] as unresolved requests expire.
-	pub fn new_without_expiry_validation() -> Self {
+	pub fn new_without_no_std_expiry_validation() -> Self {
 		Self {
 			pending_resolves: Mutex::new(new_hash_map()),
 			latest_block_time: AtomicUsize::new(0),
@@ -478,16 +478,24 @@ impl OMNameResolver {
 			let validated_rrs =
 				parsed_rrs.as_ref().and_then(|rrs| verify_rr_stream(rrs).map_err(|_| &()));
 			if let Ok(validated_rrs) = validated_rrs {
-				let block_time = self.latest_block_time.load(Ordering::Acquire) as u64;
-				if block_time != 0 {
+				#[allow(unused_assignments, unused_mut)]
+				let mut time = self.latest_block_time.load(Ordering::Acquire) as u64;
+				#[cfg(feature = "std")]
+				{
+					use std::time::{SystemTime, UNIX_EPOCH};
+					let now = SystemTime::now().duration_since(UNIX_EPOCH);
+					time = now.expect("Time must be > 1970").as_secs();
+				}
+				if time != 0 {
 					// Block times may be up to two hours in the future and some time into the past
 					// (we assume no more than two hours, though the actual limits are rather
 					// complicated).
 					// Thus, we have to let the proof times be rather fuzzy.
-					if validated_rrs.valid_from > block_time + 60 * 2 {
+					let max_time_offset = if cfg!(feature = "std") { 0 } else { 60 * 2 };
+					if validated_rrs.valid_from > time + max_time_offset {
 						return None;
 					}
-					if validated_rrs.expires < block_time - 60 * 2 {
+					if validated_rrs.expires < time - max_time_offset {
 						return None;
 					}
 				}
