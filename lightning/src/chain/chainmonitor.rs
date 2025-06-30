@@ -29,7 +29,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::channelmonitor::{
-	Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
+	write_util, Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
 	WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
@@ -37,7 +37,9 @@ use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::msgs::{self, BaseMessageHandler, Init, MessageSendEvent};
-use crate::ln::our_peer_storage::DecryptedOurPeerStorage;
+use crate::ln::our_peer_storage::{
+	DecryptedOurPeerStorage, PeerStorageMonitorHolder, PeerStorageMonitorHolderList,
+};
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -47,6 +49,7 @@ use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::persist::MonitorName;
+use crate::util::ser::{VecWriter, Writeable};
 use crate::util::wakers::{Future, Notifier};
 use bitcoin::secp256k1::PublicKey;
 use core::ops::Deref;
@@ -810,10 +813,36 @@ where
 	}
 
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
-		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage`.
-
 		let random_bytes = self.entropy_source.get_secure_random_bytes();
-		let serialised_channels = Vec::new();
+
+		// TODO(aditya): Choose n random channels so that peer storage does not exceed 64k.
+		let monitors = self.monitors.read().unwrap();
+		let mut monitors_list = PeerStorageMonitorHolderList { monitors: Vec::new() };
+
+		for (chan_id, mon) in monitors.iter() {
+			let mut ser_chan = VecWriter(Vec::new());
+			let min_seen_secret = mon.monitor.get_min_seen_secret();
+			let counterparty_node_id = mon.monitor.get_counterparty_node_id();
+
+			match write_util(&mon.monitor.inner.lock().unwrap(), true, &mut ser_chan) {
+				Ok(_) => {
+					let peer_storage_monitor = PeerStorageMonitorHolder {
+						channel_id: *chan_id,
+						min_seen_secret,
+						counterparty_node_id,
+						monitor_bytes: ser_chan.0,
+					};
+
+					monitors_list.monitors.push(peer_storage_monitor);
+				},
+				Err(_) => {
+					panic!("Can not write monitor for {}", mon.monitor.channel_id())
+				},
+			}
+		}
+
+		let mut serialised_channels = Vec::new();
+		monitors_list.write(&mut serialised_channels).unwrap();
 		let our_peer_storage = DecryptedOurPeerStorage::new(serialised_channels);
 		let cipher = our_peer_storage.encrypt(&self.our_peerstorage_encryption_key, &random_bytes);
 
