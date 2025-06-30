@@ -583,14 +583,9 @@ where
 		self.best_block_updated(header, height);
 	}
 
-	fn block_disconnected(&self, header: &bitcoin::block::Header, height: u32) {
-		let new_height = height - 1;
+	fn blocks_disconnected(&self, new_best_block: BestBlock) {
 		if let Some(best_block) = self.best_block.write().unwrap().as_mut() {
-			assert_eq!(best_block.block_hash, header.block_hash(),
-				"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
-			assert_eq!(best_block.height, height,
-				"Blocks must be disconnected in chain-order - the disconnected block must have the correct height");
-			*best_block = BestBlock::new(header.prev_blockhash, new_height)
+			*best_block = new_best_block;
 		}
 
 		// TODO: Call block_disconnected on all sub-modules that require it, e.g., LSPS1MessageHandler.
