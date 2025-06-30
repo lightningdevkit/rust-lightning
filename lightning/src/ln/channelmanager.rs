@@ -5272,6 +5272,11 @@ where
 		}
 	}
 
+	#[cfg(all(test, async_payments))]
+	pub(crate) fn test_check_refresh_async_receive_offers(&self) {
+		self.check_refresh_async_receive_offer_cache(false);
+	}
+
 	/// Should be called after handling an [`Event::PersistStaticInvoice`], where the `Responder`
 	/// comes from [`Event::PersistStaticInvoice::invoice_persisted_path`].
 	#[cfg(async_payments)]

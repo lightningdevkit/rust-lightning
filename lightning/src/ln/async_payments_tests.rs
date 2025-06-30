@@ -25,7 +25,14 @@ use crate::ln::offers_tests;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::ln::outbound_payment::PendingOutboundPayment;
 use crate::ln::outbound_payment::Retry;
-use crate::offers::flow::TEST_OFFERS_MESSAGE_REQUEST_LIMIT;
+use crate::offers::async_receive_offer_cache::{
+	TEST_MAX_CACHED_OFFERS_TARGET, TEST_MAX_UPDATE_ATTEMPTS,
+	TEST_MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS,
+};
+use crate::offers::flow::{
+	TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY, TEST_OFFERS_MESSAGE_REQUEST_LIMIT,
+	TEST_TEMP_REPLY_PATH_RELATIVE_EXPIRY,
+};
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::Offer;
@@ -42,6 +49,7 @@ use crate::sign::NodeSigner;
 use crate::sync::Mutex;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::util::ser::Writeable;
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1;
@@ -1277,4 +1285,633 @@ fn expired_static_invoice_payment_path() {
 		"violated blinded payment constraints",
 		1,
 	);
+}
+
+#[cfg_attr(feature = "std", ignore)]
+#[test]
+fn ignore_expired_offer_paths_request() {
+	// Ignore an incoming `OfferPathsRequest` if it is sent over a blinded path that is expired.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let server = &nodes[0];
+	let recipient = &nodes[1];
+
+	const OFFER_PATHS_REQ_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60);
+	let recipient_id = vec![42; 32];
+	let inv_server_paths = server
+		.node
+		.blinded_paths_for_async_recipient(recipient_id, Some(OFFER_PATHS_REQ_RELATIVE_EXPIRY))
+		.unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	// Retrieve the offer paths request, and check that before the path that the recipient was
+	// configured with expires the server will respond to it, and after the config path expires they
+	// won't.
+	recipient.node.timer_tick_occurred();
+	let offer_paths_req = recipient
+		.onion_messenger
+		.next_onion_message_for_peer(server.node.get_our_node_id())
+		.unwrap();
+	assert!(matches!(
+		server.onion_messenger.peel_onion_message(&offer_paths_req).unwrap(),
+		PeeledOnion::AsyncPayments(AsyncPaymentsMessage::OfferPathsRequest(_), _, _)
+	));
+	recipient.onion_messenger.release_pending_msgs(); // Ignore redundant paths requests
+
+	// Prior to the config path expiry the server will respond with offer_paths:
+	server.onion_messenger.handle_onion_message(recipient.node.get_our_node_id(), &offer_paths_req);
+	let offer_paths = server
+		.onion_messenger
+		.next_onion_message_for_peer(recipient.node.get_our_node_id())
+		.unwrap();
+	assert!(matches!(
+		recipient.onion_messenger.peel_onion_message(&offer_paths).unwrap(),
+		PeeledOnion::AsyncPayments(AsyncPaymentsMessage::OfferPaths(_), _, _)
+	));
+	server.onion_messenger.release_pending_msgs(); // Ignore redundant offer_paths
+
+	// After the config path expiry the offer paths request will be ignored:
+	let configured_path_absolute_expiry =
+		(server.node.duration_since_epoch() + OFFER_PATHS_REQ_RELATIVE_EXPIRY).as_secs() as u32;
+	let block = create_dummy_block(
+		server.best_block_hash(),
+		configured_path_absolute_expiry + 1u32,
+		Vec::new(),
+	);
+	connect_block(&server, &block);
+	connect_block(&recipient, &block);
+
+	server.onion_messenger.handle_onion_message(recipient.node.get_our_node_id(), &offer_paths_req);
+	assert!(server
+		.onion_messenger
+		.next_onion_message_for_peer(recipient.node.get_our_node_id())
+		.is_none());
+}
+
+#[cfg_attr(feature = "std", ignore)]
+#[test]
+fn ignore_expired_offer_paths_message() {
+	// If the recipient receives an offer_paths message over an expired reply path, it should be ignored.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let server = &nodes[0];
+	let recipient = &nodes[1];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id, None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	// First retrieve the offer_paths_request and corresponding offer_paths response from the server.
+	recipient.node.timer_tick_occurred();
+	let offer_paths_req = recipient
+		.onion_messenger
+		.next_onion_message_for_peer(server.node.get_our_node_id())
+		.unwrap();
+	recipient.onion_messenger.release_pending_msgs(); // Ignore redundant paths requests
+	server.onion_messenger.handle_onion_message(recipient.node.get_our_node_id(), &offer_paths_req);
+	let offer_paths = server
+		.onion_messenger
+		.next_onion_message_for_peer(recipient.node.get_our_node_id())
+		.unwrap();
+	assert!(matches!(
+		recipient.onion_messenger.peel_onion_message(&offer_paths).unwrap(),
+		PeeledOnion::AsyncPayments(AsyncPaymentsMessage::OfferPaths(_), _, _)
+	));
+
+	// Prior to expiry of the offer_paths_request reply path, the recipient will respond to
+	// offer_paths with serve_static_invoice.
+	recipient.onion_messenger.handle_onion_message(server.node.get_our_node_id(), &offer_paths);
+	let serve_static_invoice = recipient
+		.onion_messenger
+		.next_onion_message_for_peer(server.node.get_our_node_id())
+		.unwrap();
+	assert!(matches!(
+		server.onion_messenger.peel_onion_message(&serve_static_invoice).unwrap(),
+		PeeledOnion::AsyncPayments(AsyncPaymentsMessage::ServeStaticInvoice(_), _, _)
+	));
+
+	// Manually advance time for the recipient so they will perceive the offer_paths message as being
+	// sent over an expired reply path, and not respond with serve_static_invoice.
+	let offer_paths_request_reply_path_exp =
+		(recipient.node.duration_since_epoch() + TEST_TEMP_REPLY_PATH_RELATIVE_EXPIRY).as_secs();
+	let block = create_dummy_block(
+		recipient.best_block_hash(),
+		offer_paths_request_reply_path_exp as u32 + 1u32,
+		Vec::new(),
+	);
+	connect_block(&recipient, &block);
+
+	recipient.onion_messenger.handle_onion_message(server.node.get_our_node_id(), &offer_paths);
+	assert!(recipient
+		.onion_messenger
+		.next_onion_message_for_peer(server.node.get_our_node_id())
+		.is_none());
+}
+
+#[cfg_attr(feature = "std", ignore)]
+#[test]
+fn ignore_expired_serve_static_invoice_message() {
+	// If the server receives a serve_static_invoice message over an expired reply path, it should be
+	// ignored.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let server = &nodes[0];
+	let recipient = &nodes[1];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id, None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	// First retrieve the serve_static_invoice message.
+	recipient.node.timer_tick_occurred();
+	let serve_static_invoice = invoice_flow_up_to_send_serve_static_invoice(server, recipient).1;
+
+	// Manually advance time for the server so they will perceive the serve_static_invoice message as being
+	// sent over an expired reply path, and not respond with serve_static_invoice.
+	let block = create_dummy_block(
+		server.best_block_hash(),
+		(server.node.duration_since_epoch() + TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY).as_secs()
+			as u32 + 1u32,
+		Vec::new(),
+	);
+	connect_block(&server, &block);
+
+	server
+		.onion_messenger
+		.handle_onion_message(recipient.node.get_our_node_id(), &serve_static_invoice);
+	assert!(server.node.get_and_clear_pending_events().is_empty());
+	assert!(server
+		.onion_messenger
+		.next_onion_message_for_peer(recipient.node.get_our_node_id())
+		.is_none());
+}
+
+#[cfg_attr(feature = "std", ignore)]
+#[test]
+fn ignore_expired_static_invoice_persisted_message() {
+	// If the recipient receives a static_invoice_persisted message over an expired reply path, it
+	// should be ignored.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let server = &nodes[0];
+	let recipient = &nodes[1];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id, None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	// Exchange messages until we can extract the final static_invoice_persisted OM.
+	recipient.node.timer_tick_occurred();
+	let serve_static_invoice = invoice_flow_up_to_send_serve_static_invoice(server, recipient).1;
+	server
+		.onion_messenger
+		.handle_onion_message(recipient.node.get_our_node_id(), &serve_static_invoice);
+	let mut events = server.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let ack_path = match events.pop().unwrap() {
+		Event::PersistStaticInvoice { invoice_persisted_path, .. } => invoice_persisted_path,
+		_ => panic!(),
+	};
+
+	server.node.static_invoice_persisted(ack_path);
+	let invoice_persisted = server
+		.onion_messenger
+		.next_onion_message_for_peer(recipient.node.get_our_node_id())
+		.unwrap();
+	assert!(matches!(
+		recipient.onion_messenger.peel_onion_message(&invoice_persisted).unwrap(),
+		PeeledOnion::AsyncPayments(AsyncPaymentsMessage::StaticInvoicePersisted(_), _, _)
+	));
+
+	let block = create_dummy_block(
+		recipient.best_block_hash(),
+		(recipient.node.duration_since_epoch() + TEST_TEMP_REPLY_PATH_RELATIVE_EXPIRY).as_secs()
+			as u32 + 1u32,
+		Vec::new(),
+	);
+	connect_block(&server, &block);
+	connect_block(&recipient, &block);
+	recipient
+		.onion_messenger
+		.handle_onion_message(server.node.get_our_node_id(), &invoice_persisted);
+	assert!(recipient.node.get_async_receive_offer().is_err());
+}
+
+#[test]
+fn limit_offer_paths_requests() {
+	// Limit the number of offer_paths_requests sent to the server if they aren't responding.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let server = &nodes[0];
+	let recipient = &nodes[1];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id, None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	// Up to TEST_MAX_UPDATE_ATTEMPTS offer_paths_requests are allowed to be sent out before the async
+	// recipient should give up.
+	for _ in 0..TEST_MAX_UPDATE_ATTEMPTS {
+		recipient.node.test_check_refresh_async_receive_offers();
+		let offer_paths_req = recipient
+			.onion_messenger
+			.next_onion_message_for_peer(server.node.get_our_node_id())
+			.unwrap();
+		assert!(matches!(
+			server.onion_messenger.peel_onion_message(&offer_paths_req).unwrap(),
+			PeeledOnion::AsyncPayments(AsyncPaymentsMessage::OfferPathsRequest(_), _, _)
+		));
+		recipient.onion_messenger.release_pending_msgs(); // Ignore redundant paths requests
+	}
+
+	// After the recipient runs out of attempts to request offer paths, they will give up until the
+	// next timer tick.
+	recipient.node.test_check_refresh_async_receive_offers();
+	assert!(recipient
+		.onion_messenger
+		.next_onion_message_for_peer(server.node.get_our_node_id())
+		.is_none());
+
+	// On the next timer tick, more offer paths requests should be allowed to go through.
+	recipient.node.timer_tick_occurred();
+	let offer_paths_req = recipient
+		.onion_messenger
+		.next_onion_message_for_peer(server.node.get_our_node_id())
+		.unwrap();
+	assert!(matches!(
+		server.onion_messenger.peel_onion_message(&offer_paths_req).unwrap(),
+		PeeledOnion::AsyncPayments(AsyncPaymentsMessage::OfferPathsRequest(_), _, _)
+	));
+}
+
+#[test]
+fn limit_serve_static_invoice_requests() {
+	// If we have enough async receive offers cached already, the recipient should stop sending out
+	// offer_paths_requests.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let chain_monitor;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let payee_node_deserialized;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id =
+		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0).0.channel_id;
+	let server = &nodes[0];
+	let recipient = &nodes[1];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	// Build the target number of offers interactively with the static invoice server.
+	let mut offer_paths_req = None;
+	for _ in 0..TEST_MAX_CACHED_OFFERS_TARGET {
+		let flow_res = pass_static_invoice_server_messages(server, recipient, recipient_id.clone());
+		offer_paths_req = Some(flow_res.offer_paths_request);
+
+		// Trigger a cache refresh
+		recipient.node.timer_tick_occurred();
+	}
+	assert_eq!(
+		recipient.node.flow.test_get_async_receive_offers().len(),
+		TEST_MAX_CACHED_OFFERS_TARGET
+	);
+
+	// Force allowing more offer paths request attempts so we can check that the recipient will not
+	// attempt to build any further offers.
+	recipient.node.timer_tick_occurred();
+	assert!(recipient
+		.onion_messenger
+		.next_onion_message_for_peer(server.node.get_our_node_id())
+		.is_none());
+
+	// If the recipient now receives new offer_paths, they should not attempt to build new offers as
+	// they already have enough.
+	server
+		.onion_messenger
+		.handle_onion_message(recipient.node.get_our_node_id(), &offer_paths_req.unwrap());
+	let offer_paths = server
+		.onion_messenger
+		.next_onion_message_for_peer(recipient.node.get_our_node_id())
+		.unwrap();
+	recipient.onion_messenger.handle_onion_message(server.node.get_our_node_id(), &offer_paths);
+	assert!(recipient
+		.onion_messenger
+		.next_onion_message_for_peer(server.node.get_our_node_id())
+		.is_none());
+
+	// Check that round trip serialization of the ChannelManager will result in identical stored
+	// offers.
+	let cached_offers_pre_ser = recipient.node.flow.test_get_async_receive_offers();
+	let config = test_default_channel_config();
+	let serialized_monitor = get_monitor!(recipient, chan_id).encode();
+	reload_node!(
+		nodes[1],
+		config,
+		recipient.node.encode(),
+		&[&serialized_monitor],
+		persister,
+		chain_monitor,
+		payee_node_deserialized
+	);
+	let recipient = &nodes[1];
+	let cached_offers_post_ser = recipient.node.flow.test_get_async_receive_offers();
+	assert_eq!(cached_offers_pre_ser, cached_offers_post_ser);
+}
+
+#[cfg_attr(feature = "std", ignore)]
+#[test]
+fn refresh_static_invoices() {
+	// Check that an invoice for a particular offer stored with the server will be updated once per
+	// timer tick.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let mut allow_priv_chan_fwds_cfg = test_default_channel_config();
+	allow_priv_chan_fwds_cfg.accept_forwards_to_priv_channels = true;
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), None]);
+
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let server = &nodes[1];
+	let recipient = &nodes[2];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	// Set up the recipient to have one offer and an invoice with the static invoice server.
+	let original_invoice =
+		pass_static_invoice_server_messages(&nodes[1], &nodes[2], recipient_id.clone()).invoice;
+	// Mark the offer as used so we'll update the invoice on timer tick.
+	let _offer = recipient.node.get_async_receive_offer().unwrap();
+
+	// Force the server and recipient to send OMs directly to each other for testing simplicity.
+	server.message_router.peers_override.lock().unwrap().push(recipient.node.get_our_node_id());
+	recipient.message_router.peers_override.lock().unwrap().push(server.node.get_our_node_id());
+
+	assert!(recipient
+		.onion_messenger
+		.next_onion_message_for_peer(server.node.get_our_node_id())
+		.is_none());
+
+	// Check that we'll refresh the invoice on the next timer tick.
+	recipient.node.timer_tick_occurred();
+	let serve_static_invoice_om = loop {
+		let msg = recipient
+			.onion_messenger
+			.next_onion_message_for_peer(server.node.get_our_node_id())
+			.unwrap();
+		match server.onion_messenger.peel_onion_message(&msg).unwrap() {
+			PeeledOnion::AsyncPayments(AsyncPaymentsMessage::ServeStaticInvoice(_), _, _) => {
+				break msg;
+			},
+			PeeledOnion::AsyncPayments(AsyncPaymentsMessage::OfferPathsRequest(_), _, _) => {},
+			_ => panic!("Unexpected message"),
+		}
+	};
+	server
+		.onion_messenger
+		.handle_onion_message(recipient.node.get_our_node_id(), &serve_static_invoice_om);
+	let mut events = server.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let (updated_invoice, ack_path) = match events.pop().unwrap() {
+		Event::PersistStaticInvoice {
+			invoice,
+			invoice_persisted_path,
+			recipient_id: ev_id,
+			..
+		} => {
+			assert_eq!(recipient_id, ev_id);
+			(invoice, invoice_persisted_path)
+		},
+		_ => panic!(),
+	};
+	assert_ne!(original_invoice, updated_invoice);
+	server.node.static_invoice_persisted(ack_path);
+	let invoice_persisted_om = server
+		.onion_messenger
+		.next_onion_message_for_peer(recipient.node.get_our_node_id())
+		.unwrap();
+	recipient
+		.onion_messenger
+		.handle_onion_message(server.node.get_our_node_id(), &invoice_persisted_om);
+	assert_eq!(recipient.node.flow.test_get_async_receive_offers().len(), 1);
+
+	// Remove the peer restriction added above.
+	server.message_router.peers_override.lock().unwrap().clear();
+	recipient.message_router.peers_override.lock().unwrap().clear();
+
+	// Complete a payment to the new invoice.
+	let offer = nodes[2].node.get_async_receive_offer().unwrap();
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	let params = RouteParametersConfig::default();
+	nodes[0]
+		.node
+		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), params)
+		.unwrap();
+
+	let release_held_htlc_om = pass_async_payments_oms(
+		updated_invoice.clone(),
+		&nodes[0],
+		&nodes[1],
+		&nodes[2],
+		recipient_id,
+	)
+	.1;
+	nodes[0]
+		.onion_messenger
+		.handle_onion_message(nodes[2].node.get_our_node_id(), &release_held_htlc_om);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let payment_hash = extract_payment_hash(&ev);
+	check_added_monitors!(nodes[0], 1);
+
+	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
+	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev);
+	let claimable_ev = do_pass_along_path(args).unwrap();
+	let keysend_preimage = extract_payment_preimage(&claimable_ev);
+	let res =
+		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
+	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(updated_invoice)));
+}
+
+#[cfg_attr(feature = "std", ignore)]
+#[test]
+fn ignore_expired_static_invoice() {
+	// If a server receives an expired static invoice to persist, they should ignore it and not
+	// generate an event.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let server = &nodes[0];
+	let recipient = &nodes[1];
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id, None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	let (_, serve_static_invoice_om) =
+		invoice_flow_up_to_send_serve_static_invoice(server, recipient);
+
+	// Advance time for the server so that by the time it receives the serve_static_invoice message,
+	// the invoice within has expired.
+	let block = create_dummy_block(
+		server.best_block_hash(),
+		server.node.duration_since_epoch().as_secs() as u32
+			+ TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY.as_secs() as u32
+			+ 1,
+		Vec::new(),
+	);
+	connect_block(server, &block);
+
+	server
+		.onion_messenger
+		.handle_onion_message(recipient.node.get_our_node_id(), &serve_static_invoice_om);
+	let mut events = server.node.get_and_clear_pending_events();
+	assert!(events.is_empty());
+}
+
+#[test]
+fn ignore_offer_paths_expiry_too_soon() {
+	// Recipents should ignore received offer_paths that expire too soon.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let server = &nodes[0];
+	let recipient = &nodes[1];
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id, None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	// Get a legit offer_paths message from the server.
+	recipient.node.timer_tick_occurred();
+	let offer_paths_req = recipient
+		.onion_messenger
+		.next_onion_message_for_peer(server.node.get_our_node_id())
+		.unwrap();
+	recipient.onion_messenger.release_pending_msgs();
+	server.onion_messenger.handle_onion_message(recipient.node.get_our_node_id(), &offer_paths_req);
+	let offer_paths = server
+		.onion_messenger
+		.next_onion_message_for_peer(recipient.node.get_our_node_id())
+		.unwrap();
+
+	// Get the blinded path use when manually sending the modified offer_paths message to the
+	// recipient.
+	let offer_paths_req_reply_path =
+		match server.onion_messenger.peel_onion_message(&offer_paths_req) {
+			Ok(PeeledOnion::AsyncPayments(
+				AsyncPaymentsMessage::OfferPathsRequest(_),
+				_,
+				reply_path,
+			)) => reply_path.unwrap(),
+			_ => panic!(),
+		};
+
+	// Modify the offer_paths message from the server to indicate that the offer paths expire too
+	// soon.
+	let (mut offer_paths_unwrapped, ctx) = match recipient
+		.onion_messenger
+		.peel_onion_message(&offer_paths)
+	{
+		Ok(PeeledOnion::AsyncPayments(AsyncPaymentsMessage::OfferPaths(msg), ctx, _)) => (msg, ctx),
+		_ => panic!(),
+	};
+	let too_soon_expiry_secs = recipient
+		.node
+		.duration_since_epoch()
+		.as_secs()
+		.saturating_add(TEST_MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS - 1);
+	offer_paths_unwrapped.paths_absolute_expiry = Some(too_soon_expiry_secs);
+
+	// Deliver the expired paths to the recipient and make sure they don't construct a
+	// serve_static_invoice message in response.
+	server
+		.onion_messenger
+		.send_onion_message(
+			ParsedOnionMessageContents::<Infallible>::AsyncPayments(
+				AsyncPaymentsMessage::OfferPaths(offer_paths_unwrapped),
+			),
+			MessageSendInstructions::WithReplyPath {
+				destination: Destination::BlindedPath(offer_paths_req_reply_path),
+				// This context isn't used because the recipient doesn't reply to the message
+				context: MessageContext::AsyncPayments(ctx),
+			},
+		)
+		.unwrap();
+	let offer_paths_expiry_too_soon = server
+		.onion_messenger
+		.next_onion_message_for_peer(recipient.node.get_our_node_id())
+		.unwrap();
+	recipient
+		.onion_messenger
+		.handle_onion_message(server.node.get_our_node_id(), &offer_paths_expiry_too_soon);
+	assert!(recipient
+		.onion_messenger
+		.next_onion_message_for_peer(server.node.get_our_node_id())
+		.is_none());
+}
+
+#[test]
+fn ignore_duplicate_offer() {
+	// Test that if an async receiver gets notified that the invoice for an offer was persisted twice,
+	// they won't cache the offer twice.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		nodes[0].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	nodes[1].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	let invoice_flow_res =
+		pass_static_invoice_server_messages(&nodes[0], &nodes[1], recipient_id.clone());
+	let static_invoice = invoice_flow_res.invoice;
+	assert!(static_invoice.invoice_features().supports_basic_mpp());
+	assert!(nodes[1].node.get_async_receive_offer().is_ok());
+
+	// Check that the recipient will ignore duplicate offers received.
+	nodes[1].onion_messenger.handle_onion_message(
+		nodes[1].node.get_our_node_id(),
+		&invoice_flow_res.static_invoice_persisted_message,
+	);
+	assert_eq!(nodes[1].node.flow.test_get_async_receive_offers().len(), 1);
 }
