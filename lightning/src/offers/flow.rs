@@ -253,11 +253,18 @@ pub(crate) const TEST_OFFERS_MESSAGE_REQUEST_LIMIT: usize = OFFERS_MESSAGE_REQUE
 /// The default relative expiry for reply paths where a quick response is expected and the reply
 /// path is single-use.
 #[cfg(async_payments)]
-const TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
+const TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = Duration::from_secs(2 * 60 * 60);
+
+#[cfg(all(async_payments, test))]
+pub(crate) const TEST_TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = TEMP_REPLY_PATH_RELATIVE_EXPIRY;
 
 // Default to async receive offers and the paths used to update them lasting one year.
 #[cfg(async_payments)]
 const DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+#[cfg(all(async_payments, test))]
+pub(crate) const TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration =
+	DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY;
 
 impl<MR: Deref> OffersMessageFlow<MR>
 where
