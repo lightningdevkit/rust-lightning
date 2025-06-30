@@ -40,7 +40,7 @@ use lightning::sign::ChangeDestinationSourceSync;
 use lightning::sign::EntropySource;
 use lightning::sign::OutputSpender;
 use lightning::util::logger::Logger;
-use lightning::util::persist::{KVStore, Persister};
+use lightning::util::persist::{KVStoreSync, Persister};
 use lightning::util::sweep::OutputSweeper;
 #[cfg(feature = "std")]
 use lightning::util::sweep::OutputSweeperSync;
@@ -653,7 +653,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// #     fn log(&self, _record: lightning::util::logger::Record) {}
 /// # }
 /// # struct Store {}
-/// # impl lightning::util::persist::KVStore for Store {
+/// # impl lightning::util::persist::KVStoreSync for Store {
 /// #     fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> io::Result<Vec<u8>> { Ok(Vec::new()) }
 /// #     fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> { Ok(()) }
 /// #     fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> io::Result<()> { Ok(()) }
@@ -684,7 +684,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// #     FE: lightning::chain::chaininterface::FeeEstimator + Send + Sync + 'static,
 /// #     UL: lightning::routing::utxo::UtxoLookup + Send + Sync + 'static,
 /// #     D: lightning::sign::ChangeDestinationSource + Send + Sync + 'static,
-/// #     K: lightning::util::persist::KVStore + Send + Sync + 'static,
+/// #     K: lightning::util::persist::KVStoreSync + Send + Sync + 'static,
 /// #     O: lightning::sign::OutputSpender + Send + Sync + 'static,
 /// # > {
 /// #     peer_manager: Arc<PeerManager<B, F, FE, UL>>,
@@ -706,7 +706,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// #     FE: lightning::chain::chaininterface::FeeEstimator + Send + Sync + 'static,
 /// #     UL: lightning::routing::utxo::UtxoLookup + Send + Sync + 'static,
 /// #     D: lightning::sign::ChangeDestinationSource + Send + Sync + 'static,
-/// #     K: lightning::util::persist::KVStore + Send + Sync + 'static,
+/// #     K: lightning::util::persist::KVStoreSync + Send + Sync + 'static,
 /// #     O: lightning::sign::OutputSpender + Send + Sync + 'static,
 /// # >(node: Node<B, F, FE, UL, D, K, O>) {
 ///	let background_persister = Arc::clone(&node.persister);
@@ -822,7 +822,7 @@ where
 	LM::Target: ALiquidityManager,
 	O::Target: 'static + OutputSpender,
 	D::Target: 'static + ChangeDestinationSource,
-	K::Target: 'static + KVStore,
+	K::Target: 'static + KVStoreSync,
 {
 	let mut should_break = false;
 	let async_event_handler = |event| {
@@ -1018,7 +1018,7 @@ impl BackgroundProcessor {
 		LM::Target: ALiquidityManager,
 		D::Target: ChangeDestinationSourceSync,
 		O::Target: 'static + OutputSpender,
-		K::Target: 'static + KVStore,
+		K::Target: 'static + KVStoreSync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = Arc::clone(&stop_thread);
@@ -1186,7 +1186,8 @@ mod tests {
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
 	use lightning::util::persist::{
-		KVStore, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+		KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY,
+		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 		CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
 		NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 		SCORER_PERSISTENCE_KEY, SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -1420,7 +1421,7 @@ mod tests {
 		}
 	}
 
-	impl KVStore for Persister {
+	impl KVStoreSync for Persister {
 		fn read(
 			&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 		) -> lightning::io::Result<Vec<u8>> {
