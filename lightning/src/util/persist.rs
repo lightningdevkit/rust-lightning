@@ -202,7 +202,7 @@ pub fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-pub trait Persister<'a, CM: Deref, L: Deref, S: Deref>
+pub trait PersisterSync<'a, CM: Deref, L: Deref, S: Deref>
 where
 	CM::Target: 'static + AChannelManager,
 	L::Target: 'static + Logger,
@@ -220,7 +220,7 @@ where
 	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error>;
 }
 
-impl<'a, A: KVStoreSync + ?Sized, CM: Deref, L: Deref, S: Deref> Persister<'a, CM, L, S> for A
+impl<'a, A: KVStoreSync + ?Sized, CM: Deref, L: Deref, S: Deref> PersisterSync<'a, CM, L, S> for A
 where
 	CM::Target: 'static + AChannelManager,
 	L::Target: 'static + Logger,
