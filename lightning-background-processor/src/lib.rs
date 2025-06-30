@@ -40,7 +40,7 @@ use lightning::sign::ChangeDestinationSourceSync;
 use lightning::sign::EntropySource;
 use lightning::sign::OutputSpender;
 use lightning::util::logger::Logger;
-use lightning::util::persist::{KVStoreSync, Persister};
+use lightning::util::persist::{KVStoreSync, PersisterSync};
 use lightning::util::sweep::OutputSweeper;
 #[cfg(feature = "std")]
 use lightning::util::sweep::OutputSweeperSync;
@@ -814,7 +814,7 @@ where
 	F::Target: 'static + FeeEstimator,
 	L::Target: 'static + Logger,
 	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-	PS::Target: 'static + Persister<'a, CM, L, S>,
+	PS::Target: 'static + PersisterSync<'a, CM, L, S>,
 	ES::Target: 'static + EntropySource,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,
@@ -928,21 +928,21 @@ impl BackgroundProcessor {
 	/// documentation].
 	///
 	/// The thread runs indefinitely unless the object is dropped, [`stop`] is called, or
-	/// [`Persister::persist_manager`] returns an error. In case of an error, the error is retrieved by calling
+	/// [`PersisterSync::persist_manager`] returns an error. In case of an error, the error is retrieved by calling
 	/// either [`join`] or [`stop`].
 	///
 	/// # Data Persistence
 	///
-	/// [`Persister::persist_manager`] is responsible for writing out the [`ChannelManager`] to disk, and/or
+	/// [`PersisterSync::persist_manager`] is responsible for writing out the [`ChannelManager`] to disk, and/or
 	/// uploading to one or more backup services. See [`ChannelManager::write`] for writing out a
 	/// [`ChannelManager`]. See the `lightning-persister` crate for LDK's
 	/// provided implementation.
 	///
-	/// [`Persister::persist_graph`] is responsible for writing out the [`NetworkGraph`] to disk, if
+	/// [`PersisterSync::persist_graph`] is responsible for writing out the [`NetworkGraph`] to disk, if
 	/// [`GossipSync`] is supplied. See [`NetworkGraph::write`] for writing out a [`NetworkGraph`].
 	/// See the `lightning-persister` crate for LDK's provided implementation.
 	///
-	/// Typically, users should either implement [`Persister::persist_manager`] to never return an
+	/// Typically, users should either implement [`PersisterSync::persist_manager`] to never return an
 	/// error or call [`join`] and handle any error that may arise. For the latter case,
 	/// `BackgroundProcessor` must be restarted by calling `start` again after handling the error.
 	///
@@ -964,8 +964,8 @@ impl BackgroundProcessor {
 	/// [`stop`]: Self::stop
 	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::write`]: lightning::ln::channelmanager::ChannelManager#impl-Writeable
-	/// [`Persister::persist_manager`]: lightning::util::persist::Persister::persist_manager
-	/// [`Persister::persist_graph`]: lightning::util::persist::Persister::persist_graph
+	/// [`PersisterSync::persist_manager`]: lightning::util::persist::PersisterSync::persist_manager
+	/// [`PersisterSync::persist_graph`]: lightning::util::persist::PersisterSync::persist_graph
 	/// [`NetworkGraph`]: lightning::routing::gossip::NetworkGraph
 	/// [`NetworkGraph::write`]: lightning::routing::gossip::NetworkGraph#impl-Writeable
 	pub fn start<
@@ -1010,7 +1010,7 @@ impl BackgroundProcessor {
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-		PS::Target: 'static + Persister<'a, CM, L, S>,
+		PS::Target: 'static + PersisterSync<'a, CM, L, S>,
 		ES::Target: 'static + EntropySource,
 		CM::Target: AChannelManager,
 		OM::Target: AOnionMessenger,
