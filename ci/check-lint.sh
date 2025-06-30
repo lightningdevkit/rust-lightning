@@ -10,6 +10,7 @@ CLIPPY() {
 		`# Things where clippy is just wrong` \
 		-A clippy::unwrap-or-default \
 		-A clippy::upper_case_acronyms \
+		-A clippy::swap-with-temporary \
 		`# Things where we do odd stuff on purpose ` \
 		-A clippy::unusual_byte_groupings \
 		-A clippy::unit_arg \
@@ -105,7 +106,8 @@ CLIPPY() {
 		-A clippy::useless_conversion \
 		-A clippy::unnecessary_map_or `# to be removed once we hit MSRV 1.70` \
 		-A clippy::manual_repeat_n `# to be removed once we hit MSRV 1.86` \
-		-A clippy::io_other_error `# to be removed once we hit MSRV 1.74`
+		-A clippy::io_other_error `# to be removed once we hit MSRV 1.74` \
+		-A clippy::uninlined-format-args
 }
 
 CLIPPY
