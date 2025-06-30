@@ -1268,6 +1268,14 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// The node_id of our counterparty
 	counterparty_node_id: PublicKey,
 
+	/// Controls whether the monitor is allowed to automatically broadcast the latest holder commitment transaction.
+	///
+	/// This flag is set to `false` when a channel is force-closed with `should_broadcast: false`,
+	/// indicating that broadcasting the latest holder commitment transaction would be unsafe.
+	///
+	/// Default: `true`.
+	allow_automated_broadcast: bool,
+
 	/// Initial counterparty commmitment data needed to recreate the commitment tx
 	/// in the persistence pipeline for third-party watchtowers. This will only be present on
 	/// monitors created after 0.0.117.
@@ -1570,6 +1578,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(29, self.initial_counterparty_commitment_tx, option),
 			(31, self.funding.channel_parameters, required),
 			(32, self.pending_funding, optional_vec),
+			(33, self.allow_automated_broadcast, required),
 		});
 
 		Ok(())
@@ -1788,6 +1797,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			best_block,
 			counterparty_node_id: counterparty_node_id,
+			allow_automated_broadcast: true,
 			initial_counterparty_commitment_info: None,
 			initial_counterparty_commitment_tx: None,
 			balances_empty_height: None,
@@ -2144,7 +2154,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// may be to contact the other node operator out-of-band to coordinate other options available
 	/// to you.
 	#[rustfmt::skip]
-	pub fn broadcast_latest_holder_commitment_txn<B: Deref, F: Deref, L: Deref>(
+	pub fn force_broadcast_latest_holder_commitment_txn_unsafe<B: Deref, F: Deref, L: Deref>(
 		&self, broadcaster: &B, fee_estimator: &F, logger: &L
 	)
 	where
@@ -3681,6 +3691,32 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		Ok(())
 	}
 
+	fn maybe_broadcast_latest_holder_commitment_txn<B: Deref, F: Deref, L: Deref>(
+		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		logger: &WithChannelMonitor<L>,
+	) where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		if !self.allow_automated_broadcast {
+			return;
+		}
+		let detected_funding_spend = self.funding_spend_confirmed.is_some()
+			|| self
+				.onchain_events_awaiting_threshold_conf
+				.iter()
+				.any(|event| matches!(event.event, OnchainEvent::FundingSpendConfirmation { .. }));
+		if detected_funding_spend {
+			log_trace!(
+				logger,
+				"Avoiding commitment broadcast, already detected confirmed spend onchain"
+			);
+			return;
+		}
+		self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, fee_estimator, logger);
+	}
+
 	#[rustfmt::skip]
 	fn update_monitor<B: Deref, F: Deref, L: Deref>(
 		&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &WithChannelMonitor<L>
@@ -3774,28 +3810,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
 					log_trace!(logger, "Updating ChannelMonitor: channel force closed, should broadcast: {}", should_broadcast);
 					self.lockdown_from_offchain = true;
-					if *should_broadcast {
-						// There's no need to broadcast our commitment transaction if we've seen one
-						// confirmed (even with 1 confirmation) as it'll be rejected as
-						// duplicate/conflicting.
-						let detected_funding_spend = self.funding_spend_confirmed.is_some() ||
-							self.onchain_events_awaiting_threshold_conf.iter().any(
-								|event| matches!(event.event, OnchainEvent::FundingSpendConfirmation { .. }));
-						if detected_funding_spend {
-							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
-							continue;
-						}
-						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger);
-					} else if !self.holder_tx_signed {
-						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
-						log_error!(logger, "    in channel monitor for channel {}!", &self.channel_id());
-						log_error!(logger, "    Read the docs for ChannelMonitor::broadcast_latest_holder_commitment_txn to take manual action!");
-					} else {
+					self.allow_automated_broadcast = *should_broadcast;
+					if !*should_broadcast && self.holder_tx_signed {
 						// If we generated a MonitorEvent::HolderForceClosed, the ChannelManager
 						// will still give us a ChannelForceClosed event with !should_broadcast, but we
 						// shouldn't print the scary warning above.
 						log_info!(logger, "Channel off-chain state closed after we broadcasted our latest commitment transaction.");
 					}
+					self.maybe_broadcast_latest_holder_commitment_txn(broadcaster, &bounded_fee_estimator, logger);
 				},
 				ChannelMonitorUpdateStep::ShutdownScript { scriptpubkey } => {
 					log_trace!(logger, "Updating ChannelMonitor with shutdown script");
@@ -5682,6 +5704,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut first_confirmed_funding_txo = RequiredWrapper(None);
 		let mut channel_parameters = None;
 		let mut pending_funding = None;
+		let mut allow_automated_broadcast = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -5700,6 +5723,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(29, initial_counterparty_commitment_tx, option),
 			(31, channel_parameters, (option: ReadableArgs, None)),
 			(32, pending_funding, optional_vec),
+			(33, allow_automated_broadcast, option),
 		});
 		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
 			if payment_preimages_with_info.len() != payment_preimages.len() {
@@ -5864,6 +5888,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			best_block,
 			counterparty_node_id: counterparty_node_id.unwrap(),
+			allow_automated_broadcast: allow_automated_broadcast.unwrap_or(true),
 			initial_counterparty_commitment_info,
 			initial_counterparty_commitment_tx,
 			balances_empty_height,
