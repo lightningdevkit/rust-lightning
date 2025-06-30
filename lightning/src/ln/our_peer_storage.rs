@@ -13,8 +13,13 @@
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine};
+use bitcoin::secp256k1::PublicKey;
 
+use crate::io;
+use crate::ln::msgs::DecodeError;
+use crate::ln::types::ChannelId;
 use crate::sign::PeerStorageKey;
+use crate::util::ser::{Readable, Writeable, Writer};
 
 use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::prelude::*;
@@ -144,6 +149,77 @@ fn derive_nonce(key: &PeerStorageKey, random_bytes: &[u8]) -> [u8; 12] {
 	nonce[4..].copy_from_slice(&Hmac::from_engine(hmac).to_byte_array()[0..8]);
 
 	nonce
+}
+
+/// [`PeerStorageMonitorHolder`] represents a single channel sent over the wire.
+/// This would be used inside [`ChannelManager`] to determine
+/// if the user has lost channel states so that we can do something about it.
+///
+/// The main idea here is to just enable node to figure out that it has lost some data
+/// using peer storage backups.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+///
+/// TODO(aditya): Write FundRecoverer to use `monitor_bytes` to drop onchain.
+pub(crate) struct PeerStorageMonitorHolder {
+	/// Channel Id of the channel.
+	pub(crate) channel_id: ChannelId,
+	/// Node Id of the channel partner.
+	pub(crate) counterparty_node_id: PublicKey,
+	/// Minimum seen secret to determine if we have lost state.
+	pub(crate) min_seen_secret: u64,
+	/// Whole serialised ChannelMonitor to recover funds.
+	pub(crate) monitor_bytes: Vec<u8>,
+}
+
+impl Writeable for PeerStorageMonitorHolder {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.channel_id.write(w)?;
+		self.counterparty_node_id.write(w)?;
+		self.min_seen_secret.write(w)?;
+		self.monitor_bytes.write(w)
+	}
+}
+
+impl Readable for PeerStorageMonitorHolder {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let channel_id = Readable::read(r)?;
+		let counterparty_node_id = Readable::read(r)?;
+		let min_seen_secret = Readable::read(r)?;
+		let monitor_bytes = Readable::read(r)?;
+
+		Ok(PeerStorageMonitorHolder {
+			channel_id,
+			counterparty_node_id,
+			min_seen_secret,
+			monitor_bytes,
+		})
+	}
+}
+
+/// [`PeerStorageMonitorHolderList`] is used to serialise all the channels and send it over wire
+/// wrapped inside [`PeerStorage`].
+///
+/// [`PeerStorage`]: crate::ln::msgs::PeerStorage
+pub(crate) struct PeerStorageMonitorHolderList {
+	/// List of all the channels to be sent over the wire.
+	pub(crate) monitors: Vec<PeerStorageMonitorHolder>,
+}
+
+impl Writeable for PeerStorageMonitorHolderList {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		encode_tlv_stream!(w, { (1, &self.monitors, required_vec) });
+		Ok(())
+	}
+}
+
+impl Readable for PeerStorageMonitorHolderList {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let mut monitors: Option<Vec<PeerStorageMonitorHolder>> = None;
+		decode_tlv_stream!(r, { (1, monitors, optional_vec) });
+
+		Ok(PeerStorageMonitorHolderList { monitors: monitors.ok_or(DecodeError::InvalidValue)? })
+	}
 }
 
 #[cfg(test)]

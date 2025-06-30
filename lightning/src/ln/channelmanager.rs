@@ -58,6 +58,7 @@ use crate::events::{
 use crate::events::{FundingInfo, PaidBolt12Invoice};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
+use crate::io;
 use crate::ln::channel::PendingV2Channel;
 use crate::ln::channel::{
 	self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, InboundV1Channel,
@@ -78,7 +79,7 @@ use crate::ln::onion_payment::{
 };
 use crate::ln::onion_utils::{self};
 use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason};
-use crate::ln::our_peer_storage::EncryptedOurPeerStorage;
+use crate::ln::our_peer_storage::{EncryptedOurPeerStorage, PeerStorageMonitorHolderList};
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{
@@ -174,7 +175,6 @@ use lightning_invoice::{
 
 use alloc::collections::{btree_map, BTreeMap};
 
-use crate::io;
 use crate::io::Read;
 use crate::prelude::*;
 use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, RwLock, RwLockReadGuard};
@@ -3014,6 +3014,7 @@ pub(super) const MAX_UNFUNDED_CHANNEL_PEERS: usize = 50;
 /// This constant defines the upper limit for the size of data
 /// that can be stored for a peer. It is set to 1024 bytes (1 kilobyte)
 /// to prevent excessive resource consumption.
+#[cfg(not(test))]
 const MAX_PEER_STORAGE_SIZE: usize = 1024;
 
 /// The maximum number of peers which we do not have a (funded) channel with. Once we reach this
@@ -8807,6 +8808,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, peer_node_id: PublicKey, msg: msgs::PeerStorageRetrieval,
 	) -> Result<(), MsgHandleErrInternal> {
 		// TODO: Check if have any stale or missing ChannelMonitor.
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		let logger = WithContext::from(&self.logger, Some(peer_node_id), None, None);
 		let err = || {
 			MsgHandleErrInternal::from_chan_no_close(
@@ -8833,6 +8835,55 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		log_trace!(logger, "Got valid {}-byte peer backup from {}", decrypted.len(), peer_node_id);
 
+		let mut cursor = io::Cursor::new(decrypted);
+		match <PeerStorageMonitorHolderList as Readable>::read(&mut cursor) {
+			Ok(mon_list) => {
+				for mon_holder in mon_list.monitors.iter() {
+					let peer_state_mutex =
+						match per_peer_state.get(&mon_holder.counterparty_node_id) {
+							Some(mutex) => mutex,
+							None => {
+								log_debug!(
+									logger,
+									"Not able to find peer_state for the counterparty {}, channelId {}",
+									log_pubkey!(mon_holder.counterparty_node_id),
+									mon_holder.channel_id
+								);
+								continue;
+							},
+						};
+
+					let peer_state_lock = peer_state_mutex.lock().unwrap();
+					let peer_state = &*peer_state_lock;
+
+					match peer_state.channel_by_id.get(&mon_holder.channel_id) {
+						Some(chan) => {
+							if let Some(funded_chan) = chan.as_funded() {
+								if funded_chan
+									.get_revoked_counterparty_commitment_transaction_number()
+									> mon_holder.min_seen_secret
+								{
+									panic!(
+										"Lost channel state for channel {}.
+										Received peer storage with a more recent state than what our node had.
+										Use the FundRecoverer to initiate a force close and sweep the funds.",
+										&mon_holder.channel_id
+									);
+								}
+							}
+						},
+						None => {
+							// TODO: Figure out if this channel is so old that we have forgotten about it.
+							panic!("Lost a channel {}", &mon_holder.channel_id);
+						},
+					}
+				}
+			},
+
+			Err(e) => {
+				panic!("Wrong serialisation of PeerStorageMonitorHolderList: {}", e);
+			},
+		}
 		Ok(())
 	}
 
@@ -8858,6 +8909,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			), ChannelId([0; 32])));
 		}
 
+		#[cfg(not(test))]
 		if msg.data.len() > MAX_PEER_STORAGE_SIZE {
 			log_debug!(logger, "Sending warning to peer and ignoring peer storage request from {} as its over 1KiB", log_pubkey!(counterparty_node_id));
 
@@ -16151,11 +16203,15 @@ mod tests {
 
 	#[test]
 	#[rustfmt::skip]
+	#[should_panic(expected = "Lost a channel ae3367da2c13bc1ceb86bf56418f62828f7ce9d6bfb15a46af5ba1f1ed8b124f")]
 	fn test_peer_storage() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let (persister, chain_monitor);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let nodes_0_deserialized;
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let nodes_0_serialized = nodes[0].node.encode();
 
 		create_announced_chan_between_nodes(&nodes, 0, 1);
 
@@ -16164,24 +16220,36 @@ mod tests {
 		assert_ne!(peer_storage_msg_events_node0.len(), 0);
 		assert_ne!(peer_storage_msg_events_node1.len(), 0);
 
-		match peer_storage_msg_events_node0[0] {
-			MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
-				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-				nodes[1].node.handle_peer_storage(nodes[0].node.get_our_node_id(), msg.clone());
+		for ps_msg in peer_storage_msg_events_node0 {
+			match ps_msg {
+				MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
+					assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+					nodes[1].node.handle_peer_storage(nodes[0].node.get_our_node_id(), msg.clone());
+				}
+				_ => panic!("Unexpected event"),
 			}
-			_ => panic!("Unexpected event"),
 		}
 
-		match peer_storage_msg_events_node1[0] {
-			MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
-				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-				nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msg.clone());
+		for ps_msg in peer_storage_msg_events_node1 {
+			match ps_msg {
+				MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
+					assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+					nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msg.clone());
+				}
+				_ => panic!("Unexpected event"),
 			}
-			_ => panic!("Unexpected event"),
 		}
+
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 1000);
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 10000);
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 9999);
 
 		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+
+		// Reload Node!
+		nodes[0].chain_source.clear_watched_txn_and_outputs();
+		reload_node!(nodes[0], test_default_channel_config(), &nodes_0_serialized, &[], persister, chain_monitor, nodes_0_deserialized);
 
 		nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
 			features: nodes[1].node.init_features(), networks: None, remote_network_address: None
@@ -16193,10 +16261,11 @@ mod tests {
 		let node_1_events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(node_1_events.len(), 2);
 
+		// Since, node-0 does not have any memory it would not send any message.
 		let node_0_events = nodes[0].node.get_and_clear_pending_msg_events();
-		assert_eq!(node_0_events.len(), 2);
+		assert_eq!(node_0_events.len(), 0);
 
-		for msg in node_1_events{
+		for msg in node_1_events {
 			if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
 				nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), msg);
 				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
@@ -16208,35 +16277,8 @@ mod tests {
 			}
 		}
 
-		for msg in node_0_events{
-			if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
-				nodes[1].node.handle_channel_reestablish(nodes[0].node.get_our_node_id(), msg);
-				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-			} else if let MessageSendEvent::SendPeerStorageRetrieval { ref node_id, ref msg } = msg {
-				nodes[1].node.handle_peer_storage_retrieval(nodes[0].node.get_our_node_id(), msg.clone());
-				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-			} else {
-				panic!("Unexpected event")
-			}
-		}
-
-		let node_1_msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 		let node_0_msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-
-		assert_eq!(node_1_msg_events.len(), 3);
-		assert_eq!(node_0_msg_events.len(), 3);
-
-		for msg in node_1_msg_events {
-			if let MessageSendEvent::SendChannelReady { ref node_id, .. } = msg {
-				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			} else if let MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } = msg {
-				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			} else if let MessageSendEvent::SendChannelUpdate { ref node_id, .. } = msg {
-				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			} else {
-				panic!("Unexpected event")
-			}
-		}
+		assert_eq!(node_0_msg_events.len(), 2);
 
 		for msg in node_0_msg_events {
 			if let MessageSendEvent::SendChannelReady { ref node_id, .. } = msg {
