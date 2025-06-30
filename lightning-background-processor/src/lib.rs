@@ -1384,7 +1384,7 @@ mod tests {
 		}
 	}
 
-	struct Persister {
+	struct PersisterSync {
 		graph_error: Option<(std::io::ErrorKind, &'static str)>,
 		graph_persistence_notifier: Option<SyncSender<()>>,
 		manager_error: Option<(std::io::ErrorKind, &'static str)>,
@@ -1392,7 +1392,7 @@ mod tests {
 		kv_store: FilesystemStore,
 	}
 
-	impl Persister {
+	impl PersisterSync {
 		fn new(data_dir: PathBuf) -> Self {
 			let kv_store = FilesystemStore::new(data_dir);
 			Self {
@@ -1421,7 +1421,7 @@ mod tests {
 		}
 	}
 
-	impl KVStoreSync for Persister {
+	impl KVStoreSync for PersisterSync {
 		fn read(
 			&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 		) -> lightning::io::Result<Vec<u8>> {
@@ -1937,7 +1937,7 @@ mod tests {
 
 		// Initiate the background processors to watch each node.
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir));
+		let persister = Arc::new(PersisterSync::new(data_dir));
 		let event_handler = |_: _| Ok(());
 		let bg_processor = BackgroundProcessor::start(
 			persister,
@@ -2032,7 +2032,7 @@ mod tests {
 		// - `OnionMessageHandler::timer_tick_occurred` is called every `ONION_MESSAGE_HANDLER_TIMER`.
 		let (_, nodes) = create_nodes(1, "test_timer_tick_called");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir));
+		let persister = Arc::new(PersisterSync::new(data_dir));
 		let event_handler = |_: _| Ok(());
 		let bg_processor = BackgroundProcessor::start(
 			persister,
@@ -2075,7 +2075,7 @@ mod tests {
 
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(
-			Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
+			PersisterSync::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
 		);
 		let event_handler = |_: _| Ok(());
 		let bg_processor = BackgroundProcessor::start(
@@ -2108,7 +2108,7 @@ mod tests {
 
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(
-			Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
+			PersisterSync::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
 		);
 
 		let bp_future = super::process_events_async(
@@ -2146,8 +2146,9 @@ mod tests {
 		// Test that if we encounter an error during network graph persistence, an error gets returned.
 		let (_, nodes) = create_nodes(2, "test_persist_network_graph_error");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister =
-			Arc::new(Persister::new(data_dir).with_graph_error(std::io::ErrorKind::Other, "test"));
+		let persister = Arc::new(
+			PersisterSync::new(data_dir).with_graph_error(std::io::ErrorKind::Other, "test"),
+		);
 		let event_handler = |_: _| Ok(());
 		let bg_processor = BackgroundProcessor::start(
 			persister,
@@ -2177,8 +2178,9 @@ mod tests {
 		// Test that if we encounter an error during scorer persistence, an error gets returned.
 		let (_, nodes) = create_nodes(2, "test_persist_scorer_error");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister =
-			Arc::new(Persister::new(data_dir).with_scorer_error(std::io::ErrorKind::Other, "test"));
+		let persister = Arc::new(
+			PersisterSync::new(data_dir).with_scorer_error(std::io::ErrorKind::Other, "test"),
+		);
 		let event_handler = |_: _| Ok(());
 		let bg_processor = BackgroundProcessor::start(
 			persister,
@@ -2211,7 +2213,7 @@ mod tests {
 
 		let channel_value = 100000;
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir.clone()));
+		let persister = Arc::new(PersisterSync::new(data_dir.clone()));
 
 		// Set up a background event handler for FundingGenerationReady events.
 		let (funding_generation_send, funding_generation_recv) = std::sync::mpsc::sync_channel(1);
@@ -2291,7 +2293,7 @@ mod tests {
 			}
 			Ok(())
 		};
-		let persister = Arc::new(Persister::new(data_dir));
+		let persister = Arc::new(PersisterSync::new(data_dir));
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
@@ -2437,7 +2439,7 @@ mod tests {
 		let (_, nodes) = create_nodes(2, "test_event_handling_failures_are_replayed");
 		let channel_value = 100000;
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir.clone()));
+		let persister = Arc::new(PersisterSync::new(data_dir.clone()));
 
 		let (first_event_send, first_event_recv) = std::sync::mpsc::sync_channel(1);
 		let (second_event_send, second_event_recv) = std::sync::mpsc::sync_channel(1);
@@ -2486,7 +2488,7 @@ mod tests {
 	fn test_scorer_persistence() {
 		let (_, nodes) = create_nodes(2, "test_scorer_persistence");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir));
+		let persister = Arc::new(PersisterSync::new(data_dir));
 		let event_handler = |_: _| Ok(());
 		let bg_processor = BackgroundProcessor::start(
 			persister,
@@ -2582,7 +2584,8 @@ mod tests {
 		let (_, nodes) =
 			create_nodes(2, "test_not_pruning_network_graph_until_graph_sync_completion");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
+		let persister =
+			Arc::new(PersisterSync::new(data_dir).with_graph_persistence_notifier(sender));
 
 		let event_handler = |_: _| Ok(());
 		let background_processor = BackgroundProcessor::start(
@@ -2615,7 +2618,8 @@ mod tests {
 		let (_, nodes) =
 			create_nodes(2, "test_not_pruning_network_graph_until_graph_sync_completion_async");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
+		let persister =
+			Arc::new(PersisterSync::new(data_dir).with_graph_persistence_notifier(sender));
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 		let bp_future = super::process_events_async(
@@ -2783,7 +2787,7 @@ mod tests {
 
 		let (_, nodes) = create_nodes(1, "test_payment_path_scoring");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir));
+		let persister = Arc::new(PersisterSync::new(data_dir));
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
@@ -2831,7 +2835,7 @@ mod tests {
 
 		let (_, nodes) = create_nodes(1, "test_payment_path_scoring_async");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir));
+		let persister = Arc::new(PersisterSync::new(data_dir));
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 
