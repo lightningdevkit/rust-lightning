@@ -41,7 +41,7 @@ impl TaggedHash {
 	/// Creates a tagged hash with the given parameters.
 	///
 	/// Panics if `bytes` is not a well-formed TLV stream containing at least one TLV record.
-	pub(super) fn from_valid_tlv_stream_bytes(tag: &'static str, bytes: &[u8]) -> Self {
+	pub fn from_valid_tlv_stream_bytes(tag: &'static str, bytes: &[u8]) -> Self {
 		let tlv_stream = TlvStream::new(bytes);
 		Self::from_tlv_stream(tag, tlv_stream)
 	}
@@ -117,7 +117,7 @@ where
 ///
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-pub(super) fn sign_message<F, T>(
+pub fn sign_message<F, T>(
 	f: F, message: &T, pubkey: PublicKey,
 ) -> Result<Signature, SignError>
 where
@@ -136,7 +136,7 @@ where
 
 /// Verifies the signature with a pubkey over the given message using a tagged hash as the message
 /// digest.
-pub(super) fn verify_signature(
+pub fn verify_signature(
 	signature: &Signature, message: &TaggedHash, pubkey: PublicKey,
 ) -> Result<(), secp256k1::Error> {
 	let digest = message.as_digest();
