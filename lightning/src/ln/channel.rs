@@ -9677,11 +9677,25 @@ where
 							.get_funding_txo()
 							.expect("Splice FundingScope should always have a funding_txo")
 					});
+
+					let monitor_update_opt = funding_promoted.then(|| {
+						self.context.latest_monitor_update_id += 1;
+						let monitor_update = ChannelMonitorUpdate {
+							update_id: self.context.latest_monitor_update_id,
+							updates: vec![ChannelMonitorUpdateStep::RenegotiatedFundingLocked {
+								funding_txid: funding_txo.unwrap().txid,
+							}],
+							channel_id: Some(self.context.channel_id()),
+						};
+						self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+						self.push_ret_blockable_mon_update(monitor_update)
+					}).flatten();
+
 					let announcement_sigs = funding_promoted
 						.then(|| self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger))
 						.flatten();
 
-					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), announcement_sigs));
+					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update_opt)), announcement_sigs));
 				}
 			}
 
@@ -9846,6 +9860,20 @@ where
 						.get_funding_txo()
 						.expect("Splice FundingScope should always have a funding_txo")
 				});
+
+				let monitor_update_opt = funding_promoted.then(|| {
+					self.context.latest_monitor_update_id += 1;
+					let monitor_update = ChannelMonitorUpdate {
+						update_id: self.context.latest_monitor_update_id,
+						updates: vec![ChannelMonitorUpdateStep::RenegotiatedFundingLocked {
+							funding_txid: funding_txo.unwrap().txid,
+						}],
+						channel_id: Some(self.context.channel_id()),
+					};
+					self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+					self.push_ret_blockable_mon_update(monitor_update)
+				}).flatten();
+
 				let announcement_sigs = funding_promoted
 					.then(|| chain_node_signer
 						.and_then(|(chain_hash, node_signer, user_config)|
@@ -9854,7 +9882,7 @@ where
 					)
 					.flatten();
 
-				return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), timed_out_htlcs, announcement_sigs));
+				return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update_opt)), timed_out_htlcs, announcement_sigs));
 			}
 		}
 
@@ -10349,7 +10377,10 @@ where
 	pub fn splice_locked<NS: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceLocked, node_signer: &NS, chain_hash: ChainHash,
 		user_config: &UserConfig, best_block: &BestBlock, logger: &L,
-	) -> Result<(Option<OutPoint>, Option<msgs::AnnouncementSignatures>), ChannelError>
+	) -> Result<
+		(Option<OutPoint>, Option<ChannelMonitorUpdate>, Option<msgs::AnnouncementSignatures>),
+		ChannelError,
+	>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger,
@@ -10375,6 +10406,7 @@ where
 					.iter_mut()
 					.find(|funding| funding.get_funding_txid() == Some(sent_funding_txid))
 				{
+					// TODO: Do we need to do any of this after the channel is resumed?
 					log_info!(
 						logger,
 						"Promoting splice funding txid {} for channel {}",
@@ -10382,10 +10414,30 @@ where
 						&self.context.channel_id,
 					);
 					promote_splice_funding!(self, funding);
+
 					let funding_txo = self
 						.funding
 						.get_funding_txo()
 						.expect("Splice FundingScope should always have a funding_txo");
+
+					self.context.latest_monitor_update_id += 1;
+					let monitor_update = ChannelMonitorUpdate {
+						update_id: self.context.latest_monitor_update_id,
+						updates: vec![ChannelMonitorUpdateStep::RenegotiatedFundingLocked {
+							funding_txid: funding_txo.txid,
+						}],
+						channel_id: Some(self.context.channel_id()),
+					};
+					self.monitor_updating_paused(
+						false,
+						false,
+						false,
+						Vec::new(),
+						Vec::new(),
+						Vec::new(),
+					);
+					let monitor_update_opt = self.push_ret_blockable_mon_update(monitor_update);
+
 					let announcement_sigs = self.get_announcement_sigs(
 						node_signer,
 						chain_hash,
@@ -10393,7 +10445,8 @@ where
 						best_block.height,
 						logger,
 					);
-					return Ok((Some(funding_txo), announcement_sigs));
+
+					return Ok((Some(funding_txo), monitor_update_opt, announcement_sigs));
 				}
 
 				let err = "unknown splice funding txid";
@@ -10417,7 +10470,7 @@ where
 		}
 
 		pending_splice.received_funding_txid = Some(msg.splice_txid);
-		Ok((None, None))
+		Ok((None, None, None))
 	}
 
 	// Send stuff to our remote peers:
