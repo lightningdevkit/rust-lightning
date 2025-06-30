@@ -1775,11 +1775,9 @@ where
 		}
 	}
 
-	pub fn force_shutdown(
-		&mut self, should_broadcast: bool, closure_reason: ClosureReason,
-	) -> ShutdownResult {
+	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
 		let (funding, context) = self.funding_and_context_mut();
-		context.force_shutdown(funding, should_broadcast, closure_reason)
+		context.force_shutdown(funding, closure_reason)
 	}
 
 	#[rustfmt::skip]
@@ -2937,11 +2935,9 @@ where
 		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
 			if outp.script_pubkey() == &expected_spk && outp.value() == self.funding.get_value_satoshis() {
 				if output_index.is_some() {
-					return Err(ChannelError::Close(
-						(
-							"Multiple outputs matched the expected script and value".to_owned(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						)));
+					let msg = "Multiple outputs matched the expected script and value";
+					let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+					return Err(ChannelError::Close((msg.to_owned(), reason)));
 				}
 				output_index = Some(idx as u16);
 			}
@@ -2949,11 +2945,9 @@ where
 		let outpoint = if let Some(output_index) = output_index {
 			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
 		} else {
-			return Err(ChannelError::Close(
-				(
-					"No output matched the funding script_pubkey".to_owned(),
-					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-				)));
+			let msg = "No output matched the funding script_pubkey";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		};
 		self.funding.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 
@@ -2961,9 +2955,9 @@ where
 		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => commitment_signed,
-			Err(err) => {
+			Err(e) => {
 				self.funding.channel_transaction_parameters.funding_outpoint = None;
-				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })));
+				return Err(e)
 			},
 		};
 
@@ -2974,10 +2968,9 @@ where
 					false,
 					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
 				);
-				return Err(ChannelError::Close((
-					"V2 channel rejected due to sender error".into(),
-					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
-				)));
+				let msg = "V2 channel rejected due to sender error";
+				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+				return Err(ChannelError::Close((msg.to_owned(), reason)));
 			}
 			None
 		} else {
@@ -2999,10 +2992,9 @@ where
 				false,
 				"We don't support users providing inputs but somehow we had more than zero inputs",
 			);
-			return Err(ChannelError::Close((
-				"V2 channel rejected due to sender error".into(),
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
-			)));
+			let msg = "V2 channel rejected due to sender error";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		};
 
 		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
@@ -5346,19 +5338,83 @@ where
 		self.unbroadcasted_funding_txid(funding).filter(|_| self.is_batch_funding())
 	}
 
-	/// Gets the latest commitment transaction and any dependent transactions for relay (forcing
-	/// shutdown of this channel - no more calls into this Channel may be made afterwards except
-	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
-	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
-	/// immediately (others we will have to allow to time out).
+	/// Shuts down this channel (no more calls into this Channel may be made afterwards except
+	/// those explicitly stated to be allowed after shutdown, eg some simple getters).
+	///
+	/// Only allowed for channels which never been used (i.e. have never broadcasted their funding
+	/// transaction).
+	fn abandon_unfunded_chan(
+		&mut self, funding: &FundingScope, mut closure_reason: ClosureReason,
+	) -> ShutdownResult {
+		assert!(!matches!(self.channel_state, ChannelState::ShutdownComplete));
+		assert!(!self.is_funding_broadcast());
+
+		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid(funding);
+		let unbroadcasted_funding_tx = self.unbroadcasted_funding(funding);
+
+		let monitor_update = if let Some(funding_txo) = funding.get_funding_txo() {
+			// If we haven't yet exchanged funding signatures (ie channel_state < AwaitingChannelReady),
+			// returning a channel monitor update here would imply a channel monitor update before
+			// we even registered the channel monitor to begin with, which is invalid.
+			// Thus, if we aren't actually at a point where we could conceivably broadcast the
+			// funding transaction, don't return a funding txo (which prevents providing the
+			// monitor update to the user, even if we return one).
+			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
+			if !self.channel_state.is_pre_funded_state() {
+				self.latest_monitor_update_id += 1;
+				let update = ChannelMonitorUpdate {
+					update_id: self.latest_monitor_update_id,
+					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
+						should_broadcast: false,
+					}],
+					channel_id: Some(self.channel_id()),
+				};
+				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), update))
+			} else {
+				None
+			}
+		} else {
+			None
+		};
+
+		if let ClosureReason::HolderForceClosed { ref mut broadcasted_latest_txn, .. } =
+			&mut closure_reason
+		{
+			*broadcasted_latest_txn = Some(false);
+		}
+
+		self.channel_state = ChannelState::ShutdownComplete;
+		self.update_time_counter += 1;
+		ShutdownResult {
+			closure_reason,
+			monitor_update,
+			dropped_outbound_htlcs: Vec::new(),
+			unbroadcasted_batch_funding_txid,
+			channel_id: self.channel_id,
+			user_channel_id: self.user_id,
+			channel_capacity_satoshis: funding.get_value_satoshis(),
+			counterparty_node_id: self.counterparty_node_id,
+			unbroadcasted_funding_tx,
+			is_manual_broadcast: self.is_manual_broadcast,
+			channel_funding_txo: funding.get_funding_txo(),
+			last_local_balance_msat: funding.value_to_self_msat,
+		}
+	}
+
+	/// Shuts down this channel (no more calls into this Channel may be made afterwards except
+	/// those explicitly stated to be alowed after shutdown, eg some simple getters).
 	pub fn force_shutdown(
-		&mut self, funding: &FundingScope, should_broadcast: bool, closure_reason: ClosureReason,
+		&mut self, funding: &FundingScope, mut closure_reason: ClosureReason,
 	) -> ShutdownResult {
 		// Note that we MUST only generate a monitor update that indicates force-closure - we're
 		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
 		// being fully configured in some cases. Thus, its likely any monitor events we generate will
 		// be delayed in being processed! See the docs for `ChannelManagerReadArgs` for more.
 		assert!(!matches!(self.channel_state, ChannelState::ShutdownComplete));
+
+		if !self.is_funding_broadcast() {
+			return self.abandon_unfunded_chan(funding, closure_reason);
+		}
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
 		// return them to fail the payment.
@@ -5390,7 +5446,7 @@ where
 				let update = ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
-						should_broadcast,
+						should_broadcast: true,
 					}],
 					channel_id: Some(self.channel_id()),
 				};
@@ -5403,6 +5459,12 @@ where
 		};
 		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid(funding);
 		let unbroadcasted_funding_tx = self.unbroadcasted_funding(funding);
+
+		if let ClosureReason::HolderForceClosed { ref mut broadcasted_latest_txn, .. } =
+			&mut closure_reason
+		{
+			*broadcasted_latest_txn = Some(true);
+		}
 
 		self.channel_state = ChannelState::ShutdownComplete;
 		self.update_time_counter += 1;
@@ -5556,11 +5618,11 @@ where
 				let channel_parameters = &funding.channel_transaction_parameters;
 				ecdsa.sign_counterparty_commitment(channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
 					.map(|(signature, _)| signature)
-					.map_err(|_| ChannelError::Close(
-						(
-							"Failed to get signatures for new commitment_signed".to_owned(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						)))
+					.map_err(|()| {
+						let msg = "Failed to get signatures for new commitment_signed";
+						let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+						ChannelError::Close((msg.to_owned(), reason))
+					})
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
@@ -5581,10 +5643,10 @@ where
 			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
 		) {
 			debug_assert!(false);
-			return Err(ChannelError::Close(("Tried to get an initial commitment_signed messsage at a time other than \
-				immediately after initial handshake completion (or tried to get funding_created twice)".to_string(),
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
-			)));
+			let msg = "Tried to get an initial commitment_signed messsage at a time other than \
+				immediately after initial handshake completion (or tried to get funding_created twice)";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		}
 
 		let signature = match self.get_initial_counterparty_commitment_signature(funding, logger) {
@@ -6049,6 +6111,14 @@ where
 	SP::Target: SignerProvider,
 	<SP::Target as SignerProvider>::EcdsaSigner: EcdsaChannelSigner,
 {
+	pub fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+
+	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
+		self.context.force_shutdown(&self.funding, closure_reason)
+	}
+
 	#[rustfmt::skip]
 	fn check_remote_fee<F: Deref, L: Deref>(
 		channel_type: &ChannelTypeFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
@@ -6713,11 +6783,9 @@ where
 		if !self.context.channel_state.is_interactive_signing()
 			|| self.context.channel_state.is_their_tx_signatures_sent()
 		{
-			return Err(ChannelError::Close(
-				(
-					"Received initial commitment_signed before funding transaction constructed or after peer's tx_signatures received!".to_owned(),
-					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-				)));
+			let msg = "Received initial commitment_signed before funding transaction constructed or after peer's tx_signatures received!";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		}
 
 		let holder_commitment_point = &mut self.holder_commitment_point.clone();
@@ -7652,22 +7720,18 @@ where
 
 		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
 			if msg.tx_hash != signing_session.unsigned_tx().compute_txid() {
-				return Err(ChannelError::Close(
-					(
-						"The txid for the transaction does not match".to_string(),
-						ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-					)));
+				let msg = "The txid for the transaction does not match";
+				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+				return Err(ChannelError::Close((msg.to_owned(), reason)));
 			}
 
 			// We need to close the channel if our peer hasn't sent their commitment signed already.
 			// Technically we'd wait on having an initial monitor persisted, so we shouldn't be broadcasting
 			// the transaction, but this may risk losing funds for a manual broadcast if we continue.
 			if !signing_session.has_received_commitment_signed() {
-				return Err(ChannelError::Close(
-					(
-						"Received tx_signatures before initial commitment_signed".to_string(),
-						ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-					)));
+				let msg = "Received tx_signatures before initial commitment_signed";
+				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+				return Err(ChannelError::Close((msg.to_owned(), reason)));
 			}
 
 			if msg.witnesses.len() != signing_session.remote_inputs_count() {
@@ -7678,11 +7742,9 @@ where
 
 			for witness in &msg.witnesses {
 				if witness.is_empty() {
-					return Err(ChannelError::Close(
-						(
-							"Unexpected empty witness in tx_signatures received".to_string(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						)));
+					let msg = "Unexpected empty witness in tx_signatures received";
+					let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+					return Err(ChannelError::Close((msg.to_owned(), reason)));
 				}
 
 				// TODO(dual_funding): Check all sigs are SIGHASH_ALL.
@@ -7718,10 +7780,9 @@ where
 			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			Ok((funding_tx_opt, holder_tx_signatures_opt))
 		} else {
-			Err(ChannelError::Close((
-				"Unexpected tx_signatures. No funding transaction awaiting signatures".to_string(),
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-			)))
+			let msg = "Unexpected tx_signatures. No funding transaction awaiting signatures";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		}
 	}
 
@@ -8129,7 +8190,7 @@ where
 						(closing_signed, signed_tx, shutdown_result)
 					}
 					Err(err) => {
-						let shutdown = self.context.force_shutdown(&self.funding, true, ClosureReason::ProcessingError {err: err.to_string()});
+						let shutdown = self.context.force_shutdown(&self.funding, ClosureReason::ProcessingError {err: err.to_string()});
 						(None, None, Some(shutdown))
 					}
 				}
@@ -8297,11 +8358,6 @@ where
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
-	///
-	/// Some links printed in log lines are included here to check them during build (when run with
-	/// `cargo doc --document-private-items`):
-	/// [`super::channelmanager::ChannelManager::force_close_without_broadcasting_txn`] and
-	/// [`super::channelmanager::ChannelManager::force_close_all_channels_without_broadcasting_txn`].
 	#[rustfmt::skip]
 	pub fn channel_reestablish<L: Deref, NS: Deref>(
 		&mut self, msg: &msgs::ChannelReestablish, logger: &L, node_signer: &NS,
@@ -8339,18 +8395,17 @@ where
 			if msg.next_remote_commitment_number > our_commitment_transaction {
 				macro_rules! log_and_panic {
 					($err_msg: expr) => {
-						log_error!(logger, $err_msg, &self.context.channel_id, log_pubkey!(self.context.counterparty_node_id));
-						panic!($err_msg, &self.context.channel_id, log_pubkey!(self.context.counterparty_node_id));
+						log_error!(logger, $err_msg);
+						panic!($err_msg);
 					}
 				}
 				log_and_panic!("We have fallen behind - we have received proof that if we broadcast our counterparty is going to claim all our funds.\n\
 					This implies you have restarted with lost ChannelMonitor and ChannelManager state, the first of which is a violation of the LDK chain::Watch requirements.\n\
 					More specifically, this means you have a bug in your implementation that can cause loss of funds, or you are running with an old backup, which is unsafe.\n\
-					If you have restored from an old backup and wish to force-close channels and return to operation, you should start up, call\n\
-					ChannelManager::force_close_without_broadcasting_txn on channel {} with counterparty {} or\n\
-					ChannelManager::force_close_all_channels_without_broadcasting_txn, then reconnect to peer(s).\n\
-					Note that due to a long-standing bug in lnd you may have to reach out to peers running lnd-based nodes to ask them to manually force-close channels\n\
-					See https://github.com/lightningdevkit/rust-lightning/issues/1565 for more info.");
+					If you have restored from an old backup and wish to claim any available funds, you should restart with\n\
+					an empty ChannelManager and no ChannelMonitors, reconnect to peer(s), ensure they've force-closed all of your\n\
+					previous channels and that the closure transaction(s) have confirmed on-chain,\n\
+					then restart with an empty ChannelManager and the latest ChannelMonitors that you do have.");
 			}
 		}
 
@@ -8680,7 +8735,7 @@ where
 	pub fn maybe_propose_closing_signed<F: Deref, L: Deref>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<
-		(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>),
+		(Option<msgs::ClosingSigned>, Option<(Transaction, ShutdownResult)>),
 		ChannelError,
 	>
 	where
@@ -8692,20 +8747,20 @@ where
 		// initiate `closing_signed` negotiation until we're clear of all pending messages. Note
 		// that closing_negotiation_ready checks this case (as well as a few others).
 		if self.context.last_sent_closing_fee.is_some() || !self.closing_negotiation_ready() {
-			return Ok((None, None, None));
+			return Ok((None, None));
 		}
 
 		if !self.funding.is_outbound() {
 			if let Some(msg) = &self.context.pending_counterparty_closing_signed.take() {
 				return self.closing_signed(fee_estimator, &msg, logger);
 			}
-			return Ok((None, None, None));
+			return Ok((None, None));
 		}
 
 		// If we're waiting on a counterparty `commitment_signed` to clear some updates from our
 		// local commitment transaction, we can't yet initiate `closing_signed` negotiation.
 		if self.context.expecting_peer_commitment_signed {
-			return Ok((None, None, None));
+			return Ok((None, None));
 		}
 
 		let (our_min_fee, our_max_fee) = self.calculate_closing_fee_limits(fee_estimator);
@@ -8724,7 +8779,7 @@ where
 			our_max_fee,
 			logger,
 		);
-		Ok((closing_signed, None, None))
+		Ok((closing_signed, None))
 	}
 
 	fn mark_response_received(&mut self) {
@@ -8988,7 +9043,7 @@ where
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::ClosingSigned,
 		logger: &L,
 	) -> Result<
-		(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>),
+		(Option<msgs::ClosingSigned>, Option<(Transaction, ShutdownResult)>),
 		ChannelError,
 	>
 	where
@@ -9030,7 +9085,7 @@ where
 
 		if self.context.channel_state.is_monitor_update_in_progress() {
 			self.context.pending_counterparty_closing_signed = Some(msg.clone());
-			return Ok((None, None, None));
+			return Ok((None, None));
 		}
 
 		let funding_redeemscript = self.funding.get_funding_redeemscript();
@@ -9084,7 +9139,7 @@ where
 					self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
 				self.context.channel_state = ChannelState::ShutdownComplete;
 				self.context.update_time_counter += 1;
-				return Ok((None, Some(tx), Some(shutdown_result)));
+				return Ok((None, Some((tx, shutdown_result))));
 			}
 		}
 
@@ -9107,26 +9162,25 @@ where
 					our_max_fee,
 					logger,
 				);
-				let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
-					let shutdown_result =
-						closing_signed.as_ref().map(|_| self.shutdown_result_coop_close());
-					if closing_signed.is_some() {
-						self.context.channel_state = ChannelState::ShutdownComplete;
-					}
+				let signed_tx_shutdown = if $new_fee == msg.fee_satoshis {
 					self.context.update_time_counter += 1;
 					self.context.last_received_closing_sig = Some(msg.signature.clone());
-					let tx = closing_signed.as_ref().map(|ClosingSigned { signature, .. }| {
-						self.build_signed_closing_transaction(
+					if let Some(ClosingSigned { signature, .. }) = &closing_signed {
+						let shutdown_result = self.shutdown_result_coop_close();
+						self.context.channel_state = ChannelState::ShutdownComplete;
+						let tx = self.build_signed_closing_transaction(
 							&closing_tx,
 							&msg.signature,
 							signature,
-						)
-					});
-					(tx, shutdown_result)
+						);
+						Some((tx, shutdown_result))
+					} else {
+						None
+					}
 				} else {
-					(None, None)
+					None
 				};
-				return Ok((closing_signed, signed_tx, shutdown_result))
+				return Ok((closing_signed, signed_tx_shutdown))
 			};
 		}
 
@@ -11211,6 +11265,10 @@ impl<SP: Deref> OutboundV1Channel<SP>
 where
 	SP::Target: SignerProvider,
 {
+	pub fn abandon_unfunded_chan(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
+		self.context.abandon_unfunded_chan(&self.funding, closure_reason)
+	}
+
 	#[allow(dead_code)] // TODO(dual_funding): Remove once opending V2 channels is enabled.
 	#[rustfmt::skip]
 	pub fn new<ES: Deref, F: Deref, L: Deref>(
@@ -12056,10 +12114,10 @@ where
 				outputs_to_contribute: Vec::new(),
 				expected_remote_shared_funding_output: Some((funding.get_funding_redeemscript().to_p2wsh(), funding.get_value_satoshis())),
 			}
-		).map_err(|_| ChannelError::Close((
-			"V2 channel rejected due to sender error".into(),
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
-		)))?);
+		).map_err(|err| {
+			let reason = ClosureReason::ProcessingError { err: err.to_string() };
+			ChannelError::Close((err.to_string(), reason))
+		})?);
 
 		let unfunded_context = UnfundedChannelContext {
 			unfunded_channel_age_ticks: 0,
