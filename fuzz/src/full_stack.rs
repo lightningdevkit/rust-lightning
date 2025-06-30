@@ -1067,7 +1067,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 32
 	ext_from_hex("030020", &mut test);
 	// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
-	ext_from_hex("0010 00021aaa 0008aaa208aa2a0a9aaa 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0010 00021aaa 0008aaa218aa2a0a9aaa 03000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
@@ -1168,7 +1168,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 32
 	ext_from_hex("030120", &mut test);
 	// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
-	ext_from_hex("0010 00021aaa 0008aaa208aa2a0a9aaa 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0010 00021aaa 0008aaa218aa2a0a9aaa 01000000000000000000000000000000", &mut test);
 
 	// create outbound channel to peer 1 for 50k sat
 	ext_from_hex(
@@ -1181,16 +1181,16 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
 	// message header indicating message length 274
-	ext_from_hex("0112 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0116 01000000000000000000000000000000", &mut test);
 	// inbound read from peer id 1 of len 255
 	ext_from_hex("0301ff", &mut test);
 	// beginning of accept_channel
 	ext_from_hex("0021 0000000000000000000000000000000000000000000000000000000000000e12 0000000000000162 00000000004c4b40 00000000000003e8 00000000000003e8 00000002 03f0 0005 030000000000000000000000000000000000000000000000000000000000000100 030000000000000000000000000000000000000000000000000000000000000200 030000000000000000000000000000000000000000000000000000000000000300 030000000000000000000000000000000000000000000000000000000000000400 030000000000000000000000000000000000000000000000000000000000000500 02660000000000000000000000000000", &mut test);
 	// inbound read from peer id 1 of len 35
-	ext_from_hex("030123", &mut test);
+	ext_from_hex("030127", &mut test);
 	// rest of accept_channel and mac
 	ext_from_hex(
-		"0000000000000000000000000000000000 0000 01000000000000000000000000000000",
+		"0000000000000000000000000000000000 0000 01021000 01000000000000000000000000000000",
 		&mut test,
 	);
 
@@ -1583,7 +1583,7 @@ fn gossip_exchange_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 32
 	ext_from_hex("030020", &mut test);
 	// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
-	ext_from_hex("0010 00021aaa 0008aaa20aaa2a0a9aaa 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0010 00021aaa 0008aaa218aa2a0a9aaa 03000000000000000000000000000000", &mut test);
 
 	// new inbound connection with id 1
 	ext_from_hex("01", &mut test);
@@ -1603,7 +1603,7 @@ fn gossip_exchange_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 32
 	ext_from_hex("030120", &mut test);
 	// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
-	ext_from_hex("0010 00021aaa 0008aaa20aaa2a0a9aaa 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0010 00021aaa 0008aaa218aa2a0a9aaa 01000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);

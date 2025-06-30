@@ -3842,14 +3842,8 @@ where
 			if ty != funding.get_channel_type() {
 				return Err(ChannelError::close("Channel Type in accept_channel didn't match the one sent in open_channel.".to_owned()));
 			}
-		} else if their_features.supports_channel_type() {
-			// Assume they've accepted the channel type as they said they understand it.
 		} else {
-			let channel_type = ChannelTypeFeatures::from_init(&their_features);
-			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
-				return Err(ChannelError::close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
-			}
-			funding.channel_transaction_parameters.channel_type_features = channel_type;
+			return Err(ChannelError::close("channel_type assumed to be supported".to_owned()));
 		}
 
 		if common_fields.dust_limit_satoshis > 21000000 * 100000000 {
@@ -11542,8 +11536,7 @@ where
 /// [`msgs::CommonOpenChannelFields`].
 #[rustfmt::skip]
 pub(super) fn channel_type_from_open_channel(
-	common_fields: &msgs::CommonOpenChannelFields, their_features: &InitFeatures,
-	our_supported_features: &ChannelTypeFeatures
+	common_fields: &msgs::CommonOpenChannelFields, our_supported_features: &ChannelTypeFeatures
 ) -> Result<ChannelTypeFeatures, ChannelError> {
 	if let Some(channel_type) = &common_fields.channel_type {
 		if channel_type.supports_any_optional_bits() {
@@ -11567,11 +11560,7 @@ pub(super) fn channel_type_from_open_channel(
 		}
 		Ok(channel_type.clone())
 	} else {
-		let channel_type = ChannelTypeFeatures::from_init(&their_features);
-		if channel_type != ChannelTypeFeatures::only_static_remote_key() {
-			return Err(ChannelError::close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
-		}
-		Ok(channel_type)
+		return Err(ChannelError::close("channel_type assumed to be supported".to_owned()));
 	}
 }
 
@@ -11596,7 +11585,7 @@ where
 
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
-		let channel_type = channel_type_from_open_channel(&msg.common_fields, their_features, our_supported_features)?;
+		let channel_type = channel_type_from_open_channel(&msg.common_fields, our_supported_features)?;
 
 		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(msg.common_fields.funding_satoshis, config);
 		let counterparty_pubkeys = ChannelPublicKeys {
@@ -11999,7 +11988,7 @@ where
 			return Err(ChannelError::close(format!("Rejecting V2 channel {} missing channel_type",
 				msg.common_fields.temporary_channel_id)))
 		}
-		let channel_type = channel_type_from_open_channel(&msg.common_fields, their_features, our_supported_features)?;
+		let channel_type = channel_type_from_open_channel(&msg.common_fields, our_supported_features)?;
 
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.common_fields.funding_pubkey,
