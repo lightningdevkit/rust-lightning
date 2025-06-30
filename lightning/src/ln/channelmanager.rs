@@ -1829,7 +1829,7 @@ where
 /// - Perform any periodic channel and payment checks by calling [`timer_tick_occurred`] roughly
 ///   every minute
 /// - Persist to disk whenever [`get_and_clear_needs_persistence`] returns `true` using a
-///   [`KVStore`] implementation
+///   [`KVStoreSync`] implementation
 /// - Handle [`Event`]s obtained via its [`EventsProvider`] implementation
 ///
 /// The [`Future`] returned by [`get_event_or_persistence_needed_future`] is useful in determining
@@ -2411,7 +2411,7 @@ where
 /// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 /// [`timer_tick_occurred`]: Self::timer_tick_occurred
 /// [`get_and_clear_needs_persistence`]: Self::get_and_clear_needs_persistence
-/// [`KVStore`]: crate::util::persist::KVStore
+/// [`KVStoreSync`]: crate::util::persist::KVStoreSync
 /// [`get_event_or_persistence_needed_future`]: Self::get_event_or_persistence_needed_future
 /// [`lightning-block-sync`]: https://docs.rs/lightning_block_sync/latest/lightning_block_sync
 /// [`lightning-transaction-sync`]: https://docs.rs/lightning_transaction_sync/latest/lightning_transaction_sync

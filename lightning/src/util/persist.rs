@@ -4,7 +4,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! This module contains a simple key-value store trait [`KVStore`] that
+//! This module contains a simple key-value store trait [`KVStoreSync`] that
 //! allows one to implement the persistence for [`ChannelManager`], [`NetworkGraph`],
 //! and [`ChannelMonitor`] all in one place.
 //!
@@ -129,7 +129,7 @@ pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 /// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
 /// interface can use a concatenation of `[{primary_namespace}/[{secondary_namespace}/]]{key}` to
 /// recover a `key` compatible with the data model previously assumed by `KVStorePersister::persist`.
-pub trait KVStore {
+pub trait KVStoreSync {
 	/// Returns the data stored for the given `primary_namespace`, `secondary_namespace`, and
 	/// `key`.
 	///
@@ -152,7 +152,7 @@ pub trait KVStore {
 	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
 	/// remove the given `key` at some point in time after the method returns, e.g., as part of an
 	/// eventual batch deletion of multiple keys. As a consequence, subsequent calls to
-	/// [`KVStore::list`] might include the removed key until the changes are actually persisted.
+	/// [`KVStoreSync::list`] might include the removed key until the changes are actually persisted.
 	///
 	/// Note that while setting the `lazy` flag reduces the I/O burden of multiple subsequent
 	/// `remove` calls, it also influences the atomicity guarantees as lazy `remove`s could
@@ -175,12 +175,12 @@ pub trait KVStore {
 	) -> Result<Vec<String>, io::Error>;
 }
 
-/// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
+/// Provides additional interface methods that are required for [`KVStoreSync`]-to-[`KVStoreSync`]
 /// data migration.
-pub trait MigratableKVStore: KVStore {
+pub trait MigratableKVStore: KVStoreSync {
 	/// Returns *all* known keys as a list of `primary_namespace`, `secondary_namespace`, `key` tuples.
 	///
-	/// This is useful for migrating data from [`KVStore`] implementation to [`KVStore`]
+	/// This is useful for migrating data from [`KVStoreSync`] implementation to [`KVStoreSync`]
 	/// implementation.
 	///
 	/// Must exhaustively return all entries known to the store to ensure no data is missed, but
@@ -209,7 +209,7 @@ pub fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
 	Ok(())
 }
 
-impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSigner> for K {
+impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<ChannelSigner> for K {
 	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
 	// down once these start returning failure.
 	// Then we should return InProgress rather than UnrecoverableError, implying we should probably
@@ -277,7 +277,7 @@ pub fn read_channel_monitors<K: Deref, ES: Deref, SP: Deref>(
 	kv_store: K, entropy_source: ES, signer_provider: SP,
 ) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, io::Error>
 where
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 {
@@ -322,7 +322,7 @@ where
 ///
 /// # Overview
 ///
-/// The main benefit this provides over the [`KVStore`]'s [`Persist`] implementation is decreased
+/// The main benefit this provides over the [`KVStoreSync`]'s [`Persist`] implementation is decreased
 /// I/O bandwidth and storage churn, at the expense of more IOPS (including listing, reading, and
 /// deleting) and complexity. This is because it writes channel monitor differential updates,
 /// whereas the other (default) implementation rewrites the entire monitor on each update. For
@@ -330,7 +330,7 @@ where
 /// of megabytes (or more). Updates can be as small as a few hundred bytes.
 ///
 /// Note that monitors written with `MonitorUpdatingPersister` are _not_ backward-compatible with
-/// the default [`KVStore`]'s [`Persist`] implementation. They have a prepended byte sequence,
+/// the default [`KVStoreSync`]'s [`Persist`] implementation. They have a prepended byte sequence,
 /// [`MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL`], applied to prevent deserialization with other
 /// persisters. This is because monitors written by this struct _may_ have unapplied updates. In
 /// order to downgrade, you must ensure that all updates are applied to the monitor, and remove the
@@ -382,7 +382,7 @@ where
 ///
 /// ## EXTREMELY IMPORTANT
 ///
-/// It is extremely important that your [`KVStore::read`] implementation uses the
+/// It is extremely important that your [`KVStoreSync::read`] implementation uses the
 /// [`io::ErrorKind::NotFound`] variant correctly: that is, when a file is not found, and _only_ in
 /// that circumstance (not when there is really a permissions error, for example). This is because
 /// neither channel monitor reading function lists updates. Instead, either reads the monitor, and
@@ -394,7 +394,7 @@ where
 /// Stale updates are pruned when the consolidation threshold is reached according to `maximum_pending_updates`.
 /// Monitor updates in the range between the latest `update_id` and `update_id - maximum_pending_updates`
 /// are deleted.
-/// The `lazy` flag is used on the [`KVStore::remove`] method, so there are no guarantees that the deletions
+/// The `lazy` flag is used on the [`KVStoreSync::remove`] method, so there are no guarantees that the deletions
 /// will complete. However, stale updates are not a problem for data integrity, since updates are
 /// only read that are higher than the stored [`ChannelMonitor`]'s `update_id`.
 ///
@@ -403,7 +403,7 @@ where
 /// [`MonitorUpdatingPersister::cleanup_stale_updates`] function.
 pub struct MonitorUpdatingPersister<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
 where
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
@@ -423,7 +423,7 @@ where
 impl<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
 	MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
@@ -463,7 +463,7 @@ where
 
 	/// Reads all stored channel monitors, along with any stored updates for them.
 	///
-	/// It is extremely important that your [`KVStore::read`] implementation uses the
+	/// It is extremely important that your [`KVStoreSync::read`] implementation uses the
 	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
 	/// documentation for [`MonitorUpdatingPersister`].
 	pub fn read_all_channel_monitors_with_updates(
@@ -485,7 +485,7 @@ where
 
 	/// Read a single channel monitor, along with any stored updates for it.
 	///
-	/// It is extremely important that your [`KVStore::read`] implementation uses the
+	/// It is extremely important that your [`KVStoreSync::read`] implementation uses the
 	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
 	/// documentation for [`MonitorUpdatingPersister`].
 	///
@@ -612,7 +612,7 @@ where
 	/// This function works by first listing all monitors, and then for each of them, listing all
 	/// updates. The updates that have an `update_id` less than or equal to than the stored monitor
 	/// are deleted. The deletion can either be lazy or non-lazy based on the `lazy` flag; this will
-	/// be passed to [`KVStore::remove`].
+	/// be passed to [`KVStoreSync::remove`].
 	pub fn cleanup_stale_updates(&self, lazy: bool) -> Result<(), io::Error> {
 		let monitor_keys = self.kv_store.list(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -651,7 +651,7 @@ impl<
 		FE: Deref,
 	> Persist<ChannelSigner> for MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
@@ -659,7 +659,7 @@ where
 	FE::Target: FeeEstimator,
 {
 	/// Persists a new channel. This means writing the entire monitor to the
-	/// parametrized [`KVStore`].
+	/// parametrized [`KVStoreSync`].
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
@@ -692,11 +692,11 @@ where
 		}
 	}
 
-	/// Persists a channel update, writing only the update to the parameterized [`KVStore`] if possible.
+	/// Persists a channel update, writing only the update to the parameterized [`KVStoreSync`] if possible.
 	///
 	/// In some cases, this will forward to [`MonitorUpdatingPersister::persist_new_channel`]:
 	///
-	///   - No full monitor is found in [`KVStore`]
+	///   - No full monitor is found in [`KVStoreSync`]
 	///   - The number of pending updates exceeds `maximum_pending_updates` as given to [`Self::new`]
 	///   - LDK commands re-persisting the entire monitor through this function, specifically when
 	///	    `update` is `None`.
@@ -806,7 +806,7 @@ impl<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
 	MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	ES::Target: EntropySource + Sized,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
 	BI::Target: BroadcasterInterface,
@@ -887,7 +887,7 @@ pub enum MonitorName {
 }
 
 impl MonitorName {
-	/// Attempts to construct a `MonitorName` from a storage key returned by [`KVStore::list`].
+	/// Attempts to construct a `MonitorName` from a storage key returned by [`KVStoreSync::list`].
 	///
 	/// This is useful when you need to reconstruct the original data the key represents.
 	fn from_str(monitor_key: &str) -> Result<Self, io::Error> {
@@ -1426,7 +1426,7 @@ mod tests {
 
 	#[test]
 	fn kvstore_trait_object_usage() {
-		let store: Arc<dyn KVStore + Send + Sync> = Arc::new(TestStore::new(false));
+		let store: Arc<dyn KVStoreSync + Send + Sync> = Arc::new(TestStore::new(false));
 		assert!(persist_fn::<_, TestChannelSigner>(Arc::clone(&store)));
 	}
 }

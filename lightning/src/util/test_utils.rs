@@ -57,7 +57,7 @@ use crate::util::dyn_signer::{
 use crate::util::logger::{Logger, Record};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
-use crate::util::persist::{KVStore, MonitorName};
+use crate::util::persist::{KVStoreSync, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 
@@ -806,7 +806,7 @@ impl TestStore {
 	}
 }
 
-impl KVStore for TestStore {
+impl KVStoreSync for TestStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 	) -> io::Result<Vec<u8>> {

@@ -55,7 +55,7 @@ use lightning::sign::EntropySource;
 use lightning::sign::OutputSpender;
 use lightning::util::logger::Logger;
 use lightning::util::persist::{
-	KVStore, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+	KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 	CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
 	NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 	SCORER_PERSISTENCE_KEY, SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -729,8 +729,8 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # impl lightning::util::logger::Logger for Logger {
 /// #     fn log(&self, _record: lightning::util::logger::Record) {}
 /// # }
-/// # struct Store {}
-/// # impl lightning::util::persist::KVStore for Store {
+/// # struct StoreSync {}
+/// # impl lightning::util::persist::KVStoreSync for StoreSync {
 /// #     fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> io::Result<Vec<u8>> { Ok(Vec::new()) }
 /// #     fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> { Ok(()) }
 /// #     fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> io::Result<()> { Ok(()) }
@@ -746,14 +746,14 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// #     fn send_data(&mut self, _data: &[u8], _resume_read: bool) -> usize { 0 }
 /// #     fn disconnect_socket(&mut self) {}
 /// # }
-/// # type ChainMonitor<B, F, FE> = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<F>, Arc<B>, Arc<FE>, Arc<Logger>, Arc<Store>, Arc<lightning::sign::KeysManager>>;
+/// # type ChainMonitor<B, F, FE> = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<F>, Arc<B>, Arc<FE>, Arc<Logger>, Arc<StoreSync>, Arc<lightning::sign::KeysManager>>;
 /// # type NetworkGraph = lightning::routing::gossip::NetworkGraph<Arc<Logger>>;
 /// # type P2PGossipSync<UL> = lightning::routing::gossip::P2PGossipSync<Arc<NetworkGraph>, Arc<UL>, Arc<Logger>>;
 /// # type ChannelManager<B, F, FE> = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor<B, F, FE>, B, FE, Logger>;
 /// # type OnionMessenger<B, F, FE> = lightning::onion_message::messenger::OnionMessenger<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<Logger>, Arc<ChannelManager<B, F, FE>>, Arc<lightning::onion_message::messenger::DefaultMessageRouter<Arc<NetworkGraph>, Arc<Logger>, Arc<lightning::sign::KeysManager>>>, Arc<ChannelManager<B, F, FE>>, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler>;
 /// # type LiquidityManager<B, F, FE> = lightning_liquidity::LiquidityManager<Arc<lightning::sign::KeysManager>, Arc<ChannelManager<B, F, FE>>, Arc<F>>;
 /// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
-/// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger, F, Store>;
+/// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger, F, StoreSync>;
 /// #
 /// # struct Node<
 /// #     B: lightning::chain::chaininterface::BroadcasterInterface + Send + Sync + 'static,
@@ -770,10 +770,10 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// #     liquidity_manager: Arc<LiquidityManager<B, F, FE>>,
 /// #     chain_monitor: Arc<ChainMonitor<B, F, FE>>,
 /// #     gossip_sync: Arc<P2PGossipSync<UL>>,
-/// #     persister: Arc<Store>,
+/// #     persister: Arc<StoreSync>,
 /// #     logger: Arc<Logger>,
 /// #     scorer: Arc<Scorer>,
-/// #     sweeper: Arc<OutputSweeper<Arc<B>, Arc<D>, Arc<FE>, Arc<F>, Arc<Store>, Arc<Logger>, Arc<O>>>,
+/// #     sweeper: Arc<OutputSweeper<Arc<B>, Arc<D>, Arc<FE>, Arc<F>, Arc<StoreSync>, Arc<Logger>, Arc<O>>>,
 /// # }
 /// #
 /// # async fn setup_background_processing<
@@ -895,7 +895,7 @@ where
 	LM::Target: ALiquidityManager,
 	O::Target: 'static + OutputSpender,
 	D::Target: 'static + ChangeDestinationSource,
-	K::Target: 'static + KVStore,
+	K::Target: 'static + KVStoreSync,
 {
 	let mut should_break = false;
 	let async_event_handler = |event| {
@@ -1016,21 +1016,21 @@ impl BackgroundProcessor {
 	/// documentation].
 	///
 	/// The thread runs indefinitely unless the object is dropped, [`stop`] is called, or
-	/// [`KVStore`] returns an error. In case of an error, the error is retrieved by calling
+	/// [`KVStoreSync`] returns an error. In case of an error, the error is retrieved by calling
 	/// either [`join`] or [`stop`].
 	///
 	/// # Data Persistence
 	///
-	/// [`KVStore`] is responsible for writing out the [`ChannelManager`] to disk, and/or
+	/// [`KVStoreSync`] is responsible for writing out the [`ChannelManager`] to disk, and/or
 	/// uploading to one or more backup services. See [`ChannelManager::write`] for writing out a
 	/// [`ChannelManager`]. See the `lightning-persister` crate for LDK's
 	/// provided implementation.
 	///
-	/// [`KVStore`] is also responsible for writing out the [`NetworkGraph`] to disk, if
+	/// [`KVStoreSync`] is also responsible for writing out the [`NetworkGraph`] to disk, if
 	/// [`GossipSync`] is supplied. See [`NetworkGraph::write`] for writing out a [`NetworkGraph`].
 	/// See the `lightning-persister` crate for LDK's provided implementation.
 	///
-	/// Typically, users should either implement [`KVStore`] to never return an
+	/// Typically, users should either implement [`KVStoreSync`] to never return an
 	/// error or call [`join`] and handle any error that may arise. For the latter case,
 	/// `BackgroundProcessor` must be restarted by calling `start` again after handling the error.
 	///
@@ -1102,7 +1102,7 @@ impl BackgroundProcessor {
 		LM::Target: ALiquidityManager,
 		D::Target: ChangeDestinationSourceSync,
 		O::Target: 'static + OutputSpender,
-		K::Target: 'static + KVStore,
+		K::Target: 'static + KVStoreSync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = Arc::clone(&stop_thread);
@@ -1283,7 +1283,8 @@ mod tests {
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
 	use lightning::util::persist::{
-		KVStore, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+		KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY,
+		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 		CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
 		NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 		SCORER_PERSISTENCE_KEY, SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -1522,7 +1523,7 @@ mod tests {
 		}
 	}
 
-	impl KVStore for Persister {
+	impl KVStoreSync for Persister {
 		fn read(
 			&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 		) -> lightning::io::Result<Vec<u8>> {
