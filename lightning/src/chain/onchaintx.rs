@@ -994,6 +994,17 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 						panic!("Inconsistencies between pending_claim_requests map and claimable_outpoints map");
 					}
 				}
+
+				// Also remove/split any locktimed packages whose inputs have been spent by this transaction.
+				self.locktimed_packages.retain(|_locktime, packages|{
+					packages.retain_mut(|package| {
+						if let Some(p) = package.split_package(&inp.previous_output) {
+							claimed_outputs_material.push(p);
+						}
+						!package.outpoints().is_empty()
+					});
+					!packages.is_empty()
+				});
 			}
 			for package in claimed_outputs_material.drain(..) {
 				let entry = OnchainEventEntry {
@@ -1135,6 +1146,12 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				//- resurect outpoint back in its claimable set and regenerate tx
 				match entry.event {
 					OnchainEvent::ContentiousOutpoint { package } => {
+						let package_locktime = package.package_locktime(height);
+						if package_locktime > height {
+							self.locktimed_packages.entry(package_locktime).or_default().push(package);
+							continue;
+						}
+
 						if let Some(pending_claim) = self.claimable_outpoints.get(package.outpoints()[0]) {
 							if let Some(request) = self.pending_claim_requests.get_mut(&pending_claim.0) {
 								assert!(request.merge_package(package, height).is_ok());
