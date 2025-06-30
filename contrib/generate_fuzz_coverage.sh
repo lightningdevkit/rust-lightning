@@ -3,7 +3,7 @@ set -e
 set -x
 
 # Parse command line arguments
-OUTPUT_DIR="target/llvm-cov/html"
+OUTPUT_DIR="coverage-report"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --output-dir)
@@ -56,7 +56,7 @@ export RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz"
 cargo llvm-cov --html --ignore-filename-regex "fuzz/" --output-dir "$OUTPUT_DIR"
 
 # Check if coverage report was generated successfully
-# The report is generated directly in $OUTPUT_DIR/html/index.html
+# The report is generated in $OUTPUT_DIR/html/index.html when using --html --output-dir
 if [ ! -f "$OUTPUT_DIR/html/index.html" ]; then
     echo "Error: Failed to generate coverage report at $OUTPUT_DIR/html/index.html"
     # Debug: list what was actually created
