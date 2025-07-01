@@ -1766,7 +1766,8 @@ mod tests {
 					payment_hash: PaymentHash::from(preimage),
 					transaction_output_index: None,
 				};
-				let commitment_tx = HolderCommitmentTransaction::dummy(0, vec![htlc.clone()]);
+				let funding_outpoint = channel_parameters.funding_outpoint.unwrap();
+				let commitment_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, vec![htlc.clone()]);
 				let trusted_tx = commitment_tx.trust();
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(
 					HTLCDescriptor {
@@ -1801,7 +1802,8 @@ mod tests {
 					payment_hash: PaymentHash::from(PaymentPreimage([2;32])),
 					transaction_output_index: None,
 				};
-				let commitment_tx = HolderCommitmentTransaction::dummy(0, vec![htlc.clone()]);
+				let funding_outpoint = channel_parameters.funding_outpoint.unwrap();
+				let commitment_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, vec![htlc.clone()]);
 				let trusted_tx = commitment_tx.trust();
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(
 					HTLCDescriptor {
@@ -1826,8 +1828,9 @@ mod tests {
 	#[rustfmt::skip]
 	macro_rules! dumb_funding_output {
 		() => {{
-			let commitment_tx = HolderCommitmentTransaction::dummy(0, Vec::new());
 			let mut channel_parameters = ChannelTransactionParameters::test_dummy(0);
+			let funding_outpoint = channel_parameters.funding_outpoint.unwrap();
+			let commitment_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new());
 			channel_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 			PackageSolvingData::HolderFundingOutput(HolderFundingOutput::build(
 				commitment_tx, channel_parameters,
