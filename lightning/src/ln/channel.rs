@@ -2996,6 +2996,8 @@ where
 		"commitment_signed"
 	}
 
+	/// Checks whether the channel was opened through V2 channel open (negotiation).
+	/// See also: is_v2()
 	fn is_v2_established(&self) -> bool {
 		let channel_parameters = &self.funding().channel_transaction_parameters;
 		// This will return false if `counterparty_parameters` is `None`, but for a `FundedChannel`, it
@@ -11144,7 +11146,7 @@ where
 		}
 		// We're not allowed to dip below the reserve once we've been above,
 		// check differently for originally v1 and v2 channels
-		if self.is_v2_established() {
+		if self.is_v2() {
 			let pre_channel_reserve_sats =
 				get_v2_channel_reserve_satoshis(pre_channel_value_sats, dust_limit_sats);
 			if pre_balance_msat >= (pre_channel_reserve_sats * 1000) {
@@ -11991,6 +11993,18 @@ where
 		// Drains the oldest historical SCIDs until reaching one without
 		// CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY confirmations.
 		self.context.historical_scids.drain(0..end)
+	}
+
+	/// Check is channel is currently v2:
+	/// - established as v2
+	/// - or past a splice (which implicitly makes the channel v2)
+	#[cfg(splicing)]
+	fn is_v2(&self) -> bool {
+		if self.funding.channel_transaction_parameters.splice_parent_funding_txid.is_some() {
+			true
+		} else {
+			self.is_v2_established()
+		}
 	}
 }
 
