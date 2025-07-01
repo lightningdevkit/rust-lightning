@@ -98,7 +98,7 @@ use crate::offers::invoice::{
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::Offer;
+use crate::offers::offer::{Offer, OfferFromHrn};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::Refund;
 use crate::offers::signer;
@@ -12288,6 +12288,9 @@ where
 	/// `amount_msats` allows you to overpay what is required to satisfy the offer, or may be
 	/// required if the offer does not require a specific amount.
 	///
+	/// If the [`Offer`] was built from a human readable name resolved using BIP 353, you *must*
+	/// instead call [`Self::pay_for_offer_from_hrn`].
+	///
 	/// # Payment
 	///
 	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
@@ -12347,6 +12350,41 @@ where
 			optional_params.payer_note,
 			payment_id,
 			None,
+			create_pending_payment_fn,
+		)
+	}
+
+	/// Pays for an [`Offer`] which was built by resolving a human readable name. It is otherwise
+	/// identical to [`Self::pay_for_offer`].
+	pub fn pay_for_offer_from_hrn(
+		&self, offer: &OfferFromHrn, amount_msats: u64, payment_id: PaymentId,
+		optional_params: OptionalOfferPaymentParams,
+	) -> Result<(), Bolt12SemanticError> {
+		let create_pending_payment_fn = |invoice_request: &InvoiceRequest, nonce| {
+			let expiration = StaleExpiration::TimerTicks(1);
+			let retryable_invoice_request = RetryableInvoiceRequest {
+				invoice_request: invoice_request.clone(),
+				nonce,
+				needs_retry: true,
+			};
+			self.pending_outbound_payments
+				.add_new_awaiting_invoice(
+					payment_id,
+					expiration,
+					optional_params.retry_strategy,
+					optional_params.route_params_config,
+					Some(retryable_invoice_request),
+				)
+				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
+		};
+
+		self.pay_for_offer_intern(
+			&offer.offer,
+			if offer.offer.expects_quantity() { Some(1) } else { None },
+			Some(amount_msats),
+			optional_params.payer_note,
+			payment_id,
+			Some(offer.hrn),
 			create_pending_payment_fn,
 		)
 	}
