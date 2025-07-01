@@ -4584,12 +4584,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							!unmatured_htlcs.contains(&&source),
 							"An unmature HTLC transaction conflicts with a maturing one; failed to \
 							 call either transaction_unconfirmed for the conflicting transaction \
-							 or blocks_disconnected for a block containing it.");
+							 or blocks_disconnected for a before below it.");
 						debug_assert!(
 							!matured_htlcs.contains(&source),
 							"A matured HTLC transaction conflicts with a maturing one; failed to \
 							 call either transaction_unconfirmed for the conflicting transaction \
-							 or blocks_disconnected for a block containing it.");
+							 or blocks_disconnected for a block before it.");
 						matured_htlcs.push(source.clone());
 					}
 
