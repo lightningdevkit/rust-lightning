@@ -140,7 +140,7 @@ enum FeeUpdateState {
 enum InboundHTLCRemovalReason {
 	FailRelay(msgs::OnionErrorPacket),
 	FailMalformed(([u8; 32], u16)),
-	Fulfill(PaymentPreimage),
+	Fulfill(PaymentPreimage, Option<AttributionData>),
 }
 
 /// Represents the resolution status of an inbound HTLC.
@@ -236,7 +236,7 @@ impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
 			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed(_)) =>
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) =>
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_, _)) =>
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill),
 		}
 	}
@@ -268,7 +268,7 @@ impl InboundHTLCState {
 
 	fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(preimage)) => {
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(preimage, _)) => {
 				Some(*preimage)
 			},
 			_ => None,
@@ -6190,7 +6190,7 @@ where
 				match htlc.state {
 					InboundHTLCState::Committed => {},
 					InboundHTLCState::LocalRemoved(ref reason) => {
-						if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
+						if let &InboundHTLCRemovalReason::Fulfill(_, _) = reason {
 						} else {
 							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", &htlc.payment_hash, &self.context.channel_id());
 							debug_assert!(
@@ -6301,6 +6301,7 @@ where
 			);
 			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(
 				payment_preimage_arg.clone(),
+				None,
 			));
 		}
 
@@ -7459,7 +7460,7 @@ where
 			pending_inbound_htlcs.retain(|htlc| {
 				if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
 					log_trace!(logger, " ...removing inbound LocalRemoved {}", &htlc.payment_hash);
-					if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
+					if let &InboundHTLCRemovalReason::Fulfill(_, _) = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
 					}
 					*expecting_peer_commitment_signed = true;
@@ -8323,12 +8324,15 @@ where
 							failure_code: failure_code.clone(),
 						});
 					},
-					&InboundHTLCRemovalReason::Fulfill(ref payment_preimage) => {
+					&InboundHTLCRemovalReason::Fulfill(
+						ref payment_preimage,
+						ref attribution_data,
+					) => {
 						update_fulfill_htlcs.push(msgs::UpdateFulfillHTLC {
 							channel_id: self.context.channel_id(),
 							htlc_id: htlc.htlc_id,
 							payment_preimage: payment_preimage.clone(),
-							attribution_data: None,
+							attribution_data: attribution_data.clone(),
 						});
 					},
 				}
@@ -12414,7 +12418,7 @@ where
 				dropped_inbound_htlcs += 1;
 			}
 		}
-		let mut removed_htlc_failure_attribution_data: Vec<&Option<AttributionData>> = Vec::new();
+		let mut removed_htlc_attribution_data: Vec<&Option<AttributionData>> = Vec::new();
 		(self.context.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
 		for htlc in self.context.pending_inbound_htlcs.iter() {
 			if let &InboundHTLCState::RemoteAnnounced(_) = &htlc.state {
@@ -12446,15 +12450,16 @@ where
 						}) => {
 							0u8.write(writer)?;
 							data.write(writer)?;
-							removed_htlc_failure_attribution_data.push(&attribution_data);
+							removed_htlc_attribution_data.push(&attribution_data);
 						},
 						InboundHTLCRemovalReason::FailMalformed((hash, code)) => {
 							1u8.write(writer)?;
 							(hash, code).write(writer)?;
 						},
-						InboundHTLCRemovalReason::Fulfill(preimage) => {
+						InboundHTLCRemovalReason::Fulfill(preimage, attribution_data) => {
 							2u8.write(writer)?;
 							preimage.write(writer)?;
+							removed_htlc_attribution_data.push(&attribution_data);
 						},
 					}
 				},
@@ -12771,7 +12776,7 @@ where
 			(51, is_manual_broadcast, option), // Added in 0.0.124
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
 			(54, self.pending_funding, optional_vec), // Added in 0.2
-			(55, removed_htlc_failure_attribution_data, optional_vec), // Added in 0.2
+			(55, removed_htlc_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
 			(58, self.interactive_tx_signing_session, option), // Added in 0.2
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
@@ -12867,7 +12872,7 @@ where
 								attribution_data: None,
 							}),
 							1 => InboundHTLCRemovalReason::FailMalformed(Readable::read(reader)?),
-							2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?),
+							2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?, None),
 							_ => return Err(DecodeError::InvalidValue),
 						};
 						InboundHTLCState::LocalRemoved(reason)
@@ -13117,7 +13122,7 @@ where
 		let mut pending_outbound_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 
-		let mut removed_htlc_failure_attribution_data: Option<Vec<Option<AttributionData>>> = None;
+		let mut removed_htlc_attribution_data: Option<Vec<Option<AttributionData>>> = None;
 		let mut holding_cell_failure_attribution_data: Option<Vec<Option<AttributionData>>> = None;
 
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
@@ -13170,7 +13175,7 @@ where
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
 			(54, pending_funding, optional_vec), // Added in 0.2
-			(55, removed_htlc_failure_attribution_data, optional_vec),
+			(55, removed_htlc_attribution_data, optional_vec),
 			(57, holding_cell_failure_attribution_data, optional_vec),
 			(58, interactive_tx_signing_session, option), // Added in 0.2
 			(59, minimum_depth_override, option), // Added in 0.2
@@ -13274,24 +13279,27 @@ where
 			}
 		}
 
-		if let Some(attribution_data_list) = removed_htlc_failure_attribution_data {
-			let mut removed_htlc_relay_failures =
-				pending_inbound_htlcs.iter_mut().filter_map(|status| {
-					if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(
-						ref mut packet,
-					)) = &mut status.state
-					{
-						Some(&mut packet.attribution_data)
-					} else {
-						None
+		if let Some(attribution_data_list) = removed_htlc_attribution_data {
+			let mut removed_htlcs = pending_inbound_htlcs.iter_mut().filter_map(|status| {
+				if let InboundHTLCState::LocalRemoved(reason) = &mut status.state {
+					match reason {
+						InboundHTLCRemovalReason::FailRelay(ref mut packet) => {
+							Some(&mut packet.attribution_data)
+						},
+						InboundHTLCRemovalReason::Fulfill(_, ref mut attribution_data) => {
+							Some(attribution_data)
+						},
+						_ => None,
 					}
-				});
+				} else {
+					None
+				}
+			});
 
 			for attribution_data in attribution_data_list {
-				*removed_htlc_relay_failures.next().ok_or(DecodeError::InvalidValue)? =
-					attribution_data;
+				*removed_htlcs.next().ok_or(DecodeError::InvalidValue)? = attribution_data;
 			}
-			if removed_htlc_relay_failures.next().is_some() {
+			if removed_htlcs.next().is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
