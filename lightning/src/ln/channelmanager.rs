@@ -2301,7 +2301,7 @@ where
 /// # let channel_manager = channel_manager.get_cm();
 /// let payment_id = PaymentId([42; 32]);
 /// match channel_manager.pay_for_offer(
-///     offer, amount_msats, payment_id, Default::default(),
+///     offer, amount_msats, payment_id, Default::default(), None,
 /// ) {
 ///     Ok(()) => println!("Requesting invoice for offer"),
 ///     Err(e) => println!("Unable to request invoice for offer: {:?}", e),
@@ -11169,6 +11169,9 @@ where
 	/// `amount_msats` allows you to overpay what is required to satisfy the offer, or may be
 	/// required if the offer does not require a specific amount.
 	///
+	/// If the [`Offer`] was built from a human readable name resolved using BIP 353,
+	/// `derived_from_hrn` must be set to `Some` to include the name.
+	///
 	/// # Payment
 	///
 	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
@@ -11202,7 +11205,7 @@ where
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn pay_for_offer(
 		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
-		optional_params: OptionalOfferPaymentParams,
+		optional_params: OptionalOfferPaymentParams, derived_from_hrn: Option<HumanReadableName>,
 	) -> Result<(), Bolt12SemanticError> {
 		let create_pending_payment_fn = |invoice_request: &InvoiceRequest, nonce| {
 			let expiration = StaleExpiration::TimerTicks(1);
@@ -11276,7 +11279,7 @@ where
 			amount_msats,
 			optional_params.payer_note,
 			payment_id,
-			None,
+			derived_from_hrn,
 			create_pending_payment_fn,
 		)
 	}

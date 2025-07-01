@@ -241,7 +241,7 @@ fn static_invoice_unknown_required_features() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default())
+		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default(), None)
 		.unwrap();
 
 	// Don't forward the invreq since we don't support retrieving the static invoice from the
@@ -301,7 +301,7 @@ fn ignore_unexpected_static_invoice() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default())
+		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default(), None)
 		.unwrap();
 
 	// Don't forward the invreq since we don't support retrieving the static invoice from the
@@ -418,7 +418,7 @@ fn async_receive_flow_success() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default())
+		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default(), None)
 		.unwrap();
 	let release_held_htlc_om =
 		pass_async_payments_oms(static_invoice.clone(), &nodes[0], &nodes[1], &nodes[2]).1;
@@ -469,7 +469,7 @@ fn expired_static_invoice_fail() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default())
+		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default(), None)
 		.unwrap();
 
 	let invreq_om = nodes[0]
@@ -559,7 +559,7 @@ fn async_receive_mpp() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default())
+		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default(), None)
 		.unwrap();
 	let release_held_htlc_om_3_0 =
 		pass_async_payments_oms(static_invoice, &nodes[0], &nodes[1], &nodes[3]).1;
@@ -649,7 +649,7 @@ fn amount_doesnt_match_invreq() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default())
+		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default(), None)
 		.unwrap();
 	let release_held_htlc_om_3_0 =
 		pass_async_payments_oms(static_invoice, &nodes[0], &nodes[1], &nodes[3]).1;
@@ -884,7 +884,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default())
+		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default(), None)
 		.unwrap();
 	let release_held_htlc_om_2_0 =
 		pass_async_payments_oms(static_invoice, &nodes[0], &nodes[1], &nodes[2]).1;
@@ -973,7 +973,7 @@ fn expired_static_invoice_message_path() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default())
+		.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default(), None)
 		.unwrap();
 
 	// While the invoice is unexpired, respond with release_held_htlc.
@@ -1077,7 +1077,7 @@ fn expired_static_invoice_payment_path() {
 	let payment_id = PaymentId([1; 32]);
 	let mut params: OptionalOfferPaymentParams = Default::default();
 	params.retry_strategy = Retry::Attempts(0);
-	nodes[0].node.pay_for_offer(&offer, Some(amt_msat), payment_id, params).unwrap();
+	nodes[0].node.pay_for_offer(&offer, Some(amt_msat), payment_id, params, None).unwrap();
 	let release_held_htlc_om =
 		pass_async_payments_oms(static_invoice, &nodes[0], &nodes[1], &nodes[2]).1;
 	nodes[0]
