@@ -349,11 +349,11 @@ impl From<&OutboundHTLCState> for OutboundHTLCStateDetails {
 			// the state yet.
 			OutboundHTLCState::RemoteRemoved(_) =>
 				OutboundHTLCStateDetails::Committed,
-			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) =>
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _)) =>
 				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
 			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Failure(_)) =>
 				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
-			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) =>
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _)) =>
 				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
 			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Failure(_)) =>
 				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
@@ -388,9 +388,9 @@ impl OutboundHTLCState {
 	#[rustfmt::skip]
 	fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(preimage))
-			| OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(preimage))
-			| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(preimage)) => {
+			OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(preimage, _))
+			| OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(preimage, _))
+			| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(preimage, _)) => {
 				Some(*preimage)
 			},
 			_ => None,
@@ -403,14 +403,14 @@ impl OutboundHTLCState {
 enum OutboundHTLCOutcome {
 	/// We started always filling in the preimages here in 0.0.105, and the requirement
 	/// that the preimages always be filled in was added in 0.2.
-	Success(PaymentPreimage),
+	Success(PaymentPreimage, #[allow(dead_code)] Option<AttributionData>),
 	Failure(HTLCFailReason),
 }
 
 impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
 	fn into(self) -> Option<&'a HTLCFailReason> {
 		match self {
-			OutboundHTLCOutcome::Success(_) => None,
+			OutboundHTLCOutcome::Success(_, _) => None,
 			OutboundHTLCOutcome::Failure(ref r) => Some(r),
 		}
 	}
@@ -4161,9 +4161,9 @@ where
 		// transaction).
 		let mut removed_outbound_total_msat = 0;
 		for ref htlc in self.pending_outbound_htlcs.iter() {
-			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
+			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _)) = htlc.state {
 				removed_outbound_total_msat += htlc.amount_msat;
-			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
+			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _)) = htlc.state {
 				removed_outbound_total_msat += htlc.amount_msat;
 			}
 		}
@@ -4409,9 +4409,9 @@ where
 
 		let mut removed_outbound_total_msat = 0;
 		for ref htlc in self.pending_outbound_htlcs.iter() {
-			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
+			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _)) = htlc.state {
 				removed_outbound_total_msat += htlc.amount_msat;
-			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
+			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _)) = htlc.state {
 				removed_outbound_total_msat += htlc.amount_msat;
 			}
 		}
@@ -6678,7 +6678,7 @@ where
 	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, outcome: OutboundHTLCOutcome) -> Result<&OutboundHTLCOutput, ChannelError> {
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
-				if let OutboundHTLCOutcome::Success(ref payment_preimage) = outcome {
+				if let OutboundHTLCOutcome::Success(ref payment_preimage, ..) = outcome {
 					let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
 					if payment_hash != htlc.payment_hash {
 						return Err(ChannelError::close(format!("Remote tried to fulfill HTLC ({}) with an incorrect preimage", htlc_id)));
@@ -6720,7 +6720,7 @@ where
 			));
 		}
 
-		let outcome = OutboundHTLCOutcome::Success(msg.payment_preimage);
+		let outcome = OutboundHTLCOutcome::Success(msg.payment_preimage, None);
 		self.mark_outbound_htlc_removed(msg.htlc_id, outcome).map(|htlc| {
 			(htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat, htlc.send_timestamp)
 		})
@@ -7082,9 +7082,9 @@ where
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
 				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
-				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
+				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None);
 				mem::swap(outcome, &mut reason);
-				if let OutboundHTLCOutcome::Success(preimage) = reason {
+				if let OutboundHTLCOutcome::Success(preimage, _) = reason {
 					// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
 					// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
 					// have a `Success(None)` reason. In this case we could forget some HTLC
@@ -7636,7 +7636,7 @@ where
 				{
 					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
 					// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
-					let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
+					let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None);
 					mem::swap(outcome, &mut reason);
 					htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
 					require_commitment = true;
@@ -10775,7 +10775,7 @@ where
 			if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
 				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
-				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
+				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None);
 				mem::swap(outcome, &mut reason);
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
 			}
@@ -12550,6 +12550,7 @@ where
 		// The elements of this vector will always be `Some` starting in 0.2,
 		// but we still serialize the option to maintain backwards compatibility
 		let mut preimages: Vec<Option<&PaymentPreimage>> = vec![];
+		let mut success_attribution_data = vec![];
 		let mut pending_outbound_skimmed_fees: Vec<Option<u64>> = Vec::new();
 		let mut pending_outbound_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 
@@ -12575,16 +12576,18 @@ where
 				},
 				&OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref outcome) => {
 					3u8.write(writer)?;
-					if let OutboundHTLCOutcome::Success(preimage) = outcome {
+					if let OutboundHTLCOutcome::Success(preimage, attribution_data) = outcome {
 						preimages.push(Some(preimage));
+						success_attribution_data.push(attribution_data);
 					}
 					let reason: Option<&HTLCFailReason> = outcome.into();
 					reason.write(writer)?;
 				},
 				&OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) => {
 					4u8.write(writer)?;
-					if let OutboundHTLCOutcome::Success(preimage) = outcome {
+					if let OutboundHTLCOutcome::Success(preimage, attribution_data) = outcome {
 						preimages.push(Some(preimage));
+						success_attribution_data.push(attribution_data);
 					}
 					let reason: Option<&HTLCFailReason> = outcome.into();
 					reason.write(writer)?;
@@ -12868,6 +12871,7 @@ where
 			(58, self.interactive_tx_signing_session, option), // Added in 0.2
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
+			(61, success_attribution_data, optional_vec),
 		});
 
 		Ok(())
@@ -12989,7 +12993,7 @@ where
 						let outcome = match option {
 							Some(r) => OutboundHTLCOutcome::Failure(r),
 							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
-							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None),
 						};
 						OutboundHTLCState::RemoteRemoved(outcome)
 					},
@@ -12998,7 +13002,7 @@ where
 						let outcome = match option {
 							Some(r) => OutboundHTLCOutcome::Failure(r),
 							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
-							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None),
 						};
 						OutboundHTLCState::AwaitingRemoteRevokeToRemove(outcome)
 					},
@@ -13007,7 +13011,7 @@ where
 						let outcome = match option {
 							Some(r) => OutboundHTLCOutcome::Failure(r),
 							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
-							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None),
 						};
 						OutboundHTLCState::AwaitingRemovedRemoteRevoke(outcome)
 					},
@@ -13183,6 +13187,7 @@ where
 		// Starting in 0.2, all the elements in this vector will be `Some`, but they are still
 		// serialized as options to maintain backwards compatibility
 		let mut preimages: Vec<Option<PaymentPreimage>> = Vec::new();
+		let mut success_attribution_data: Option<Vec<Option<AttributionData>>> = None;
 
 		// If we read an old Channel, for simplicity we just treat it as "we never sent an
 		// AnnouncementSignatures" which implies we'll re-send it on reconnect, but that's fine.
@@ -13268,23 +13273,32 @@ where
 			(58, interactive_tx_signing_session, option), // Added in 0.2
 			(59, minimum_depth_override, option), // Added in 0.2
 			(60, historical_scids, optional_vec), // Added in 0.2
+			(61, success_attribution_data, optional_vec),
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
 
 		let mut iter = preimages.into_iter();
+		let mut success_attribution_data_iter = success_attribution_data.map(Vec::into_iter);
 		for htlc in pending_outbound_htlcs.iter_mut() {
 			match &mut htlc.state {
 				OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(
 					ref mut preimage,
+					ref mut attribution_data,
 				))
 				| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(
 					ref mut preimage,
+					ref mut attribution_data,
 				)) => {
 					// This variant was initialized like this further above
 					debug_assert_eq!(preimage, &PaymentPreimage([0u8; 32]));
 					// Flatten and unwrap the preimage; they are always set starting in 0.2.
 					*preimage = iter.next().flatten().ok_or(DecodeError::InvalidValue)?;
+
+					*attribution_data = success_attribution_data_iter
+						.as_mut()
+						.and_then(Iterator::next)
+						.ok_or(DecodeError::InvalidValue)?;
 				},
 				_ => {},
 			}
