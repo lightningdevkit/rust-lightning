@@ -98,6 +98,9 @@ pub const OUTPUT_SWEEPER_PERSISTENCE_KEY: &str = "output_sweeper";
 /// updates applied to be current) with another implementation.
 pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 
+/// The default size of monitor where persistence is switched to update based.
+pub const DEFAULT_MONITOR_SIZE_FOR_UPDATES_BYTES: usize = 8192;
+
 /// Provides an interface that allows storage and retrieval of persisted values that are associated
 /// with given keys.
 ///
@@ -502,42 +505,19 @@ where
 	///
 	/// This sets `min_monitor_size_for_updates_bytes` to 8192 bytes (8 KiB), which is a reasonable
 	/// default for most use cases. Monitors smaller than this will be persisted in full rather than
-	/// using update-based persistence. Use [`MonitorUpdatingPersister::new_with_monitor_size_threshold`]
+	/// using update-based persistence. Pass a custom value for `min_monitor_size_for_updates_bytes`
 	/// if you need a custom threshold.
 	pub fn new(
 		kv_store: K, logger: L, maximum_pending_updates: u64, entropy_source: ES,
 		signer_provider: SP, broadcaster: BI, fee_estimator: FE,
-	) -> Self {
-		Self::new_with_monitor_size_threshold(
-			kv_store,
-			logger,
-			maximum_pending_updates,
-			8192,
-			entropy_source,
-			signer_provider,
-			broadcaster,
-			fee_estimator,
-		)
-	}
-
-	/// Constructs a new [`MonitorUpdatingPersister`] with a custom minimum monitor size threshold.
-	///
-	/// The `min_monitor_size_for_updates_bytes` parameter sets the minimum serialized size (in bytes)
-	/// for a [`ChannelMonitor`] to use update-based persistence. Monitors smaller than this threshold
-	/// will always be persisted in full, avoiding the overhead of managing update files for tiny
-	/// monitors. Set to 0 to always use update-based persistence regardless of size.
-	///
-	/// For other parameters, see [`MonitorUpdatingPersister::new`].
-	pub fn new_with_monitor_size_threshold(
-		kv_store: K, logger: L, maximum_pending_updates: u64,
-		min_monitor_size_for_updates_bytes: usize, entropy_source: ES, signer_provider: SP,
-		broadcaster: BI, fee_estimator: FE,
+		min_monitor_size_for_updates_bytes: Option<usize>,
 	) -> Self {
 		MonitorUpdatingPersister {
 			kv_store,
 			logger,
 			maximum_pending_updates,
-			min_monitor_size_for_updates_bytes,
+			min_monitor_size_for_updates_bytes: min_monitor_size_for_updates_bytes
+				.unwrap_or(DEFAULT_MONITOR_SIZE_FOR_UPDATES_BYTES),
 			entropy_source,
 			signer_provider,
 			broadcaster,
@@ -1433,21 +1413,25 @@ mod tests {
 			&chanmon_cfgs[0].keys_manager,
 			&chanmon_cfgs[0].tx_broadcaster,
 			&chanmon_cfgs[0].fee_estimator,
+			None,
 		);
 		// Test the custom threshold constructor with zero threshold
-		let persister_1 = MonitorUpdatingPersister::new_with_monitor_size_threshold(
+		let persister_1 = MonitorUpdatingPersister::new(
 			&store_1,
 			&logger_1,
 			test_max_pending_updates,
-			0, // 0 byte threshold for maximum update usage
 			&chanmon_cfgs[1].keys_manager,
 			&chanmon_cfgs[1].keys_manager,
 			&chanmon_cfgs[1].tx_broadcaster,
 			&chanmon_cfgs[1].fee_estimator,
+			Some(0), // 0 byte threshold for maximum update usage
 		);
 
 		// Verify the constructors set the thresholds correctly
-		assert_eq!(persister_0.min_monitor_size_for_updates_bytes, 8192);
+		assert_eq!(
+			persister_0.min_monitor_size_for_updates_bytes,
+			DEFAULT_MONITOR_SIZE_FOR_UPDATES_BYTES
+		);
 		assert_eq!(persister_1.min_monitor_size_for_updates_bytes, 0);
 		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let chain_mon_0 = test_utils::TestChainMonitor::new(
@@ -1521,30 +1505,30 @@ mod tests {
 
 		// Create a persister with a huge minimum size threshold (100KB)
 		// This should force all monitors to use full persistence instead of updates
-		// Test the new_with_monitor_size_threshold constructor with large threshold
-		let large_threshold_persister = MonitorUpdatingPersister::new_with_monitor_size_threshold(
+		// Test the new constructor with large threshold
+		let large_threshold_persister = MonitorUpdatingPersister::new(
 			&store_0,
 			&logger_0,
 			5,
-			100_000,
 			&chanmon_cfgs[0].keys_manager,
 			&chanmon_cfgs[0].keys_manager,
 			&chanmon_cfgs[0].tx_broadcaster,
 			&chanmon_cfgs[0].fee_estimator,
+			Some(100_000),
 		);
 
 		// Create a persister with zero minimum size threshold
 		// This should allow all monitors to use update-based persistence
-		// Test the new_with_monitor_size_threshold constructor with zero threshold
-		let small_threshold_persister = MonitorUpdatingPersister::new_with_monitor_size_threshold(
+		// Test the new constructor with zero threshold
+		let small_threshold_persister = MonitorUpdatingPersister::new(
 			&store_1,
 			&logger_1,
 			5,
-			0, // allows all monitors to use updates
 			&chanmon_cfgs[1].keys_manager,
 			&chanmon_cfgs[1].keys_manager,
 			&chanmon_cfgs[1].tx_broadcaster,
 			&chanmon_cfgs[1].fee_estimator,
+			Some(0), // allows all monitors to use updates
 		);
 
 		// Verify the constructors set the thresholds correctly
