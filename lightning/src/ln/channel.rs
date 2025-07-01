@@ -13216,13 +13216,8 @@ where
 			match &mut htlc.state {
 				OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(
 					ref mut preimage,
-				)) => {
-					// This variant was initialized like this further above
-					debug_assert_eq!(preimage, &PaymentPreimage([0u8; 32]));
-					// Flatten and unwrap the preimage; they are always set starting in 0.2.
-					*preimage = iter.next().flatten().ok_or(DecodeError::InvalidValue)?;
-				},
-				OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(
+				))
+				| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(
 					ref mut preimage,
 				)) => {
 					// This variant was initialized like this further above
