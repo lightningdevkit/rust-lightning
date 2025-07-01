@@ -7748,7 +7748,8 @@ pub fn test_onion_value_mpp_set_calculation() {
 		assert_eq!(node.node.get_our_node_id(), payment_event.node_id);
 
 		if idx == 0 {
-			// routing node
+			// Manipulate the onion packet for the routing node. Note that we pick a dummy session_priv here. The sender
+			// won't be able to decode fulfill attribution data.
 			let session_priv = [3; 32];
 			let height = nodes[0].best_block_info().1;
 			let session_priv = SecretKey::from_slice(&session_priv).unwrap();

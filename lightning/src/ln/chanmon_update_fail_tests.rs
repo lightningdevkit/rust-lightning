@@ -2890,7 +2890,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		as_raa = Some(get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id));
 	}
 
-	let fulfill_msg = msgs::UpdateFulfillHTLC {
+	let mut fulfill_msg = msgs::UpdateFulfillHTLC {
 		channel_id: chan_id_2,
 		htlc_id: 0,
 		payment_preimage,
@@ -2904,6 +2904,8 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		);
 		check_added_monitors!(nodes[2], 1);
 		get_htlc_update_msgs!(nodes[2], node_b_id);
+	// Note that we don't populate fulfill_msg.attribution_data here, which will lead to hold times being
+	// unavailable.
 	} else {
 		nodes[2].node.claim_funds(payment_preimage);
 		check_added_monitors!(nodes[2], 1);
@@ -2919,6 +2921,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 			fulfill_msg.payment_preimage,
 			cs_updates.update_fulfill_htlcs[0].payment_preimage
 		);
+		fulfill_msg.attribution_data = cs_updates.update_fulfill_htlcs[0].attribution_data.clone();
 	}
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &fulfill_msg);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);

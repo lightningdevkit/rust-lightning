@@ -6148,7 +6148,7 @@ where
 		assert!(!self.context.channel_state.can_generate_new_commitment());
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
 		let fulfill_resp =
-			self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, None, logger);
+			self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, None, None, logger);
 		self.context.latest_monitor_update_id = mon_update_id;
 		if let UpdateFulfillFetch::NewClaim { update_blocked, .. } = fulfill_resp {
 			assert!(update_blocked); // The HTLC must have ended up in the holding cell.
@@ -6157,7 +6157,8 @@ where
 
 	fn get_update_fulfill_htlc<L: Deref>(
 		&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage,
-		payment_info: Option<PaymentClaimDetails>, logger: &L,
+		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
+		logger: &L,
 	) -> UpdateFulfillFetch
 	where
 		L::Target: Logger,
@@ -6272,7 +6273,7 @@ where
 			self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
 				payment_preimage: payment_preimage_arg,
 				htlc_id: htlc_id_arg,
-				attribution_data: None,
+				attribution_data,
 			});
 			return UpdateFulfillFetch::NewClaim {
 				monitor_update,
@@ -6303,7 +6304,7 @@ where
 			);
 			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(
 				payment_preimage_arg.clone(),
-				None,
+				attribution_data,
 			));
 		}
 
@@ -6312,13 +6313,20 @@ where
 
 	pub fn get_update_fulfill_htlc_and_commit<L: Deref>(
 		&mut self, htlc_id: u64, payment_preimage: PaymentPreimage,
-		payment_info: Option<PaymentClaimDetails>, logger: &L,
+		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
+		logger: &L,
 	) -> UpdateFulfillCommitFetch
 	where
 		L::Target: Logger,
 	{
 		let release_cs_monitor = self.context.blocked_monitor_updates.is_empty();
-		match self.get_update_fulfill_htlc(htlc_id, payment_preimage, payment_info, logger) {
+		match self.get_update_fulfill_htlc(
+			htlc_id,
+			payment_preimage,
+			payment_info,
+			attribution_data,
+			logger,
+		) {
 			UpdateFulfillFetch::NewClaim {
 				mut monitor_update,
 				htlc_value_msat,
@@ -6650,7 +6658,7 @@ where
 
 	pub fn update_fulfill_htlc(
 		&mut self, msg: &msgs::UpdateFulfillHTLC,
-	) -> Result<(HTLCSource, u64, Option<u64>), ChannelError> {
+	) -> Result<(HTLCSource, u64, Option<u64>, Option<Duration>), ChannelError> {
 		if self.context.channel_state.is_remote_stfu_sent()
 			|| self.context.channel_state.is_quiescent()
 		{
@@ -6670,8 +6678,9 @@ where
 		}
 
 		let outcome = OutboundHTLCOutcome::Success(msg.payment_preimage);
-		self.mark_outbound_htlc_removed(msg.htlc_id, outcome)
-			.map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
+		self.mark_outbound_htlc_removed(msg.htlc_id, outcome).map(|htlc| {
+			(htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat, htlc.send_timestamp)
+		})
 	}
 
 	#[rustfmt::skip]
@@ -7231,7 +7240,11 @@ where
 						}
 						None
 					},
-					&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, htlc_id, .. } => {
+					&HTLCUpdateAwaitingACK::ClaimHTLC {
+						ref payment_preimage,
+						htlc_id,
+						ref attribution_data,
+					} => {
 						// If an HTLC claim was previously added to the holding cell (via
 						// `get_update_fulfill_htlc`, then generating the claim message itself must
 						// not fail - any in between attempts to claim the HTLC will have resulted
@@ -7242,8 +7255,13 @@ where
 						// `ChannelMonitorUpdate` to the user, making this one redundant, however
 						// there's no harm in including the extra `ChannelMonitorUpdateStep` here.
 						// We do not bother to track and include `payment_info` here, however.
-						let fulfill =
-							self.get_update_fulfill_htlc(htlc_id, *payment_preimage, None, logger);
+						let fulfill = self.get_update_fulfill_htlc(
+							htlc_id,
+							*payment_preimage,
+							None,
+							attribution_data.clone(),
+							logger,
+						);
 						let mut additional_monitor_update =
 							if let UpdateFulfillFetch::NewClaim { monitor_update, .. } = fulfill {
 								monitor_update
@@ -13540,7 +13558,7 @@ where
 	}
 }
 
-fn duration_since_epoch() -> Option<Duration> {
+pub(crate) fn duration_since_epoch() -> Option<Duration> {
 	#[cfg(not(feature = "std"))]
 	let now = None;
 
@@ -13556,7 +13574,7 @@ fn duration_since_epoch() -> Option<Duration> {
 
 /// Returns the time expressed in hold time units (1 unit = 100 ms) that has elapsed between send_timestamp and now. If
 /// any of the arguments are `None`, returns `None`.
-fn hold_time(send_timestamp: Option<Duration>, now: Option<Duration>) -> Option<u32> {
+pub(crate) fn hold_time(send_timestamp: Option<Duration>, now: Option<Duration>) -> Option<u32> {
 	send_timestamp.and_then(|t| {
 		now.map(|now| {
 			let elapsed = now.saturating_sub(t).as_millis() / HOLD_TIME_UNIT_MILLIS;

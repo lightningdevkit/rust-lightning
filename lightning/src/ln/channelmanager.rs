@@ -58,12 +58,12 @@ use crate::events::{
 use crate::events::{FundingInfo, PaidBolt12Invoice};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
-use crate::ln::channel::PendingV2Channel;
 use crate::ln::channel::{
-	self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, InboundV1Channel,
+	self, hold_time, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, InboundV1Channel,
 	OutboundV1Channel, ReconnectionMsg, ShutdownResult, UpdateFulfillCommitFetch,
 	WithChannelContext,
 };
+use crate::ln::channel::{duration_since_epoch, PendingV2Channel};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::inbound_payment;
 use crate::ln::msgs;
@@ -77,6 +77,7 @@ use crate::ln::onion_payment::{
 	NextPacketDetails,
 };
 use crate::ln::onion_utils::{self};
+use crate::ln::onion_utils::{process_fulfill_attribution_data, AttributionData};
 use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason};
 use crate::ln::our_peer_storage::EncryptedOurPeerStorage;
 #[cfg(test)]
@@ -7938,10 +7939,30 @@ where
 						pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
 					}
 				});
+
+				// Create new attribution data as the final hop. Always report a zero hold time, because reporting a
+				// non-zero value will not make a difference in the penalty that may be applied by the sender. If there
+				// is a phantom hop, we need to double-process.
+				let attribution_data =
+					if let Some(phantom_secret) = htlc.prev_hop.phantom_shared_secret {
+						let attribution_data =
+							process_fulfill_attribution_data(None, &phantom_secret, 0);
+						Some(attribution_data)
+					} else {
+						None
+					};
+
+				let attribution_data = process_fulfill_attribution_data(
+					attribution_data.as_ref(),
+					&htlc.prev_hop.incoming_packet_shared_secret,
+					0,
+				);
+
 				self.claim_funds_from_hop(
 					htlc.prev_hop,
 					payment_preimage,
 					payment_info.clone(),
+					Some(attribution_data),
 					|_, definitely_duplicate| {
 						debug_assert!(
 							!definitely_duplicate,
@@ -7986,7 +8007,8 @@ where
 		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
-		payment_info: Option<PaymentClaimDetails>, completion_action: ComplFunc,
+		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
+		completion_action: ComplFunc,
 	) {
 		let counterparty_node_id = prev_hop.counterparty_node_id.or_else(|| {
 			let short_to_chan_info = self.short_to_chan_info.read().unwrap();
@@ -7999,7 +8021,13 @@ where
 			channel_id: prev_hop.channel_id,
 			htlc_id: prev_hop.htlc_id,
 		};
-		self.claim_mpp_part(htlc_source, payment_preimage, payment_info, completion_action)
+		self.claim_mpp_part(
+			htlc_source,
+			payment_preimage,
+			payment_info,
+			attribution_data,
+			completion_action,
+		)
 	}
 
 	fn claim_mpp_part<
@@ -8009,7 +8037,8 @@ where
 		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
-		payment_info: Option<PaymentClaimDetails>, completion_action: ComplFunc,
+		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
+		completion_action: ComplFunc,
 	) {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 
@@ -8050,6 +8079,7 @@ where
 						prev_hop.htlc_id,
 						payment_preimage,
 						payment_info,
+						attribution_data,
 						&&logger,
 					);
 
@@ -8258,7 +8288,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
 		next_channel_outpoint: OutPoint, next_channel_id: ChannelId,
-		next_user_channel_id: Option<u128>,
+		next_user_channel_id: Option<u128>, attribution_data: Option<&AttributionData>,
+		send_timestamp: Option<Duration>,
 	) {
 		match source {
 			HTLCSource::OutboundRoute {
@@ -8290,10 +8321,25 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let prev_node_id = hop_data.counterparty_node_id;
 				let completed_blocker =
 					RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
+
+				// Obtain hold time, if available.
+				let now = duration_since_epoch();
+				let hold_time = hold_time(send_timestamp, now).unwrap_or(0);
+
+				// If attribution data was received from downstream, we shift it and get it ready for adding our hold
+				// time. Note that fulfilled HTLCs take a fast path to the incoming side. We don't need to wait for RAA
+				// to record the hold time like we do for failed HTLCs.
+				let attribution_data = process_fulfill_attribution_data(
+					attribution_data,
+					&hop_data.incoming_packet_shared_secret,
+					hold_time,
+				);
+
 				self.claim_funds_from_hop(
 					hop_data,
 					payment_preimage,
 					None,
+					Some(attribution_data),
 					|htlc_claim_value_msat, definitely_duplicate| {
 						let chan_to_release = Some(EventUnblockedChannel {
 							counterparty_node_id: next_channel_counterparty_node_id,
@@ -9852,7 +9898,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		let funding_txo;
 		let next_user_channel_id;
-		let (htlc_source, forwarded_htlc_value, skimmed_fee_msat) = {
+		let (htlc_source, forwarded_htlc_value, skimmed_fee_msat, send_timestamp) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 				debug_assert!(false);
@@ -9907,6 +9953,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			funding_txo,
 			msg.channel_id,
 			Some(next_user_channel_id),
+			msg.attribution_data.as_ref(),
+			send_timestamp,
 		);
 
 		Ok(())
@@ -10800,6 +10848,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								"Claiming HTLC with preimage {} from our monitor",
 								preimage
 							);
+							// Claim the funds from the previous hop, if there is one. Because this is in response to a
+							// chain event, no attribution data is available.
 							self.claim_funds_internal(
 								htlc_update.source,
 								preimage,
@@ -10810,6 +10860,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								counterparty_node_id,
 								funding_outpoint,
 								channel_id,
+								None,
+								None,
 								None,
 							);
 						} else {
@@ -16677,9 +16729,13 @@ where
 							// Note that we don't need to pass the `payment_info` here - its
 							// already (clearly) durably on disk in the `ChannelMonitor` so there's
 							// no need to worry about getting it into others.
+							//
+							// We don't encode any attribution data, because the required onion shared secret isn't
+							// available here.
 							channel_manager.claim_mpp_part(
 								part.into(),
 								payment_preimage,
+								None,
 								None,
 								|_, _| {
 									(
@@ -16825,6 +16881,7 @@ where
 			// We use `downstream_closed` in place of `from_onchain` here just as a guess - we
 			// don't remember in the `ChannelMonitor` where we got a preimage from, but if the
 			// channel is closed we just assume that it probably came from an on-chain claim.
+			// The same holds for attribution data. We don't have any, so we pass an empty one.
 			channel_manager.claim_funds_internal(
 				source,
 				preimage,
@@ -16835,6 +16892,8 @@ where
 				downstream_node_id,
 				downstream_funding,
 				downstream_channel_id,
+				None,
+				None,
 				None,
 			);
 		}
