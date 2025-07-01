@@ -4751,8 +4751,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			log_trace!(logger, "Best block re-orged, replaced with new block {} at height {}", block_hash, height);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
 			let conf_target = self.closure_conf_target();
-			self.onchain_tx_handler.block_disconnected(
-				height + 1, broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
+			self.onchain_tx_handler.blocks_disconnected(
+				height, broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
 			);
 			Vec::new()
 		} else { Vec::new() }
@@ -5127,8 +5127,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let conf_target = self.closure_conf_target();
-		self.onchain_tx_handler.block_disconnected(
-			new_height + 1, broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator, logger
+		self.onchain_tx_handler.blocks_disconnected(
+			new_height, broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator, logger
 		);
 
 		self.best_block = fork_point;
