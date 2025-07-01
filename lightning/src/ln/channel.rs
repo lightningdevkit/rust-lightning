@@ -7478,12 +7478,9 @@ where
 					);
 					// We really want take() here, but, again, non-mut ref :(
 					if let OutboundHTLCOutcome::Failure(mut reason) = outcome.clone() {
-						if let (Some(timestamp), Some(now)) = (htlc.send_timestamp, now) {
-							let elapsed_millis = now.saturating_sub(timestamp).as_millis();
-							let elapsed_units = elapsed_millis / HOLD_TIME_UNIT_MILLIS;
-							let hold_time = u32::try_from(elapsed_units).unwrap_or(u32::MAX);
+						hold_time(htlc.send_timestamp, now).map(|hold_time| {
 							reason.set_hold_time(hold_time);
-						}
+						});
 
 						revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
 					} else {
@@ -13538,6 +13535,17 @@ fn duration_since_epoch() -> Option<Duration> {
 	);
 
 	now
+}
+
+/// Returns the time expressed in hold time units (1 unit = 100 ms) that has elapsed between send_timestamp and now. If
+/// any of the arguments are `None`, returns `None`.
+fn hold_time(send_timestamp: Option<Duration>, now: Option<Duration>) -> Option<u32> {
+	send_timestamp.and_then(|t| {
+		now.map(|now| {
+			let elapsed = now.saturating_sub(t).as_millis() / HOLD_TIME_UNIT_MILLIS;
+			u32::try_from(elapsed).unwrap_or(u32::MAX)
+		})
+	})
 }
 
 #[cfg(test)]
