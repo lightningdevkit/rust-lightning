@@ -1127,15 +1127,15 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		}
 
 		if let Some(height) = height {
-			self.block_disconnected(
-				height, broadcaster, conf_target, destination_script, fee_estimator, logger,
+			self.blocks_disconnected(
+				height - 1, broadcaster, conf_target, destination_script, fee_estimator, logger,
 			);
 		}
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn block_disconnected<B: Deref, F: Deref, L: Logger>(
-		&mut self, height: u32, broadcaster: &B, conf_target: ConfirmationTarget,
+	pub(super) fn blocks_disconnected<B: Deref, F: Deref, L: Logger>(
+		&mut self, new_best_height: u32, broadcaster: &B, conf_target: ConfirmationTarget,
 		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	)
 		where B::Target: BroadcasterInterface,
@@ -1145,21 +1145,21 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		let onchain_events_awaiting_threshold_conf =
 			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
 		for entry in onchain_events_awaiting_threshold_conf {
-			if entry.height >= height {
+			if entry.height > new_best_height {
 				//- our claim tx on a commitment tx output
 				//- resurect outpoint back in its claimable set and regenerate tx
 				match entry.event {
 					OnchainEvent::ContentiousOutpoint { package } => {
 						// We pass 0 to `package_locktime` to get the actual required locktime.
 						let package_locktime = package.package_locktime(0);
-						if package_locktime >= height {
+						if package_locktime > new_best_height {
 							self.locktimed_packages.entry(package_locktime).or_default().push(package);
 							continue;
 						}
 
 						if let Some(pending_claim) = self.claimable_outpoints.get(package.outpoints()[0]) {
 							if let Some(request) = self.pending_claim_requests.get_mut(&pending_claim.0) {
-								assert!(request.merge_package(package, height).is_ok());
+								assert!(request.merge_package(package, new_best_height + 1).is_ok());
 								// Using a HashMap guarantee us than if we have multiple outpoints getting
 								// resurrected only one bump claim tx is going to be broadcast
 								bump_candidates.insert(pending_claim.clone(), request.clone());
@@ -1173,10 +1173,8 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			}
 		}
 		for ((_claim_id, _), ref mut request) in bump_candidates.iter_mut() {
-			// `height` is the height being disconnected, so our `current_height` is 1 lower.
-			let current_height = height - 1;
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(
-				current_height, &request, &FeerateStrategy::ForceBump, conf_target,
+				new_best_height, &request, &FeerateStrategy::ForceBump, conf_target,
 				destination_script, fee_estimator, logger
 			) {
 				request.set_timer(new_timer);
@@ -1210,9 +1208,9 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		// right now if one of the outpoint get disconnected, just erase whole pending claim request.
 		let mut remove_request = Vec::new();
 		self.claimable_outpoints.retain(|_, ref v|
-			if v.1 >= height {
-			remove_request.push(v.0.clone());
-			false
+			if v.1 > new_best_height {
+				remove_request.push(v.0.clone());
+				false
 			} else { true });
 		for req in remove_request {
 			self.pending_claim_requests.remove(&req);
