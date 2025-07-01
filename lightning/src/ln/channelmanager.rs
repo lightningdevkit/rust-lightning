@@ -11348,7 +11348,8 @@ where
 	/// If the wallet supports paying on-chain schemes, you should instead use
 	/// [`OMNameResolver::resolve_name`] and [`OMNameResolver::handle_dnssec_proof_for_uri`] (by
 	/// implementing [`DNSResolverMessageHandler`]) directly to look up a URI and then delegate to
-	/// your normal URI handling.
+	/// your normal URI handling. The `bitcoin-payment-instructions` crate provides an
+	/// implementation of much of this logic.
 	///
 	/// # Payment
 	///
