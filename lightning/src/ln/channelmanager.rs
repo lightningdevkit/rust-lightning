@@ -12538,6 +12538,9 @@ where
 	/// implementing [`DNSResolverMessageHandler`]) directly to look up a URI and then delegate to
 	/// your normal URI handling.
 	///
+	/// Alternatively, the [`bitcoin-payment-instructions`] crate provides an implementation of
+	/// much of this logic, and may be useful to decode and resolve payment instructions generally.
+	///
 	/// # Payment
 	///
 	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
@@ -12560,9 +12563,9 @@ where
 	///
 	/// [BIP 353]: https://github.com/bitcoin/bips/blob/master/bip-0353.mediawiki
 	/// [bLIP 32]: https://github.com/lightning/blips/blob/master/blip-0032.md
-	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [`OMNameResolver::resolve_name`]: crate::onion_message::dns_resolution::OMNameResolver::resolve_name
 	/// [`OMNameResolver::handle_dnssec_proof_for_uri`]: crate::onion_message::dns_resolution::OMNameResolver::handle_dnssec_proof_for_uri
+	/// [`bitcoin-payment-instructions`]: https://docs.rs/bitcoin-payment-instructions/
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	/// [`PaymentFailureReason::UserAbandoned`]: crate::events::PaymentFailureReason::UserAbandoned
