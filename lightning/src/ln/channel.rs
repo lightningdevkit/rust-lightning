@@ -40,7 +40,7 @@ use crate::ln::chan_utils;
 #[cfg(splicing)]
 use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 use crate::ln::chan_utils::{
-	commit_tx_fee_sat, get_commitment_transaction_number_obscure_factor, htlc_success_tx_weight,
+	get_commitment_transaction_number_obscure_factor, htlc_success_tx_weight,
 	htlc_timeout_tx_weight, max_htlcs, ChannelPublicKeys, ChannelTransactionParameters,
 	ClosingTransaction, CommitmentTransaction, CounterpartyChannelTransactionParameters,
 	CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HolderCommitmentTransaction,
@@ -69,6 +69,7 @@ use crate::ln::script::{self, ShutdownScript};
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::NodeId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::tx_builder::{SpecTxBuilder, TxBuilder};
 use crate::sign::{ChannelSigner, EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage};
@@ -3124,12 +3125,12 @@ where
 			0
 		};
 		let funders_amount_msat = open_channel_fields.funding_satoshis * 1000 - msg_push_msat;
-		let commitment_tx_fee = commit_tx_fee_sat(open_channel_fields.commitment_feerate_sat_per_1000_weight, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
-		if (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value) < commitment_tx_fee {
-			return Err(ChannelError::close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value), commitment_tx_fee)));
+		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(open_channel_fields.commitment_feerate_sat_per_1000_weight, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
+		if (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value) < commit_tx_fee_sat {
+			return Err(ChannelError::close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value), commit_tx_fee_sat)));
 		}
 
-		let to_remote_satoshis = funders_amount_msat / 1000 - commitment_tx_fee - anchor_outputs_value;
+		let to_remote_satoshis = funders_amount_msat / 1000 - commit_tx_fee_sat - anchor_outputs_value;
 		// While it's reasonable for us to not meet the channel reserve initially (if they don't
 		// want to push much to us), our counterparty should always have more than our reserve.
 		if to_remote_satoshis < holder_selected_channel_reserve_satoshis {
@@ -3402,9 +3403,9 @@ where
 			};
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
-		let commitment_tx_fee = commit_tx_fee_sat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type) * 1000;
-		if value_to_self_msat.saturating_sub(anchor_outputs_value_msat) < commitment_tx_fee {
-			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commitment_tx_fee / 1000) });
+		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
+		if value_to_self_msat.saturating_sub(anchor_outputs_value_msat) < commit_tx_fee_sat * 1000 {
+			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commit_tx_fee_sat) });
 		}
 
 		let mut secp_ctx = Secp256k1::new();
@@ -4504,7 +4505,7 @@ where
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat);
 		}
 
-		let commit_tx_fee_sat = commit_tx_fee_sat(feerate_per_kw, non_dust_htlc_count + fee_buffer_nondust_htlcs.unwrap_or(0), &funding.channel_transaction_parameters.channel_type_features);
+		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(feerate_per_kw, non_dust_htlc_count + fee_buffer_nondust_htlcs.unwrap_or(0), &funding.channel_transaction_parameters.channel_type_features);
 		let total_anchors_sat = if funding.channel_transaction_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 
 		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
@@ -4753,7 +4754,7 @@ where
 		{
 			let counterparty_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
 			let holder_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
-			for ref htlc in context.pending_inbound_htlcs.iter() {
+			for htlc in context.pending_inbound_htlcs.iter() {
 				pending_inbound_htlcs_value_msat += htlc.amount_msat;
 				if htlc.amount_msat / 1000 < counterparty_dust_limit_timeout_sat {
 					on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
@@ -4773,7 +4774,7 @@ where
 		{
 			let counterparty_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
 			let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
-			for ref htlc in context.pending_outbound_htlcs.iter() {
+			for htlc in context.pending_outbound_htlcs.iter() {
 				pending_outbound_htlcs_value_msat += htlc.amount_msat;
 				if htlc.amount_msat / 1000 < counterparty_dust_limit_success_sat {
 					on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
@@ -4810,10 +4811,14 @@ where
 			.unwrap_or(self.feerate_per_kw)
 			.checked_sub(dust_exposure_limiting_feerate);
 		let extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat = excess_feerate_opt.map(|excess_feerate| {
-			let extra_htlc_dust_exposure = on_counterparty_tx_dust_exposure_msat
-				+ chan_utils::commit_and_htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type()) * 1000;
-			on_counterparty_tx_dust_exposure_msat
-				+= chan_utils::commit_and_htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs, on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type()) * 1000;
+			let extra_htlc_commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1 + on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
+			let extra_htlc_htlc_tx_fees_sat = chan_utils::htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
+
+			let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
+			let htlc_tx_fees_sat = chan_utils::htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs, on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
+
+			let extra_htlc_dust_exposure = on_counterparty_tx_dust_exposure_msat + (extra_htlc_commit_tx_fee_sat + extra_htlc_htlc_tx_fees_sat) * 1000;
+			on_counterparty_tx_dust_exposure_msat += (commit_tx_fee_sat + htlc_tx_fees_sat) * 1000;
 			extra_htlc_dust_exposure
 		});
 
@@ -5158,12 +5163,12 @@ where
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000;
+		let commit_tx_fee_msat = SpecTxBuilder {}.commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000;
 		#[cfg(any(test, fuzzing))]
 		{
-			let mut fee = res;
+			let mut fee = commit_tx_fee_msat;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, funding.get_channel_type()) * 1000;
+				fee = SpecTxBuilder {}.commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, funding.get_channel_type()) * 1000;
 			}
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len()
 				+ context.holding_cell_htlc_updates.len();
@@ -5182,7 +5187,7 @@ where
 			};
 			*funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = Some(commitment_tx_info);
 		}
-		res
+		commit_tx_fee_msat
 	}
 
 	/// Get the commitment tx fee for the remote's next commitment transaction based on the number of
@@ -5256,12 +5261,12 @@ where
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000;
+		let commit_tx_fee_msat = SpecTxBuilder {}.commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000;
 		#[cfg(any(test, fuzzing))]
 		if let Some(htlc) = &htlc {
-			let mut fee = res;
+			let mut fee = commit_tx_fee_msat;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, funding.get_channel_type()) * 1000;
+				fee = SpecTxBuilder {}.commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, funding.get_channel_type()) * 1000;
 			}
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len();
 			let commitment_tx_info = CommitmentTxInfoCached {
@@ -5279,7 +5284,7 @@ where
 			};
 			*funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = Some(commitment_tx_info);
 		}
-		res
+		commit_tx_fee_msat
 	}
 
 	#[rustfmt::skip]
@@ -10574,8 +10579,7 @@ where
 						&& info.next_holder_htlc_id == self.context.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.context.next_counterparty_htlc_id
 						&& info.feerate == self.context.feerate_per_kw {
-							let actual_fee = commit_tx_fee_sat(self.context.feerate_per_kw, counterparty_commitment_tx.nondust_htlcs().len(), self.funding.get_channel_type()) * 1000;
-							assert_eq!(actual_fee, info.fee);
+							assert_eq!(commitment_data.stats.commit_tx_fee_sat, info.fee);
 						}
 				}
 			}
@@ -13194,11 +13198,13 @@ mod tests {
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 	use crate::chain::transaction::OutPoint;
 	use crate::chain::BestBlock;
-	use crate::ln::chan_utils::{self, htlc_success_tx_weight, htlc_timeout_tx_weight};
+	use crate::ln::chan_utils::{
+		self, commit_tx_fee_sat, htlc_success_tx_weight, htlc_timeout_tx_weight,
+	};
 	use crate::ln::channel::{
-		commit_tx_fee_sat, AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate,
-		HTLCInitiator, HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState,
-		InboundV1Channel, OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel,
+		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate, HTLCInitiator,
+		HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState, InboundV1Channel,
+		OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel,
 	};
 	use crate::ln::channel::{
 		MAX_FUNDING_SATOSHIS_NO_WUMBO, MIN_THEIR_CHAN_RESERVE_SATOSHIS,

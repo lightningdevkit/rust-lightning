@@ -78,6 +78,7 @@ pub(crate) mod type_resolver;
 pub mod ecdsa;
 #[cfg(taproot)]
 pub mod taproot;
+pub mod tx_builder;
 
 /// Information about a spendable output to a P2WSH script.
 ///
