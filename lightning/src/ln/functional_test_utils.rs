@@ -2862,11 +2862,13 @@ macro_rules! expect_payment_claimed {
 	};
 }
 
+/// Inspect events to assert that a payment was sent. If this was a BOLT 12 payment, the BOLT 12 invoice is returned. If
+/// per-path claims are expected, the events for each path are returned as well.
 pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 	node: &H, expected_payment_preimage: PaymentPreimage,
 	expected_fee_msat_opt: Option<Option<u64>>, expect_per_path_claims: bool,
 	expect_post_ev_mon_update: bool,
-) -> Option<PaidBolt12Invoice> {
+) -> (Option<PaidBolt12Invoice>, Vec<Event>) {
 	let events = node.node().get_and_clear_pending_events();
 	let expected_payment_hash = PaymentHash(
 		bitcoin::hashes::sha256::Hash::hash(&expected_payment_preimage.0).to_byte_array(),
@@ -2881,6 +2883,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 	}
 	// We return the invoice because some test may want to check the invoice details.
 	let invoice;
+	let mut path_events = Vec::new();
 	let expected_payment_id = match events[0] {
 		Event::PaymentSent {
 			ref payment_id,
@@ -2909,12 +2912,14 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 				Event::PaymentPathSuccessful { payment_id, payment_hash, .. } => {
 					assert_eq!(payment_id, expected_payment_id);
 					assert_eq!(payment_hash, Some(expected_payment_hash));
+
+					path_events.push(events[i].clone());
 				},
 				_ => panic!("Unexpected event"),
 			}
 		}
 	}
-	invoice
+	(invoice, path_events)
 }
 
 #[macro_export]
@@ -3926,7 +3931,9 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 
 	expected_total_fee_msat
 }
-pub fn claim_payment_along_route(args: ClaimAlongRouteArgs) -> Option<PaidBolt12Invoice> {
+pub fn claim_payment_along_route(
+	args: ClaimAlongRouteArgs,
+) -> (Option<PaidBolt12Invoice>, Vec<Event>) {
 	let origin_node = args.origin_node;
 	let payment_preimage = args.payment_preimage;
 	let skip_last = args.skip_last;
@@ -3934,7 +3941,7 @@ pub fn claim_payment_along_route(args: ClaimAlongRouteArgs) -> Option<PaidBolt12
 	if !skip_last {
 		expect_payment_sent!(origin_node, payment_preimage, Some(expected_total_fee_msat))
 	} else {
-		None
+		(None, Vec::new())
 	}
 }
 
@@ -3947,6 +3954,7 @@ pub fn claim_payment<'a, 'b, 'c>(
 		&[expected_route],
 		our_payment_preimage,
 	))
+	.0
 }
 
 pub const TEST_FINAL_CLTV: u32 = 70;
