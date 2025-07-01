@@ -687,6 +687,53 @@ impl Readable for InterceptId {
 	}
 }
 
+/// Optional arguments to [`ChannelManager::pay_for_offer`]
+#[cfg_attr(
+	feature = "dnssec",
+	doc = "and [`ChannelManager::pay_for_offer_from_human_readable_name`]"
+)]
+/// .
+///
+/// These fields will often not need to be set, and the provided [`Self::default`] can be used.
+pub struct OptionalOfferPaymentInfo {
+	/// The quantity of the offer which we wish to pay for. This is communicated to the recipient
+	/// and determines the minimum value which we must pay.
+	///
+	/// This must be set if we're paying for an offer that has [`Offer::expects_quantity`].
+	///
+	#[cfg_attr(
+		feature = "dnssec",
+		doc = "Note that setting this will cause [`ChannelManager::pay_for_offer_from_human_readable_name`] to fail."
+	)]
+	pub quantity: Option<u64>,
+	/// A note which is communicated to the recipient about this payment via
+	/// [`InvoiceRequest::payer_note`].
+	pub payer_note: Option<String>,
+	/// Pathfinding options which tweak how the path is constructed to the recipient.
+	pub route_params_config: RouteParametersConfig,
+	/// The number of tries or time during which we'll retry this payment if some paths to the
+	/// recipient fail.
+	///
+	/// Once the retry limit is reached, further path failures will not be retried and the payment
+	/// will ultimately fail once all pending paths have failed (generating an
+	/// [`Event::PaymentFailed`]).
+	pub retry_strategy: Retry,
+}
+
+impl Default for OptionalOfferPaymentInfo {
+	fn default() -> Self {
+		Self {
+			quantity: None,
+			payer_note: None,
+			route_params_config: Default::default(),
+			#[cfg(feature = "std")]
+			retry_strategy: Retry::Timeout(core::time::Duration::from_secs(2)),
+			#[cfg(not(feature = "std"))]
+			retry_strategy: Retry::Attempts(3),
+		}
+	}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Uniquely describes an HTLC by its source. Just the guaranteed-unique subset of [`HTLCSource`].
 pub(crate) enum SentHTLCId {
@@ -2256,18 +2303,16 @@ where
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
 /// # use lightning::offers::offer::Offer;
-/// # use lightning::routing::router::RouteParametersConfig;
 /// #
 /// # fn example<T: AChannelManager>(
-/// #     channel_manager: T, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
-/// #     payer_note: Option<String>, retry: Retry, route_params_config: RouteParametersConfig
+/// #     channel_manager: T, offer: &Offer, amount_msats: Option<u64>,
 /// # ) {
 /// # let channel_manager = channel_manager.get_cm();
 /// let payment_id = PaymentId([42; 32]);
 /// match channel_manager.pay_for_offer(
-///     offer, quantity, amount_msats, payer_note, payment_id, retry, route_params_config
+///     offer, amount_msats, payment_id, Default::default(),
 /// ) {
 ///     Ok(()) => println!("Requesting invoice for offer"),
 ///     Err(e) => println!("Unable to request invoice for offer: {:?}", e),
@@ -5023,6 +5068,9 @@ where
 
 	/// Sends a payment to the route found using the provided [`RouteParameters`], retrying failed
 	/// payment paths based on the provided `Retry`.
+	///
+	/// You should likely prefer [`Self::pay_for_bolt11_invoice`] or [`Self::pay_for_offer`] in
+	/// general, however this method may allow for slightly more customization.
 	///
 	/// May generate [`UpdateHTLCs`] message(s) event on success, which should be relayed (e.g. via
 	/// [`PeerManager::process_events`]).
@@ -11128,16 +11176,9 @@ where
 	///
 	/// Uses [`InvoiceRequestBuilder`] such that the [`InvoiceRequest`] it builds is recognized by
 	/// the [`ChannelManager`] when handling a [`Bolt12Invoice`] message in response to the request.
-	/// The optional parameters are used in the builder, if `Some`:
-	/// - `quantity` for [`InvoiceRequest::quantity`] which must be set if
-	///   [`Offer::expects_quantity`] is `true`.
-	/// - `amount_msats` if overpaying what is required for the given `quantity` is desired, and
-	/// - `payer_note` for [`InvoiceRequest::payer_note`].
 	///
-	/// # Custom Routing Parameters
-	///
-	/// Users can customize routing parameters via [`RouteParametersConfig`].
-	/// To use default settings, call the function with [`RouteParametersConfig::default`].
+	/// `amount_msats` allows you to overpay what is required to satisfy the offer, or may be
+	/// required if the offer does not require a specific amount.
 	///
 	/// # Payment
 	///
@@ -11179,9 +11220,8 @@ where
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn pay_for_offer(
-		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
-		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
-		route_params_config: RouteParametersConfig,
+		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
+		optional_info: OptionalOfferPaymentInfo,
 	) -> Result<(), Bolt12SemanticError> {
 		let create_pending_payment_fn = |invoice_request: &InvoiceRequest, nonce| {
 			let expiration = StaleExpiration::TimerTicks(1);
@@ -11194,8 +11234,8 @@ where
 				.add_new_awaiting_invoice(
 					payment_id,
 					expiration,
-					retry_strategy,
-					route_params_config,
+					optional_info.retry_strategy,
+					optional_info.route_params_config,
 					Some(retryable_invoice_request),
 				)
 				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
@@ -11203,9 +11243,9 @@ where
 
 		self.pay_for_offer_intern(
 			offer,
-			quantity,
+			optional_info.quantity,
 			amount_msats,
-			payer_note,
+			optional_info.payer_note,
 			payment_id,
 			None,
 			create_pending_payment_fn,
@@ -11313,11 +11353,6 @@ where
 	/// implementing [`DNSResolverMessageHandler`]) directly to look up a URI and then delegate to
 	/// your normal URI handling.
 	///
-	/// # Custom Routing Parameters
-	///
-	/// Users can customize routing parameters via [`RouteParametersConfig`].
-	/// To use default settings, call the function with [`RouteParametersConfig::default`].
-	///
 	/// # Payment
 	///
 	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
@@ -11345,6 +11380,7 @@ where
 	///
 	/// Errors if:
 	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
+	/// - [`OptionalOfferPaymentInfo.quantity`] is set.
 	///
 	/// [BIP 353]: https://github.com/bitcoin/bips/blob/master/bip-0353.mediawiki
 	/// [bLIP 32]: https://github.com/lightning/blips/blob/master/blip-0032.md
@@ -11358,9 +11394,12 @@ where
 	#[cfg(feature = "dnssec")]
 	pub fn pay_for_offer_from_human_readable_name(
 		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
-		payer_note: Option<String>, retry_strategy: Retry,
-		route_params_config: RouteParametersConfig, dns_resolvers: Vec<Destination>,
+		optional_info: OptionalOfferPaymentInfo, dns_resolvers: Vec<Destination>,
 	) -> Result<(), ()> {
+		if optional_info.quantity.is_some() {
+			return Err(());
+		}
+
 		let (onion_message, context) =
 			self.flow.hrn_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
 
@@ -11368,10 +11407,10 @@ where
 		self.pending_outbound_payments.add_new_awaiting_offer(
 			payment_id,
 			expiration,
-			retry_strategy,
-			route_params_config,
+			optional_info.retry_strategy,
+			optional_info.route_params_config,
 			amount_msats,
-			payer_note,
+			optional_info.payer_note,
 		)?;
 
 		self.flow
