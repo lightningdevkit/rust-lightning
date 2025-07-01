@@ -12303,12 +12303,6 @@ where
 	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
 	/// to construct a [`BlindedMessagePath`] for the reply path.
 	///
-	/// # Limitations
-	///
-	/// Requires a direct connection to an introduction node in [`Offer::paths`] or to
-	/// [`Offer::issuer_signing_pubkey`], if empty. A similar restriction applies to the responding
-	/// [`Bolt12Invoice::payment_paths`].
-	///
 	/// # Errors
 	///
 	/// Errors if:
@@ -12521,12 +12515,6 @@ where
 	///
 	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
 	/// to construct a [`BlindedMessagePath`] for the reply path.
-	///
-	/// # Limitations
-	///
-	/// Requires a direct connection to the given [`Destination`] as well as an introduction node in
-	/// [`Offer::paths`] or to [`Offer::issuer_signing_pubkey`], if empty. A similar restriction applies to
-	/// the responding [`Bolt12Invoice::payment_paths`].
 	///
 	/// # Errors
 	///
