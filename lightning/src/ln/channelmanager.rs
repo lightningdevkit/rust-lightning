@@ -11467,8 +11467,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the offer based on the given
 	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications as well as those of the parameterized [`Router`], which implements
-	/// [`MessageRouter`].
+	/// privacy implications.
 	///
 	/// Also, uses a derived signing pubkey in the offer for recipient privacy.
 	///
@@ -11519,8 +11518,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	///
 	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the refund based on the given
 	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications as well as those of the parameterized [`Router`], which implements
-	/// [`MessageRouter`].
+	/// privacy implications.
 	///
 	/// Also, uses a derived payer id in the refund for payer privacy.
 	///
@@ -11716,8 +11714,7 @@ where
 	/// # Privacy
 	///
 	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
-	/// to construct a [`BlindedMessagePath`] for the reply path. For further privacy implications, see the
-	/// docs of the parameterized [`Router`], which implements [`MessageRouter`].
+	/// to construct a [`BlindedMessagePath`] for the reply path.
 	///
 	/// # Limitations
 	///
@@ -11896,8 +11893,7 @@ where
 	/// # Privacy
 	///
 	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
-	/// to construct a [`BlindedMessagePath`] for the reply path. For further privacy implications, see the
-	/// docs of the parameterized [`Router`], which implements [`MessageRouter`].
+	/// to construct a [`BlindedMessagePath`] for the reply path.
 	///
 	/// # Limitations
 	///

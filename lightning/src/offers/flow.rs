@@ -575,8 +575,7 @@ where
 	///
 	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the offer based on the given
 	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications, as well as those of the parameterized [`Router`], which implements
-	/// [`MessageRouter`].
+	/// privacy implications.
 	///
 	/// Also uses a derived signing pubkey in the offer for recipient privacy.
 	///
