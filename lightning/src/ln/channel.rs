@@ -1130,10 +1130,12 @@ struct CommitmentData<'a> {
 
 /// A struct gathering stats on a commitment transaction, either local or remote.
 struct CommitmentStats {
-	total_fee_sat: u64,     // the total fee included in the transaction
-	total_anchors_sat: u64, // the sum of the anchors' amounts
-	local_balance_before_fee_anchors_msat: u64, // local balance before fees and anchors *not* considering dust limits
-	remote_balance_before_fee_anchors_msat: u64, // remote balance before fees and anchors *not* considering dust limits
+	/// The total fee included in the commitment transaction
+	commit_tx_fee_sat: u64,
+	/// The local balance before fees *not* considering dust limits
+	local_balance_before_fee_msat: u64,
+	/// The remote balance before fees *not* considering dust limits
+	remote_balance_before_fee_msat: u64,
 }
 
 /// Used when calculating whether we or the remote can afford an additional HTLC.
@@ -4235,7 +4237,7 @@ where
 		if update_fee {
 			debug_assert!(!funding.is_outbound());
 			let counterparty_reserve_we_require_msat = funding.holder_selected_channel_reserve_satoshis * 1000;
-			if commitment_data.stats.remote_balance_before_fee_anchors_msat < commitment_data.stats.total_fee_sat * 1000 + commitment_data.stats.total_anchors_sat * 1000 + counterparty_reserve_we_require_msat {
+			if commitment_data.stats.remote_balance_before_fee_msat < commitment_data.stats.commit_tx_fee_sat * 1000 + counterparty_reserve_we_require_msat {
 				return Err(ChannelError::close("Funding remote cannot afford proposed new fee".to_owned()));
 			}
 		}
@@ -4251,7 +4253,7 @@ where
 						&& info.next_holder_htlc_id == self.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.next_counterparty_htlc_id
 						&& info.feerate == self.feerate_per_kw {
-							assert_eq!(commitment_data.stats.total_fee_sat, info.fee / 1000);
+							assert_eq!(commitment_data.stats.commit_tx_fee_sat, info.fee / 1000);
 						}
 				}
 			}
@@ -4327,8 +4329,8 @@ where
 			&holder_commitment_point.current_point(), true, true, logger,
 		);
 		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_data.tx.nondust_htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, funding.get_channel_type()) * 1000;
-		let holder_balance_msat = commitment_data.stats.local_balance_before_fee_anchors_msat - htlc_stats.outbound_holding_cell_msat;
-		if holder_balance_msat < buffer_fee_msat + commitment_data.stats.total_anchors_sat * 1000 + funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
+		let holder_balance_msat = commitment_data.stats.local_balance_before_fee_msat - htlc_stats.outbound_holding_cell_msat;
+		if holder_balance_msat < buffer_fee_msat  + funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
 			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
 			return false;
@@ -4506,14 +4508,26 @@ where
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat);
 		}
 
-		let total_fee_sat = commit_tx_fee_sat(feerate_per_kw, non_dust_htlc_count, &funding.channel_transaction_parameters.channel_type_features);
+		let commit_tx_fee_sat = commit_tx_fee_sat(feerate_per_kw, non_dust_htlc_count, &funding.channel_transaction_parameters.channel_type_features);
 		let total_anchors_sat = if funding.channel_transaction_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 
+		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
+		// than or equal to `total_anchors_sat`.
+		//
+		// This is because when the remote party sends an `update_fee` message, we build the new
+		// commitment transaction *before* checking whether the remote party's balance is enough to
+		// cover the total anchor sum.
+
+		if funding.is_outbound() {
+			value_to_self_msat = value_to_self_msat.saturating_sub(total_anchors_sat * 1000);
+		} else {
+			value_to_remote_msat = value_to_remote_msat.saturating_sub(total_anchors_sat * 1000);
+		}
+
 		CommitmentStats {
-			total_fee_sat,
-			total_anchors_sat,
-			local_balance_before_fee_anchors_msat: value_to_self_msat,
-			remote_balance_before_fee_anchors_msat: value_to_remote_msat,
+			commit_tx_fee_sat,
+			local_balance_before_fee_msat: value_to_self_msat,
+			remote_balance_before_fee_msat: value_to_remote_msat,
 		}
 	}
 
@@ -4540,10 +4554,9 @@ where
 
 		let stats = self.build_commitment_stats(funding, local, generated_by_local);
 		let CommitmentStats {
-			total_fee_sat,
-			total_anchors_sat,
-			local_balance_before_fee_anchors_msat,
-			remote_balance_before_fee_anchors_msat
+			commit_tx_fee_sat,
+			local_balance_before_fee_msat,
+			remote_balance_before_fee_msat
 		} = stats;
 
 		let num_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len();
@@ -4607,16 +4620,16 @@ where
 		};
 
 		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
-		// than or equal to the sum of `total_fee_sat` and `total_anchors_sat`.
+		// than or equal to `commit_tx_fee_sat`.
 		//
 		// This is because when the remote party sends an `update_fee` message, we build the new
 		// commitment transaction *before* checking whether the remote party's balance is enough to
-		// cover the total fee and the anchors.
+		// cover the total fee.
 
 		let (value_to_self, value_to_remote) = if funding.is_outbound() {
-			((local_balance_before_fee_anchors_msat / 1000).saturating_sub(total_anchors_sat).saturating_sub(total_fee_sat), remote_balance_before_fee_anchors_msat / 1000)
+			((local_balance_before_fee_msat / 1000).saturating_sub(commit_tx_fee_sat), remote_balance_before_fee_msat / 1000)
 		} else {
-			(local_balance_before_fee_anchors_msat / 1000, (remote_balance_before_fee_anchors_msat / 1000).saturating_sub(total_anchors_sat).saturating_sub(total_fee_sat))
+			(local_balance_before_fee_msat / 1000, (remote_balance_before_fee_msat / 1000).saturating_sub(commit_tx_fee_sat))
 		};
 
 		let mut to_broadcaster_value_sat = if local { value_to_self } else { value_to_remote };
