@@ -2817,6 +2817,30 @@ fn process_failure_packet(
 	update_attribution_data(onion_error, shared_secret, hold_time);
 }
 
+/// Updates fulfill attribution data with the given hold time for an intermediate or final node. If no downstream
+/// attribution data is passed in, a new `AttributionData` field is instantiated. It is needless to say that in that
+/// case the sender won't receive any hold times from nodes downstream of the current node.
+pub(crate) fn process_fulfill_attribution_data(
+	attribution_data: Option<&AttributionData>, shared_secret: &[u8], hold_time: u32,
+) -> AttributionData {
+	let mut attribution_data =
+		attribution_data.map_or(AttributionData::new(), |attribution_data| {
+			let mut attribution_data = attribution_data.clone();
+
+			// Shift the existing attribution data to the right to make space for the new hold time and HMACs.
+			attribution_data.shift_right();
+
+			attribution_data
+		});
+
+	// Add this node's hold time and HMACs. We pass in an empty message because there is no (failure) message in the
+	// fulfill case.
+	attribution_data.update(&[], &shared_secret, hold_time);
+	attribution_data.crypt(&shared_secret);
+
+	attribution_data
+}
+
 #[cfg(test)]
 mod tests {
 	use core::iter;
