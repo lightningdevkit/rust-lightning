@@ -468,6 +468,7 @@ enum HTLCUpdateAwaitingACK {
 	},
 	ClaimHTLC {
 		payment_preimage: PaymentPreimage,
+		attribution_data: Option<AttributionData>,
 		htlc_id: u64,
 	},
 	FailHTLC {
@@ -6271,6 +6272,7 @@ where
 			self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
 				payment_preimage: payment_preimage_arg,
 				htlc_id: htlc_id_arg,
+				attribution_data: None,
 			});
 			return UpdateFulfillFetch::NewClaim {
 				monitor_update,
@@ -12518,7 +12520,7 @@ where
 			Vec::with_capacity(holding_cell_htlc_update_count);
 		let mut holding_cell_blinding_points: Vec<Option<PublicKey>> =
 			Vec::with_capacity(holding_cell_htlc_update_count);
-		let mut holding_cell_failure_attribution_data: Vec<Option<&AttributionData>> =
+		let mut holding_cell_attribution_data: Vec<Option<&AttributionData>> =
 			Vec::with_capacity(holding_cell_htlc_update_count);
 		// Vec of (htlc_id, failure_code, sha256_of_onion)
 		let mut malformed_htlcs: Vec<(u64, u16, [u8; 32])> = Vec::new();
@@ -12544,10 +12546,17 @@ where
 					holding_cell_skimmed_fees.push(skimmed_fee_msat);
 					holding_cell_blinding_points.push(blinding_point);
 				},
-				&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, ref htlc_id } => {
+				&HTLCUpdateAwaitingACK::ClaimHTLC {
+					ref payment_preimage,
+					ref htlc_id,
+					ref attribution_data,
+				} => {
 					1u8.write(writer)?;
 					payment_preimage.write(writer)?;
 					htlc_id.write(writer)?;
+
+					// Store the attribution data for later writing.
+					holding_cell_attribution_data.push(attribution_data.as_ref());
 				},
 				&HTLCUpdateAwaitingACK::FailHTLC { ref htlc_id, ref err_packet } => {
 					2u8.write(writer)?;
@@ -12555,8 +12564,7 @@ where
 					err_packet.data.write(writer)?;
 
 					// Store the attribution data for later writing.
-					holding_cell_failure_attribution_data
-						.push(err_packet.attribution_data.as_ref());
+					holding_cell_attribution_data.push(err_packet.attribution_data.as_ref());
 				},
 				&HTLCUpdateAwaitingACK::FailMalformedHTLC {
 					htlc_id,
@@ -12573,7 +12581,7 @@ where
 
 					// Push 'None' attribution data for FailMalformedHTLC, because FailMalformedHTLC uses the same
 					// type 2 and is deserialized as a FailHTLC.
-					holding_cell_failure_attribution_data.push(None);
+					holding_cell_attribution_data.push(None);
 				},
 			}
 		}
@@ -12777,7 +12785,7 @@ where
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
 			(54, self.pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_attribution_data, optional_vec), // Added in 0.2
-			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
+			(57, holding_cell_attribution_data, optional_vec), // Added in 0.2
 			(58, self.interactive_tx_signing_session, option), // Added in 0.2
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
@@ -12951,6 +12959,7 @@ where
 				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
 					payment_preimage: Readable::read(reader)?,
 					htlc_id: Readable::read(reader)?,
+					attribution_data: None,
 				},
 				2 => HTLCUpdateAwaitingACK::FailHTLC {
 					htlc_id: Readable::read(reader)?,
@@ -13123,7 +13132,7 @@ where
 		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 
 		let mut removed_htlc_attribution_data: Option<Vec<Option<AttributionData>>> = None;
-		let mut holding_cell_failure_attribution_data: Option<Vec<Option<AttributionData>>> = None;
+		let mut holding_cell_attribution_data: Option<Vec<Option<AttributionData>>> = None;
 
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
 		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
@@ -13176,7 +13185,7 @@ where
 			(53, funding_tx_broadcast_safe_event_emitted, option),
 			(54, pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_attribution_data, optional_vec),
-			(57, holding_cell_failure_attribution_data, optional_vec),
+			(57, holding_cell_attribution_data, optional_vec),
 			(58, interactive_tx_signing_session, option), // Added in 0.2
 			(59, minimum_depth_override, option), // Added in 0.2
 			(60, historical_scids, optional_vec), // Added in 0.2
@@ -13304,24 +13313,23 @@ where
 			}
 		}
 
-		if let Some(attribution_data_list) = holding_cell_failure_attribution_data {
-			let mut holding_cell_failures =
-				holding_cell_htlc_updates.iter_mut().filter_map(|upd| {
-					if let HTLCUpdateAwaitingACK::FailHTLC {
+		if let Some(attribution_data_list) = holding_cell_attribution_data {
+			let mut holding_cell_htlcs =
+				holding_cell_htlc_updates.iter_mut().filter_map(|upd| match upd {
+					HTLCUpdateAwaitingACK::FailHTLC {
 						err_packet: OnionErrorPacket { ref mut attribution_data, .. },
 						..
-					} = upd
-					{
+					} => Some(attribution_data),
+					HTLCUpdateAwaitingACK::ClaimHTLC { attribution_data, .. } => {
 						Some(attribution_data)
-					} else {
-						None
-					}
+					},
+					_ => None,
 				});
 
 			for attribution_data in attribution_data_list {
-				*holding_cell_failures.next().ok_or(DecodeError::InvalidValue)? = attribution_data;
+				*holding_cell_htlcs.next().ok_or(DecodeError::InvalidValue)? = attribution_data;
 			}
-			if holding_cell_failures.next().is_some() {
+			if holding_cell_htlcs.next().is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -14315,17 +14323,16 @@ mod tests {
 			skimmed_fee_msat: None,
 			blinding_point: None,
 		};
-		let dummy_holding_cell_claim_htlc = HTLCUpdateAwaitingACK::ClaimHTLC {
+		let dummy_holding_cell_claim_htlc = |attribution_data| HTLCUpdateAwaitingACK::ClaimHTLC {
 			payment_preimage: PaymentPreimage([42; 32]),
 			htlc_id: 0,
+			attribution_data,
 		};
-		let dummy_holding_cell_failed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailHTLC {
-			htlc_id,
-			err_packet: msgs::OnionErrorPacket {
-				data: vec![42],
-				attribution_data: Some(AttributionData::new()),
-			},
-		};
+		let dummy_holding_cell_failed_htlc =
+			|htlc_id, attribution_data| HTLCUpdateAwaitingACK::FailHTLC {
+				htlc_id,
+				err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data },
+			};
 		let dummy_holding_cell_malformed_htlc =
 			|htlc_id| HTLCUpdateAwaitingACK::FailMalformedHTLC {
 				htlc_id,
@@ -14333,29 +14340,45 @@ mod tests {
 				sha256_of_onion: [0; 32],
 			};
 		let mut holding_cell_htlc_updates = Vec::with_capacity(12);
-		for i in 0..12 {
-			if i % 5 == 0 {
-				holding_cell_htlc_updates.push(dummy_holding_cell_add_htlc.clone());
-			} else if i % 5 == 1 {
-				holding_cell_htlc_updates.push(dummy_holding_cell_claim_htlc.clone());
-			} else if i % 5 == 2 {
-				let mut dummy_add = dummy_holding_cell_add_htlc.clone();
-				if let HTLCUpdateAwaitingACK::AddHTLC {
-					ref mut blinding_point,
-					ref mut skimmed_fee_msat,
-					..
-				} = &mut dummy_add
-				{
-					*blinding_point = Some(test_utils::pubkey(42 + i));
-					*skimmed_fee_msat = Some(42);
-				} else {
-					panic!()
-				}
-				holding_cell_htlc_updates.push(dummy_add);
-			} else if i % 5 == 3 {
-				holding_cell_htlc_updates.push(dummy_holding_cell_malformed_htlc(i as u64));
-			} else {
-				holding_cell_htlc_updates.push(dummy_holding_cell_failed_htlc(i as u64));
+		for i in 0..16 {
+			match i % 7 {
+				0 => {
+					holding_cell_htlc_updates.push(dummy_holding_cell_add_htlc.clone());
+				},
+				1 => {
+					holding_cell_htlc_updates.push(dummy_holding_cell_claim_htlc(None));
+				},
+				2 => {
+					holding_cell_htlc_updates
+						.push(dummy_holding_cell_claim_htlc(Some(AttributionData::new())));
+				},
+				3 => {
+					let mut dummy_add = dummy_holding_cell_add_htlc.clone();
+					if let HTLCUpdateAwaitingACK::AddHTLC {
+						ref mut blinding_point,
+						ref mut skimmed_fee_msat,
+						..
+					} = &mut dummy_add
+					{
+						*blinding_point = Some(test_utils::pubkey(42 + i));
+						*skimmed_fee_msat = Some(42);
+					} else {
+						panic!()
+					}
+					holding_cell_htlc_updates.push(dummy_add);
+				},
+				4 => {
+					holding_cell_htlc_updates.push(dummy_holding_cell_malformed_htlc(i as u64));
+				},
+				5 => {
+					holding_cell_htlc_updates.push(dummy_holding_cell_failed_htlc(i as u64, None));
+				},
+				_ => {
+					holding_cell_htlc_updates.push(dummy_holding_cell_failed_htlc(
+						i as u64,
+						Some(AttributionData::new()),
+					));
+				},
 			}
 		}
 		chan.context.holding_cell_htlc_updates = holding_cell_htlc_updates.clone();
