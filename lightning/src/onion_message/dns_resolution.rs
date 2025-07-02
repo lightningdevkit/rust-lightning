@@ -329,10 +329,29 @@ impl OMNameResolver {
 		}
 	}
 
+	/// Builds a new [`OMNameResolver`] which will not validate the time limits on DNSSEC proofs
+	/// (for builds without the "std" feature and until [`Self::new_best_block`] is called).
+	///
+	/// If possible, you should prefer [`Self::new`] so that providing stale proofs is not
+	/// possible, however in no-std environments where there is some trust in the resolver used and
+	/// no time source is available, this may be acceptable.
+	///
+	/// Note that not calling [`Self::new_best_block`] will result in requests not timing out and
+	/// unresolved requests leaking memory. You must instead call
+	/// [`Self::expire_pending_resolution`] as unresolved requests expire.
+	pub fn new_without_no_std_expiry_validation() -> Self {
+		Self {
+			pending_resolves: Mutex::new(new_hash_map()),
+			latest_block_time: AtomicUsize::new(0),
+			latest_block_height: AtomicUsize::new(0),
+		}
+	}
+
 	/// Informs the [`OMNameResolver`] of the passage of time in the form of a new best Bitcoin
 	/// block.
 	///
-	/// This will call back to resolve some pending queries which have timed out.
+	/// This is used to prune stale requests (by block height) and keep track of the current time
+	/// to validate that DNSSEC proofs are current.
 	pub fn new_best_block(&self, height: u32, time: u32) {
 		self.latest_block_time.store(time as usize, Ordering::Release);
 		self.latest_block_height.store(height as usize, Ordering::Release);
@@ -341,6 +360,30 @@ impl OMNameResolver {
 			queries.retain(|query| query.start_height >= height - 1);
 			!queries.is_empty()
 		});
+	}
+
+	/// Removes any pending resolutions for the given `name` and `payment_id`.
+	///
+	/// Any future calls to [`Self::handle_dnssec_proof_for_offer`] or
+	/// [`Self::handle_dnssec_proof_for_uri`] will no longer return a result for the given
+	/// resolution.
+	pub fn expire_pending_resolution(&self, name: &HumanReadableName, payment_id: PaymentId) {
+		let dns_name =
+			Name::try_from(format!("{}.user._bitcoin-payment.{}.", name.user(), name.domain()));
+		debug_assert!(
+			dns_name.is_ok(),
+			"The HumanReadableName constructor shouldn't allow names which are too long"
+		);
+		if let Ok(name) = dns_name {
+			let mut pending_resolves = self.pending_resolves.lock().unwrap();
+			if let hash_map::Entry::Occupied(mut entry) = pending_resolves.entry(name) {
+				let resolutions = entry.get_mut();
+				resolutions.retain(|resolution| resolution.payment_id != payment_id);
+				if resolutions.is_empty() {
+					entry.remove();
+				}
+			}
+		}
 	}
 
 	/// Begins the process of resolving a BIP 353 Human Readable Name.
@@ -435,16 +478,26 @@ impl OMNameResolver {
 			let validated_rrs =
 				parsed_rrs.as_ref().and_then(|rrs| verify_rr_stream(rrs).map_err(|_| &()));
 			if let Ok(validated_rrs) = validated_rrs {
-				let block_time = self.latest_block_time.load(Ordering::Acquire) as u64;
-				// Block times may be up to two hours in the future and some time into the past
-				// (we assume no more than two hours, though the actual limits are rather
-				// complicated).
-				// Thus, we have to let the proof times be rather fuzzy.
-				if validated_rrs.valid_from > block_time + 60 * 2 {
-					return None;
+				#[allow(unused_assignments, unused_mut)]
+				let mut time = self.latest_block_time.load(Ordering::Acquire) as u64;
+				#[cfg(feature = "std")]
+				{
+					use std::time::{SystemTime, UNIX_EPOCH};
+					let now = SystemTime::now().duration_since(UNIX_EPOCH);
+					time = now.expect("Time must be > 1970").as_secs();
 				}
-				if validated_rrs.expires < block_time - 60 * 2 {
-					return None;
+				if time != 0 {
+					// Block times may be up to two hours in the future and some time into the past
+					// (we assume no more than two hours, though the actual limits are rather
+					// complicated).
+					// Thus, we have to let the proof times be rather fuzzy.
+					let max_time_offset = if cfg!(feature = "std") { 0 } else { 60 * 2 };
+					if validated_rrs.valid_from > time + max_time_offset {
+						return None;
+					}
+					if validated_rrs.expires < time - max_time_offset {
+						return None;
+					}
 				}
 				let resolved_rrs = validated_rrs.resolve_name(&entry.key());
 				if resolved_rrs.is_empty() {
@@ -482,7 +535,7 @@ impl OMNameResolver {
 
 #[cfg(test)]
 mod tests {
-	use super::HumanReadableName;
+	use super::*;
 
 	#[test]
 	fn test_hrn_display_format() {
@@ -498,5 +551,44 @@ mod tests {
 			expected_display,
 			"HumanReadableName display format mismatch"
 		);
+	}
+
+	#[test]
+	#[cfg(feature = "dnssec")]
+	fn test_expiry() {
+		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0);
+		let resolver = OMNameResolver::new(42, 42);
+		let name = HumanReadableName::new("user", "example.com").unwrap();
+
+		// Queue up a resolution
+		resolver.resolve_name(PaymentId([0; 32]), name.clone(), &keys).unwrap();
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		// and check that it expires after two blocks
+		resolver.new_best_block(44, 42);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 0);
+
+		// Queue up another resolution
+		resolver.resolve_name(PaymentId([1; 32]), name.clone(), &keys).unwrap();
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		// it won't expire after one block
+		resolver.new_best_block(45, 42);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 1);
+		// and queue up a second and third resolution of the same name
+		resolver.resolve_name(PaymentId([2; 32]), name.clone(), &keys).unwrap();
+		resolver.resolve_name(PaymentId([3; 32]), name.clone(), &keys).unwrap();
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 3);
+		// after another block the first will expire, but the second and third won't
+		resolver.new_best_block(46, 42);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 2);
+		// Check manual expiry
+		resolver.expire_pending_resolution(&name, PaymentId([3; 32]));
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 1);
+		// after one more block all the requests will have expired
+		resolver.new_best_block(47, 42);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 0);
 	}
 }
