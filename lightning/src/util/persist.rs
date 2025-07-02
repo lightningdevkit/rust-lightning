@@ -121,6 +121,58 @@ pub trait KVStoreSync {
 	) -> Result<Vec<String>, io::Error>;
 }
 
+/// A wrapper around a [`KVStoreSync`] that implements the [`KVStore`] trait.
+pub struct KVStoreSyncWrapper<K: Deref>(pub K)
+where
+	K::Target: KVStoreSync;
+
+impl<K: Deref> Deref for KVStoreSyncWrapper<K>
+where
+	K::Target: KVStoreSync,
+{
+	type Target = Self;
+	fn deref(&self) -> &Self {
+		self
+	}
+}
+
+impl<K: Deref> KVStore for KVStoreSyncWrapper<K>
+where
+	K::Target: KVStoreSync,
+{
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>> {
+		let res = self.0.read(primary_namespace, secondary_namespace, key);
+
+		Box::pin(async move { res })
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+		let res = self.0.write(primary_namespace, secondary_namespace, key, buf);
+
+		Box::pin(async move { res })
+	}
+
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+		let res = self.0.remove(primary_namespace, secondary_namespace, key, lazy);
+
+		Box::pin(async move { res })
+	}
+
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>> {
+		let res = self.0.list(primary_namespace, secondary_namespace);
+
+		Box::pin(async move { res })
+	}
+}
+
 /// A trait that provides a key-value store interface for persisting data.
 pub trait KVStore {
 	/// Returns the data stored for the given `primary_namespace`, `secondary_namespace`, and

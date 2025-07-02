@@ -40,12 +40,14 @@ use lightning::sign::ChangeDestinationSourceSync;
 use lightning::sign::EntropySource;
 use lightning::sign::OutputSpender;
 use lightning::util::logger::Logger;
+use lightning::util::persist::KVStore;
 use lightning::util::persist::KVStoreSync;
 use lightning::util::persist::Persister;
 use lightning::util::persist::PersisterSync;
 use lightning::util::sweep::OutputSweeper;
 #[cfg(feature = "std")]
 use lightning::util::sweep::OutputSweeperSync;
+use lightning::util::sweep::OutputSweeperSyncKVStore;
 #[cfg(feature = "std")]
 use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
@@ -698,7 +700,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # type LiquidityManager<B, F, FE> = lightning_liquidity::LiquidityManager<Arc<lightning::sign::KeysManager>, Arc<ChannelManager<B, F, FE>>, Arc<F>>;
 /// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
 /// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger, F, StoreSync>;
-/// # type OutputSweeper<B, D, FE, F, O> = lightning::util::sweep::OutputSweeper<Arc<B>, Arc<D>, Arc<FE>, Arc<F>, Arc<StoreSync>, Arc<Logger>, Arc<O>>;
+/// # type OutputSweeper<B, D, FE, F, O> = lightning::util::sweep::OutputSweeper<Arc<B>, Arc<D>, Arc<FE>, Arc<F>, Arc<Store>, Arc<Logger>, Arc<O>>;
 ///
 /// # struct Node<
 /// #     B: lightning::chain::chaininterface::BroadcasterInterface + Send + Sync + 'static,
@@ -842,7 +844,7 @@ where
 	LM::Target: ALiquidityManager,
 	O::Target: 'static + OutputSpender,
 	D::Target: 'static + ChangeDestinationSource,
-	K::Target: 'static + KVStoreSync,
+	K::Target: 'static + KVStore,
 {
 	let mut should_break = false;
 	let async_event_handler = |event| {
@@ -1020,7 +1022,7 @@ pub async fn process_events_async<
 	D: 'static + Deref,
 	O: 'static + Deref,
 	K: 'static + Deref,
-	OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>>,
+	OS: 'static + Deref<Target = OutputSweeperSyncKVStore<T, D, F, CF, K, L, O>>,
 	S: 'static + Deref<Target = SC> + Send + Sync,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
@@ -1050,6 +1052,7 @@ where
 	K::Target: 'static + KVStoreSync,
 {
 	let persister = PersisterSyncWrapper::<'static, PS, CM, L, S>::new(persister);
+	let sweeper = sweeper.map(|s| s.sweeper_async());
 	process_events_full_async(
 		persister,
 		event_handler,
@@ -1302,6 +1305,7 @@ impl Drop for BackgroundProcessor {
 #[cfg(all(feature = "std", test))]
 mod tests {
 	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
+	use crate::PersisterSyncWrapper;
 	use bitcoin::constants::{genesis_block, ChainHash};
 	use bitcoin::hashes::Hash;
 	use bitcoin::locktime::absolute::LockTime;
@@ -2255,11 +2259,12 @@ mod tests {
 		open_channel!(nodes[0], nodes[1], 100000);
 
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(
+		let persister_sync = Arc::new(
 			PersisterSync::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
 		);
+		let persister = PersisterSyncWrapper::new(persister_sync);
 
-		let bp_future = super::process_events_async(
+		let bp_future = super::process_events_full_async(
 			persister,
 			|_: _| async { Ok(()) },
 			Arc::clone(&nodes[0].chain_monitor),
@@ -2766,11 +2771,12 @@ mod tests {
 		let (_, nodes) =
 			create_nodes(2, "test_not_pruning_network_graph_until_graph_sync_completion_async");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister =
+		let persister_sync =
 			Arc::new(PersisterSync::new(data_dir).with_graph_persistence_notifier(sender));
+		let persister = PersisterSyncWrapper::new(persister_sync);
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
-		let bp_future = super::process_events_async(
+		let bp_future = super::process_events_full_async(
 			persister,
 			|_: _| async { Ok(()) },
 			Arc::clone(&nodes[0].chain_monitor),
@@ -2983,11 +2989,12 @@ mod tests {
 
 		let (_, nodes) = create_nodes(1, "test_payment_path_scoring_async");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(PersisterSync::new(data_dir));
+		let persister_sync = Arc::new(PersisterSync::new(data_dir));
+		let persister = PersisterSyncWrapper::new(persister_sync);
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 
-		let bp_future = super::process_events_async(
+		let bp_future = super::process_events_full_async(
 			persister,
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
