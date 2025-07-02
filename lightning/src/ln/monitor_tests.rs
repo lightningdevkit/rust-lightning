@@ -3151,7 +3151,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 		(&nodes[0], &nodes[1])
 	};
 
-	get_monitor!(closing_node, chan_id).broadcast_latest_holder_commitment_txn(
+	get_monitor!(closing_node, chan_id).force_broadcast_latest_holder_commitment_txn_unsafe(
 		&closing_node.tx_broadcaster, &closing_node.fee_estimator, &closing_node.logger
 	);
 
