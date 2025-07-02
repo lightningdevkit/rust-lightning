@@ -10,10 +10,13 @@
 //!
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 
+use crate::sync::Arc;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::{BlockHash, Txid};
 use core::cmp;
+use core::future::Future;
 use core::ops::Deref;
+use core::pin::Pin;
 use core::str::FromStr;
 
 use crate::prelude::*;
@@ -98,28 +101,86 @@ pub const OUTPUT_SWEEPER_PERSISTENCE_KEY: &str = "output_sweeper";
 /// updates applied to be current) with another implementation.
 pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 
-/// Provides an interface that allows storage and retrieval of persisted values that are associated
-/// with given keys.
-///
-/// In order to avoid collisions the key space is segmented based on the given `primary_namespace`s
-/// and `secondary_namespace`s. Implementations of this trait are free to handle them in different
-/// ways, as long as per-namespace key uniqueness is asserted.
-///
-/// Keys and namespaces are required to be valid ASCII strings in the range of
-/// [`KVSTORE_NAMESPACE_KEY_ALPHABET`] and no longer than [`KVSTORE_NAMESPACE_KEY_MAX_LEN`]. Empty
-/// primary namespaces and secondary namespaces (`""`) are assumed to be a valid, however, if
-/// `primary_namespace` is empty, `secondary_namespace` is required to be empty, too. This means
-/// that concerns should always be separated by primary namespace first, before secondary
-/// namespaces are used. While the number of primary namespaces will be relatively small and is
-/// determined at compile time, there may be many secondary namespaces per primary namespace. Note
-/// that per-namespace uniqueness needs to also hold for keys *and* namespaces in any given
-/// namespace, i.e., conflicts between keys and equally named
-/// primary namespaces/secondary namespaces must be avoided.
-///
-/// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
-/// interface can use a concatenation of `[{primary_namespace}/[{secondary_namespace}/]]{key}` to
-/// recover a `key` compatible with the data model previously assumed by `KVStorePersister::persist`.
+/// A synchronous version of the [`KVStore`] trait.
 pub trait KVStoreSync {
+	/// A synchronous version of the [`KVStore::read`] method.
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> Result<Vec<u8>, io::Error>;
+	/// A synchronous version of the [`KVStore::write`] method.
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> Result<(), io::Error>;
+	/// A synchronous version of the [`KVStore::remove`] method.
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> Result<(), io::Error>;
+	/// A synchronous version of the [`KVStore::list`] method.
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> Result<Vec<String>, io::Error>;
+}
+
+/// A wrapper around a [`KVStoreSync`] that implements the [`KVStore`] trait.
+#[cfg(any(test, feature = "_test_utils"))]
+pub struct KVStoreSyncWrapper<K: Deref>(pub K)
+where
+	K::Target: KVStoreSync;
+
+#[cfg(not(any(test, feature = "_test_utils")))]
+pub(crate) struct KVStoreSyncWrapper<K: Deref>(pub K)
+where
+	K::Target: KVStoreSync;
+
+impl<K: Deref> Deref for KVStoreSyncWrapper<K>
+where
+	K::Target: KVStoreSync,
+{
+	type Target = Self;
+	fn deref(&self) -> &Self {
+		self
+	}
+}
+
+impl<K: Deref> KVStore for KVStoreSyncWrapper<K>
+where
+	K::Target: KVStoreSync,
+{
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>> {
+		let res = self.0.read(primary_namespace, secondary_namespace, key);
+
+		Box::pin(async move { res })
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+		let res = self.0.write(primary_namespace, secondary_namespace, key, buf);
+
+		Box::pin(async move { res })
+	}
+
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+		let res = self.0.remove(primary_namespace, secondary_namespace, key, lazy);
+
+		Box::pin(async move { res })
+	}
+
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>> {
+		let res = self.0.list(primary_namespace, secondary_namespace);
+
+		Box::pin(async move { res })
+	}
+}
+
+/// A trait that provides a key-value store interface for persisting data.
+pub trait KVStore {
 	/// Returns the data stored for the given `primary_namespace`, `secondary_namespace`, and
 	/// `key`.
 	///
@@ -129,14 +190,14 @@ pub trait KVStoreSync {
 	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Result<Vec<u8>, io::Error>;
+	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>>;
 	/// Persists the given data under the given `key`.
 	///
 	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present
 	/// in the store.
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
-	) -> Result<(), io::Error>;
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>>;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
 	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
@@ -154,7 +215,7 @@ pub trait KVStoreSync {
 	/// invokation or not.
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
-	) -> Result<(), io::Error>;
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>>;
 	/// Returns a list of keys that are stored under the given `secondary_namespace` in
 	/// `primary_namespace`.
 	///
@@ -162,10 +223,78 @@ pub trait KVStoreSync {
 	/// returned keys. Returns an empty list if `primary_namespace` or `secondary_namespace` is unknown.
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> Result<Vec<String>, io::Error>;
+	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>>;
 }
 
-/// Provides additional interface methods that are required for [`KVStoreSync`]-to-[`KVStoreSync`]
+/// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+pub trait Persister<'a, CM: Deref, L: Deref, S: Deref>
+where
+	CM::Target: 'static + AChannelManager,
+	L::Target: 'static + Logger,
+	S::Target: WriteableScore<'a>,
+{
+	/// Persist the given ['ChannelManager'] to disk, returning an error if persistence failed.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	fn persist_manager(
+		&self, channel_manager: &CM,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>>;
+
+	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
+	fn persist_graph(
+		&self, network_graph: &NetworkGraph<L>,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>>;
+
+	/// Persist the given [`WriteableScore`] to disk, returning an error if persistence failed.
+	fn persist_scorer(
+		&self, scorer: &S,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>>;
+}
+
+impl<'a, A: KVStore + ?Sized + Send + Sync + 'static, CM: Deref, L: Deref, S: Deref>
+	Persister<'a, CM, L, S> for Arc<A>
+where
+	CM::Target: 'static + AChannelManager,
+	L::Target: 'static + Logger,
+	S::Target: WriteableScore<'a>,
+{
+	fn persist_manager(
+		&self, channel_manager: &CM,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+		self.write(
+			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_KEY,
+			&channel_manager.get_cm().encode(),
+		)
+	}
+
+	fn persist_graph(
+		&self, network_graph: &NetworkGraph<L>,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+		self.write(
+			NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
+			NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+			NETWORK_GRAPH_PERSISTENCE_KEY,
+			&network_graph.encode(),
+		)
+	}
+
+	fn persist_scorer(
+		&self, scorer: &S,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+		self.write(
+			SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+			SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+			SCORER_PERSISTENCE_KEY,
+			&scorer.encode(),
+		)
+	}
+}
+
+/// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
 /// data migration.
 pub trait MigratableKVStore: KVStoreSync {
 	/// Returns *all* known keys as a list of `primary_namespace`, `secondary_namespace`, `key` tuples.
@@ -199,24 +328,20 @@ pub fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
 	Ok(())
 }
 
-/// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
-///
-/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+/// A synchronous version of the [`Persister`] trait.
 pub trait PersisterSync<'a, CM: Deref, L: Deref, S: Deref>
 where
 	CM::Target: 'static + AChannelManager,
 	L::Target: 'static + Logger,
 	S::Target: WriteableScore<'a>,
 {
-	/// Persist the given ['ChannelManager'] to disk, returning an error if persistence failed.
-	///
-	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// A synchronous version of the [`Persister::persist_manager`] method.
 	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error>;
 
-	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
+	/// A synchronous version of the [`Persister::persist_graph`] method.
 	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error>;
 
-	/// Persist the given [`WriteableScore`] to disk, returning an error if persistence failed.
+	/// A synchronous version of the [`Persister::persist_scorer`] method.
 	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error>;
 }
 

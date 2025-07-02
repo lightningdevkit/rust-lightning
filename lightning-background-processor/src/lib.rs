@@ -40,7 +40,9 @@ use lightning::sign::ChangeDestinationSourceSync;
 use lightning::sign::EntropySource;
 use lightning::sign::OutputSpender;
 use lightning::util::logger::Logger;
-use lightning::util::persist::{KVStoreSync, PersisterSync};
+#[cfg(feature = "std")]
+use lightning::util::persist::PersisterSync;
+use lightning::util::persist::{KVStoreSync, Persister};
 use lightning::util::sweep::OutputSweeper;
 #[cfg(feature = "std")]
 use lightning::util::sweep::OutputSweeperSync;
@@ -311,6 +313,15 @@ fn update_scorer<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + Wri
 	true
 }
 
+macro_rules! maybe_await {
+	(true, $e:expr) => {
+		$e.await
+	};
+	(false, $e:expr) => {
+		$e
+	};
+}
+
 macro_rules! define_run_body {
 	(
 		$persister: ident, $chain_monitor: ident, $process_chain_monitor_events: expr,
@@ -319,7 +330,7 @@ macro_rules! define_run_body {
 		$peer_manager: ident, $gossip_sync: ident,
 		$process_sweeper: expr,
 		$logger: ident, $scorer: ident, $loop_exit_check: expr, $await: expr, $get_timer: expr,
-		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr,
+		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr, $async: tt,
 	) => { {
 		log_trace!($logger, "Calling ChannelManager's timer_tick_occurred on startup");
 		$channel_manager.get_cm().timer_tick_occurred();
@@ -375,7 +386,7 @@ macro_rules! define_run_body {
 
 			if $channel_manager.get_cm().get_and_clear_needs_persistence() {
 				log_trace!($logger, "Persisting ChannelManager...");
-				$persister.persist_manager(&$channel_manager)?;
+				maybe_await!($async, $persister.persist_manager(&$channel_manager))?;
 				log_trace!($logger, "Done persisting ChannelManager.");
 			}
 			if $timer_elapsed(&mut last_freshness_call, FRESHNESS_TIMER) {
@@ -436,7 +447,7 @@ macro_rules! define_run_body {
 						log_trace!($logger, "Persisting network graph.");
 					}
 
-					if let Err(e) = $persister.persist_graph(network_graph) {
+					if let Err(e) = maybe_await!($async, $persister.persist_graph(network_graph)) {
 						log_error!($logger, "Error: Failed to persist network graph, check your disk and permissions {}", e)
 					}
 
@@ -464,8 +475,8 @@ macro_rules! define_run_body {
 					} else {
 						log_trace!($logger, "Persisting scorer");
 					}
-					if let Err(e) = $persister.persist_scorer(&scorer) {
-						log_error!($logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
+					if let Err(e) = maybe_await!($async, $persister.persist_scorer(&scorer)) {
+							log_error!($logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
 					}
 				}
 				last_scorer_persist_call = $get_timer(SCORER_PERSIST_TIMER);
@@ -487,16 +498,16 @@ macro_rules! define_run_body {
 		// After we exit, ensure we persist the ChannelManager one final time - this avoids
 		// some races where users quit while channel updates were in-flight, with
 		// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
-		$persister.persist_manager(&$channel_manager)?;
+		maybe_await!($async, $persister.persist_manager(&$channel_manager))?;
 
 		// Persist Scorer on exit
 		if let Some(ref scorer) = $scorer {
-			$persister.persist_scorer(&scorer)?;
+			maybe_await!($async, $persister.persist_scorer(&scorer))?;
 		}
 
 		// Persist NetworkGraph on exit
 		if let Some(network_graph) = $gossip_sync.network_graph() {
-			$persister.persist_graph(network_graph)?;
+			maybe_await!($async, $persister.persist_graph(network_graph))?;
 		}
 
 		Ok(())
@@ -643,21 +654,29 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// ```
 /// # use lightning::io;
 /// # use lightning::events::ReplayEvent;
-/// # use lightning::util::sweep::OutputSweeper;
 /// # use std::sync::{Arc, RwLock};
 /// # use std::sync::atomic::{AtomicBool, Ordering};
 /// # use std::time::SystemTime;
 /// # use lightning_background_processor::{process_events_async, GossipSync};
+/// # use core::future::Future;
+/// # use core::pin::Pin;
 /// # struct Logger {}
 /// # impl lightning::util::logger::Logger for Logger {
 /// #     fn log(&self, _record: lightning::util::logger::Record) {}
 /// # }
-/// # struct Store {}
-/// # impl lightning::util::persist::KVStore for Store {
+/// # struct StoreSync {}
+/// # impl lightning::util::persist::KVStoreSync for StoreSync {
 /// #     fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> io::Result<Vec<u8>> { Ok(Vec::new()) }
 /// #     fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> { Ok(()) }
 /// #     fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> io::Result<()> { Ok(()) }
 /// #     fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> io::Result<Vec<String>> { Ok(Vec::new()) }
+/// # }
+/// # struct Store {}
+/// # impl lightning::util::persist::KVStore for Store {
+/// #     fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>> { todo!() }
+/// #     fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> { todo!() }
+/// #     fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> { todo!() }
+/// #     fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>> { todo!() }
 /// # }
 /// # struct EventHandler {}
 /// # impl EventHandler {
@@ -669,22 +688,22 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// #     fn send_data(&mut self, _data: &[u8], _resume_read: bool) -> usize { 0 }
 /// #     fn disconnect_socket(&mut self) {}
 /// # }
-/// # type ChainMonitor<B, F, FE> = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<F>, Arc<B>, Arc<FE>, Arc<Logger>, Arc<Store>, Arc<lightning::sign::KeysManager>>;
+/// # type ChainMonitor<B, F, FE> = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<F>, Arc<B>, Arc<FE>, Arc<Logger>, Arc<StoreSync>, Arc<lightning::sign::KeysManager>>;
 /// # type NetworkGraph = lightning::routing::gossip::NetworkGraph<Arc<Logger>>;
 /// # type P2PGossipSync<UL> = lightning::routing::gossip::P2PGossipSync<Arc<NetworkGraph>, Arc<UL>, Arc<Logger>>;
 /// # type ChannelManager<B, F, FE> = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor<B, F, FE>, B, FE, Logger>;
 /// # type OnionMessenger<B, F, FE> = lightning::onion_message::messenger::OnionMessenger<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<Logger>, Arc<ChannelManager<B, F, FE>>, Arc<lightning::onion_message::messenger::DefaultMessageRouter<Arc<NetworkGraph>, Arc<Logger>, Arc<lightning::sign::KeysManager>>>, Arc<ChannelManager<B, F, FE>>, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler>;
 /// # type LiquidityManager<B, F, FE> = lightning_liquidity::LiquidityManager<Arc<lightning::sign::KeysManager>, Arc<ChannelManager<B, F, FE>>, Arc<F>>;
 /// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
-/// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger, F, Store>;
-/// #
+/// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger, F, StoreSync>;
+/// # type OutputSweeper<B, D, FE, F, O> = lightning::util::sweep::OutputSweeper<Arc<B>, Arc<D>, Arc<FE>, Arc<F>, Arc<StoreSync>, Arc<Logger>, Arc<O>>;
+///
 /// # struct Node<
 /// #     B: lightning::chain::chaininterface::BroadcasterInterface + Send + Sync + 'static,
 /// #     F: lightning::chain::Filter + Send + Sync + 'static,
 /// #     FE: lightning::chain::chaininterface::FeeEstimator + Send + Sync + 'static,
 /// #     UL: lightning::routing::utxo::UtxoLookup + Send + Sync + 'static,
 /// #     D: lightning::sign::ChangeDestinationSource + Send + Sync + 'static,
-/// #     K: lightning::util::persist::KVStore + Send + Sync + 'static,
 /// #     O: lightning::sign::OutputSpender + Send + Sync + 'static,
 /// # > {
 /// #     peer_manager: Arc<PeerManager<B, F, FE, UL>>,
@@ -697,7 +716,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// #     persister: Arc<Store>,
 /// #     logger: Arc<Logger>,
 /// #     scorer: Arc<Scorer>,
-/// #     sweeper: Arc<OutputSweeper<Arc<B>, Arc<D>, Arc<FE>, Arc<F>, Arc<K>, Arc<Logger>, Arc<O>>>,
+/// #     sweeper: Arc<OutputSweeper<B, D, FE, F, O>>,
 /// # }
 /// #
 /// # async fn setup_background_processing<
@@ -706,10 +725,9 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// #     FE: lightning::chain::chaininterface::FeeEstimator + Send + Sync + 'static,
 /// #     UL: lightning::routing::utxo::UtxoLookup + Send + Sync + 'static,
 /// #     D: lightning::sign::ChangeDestinationSource + Send + Sync + 'static,
-/// #     K: lightning::util::persist::KVStore + Send + Sync + 'static,
 /// #     O: lightning::sign::OutputSpender + Send + Sync + 'static,
-/// # >(node: Node<B, F, FE, UL, D, K, O>) {
-///	let background_persister = Arc::clone(&node.persister);
+/// # >(node: Node<B, F, FE, UL, D, O>) {
+///	let background_persister = Arc::new(Arc::clone(&node.persister));
 ///	let background_event_handler = Arc::clone(&node.event_handler);
 ///	let background_chain_mon = Arc::clone(&node.chain_monitor);
 ///	let background_chan_man = Arc::clone(&node.channel_manager);
@@ -814,7 +832,7 @@ where
 	F::Target: 'static + FeeEstimator,
 	L::Target: 'static + Logger,
 	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-	PS::Target: 'static + PersisterSync<'a, CM, L, S>,
+	PS::Target: 'static + Persister<'a, CM, L, S>,
 	ES::Target: 'static + EntropySource,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,
@@ -841,7 +859,7 @@ where
 				if let Some(duration_since_epoch) = fetch_time() {
 					if update_scorer(scorer, &event, duration_since_epoch) {
 						log_trace!(logger, "Persisting scorer after update");
-						if let Err(e) = persister.persist_scorer(&*scorer) {
+						if let Err(e) = persister.persist_scorer(&*scorer).await {
 							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
 							// We opt not to abort early on persistence failure here as persisting
 							// the scorer is non-critical and we still hope that it will have
@@ -919,6 +937,7 @@ where
 		},
 		mobile_interruptable_platform,
 		fetch_time,
+		true,
 	)
 }
 
@@ -1098,6 +1117,7 @@ impl BackgroundProcessor {
 							.expect("Time should be sometime after 1970"),
 					)
 				},
+				false,
 			)
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
@@ -1162,6 +1182,8 @@ mod tests {
 	use bitcoin::transaction::Version;
 	use bitcoin::transaction::{Transaction, TxOut};
 	use bitcoin::{Amount, ScriptBuf, Txid};
+	use core::future::Future;
+	use core::pin::Pin;
 	use core::sync::atomic::{AtomicBool, Ordering};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 	use lightning::chain::transaction::OutPoint;
@@ -1186,7 +1208,7 @@ mod tests {
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
 	use lightning::util::persist::{
-		KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY,
+		KVStore, KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY,
 		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 		CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
 		NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -1480,6 +1502,43 @@ mod tests {
 			&self, primary_namespace: &str, secondary_namespace: &str,
 		) -> lightning::io::Result<Vec<String>> {
 			self.kv_store.list(primary_namespace, secondary_namespace)
+		}
+	}
+
+	struct PersisterSyncWrapper(PersisterSync);
+
+	impl KVStore for PersisterSyncWrapper {
+		fn read(
+			&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, lightning::io::Error>> + 'static + Send>> {
+			let res = self.0.read(primary_namespace, secondary_namespace, key);
+
+			Box::pin(async move { res })
+		}
+
+		fn write(
+			&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+		) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + 'static + Send>> {
+			let res = self.0.write(primary_namespace, secondary_namespace, key, buf);
+
+			Box::pin(async move { res })
+		}
+
+		fn remove(
+			&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+		) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + 'static + Send>> {
+			let res = self.0.remove(primary_namespace, secondary_namespace, key, lazy);
+
+			Box::pin(async move { res })
+		}
+
+		fn list(
+			&self, primary_namespace: &str, secondary_namespace: &str,
+		) -> Pin<Box<dyn Future<Output = Result<Vec<String>, lightning::io::Error>> + 'static + Send>>
+		{
+			let res = self.0.list(primary_namespace, secondary_namespace);
+
+			Box::pin(async move { res })
 		}
 	}
 
@@ -2107,9 +2166,9 @@ mod tests {
 		open_channel!(nodes[0], nodes[1], 100000);
 
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(
-			PersisterSync::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
-		);
+		let persister_sync =
+			PersisterSync::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test");
+		let persister = Arc::new(Arc::new(PersisterSyncWrapper(persister_sync)));
 
 		let bp_future = super::process_events_async(
 			persister,
@@ -2618,8 +2677,8 @@ mod tests {
 		let (_, nodes) =
 			create_nodes(2, "test_not_pruning_network_graph_until_graph_sync_completion_async");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister =
-			Arc::new(PersisterSync::new(data_dir).with_graph_persistence_notifier(sender));
+		let persister_sync = PersisterSync::new(data_dir).with_graph_persistence_notifier(sender);
+		let persister = Arc::new(Arc::new(PersisterSyncWrapper(persister_sync)));
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 		let bp_future = super::process_events_async(
@@ -2835,7 +2894,8 @@ mod tests {
 
 		let (_, nodes) = create_nodes(1, "test_payment_path_scoring_async");
 		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(PersisterSync::new(data_dir));
+		let persister_sync = PersisterSync::new(data_dir);
+		let persister = Arc::new(Arc::new(PersisterSyncWrapper(persister_sync)));
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 
