@@ -2122,8 +2122,10 @@ impl<'a> PaymentPath<'a> {
 		return result;
 	}
 
-	fn get_cost(&self) -> u128 {
-		let fee_cost = self.get_fee_cost_msat();
+	/// Gets the cost (fees plus scorer penalty in msats) of the path divided by the value we
+	/// can/will send over the path. This is also the heap score during our Dijkstra's walk.
+	fn get_cost_per_msat(&self) -> u128 {
+		let fee_cost = self.get_cost_msat();
 		if fee_cost == u64::MAX {
 			u64::MAX.into()
 		} else {
@@ -2131,7 +2133,8 @@ impl<'a> PaymentPath<'a> {
 		}
 	}
 
-	fn get_fee_cost_msat(&self) -> u64 {
+	/// Gets the fees plus scorer penalty in msats of the path.
+	fn get_cost_msat(&self) -> u64 {
 		self.get_total_fee_paid_msat().saturating_add(self.get_path_penalty_msat())
 	}
 
@@ -3574,7 +3577,7 @@ where L::Target: Logger {
 	// First, sort by the cost-per-value of the path, dropping the paths that cost the most for
 	// the value they contribute towards the payment amount.
 	// We sort in descending order as we will remove from the front in `retain`, next.
-	selected_route.sort_unstable_by(|a, b| b.get_cost().cmp(&a.get_cost()));
+	selected_route.sort_unstable_by(|a, b| b.get_cost_per_msat().cmp(&a.get_cost_per_msat()));
 
 	// We should make sure that at least 1 path left.
 	let mut paths_left = selected_route.len();
@@ -3600,7 +3603,7 @@ where L::Target: Logger {
 		selected_route.sort_unstable_by(|a, b| {
 			let a_f = a.hops.iter().map(|hop| hop.0.candidate.fees().proportional_millionths as u64).sum::<u64>();
 			let b_f = b.hops.iter().map(|hop| hop.0.candidate.fees().proportional_millionths as u64).sum::<u64>();
-			a_f.cmp(&b_f).then_with(|| b.get_fee_cost_msat().cmp(&a.get_fee_cost_msat()))
+			a_f.cmp(&b_f).then_with(|| b.get_cost_msat().cmp(&a.get_cost_msat()))
 		});
 		let expensive_payment_path = selected_route.first_mut().unwrap();
 
