@@ -31,10 +31,11 @@ impl BatchDelay {
 }
 
 fn rand_batch_delay_millis() -> u16 {
-	let mut random_bytes = [0u8; 8];
+	const USIZE_LEN: usize = core::mem::size_of::<usize>();
+	let mut random_bytes = [0u8; USIZE_LEN];
 	possiblyrandom::getpossiblyrandom(&mut random_bytes);
 
-	let index: usize = usize::from_be_bytes(random_bytes) % FWD_DELAYS_MILLIS.len();
+	let index = usize::from_be_bytes(random_bytes) % FWD_DELAYS_MILLIS.len();
 	*FWD_DELAYS_MILLIS.get(index).unwrap_or(&50)
 }
 
