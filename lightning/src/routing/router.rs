@@ -3007,6 +3007,13 @@ where L::Target: Logger {
 									.saturating_add(old_entry.path_penalty_msat);
 								let new_fee_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
 									.saturating_add(path_penalty_msat);
+								// The actual score we use for our heap is the cost divided by how
+								// much we are thinking of sending over this channel. This avoids
+								// prioritizing channels that have a very low fee because we aren't
+								// sending very much over them.
+								// In order to avoid integer division precision loss, we simply
+								// shift the costs up to the top half of a u128 and divide by the
+								// value (which is, at max, just under a u64).
 								let old_cost = if old_fee_cost != u64::MAX && old_entry.value_contribution_msat != 0 {
 									((old_fee_cost as u128) << 64) / old_entry.value_contribution_msat as u128
 								} else {
