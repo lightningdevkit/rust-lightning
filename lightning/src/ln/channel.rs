@@ -6177,10 +6177,9 @@ where
 		let mut htlc_value_msat = 0;
 		for (idx, htlc) in self.context.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
-				debug_assert_eq!(
-					htlc.payment_hash,
-					PaymentHash(Sha256::hash(&payment_preimage_arg.0[..]).to_byte_array())
-				);
+				let expected_hash =
+					PaymentHash(Sha256::hash(&payment_preimage_arg.0[..]).to_byte_array());
+				debug_assert_eq!(htlc.payment_hash, expected_hash);
 				log_debug!(
 					logger,
 					"Claiming inbound HTLC id {} with payment hash {} with preimage {}",
@@ -6334,10 +6333,8 @@ where
 					self.context.latest_monitor_update_id = monitor_update.update_id;
 					monitor_update.updates.append(&mut additional_update.updates);
 				} else {
-					let new_mon_id = self
-						.context
-						.blocked_monitor_updates
-						.get(0)
+					let blocked_upd = self.context.blocked_monitor_updates.get(0);
+					let new_mon_id = blocked_upd
 						.map(|upd| upd.update.update_id)
 						.unwrap_or(monitor_update.update_id);
 					monitor_update.update_id = new_mon_id;
@@ -6669,11 +6666,9 @@ where
 			));
 		}
 
-		self.mark_outbound_htlc_removed(
-			msg.htlc_id,
-			OutboundHTLCOutcome::Success(msg.payment_preimage),
-		)
-		.map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
+		let outcome = OutboundHTLCOutcome::Success(msg.payment_preimage);
+		self.mark_outbound_htlc_removed(msg.htlc_id, outcome)
+			.map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
 	}
 
 	#[rustfmt::skip]
@@ -7244,10 +7239,10 @@ where
 						// `ChannelMonitorUpdate` to the user, making this one redundant, however
 						// there's no harm in including the extra `ChannelMonitorUpdateStep` here.
 						// We do not bother to track and include `payment_info` here, however.
+						let fulfill =
+							self.get_update_fulfill_htlc(htlc_id, *payment_preimage, None, logger);
 						let mut additional_monitor_update =
-							if let UpdateFulfillFetch::NewClaim { monitor_update, .. } = self
-								.get_update_fulfill_htlc(htlc_id, *payment_preimage, None, logger)
-							{
+							if let UpdateFulfillFetch::NewClaim { monitor_update, .. } = fulfill {
 								monitor_update
 							} else {
 								unreachable!()
@@ -12404,12 +12399,8 @@ where
 
 		// Write out the old serialization for shutdown_pubkey for backwards compatibility, if
 		// deserialized from that format.
-		match self
-			.context
-			.shutdown_scriptpubkey
-			.as_ref()
-			.and_then(|script| script.as_legacy_pubkey())
-		{
+		let shutdown_scriptpubkey = self.context.shutdown_scriptpubkey.as_ref();
+		match shutdown_scriptpubkey.and_then(|script| script.as_legacy_pubkey()) {
 			Some(shutdown_pubkey) => shutdown_pubkey.write(writer)?,
 			None => [0u8; PUBLIC_KEY_SIZE].write(writer)?,
 		}
@@ -12688,11 +12679,11 @@ where
 		// the default, and when `holder_max_htlc_value_in_flight_msat` is configured to be set to
 		// a different percentage of the channel value then 10%, which older versions of LDK used
 		// to set it to before the percentage was made configurable.
+		let legacy_reserve_satoshis = get_legacy_default_holder_selected_channel_reserve_satoshis(
+			self.funding.get_value_satoshis(),
+		);
 		let serialized_holder_selected_reserve =
-			if self.funding.holder_selected_channel_reserve_satoshis
-				!= get_legacy_default_holder_selected_channel_reserve_satoshis(
-					self.funding.get_value_satoshis(),
-				) {
+			if self.funding.holder_selected_channel_reserve_satoshis != legacy_reserve_satoshis {
 				Some(self.funding.holder_selected_channel_reserve_satoshis)
 			} else {
 				None
@@ -12701,12 +12692,12 @@ where
 		let mut old_max_in_flight_percent_config = UserConfig::default().channel_handshake_config;
 		old_max_in_flight_percent_config.max_inbound_htlc_value_in_flight_percent_of_channel =
 			MAX_IN_FLIGHT_PERCENT_LEGACY;
+		let max_in_flight_msat = get_holder_max_htlc_value_in_flight_msat(
+			self.funding.get_value_satoshis(),
+			&old_max_in_flight_percent_config,
+		);
 		let serialized_holder_htlc_max_in_flight =
-			if self.context.holder_max_htlc_value_in_flight_msat
-				!= get_holder_max_htlc_value_in_flight_msat(
-					self.funding.get_value_satoshis(),
-					&old_max_in_flight_percent_config,
-				) {
+			if self.context.holder_max_htlc_value_in_flight_msat != max_in_flight_msat {
 				Some(self.context.holder_max_htlc_value_in_flight_msat)
 			} else {
 				None
@@ -14203,6 +14194,9 @@ mod tests {
 			&logger,
 		)
 		.unwrap();
+		let open_channel_msg = &outbound_chan
+			.get_open_channel(ChainHash::using_genesis_block(network), &&logger)
+			.unwrap();
 		let mut inbound_chan = InboundV1Channel::<&TestKeysInterface>::new(
 			&feeest,
 			&&keys_provider,
@@ -14210,9 +14204,7 @@ mod tests {
 			node_b_node_id,
 			&channelmanager::provided_channel_type_features(&config),
 			&features,
-			&outbound_chan
-				.get_open_channel(ChainHash::using_genesis_block(network), &&logger)
-				.unwrap(),
+			open_channel_msg,
 			7,
 			&config,
 			0,

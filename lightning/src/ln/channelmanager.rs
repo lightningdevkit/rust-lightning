@@ -15426,13 +15426,9 @@ where
 					}
 
 					for short_channel_id in channel.context.historical_scids() {
-						short_to_chan_info.insert(
-							*short_channel_id,
-							(
-								channel.context.get_counterparty_node_id(),
-								channel.context.channel_id(),
-							),
-						);
+						let cp_id = channel.context.get_counterparty_node_id();
+						let chan_id = channel.context.channel_id();
+						short_to_chan_info.insert(*short_channel_id, (cp_id, chan_id));
 					}
 
 					per_peer_state
@@ -16261,10 +16257,8 @@ where
 					.into_iter()
 					.zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
 				{
-					let existing_payment = claimable_payments.insert(
-						payment_hash,
-						ClaimablePayment { purpose, htlcs, onion_fields: onion },
-					);
+					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: onion };
+					let existing_payment = claimable_payments.insert(payment_hash, claimable);
 					if existing_payment.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}
@@ -16273,10 +16267,8 @@ where
 				for (purpose, (payment_hash, htlcs)) in
 					purposes.into_iter().zip(claimable_htlcs_list.into_iter())
 				{
-					let existing_payment = claimable_payments.insert(
-						payment_hash,
-						ClaimablePayment { purpose, htlcs, onion_fields: None },
-					);
+					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: None };
+					let existing_payment = claimable_payments.insert(payment_hash, claimable);
 					if existing_payment.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}
@@ -16397,13 +16389,9 @@ where
 						return Err(DecodeError::InvalidValue);
 					}
 					if funded_chan.context.is_usable() {
-						if short_to_chan_info
-							.insert(
-								funded_chan.context.outbound_scid_alias(),
-								(funded_chan.context.get_counterparty_node_id(), *chan_id),
-							)
-							.is_some()
-						{
+						let alias = funded_chan.context.outbound_scid_alias();
+						let cp_id = funded_chan.context.get_counterparty_node_id();
+						if short_to_chan_info.insert(alias, (cp_id, *chan_id)).is_some() {
 							// Note that in rare cases its possible to hit this while reading an older
 							// channel if we just happened to pick a colliding outbound alias above.
 							log_error!(
@@ -16792,21 +16780,17 @@ where
 						let mut pending_events = channel_manager.pending_events.lock().unwrap();
 						let payment_id =
 							payment.inbound_payment_id(&inbound_payment_id_secret.unwrap());
+						let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
+						let sender_intended_total_msat =
+							payment.htlcs.first().map(|htlc| htlc.total_msat);
 						pending_events.push_back((
 							events::Event::PaymentClaimed {
 								receiver_node_id,
 								payment_hash,
 								purpose: payment.purpose,
 								amount_msat: claimable_amt_msat,
-								htlcs: payment
-									.htlcs
-									.iter()
-									.map(events::ClaimedHTLC::from)
-									.collect(),
-								sender_intended_total_msat: payment
-									.htlcs
-									.first()
-									.map(|htlc| htlc.total_msat),
+								htlcs,
+								sender_intended_total_msat,
 								onion_fields: payment.onion_fields,
 								payment_id: Some(payment_id),
 							},
