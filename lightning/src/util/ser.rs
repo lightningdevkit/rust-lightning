@@ -15,7 +15,7 @@
 
 use crate::io::{self, BufRead, Read, Write};
 use crate::io_extras::{copy, sink};
-use crate::ln::interactivetxs::{InteractiveTxInput, InteractiveTxOutput};
+use crate::ln::interactivetxs::{InteractiveTxOutput, NegotiatedTxInput};
 use crate::ln::onion_utils::{HMAC_COUNT, HMAC_LEN, HOLD_TIME_LEN, MAX_HOPS};
 use crate::prelude::*;
 use crate::sync::{Mutex, RwLock};
@@ -1082,7 +1082,7 @@ impl_for_vec!(crate::ln::channelmanager::PaymentClaimDetails);
 impl_for_vec!(crate::ln::msgs::SocketAddress);
 impl_for_vec!((A, B), A, B);
 impl_for_vec!(SerialId);
-impl_for_vec!(InteractiveTxInput);
+impl_for_vec!(NegotiatedTxInput);
 impl_for_vec!(InteractiveTxOutput);
 impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
 impl_readable_for_vec!(crate::routing::router::BlindedTail);
@@ -1692,22 +1692,30 @@ impl TransactionU16LenLimited {
 	}
 }
 
-impl Writeable for TransactionU16LenLimited {
+impl Writeable for Option<TransactionU16LenLimited> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.0.serialized_length() as u16).write(w)?;
-		self.0.write(w)
+		match self {
+			Some(tx) => {
+				(tx.0.serialized_length() as u16).write(w)?;
+				tx.0.write(w)
+			},
+			None => 0u16.write(w),
+		}
 	}
 }
 
-impl Readable for TransactionU16LenLimited {
+impl Readable for Option<TransactionU16LenLimited> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len = <u16 as Readable>::read(r)?;
+		if len == 0 {
+			return Ok(None);
+		}
 		let mut tx_reader = FixedLengthReader::new(r, len as u64);
 		let tx: Transaction = Readable::read(&mut tx_reader)?;
 		if tx_reader.bytes_remain() {
 			Err(DecodeError::BadLengthDescriptor)
 		} else {
-			Ok(Self(tx))
+			Ok(Some(TransactionU16LenLimited(tx)))
 		}
 	}
 }
