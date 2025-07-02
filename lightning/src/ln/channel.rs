@@ -14265,7 +14265,6 @@ where
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
-			(54, self.pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_attribution_data, optional_vec), // Added in 0.2
 			(58, self.interactive_tx_signing_session, option), // Added in 0.2
@@ -14628,7 +14627,6 @@ where
 		let mut holder_commitment_point_pending_next_opt: Option<PublicKey> = None;
 		let mut is_manual_broadcast = None;
 
-		let mut pending_funding = Some(Vec::new());
 		let mut historical_scids = Some(Vec::new());
 
 		let mut interactive_tx_signing_session: Option<InteractiveTxSigningSession> = None;
@@ -14672,7 +14670,6 @@ where
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
-			(54, pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_attribution_data, optional_vec), // Added in 0.2
 			(58, interactive_tx_signing_session, option), // Added in 0.2
@@ -14929,7 +14926,7 @@ where
 				short_channel_id,
 				minimum_depth_override,
 			},
-			pending_funding: pending_funding.unwrap(),
+			pending_funding: Vec::new(),
 			context: ChannelContext {
 				user_id,
 
