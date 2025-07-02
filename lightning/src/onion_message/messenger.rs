@@ -413,6 +413,11 @@ impl Responder {
 		Responder { reply_path }
 	}
 
+	/// Returns the reply path for this [`Responder`].
+	pub fn reply_path(&self) -> &BlindedMessagePath {
+		&self.reply_path
+	}
+
 	/// Creates a [`ResponseInstruction`] for responding without including a reply path.
 	///
 	/// Use when the recipient doesn't need to send back a reply to us.
