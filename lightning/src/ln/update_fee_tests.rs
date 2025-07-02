@@ -1193,3 +1193,185 @@ pub fn do_cannot_afford_on_holding_cell_release(
 		nodes[0].logger.assert_log("lightning::ln::channel", err, 1);
 	}
 }
+
+#[xtest(feature = "_externalize_tests")]
+pub fn can_afford_given_trimmed_htlcs() {
+	do_can_afford_given_trimmed_htlcs(core::cmp::Ordering::Equal);
+	do_can_afford_given_trimmed_htlcs(core::cmp::Ordering::Greater);
+	do_can_afford_given_trimmed_htlcs(core::cmp::Ordering::Less);
+}
+
+pub fn do_can_afford_given_trimmed_htlcs(inequality_regions: core::cmp::Ordering) {
+	// Test that when we check whether we can afford a feerate update, we account for the
+	// decrease in the weight of the commitment transaction due to newly trimmed HTLCs at the higher feerate.
+	//
+	// Place a non-dust HTLC on the transaction, increase the feerate such that the HTLC
+	// gets trimmed, and finally check whether we were able to afford the new feerate.
+
+	let channel_type = ChannelTypeFeatures::only_static_remote_key();
+	let can_afford = match inequality_regions {
+		core::cmp::Ordering::Less => false,
+		core::cmp::Ordering::Equal => true,
+		core::cmp::Ordering::Greater => true,
+	};
+	let inequality_boundary_offset = match inequality_regions {
+		core::cmp::Ordering::Less => 0,
+		core::cmp::Ordering::Equal => 1,
+		core::cmp::Ordering::Greater => 2,
+	};
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+
+	let mut default_config = test_default_channel_config();
+	default_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel =
+		100;
+
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(default_config.clone()), Some(default_config)]);
+
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	// We will update the feerate from 253sat/kw to 1000sat/kw
+	let target_feerate = 1000;
+	// Set a HTLC amount that is non-dust at 253sat/kw and dust at 1000sat/kw
+	let node_0_inbound_htlc_amount_sat = 750;
+
+	// This is the number of HTLCs that `can_send_update_fee` will account for when checking
+	// whether node 0 can afford the target feerate. We do not include the inbound HTLC we will send,
+	// as that HTLC will be trimmed at the new feerate.
+	let buffer_tx_fee_sat = chan_utils::commit_tx_fee_sat(
+		target_feerate,
+		crate::ln::channel::CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize,
+		&channel_type,
+	);
+	let channel_reserve_satoshis = 1000;
+
+	let channel_value_sat = 100_000;
+	let node_0_balance_sat =
+		(buffer_tx_fee_sat + channel_reserve_satoshis) - 1 + inequality_boundary_offset;
+	let node_1_balance_sat = channel_value_sat - node_0_balance_sat;
+
+	let chan_id =
+		create_chan_between_nodes_with_value(&nodes[0], &nodes[1], channel_value_sat, 0).3;
+	{
+		// Double check the reserve here
+		let per_peer_state_lock;
+		let mut peer_state_lock;
+		let chan =
+			get_channel_ref!(nodes[1], nodes[0], per_peer_state_lock, peer_state_lock, chan_id);
+		assert_eq!(
+			chan.funding().holder_selected_channel_reserve_satoshis,
+			channel_reserve_satoshis
+		);
+	}
+
+	// Set node 0's balance at some offset from the inequality boundary
+	send_payment(&nodes[0], &[&nodes[1]], node_1_balance_sat * 1000);
+
+	// Route the HTLC from node 1 to node 0
+	route_payment(&nodes[1], &[&nodes[0]], node_0_inbound_htlc_amount_sat * 1000);
+
+	// Confirm the feerate on node 0's commitment transaction
+	{
+		let expected_tx_fee_sat = chan_utils::commit_tx_fee_sat(253, 1, &channel_type);
+		let commitment_tx = get_local_commitment_txn!(nodes[0], chan_id)[0].clone();
+
+		let mut actual_fee = commitment_tx
+			.output
+			.iter()
+			.map(|output| output.value.to_sat())
+			.reduce(|acc, value| acc + value)
+			.unwrap();
+		actual_fee = channel_value_sat - actual_fee;
+		assert_eq!(expected_tx_fee_sat, actual_fee);
+
+		// The HTLC is non-dust...
+		assert_eq!(commitment_tx.output.len(), 3);
+	}
+
+	{
+		// Bump the feerate
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = target_feerate;
+	}
+	nodes[0].node.timer_tick_occurred();
+	check_added_monitors(&nodes[0], if can_afford { 1 } else { 0 });
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+
+	if can_afford {
+		// We could afford the target feerate, sanity check everything
+		assert_eq!(events.len(), 1);
+		if let MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } =
+			events.pop().unwrap()
+		{
+			assert_eq!(node_id, node_b_id);
+			assert_eq!(channel_id, chan_id);
+			assert_eq!(updates.commitment_signed.len(), 1);
+			// The HTLC is now trimmed!
+			assert_eq!(updates.commitment_signed[0].htlc_signatures.len(), 0);
+			assert_eq!(updates.update_add_htlcs.len(), 0);
+			assert_eq!(updates.update_fulfill_htlcs.len(), 0);
+			assert_eq!(updates.update_fail_htlcs.len(), 0);
+			assert_eq!(updates.update_fail_malformed_htlcs.len(), 0);
+			let update_fee = updates.update_fee.unwrap();
+			assert_eq!(update_fee.channel_id, chan_id);
+			assert_eq!(update_fee.feerate_per_kw, target_feerate);
+
+			nodes[1].node.handle_update_fee(node_a_id, &update_fee);
+			commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
+
+			// Confirm the feerate on node 0's commitment transaction
+			{
+				// Also add the trimmed HTLC to the fees
+				let expected_tx_fee_sat =
+					chan_utils::commit_tx_fee_sat(target_feerate, 0, &channel_type)
+						+ node_0_inbound_htlc_amount_sat;
+				let commitment_tx = get_local_commitment_txn!(nodes[0], channel_id)[0].clone();
+
+				let mut actual_fee = commitment_tx
+					.output
+					.iter()
+					.map(|output| output.value.to_sat())
+					.reduce(|acc, value| acc + value)
+					.unwrap();
+				actual_fee = channel_value_sat - actual_fee;
+				assert_eq!(expected_tx_fee_sat, actual_fee);
+
+				// The HTLC is now trimmed!
+				assert_eq!(commitment_tx.output.len(), 2);
+			}
+
+			// Confirm the feerate on node 1's commitment transaction
+			{
+				// Also add the trimmed HTLC to the fees
+				let expected_tx_fee_sat =
+					chan_utils::commit_tx_fee_sat(target_feerate, 0, &channel_type)
+						+ node_0_inbound_htlc_amount_sat;
+				let commitment_tx = get_local_commitment_txn!(nodes[1], channel_id)[0].clone();
+
+				let mut actual_fee = commitment_tx
+					.output
+					.iter()
+					.map(|output| output.value.to_sat())
+					.reduce(|acc, value| acc + value)
+					.unwrap();
+				actual_fee = channel_value_sat - actual_fee;
+				assert_eq!(expected_tx_fee_sat, actual_fee);
+
+				// The HTLC is now trimmed!
+				assert_eq!(commitment_tx.output.len(), 2);
+			}
+		} else {
+			panic!();
+		}
+	} else {
+		// We could not afford the target feerate, no events should be generated
+		assert_eq!(events.len(), 0);
+		let err = format!("Cannot afford to send new feerate at {}", target_feerate);
+		nodes[0].logger.assert_log("lightning::ln::channel", err, 1);
+	}
+}
