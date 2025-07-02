@@ -3133,7 +3133,7 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 	payment_failed_events: Vec<Event>, expected_payment_hash: PaymentHash,
 	expected_payment_failed_permanently: bool, conditions: PaymentFailedConditions<'e>,
 ) {
-	if conditions.expected_mpp_parts_remain {
+	if conditions.expected_mpp_parts_remain || conditions.retry_expected {
 		assert_eq!(payment_failed_events.len(), 1);
 	} else {
 		assert_eq!(payment_failed_events.len(), 2);
