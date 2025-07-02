@@ -9405,6 +9405,12 @@ where
 		false
 	}
 
+	/// Gets the latest inbound SCID alias from our peer, or if none exists, the channel's real
+	/// SCID.
+	pub fn get_inbound_scid(&self) -> Option<u64> {
+		self.context.latest_inbound_scid_alias.or(self.funding.get_short_channel_id())
+	}
+
 	/// Returns true if our channel_ready has been sent
 	pub fn is_our_channel_ready(&self) -> bool {
 		matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if flags.is_set(AwaitingChannelReadyFlags::OUR_CHANNEL_READY))

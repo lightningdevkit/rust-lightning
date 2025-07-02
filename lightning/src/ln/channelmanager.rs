@@ -11524,8 +11524,9 @@ where
 					.channel_by_id
 					.iter()
 					.filter(|(_, channel)| channel.context().is_usable())
-					.min_by_key(|(_, channel)| channel.context().channel_creation_height)
-					.and_then(|(_, channel)| channel.funding().get_short_channel_id()),
+					.filter_map(|(_, channel)| channel.as_funded())
+					.min_by_key(|funded_channel| funded_channel.context.channel_creation_height)
+					.and_then(|funded_channel| funded_channel.get_inbound_scid()),
 			})
 			.collect::<Vec<_>>()
 	}
