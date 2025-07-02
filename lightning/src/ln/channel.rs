@@ -5941,6 +5941,7 @@ impl<SP: Deref> Channel<SP> where
 	{
 		assert!(self.context.channel_state.is_monitor_update_in_progress());
 		self.context.channel_state.clear_monitor_update_in_progress();
+		assert_eq!(self.blocked_monitor_updates_pending(), 0);
 
 		// If we're past (or at) the AwaitingChannelReady stage on an outbound channel, try to
 		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
