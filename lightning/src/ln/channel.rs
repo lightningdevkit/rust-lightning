@@ -12615,7 +12615,6 @@ where
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
-			(54, self.pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
 			(58, self.interactive_tx_signing_session, option), // Added in 0.2
@@ -12979,7 +12978,6 @@ where
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
-			(54, pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec),
 			(57, holding_cell_failure_attribution_data, optional_vec),
 			(58, interactive_tx_signing_session, option), // Added in 0.2
