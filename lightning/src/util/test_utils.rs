@@ -317,13 +317,17 @@ pub struct TestMessageRouter<'a> {
 		&'a TestLogger,
 		&'a TestKeysInterface,
 	>,
+	pub peers_override: Mutex<Vec<PublicKey>>,
 }
 
 impl<'a> TestMessageRouter<'a> {
 	pub fn new(
 		network_graph: Arc<NetworkGraph<&'a TestLogger>>, entropy_source: &'a TestKeysInterface,
 	) -> Self {
-		Self { inner: DefaultMessageRouter::new(network_graph, entropy_source) }
+		Self {
+			inner: DefaultMessageRouter::new(network_graph, entropy_source),
+			peers_override: Mutex::new(Vec::new()),
+		}
 	}
 }
 
@@ -331,6 +335,13 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 	fn find_path(
 		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination,
 	) -> Result<OnionMessagePath, ()> {
+		let mut peers = peers;
+		{
+			let peers_override = self.peers_override.lock().unwrap();
+			if !peers_override.is_empty() {
+				peers = peers_override.clone();
+			}
+		}
 		self.inner.find_path(sender, peers, destination)
 	}
 
@@ -338,6 +349,13 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
+		let mut peers = peers;
+		{
+			let peers_override = self.peers_override.lock().unwrap();
+			if !peers_override.is_empty() {
+				peers = peers_override.clone();
+			}
+		}
 		self.inner.create_blinded_paths(recipient, context, peers, secp_ctx)
 	}
 
@@ -345,6 +363,17 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 		&self, recipient: PublicKey, context: MessageContext, peers: Vec<MessageForwardNode>,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
+		let mut peers = peers;
+		{
+			let peers_override = self.peers_override.lock().unwrap();
+			if !peers_override.is_empty() {
+				peers = peers_override
+					.clone()
+					.iter()
+					.map(|pk| MessageForwardNode { node_id: *pk, short_channel_id: None })
+					.collect();
+			}
+		}
 		self.inner.create_compact_blinded_paths(recipient, context, peers, secp_ctx)
 	}
 }
