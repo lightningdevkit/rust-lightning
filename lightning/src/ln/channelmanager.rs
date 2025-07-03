@@ -2720,6 +2720,10 @@ pub struct ChannelManager<
 	/// A simple atomic flag to ensure only one task at a time can be processing events asynchronously.
 	pending_events_processor: AtomicBool,
 
+	/// A simple atomic flag to ensure only one task at a time can be processing HTLC forwards via
+	/// [`Self::process_pending_htlc_forwards`].
+	pending_htlc_forwards_processor: AtomicBool,
+
 	/// If we are running during init (either directly during the deserialization method or in
 	/// block connection methods which run after deserialization but before normal operation) we
 	/// cannot provide the user with [`ChannelMonitorUpdate`]s through the normal update flow -
@@ -3784,6 +3788,7 @@ where
 
 			pending_events: Mutex::new(VecDeque::new()),
 			pending_events_processor: AtomicBool::new(false),
+			pending_htlc_forwards_processor: AtomicBool::new(false),
 			pending_background_events: Mutex::new(Vec::new()),
 			total_consistency_lock: RwLock::new(()),
 			background_events_processed_since_startup: AtomicBool::new(false),
@@ -6334,9 +6339,19 @@ where
 	///
 	/// Will regularly be called by the background processor.
 	pub fn process_pending_htlc_forwards(&self) {
+		if self
+			.pending_htlc_forwards_processor
+			.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+			.is_err()
+		{
+			return;
+		}
+
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			self.internal_process_pending_htlc_forwards()
 		});
+
+		self.pending_htlc_forwards_processor.store(false, Ordering::Release);
 	}
 
 	// Returns whether or not we need to re-persist.
@@ -16348,6 +16363,7 @@ where
 
 			pending_events: Mutex::new(pending_events_read),
 			pending_events_processor: AtomicBool::new(false),
+			pending_htlc_forwards_processor: AtomicBool::new(false),
 			pending_background_events: Mutex::new(pending_background_events),
 			total_consistency_lock: RwLock::new(()),
 			background_events_processed_since_startup: AtomicBool::new(false),
