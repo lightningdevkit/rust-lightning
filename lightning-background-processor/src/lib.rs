@@ -892,7 +892,7 @@ where
 			event_handler(event).await
 		})
 	};
-	let batch_delay = BatchDelay::new();
+	let mut batch_delay = BatchDelay::new();
 	define_run_body!(
 		persister,
 		chain_monitor,
@@ -1086,7 +1086,7 @@ impl BackgroundProcessor {
 				}
 				event_handler.handle_event(event)
 			};
-			let batch_delay = BatchDelay::new();
+			let mut batch_delay = BatchDelay::new();
 			define_run_body!(
 				persister,
 				chain_monitor,
