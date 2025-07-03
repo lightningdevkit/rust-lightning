@@ -2173,10 +2173,15 @@ impl FundingScope {
 	}
 }
 
-/// Info about a pending splice, used in the pre-splice channel
+/// Information about pending attempts at funding a channel. This includes funding currently under
+/// negotiation and any negotiated attempts waiting enough on-chain confirmations. More than one
+/// such attempt indicates use of RBF to increase the chances of confirmation.
 #[cfg(splicing)]
-struct PendingSplice {
+struct PendingFunding {
 	pub our_funding_contribution: i64,
+
+	/// The current funding attempt under negotiation. Once signatures have been exchanged, this
+	/// will move to `negotiated_candidates`.
 	funding: Option<FundingScope>,
 
 	/// Funding candidates that have been negotiated but have not reached enough confirmations
@@ -2191,7 +2196,7 @@ struct PendingSplice {
 }
 
 #[cfg(splicing)]
-impl PendingSplice {
+impl PendingFunding {
 	fn check_get_splice_locked<SP: Deref>(
 		&mut self, context: &ChannelContext<SP>, confirmed_funding_index: usize, height: u32,
 	) -> Option<msgs::SpliceLocked>
@@ -5903,7 +5908,7 @@ where
 	holder_commitment_point: HolderCommitmentPoint,
 	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
 	#[cfg(splicing)]
-	pending_splice: Option<PendingSplice>,
+	pending_splice: Option<PendingFunding>,
 }
 
 #[cfg(splicing)]
@@ -10273,7 +10278,7 @@ where
 				self.context.channel_id(), err,
 			)})?;
 
-		self.pending_splice = Some(PendingSplice {
+		self.pending_splice = Some(PendingFunding {
 			our_funding_contribution: our_funding_contribution_satoshis,
 			funding: None,
 			negotiated_candidates: vec![],
