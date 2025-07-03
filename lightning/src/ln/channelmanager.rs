@@ -6334,8 +6334,14 @@ where
 	///
 	/// Will regularly be called by the background processor.
 	pub fn process_pending_htlc_forwards(&self) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			self.internal_process_pending_htlc_forwards()
+		});
+	}
 
+	// Returns whether or not we need to re-persist.
+	fn internal_process_pending_htlc_forwards(&self) -> NotifyOption {
+		let should_persist = NotifyOption::DoPersist;
 		self.process_pending_update_add_htlcs();
 
 		let mut new_events = VecDeque::new();
@@ -7135,10 +7141,11 @@ where
 		self.check_free_holding_cells();
 
 		if new_events.is_empty() {
-			return;
+			return should_persist;
 		}
 		let mut events = self.pending_events.lock().unwrap();
 		events.append(&mut new_events);
+		should_persist
 	}
 
 	/// Free the background events, generally called from [`PersistenceNotifierGuard`] constructors.
