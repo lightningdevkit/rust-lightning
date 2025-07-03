@@ -4396,14 +4396,22 @@ where
 				funding.get_channel_type()
 			);
 
-			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
-			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
-			// side, only on the sender's. Note that with anchor outputs we are no longer as
-			// sensitive to fee spikes, so we need to account for them.
+			// `Some(())` is for the fee spike buffer we keep for the remote if the channel is
+			// not zero fee. This deviates from the spec because the fee spike buffer requirement
+			// doesn't exist on the receiver's side, only on the sender's. Note that with anchor
+			// outputs we are no longer as sensitive to fee spikes, so we need to account for them.
 			//
 			// A `None` `HTLCCandidate` is used as in this case because we're already accounting for
 			// the incoming HTLC as it has been fully committed by both sides.
-			let mut remote_fee_cost_incl_stuck_buffer_msat = self.next_remote_commit_tx_fee_msat(funding, None, Some(()));
+			let fee_spike_buffer_htlc = if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+				None
+			} else {
+				Some(())
+			};
+
+			let mut remote_fee_cost_incl_stuck_buffer_msat = self.next_remote_commit_tx_fee_msat(
+				funding, None, fee_spike_buffer_htlc,
+			);
 			if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 			}
@@ -4929,11 +4937,18 @@ where
 			// and the answer will in turn change the amount itself — making it a circular
 			// dependency.
 			// This complicates the computation around dust-values, up to the one-htlc-value.
+			let fee_spike_buffer_htlc = if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+				None
+			} else {
+				Some(())
+			};
+
 			let real_dust_limit_timeout_sat = real_htlc_timeout_tx_fee_sat + context.holder_dust_limit_satoshis;
 			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000, HTLCInitiator::LocalOffered);
-			let mut max_reserved_commit_tx_fee_msat = context.next_local_commit_tx_fee_msat(funding, htlc_above_dust, Some(()));
+			let mut max_reserved_commit_tx_fee_msat = context.next_local_commit_tx_fee_msat(&funding, htlc_above_dust, fee_spike_buffer_htlc);
 			let htlc_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000 - 1, HTLCInitiator::LocalOffered);
-			let mut min_reserved_commit_tx_fee_msat = context.next_local_commit_tx_fee_msat(funding, htlc_dust, Some(()));
+			let mut min_reserved_commit_tx_fee_msat = context.next_local_commit_tx_fee_msat(&funding, htlc_dust, fee_spike_buffer_htlc);
+
 			if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				max_reserved_commit_tx_fee_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 				min_reserved_commit_tx_fee_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
@@ -5051,6 +5066,7 @@ where
 
 		if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
 			debug_assert_eq!(context.feerate_per_kw, 0);
+			debug_assert!(fee_spike_buffer_htlc.is_none());
 			return 0;
 		}
 
@@ -5160,6 +5176,7 @@ where
 
 		if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
 			debug_assert_eq!(context.feerate_per_kw, 0);
+			debug_assert!(fee_spike_buffer_htlc.is_none());
 			return 0
 		}
 

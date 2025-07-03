@@ -776,6 +776,16 @@ pub fn test_basic_channel_reserve() {
 fn test_fee_spike_violation_fails_htlc() {
 	do_test_fee_spike_buffer(None, true)
 }
+
+#[test]
+fn test_zero_fee_commitments_no_fee_spike_buffer() {
+	let mut cfg = test_default_channel_config();
+	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+	cfg.manually_accept_inbound_channels = true;
+
+	do_test_fee_spike_buffer(Some(cfg), false)
+}
+
 pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
