@@ -1067,7 +1067,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 32
 	ext_from_hex("030020", &mut test);
 	// init message (type 16) with static_remotekey required, no anchors/taproot, and other bits optional and mac
-	ext_from_hex("0010 00021aaa 0008aaa218aa2a0a9aaa 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0010 00021aaa 0008aaa210aa2a0a9aaa 03000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
@@ -1168,7 +1168,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 32
 	ext_from_hex("030120", &mut test);
 	// init message (type 16) with static_remotekey required, no anchors/taproot, and other bits optional and mac
-	ext_from_hex("0010 00021aaa 0008aaa218aa2a0a9aaa 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0010 00021aaa 0008aaa210aa2a0a9aaa 01000000000000000000000000000000", &mut test);
 
 	// create outbound channel to peer 1 for 50k sat
 	ext_from_hex(
@@ -1582,8 +1582,8 @@ fn gossip_exchange_seed() -> Vec<u8> {
 	ext_from_hex("0010 03000000000000000000000000000000", &mut test);
 	// inbound read from peer id 0 of len 32
 	ext_from_hex("030020", &mut test);
-	// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
-	ext_from_hex("0010 00021aaa 0008aaa218aa2a0a9aaa 03000000000000000000000000000000", &mut test);
+	// init message (type 16) with static_remotekey required, no anchors/taproot, and other bits optional and mac
+	ext_from_hex("0010 00021aaa 0008aaa210aa2a0a9aaa 03000000000000000000000000000000", &mut test);
 
 	// new inbound connection with id 1
 	ext_from_hex("01", &mut test);
@@ -1602,8 +1602,8 @@ fn gossip_exchange_seed() -> Vec<u8> {
 	ext_from_hex("0010 01000000000000000000000000000000", &mut test);
 	// inbound read from peer id 1 of len 32
 	ext_from_hex("030120", &mut test);
-	// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
-	ext_from_hex("0010 00021aaa 0008aaa218aa2a0a9aaa 01000000000000000000000000000000", &mut test);
+	// init message (type 16) with static_remotekey required, no anchors/taproot, and other bits optional and mac
+	ext_from_hex("0010 00021aaa 0008aaa210aa2a0a9aaa 01000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
