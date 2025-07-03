@@ -225,11 +225,16 @@ fn do_test_manual_inbound_accept_with_override(
 
 	nodes[2].node.handle_open_channel(node_a, &open_channel_msg);
 	let events = nodes[2].node.get_and_clear_pending_events();
-	match events[0] {
-		Event::OpenChannelRequest { temporary_channel_id, .. } => nodes[2]
-			.node
-			.accept_inbound_channel(&temporary_channel_id, &node_a, 23, config_overrides)
-			.unwrap(),
+	match &events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, params, .. } => {
+			// Test that channel_reserve_satoshis is properly exposed in Event::OpenChannelRequest
+			assert_eq!(params.channel_reserve_satoshis, open_channel_msg.channel_reserve_satoshis);
+
+			nodes[2]
+				.node
+				.accept_inbound_channel(temporary_channel_id, &node_a, 23, config_overrides)
+				.unwrap()
+		},
 		_ => panic!("Unexpected event"),
 	}
 	get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, node_a)
