@@ -2175,7 +2175,10 @@ impl FundingScope {
 struct PendingSplice {
 	pub our_funding_contribution: i64,
 	funding: Option<FundingScope>,
-	pending_funding: Vec<FundingScope>,
+
+	/// Funding candidates that have been negotiated but have not reached enough confirmations
+	/// by both counterparties to have exchanged `splice_locked` and be promoted.
+	negotiated_candidates: Vec<FundingScope>,
 
 	/// The funding txid used in the `splice_locked` sent to the counterparty.
 	sent_funding_txid: Option<Txid>,
@@ -2192,9 +2195,9 @@ impl PendingSplice {
 	where
 		SP::Target: SignerProvider,
 	{
-		debug_assert!(confirmed_funding_index < self.pending_funding.len());
+		debug_assert!(confirmed_funding_index < self.negotiated_candidates.len());
 
-		let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
+		let funding = self.negotiated_candidates.get(confirmed_funding_index).unwrap();
 		if !context.check_funding_meets_minimum_depth(funding, height) {
 			return None;
 		}
@@ -6052,7 +6055,7 @@ where
 {
 	fn pending_funding(&self) -> &[FundingScope] {
 		if let Some(pending_splice) = &self.pending_splice {
-			pending_splice.pending_funding.as_slice()
+			pending_splice.negotiated_candidates.as_slice()
 		} else {
 			&[]
 		}
@@ -7305,7 +7308,7 @@ where
 			*self.funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
 			*self.funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
 			if let Some(pending_splice) = self.pending_splice.as_mut() {
-				for funding in pending_splice.pending_funding.iter_mut() {
+				for funding in pending_splice.negotiated_candidates.iter_mut() {
 					*funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
 					*funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
 				}
@@ -7512,7 +7515,7 @@ where
 		self.funding.value_to_self_msat =
 			(self.funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 		if let Some(pending_splice) = self.pending_splice.as_mut() {
-			for funding in pending_splice.pending_funding.iter_mut() {
+			for funding in pending_splice.negotiated_candidates.iter_mut() {
 				funding.value_to_self_msat =
 					(funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 			}
@@ -9553,7 +9556,7 @@ where
 
 		let pending_splice = self.pending_splice.as_mut().unwrap();
 
-		debug_assert!(confirmed_funding_index < pending_splice.pending_funding.len());
+		debug_assert!(confirmed_funding_index < pending_splice.negotiated_candidates.len());
 
 		let splice_txid = match pending_splice.sent_funding_txid {
 			Some(sent_funding_txid) => sent_funding_txid,
@@ -9571,7 +9574,8 @@ where
 				&self.context.channel_id,
 			);
 
-			let funding = pending_splice.pending_funding.get_mut(confirmed_funding_index).unwrap();
+			let funding =
+				pending_splice.negotiated_candidates.get_mut(confirmed_funding_index).unwrap();
 			debug_assert_eq!(Some(splice_txid), funding.get_funding_txid());
 			promote_splice_funding!(self, funding);
 
@@ -9646,7 +9650,7 @@ where
 			let mut funding_already_confirmed = false;
 			#[cfg(splicing)]
 			if let Some(pending_splice) = &mut self.pending_splice {
-				for (index, funding) in pending_splice.pending_funding.iter_mut().enumerate() {
+				for (index, funding) in pending_splice.negotiated_candidates.iter_mut().enumerate() {
 					if self.context.check_for_funding_tx_confirmed(
 						funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
 					)? {
@@ -9681,7 +9685,7 @@ where
 				) {
 					for &(idx, tx) in txdata.iter() {
 						if idx > index_in_block {
-							let funding = pending_splice.pending_funding.get(confirmed_funding_index).unwrap();
+							let funding = pending_splice.negotiated_candidates.get(confirmed_funding_index).unwrap();
 							self.context.check_for_funding_tx_spent(funding, tx, logger)?;
 						}
 					}
@@ -9711,7 +9715,7 @@ where
 			self.context.check_for_funding_tx_spent(&self.funding, tx, logger)?;
 			#[cfg(splicing)]
 			if let Some(pending_splice) = self.pending_splice.as_ref() {
-				for funding in pending_splice.pending_funding.iter() {
+				for funding in pending_splice.negotiated_candidates.iter() {
 					self.context.check_for_funding_tx_spent(funding, tx, logger)?;
 				}
 			}
@@ -9840,7 +9844,7 @@ where
 					return Err(ClosureReason::ProcessingError { err });
 				},
 			};
-			let funding = pending_splice.pending_funding.get_mut(confirmed_funding_index).unwrap();
+			let funding = pending_splice.negotiated_candidates.get_mut(confirmed_funding_index).unwrap();
 
 			// Check if the splice funding transaction was unconfirmed
 			if funding.get_funding_tx_confirmations(height) == 0 {
@@ -9928,7 +9932,7 @@ where
 			.or_else(|| {
 				self.pending_splice.as_mut().and_then(|pending_splice| {
 					pending_splice
-						.pending_funding
+						.negotiated_candidates
 						.iter_mut()
 						.find(|funding| funding.get_funding_txid() == Some(*txid))
 				})
@@ -10288,7 +10292,7 @@ where
 		self.pending_splice = Some(PendingSplice {
 			our_funding_contribution: our_funding_contribution_satoshis,
 			funding: None,
-			pending_funding: vec![],
+			negotiated_candidates: vec![],
 			sent_funding_txid: None,
 			received_funding_txid: None,
 		});
@@ -10406,7 +10410,7 @@ where
 		if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
 			if sent_funding_txid == msg.splice_txid {
 				if let Some(funding) = pending_splice
-					.pending_funding
+					.negotiated_candidates
 					.iter_mut()
 					.find(|funding| funding.get_funding_txid() == Some(sent_funding_txid))
 				{
