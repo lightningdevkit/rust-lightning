@@ -1226,13 +1226,14 @@ impl OutboundPayments {
 		)
 	}
 
+	// Returns whether the data changed and needs to be repersisted.
 	#[rustfmt::skip]
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
 		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
 		best_block_height: u32,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, logger: &L,
 		send_payment_along_path: SP,
-	)
+	) -> bool
 	where
 		R::Target: Router,
 		ES::Target: EntropySource,
@@ -1243,6 +1244,7 @@ impl OutboundPayments {
 		L::Target: Logger,
 	{
 		let _single_thread = self.retry_lock.lock().unwrap();
+		let mut should_persist = false;
 		loop {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			let mut retry_id_route_params = None;
@@ -1262,7 +1264,8 @@ impl OutboundPayments {
 			}
 			core::mem::drop(outbounds);
 			if let Some((payment_hash, payment_id, route_params)) = retry_id_route_params {
-				self.find_route_and_send_payment(payment_hash, payment_id, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path)
+				self.find_route_and_send_payment(payment_hash, payment_id, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path);
+				should_persist = true;
 			} else { break }
 		}
 
@@ -1278,10 +1281,12 @@ impl OutboundPayments {
 						reason: *reason,
 					}, None));
 					retain = false;
+					should_persist = true;
 				}
 			}
 			retain
 		});
+		should_persist
 	}
 
 	#[rustfmt::skip]
