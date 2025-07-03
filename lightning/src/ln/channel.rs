@@ -9650,11 +9650,10 @@ where
 			}
 
 			#[cfg(splicing)]
-			let mut confirmed_funding_index = None;
-			#[cfg(splicing)]
-			let mut funding_already_confirmed = false;
-			#[cfg(splicing)]
 			if let Some(pending_splice) = &mut self.pending_splice {
+				let mut confirmed_funding_index = None;
+				let mut funding_already_confirmed = false;
+
 				for (index, funding) in pending_splice.negotiated_candidates.iter_mut().enumerate() {
 					if self.context.check_for_funding_tx_confirmed(
 						funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
@@ -9669,51 +9668,40 @@ where
 						funding_already_confirmed = true;
 					}
 				}
-			}
 
-			#[cfg(splicing)]
-			if let Some(confirmed_funding_index) = confirmed_funding_index {
-				let pending_splice = match self.pending_splice.as_mut() {
-					Some(pending_splice) => pending_splice,
-					None => {
-						// TODO: Move pending_funding into pending_splice
-						debug_assert!(false);
-						let err = "expected a pending splice".to_string();
-						return Err(ClosureReason::ProcessingError { err });
-					},
-				};
-
-				if let Some(splice_locked) = pending_splice.check_get_splice_locked(
-					&self.context,
-					confirmed_funding_index,
-					height,
-				) {
-					for &(idx, tx) in txdata.iter() {
-						if idx > index_in_block {
-							let funding = pending_splice.negotiated_candidates.get(confirmed_funding_index).unwrap();
-							self.context.check_for_funding_tx_spent(funding, tx, logger)?;
+				if let Some(confirmed_funding_index) = confirmed_funding_index {
+					if let Some(splice_locked) = pending_splice.check_get_splice_locked(
+						&self.context,
+						confirmed_funding_index,
+						height,
+					) {
+						for &(idx, tx) in txdata.iter() {
+							if idx > index_in_block {
+								let funding = pending_splice.negotiated_candidates.get(confirmed_funding_index).unwrap();
+								self.context.check_for_funding_tx_spent(funding, tx, logger)?;
+							}
 						}
+
+						log_info!(
+							logger,
+							"Sending splice_locked txid {} to our peer for channel {}",
+							splice_locked.splice_txid,
+							&self.context.channel_id,
+						);
+
+						let funding_promoted =
+							self.maybe_promote_splice_funding(confirmed_funding_index, logger);
+						let funding_txo = funding_promoted.then(|| {
+							self.funding
+								.get_funding_txo()
+								.expect("Splice FundingScope should always have a funding_txo")
+						});
+						let announcement_sigs = funding_promoted
+							.then(|| self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger))
+							.flatten();
+
+						return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), announcement_sigs));
 					}
-
-					log_info!(
-						logger,
-						"Sending splice_locked txid {} to our peer for channel {}",
-						splice_locked.splice_txid,
-						&self.context.channel_id,
-					);
-
-					let funding_promoted =
-						self.maybe_promote_splice_funding(confirmed_funding_index, logger);
-					let funding_txo = funding_promoted.then(|| {
-						self.funding
-							.get_funding_txo()
-							.expect("Splice FundingScope should always have a funding_txo")
-					});
-					let announcement_sigs = funding_promoted
-						.then(|| self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger))
-						.flatten();
-
-					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), announcement_sigs));
 				}
 			}
 
@@ -9825,72 +9813,63 @@ where
 		}
 
 		#[cfg(splicing)]
-		let mut confirmed_funding_index = None;
-		#[cfg(splicing)]
-		for (index, funding) in self.pending_funding().iter().enumerate() {
-			if funding.funding_tx_confirmation_height != 0 {
-				if confirmed_funding_index.is_some() {
-					let err_reason = "splice tx of another pending funding already confirmed";
-					return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
+		if let Some(pending_splice) = &mut self.pending_splice {
+			let mut confirmed_funding_index = None;
+
+			for (index, funding) in pending_splice.negotiated_candidates.iter().enumerate() {
+				if funding.funding_tx_confirmation_height != 0 {
+					if confirmed_funding_index.is_some() {
+						let err_reason = "splice tx of another pending funding already confirmed";
+						return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
+					}
+
+					confirmed_funding_index = Some(index);
 				}
-
-				confirmed_funding_index = Some(index);
 			}
-		}
 
-		#[cfg(splicing)]
-		if let Some(confirmed_funding_index) = confirmed_funding_index {
-			let pending_splice = match self.pending_splice.as_mut() {
-				Some(pending_splice) => pending_splice,
-				None => {
-					// TODO: Move pending_funding into pending_splice
-					debug_assert!(false);
-					let err = "expected a pending splice".to_string();
-					return Err(ClosureReason::ProcessingError { err });
-				},
-			};
-			let funding = pending_splice.negotiated_candidates.get_mut(confirmed_funding_index).unwrap();
+			if let Some(confirmed_funding_index) = confirmed_funding_index {
+				let funding = pending_splice.negotiated_candidates.get_mut(confirmed_funding_index).unwrap();
 
-			// Check if the splice funding transaction was unconfirmed
-			if funding.get_funding_tx_confirmations(height) == 0 {
-				funding.funding_tx_confirmation_height = 0;
-				if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
-					if Some(sent_funding_txid) == funding.get_funding_txid() {
-						log_warn!(
-							logger,
-							"Unconfirming sent splice_locked txid {} for channel {}",
-							sent_funding_txid,
-							&self.context.channel_id,
-						);
-						pending_splice.sent_funding_txid = None;
+				// Check if the splice funding transaction was unconfirmed
+				if funding.get_funding_tx_confirmations(height) == 0 {
+					funding.funding_tx_confirmation_height = 0;
+					if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
+						if Some(sent_funding_txid) == funding.get_funding_txid() {
+							log_warn!(
+								logger,
+								"Unconfirming sent splice_locked txid {} for channel {}",
+								sent_funding_txid,
+								&self.context.channel_id,
+							);
+							pending_splice.sent_funding_txid = None;
+						}
 					}
 				}
-			}
 
-			let pending_splice = self.pending_splice.as_mut().unwrap();
-			if let Some(splice_locked) = pending_splice.check_get_splice_locked(
-				&self.context,
-				confirmed_funding_index,
-				height,
-			) {
-				log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
+				if let Some(splice_locked) = pending_splice.check_get_splice_locked(
+					&self.context,
+					confirmed_funding_index,
+					height,
+				) {
+					log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
 
-				let funding_promoted =
-					self.maybe_promote_splice_funding(confirmed_funding_index, logger);
-				let funding_txo = funding_promoted.then(|| {
-					self.funding
-						.get_funding_txo()
-						.expect("Splice FundingScope should always have a funding_txo")
-				});
-				let announcement_sigs = funding_promoted
-					.then(|| chain_node_signer
-						.and_then(|(chain_hash, node_signer, user_config)|
-							self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
+					let funding_promoted =
+						self.maybe_promote_splice_funding(confirmed_funding_index, logger);
+					let funding_txo = funding_promoted.then(|| {
+						self.funding
+							.get_funding_txo()
+							.expect("Splice FundingScope should always have a funding_txo")
+					});
+					let announcement_sigs = funding_promoted
+						.then(|| chain_node_signer
+							.and_then(|(chain_hash, node_signer, user_config)|
+								self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
+							)
 						)
-					)
-					.flatten();
+						.flatten();
 
-				return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), timed_out_htlcs, announcement_sigs));
+					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), timed_out_htlcs, announcement_sigs));
+				}
 			}
 		}
 
