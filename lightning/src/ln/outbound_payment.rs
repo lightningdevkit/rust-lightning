@@ -1226,12 +1226,14 @@ impl OutboundPayments {
 		)
 	}
 
+	// Returns whether the data changed and needs to be repersisted.
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
 		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &L, send_payment_along_path: SP,
-	) where
+	) -> bool
+	where
 		R::Target: Router,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
@@ -1241,6 +1243,7 @@ impl OutboundPayments {
 		L::Target: Logger,
 	{
 		let _single_thread = self.retry_lock.lock().unwrap();
+		let mut should_persist = false;
 		loop {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			let mut retry_id_route_params = None;
@@ -1288,7 +1291,8 @@ impl OutboundPayments {
 					logger,
 					pending_events,
 					&send_payment_along_path,
-				)
+				);
+				should_persist = true;
 			} else {
 				break;
 			}
@@ -1312,10 +1316,12 @@ impl OutboundPayments {
 						None,
 					));
 					retain = false;
+					should_persist = true;
 				}
 			}
 			retain
 		});
+		should_persist
 	}
 
 	pub(super) fn needs_abandon_or_retry(&self) -> bool {

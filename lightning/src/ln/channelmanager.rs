@@ -6124,7 +6124,8 @@ where
 		Ok(())
 	}
 
-	pub(crate) fn process_pending_update_add_htlcs(&self) {
+	pub(crate) fn process_pending_update_add_htlcs(&self) -> bool {
+		let mut should_persist = false;
 		let mut decode_update_add_htlcs = new_hash_map();
 		mem::swap(&mut decode_update_add_htlcs, &mut self.decode_update_add_htlcs.lock().unwrap());
 
@@ -6147,6 +6148,8 @@ where
 		};
 
 		'outer_loop: for (incoming_scid, update_add_htlcs) in decode_update_add_htlcs {
+			// If any decoded update_add_htlcs were processed, we need to persist.
+			should_persist = true;
 			let incoming_channel_details_opt =
 				self.do_funded_channel_callback(incoming_scid, |chan: &mut FundedChannel<SP>| {
 					let counterparty_node_id = chan.context.get_counterparty_node_id();
@@ -6310,6 +6313,7 @@ where
 				));
 			}
 		}
+		should_persist
 	}
 
 	/// Returns whether we have pending HTLC forwards that need to be processed via
@@ -6341,8 +6345,11 @@ where
 
 	// Returns whether or not we need to re-persist.
 	fn internal_process_pending_htlc_forwards(&self) -> NotifyOption {
-		let should_persist = NotifyOption::DoPersist;
-		self.process_pending_update_add_htlcs();
+		let mut should_persist = NotifyOption::SkipPersistNoEvents;
+
+		if self.process_pending_update_add_htlcs() {
+			should_persist = NotifyOption::DoPersist;
+		}
 
 		let mut new_events = VecDeque::new();
 		let mut failed_forwards = Vec::new();
@@ -6351,6 +6358,7 @@ where
 		mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
 
 		for (short_chan_id, mut pending_forwards) in forward_htlcs {
+			should_persist = NotifyOption::DoPersist;
 			if short_chan_id != 0 {
 				self.process_forward_htlcs(
 					short_chan_id,
@@ -6368,7 +6376,7 @@ where
 		}
 
 		let best_block_height = self.best_block.read().unwrap().height;
-		self.pending_outbound_payments.check_retry_payments(
+		let needs_persist = self.pending_outbound_payments.check_retry_payments(
 			&self.router,
 			|| self.list_usable_channels(),
 			|| self.compute_inflight_htlcs(),
@@ -6379,6 +6387,9 @@ where
 			&self.logger,
 			|args| self.send_payment_along_path(args),
 		);
+		if needs_persist {
+			should_persist = NotifyOption::DoPersist;
+		}
 
 		for (htlc_source, payment_hash, failure_reason, destination) in failed_forwards.drain(..) {
 			self.fail_htlc_backwards_internal(
@@ -6394,13 +6405,17 @@ where
 		// next get a `get_and_clear_pending_msg_events` call, but some tests rely on it, and it's
 		// nice to do the work now if we can rather than while we're trying to get messages in the
 		// network stack.
-		self.check_free_holding_cells();
+		if self.check_free_holding_cells() {
+			should_persist = NotifyOption::DoPersist;
+		}
 
 		if new_events.is_empty() {
 			return should_persist;
 		}
 		let mut events = self.pending_events.lock().unwrap();
 		events.append(&mut new_events);
+		should_persist = NotifyOption::DoPersist;
+
 		should_persist
 	}
 
