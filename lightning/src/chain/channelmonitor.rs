@@ -2863,8 +2863,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				// In addition to `commit_tx_fee_sat`, this can also include dust HTLCs, and the total msat amount rounded down from non-dust HTLCs
 				transaction_fee_satoshis: if us.holder_pays_commitment_tx_fee.unwrap_or(true) {
 					let transaction = &us.funding.current_holder_commitment_tx.trust().built_transaction().transaction;
-					// Unwrap here; commitment transactions always have at least one output
-					let output_value_sat = transaction.output.iter().map(|txout| txout.value).reduce(|sum, value| sum + value).unwrap().to_sat();
+					let output_value_sat: u64 = transaction.output.iter().map(|txout| txout.value.to_sat()).sum();
 					us.funding.channel_parameters.channel_value_satoshis - output_value_sat
 				} else { 0 },
 				outbound_payment_htlc_rounded_msat,
