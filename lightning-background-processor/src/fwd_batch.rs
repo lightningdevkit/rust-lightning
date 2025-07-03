@@ -7,26 +7,25 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use core::sync::atomic::{AtomicU16, Ordering};
 use core::time::Duration;
 
 pub(crate) struct BatchDelay {
-	next_batch_delay_millis: AtomicU16,
+	next_batch_delay_millis: u16,
 }
 
 impl BatchDelay {
 	pub(crate) fn new() -> Self {
-		let next_batch_delay_millis = AtomicU16::new(rand_batch_delay_millis());
+		let next_batch_delay_millis = rand_batch_delay_millis();
 		Self { next_batch_delay_millis }
 	}
 
 	pub(crate) fn get(&self) -> Duration {
-		Duration::from_millis(self.next_batch_delay_millis.load(Ordering::Acquire) as u64)
+		Duration::from_millis(self.next_batch_delay_millis as u64)
 	}
 
-	pub(crate) fn next(&self) -> Duration {
+	pub(crate) fn next(&mut self) -> Duration {
 		let next = rand_batch_delay_millis();
-		self.next_batch_delay_millis.store(next, Ordering::Release);
+		self.next_batch_delay_millis = next;
 		Duration::from_millis(next as u64)
 	}
 }
