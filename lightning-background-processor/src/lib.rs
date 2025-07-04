@@ -382,7 +382,8 @@ macro_rules! define_run_body {
 				last_forwards_processing_call = $get_timer(cur_batch_delay);
 			}
 
-			// Exit the loop if the background processor was requested to stop.
+			// Checke whether to exit the loop again, as some time might have passed since we
+			// checked above.
 			if $loop_exit_check {
 				log_trace!($logger, "Terminating background processor.");
 				break;
