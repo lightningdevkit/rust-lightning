@@ -61,6 +61,8 @@ use crate::ln::functional_test_utils::*;
 use crate::routing::gossip::NodeId;
 
 use core::cmp::Ordering;
+#[cfg(feature = "std")]
+use std::thread;
 
 #[cfg(feature = "std")]
 use {
@@ -526,7 +528,33 @@ fn test_mpp_keysend() {
 
 	let ev = remove_first_msg_event_to_node(&node_c_id, &mut events);
 	pass_along_path(&nodes[0], route[1], recv_value, hash, payment_secret, ev, true, preimage);
-	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, preimage.unwrap()));
+
+	#[cfg(feature = "std")]
+	thread::sleep(Duration::from_millis(200));
+
+	let (_, path_events) =
+		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, preimage.unwrap()));
+
+	// If we've delayed, check that this is reflected in the hold times.
+	path_events.iter().for_each(|event| match event {
+		Event::PaymentPathSuccessful { hold_times, .. } => {
+			let mut iter = hold_times.as_ref().unwrap().iter();
+			let mut cur = iter.next().unwrap();
+
+			// Assert that the first hold time is greater than 0.
+			#[cfg(feature = "std")]
+			assert!(*cur > 0);
+			#[cfg(not(feature = "std"))]
+			assert!(*cur == 0);
+
+			// Assert that the hold times are decreasing.
+			for next in iter {
+				assert!(cur >= next);
+				cur = next;
+			}
+		},
+		_ => panic!("Unexpected event: {:?}", event),
+	})
 }
 
 #[test]
