@@ -208,7 +208,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 
 	let events_3 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_3.len(), 1);
@@ -646,7 +646,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	check_added_monitors!(nodes[0], 1);
 	expect_payment_path_successful!(nodes[0]);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_5.len(), 1);
@@ -781,7 +781,7 @@ fn test_monitor_update_fail_cs() {
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &final_raa);
 	check_added_monitors!(nodes[1], 1);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -853,7 +853,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 0);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -938,12 +938,12 @@ fn test_monitor_update_raa_while_paused() {
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_second_raa);
 	check_added_monitors!(nodes[0], 1);
-	expect_pending_htlcs_forwardable!(nodes[0]);
+	nodes[0].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[0], our_payment_hash_2, our_payment_secret_2, 1000000);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_second_raa);
 	check_added_monitors!(nodes[1], 1);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], our_payment_hash_1, our_payment_secret_1, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
@@ -972,7 +972,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	// Fail the payment backwards, failing the monitor update on nodes[1]'s receipt of the RAA
 	nodes[2].node.fail_htlc_backwards(&payment_hash_1);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+	process_htlcs_and_expect_htlc_handling_failed!(
 		nodes[2],
 		[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_1 }]
 	);
@@ -1005,7 +1005,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &send_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], send_event.commitment_msg, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[1], 0);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -1034,7 +1034,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	// Call forward_pending_htlcs and check that the new HTLC was simply added to the holding cell
 	// and not forwarded.
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[1], 0);
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
@@ -1064,7 +1064,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], chan_2.2);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_2.2, latest_update);
 	check_added_monitors!(nodes[1], 0);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+	process_htlcs_and_expect_htlc_handling_failed!(
 		nodes[1],
 		[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
 	);
@@ -1201,7 +1201,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	check_added_monitors!(nodes[2], 1);
 	assert!(nodes[2].node.get_and_clear_pending_msg_events().is_empty());
 
-	expect_pending_htlcs_forwardable!(nodes[2]);
+	nodes[2].node.process_pending_htlc_forwards();
 
 	let events_6 = nodes[2].node.get_and_clear_pending_events();
 	assert_eq!(events_6.len(), 2);
@@ -1219,7 +1219,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	};
 
 	if test_ignore_second_cs {
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		nodes[1].node.process_pending_htlc_forwards();
 		check_added_monitors!(nodes[1], 1);
 
 		send_event = SendEvent::from_node(&nodes[1]);
@@ -1228,7 +1228,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		nodes[0].node.handle_update_add_htlc(node_b_id, &send_event.msgs[0]);
 		commitment_signed_dance!(nodes[0], nodes[1], send_event.commitment_msg, false);
 
-		expect_pending_htlcs_forwardable!(nodes[0]);
+		nodes[0].node.process_pending_htlc_forwards();
 
 		let events_9 = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events_9.len(), 1);
@@ -1425,7 +1425,7 @@ fn raa_no_response_awaiting_raa_state() {
 	// nodes[1] should be AwaitingRAA here!
 	check_added_monitors!(nodes[1], 0);
 	let bs_responses = get_revoke_commit_msgs!(nodes[1], node_a_id);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
 	// We send a third payment here, which is somewhat of a redundant test, but the
@@ -1454,7 +1454,7 @@ fn raa_no_response_awaiting_raa_state() {
 	// Finally deliver the RAA to nodes[1] which results in a CS response to the last update
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_raa);
 	check_added_monitors!(nodes[1], 1);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 	let bs_update = get_htlc_update_msgs!(nodes[1], node_a_id);
 
@@ -1467,7 +1467,7 @@ fn raa_no_response_awaiting_raa_state() {
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_raa);
 	check_added_monitors!(nodes[1], 1);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash_3, payment_secret_3, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
@@ -1595,7 +1595,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_raa);
 	check_added_monitors!(nodes[1], 1);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_raa);
@@ -1691,7 +1691,7 @@ fn monitor_failed_no_reestablish_response() {
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_raa);
 	check_added_monitors!(nodes[1], 1);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
@@ -1779,7 +1779,8 @@ fn first_message_on_recv_ordering() {
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[1], 0);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.get_and_clear_pending_events();
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
 	let bs_responses = get_revoke_commit_msgs!(nodes[1], node_a_id);
@@ -1792,7 +1793,7 @@ fn first_message_on_recv_ordering() {
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_raa);
 	check_added_monitors!(nodes[1], 1);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
@@ -1855,7 +1856,7 @@ fn test_monitor_update_fail_claim() {
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 0);
 	commitment_signed_dance!(nodes[1], nodes[2], payment_event.commitment_msg, false, true);
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 
 	let (_, payment_hash_3, payment_secret_3) = get_payment_preimage_hash!(nodes[0]);
 	let id_3 = PaymentId(payment_hash_3.0);
@@ -1890,7 +1891,7 @@ fn test_monitor_update_fail_claim() {
 	nodes[0].node.handle_update_add_htlc(node_b_id, &bs_forward_update.update_add_htlcs[0]);
 	nodes[0].node.handle_update_add_htlc(node_b_id, &bs_forward_update.update_add_htlcs[1]);
 	commitment_signed_dance!(nodes[0], nodes[1], bs_forward_update.commitment_signed, false);
-	expect_pending_htlcs_forwardable!(nodes[0]);
+	nodes[0].node.process_pending_htlc_forwards();
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
@@ -1969,7 +1970,7 @@ fn test_monitor_update_on_pending_forwards() {
 
 	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 	nodes[2].node.fail_htlc_backwards(&payment_hash_1);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+	process_htlcs_and_expect_htlc_handling_failed!(
 		nodes[2],
 		[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_1 }]
 	);
@@ -1994,7 +1995,7 @@ fn test_monitor_update_on_pending_forwards() {
 	commitment_signed_dance!(nodes[1], nodes[2], payment_event.commitment_msg, false);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+	process_htlcs_and_expect_htlc_handling_failed!(
 		nodes[1],
 		[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }]
 	);
@@ -2011,23 +2012,19 @@ fn test_monitor_update_on_pending_forwards() {
 	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false, true);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 3);
-	if let Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } = events[1] {
+	assert_eq!(events.len(), 2);
+	if let Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } = events[0] {
 		assert_eq!(payment_hash, payment_hash_1);
 		assert!(payment_failed_permanently);
 	} else {
 		panic!("Unexpected event!");
 	}
-	match events[2] {
+	match events[1] {
 		Event::PaymentFailed { payment_hash, .. } => {
 			assert_eq!(payment_hash, Some(payment_hash_1));
 		},
 		_ => panic!("Unexpected event"),
 	}
-	match events[0] {
-		Event::PendingHTLCsForwardable { .. } => {},
-		_ => panic!("Unexpected event"),
-	};
 	nodes[0].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[0], payment_hash_2, payment_secret_2, 1000000);
 
@@ -2084,7 +2081,7 @@ fn monitor_update_claim_fail_no_response() {
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_raa);
 	check_added_monitors!(nodes[1], 1);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 
 	let bs_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
@@ -2452,7 +2449,7 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	);
 	check_added_monitors!(nodes[1], 1);
 
-	expect_pending_htlcs_forwardable!(nodes[0]);
+	nodes[0].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[0], payment_hash, payment_secret, 1_000_000);
 
 	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage);
@@ -2501,7 +2498,7 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	check_closed_broadcast!(nodes[1], true);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	check_added_monitors!(nodes[1], 1);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+	process_htlcs_and_expect_htlc_handling_failed!(
 		nodes[1],
 		[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_id_2 }]
 	);
@@ -2803,19 +2800,15 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 
 	let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_revoke_and_ack);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 100000);
 	check_added_monitors!(nodes[1], 1);
 
 	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PendingHTLCsForwardable { .. } => {},
-		_ => panic!("Unexpected event"),
-	};
-	match events[1] {
 		Event::PaymentPathSuccessful { .. } => {},
 		_ => panic!("Unexpected event"),
 	};
@@ -2891,7 +2884,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		msgs::UpdateFulfillHTLC { channel_id: chan_id_2, htlc_id: 0, payment_preimage };
 	if second_fails {
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+		process_htlcs_and_expect_htlc_handling_failed!(
 			nodes[2],
 			[HTLCHandlingFailureType::Receive { payment_hash }]
 		);
@@ -2940,7 +2933,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
 		reconnect_args.pending_htlc_fails.0 = 1;
 		reconnect_nodes(reconnect_args);
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+		process_htlcs_and_expect_htlc_handling_failed!(
 			nodes[1],
 			[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_id_2 }]
 		);
@@ -2953,7 +2946,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	if htlc_status == HTLCStatusAtDupClaim::HoldingCell {
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &as_raa.unwrap());
 		check_added_monitors!(nodes[1], 1);
-		expect_pending_htlcs_forwardable_ignore!(nodes[1]); // We finally receive the second payment, but don't claim it
+		expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]); // We finally receive the second payment, but don't claim it
 
 		bs_updates = Some(get_htlc_update_msgs!(nodes[1], node_a_id));
 		assert_eq!(bs_updates.as_ref().unwrap().update_fulfill_htlcs.len(), 1);
