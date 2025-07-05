@@ -46,7 +46,7 @@ use crate::routing::router::{
 };
 use crate::routing::scoring::{ChannelUsage, ScoreLookUp, ScoreUpdate};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
-use crate::sign;
+use crate::sign::{self, ReceiveAuthKey};
 use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
@@ -346,8 +346,8 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>,
-		secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
+		context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let mut peers = peers;
 		{
@@ -356,12 +356,12 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 				peers = peers_override.clone();
 			}
 		}
-		self.inner.create_blinded_paths(recipient, context, peers, secp_ctx)
+		self.inner.create_blinded_paths(recipient, local_node_receive_key, context, peers, secp_ctx)
 	}
 
 	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<MessageForwardNode>,
-		secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
+		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let mut peers = peers;
 		{
@@ -374,7 +374,13 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 					.collect();
 			}
 		}
-		self.inner.create_compact_blinded_paths(recipient, context, peers, secp_ctx)
+		self.inner.create_compact_blinded_paths(
+			recipient,
+			local_node_receive_key,
+			context,
+			peers,
+			secp_ctx,
+		)
 	}
 }
 
@@ -1524,6 +1530,10 @@ impl NodeSigner for TestNodeSigner {
 		unreachable!()
 	}
 
+	fn get_receive_auth_key(&self) -> ReceiveAuthKey {
+		ReceiveAuthKey(self.node_secret.secret_bytes())
+	}
+
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		let node_secret = match recipient {
 			Recipient::Node => Ok(&self.node_secret),
@@ -1606,6 +1616,10 @@ impl NodeSigner for TestKeysInterface {
 
 	fn get_peer_storage_key(&self) -> PeerStorageKey {
 		self.backing.get_peer_storage_key()
+	}
+
+	fn get_receive_auth_key(&self) -> ReceiveAuthKey {
+		self.backing.get_receive_auth_key()
 	}
 
 	fn sign_bolt12_invoice(

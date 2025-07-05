@@ -54,7 +54,7 @@ use crate::onion_message::messenger::{Destination, MessageRouter, MessageSendIns
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::router::Router;
-use crate::sign::{EntropySource, NodeSigner};
+use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey};
 use crate::sync::{Mutex, RwLock};
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::ser::Writeable;
@@ -95,6 +95,8 @@ where
 	highest_seen_timestamp: AtomicUsize,
 	inbound_payment_key: inbound_payment::ExpandedKey,
 
+	receive_auth_key: ReceiveAuthKey,
+
 	secp_ctx: Secp256k1<secp256k1::All>,
 	message_router: MR,
 
@@ -123,7 +125,7 @@ where
 	pub fn new(
 		chain_hash: ChainHash, best_block: BestBlock, our_network_pubkey: PublicKey,
 		current_timestamp: u32, inbound_payment_key: inbound_payment::ExpandedKey,
-		secp_ctx: Secp256k1<secp256k1::All>, message_router: MR,
+		receive_auth_key: ReceiveAuthKey, secp_ctx: Secp256k1<secp256k1::All>, message_router: MR,
 	) -> Self {
 		Self {
 			chain_hash,
@@ -132,6 +134,8 @@ where
 			our_network_pubkey,
 			highest_seen_timestamp: AtomicUsize::new(current_timestamp as usize),
 			inbound_payment_key,
+
+			receive_auth_key,
 
 			secp_ctx,
 			message_router,
@@ -186,6 +190,10 @@ where
 	/// Gets the node_id held by this [`OffersMessageFlow`]`
 	fn get_our_node_id(&self) -> PublicKey {
 		self.our_network_pubkey
+	}
+
+	fn get_receive_auth_key(&self) -> ReceiveAuthKey {
+		self.receive_auth_key
 	}
 
 	fn duration_since_epoch(&self) -> Duration {
@@ -326,11 +334,12 @@ where
 		&self, peers: Vec<MessageForwardNode>, context: MessageContext,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let recipient = self.get_our_node_id();
+		let receive_key = self.get_receive_auth_key();
 		let secp_ctx = &self.secp_ctx;
 
 		let peers = peers.into_iter().map(|node| node.node_id).collect();
 		self.message_router
-			.create_blinded_paths(recipient, context, peers, secp_ctx)
+			.create_blinded_paths(recipient, receive_key, context, peers, secp_ctx)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 
@@ -342,11 +351,13 @@ where
 		&self, peers: Vec<MessageForwardNode>, context: OffersContext,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let recipient = self.get_our_node_id();
+		let receive_key = self.get_receive_auth_key();
 		let secp_ctx = &self.secp_ctx;
 
 		self.message_router
 			.create_compact_blinded_paths(
 				recipient,
+				receive_key,
 				MessageContext::Offers(context),
 				peers,
 				secp_ctx,

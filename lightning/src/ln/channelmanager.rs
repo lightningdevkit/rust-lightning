@@ -3761,7 +3761,7 @@ where
 		let flow = OffersMessageFlow::new(
 			ChainHash::using_genesis_block(params.network), params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
-			secp_ctx.clone(), message_router
+			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router
 		);
 
 		ChannelManager {
@@ -16499,6 +16499,7 @@ where
 			our_network_pubkey,
 			highest_seen_timestamp,
 			expanded_inbound_key,
+			args.node_signer.get_receive_auth_key(),
 			secp_ctx.clone(),
 			args.message_router,
 		)
