@@ -2812,15 +2812,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			}
 		} else {
 			let mut claimable_inbound_htlc_value_sat = 0;
-			let mut nondust_htlc_count = 0;
 			let mut outbound_payment_htlc_rounded_msat = 0;
 			let mut outbound_forwarded_htlc_rounded_msat = 0;
 			let mut inbound_claiming_htlc_rounded_msat = 0;
 			let mut inbound_htlc_rounded_msat = 0;
 			for (htlc, source) in holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES) {
-				if htlc.transaction_output_index.is_some() {
-					nondust_htlc_count += 1;
-				}
 				let rounded_value_msat = if htlc.transaction_output_index.is_none() {
 					htlc.amount_msat
 				} else { htlc.amount_msat % 1000 };
@@ -2864,11 +2860,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			let to_self_value_sat = us.funding.current_holder_commitment_tx.to_broadcaster_value_sat();
 			res.push(Balance::ClaimableOnChannelClose {
 				amount_satoshis: to_self_value_sat + claimable_inbound_htlc_value_sat,
+				// In addition to `commit_tx_fee_sat`, this can also include dust HTLCs, and the total msat amount rounded down from non-dust HTLCs
 				transaction_fee_satoshis: if us.holder_pays_commitment_tx_fee.unwrap_or(true) {
-					chan_utils::commit_tx_fee_sat(
-						us.funding.current_holder_commitment_tx.feerate_per_kw(), nondust_htlc_count,
-						us.channel_type_features(),
-					)
+					let transaction = &us.funding.current_holder_commitment_tx.trust().built_transaction().transaction;
+					// Unwrap here; commitment transactions always have at least one output
+					let output_value_sat = transaction.output.iter().map(|txout| txout.value).reduce(|sum, value| sum + value).unwrap().to_sat();
+					us.funding.channel_parameters.channel_value_satoshis - output_value_sat
 				} else { 0 },
 				outbound_payment_htlc_rounded_msat,
 				outbound_forwarded_htlc_rounded_msat,

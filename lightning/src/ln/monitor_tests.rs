@@ -544,9 +544,11 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	let commitment_tx_fee = chan_feerate as u64 *
 		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
+	let amount_satoshis = 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - commitment_tx_fee - anchor_outputs_value - 1; /* msat amount that is burned to fees */
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
-			amount_satoshis: 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - commitment_tx_fee - anchor_outputs_value - 1 /* msat amount that is burned to fees */,
-			transaction_fee_satoshis: commitment_tx_fee,
+			amount_satoshis,
+			// In addition to `commitment_tx_fee`, this also includes the dust HTLC, and the total msat amount rounded down from non-dust HTLCs
+			transaction_fee_satoshis: 1_000_000 - 4_000 - 3_000 - 1_000 - amount_satoshis - anchor_outputs_value,
 			outbound_payment_htlc_rounded_msat: 3300,
 			outbound_forwarded_htlc_rounded_msat: 0,
 			inbound_claiming_htlc_rounded_msat: 0,
@@ -598,16 +600,18 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	let commitment_tx_fee = chan_feerate as u64 *
 		(chan_utils::commitment_tx_base_weight(&channel_type_features) +
 		if prev_commitment_tx { 1 } else { 2 } * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-	let mut a_expected_balances = vec![Balance::ClaimableOnChannelClose {
-			amount_satoshis: 1_000_000 - // Channel funding value in satoshis
+	let amount_satoshis = 1_000_000 - // Channel funding value in satoshis
 				4_000 - // The to-be-failed HTLC value in satoshis
 				3_000 - // The claimed HTLC value in satoshis
 				1_000 - // The push_msat value in satoshis
 				3 - // The dust HTLC value in satoshis
 				commitment_tx_fee - // The commitment transaction fee with two HTLC outputs
 				anchor_outputs_value - // The anchor outputs value in satoshis
-				1, // The rounded up msat part of the one HTLC
-			transaction_fee_satoshis: commitment_tx_fee,
+				1; // The rounded up msat part of the one HTLC
+	let mut a_expected_balances = vec![Balance::ClaimableOnChannelClose {
+			amount_satoshis, // Channel funding value in satoshis
+			// In addition to `commitment_tx_fee`, this also includes the dust HTLC, and the total msat amount rounded down from non-dust HTLCs
+			transaction_fee_satoshis: 1_000_000 - 4_000 - 3_000 - 1_000 - amount_satoshis - anchor_outputs_value,
 			outbound_payment_htlc_rounded_msat: 3000 + if prev_commitment_tx {
 			    200 /* 1 to-be-failed HTLC */ } else { 300 /* 2 HTLCs */ },
 			outbound_forwarded_htlc_rounded_msat: 0,
