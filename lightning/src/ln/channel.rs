@@ -4331,6 +4331,10 @@ where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
+		if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+			return false;
+		}
+
 		// Before proposing a feerate update, check that we can actually afford the new fee.
 		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
 			&fee_estimator, funding.get_channel_type(),
@@ -8011,6 +8015,9 @@ where
 		}
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fee update message while quiescent".to_owned()));
+		}
+		if self.funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+			return Err(ChannelError::WarnAndDisconnect("Update fee message received for zero fee commitment channel".to_owned()));
 		}
 
 		core::iter::once(&self.funding)
