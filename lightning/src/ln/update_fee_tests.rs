@@ -1375,3 +1375,59 @@ pub fn do_can_afford_given_trimmed_htlcs(inequality_regions: core::cmp::Ordering
 		nodes[0].logger.assert_log("lightning::ln::channel", err, 1);
 	}
 }
+
+#[test]
+pub fn test_zero_fee_commitments_no_update_fee() {
+	// Tests that option_zero_fee_commitment channels do not sent update_fee messages, and that
+	// they'll disconnect and warn if they receive them.
+	let mut cfg = test_default_channel_config();
+	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+	cfg.manually_accept_inbound_channels = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel = create_chan_between_nodes(&nodes[0], &nodes[1]);
+
+	let assert_zero_fee = || {
+		for node in nodes.iter() {
+			let channels = node.node.list_channels();
+			assert_eq!(channels.len(), 1);
+			assert!(channels[0]
+				.channel_type
+				.as_ref()
+				.unwrap()
+				.supports_anchor_zero_fee_commitments());
+			assert_eq!(channels[0].feerate_sat_per_1000_weight.unwrap(), 0);
+		}
+	};
+	assert_zero_fee();
+
+	// Sender should not queue an update_fee message.
+	nodes[0].node.timer_tick_occurred();
+	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_0.len(), 0);
+
+	// Receiver should ignore and warn if sent update_fee.
+	let channel_id = channel.3;
+	let update_fee_msg = msgs::UpdateFee { channel_id, feerate_per_kw: 5000 };
+	nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), &update_fee_msg);
+
+	let events_1 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_1.len(), 1);
+	match events_1[0] {
+		MessageSendEvent::HandleError { ref action, .. } => match action {
+			ErrorAction::DisconnectPeerWithWarning { ref msg, .. } => {
+				assert_eq!(msg.channel_id, channel_id);
+				assert!(msg
+					.data
+					.contains("Update fee message received for zero fee commitment channel"));
+			},
+			_ => panic!("Expected DisconnectPeerWithWarning, got {:?}", action),
+		},
+		_ => panic!("Expected HandleError event, got {:?}", events_1[0]),
+	}
+	assert_zero_fee();
+}

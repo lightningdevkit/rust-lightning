@@ -7191,10 +7191,17 @@ where
 
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 
-		// If the feerate has decreased by less than half, don't bother
-		if new_feerate <= chan.context.get_feerate_sat_per_1000_weight() && new_feerate * 2 > chan.context.get_feerate_sat_per_1000_weight() {
-			return NotifyOption::SkipPersistNoEvents;
+		let current_feerate = chan.context.get_feerate_sat_per_1000_weight();
+		let update_fee_required = match new_feerate.cmp(&current_feerate) {
+			cmp::Ordering::Greater => true,
+			cmp::Ordering::Equal => false,
+			// Only bother with a fee update if feerate has decreased at least half.
+			cmp::Ordering::Less => new_feerate * 2 <= current_feerate,
+		};
+		if !update_fee_required {
+			return NotifyOption::SkipPersistNoEvents
 		}
+
 		if !chan.context.is_live() {
 			log_trace!(logger, "Channel {} does not qualify for a feerate change from {} to {} as it cannot currently be updated (probably the peer is disconnected).",
 				chan_id, chan.context.get_feerate_sat_per_1000_weight(), new_feerate);

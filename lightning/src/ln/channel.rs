@@ -7709,6 +7709,10 @@ where
 			panic!("Cannot update fee while peer is disconnected/we're awaiting a monitor update (ChannelManager should have caught this)");
 		}
 
+		// Sending a fee update for zero fee commitments will trigger a warning and disconnect
+		// from our peer, but does not result in a loss of funds so we do not panic here.
+		debug_assert!(!self.funding.get_channel_type().supports_anchor_zero_fee_commitments());
+
 		let can_send_update_fee = core::iter::once(&self.funding)
 			.chain(self.pending_funding.iter())
 			.all(|funding| self.context.can_send_update_fee(funding, feerate_per_kw, fee_estimator, logger));
@@ -8003,6 +8007,9 @@ where
 		}
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fee update message while quiescent".to_owned()));
+		}
+		if self.funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+			return Err(ChannelError::WarnAndDisconnect("Update fee message received for zero fee commitment channel".to_owned()));
 		}
 
 		core::iter::once(&self.funding)
