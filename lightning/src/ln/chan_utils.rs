@@ -235,15 +235,27 @@ pub(crate) fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_t
 		/ 1000
 }
 
+/// Returns the fees for success and timeout second stage HTLC transactions.
+pub(super) fn second_stage_tx_fees_sat(
+	channel_type: &ChannelTypeFeatures, feerate_sat_per_1000_weight: u32,
+) -> (u64, u64) {
+	if channel_type.supports_anchors_zero_fee_htlc_tx() {
+		(0, 0)
+	} else {
+		(
+			feerate_sat_per_1000_weight as u64 * htlc_success_tx_weight(channel_type) / 1000,
+			feerate_sat_per_1000_weight as u64 * htlc_timeout_tx_weight(channel_type) / 1000,
+		)
+	}
+}
+
 #[rustfmt::skip]
 pub(crate) fn htlc_tx_fees_sat(feerate_per_kw: u32, num_accepted_htlcs: usize, num_offered_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
-	let htlc_tx_fees_sat = if !channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		num_accepted_htlcs as u64 * htlc_success_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
-	  + num_offered_htlcs as u64 * htlc_timeout_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
-	} else {
-		0
-	};
-	htlc_tx_fees_sat
+	let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
+		channel_type_features, feerate_per_kw,
+	);
+
+	num_accepted_htlcs as u64 * htlc_success_tx_fee_sat + num_offered_htlcs as u64 * htlc_timeout_tx_fee_sat
 }
 
 /// Returns a fee estimate for the commitment transaction depending on channel type.
@@ -824,16 +836,17 @@ pub(crate) fn build_htlc_input(commitment_txid: &Txid, htlc: &HTLCOutputInCommit
 pub(crate) fn build_htlc_output(
 	feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey
 ) -> TxOut {
-	let weight = if htlc.offered {
-		htlc_timeout_tx_weight(channel_type_features)
-	} else {
-		htlc_success_tx_weight(channel_type_features)
-	};
-	let output_value = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		htlc.to_bitcoin_amount()
-	} else {
-		let total_fee = Amount::from_sat(feerate_per_kw as u64 * weight / 1000);
-		htlc.to_bitcoin_amount() - total_fee
+	let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
+		channel_type_features, feerate_per_kw,
+	);
+
+	let output_value = {
+		let total_fee = if htlc.offered {
+			htlc_timeout_tx_fee_sat
+		} else {
+			htlc_success_tx_fee_sat
+		};
+		htlc.to_bitcoin_amount() - Amount::from_sat(total_fee)
 	};
 
 	TxOut {
