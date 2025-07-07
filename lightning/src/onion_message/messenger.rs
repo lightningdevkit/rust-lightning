@@ -1538,7 +1538,9 @@ where
 	}
 
 	#[cfg(test)]
-	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
+	pub(crate) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
+		self.enqueue_messages_from_handlers();
+
 		let mut message_recipients = self.message_recipients.lock().unwrap();
 		let mut msgs = new_hash_map();
 		// We don't want to disconnect the peers by removing them entirely from the original map, so we
@@ -1547,6 +1549,47 @@ where
 			msgs.insert(*node_id, recipient.release_pending_messages());
 		}
 		msgs
+	}
+
+	// Pull pending messages from each onion message handler and enqueue them in the messenger.
+	fn enqueue_messages_from_handlers(&self) {
+		// Enqueue any initiating `OffersMessage`s to send.
+		for (message, instructions) in self.offers_handler.release_pending_messages() {
+			let _ = self.send_onion_message_internal(
+				message,
+				instructions,
+				format_args!("when sending OffersMessage"),
+			);
+		}
+
+		#[cfg(async_payments)]
+		{
+			for (message, instructions) in self.async_payments_handler.release_pending_messages() {
+				let _ = self.send_onion_message_internal(
+					message,
+					instructions,
+					format_args!("when sending AsyncPaymentsMessage"),
+				);
+			}
+		}
+
+		// Enqueue any initiating `DNSResolverMessage`s to send.
+		for (message, instructions) in self.dns_resolver_handler.release_pending_messages() {
+			let _ = self.send_onion_message_internal(
+				message,
+				instructions,
+				format_args!("when sending DNSResolverMessage"),
+			);
+		}
+
+		// Enqueue any initiating `CustomMessage`s to send.
+		for (message, instructions) in self.custom_handler.release_pending_custom_messages() {
+			let _ = self.send_onion_message_internal(
+				message,
+				instructions,
+				format_args!("when sending CustomMessage"),
+			);
+		}
 	}
 
 	fn enqueue_intercepted_event(&self, event: Event) {
@@ -2104,43 +2147,7 @@ where
 	// enqueued in the handler by users, find a path to the corresponding blinded path's introduction
 	// node, and then enqueue the message for sending to the first peer in the full path.
 	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<OnionMessage> {
-		// Enqueue any initiating `OffersMessage`s to send.
-		for (message, instructions) in self.offers_handler.release_pending_messages() {
-			let _ = self.send_onion_message_internal(
-				message,
-				instructions,
-				format_args!("when sending OffersMessage"),
-			);
-		}
-
-		#[cfg(async_payments)]
-		{
-			for (message, instructions) in self.async_payments_handler.release_pending_messages() {
-				let _ = self.send_onion_message_internal(
-					message,
-					instructions,
-					format_args!("when sending AsyncPaymentsMessage"),
-				);
-			}
-		}
-
-		// Enqueue any initiating `DNSResolverMessage`s to send.
-		for (message, instructions) in self.dns_resolver_handler.release_pending_messages() {
-			let _ = self.send_onion_message_internal(
-				message,
-				instructions,
-				format_args!("when sending DNSResolverMessage"),
-			);
-		}
-
-		// Enqueue any initiating `CustomMessage`s to send.
-		for (message, instructions) in self.custom_handler.release_pending_custom_messages() {
-			let _ = self.send_onion_message_internal(
-				message,
-				instructions,
-				format_args!("when sending CustomMessage"),
-			);
-		}
+		self.enqueue_messages_from_handlers();
 
 		let mut message_recipients = self.message_recipients.lock().unwrap();
 		message_recipients.get_mut(&peer_node_id).and_then(|buffer| buffer.dequeue_message())
