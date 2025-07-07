@@ -19,8 +19,8 @@ use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
 use crate::ln::types::ChannelId;
 use crate::sign::OutputSpender;
+use crate::types::string::UntrustedString;
 use crate::util::ser::Writeable;
-use crate::util::string::UntrustedString;
 
 use bitcoin::script::Builder;
 use bitcoin::opcodes;

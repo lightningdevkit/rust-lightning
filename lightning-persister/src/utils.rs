@@ -1,5 +1,5 @@
+use lightning::types::string::PrintableString;
 use lightning::util::persist::{KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN};
-use lightning::util::string::PrintableString;
 
 pub(crate) fn is_valid_kvstore_str(key: &str) -> bool {
 	key.len() <= KVSTORE_NAMESPACE_KEY_MAX_LEN

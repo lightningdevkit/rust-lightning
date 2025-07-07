@@ -147,11 +147,11 @@ use crate::offers::refund::{
 use crate::offers::signer::{self, Metadata};
 use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::types::payment::PaymentHash;
+use crate::types::string::PrintableString;
 use crate::util::ser::{
 	CursorReadable, HighZeroBytesDroppedBigSize, Iterable, LengthLimitedRead, LengthReadable,
 	WithoutLength, Writeable, Writer,
 };
-use crate::util::string::PrintableString;
 use bitcoin::address::Address;
 use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::schnorr::Signature;
@@ -1802,8 +1802,8 @@ mod tests {
 	use crate::offers::test_utils::*;
 	use crate::prelude::*;
 	use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
+	use crate::types::string::PrintableString;
 	use crate::util::ser::{BigSize, Iterable, Writeable};
-	use crate::util::string::PrintableString;
 	#[cfg(not(c_bindings))]
 	use {crate::offers::offer::OfferBuilder, crate::offers::refund::RefundBuilder};
 	#[cfg(c_bindings)]

@@ -35,12 +35,12 @@ use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
 use crate::sign::SpendableOutputDescriptor;
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::types::string::UntrustedString;
 use crate::util::errors::APIError;
 use crate::util::ser::{
 	BigSize, FixedLengthReader, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired,
 	WithoutLength, Writeable, Writer,
 };
-use crate::util::string::UntrustedString;
 
 use crate::io;
 use crate::sync::Arc;
@@ -315,7 +315,7 @@ pub enum ClosureReason {
 		/// a security vulnerability in the terminal emulator or the logging subsystem.
 		/// To be safe, use `Display` on `UntrustedString`
 		///
-		/// [`UntrustedString`]: crate::util::string::UntrustedString
+		/// [`UntrustedString`]: crate::types::string::UntrustedString
 		peer_msg: UntrustedString,
 	},
 	/// Closure generated from [`ChannelManager::force_close_channel`], called by the user.

@@ -13,8 +13,8 @@ use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::offers::merkle::SignError;
 use crate::offers::parse::Bolt12SemanticError;
+use crate::types::string::UntrustedString;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
-use crate::util::string::UntrustedString;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -123,10 +123,10 @@ mod tests {
 	use super::{ErroneousField, InvoiceError};
 
 	use crate::ln::msgs::DecodeError;
+	use crate::types::string::UntrustedString;
 	use crate::util::ser::{
 		HighZeroBytesDroppedBigSize, Readable, VecWriter, WithoutLength, Writeable,
 	};
-	use crate::util::string::UntrustedString;
 
 	#[test]
 	fn parses_invoice_error_without_erroneous_field() {

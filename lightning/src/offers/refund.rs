@@ -102,10 +102,10 @@ use crate::offers::signer::{self, Metadata, MetadataMaterial};
 use crate::sign::EntropySource;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::types::payment::PaymentHash;
+use crate::types::string::PrintableString;
 use crate::util::ser::{
 	CursorReadable, LengthLimitedRead, LengthReadable, WithoutLength, Writeable, Writer,
 };
-use crate::util::string::PrintableString;
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
@@ -1055,8 +1055,8 @@ mod tests {
 	use crate::offers::test_utils::*;
 	use crate::prelude::*;
 	use crate::types::features::{InvoiceRequestFeatures, OfferFeatures};
+	use crate::types::string::PrintableString;
 	use crate::util::ser::{BigSize, Writeable};
-	use crate::util::string::PrintableString;
 
 	trait ToBytes {
 		fn to_bytes(&self) -> Vec<u8>;

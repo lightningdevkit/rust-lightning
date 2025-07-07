@@ -87,11 +87,11 @@ use crate::offers::nonce::Nonce;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{self, Metadata, MetadataMaterial};
 use crate::types::features::OfferFeatures;
+use crate::types::string::PrintableString;
 use crate::util::ser::{
 	CursorReadable, HighZeroBytesDroppedBigSize, LengthLimitedRead, LengthReadable, Readable,
 	WithoutLength, Writeable, Writer,
 };
-use crate::util::string::PrintableString;
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{self, Keypair, PublicKey, Secp256k1};
@@ -646,7 +646,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 
 	/// A complete description of the purpose of the payment. Intended to be displayed to the user
 	/// but with the caveat that it has not been verified in any way.
-	pub fn description(&$self) -> Option<$crate::util::string::PrintableString> {
+	pub fn description(&$self) -> Option<$crate::types::string::PrintableString> {
 		$contents.description()
 	}
 
@@ -664,7 +664,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 
 	/// The issuer of the offer, possibly beginning with `user@domain` or `domain`. Intended to be
 	/// displayed to the user but with the caveat that it has not been verified in any way.
-	pub fn issuer(&$self) -> Option<$crate::util::string::PrintableString> {
+	pub fn issuer(&$self) -> Option<$crate::types::string::PrintableString> {
 		$contents.issuer()
 	}
 
@@ -1349,8 +1349,8 @@ mod tests {
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::test_utils::*;
 	use crate::types::features::OfferFeatures;
+	use crate::types::string::PrintableString;
 	use crate::util::ser::{BigSize, Writeable};
-	use crate::util::string::PrintableString;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::Secp256k1;

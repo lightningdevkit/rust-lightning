@@ -119,6 +119,7 @@ use crate::types::features::{
 	Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures,
 };
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::types::string::UntrustedString;
 use crate::util::config::{ChannelConfig, ChannelConfigOverrides, ChannelConfigUpdate, UserConfig};
 use crate::util::errors::APIError;
 use crate::util::logger::{Level, Logger, WithContext};
@@ -127,7 +128,6 @@ use crate::util::ser::{
 	BigSize, FixedLengthReader, LengthReadable, MaybeReadable, Readable, ReadableArgs, VecWriter,
 	Writeable, Writer,
 };
-use crate::util::string::UntrustedString;
 use crate::util::wakers::{Future, Notifier};
 
 #[cfg(all(test, async_payments))]

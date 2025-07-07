@@ -33,10 +33,10 @@ use crate::offers::offer::{
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
+use crate::types::string::PrintableString;
 use crate::util::ser::{
 	CursorReadable, Iterable, LengthLimitedRead, LengthReadable, WithoutLength, Writeable, Writer,
 };
-use crate::util::string::PrintableString;
 use bitcoin::address::Address;
 use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::schnorr::Signature;
