@@ -11231,7 +11231,7 @@ where
 			amount_msats,
 			optional_params.payer_note,
 			payment_id,
-			None,
+			derived_from_hrn,
 			create_pending_payment_fn,
 		)
 	}
@@ -11253,7 +11253,8 @@ where
 	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
 	pub fn pay_for_offer_with_quantity(
 		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
-		optional_params: OptionalOfferPaymentParams, quantity: u64,
+		optional_params: OptionalOfferPaymentParams, derived_from_hrn: Option<HumanReadableName>,
+		quantity: u64,
 	) -> Result<(), Bolt12SemanticError> {
 		let create_pending_payment_fn = |invoice_request: &InvoiceRequest, nonce| {
 			let expiration = StaleExpiration::TimerTicks(1);
