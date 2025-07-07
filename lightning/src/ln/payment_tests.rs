@@ -44,9 +44,9 @@ use crate::routing::scoring::ChannelUsage;
 use crate::sign::EntropySource;
 use crate::types::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::types::string::UntrustedString;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
-use crate::util::string::UntrustedString;
 use crate::util::test_utils;
 
 use bitcoin::hashes::sha256::Hash as Sha256;

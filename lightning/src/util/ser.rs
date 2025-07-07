@@ -50,10 +50,10 @@ use crate::chain::ClaimId;
 use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{DecodeError, SerialId};
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-use core::time::Duration;
-
+use crate::types::string::UntrustedString;
 use crate::util::byte_utils::{be48_to_array, slice_to_be48};
-use crate::util::string::UntrustedString;
+
+use core::time::Duration;
 
 /// serialization buffer size
 pub const MAX_BUF_SIZE: usize = 64 * 1024;

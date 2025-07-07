@@ -23,9 +23,9 @@ use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::routing::router::{get_route, PaymentParameters, RouteParameters};
 use crate::sign::{EntropySource, SignerProvider};
+use crate::types::string::UntrustedString;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
-use crate::util::string::UntrustedString;
 use crate::util::test_utils;
 use crate::util::test_utils::OnGetShutdownScriptpubkey;
 

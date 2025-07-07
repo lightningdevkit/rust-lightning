@@ -52,13 +52,13 @@ use crate::routing::router::{
 use crate::sign::{EntropySource, OutputSpender, SignerProvider};
 use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentSecret};
+use crate::types::string::UntrustedString;
 use crate::util::config::{
 	ChannelConfigOverrides, ChannelConfigUpdate, ChannelHandshakeConfigUpdate, MaxDustHTLCExposure,
 	UserConfig,
 };
 use crate::util::errors::APIError;
 use crate::util::ser::{ReadableArgs, Writeable};
-use crate::util::string::UntrustedString;
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils::{self, TestLogger, WatchtowerPersister};
 

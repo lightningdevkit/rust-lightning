@@ -45,10 +45,10 @@ use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::sign::{NodeSigner, Recipient};
 use crate::types::features::{InitFeatures, NodeFeatures};
+use crate::types::string::PrintableString;
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::ser::{VecWriter, Writeable, Writer};
-use crate::util::string::PrintableString;
 
 #[allow(unused_imports)]
 use crate::prelude::*;

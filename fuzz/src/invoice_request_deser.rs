@@ -24,8 +24,8 @@ use lightning::offers::parse::Bolt12SemanticError;
 use lightning::sign::EntropySource;
 use lightning::types::features::BlindedHopFeatures;
 use lightning::types::payment::{PaymentHash, PaymentSecret};
+use lightning::types::string::UntrustedString;
 use lightning::util::ser::Writeable;
-use lightning::util::string::UntrustedString;
 
 #[inline]
 pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {

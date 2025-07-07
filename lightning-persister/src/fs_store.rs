@@ -1,8 +1,8 @@
 //! Objects related to [`FilesystemStore`] live here.
 use crate::utils::{check_namespace_key_validity, is_valid_kvstore_str};
 
+use lightning::types::string::PrintableString;
 use lightning::util::persist::{KVStore, MigratableKVStore};
-use lightning::util::string::PrintableString;
 
 use std::collections::HashMap;
 use std::fs;

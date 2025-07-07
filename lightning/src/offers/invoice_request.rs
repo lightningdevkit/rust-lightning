@@ -85,11 +85,11 @@ use crate::offers::signer::{Metadata, MetadataMaterial};
 use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::types::payment::PaymentHash;
+use crate::types::string::{PrintableString, UntrustedString};
 use crate::util::ser::{
 	CursorReadable, HighZeroBytesDroppedBigSize, LengthLimitedRead, LengthReadable, Readable,
 	WithoutLength, Writeable, Writer,
 };
-use crate::util::string::{PrintableString, UntrustedString};
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::schnorr::Signature;
@@ -1474,8 +1474,8 @@ mod tests {
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::test_utils::*;
 	use crate::types::features::{InvoiceRequestFeatures, OfferFeatures};
+	use crate::types::string::{PrintableString, UntrustedString};
 	use crate::util::ser::{BigSize, Readable, Writeable};
-	use crate::util::string::{PrintableString, UntrustedString};
 	use bitcoin::constants::ChainHash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{self, Keypair, Secp256k1, SecretKey};
