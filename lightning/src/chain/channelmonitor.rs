@@ -774,6 +774,8 @@ pub enum Balance {
 		amount_satoshis: u64,
 		/// The transaction fee we pay for the closing commitment transaction. This amount is not
 		/// included in the [`Balance::ClaimableOnChannelClose::amount_satoshis`] value.
+		/// This amount includes the sum of dust HTLCs on the commitment transaction, any elided anchors,
+		/// as well as the sum of msat amounts rounded down from non-dust HTLCs.
 		///
 		/// Note that if this channel is inbound (and thus our counterparty pays the commitment
 		/// transaction fee) this value will be zero. For [`ChannelMonitor`]s created prior to LDK
@@ -2860,7 +2862,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			let to_self_value_sat = us.funding.current_holder_commitment_tx.to_broadcaster_value_sat();
 			res.push(Balance::ClaimableOnChannelClose {
 				amount_satoshis: to_self_value_sat + claimable_inbound_htlc_value_sat,
-				// In addition to `commit_tx_fee_sat`, this can also include dust HTLCs, and the total msat amount rounded down from non-dust HTLCs
+				// In addition to `commit_tx_fee_sat`, this can also include dust HTLCs, any elided anchors,
+				// and the total msat amount rounded down from non-dust HTLCs
 				transaction_fee_satoshis: if us.holder_pays_commitment_tx_fee.unwrap_or(true) {
 					let transaction = &us.funding.current_holder_commitment_tx.trust().built_transaction().transaction;
 					let output_value_sat: u64 = transaction.output.iter().map(|txout| txout.value.to_sat()).sum();
