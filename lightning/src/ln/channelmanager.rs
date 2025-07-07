@@ -696,16 +696,6 @@ impl Readable for InterceptId {
 ///
 /// These fields will often not need to be set, and the provided [`Self::default`] can be used.
 pub struct OptionalOfferPaymentInfo {
-	/// The quantity of the offer which we wish to pay for. This is communicated to the recipient
-	/// and determines the minimum value which we must pay.
-	///
-	/// This must be set if we're paying for an offer that has [`Offer::expects_quantity`].
-	///
-	#[cfg_attr(
-		feature = "dnssec",
-		doc = "Note that setting this will cause [`ChannelManager::pay_for_offer_from_human_readable_name`] to fail."
-	)]
-	pub quantity: Option<u64>,
 	/// A note which is communicated to the recipient about this payment via
 	/// [`InvoiceRequest::payer_note`].
 	pub payer_note: Option<String>,
@@ -723,7 +713,6 @@ pub struct OptionalOfferPaymentInfo {
 impl Default for OptionalOfferPaymentInfo {
 	fn default() -> Self {
 		Self {
-			quantity: None,
 			payer_note: None,
 			route_params_config: Default::default(),
 			#[cfg(feature = "std")]
@@ -11212,8 +11201,6 @@ where
 	///   request.
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
-	/// [`InvoiceRequest::payer_note`]: crate::offers::invoice_request::InvoiceRequest::payer_note
 	/// [`InvoiceRequestBuilder`]: crate::offers::invoice_request::InvoiceRequestBuilder
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
@@ -11243,7 +11230,55 @@ where
 
 		self.pay_for_offer_intern(
 			offer,
-			optional_info.quantity,
+			if offer.expects_quantity() { Some(1) } else { None },
+			amount_msats,
+			optional_info.payer_note,
+			payment_id,
+			None,
+			create_pending_payment_fn,
+		)
+	}
+
+	/// Pays for an [`Offer`] using the given parameters, including a `quantity`, by creating an
+	/// [`InvoiceRequest`] and enqueuing it to be sent via an onion message. [`ChannelManager`] will
+	/// pay the actual [`Bolt12Invoice`] once it is received.
+	///
+	/// This method is identical to [`Self::pay_for_offer`] with the one exception that it allows
+	/// you to specify the [`InvoiceRequest::quantity`]. We expect this to be rather seldom used,
+	/// as the "quantity" feature of offers doesn't line up with common payment flows today.
+	///
+	/// This method is otherwise identical to [`Self::pay_for_offer`] but will additionally fail if
+	/// the provided `quantity` does not meet the requirements described by
+	/// [`Offer::supported_quantity`].
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
+	pub fn pay_for_offer_with_quantity(
+		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
+		optional_info: OptionalOfferPaymentInfo, quantity: u64,
+	) -> Result<(), Bolt12SemanticError> {
+		let create_pending_payment_fn = |invoice_request: &InvoiceRequest, nonce| {
+			let expiration = StaleExpiration::TimerTicks(1);
+			let retryable_invoice_request = RetryableInvoiceRequest {
+				invoice_request: invoice_request.clone(),
+				nonce,
+				needs_retry: true,
+			};
+			self.pending_outbound_payments
+				.add_new_awaiting_invoice(
+					payment_id,
+					expiration,
+					optional_info.retry_strategy,
+					optional_info.route_params_config,
+					Some(retryable_invoice_request),
+				)
+				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
+		};
+
+		self.pay_for_offer_intern(
+			offer,
+			Some(quantity),
 			amount_msats,
 			optional_info.payer_note,
 			payment_id,
@@ -11378,9 +11413,7 @@ where
 	///
 	/// # Errors
 	///
-	/// Errors if:
-	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
-	/// - [`OptionalOfferPaymentInfo.quantity`] is set.
+	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link.
 	///
 	/// [BIP 353]: https://github.com/bitcoin/bips/blob/master/bip-0353.mediawiki
 	/// [bLIP 32]: https://github.com/lightning/blips/blob/master/blip-0032.md
@@ -11396,10 +11429,6 @@ where
 		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
 		optional_info: OptionalOfferPaymentInfo, dns_resolvers: Vec<Destination>,
 	) -> Result<(), ()> {
-		if optional_info.quantity.is_some() {
-			return Err(());
-		}
-
 		let (onion_message, context) =
 			self.flow.hrn_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
 
