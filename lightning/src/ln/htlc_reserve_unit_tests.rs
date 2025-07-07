@@ -2,7 +2,7 @@
 
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
 use crate::ln::chan_utils::{
-	self, commitment_tx_base_weight, htlc_success_tx_weight, CommitmentTransaction,
+	self, commitment_tx_base_weight, second_stage_tx_fees_sat, CommitmentTransaction,
 	COMMITMENT_TX_WEIGHT_PER_HTLC,
 };
 use crate::ln::channel::{
@@ -1084,8 +1084,10 @@ pub fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, push_amt);
 
+	let (htlc_success_tx_fee_sat, _) =
+		second_stage_tx_fees_sat(&channel_type_features, feerate_per_kw);
 	let dust_amt = crate::ln::channel::MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000
-		+ feerate_per_kw as u64 * htlc_success_tx_weight(&channel_type_features) / 1000 * 1000
+		+ htlc_success_tx_fee_sat * 1000
 		- 1;
 	// In the previous code, routing this dust payment would cause nodes[0] to perceive a channel
 	// reserve violation even though it's a dust HTLC and therefore shouldn't count towards the

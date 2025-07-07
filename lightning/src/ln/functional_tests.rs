@@ -25,8 +25,8 @@ use crate::events::{
 	PaymentPurpose,
 };
 use crate::ln::chan_utils::{
-	commitment_tx_base_weight, htlc_success_tx_weight, htlc_timeout_tx_weight,
-	COMMITMENT_TX_WEIGHT_PER_HTLC, OFFERED_HTLC_SCRIPT_WEIGHT,
+	commitment_tx_base_weight, second_stage_tx_fees_sat, COMMITMENT_TX_WEIGHT_PER_HTLC,
+	OFFERED_HTLC_SCRIPT_WEIGHT,
 };
 use crate::ln::channel::{
 	get_holder_selected_channel_reserve_satoshis, Channel, ChannelError, InboundV1Channel,
@@ -9853,12 +9853,12 @@ fn do_test_max_dust_htlc_exposure(
 		nondust_htlc_count_in_limit,
 		&ChannelTypeFeatures::empty(),
 	);
-	commitment_tx_cost_msat += if on_holder_tx {
-		htlc_success_tx_weight(&ChannelTypeFeatures::empty())
-	} else {
-		htlc_timeout_tx_weight(&ChannelTypeFeatures::empty())
-	} * (initial_feerate as u64 - 253)
-		* nondust_htlc_count_in_limit;
+	let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
+		second_stage_tx_fees_sat(&ChannelTypeFeatures::empty(), initial_feerate as u32 - 253);
+	let per_htlc_cost_sat =
+		if on_holder_tx { htlc_success_tx_fee_sat } else { htlc_timeout_tx_fee_sat };
+
+	commitment_tx_cost_msat += per_htlc_cost_sat * 1000 * nondust_htlc_count_in_limit;
 	{
 		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 		*feerate_lock = initial_feerate;
@@ -9889,8 +9889,6 @@ fn do_test_max_dust_htlc_exposure(
 	let mut accept_channel =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
-
-	let channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 
 	let (chan_id, tx, _) = create_funding_transaction(&nodes[0], &node_b_id, 1_000_000, 42);
 
@@ -9935,31 +9933,40 @@ fn do_test_max_dust_htlc_exposure(
 	let (mut route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1000);
 
-	let (dust_buffer_feerate, max_dust_htlc_exposure_msat) = {
+	let (
+		dust_buffer_feerate,
+		max_dust_htlc_exposure_msat,
+		htlc_success_tx_fee_sat,
+		htlc_timeout_tx_fee_sat,
+	) = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&node_b_id).unwrap().lock().unwrap();
 		let chan = chan_lock.channel_by_id.get(&channel_id).unwrap();
+		let dust_buffer_feerate = chan.context().get_dust_buffer_feerate(None);
+		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
+			&chan.as_funded().unwrap().funding.get_channel_type(),
+			dust_buffer_feerate,
+		);
 		(
-			chan.context().get_dust_buffer_feerate(None) as u64,
+			dust_buffer_feerate,
 			chan.context().get_max_dust_htlc_exposure_msat(Some(253)),
+			htlc_success_tx_fee_sat,
+			htlc_timeout_tx_fee_sat,
 		)
 	};
-	assert_eq!(dust_buffer_feerate, expected_dust_buffer_feerate as u64);
+	assert_eq!(dust_buffer_feerate, expected_dust_buffer_feerate);
 	let dust_outbound_htlc_on_holder_tx_msat: u64 =
-		(dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type_features) / 1000
-			+ open_channel.common_fields.dust_limit_satoshis
-			- 1) * 1000;
+		(htlc_timeout_tx_fee_sat + open_channel.common_fields.dust_limit_satoshis - 1) * 1000;
 	let dust_outbound_htlc_on_holder_tx: u64 =
 		max_dust_htlc_exposure_msat / dust_outbound_htlc_on_holder_tx_msat;
 
 	// Substract 3 sats for multiplier and 2 sats for fixed limit to make sure we are 50% below the dust limit.
 	// This is to make sure we fully use the dust limit. If we don't, we could end up with `dust_ibd_htlc_on_holder_tx` being 1
 	// while `max_dust_htlc_exposure_msat` is not equal to `dust_outbound_htlc_on_holder_tx_msat`.
-	let dust_inbound_htlc_on_holder_tx_msat: u64 =
-		(dust_buffer_feerate * htlc_success_tx_weight(&channel_type_features) / 1000
-			+ open_channel.common_fields.dust_limit_satoshis
-			- if multiplier_dust_limit { 3 } else { 2 })
-			* 1000;
+	let dust_inbound_htlc_on_holder_tx_msat: u64 = (htlc_success_tx_fee_sat
+		+ open_channel.common_fields.dust_limit_satoshis
+		- if multiplier_dust_limit { 3 } else { 2 })
+		* 1000;
 	let dust_inbound_htlc_on_holder_tx: u64 =
 		max_dust_htlc_exposure_msat / dust_inbound_htlc_on_holder_tx_msat;
 
@@ -9967,11 +9974,10 @@ fn do_test_max_dust_htlc_exposure(
 	// indeed, dust on both transactions.
 	let dust_htlc_on_counterparty_tx: u64 = 4;
 	let dust_htlc_on_counterparty_tx_msat: u64 = 1_250_000;
-	let calcd_dust_htlc_on_counterparty_tx_msat: u64 =
-		(dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type_features) / 1000
-			+ open_channel.common_fields.dust_limit_satoshis
-			- if multiplier_dust_limit { 3 } else { 2 })
-			* 1000;
+	let calcd_dust_htlc_on_counterparty_tx_msat: u64 = (htlc_timeout_tx_fee_sat
+		+ open_channel.common_fields.dust_limit_satoshis
+		- if multiplier_dust_limit { 3 } else { 2 })
+		* 1000;
 	assert!(dust_htlc_on_counterparty_tx_msat < dust_inbound_htlc_on_holder_tx_msat);
 	assert!(dust_htlc_on_counterparty_tx_msat < calcd_dust_htlc_on_counterparty_tx_msat);
 
@@ -10276,9 +10282,9 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 
 	// At this point we have somewhere between dust_limit and dust_limit * 2 left in our dust
 	// exposure limit, and we want to max that out using non-dust HTLCs.
-	let commitment_tx_per_htlc_cost =
-		htlc_success_tx_weight(&ChannelTypeFeatures::empty()) * EXCESS_FEERATE as u64;
-	let max_htlcs_remaining = dust_limit * 2 / commitment_tx_per_htlc_cost;
+	let (htlc_success_tx_fee_sat, _) =
+		second_stage_tx_fees_sat(&ChannelTypeFeatures::empty(), EXCESS_FEERATE);
+	let max_htlcs_remaining = dust_limit * 2 / (htlc_success_tx_fee_sat * 1000);
 	assert!(
 		max_htlcs_remaining < chan_utils::max_htlcs(&chan_ty).into(),
 		"We should be able to fill our dust limit without too many HTLCs"
@@ -10318,7 +10324,7 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	);
 	nodes[0].logger.assert_log("lightning::ln::channel",
 		format!("Cannot accept value that would put our total dust exposure at {} over the limit {} on counterparty commitment tx",
-			2535000, 2530000), 1);
+			2531000, 2530000), 1);
 	check_added_monitors(&nodes[0], 1);
 
 	// Clear the failed htlc
@@ -10420,9 +10426,10 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 	let mut expected_dust_exposure_msat = BASE_DUST_EXPOSURE_MSAT
 		+ EXCESS_FEERATE * (commitment_tx_base_weight(&features) + COMMITMENT_TX_WEIGHT_PER_HTLC)
 			/ 1000 * 1000;
+
+	let (_, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(&features, EXCESS_FEERATE as u32);
 	if features == ChannelTypeFeatures::only_static_remote_key() {
-		expected_dust_exposure_msat +=
-			EXCESS_FEERATE * htlc_timeout_tx_weight(&features) / 1000 * 1000;
+		expected_dust_exposure_msat += htlc_timeout_tx_fee_sat * 1000;
 		assert_eq!(expected_dust_exposure_msat, 533_492);
 	} else {
 		assert_eq!(expected_dust_exposure_msat, 528_492);
@@ -10537,12 +10544,13 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 
 	// The `expected_dust_exposure_msat` for the outbound htlc changes in the non-anchor case, as the htlc success and timeout transactions have different weights
 	// only_static_remote_key: 500_492 + 22 * (724 + 172) / 1000 * 1000 + 22 * 703 / 1000 * 1000 = 534_492
+	let (htlc_success_tx_fee_sat, _) = second_stage_tx_fees_sat(&features, EXCESS_FEERATE as u32);
 	if features == ChannelTypeFeatures::only_static_remote_key() {
 		expected_dust_exposure_msat = BASE_DUST_EXPOSURE_MSAT
 			+ EXCESS_FEERATE
 				* (commitment_tx_base_weight(&features) + COMMITMENT_TX_WEIGHT_PER_HTLC)
 				/ 1000 * 1000
-			+ EXCESS_FEERATE * htlc_success_tx_weight(&features) / 1000 * 1000;
+			+ htlc_success_tx_fee_sat * 1000;
 		assert_eq!(expected_dust_exposure_msat, 534_492);
 	} else {
 		assert_eq!(expected_dust_exposure_msat, 528_492);
@@ -10563,9 +10571,10 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 	let res = nodes[1].node.send_payment_with_route(route_1_0, payment_hash_1_0, onion, id);
 	unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
 
+	let (htlc_success_tx_fee_sat, _) =
+		second_stage_tx_fees_sat(&features, node_1_dust_buffer_feerate as u32);
 	let dust_limit = if features == ChannelTypeFeatures::only_static_remote_key() {
-		MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000
-			+ htlc_success_tx_weight(&features) * node_1_dust_buffer_feerate / 1000 * 1000
+		MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000 + htlc_success_tx_fee_sat * 1000
 	} else {
 		MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000
 	};
