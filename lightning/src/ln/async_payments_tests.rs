@@ -13,7 +13,7 @@ use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentTlvs};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::events::{Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason};
 use crate::ln::blinded_payment_tests::{fail_blinded_htlc_backwards, get_blinded_route_parameters};
-use crate::ln::channelmanager::{OptionalOfferPaymentInfo, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{OptionalOfferPaymentParams, PaymentId, RecipientOnionFields};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
 use crate::ln::msgs::{
@@ -1075,7 +1075,7 @@ fn expired_static_invoice_payment_path() {
 	let (offer, static_invoice) = create_static_invoice(&nodes[1], &nodes[2], None, &secp_ctx);
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
-	let mut params: OptionalOfferPaymentInfo = Default::default();
+	let mut params: OptionalOfferPaymentParams = Default::default();
 	params.retry_strategy = Retry::Attempts(0);
 	nodes[0].node.pay_for_offer(&offer, Some(amt_msat), payment_id, params).unwrap();
 	let release_held_htlc_om =

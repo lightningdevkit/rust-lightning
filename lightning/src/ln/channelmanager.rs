@@ -695,7 +695,7 @@ impl Readable for InterceptId {
 /// .
 ///
 /// These fields will often not need to be set, and the provided [`Self::default`] can be used.
-pub struct OptionalOfferPaymentInfo {
+pub struct OptionalOfferPaymentParams {
 	/// A note which is communicated to the recipient about this payment via
 	/// [`InvoiceRequest::payer_note`].
 	pub payer_note: Option<String>,
@@ -710,7 +710,7 @@ pub struct OptionalOfferPaymentInfo {
 	pub retry_strategy: Retry,
 }
 
-impl Default for OptionalOfferPaymentInfo {
+impl Default for OptionalOfferPaymentParams {
 	fn default() -> Self {
 		Self {
 			payer_note: None,
@@ -11208,7 +11208,7 @@ where
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn pay_for_offer(
 		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
-		optional_info: OptionalOfferPaymentInfo,
+		optional_params: OptionalOfferPaymentParams,
 	) -> Result<(), Bolt12SemanticError> {
 		let create_pending_payment_fn = |invoice_request: &InvoiceRequest, nonce| {
 			let expiration = StaleExpiration::TimerTicks(1);
@@ -11221,8 +11221,8 @@ where
 				.add_new_awaiting_invoice(
 					payment_id,
 					expiration,
-					optional_info.retry_strategy,
-					optional_info.route_params_config,
+					optional_params.retry_strategy,
+					optional_params.route_params_config,
 					Some(retryable_invoice_request),
 				)
 				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
@@ -11232,7 +11232,7 @@ where
 			offer,
 			if offer.expects_quantity() { Some(1) } else { None },
 			amount_msats,
-			optional_info.payer_note,
+			optional_params.payer_note,
 			payment_id,
 			None,
 			create_pending_payment_fn,
@@ -11256,7 +11256,7 @@ where
 	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
 	pub fn pay_for_offer_with_quantity(
 		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
-		optional_info: OptionalOfferPaymentInfo, quantity: u64,
+		optional_params: OptionalOfferPaymentParams, quantity: u64,
 	) -> Result<(), Bolt12SemanticError> {
 		let create_pending_payment_fn = |invoice_request: &InvoiceRequest, nonce| {
 			let expiration = StaleExpiration::TimerTicks(1);
@@ -11269,8 +11269,8 @@ where
 				.add_new_awaiting_invoice(
 					payment_id,
 					expiration,
-					optional_info.retry_strategy,
-					optional_info.route_params_config,
+					optional_params.retry_strategy,
+					optional_params.route_params_config,
 					Some(retryable_invoice_request),
 				)
 				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
@@ -11280,7 +11280,7 @@ where
 			offer,
 			Some(quantity),
 			amount_msats,
-			optional_info.payer_note,
+			optional_params.payer_note,
 			payment_id,
 			None,
 			create_pending_payment_fn,
@@ -11427,7 +11427,7 @@ where
 	#[cfg(feature = "dnssec")]
 	pub fn pay_for_offer_from_human_readable_name(
 		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
-		optional_info: OptionalOfferPaymentInfo, dns_resolvers: Vec<Destination>,
+		optional_params: OptionalOfferPaymentParams, dns_resolvers: Vec<Destination>,
 	) -> Result<(), ()> {
 		let (onion_message, context) =
 			self.flow.hrn_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
@@ -11436,10 +11436,10 @@ where
 		self.pending_outbound_payments.add_new_awaiting_offer(
 			payment_id,
 			expiration,
-			optional_info.retry_strategy,
-			optional_info.route_params_config,
+			optional_params.retry_strategy,
+			optional_params.route_params_config,
 			amount_msats,
-			optional_info.payer_note,
+			optional_params.payer_note,
 		)?;
 
 		self.flow

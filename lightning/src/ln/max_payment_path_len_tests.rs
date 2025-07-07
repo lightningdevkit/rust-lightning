@@ -17,7 +17,7 @@ use crate::blinded_path::payment::{
 use crate::blinded_path::BlindedHop;
 use crate::events::Event;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
-use crate::ln::channelmanager::{OptionalOfferPaymentInfo, PaymentId};
+use crate::ln::channelmanager::{OptionalOfferPaymentParams, PaymentId};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
 use crate::ln::msgs::{BaseMessageHandler, OnionMessageHandler};
@@ -521,7 +521,7 @@ fn bolt12_invoice_too_large_blinded_paths() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, Some(5000), payment_id, OptionalOfferPaymentInfo::default())
+		.pay_for_offer(&offer, Some(5000), payment_id, OptionalOfferPaymentParams::default())
 		.unwrap();
 	let invreq_om = nodes[0]
 		.onion_messenger

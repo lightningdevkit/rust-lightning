@@ -162,7 +162,7 @@ mod test {
 	use lightning::blinded_path::message::{BlindedMessagePath, MessageContext};
 	use lightning::blinded_path::NodeIdLookUp;
 	use lightning::events::{Event, PaymentPurpose};
-	use lightning::ln::channelmanager::{OptionalOfferPaymentInfo, PaymentId};
+	use lightning::ln::channelmanager::{OptionalOfferPaymentParams, PaymentId};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{
 		BaseMessageHandler, ChannelMessageHandler, Init, OnionMessageHandler,
@@ -375,7 +375,7 @@ mod test {
 		let proof_override = &nodes[0].node.testing_dnssec_proof_offer_resolution_override;
 		proof_override.lock().unwrap().insert(name.clone(), offer);
 		let amt = 42_000;
-		let mut opts = OptionalOfferPaymentInfo::default();
+		let mut opts = OptionalOfferPaymentParams::default();
 		opts.payer_note = payer_note.clone();
 		nodes[0]
 			.node
