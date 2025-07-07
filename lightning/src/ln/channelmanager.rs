@@ -696,7 +696,7 @@ impl Readable for InterceptId {
 ///
 /// These fields will often not need to be set, and the provided [`Self::default`] can be used.
 pub struct OptionalOfferPaymentParams {
-	/// A note which is communicated to the recipient about this payment via
+	/// A note that is communicated to the recipient about this payment via
 	/// [`InvoiceRequest::payer_note`].
 	pub payer_note: Option<String>,
 	/// Pathfinding options which tweak how the path is constructed to the recipient.
