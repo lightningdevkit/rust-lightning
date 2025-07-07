@@ -10404,35 +10404,41 @@ where
 	/// - `our_funding_inputs`: the inputs we contribute to the new funding transaction.
 	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
 	#[cfg(splicing)]
-	#[rustfmt::skip]
-	pub fn splice_channel(&mut self, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
-		funding_feerate_per_kw: u32, locktime: u32,
+	pub fn splice_channel(
+		&mut self, our_funding_contribution_satoshis: i64,
+		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, funding_feerate_per_kw: u32,
+		locktime: u32,
 	) -> Result<msgs::SpliceInit, APIError> {
 		// Check if a splice has been initiated already.
 		// Note: only a single outstanding splice is supported (per spec)
 		if let Some(pending_splice) = &self.pending_splice {
-			return Err(APIError::APIMisuseError { err: format!(
+			return Err(APIError::APIMisuseError {
+				err: format!(
 				"Channel {} cannot be spliced, as it has already a splice pending (contribution {})",
 				self.context.channel_id(),
 				pending_splice.our_funding_contribution,
-			)});
+			),
+			});
 		}
 
 		if !self.context.is_live() {
-			return Err(APIError::APIMisuseError { err: format!(
-				"Channel {} cannot be spliced, as channel is not live",
-				self.context.channel_id()
-			)});
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot be spliced, as channel is not live",
+					self.context.channel_id()
+				),
+			});
 		}
 
 		// TODO(splicing): check for quiescence
 
 		if our_funding_contribution_satoshis < 0 {
-			return Err(APIError::APIMisuseError { err: format!(
+			return Err(APIError::APIMisuseError {
+				err: format!(
 				"TODO(splicing): Splice-out not supported, only splice in; channel ID {}, contribution {}",
 				self.context.channel_id(), our_funding_contribution_satoshis,
-			)});
+			),
+			});
 		}
 
 		// TODO(splicing): Once splice-out is supported, check that channel balance does not go below 0
@@ -10442,11 +10448,20 @@ where
 		// (Cannot test for miminum required post-splice channel value)
 
 		// Check that inputs are sufficient to cover our contribution.
-		let _fee = check_v2_funding_inputs_sufficient(our_funding_contribution_satoshis, &our_funding_inputs, true, true, funding_feerate_per_kw)
-			.map_err(|err| APIError::APIMisuseError { err: format!(
+		let _fee = check_v2_funding_inputs_sufficient(
+			our_funding_contribution_satoshis,
+			&our_funding_inputs,
+			true,
+			true,
+			funding_feerate_per_kw,
+		)
+		.map_err(|err| APIError::APIMisuseError {
+			err: format!(
 				"Insufficient inputs for splicing; channel ID {}, err {}",
-				self.context.channel_id(), err,
-			)})?;
+				self.context.channel_id(),
+				err,
+			),
+		})?;
 		// Convert inputs
 		let mut funding_inputs = Vec::new();
 		for (tx_in, tx, _w) in our_funding_inputs.into_iter() {
@@ -10456,7 +10471,7 @@ where
 		}
 
 		let funding_negotiation_context = FundingNegotiationContext {
-			our_funding_satoshis: 0, // set at later phase
+			our_funding_satoshis: 0,      // set at later phase
 			their_funding_satoshis: None, // set at later phase
 			funding_tx_locktime: LockTime::from_consensus(locktime),
 			funding_feerate_sat_per_1000_weight: funding_feerate_per_kw,
@@ -10471,7 +10486,11 @@ where
 			received_funding_txid: None,
 		});
 
-		let msg = self.get_splice_init(our_funding_contribution_satoshis, funding_feerate_per_kw, locktime);
+		let msg = self.get_splice_init(
+			our_funding_contribution_satoshis,
+			funding_feerate_per_kw,
+			locktime,
+		);
 		Ok(msg)
 	}
 
