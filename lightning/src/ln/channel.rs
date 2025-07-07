@@ -4624,7 +4624,7 @@ where
 			broadcaster_dust_limit_sat,
 			logger,
 		);
-		debug_assert_eq!(stats, self.build_commitment_stats(funding, local, generated_by_local, None, None));
+		debug_assert_eq!(stats, self.build_commitment_stats(funding, local, generated_by_local, None, None), "Caught an inconsistency between `TxBuilder::build_commitment_transaction` and the rest of the `TxBuilder` methods");
 
 		// This populates the HTLC-source table with the indices from the HTLCs in the commitment
 		// transaction.
