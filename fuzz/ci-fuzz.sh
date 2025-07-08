@@ -22,10 +22,10 @@ cargo clean
 popd
 
 cargo install --color always --force honggfuzz --no-default-features
+
 # Because we're fuzzing relatively few iterations, the maximum possible
-# compiler optimizations aren't necessary, so switch to defaults.
+# compiler optimizations aren't necessary, so we turn off LTO
 sed -i 's/lto = true//' Cargo.toml
-sed -i 's/codegen-units = 1//' Cargo.toml
 
 export HFUZZ_BUILD_ARGS="--features honggfuzz_fuzz"
 
