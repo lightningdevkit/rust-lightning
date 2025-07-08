@@ -52,24 +52,37 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 export RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz"
-# ignore anything in fuzz directory since we don't want coverage of targets 
-cargo llvm-cov --html --ignore-filename-regex "fuzz/" --output-dir "$OUTPUT_DIR"
 
-# Check if coverage report was generated successfully
-# The report is generated in $OUTPUT_DIR/html/index.html when using --html --output-dir
-if [ ! -f "$OUTPUT_DIR/html/index.html" ]; then
-    echo "Error: Failed to generate coverage report at $OUTPUT_DIR/html/index.html"
-    # Debug: list what was actually created
-    echo "Contents of $OUTPUT_DIR:"
-    ls -la "$OUTPUT_DIR" || echo "Directory $OUTPUT_DIR does not exist"
-    if [ -d "$OUTPUT_DIR/html" ]; then
-        echo "Contents of $OUTPUT_DIR/html:"
-        ls -la "$OUTPUT_DIR/html"
+# dont run this command when running in CI
+if [ "$CI" != "true" ] && [ "$GITHUB_ACTIONS" != "true" ]; then
+    cargo llvm-cov --html --ignore-filename-regex "fuzz/" --output-dir "$OUTPUT_DIR"
+
+    # Check if coverage report was generated successfully
+    # The report is generated in $OUTPUT_DIR/html/index.html when using --html --output-dir
+    if [ ! -f "$OUTPUT_DIR/html/index.html" ]; then
+        echo "Error: Failed to generate coverage report at $OUTPUT_DIR/html/index.html"
+        echo "Contents of $OUTPUT_DIR:"
+        ls -la "$OUTPUT_DIR" || echo "Directory $OUTPUT_DIR does not exist"
+        if [ -d "$OUTPUT_DIR/html" ]; then
+            echo "Contents of $OUTPUT_DIR/html:"
+            ls -la "$OUTPUT_DIR/html"
+        fi
+        exit 1
     fi
-    exit 1
+    echo "Coverage report generated in $OUTPUT_DIR/html/index.html"
 fi
 
-echo ""
-echo "Coverage report generated in $OUTPUT_DIR/html/index.html"
+# Generate codecov JSON format if running in CI environment
+if [ "$CI" = "true" ] || [ "$GITHUB_ACTIONS" = "true" ]; then
+    echo "CI environment detected, generating codecov JSON format..."
+    cargo llvm-cov --codecov --ignore-filename-regex "fuzz/" --output-path "$OUTPUT_DIR/fuzz-codecov.json"
+    
+    if [ -f "$OUTPUT_DIR/fuzz-codecov.json" ] && [[ "$OUTPUT_DIR" == *"target/"* ]]; then
+        TARGET_DIR="../target"
+        cp "$OUTPUT_DIR/fuzz-codecov.json" "$TARGET_DIR/fuzz-codecov.json"
+        echo "Fuzz codecov report copied to $TARGET_DIR/fuzz-codecov.json"
+    fi
+fi
+
 
 
