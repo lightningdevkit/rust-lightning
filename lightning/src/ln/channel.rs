@@ -1766,7 +1766,7 @@ where
 
 	pub fn funding_tx_constructed<L: Deref>(
 		&mut self, signing_session: InteractiveTxSigningSession, logger: &L,
-	) -> Result<(msgs::CommitmentSigned, Option<Transaction>), ChannelError>
+	) -> Result<msgs::CommitmentSigned, ChannelError>
 	where
 		L::Target: Logger,
 	{
@@ -1788,7 +1788,7 @@ where
 	#[rustfmt::skip]
 	pub fn commitment_signed<L: Deref>(
 		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(Option<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>, Option<ChannelMonitorUpdate>), ChannelError>
+	) -> Result<(Option<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>, Option<ChannelMonitorUpdate>, Option<Transaction>), ChannelError>
 	where
 		L::Target: Logger
 	{
@@ -1815,7 +1815,7 @@ where
 					pending_splice: None,
 				};
 				let res = funded_channel.commitment_signed_initial_v2(msg, best_block, signer_provider, logger)
-					.map(|monitor| (Some(monitor), None))
+					.map(|(monitor, funding_tx_opt)| (Some(monitor), None, funding_tx_opt))
 					// TODO: Change to `inspect_err` when MSRV is high enough.
 					.map_err(|err| {
 						// We always expect a `ChannelError` close.
@@ -1842,15 +1842,15 @@ where
 				let res = if has_negotiated_pending_splice && !session_received_commitment_signed {
 					funded_channel
 						.splice_initial_commitment_signed(msg, logger)
-						.map(|monitor_update_opt| (None, monitor_update_opt))
+						.map(|monitor_update_opt| (None, monitor_update_opt, None))
 				} else {
 					funded_channel.commitment_signed(msg, logger)
-						.map(|monitor_update_opt| (None, monitor_update_opt))
+						.map(|monitor_update_opt| (None, monitor_update_opt, None))
 				};
 
 				#[cfg(not(splicing))]
 				let res = funded_channel.commitment_signed(msg, logger)
-					.map(|monitor_update_opt| (None, monitor_update_opt));
+					.map(|monitor_update_opt| (None, monitor_update_opt, None));
 
 				self.phase = ChannelPhase::Funded(funded_channel);
 				res
@@ -2928,7 +2928,7 @@ where
 	#[rustfmt::skip]
 	pub fn funding_tx_constructed<L: Deref>(
 		&mut self, mut signing_session: InteractiveTxSigningSession, logger: &L
-	) -> Result<(msgs::CommitmentSigned, Option<Transaction>), ChannelError>
+	) -> Result<msgs::CommitmentSigned, ChannelError>
 	where
 		L::Target: Logger
 	{
@@ -2970,7 +2970,8 @@ where
 			},
 		};
 
-		let funding_tx_opt = if signing_session.local_inputs_count() == 0 {
+		// Check that we have the expected number of local inputs
+		if signing_session.local_inputs_count() == 0 {
 			debug_assert_eq!(our_funding_satoshis, 0);
 			if signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new()).is_err() {
 				debug_assert!(
@@ -2982,10 +2983,7 @@ where
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
 				)));
 			}
-			None
-		} else {
-			Some(signing_session.unsigned_tx().build_unsigned_tx())
-		};
+		}
 
 		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 		channel_state.set_interactive_signing();
@@ -2995,7 +2993,7 @@ where
 		self.interactive_tx_constructor.take();
 		self.interactive_tx_signing_session = Some(signing_session);
 
-		Ok((commitment_signed, funding_tx_opt))
+		Ok(commitment_signed)
 	}
 }
 
@@ -6632,7 +6630,7 @@ where
 	#[rustfmt::skip]
 	pub fn commitment_signed_initial_v2<L: Deref>(
 		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError>
+	) -> Result<(ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, Option<Transaction>), ChannelError>
 	where L::Target: Logger
 	{
 		if !self.context.channel_state.is_interactive_signing()
@@ -6663,8 +6661,11 @@ where
 			// so they'll be sent as soon as that's done.
 			self.context.monitor_pending_tx_signatures = Some(tx_signatures);
 		}
+		// Only build the unsigned transaction for signing if there are any holder inputs to actually sign
+		let funding_tx_opt = self.interactive_tx_signing_session.as_ref().and_then(|session|
+			session.local_inputs_count().gt(&0).then_some(session.unsigned_tx().build_unsigned_tx()));
 
-		Ok(channel_monitor)
+		Ok((channel_monitor, funding_tx_opt))
 	}
 
 	/// Handles an incoming `commitment_signed` message for the first commitment transaction of the

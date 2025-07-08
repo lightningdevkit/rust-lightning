@@ -9137,20 +9137,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
 				if let Some(signing_session) = signing_session_opt {
-					let (commitment_signed, funding_tx_opt) = chan_entry
+					let commitment_signed = chan_entry
 						.get_mut()
 						.funding_tx_constructed(signing_session, &self.logger)
 						.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
-					if let Some(unsigned_transaction) = funding_tx_opt {
-						let mut pending_events = self.pending_events.lock().unwrap();
-						pending_events.push_back((
-							Event::FundingTransactionReadyForSigning {
-								unsigned_transaction,
-								counterparty_node_id,
-								channel_id: msg.channel_id,
-								user_channel_id: chan_entry.get().context().get_user_id(),
-							}, None));
-					}
 					peer_state.pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
 						node_id: counterparty_node_id,
 						channel_id: msg.channel_id,
@@ -9682,11 +9672,21 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let chan = chan_entry.get_mut();
 				let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 				let funding_txo = chan.funding().get_funding_txo();
-				let (monitor_opt, monitor_update_opt) = try_channel_entry!(
+				let (monitor_opt, monitor_update_opt, funding_tx_opt) = try_channel_entry!(
 					self, peer_state, chan.commitment_signed(msg, best_block, &self.signer_provider, &&logger),
 					chan_entry);
 
 				if let Some(chan) = chan.as_funded_mut() {
+					if let Some(unsigned_transaction) = funding_tx_opt {
+						let mut pending_events = self.pending_events.lock().unwrap();
+						pending_events.push_back((
+							Event::FundingTransactionReadyForSigning {
+								unsigned_transaction,
+								counterparty_node_id: *counterparty_node_id,
+								channel_id: msg.channel_id,
+								user_channel_id: chan.context.get_user_id(),
+							}, None));
+					}
 					if let Some(monitor) = monitor_opt {
 						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
