@@ -1,0 +1,6 @@
+API Updates
+===========
+ * Various instances of channel closure which provided a
+   `ClosureReason::HolderForceClosed` now provide more accurate
+   `ClosureReason`s, especially `ClosureReason::ProcessingError` (#3881).
+ * A new `ClosureReason::LocallyCoopClosedUnfundedChannel` was added (#3881).
