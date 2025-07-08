@@ -54,6 +54,11 @@ use crate::sync::Mutex;
 /// [`ChannelManager::timer_tick_occurred`]: crate::ln::channelmanager::ChannelManager::timer_tick_occurred
 pub(crate) const IDEMPOTENCY_TIMEOUT_TICKS: u8 = 7;
 
+#[cfg(async_payments)]
+/// Relative expiration in seconds to wait for a pending outbound HTLC to a often-offline
+/// payee to fulfill.
+const DEFAULT_ASYNC_PAYMENT_FULFILLMENT_EXPIRY_TIME: u64 = 60 * 60 * 24 * 7;
+
 /// Stores the session_priv for each part of a payment that is still pending. For versions 0.0.102
 /// and later, also stores information for retrying the payment.
 pub(crate) enum PendingOutboundPayment {
@@ -98,6 +103,9 @@ pub(crate) enum PendingOutboundPayment {
 		route_params: RouteParameters,
 		invoice_request: InvoiceRequest,
 		static_invoice: StaticInvoice,
+		// Stale time expiration of how much time we will wait to the payment to fulfill.
+		// Defaults to [`DEFAULT_ASYNC_PAYMENT_FULFILLMENT_EXPIRY_TIME`].
+		expiry_time: StaleExpiration,
 	},
 	Retryable {
 		retry_strategy: Option<Retry>,
@@ -1164,6 +1172,7 @@ impl OutboundPayments {
 						abandon_with_entry!(entry, PaymentFailureReason::RouteNotFound);
 						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded))
 					}
+					let absolute_expiry = invoice.created_at().saturating_add(Duration::from_secs(DEFAULT_ASYNC_PAYMENT_FULFILLMENT_EXPIRY_TIME));
 
 					*entry.into_mut() = PendingOutboundPayment::StaticInvoiceReceived {
 						payment_hash,
@@ -1176,6 +1185,7 @@ impl OutboundPayments {
 							.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
 							.invoice_request,
 						static_invoice: invoice.clone(),
+						expiry_time: StaleExpiration::AbsoluteTimeout(absolute_expiry),
 					};
 					return Ok(())
 				},
@@ -2242,11 +2252,24 @@ impl OutboundPayments {
 					true
 				}
 			},
-			PendingOutboundPayment::StaticInvoiceReceived { route_params, payment_hash, .. } => {
-				let is_stale =
+			PendingOutboundPayment::StaticInvoiceReceived { route_params, payment_hash, expiry_time, .. } => {
+				let is_stale = match expiry_time {
+					StaleExpiration::AbsoluteTimeout(expiration_time) => {
+						*expiration_time < duration_since_epoch
+					},
+					StaleExpiration::TimerTicks(timer_ticks_remaining) => {
+						if *timer_ticks_remaining > 0 {
+							*timer_ticks_remaining -= 1;
+							false
+						} else {
+							true
+						}
+					}
+				};
+				let is_static_invoice_stale =
 					route_params.payment_params.expiry_time.unwrap_or(u64::MAX) <
 					duration_since_epoch.as_secs();
-				if is_stale {
+				if is_stale || is_static_invoice_stale {
 					let fail_ev = events::Event::PaymentFailed {
 						payment_id: *payment_id,
 						payment_hash: Some(*payment_hash),
@@ -2661,6 +2684,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(6, route_params, required),
 		(8, invoice_request, required),
 		(10, static_invoice, required),
+		(12, expiry_time, required),
 	},
 	// Added in 0.1. Prior versions will drop these outbounds on downgrade, which is safe because
 	// no HTLCs are in-flight.
@@ -3311,6 +3335,7 @@ mod tests {
 			route_params,
 			invoice_request: dummy_invoice_request(),
 			static_invoice: dummy_static_invoice(),
+			expiry_time: StaleExpiration::AbsoluteTimeout(Duration::from_secs(absolute_expiry + 2)),
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);
@@ -3325,6 +3350,109 @@ mod tests {
 		core::mem::drop(events);
 
 		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry + 1), &pending_events);
+		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		assert_eq!(outbounds.len(), 0);
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 1);
+		assert_eq!(events[0], (Event::PaymentFailed {
+			payment_hash: Some(payment_hash),
+			payment_id,
+			reason: Some(PaymentFailureReason::PaymentExpired),
+		}, None));
+	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn time_out_unreleased_async_payments_using_stale_absolute_time() {
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new(new_hash_map());
+		let payment_id = PaymentId([0; 32]);
+		let absolute_expiry = 60;
+
+		let mut outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		let payment_params = PaymentParameters::from_node_id(test_utils::pubkey(42), 0)
+			.with_expiry_time(absolute_expiry);
+		let route_params = RouteParameters {
+			payment_params,
+			final_value_msat: 0,
+			max_total_routing_fee_msat: None,
+		};
+		let payment_hash = PaymentHash([0; 32]);
+		let outbound = PendingOutboundPayment::StaticInvoiceReceived {
+			payment_hash,
+			keysend_preimage: PaymentPreimage([0; 32]),
+			retry_strategy: Retry::Attempts(0),
+			route_params,
+			invoice_request: dummy_invoice_request(),
+			static_invoice: dummy_static_invoice(),
+			expiry_time: StaleExpiration::AbsoluteTimeout(Duration::from_secs(absolute_expiry)),
+		};
+		outbounds.insert(payment_id, outbound);
+		core::mem::drop(outbounds);
+
+		// The payment will not be removed if it isn't expired yet.
+		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry), &pending_events);
+		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		assert_eq!(outbounds.len(), 1);
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 0);
+		core::mem::drop(outbounds);
+		core::mem::drop(events);
+
+		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry + 1), &pending_events);
+		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		assert_eq!(outbounds.len(), 0);
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 1);
+		assert_eq!(events[0], (Event::PaymentFailed {
+			payment_hash: Some(payment_hash),
+			payment_id,
+			reason: Some(PaymentFailureReason::PaymentExpired),
+		}, None));
+	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn time_out_unreleased_async_payments_using_stale_timer_ticks() {
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new(new_hash_map());
+		let payment_id = PaymentId([0; 32]);
+		let absolute_expiry = 60;
+
+		let mut outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		let payment_params = PaymentParameters::from_node_id(test_utils::pubkey(42), 0)
+			.with_expiry_time(absolute_expiry);
+		let route_params = RouteParameters {
+			payment_params,
+			final_value_msat: 0,
+			max_total_routing_fee_msat: None,
+		};
+		let payment_hash = PaymentHash([0; 32]);
+		let timer_ticks = 1;
+		let expiration = StaleExpiration::TimerTicks(timer_ticks);
+		let outbound = PendingOutboundPayment::StaticInvoiceReceived {
+			payment_hash,
+			keysend_preimage: PaymentPreimage([0; 32]),
+			retry_strategy: Retry::Attempts(0),
+			route_params,
+			invoice_request: dummy_invoice_request(),
+			static_invoice: dummy_static_invoice(),
+			expiry_time: expiration,
+		};
+		outbounds.insert(payment_id, outbound);
+		core::mem::drop(outbounds);
+
+		// First time should go through
+		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry), &pending_events);
+		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		assert_eq!(outbounds.len(), 1);
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 0);
+		core::mem::drop(outbounds);
+		core::mem::drop(events);
+
+		// As timer ticks is 1, payment should be timed out
+		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry), &pending_events);
 		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
 		assert_eq!(outbounds.len(), 0);
 		let events = pending_events.lock().unwrap();
@@ -3360,6 +3488,7 @@ mod tests {
 			route_params,
 			invoice_request: dummy_invoice_request(),
 			static_invoice: dummy_static_invoice(),
+			expiry_time: StaleExpiration::AbsoluteTimeout(now()),
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);
