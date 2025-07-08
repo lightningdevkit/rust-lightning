@@ -7592,20 +7592,12 @@ where
 		}
 	}
 
-	fn verify_interactive_tx_signatures(&mut self, _witnesses: &Vec<Witness>) {
-		if let Some(ref mut _signing_session) = self.interactive_tx_signing_session {
-			// Check that sighash_all was used:
-			// TODO(dual_funding): Check sig for sighash
-		}
-	}
-
 	pub fn funding_transaction_signed<L: Deref>(
 		&mut self, witnesses: Vec<Witness>, logger: &L,
 	) -> Result<Option<msgs::TxSignatures>, APIError>
 	where
 		L::Target: Logger,
 	{
-		self.verify_interactive_tx_signatures(&witnesses);
 		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
 			let logger = WithChannelContext::from(logger, &self.context, None);
 			if let Some(holder_tx_signatures) = signing_session
@@ -7675,11 +7667,6 @@ where
 							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 						)));
 				}
-
-				// TODO(dual_funding): Check all sigs are SIGHASH_ALL.
-
-				// TODO(dual_funding): I don't see how we're going to be able to ensure witness-standardness
-				// for spending. Doesn't seem to be anything in rust-bitcoin.
 			}
 
 			let (holder_tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg.clone())
