@@ -68,6 +68,7 @@ use {
 	crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder},
 	crate::onion_message::async_payments::{
 		HeldHtlcAvailable, OfferPaths, OfferPathsRequest, ServeStaticInvoice,
+		StaticInvoicePersisted,
 	},
 	crate::onion_message::messenger::Responder,
 };
@@ -234,6 +235,11 @@ where
 	}
 }
 
+/// The maximum size of a received [`StaticInvoice`] before we'll fail verification in
+/// [`OffersMessageFlow::verify_serve_static_invoice_message].
+#[cfg(async_payments)]
+pub const MAX_STATIC_INVOICE_SIZE_BYTES: usize = 5 * 1024;
+
 /// Defines the maximum number of [`OffersMessage`] including different reply paths to be sent
 /// along different paths.
 /// Sending multiple requests increases the chances of successful delivery in case some
@@ -241,15 +247,57 @@ where
 /// even if multiple invoices are received.
 const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 
+#[cfg(all(async_payments, test))]
+pub(crate) const TEST_OFFERS_MESSAGE_REQUEST_LIMIT: usize = OFFERS_MESSAGE_REQUEST_LIMIT;
+
 /// The default relative expiry for reply paths where a quick response is expected and the reply
 /// path is single-use.
 #[cfg(async_payments)]
-const TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
+const TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = Duration::from_secs(2 * 60 * 60);
+
+#[cfg(all(async_payments, test))]
+pub(crate) const TEST_TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = TEMP_REPLY_PATH_RELATIVE_EXPIRY;
+
+// Default to async receive offers and the paths used to update them lasting one year.
+#[cfg(async_payments)]
+const DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+#[cfg(all(async_payments, test))]
+pub(crate) const TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration =
+	DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY;
 
 impl<MR: Deref> OffersMessageFlow<MR>
 where
 	MR::Target: MessageRouter,
 {
+	/// [`BlindedMessagePath`]s for an async recipient to communicate with this node and interactively
+	/// build [`Offer`]s and [`StaticInvoice`]s for receiving async payments.
+	///
+	/// If `relative_expiry` is unset, the [`BlindedMessagePath`]s will never expire.
+	///
+	/// Returns the paths that the recipient should be configured with via
+	/// [`Self::set_paths_to_static_invoice_server`].
+	///
+	/// Errors if blinded path creation fails or the provided `recipient_id` is larger than 1KiB.
+	#[cfg(async_payments)]
+	pub(crate) fn blinded_paths_for_async_recipient(
+		&self, recipient_id: Vec<u8>, relative_expiry: Option<Duration>,
+		peers: Vec<MessageForwardNode>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		if recipient_id.len() > 1024 {
+			return Err(());
+		}
+
+		let path_absolute_expiry =
+			relative_expiry.map(|exp| exp.saturating_add(self.duration_since_epoch()));
+
+		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPathsRequest {
+			recipient_id,
+			path_absolute_expiry,
+		});
+		self.create_blinded_paths(peers, context)
+	}
+
 	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
 	/// the path's intended lifetime.
 	///
@@ -388,6 +436,26 @@ fn enqueue_onion_message_with_reply_paths<T: OnionMessageContents + Clone>(
 		});
 }
 
+/// Instructions for how to respond to an `InvoiceRequest`.
+pub enum InvreqResponseInstructions {
+	/// We are the recipient of this payment, and a [`Bolt12Invoice`] should be sent in response to
+	/// the invoice request since it is now verified.
+	SendInvoice(VerifiedInvoiceRequest),
+	/// We are a static invoice server and should respond to this invoice request by retrieving the
+	/// [`StaticInvoice`] corresponding to the `recipient_id` and `invoice_id` and calling
+	/// `OffersMessageFlow::enqueue_static_invoice`.
+	///
+	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+	SendStaticInvoice {
+		/// An identifier for the async recipient for whom we are serving [`StaticInvoice`]s.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		recipient_id: Vec<u8>,
+		/// An identifier for the specific invoice being requested by the payer.
+		invoice_id: u128,
+	},
+}
+
 impl<MR: Deref> OffersMessageFlow<MR>
 where
 	MR::Target: MessageRouter,
@@ -405,13 +473,28 @@ where
 	/// - The verification process (via recipient context data or metadata) fails.
 	pub fn verify_invoice_request(
 		&self, invoice_request: InvoiceRequest, context: Option<OffersContext>,
-	) -> Result<VerifiedInvoiceRequest, ()> {
+	) -> Result<InvreqResponseInstructions, ()> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
 		let nonce = match context {
 			None if invoice_request.metadata().is_some() => None,
 			Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
+			#[cfg(async_payments)]
+			Some(OffersContext::StaticInvoiceRequested {
+				recipient_id,
+				invoice_id,
+				path_absolute_expiry,
+			}) => {
+				if path_absolute_expiry < self.duration_since_epoch() {
+					return Err(());
+				}
+
+				return Ok(InvreqResponseInstructions::SendStaticInvoice {
+					recipient_id,
+					invoice_id,
+				});
+			},
 			_ => return Err(()),
 		};
 
@@ -422,7 +505,7 @@ where
 			None => invoice_request.verify_using_metadata(expanded_key, secp_ctx),
 		}?;
 
-		Ok(invoice_request)
+		Ok(InvreqResponseInstructions::SendInvoice(invoice_request))
 	}
 
 	/// Verifies a [`Bolt12Invoice`] using the provided [`OffersContext`] or the invoice's payer metadata,
@@ -1032,6 +1115,26 @@ where
 		Ok(())
 	}
 
+	/// Forwards a [`StaticInvoice`] over the provided `responder`.
+	#[cfg(async_payments)]
+	pub(crate) fn enqueue_static_invoice(
+		&self, invoice: StaticInvoice, responder: Responder,
+	) -> Result<(), Bolt12SemanticError> {
+		let duration_since_epoch = self.duration_since_epoch();
+		if invoice.is_expired_no_std(duration_since_epoch) {
+			return Err(Bolt12SemanticError::AlreadyExpired);
+		}
+		if invoice.is_offer_expired_no_std(duration_since_epoch) {
+			return Err(Bolt12SemanticError::AlreadyExpired);
+		}
+
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+		let message = OffersMessage::StaticInvoice(invoice);
+		pending_offers_messages.push((message, responder.respond().into_instructions()));
+
+		Ok(())
+	}
+
 	/// Enqueues `held_htlc_available` onion messages to be sent to the payee via the reply paths
 	/// contained within the provided [`StaticInvoice`].
 	///
@@ -1141,6 +1244,11 @@ where
 	pub(crate) fn get_async_receive_offer(&self) -> Result<(Offer, bool), ()> {
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
 		cache.get_async_receive_offer(self.duration_since_epoch())
+	}
+
+	#[cfg(all(test, async_payments))]
+	pub(crate) fn test_get_async_receive_offers(&self) -> Vec<Offer> {
+		self.async_receive_offer_cache.lock().unwrap().test_get_payable_offers()
 	}
 
 	/// Sends out [`OfferPathsRequest`] and [`ServeStaticInvoice`] onion messages if we are an
@@ -1285,6 +1393,69 @@ where
 				&mut self.pending_async_payments_messages.lock().unwrap(),
 			);
 		}
+	}
+
+	/// Handles an incoming [`OfferPathsRequest`] onion message from an often-offline recipient who
+	/// wants us (the static invoice server) to serve [`StaticInvoice`]s to payers on their behalf.
+	/// Sends out [`OfferPaths`] onion messages in response.
+	#[cfg(async_payments)]
+	pub(crate) fn handle_offer_paths_request<ES: Deref>(
+		&self, context: AsyncPaymentsContext, peers: Vec<MessageForwardNode>, entropy_source: ES,
+	) -> Option<(OfferPaths, MessageContext)>
+	where
+		ES::Target: EntropySource,
+	{
+		let duration_since_epoch = self.duration_since_epoch();
+
+		let recipient_id = match context {
+			AsyncPaymentsContext::OfferPathsRequest { recipient_id, path_absolute_expiry } => {
+				if duration_since_epoch > path_absolute_expiry.unwrap_or(Duration::MAX) {
+					return None;
+				}
+				recipient_id
+			},
+			_ => return None,
+		};
+
+		let mut random_bytes = [0u8; 16];
+		random_bytes.copy_from_slice(&entropy_source.get_secure_random_bytes()[..16]);
+		let invoice_id = u128::from_be_bytes(random_bytes);
+
+		// Create the blinded paths that will be included in the async recipient's offer.
+		let (offer_paths, paths_expiry) = {
+			let path_absolute_expiry =
+				duration_since_epoch.saturating_add(DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY);
+			let context = OffersContext::StaticInvoiceRequested {
+				recipient_id: recipient_id.clone(),
+				path_absolute_expiry,
+				invoice_id,
+			};
+			match self.create_blinded_paths_using_absolute_expiry(
+				context,
+				Some(path_absolute_expiry),
+				peers,
+			) {
+				Ok(paths) => (paths, path_absolute_expiry),
+				Err(()) => return None,
+			}
+		};
+
+		// Create a reply path so that the recipient can respond to our offer_paths message with the
+		// static invoice that they create. This path will also be used by the recipient to update said
+		// invoice.
+		let reply_path_context = {
+			let path_absolute_expiry =
+				duration_since_epoch.saturating_add(DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY);
+			MessageContext::AsyncPayments(AsyncPaymentsContext::ServeStaticInvoice {
+				recipient_id,
+				invoice_id,
+				path_absolute_expiry,
+			})
+		};
+
+		let offer_paths_om =
+			OfferPaths { paths: offer_paths, paths_absolute_expiry: Some(paths_expiry.as_secs()) };
+		return Some((offer_paths_om, reply_path_context));
 	}
 
 	/// Handles an incoming [`OfferPaths`] message from the static invoice server, sending out
@@ -1435,6 +1606,55 @@ where
 			.and_then(|paths| paths.into_iter().next().ok_or(()))?;
 
 		Ok((invoice, forward_invoice_request_path))
+	}
+
+	/// Verifies an incoming [`ServeStaticInvoice`] onion message from an often-offline recipient who
+	/// wants us as a static invoice server to serve the [`ServeStaticInvoice::invoice`] to payers on
+	/// their behalf.
+	///
+	/// On success, returns `(recipient_id, invoice_id)` for use in persisting and later retrieving
+	/// the static invoice from the database.
+	///
+	/// Errors if the [`ServeStaticInvoice::invoice`] is expired or larger than
+	/// [`MAX_STATIC_INVOICE_SIZE_BYTES`], or if blinded path verification fails.
+	///
+	/// [`ServeStaticInvoice::invoice`]: crate::onion_message::async_payments::ServeStaticInvoice::invoice
+	#[cfg(async_payments)]
+	pub fn verify_serve_static_invoice_message(
+		&self, message: &ServeStaticInvoice, context: AsyncPaymentsContext,
+	) -> Result<(Vec<u8>, u128), ()> {
+		if message.invoice.is_expired_no_std(self.duration_since_epoch()) {
+			return Err(());
+		}
+		if message.invoice.serialized_length() > MAX_STATIC_INVOICE_SIZE_BYTES {
+			return Err(());
+		}
+		match context {
+			AsyncPaymentsContext::ServeStaticInvoice {
+				recipient_id,
+				invoice_id,
+				path_absolute_expiry,
+			} => {
+				if self.duration_since_epoch() > path_absolute_expiry {
+					return Err(());
+				}
+
+				return Ok((recipient_id, invoice_id));
+			},
+			_ => return Err(()),
+		};
+	}
+
+	/// Indicates that a [`ServeStaticInvoice::invoice`] has been persisted and is ready to be served
+	/// to payers on behalf of an often-offline recipient. This method must be called after persisting
+	/// a [`StaticInvoice`] to confirm to the recipient that their corresponding [`Offer`] is ready to
+	/// receive async payments.
+	#[cfg(async_payments)]
+	pub fn static_invoice_persisted(&self, responder: Responder) {
+		let mut pending_async_payments_messages =
+			self.pending_async_payments_messages.lock().unwrap();
+		let message = AsyncPaymentsMessage::StaticInvoicePersisted(StaticInvoicePersisted {});
+		pending_async_payments_messages.push((message, responder.respond().into_instructions()));
 	}
 
 	/// Handles an incoming [`StaticInvoicePersisted`] onion message from the static invoice server.

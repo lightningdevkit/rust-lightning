@@ -395,6 +395,18 @@ impl StaticInvoice {
 		self.signature
 	}
 
+	/// Whether the [`Offer`] that this invoice is based on is expired.
+	#[cfg(feature = "std")]
+	pub fn is_offer_expired(&self) -> bool {
+		self.contents.is_expired()
+	}
+
+	/// Whether the [`Offer`] that this invoice is based on is expired, given the current time as
+	/// duration since the Unix epoch.
+	pub fn is_offer_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.contents.is_offer_expired_no_std(duration_since_epoch)
+	}
+
 	#[allow(unused)] // TODO: remove this once we remove the `async_payments` cfg flag
 	pub(crate) fn is_from_same_offer(&self, invreq: &InvoiceRequest) -> bool {
 		let invoice_offer_tlv_stream =
@@ -411,7 +423,6 @@ impl InvoiceContents {
 		self.offer.is_expired()
 	}
 
-	#[cfg(not(feature = "std"))]
 	fn is_offer_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
 		self.offer.is_expired_no_std(duration_since_epoch)
 	}
@@ -526,6 +537,10 @@ impl InvoiceContents {
 	#[cfg(feature = "std")]
 	fn is_expired(&self) -> bool {
 		is_expired(self.created_at(), self.relative_expiry())
+	}
+
+	fn is_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.created_at().saturating_add(self.relative_expiry()) < duration_since_epoch
 	}
 
 	fn fallbacks(&self) -> Vec<Address> {

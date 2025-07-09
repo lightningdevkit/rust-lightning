@@ -194,6 +194,16 @@ const OFFER_REFRESH_THRESHOLD: Duration = Duration::from_secs(2 * 60 * 60);
 #[cfg(async_payments)]
 const MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 = 3 * 30 * 24 * 60 * 60;
 
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_MAX_CACHED_OFFERS_TARGET: usize = MAX_CACHED_OFFERS_TARGET;
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_MAX_UPDATE_ATTEMPTS: u8 = MAX_UPDATE_ATTEMPTS;
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_OFFER_REFRESH_THRESHOLD: Duration = OFFER_REFRESH_THRESHOLD;
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 =
+	MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS;
+
 #[cfg(async_payments)]
 impl AsyncReceiveOfferCache {
 	/// Retrieve a cached [`Offer`] for receiving async payments as an often-offline recipient, as
@@ -460,6 +470,21 @@ impl AsyncReceiveOfferCache {
 		}
 
 		false
+	}
+
+	#[cfg(test)]
+	pub(super) fn test_get_payable_offers(&self) -> Vec<Offer> {
+		self.offers_with_idx()
+			.filter_map(|(_, offer)| {
+				if matches!(offer.status, OfferStatus::Ready { .. })
+					|| matches!(offer.status, OfferStatus::Used)
+				{
+					Some(offer.offer.clone())
+				} else {
+					None
+				}
+			})
+			.collect()
 	}
 }
 
