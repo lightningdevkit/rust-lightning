@@ -1009,16 +1009,6 @@ impl ChannelError {
 	pub(super) fn close(err: String) -> Self {
 		ChannelError::Close((err.clone(), ClosureReason::ProcessingError { err }))
 	}
-
-	pub(super) fn message(&self) -> &str {
-		match self {
-			&ChannelError::Ignore(ref e) => &e,
-			&ChannelError::Warn(ref e) => &e,
-			&ChannelError::WarnAndDisconnect(ref e) => &e,
-			&ChannelError::Close((ref e, _)) => &e,
-			&ChannelError::SendError(ref e) => &e,
-		}
-	}
 }
 
 pub(super) struct WithChannelContext<'a, L: Deref>
@@ -5536,12 +5526,13 @@ where
 
 		let commitment_signed = self.get_initial_commitment_signed(&funding, logger);
 		let commitment_signed = match commitment_signed {
-			Ok(commitment_signed) => commitment_signed,
-			Err(e) => {
+			Some(commitment_signed) => commitment_signed,
+			// TODO(splicing): Support async signing
+			None => {
 				funding.channel_transaction_parameters.funding_outpoint = None;
 				return Err(msgs::TxAbort {
 					channel_id: self.channel_id(),
-					data: e.message().to_owned().into_bytes(),
+					data: "Failed to get signature for commitment_signed".to_owned().into_bytes(),
 				});
 			},
 		};
@@ -5600,7 +5591,7 @@ where
 	#[rustfmt::skip]
 	fn get_initial_counterparty_commitment_signature<L: Deref>(
 		&self, funding: &FundingScope, logger: &L
-	) -> Result<Signature, ChannelError>
+	) -> Option<Signature>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
@@ -5615,11 +5606,7 @@ where
 				let channel_parameters = &funding.channel_transaction_parameters;
 				ecdsa.sign_counterparty_commitment(channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
 					.map(|(signature, _)| signature)
-					.map_err(|()| {
-						let msg = "Failed to get signatures for new commitment_signed";
-						let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-						ChannelError::Close((msg.to_owned(), reason))
-					})
+					.ok()
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
@@ -5630,38 +5617,35 @@ where
 	#[rustfmt::skip]
 	fn get_initial_commitment_signed<L: Deref>(
 		&mut self, funding: &FundingScope, logger: &L
-	) -> Result<msgs::CommitmentSigned, ChannelError>
+	) -> Option<msgs::CommitmentSigned>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
 	{
 		assert!(matches!(self.channel_state, ChannelState::FundingNegotiated(flags) if flags.is_interactive_signing()));
 
-		let signature = match self.get_initial_counterparty_commitment_signature(funding, logger) {
-			Ok(res) => res,
-			Err(e) => {
-				log_error!(logger, "Got bad signatures: {:?}!", e);
-				return Err(e);
-			}
-		};
-
-		log_info!(logger, "Generated commitment_signed for peer for channel {}", &self.channel_id());
-
-		Ok(msgs::CommitmentSigned {
-			channel_id: self.channel_id,
-			htlc_signatures: vec![],
-			signature,
-			funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
-		})
+		let signature = self.get_initial_counterparty_commitment_signature(funding, logger);
+		if let Some(signature) = signature {
+			log_info!(logger, "Generated commitment_signed for peer for channel {}", &self.channel_id());
+			Some(msgs::CommitmentSigned {
+				channel_id: self.channel_id,
+				htlc_signatures: vec![],
+				signature,
+				funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
+				#[cfg(taproot)]
+				partial_signature_with_nonce: None,
+			})
+		} else {
+			// TODO(splicing): Support async signing
+			None
+		}
 	}
 
 	#[cfg(all(test))]
 	pub fn get_initial_counterparty_commitment_signature_for_test<L: Deref>(
 		&mut self, funding: &mut FundingScope, logger: &L,
 		counterparty_cur_commitment_point_override: PublicKey,
-	) -> Result<Signature, ChannelError>
+	) -> Option<Signature>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
@@ -8814,7 +8798,16 @@ where
 							// if it has not received tx_signatures for that funding transaction AND
 							// if next_commitment_number is zero:
 							//   MUST retransmit its commitment_signed for that funding transaction.
-							let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger)?;
+							let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger)
+								// TODO(splicing): Support async signing
+								.ok_or_else(|| {
+									let message = "Failed to get signatures for new commitment_signed".to_owned();
+									ChannelError::Close(
+										(
+											message.clone(),
+											ClosureReason::HolderForceClosed { message, broadcasted_latest_txn: Some(false) },
+										)
+								)})?;
 							Some(msgs::CommitmentUpdate {
 								commitment_signed: vec![commitment_signed],
 								update_add_htlcs: vec![],
