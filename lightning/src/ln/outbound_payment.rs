@@ -1172,7 +1172,7 @@ impl OutboundPayments {
 						abandon_with_entry!(entry, PaymentFailureReason::RouteNotFound);
 						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded))
 					}
-					let absolute_expiry = invoice.created_at().saturating_add(Duration::from_secs(ASYNC_PAYMENT_TIMEOUT_SECS));
+					let absolute_expiry = duration_since_epoch.saturating_add(Duration::from_secs(ASYNC_PAYMENT_TIMEOUT_SECS));
 
 					*entry.into_mut() = PendingOutboundPayment::StaticInvoiceReceived {
 						payment_hash,
