@@ -2965,10 +2965,15 @@ where
 		self.context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
 		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
 		let commitment_signed = match commitment_signed {
-			Ok(commitment_signed) => commitment_signed,
-			Err(err) => {
+			Some(commitment_signed) => commitment_signed,
+			None => {
 				self.funding.channel_transaction_parameters.funding_outpoint = None;
-				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })));
+				return Err(ChannelError::Close(
+						(
+							"Failed to get signatures for new commitment_signed".to_owned(),
+							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+						)
+				));
 			},
 		};
 
@@ -5494,7 +5499,7 @@ where
 	#[rustfmt::skip]
 	fn get_initial_counterparty_commitment_signature<L: Deref>(
 		&self, funding: &FundingScope, logger: &L
-	) -> Result<Signature, ChannelError>
+	) -> Option<Signature>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
@@ -5509,11 +5514,7 @@ where
 				let channel_parameters = &funding.channel_transaction_parameters;
 				ecdsa.sign_counterparty_commitment(channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
 					.map(|(signature, _)| signature)
-					.map_err(|_| ChannelError::Close(
-						(
-							"Failed to get signatures for new commitment_signed".to_owned(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						)))
+					.ok()
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
@@ -5524,38 +5525,35 @@ where
 	#[rustfmt::skip]
 	fn get_initial_commitment_signed<L: Deref>(
 		&mut self, funding: &FundingScope, logger: &L
-	) -> Result<msgs::CommitmentSigned, ChannelError>
+	) -> Option<msgs::CommitmentSigned>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
 	{
 		assert!(matches!(self.channel_state, ChannelState::FundingNegotiated(_)));
 
-		let signature = match self.get_initial_counterparty_commitment_signature(funding, logger) {
-			Ok(res) => res,
-			Err(e) => {
-				log_error!(logger, "Got bad signatures: {:?}!", e);
-				return Err(e);
-			}
-		};
-
-		log_info!(logger, "Generated commitment_signed for peer for channel {}", &self.channel_id());
-
-		Ok(msgs::CommitmentSigned {
-			channel_id: self.channel_id,
-			htlc_signatures: vec![],
-			signature,
-			funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
-		})
+		let signature = self.get_initial_counterparty_commitment_signature(funding, logger);
+		if let Some(signature) = signature {
+			log_info!(logger, "Generated commitment_signed for peer for channel {}", &self.channel_id());
+			Some(msgs::CommitmentSigned {
+				channel_id: self.channel_id,
+				htlc_signatures: vec![],
+				signature,
+				funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
+				#[cfg(taproot)]
+				partial_signature_with_nonce: None,
+			})
+		} else {
+			// TODO: Support async signing
+			None
+		}
 	}
 
 	#[cfg(all(test))]
 	pub fn get_initial_counterparty_commitment_signature_for_test<L: Deref>(
 		&mut self, funding: &mut FundingScope, logger: &L,
 		counterparty_cur_commitment_point_override: PublicKey,
-	) -> Result<Signature, ChannelError>
+	) -> Option<Signature>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
@@ -8426,7 +8424,14 @@ where
 							// if it has not received tx_signatures for that funding transaction AND
 							// if next_commitment_number is zero:
 							//   MUST retransmit its commitment_signed for that funding transaction.
-							let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger)?;
+							let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger)
+								// TODO Support async signing
+								.ok_or_else(|| ChannelError::Close(
+										(
+											"Failed to get signatures for new commitment_signed".to_owned(),
+											ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+										)
+								))?;
 							Some(msgs::CommitmentUpdate {
 								commitment_signed: vec![commitment_signed],
 								update_add_htlcs: vec![],
