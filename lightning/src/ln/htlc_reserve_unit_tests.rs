@@ -7,7 +7,7 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::channel::{
 	get_holder_selected_channel_reserve_satoshis, Channel, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE,
-	MIN_AFFORDABLE_HTLC_COUNT,
+	MIN_AFFORDABLE_HTLC_COUNT, MIN_CHAN_DUST_LIMIT_SATOSHIS,
 };
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder};
 use crate::ln::functional_test_utils::*;
@@ -16,6 +16,7 @@ use crate::ln::onion_utils::{self, AttributionData};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::routing::router::PaymentParameters;
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::tx_builder::{SpecTxBuilder, TxBuilder};
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::PaymentPreimage;
 use crate::util::config::UserConfig;
@@ -772,16 +773,22 @@ pub fn test_basic_channel_reserve() {
 }
 
 #[xtest(feature = "_externalize_tests")]
-pub fn test_fee_spike_violation_fails_htlc() {
+fn test_fee_spike_violation_fails_htlc() {
+	do_test_fee_spike_buffer(None, true)
+}
+pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[cfg.clone(), cfg]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
+	let chan_amt_sat = 100000;
+	let push_amt_msat = 95000000;
+	let chan =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, chan_amt_sat, push_amt_msat);
 
 	let (mut route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 3460000);
@@ -792,11 +799,12 @@ pub fn test_fee_spike_violation_fails_htlc() {
 
 	let cur_height = nodes[1].node.best_block.read().unwrap().height + 1;
 
+	let payment_amt_msat = 3460001;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv);
 	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
 		&route.paths[0],
-		3460001,
+		payment_amt_msat,
 		&recipient_onion_fields,
 		cur_height,
 		&None,
@@ -858,16 +866,15 @@ pub fn test_fee_spike_violation_fails_htlc() {
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
 	// signature for the commitment_signed message.
-	let local_chan_balance = 1313;
-
 	let accepted_htlc_info = chan_utils::HTLCOutputInCommitment {
 		offered: false,
-		amount_msat: 3460001,
+		amount_msat: payment_amt_msat,
 		cltv_expiry: htlc_cltv,
 		payment_hash,
 		transaction_output_index: Some(1),
 	};
 
+	let local_chan_balance_msat = chan_amt_sat * 1000 - push_amt_msat;
 	let commitment_number = INITIAL_COMMITMENT_NUMBER - 1;
 
 	let res = {
@@ -877,15 +884,17 @@ pub fn test_fee_spike_violation_fails_htlc() {
 		let channel = get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan.2);
 		let chan_signer = channel.as_funded().unwrap().get_signer();
 
-		let commitment_tx = CommitmentTransaction::new(
+		let (commitment_tx, _stats) = SpecTxBuilder {}.build_commitment_transaction(
+			false,
 			commitment_number,
 			&remote_point,
-			95000,
-			local_chan_balance,
-			feerate_per_kw,
-			vec![accepted_htlc_info],
-			&channel.funding().channel_transaction_parameters.as_counterparty_broadcastable(),
+			&channel.funding().channel_transaction_parameters,
 			&secp_ctx,
+			local_chan_balance_msat,
+			vec![accepted_htlc_info],
+			feerate_per_kw,
+			MIN_CHAN_DUST_LIMIT_SATOSHIS,
+			&nodes[0].logger,
 		);
 		let params = &channel.funding().channel_transaction_parameters;
 		chan_signer
@@ -918,28 +927,35 @@ pub fn test_fee_spike_violation_fails_htlc() {
 	};
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa_msg);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_htlc_handling_failed_destinations!(
-		nodes[1].node.get_and_clear_pending_events(),
-		&[HTLCHandlingFailureType::Receive { payment_hash }]
-	);
 
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	// Make sure the HTLC failed in the way we expect.
-	match events[0] {
-		MessageSendEvent::UpdateHTLCs {
-			updates: msgs::CommitmentUpdate { ref update_fail_htlcs, .. },
-			..
-		} => {
-			assert_eq!(update_fail_htlcs.len(), 1);
-			update_fail_htlcs[0].clone()
-		},
-		_ => panic!("Unexpected event"),
-	};
-	nodes[1].logger.assert_log("lightning::ln::channel",
+	if htlc_fails {
+		expect_htlc_handling_failed_destinations!(
+			nodes[1].node.get_and_clear_pending_events(),
+			&[HTLCHandlingFailureType::Receive { payment_hash }]
+		);
+
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+
+		// Make sure the HTLC failed in the way we expect.
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs {
+				updates: msgs::CommitmentUpdate { ref update_fail_htlcs, .. },
+				..
+			} => {
+				assert_eq!(update_fail_htlcs.len(), 1);
+				update_fail_htlcs[0].clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+		nodes[1].logger.assert_log("lightning::ln::channel",
 		format!("Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", raa_msg.channel_id), 1);
 
-	check_added_monitors(&nodes[1], 3);
+		check_added_monitors(&nodes[1], 3);
+	} else {
+		expect_payment_claimable!(nodes[1], payment_hash, payment_secret, payment_amt_msat);
+		check_added_monitors(&nodes[1], 2);
+	}
 }
 
 #[xtest(feature = "_externalize_tests")]
