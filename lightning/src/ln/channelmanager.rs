@@ -11917,7 +11917,12 @@ where
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
 				peer_state.is_connected = false;
 				peer_state.ok_to_remove(true)
-			} else { debug_assert!(false, "Unconnected peer disconnected"); true }
+			} else {
+				// Note that the peer might already be marked as disconnected as we might have
+				// called this function already via a different callpath (i.e., other
+				// implementation of `BaseMessageHandler`.
+				false
+			}
 		};
 		if remove_peer {
 			per_peer_state.remove(&counterparty_node_id);
@@ -11981,7 +11986,9 @@ where
 							return NotifyOption::SkipPersistNoEvents;
 						}
 
-						debug_assert!(!peer_state.is_connected, "A peer shouldn't be connected twice");
+						// Note that the peer might already be marked as connected as we might have
+						// called this function already via a different callpath (i.e., other
+						// implementation of `BaseMessageHandler`.
 						peer_state.is_connected = true;
 					},
 				}
