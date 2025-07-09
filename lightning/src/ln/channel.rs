@@ -5517,6 +5517,9 @@ where
 		funding
 			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 
+		self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
+		self.channel_state.set_interactive_signing();
+
 		if is_splice {
 			debug_assert_eq!(
 				holder_commitment_transaction_number,
@@ -5580,10 +5583,6 @@ where
 			});
 		};
 
-		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
-		channel_state.set_interactive_signing();
-		self.channel_state = channel_state;
-
 		Ok((commitment_signed, funding_ready_for_sig_event))
 	}
 
@@ -5636,16 +5635,7 @@ where
 		SP::Target: SignerProvider,
 		L::Target: Logger
 	{
-		if !matches!(
-			self.channel_state, ChannelState::NegotiatingFunding(flags)
-			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
-		) {
-			debug_assert!(false);
-			let msg = "Tried to get an initial commitment_signed messsage at a time other than \
-				immediately after initial handshake completion (or tried to get funding_created twice)";
-			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-			return Err(ChannelError::Close((msg.to_owned(), reason)));
-		}
+		assert!(matches!(self.channel_state, ChannelState::FundingNegotiated(flags) if flags.is_interactive_signing()));
 
 		let signature = match self.get_initial_counterparty_commitment_signature(funding, logger) {
 			Ok(res) => res,
@@ -12880,6 +12870,7 @@ where
 					channel_state.clear_remote_stfu_sent();
 					channel_state.clear_quiescent();
 				},
+				ChannelState::FundingNegotiated(flags) if flags.is_interactive_signing() => {},
 				_ => debug_assert!(false, "Pre-funded/shutdown channels should not be written"),
 			}
 			channel_state.set_peer_disconnected();
