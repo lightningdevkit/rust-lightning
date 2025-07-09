@@ -14,9 +14,10 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+default = ["std", "time"]
 std = ["lightning/std", "lightning-liquidity/std", "bitcoin-io/std", "bitcoin_hashes/std"]
+time = ["std", "lightning-liquidity/time"]
 
-default = ["std"]
 
 [dependencies]
 bitcoin = { version = "0.32.2", default-features = false }
