@@ -2960,6 +2960,8 @@ where
 		};
 		self.funding.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 
+		self.context.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
+
 		self.context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
 		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
 		let commitment_signed = match commitment_signed {
@@ -3008,13 +3010,10 @@ where
 			)));
 		};
 
-		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
-		channel_state.set_interactive_signing();
-		self.context.channel_state = channel_state;
-
 		// Clear the interactive transaction constructor
 		self.interactive_tx_constructor.take();
 		self.interactive_tx_signing_session = Some(signing_session);
+		self.context.channel_state.set_interactive_signing();
 
 		Ok((commitment_signed, funding_ready_for_sig_event))
 	}
@@ -5530,16 +5529,7 @@ where
 		SP::Target: SignerProvider,
 		L::Target: Logger
 	{
-		if !matches!(
-			self.channel_state, ChannelState::NegotiatingFunding(flags)
-			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
-		) {
-			debug_assert!(false);
-			return Err(ChannelError::Close(("Tried to get an initial commitment_signed messsage at a time other than \
-				immediately after initial handshake completion (or tried to get funding_created twice)".to_string(),
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
-			)));
-		}
+		assert!(matches!(self.channel_state, ChannelState::FundingNegotiated(_)));
 
 		let signature = match self.get_initial_counterparty_commitment_signature(funding, logger) {
 			Ok(res) => res,
