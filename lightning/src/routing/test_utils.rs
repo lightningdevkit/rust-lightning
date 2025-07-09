@@ -112,7 +112,7 @@ pub(crate) fn update_channel(
 
 	match gossip_sync.handle_channel_update(Some(node_pubkey), &valid_channel_update) {
 		Ok(res) => assert!(res),
-		Err(_) => panic!()
+		Err(e) => panic!("{e:?}")
 	};
 }
 
