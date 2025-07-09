@@ -57,7 +57,7 @@ pub(crate) const IDEMPOTENCY_TIMEOUT_TICKS: u8 = 7;
 #[cfg(async_payments)]
 /// Relative expiration in seconds to wait for a pending outbound HTLC to a often-offline
 /// payee to fulfill.
-const DEFAULT_ASYNC_PAYMENT_FULFILLMENT_EXPIRY_TIME: u64 = 60 * 60 * 24 * 7;
+const ASYNC_PAYMENT_TIMEOUT_SECS: u64 = 60 * 60 * 24 * 7;
 
 /// Stores the session_priv for each part of a payment that is still pending. For versions 0.0.102
 /// and later, also stores information for retrying the payment.
@@ -104,7 +104,7 @@ pub(crate) enum PendingOutboundPayment {
 		invoice_request: InvoiceRequest,
 		static_invoice: StaticInvoice,
 		// Stale time expiration of how much time we will wait to the payment to fulfill.
-		// Defaults to [`DEFAULT_ASYNC_PAYMENT_FULFILLMENT_EXPIRY_TIME`].
+		// Defaults to [`ASYNC_PAYMENT_TIMEOUT_SECS`].
 		expiry_time: StaleExpiration,
 	},
 	Retryable {
@@ -1172,7 +1172,7 @@ impl OutboundPayments {
 						abandon_with_entry!(entry, PaymentFailureReason::RouteNotFound);
 						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded))
 					}
-					let absolute_expiry = invoice.created_at().saturating_add(Duration::from_secs(DEFAULT_ASYNC_PAYMENT_FULFILLMENT_EXPIRY_TIME));
+					let absolute_expiry = invoice.created_at().saturating_add(Duration::from_secs(ASYNC_PAYMENT_TIMEOUT_SECS));
 
 					*entry.into_mut() = PendingOutboundPayment::StaticInvoiceReceived {
 						payment_hash,
