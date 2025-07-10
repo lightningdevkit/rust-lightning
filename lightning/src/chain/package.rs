@@ -122,7 +122,7 @@ const HIGH_FREQUENCY_BUMP_INTERVAL: u32 = 1;
 ///
 /// CSV and pubkeys are used as part of a witnessScript redeeming a balance output, amount is used
 /// as part of the signature hash and revocation secret to generate a satisfying witness.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RevokedOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
@@ -132,10 +132,12 @@ pub(crate) struct RevokedOutput {
 	amount: Amount,
 	on_counterparty_tx_csv: u16,
 	is_counterparty_balance_on_anchors: Option<()>,
+	// Added in LDK 0.1.4/0.2 and always set since.
+	outpoint_confirmation_height: Option<u32>,
 }
 
 impl RevokedOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: Amount, on_counterparty_tx_csv: u16, is_counterparty_balance_on_anchors: bool) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: Amount, on_counterparty_tx_csv: u16, is_counterparty_balance_on_anchors: bool, outpoint_confirmation_height: u32) -> Self {
 		RevokedOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
@@ -144,13 +146,15 @@ impl RevokedOutput {
 			weight: WEIGHT_REVOKED_OUTPUT,
 			amount,
 			on_counterparty_tx_csv,
-			is_counterparty_balance_on_anchors: if is_counterparty_balance_on_anchors { Some(()) } else { None }
+			is_counterparty_balance_on_anchors: if is_counterparty_balance_on_anchors { Some(()) } else { None },
+			outpoint_confirmation_height: Some(outpoint_confirmation_height),
 		}
 	}
 }
 
 impl_writeable_tlv_based!(RevokedOutput, {
 	(0, per_commitment_point, required),
+	(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2 and always set
 	(2, counterparty_delayed_payment_base_key, required),
 	(4, counterparty_htlc_base_key, required),
 	(6, per_commitment_key, required),
@@ -168,7 +172,7 @@ impl_writeable_tlv_based!(RevokedOutput, {
 ///
 /// CSV is used as part of a witnessScript redeeming a balance output, amount is used as part
 /// of the signature hash and revocation secret to generate a satisfying witness.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RevokedHTLCOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
@@ -177,10 +181,12 @@ pub(crate) struct RevokedHTLCOutput {
 	weight: u64,
 	amount: u64,
 	htlc: HTLCOutputInCommitment,
+	// Added in LDK 0.1.4/0.2 and always set since.
+	outpoint_confirmation_height: Option<u32>,
 }
 
 impl RevokedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, outpoint_confirmation_height: u32) -> Self {
 		let weight = if htlc.offered { weight_revoked_offered_htlc(channel_type_features) } else { weight_revoked_received_htlc(channel_type_features) };
 		RevokedHTLCOutput {
 			per_commitment_point,
@@ -189,13 +195,15 @@ impl RevokedHTLCOutput {
 			per_commitment_key,
 			weight,
 			amount,
-			htlc
+			htlc,
+			outpoint_confirmation_height: Some(outpoint_confirmation_height),
 		}
 	}
 }
 
 impl_writeable_tlv_based!(RevokedHTLCOutput, {
 	(0, per_commitment_point, required),
+	(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2 and always set
 	(2, counterparty_delayed_payment_base_key, required),
 	(4, counterparty_htlc_base_key, required),
 	(6, per_commitment_key, required),
@@ -212,7 +220,7 @@ impl_writeable_tlv_based!(RevokedHTLCOutput, {
 /// The preimage is used as part of the witness.
 ///
 /// Note that on upgrades, some features of existing outputs may be missed.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CounterpartyOfferedHTLCOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
@@ -220,10 +228,12 @@ pub(crate) struct CounterpartyOfferedHTLCOutput {
 	preimage: PaymentPreimage,
 	htlc: HTLCOutputInCommitment,
 	channel_type_features: ChannelTypeFeatures,
+	// Added in LDK 0.1.4/0.2 and always set since.
+	outpoint_confirmation_height: Option<u32>,
 }
 
 impl CounterpartyOfferedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures, outpoint_confirmation_height: Option<u32>) -> Self {
 		CounterpartyOfferedHTLCOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
@@ -231,6 +241,7 @@ impl CounterpartyOfferedHTLCOutput {
 			preimage,
 			htlc,
 			channel_type_features,
+			outpoint_confirmation_height,
 		}
 	}
 }
@@ -240,6 +251,7 @@ impl Writeable for CounterpartyOfferedHTLCOutput {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.per_commitment_point, required),
+			(1, self.outpoint_confirmation_height, option), // Added in 0.1.4/0.2, not always set
 			(2, self.counterparty_delayed_payment_base_key, required),
 			(4, self.counterparty_htlc_base_key, required),
 			(6, self.preimage, required),
@@ -260,9 +272,11 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 		let mut htlc = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
+		let mut outpoint_confirmation_height = None;
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
+			(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2, not always set
 			(2, counterparty_delayed_payment_base_key, required),
 			(4, counterparty_htlc_base_key, required),
 			(6, preimage, required),
@@ -279,7 +293,8 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 			counterparty_htlc_base_key: counterparty_htlc_base_key.0.unwrap(),
 			preimage: preimage.0.unwrap(),
 			htlc: htlc.0.unwrap(),
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
+			outpoint_confirmation_height,
 		})
 	}
 }
@@ -290,23 +305,25 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 /// witnessScript.
 ///
 /// Note that on upgrades, some features of existing outputs may be missed.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CounterpartyReceivedHTLCOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
 	counterparty_htlc_base_key: HtlcBasepoint,
 	htlc: HTLCOutputInCommitment,
 	channel_type_features: ChannelTypeFeatures,
+	outpoint_confirmation_height: Option<u32>,
 }
 
 impl CounterpartyReceivedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures, outpoint_confirmation_height: Option<u32>) -> Self {
 		CounterpartyReceivedHTLCOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
 			counterparty_htlc_base_key,
 			htlc,
-			channel_type_features
+			channel_type_features,
+			outpoint_confirmation_height,
 		}
 	}
 }
@@ -316,6 +333,7 @@ impl Writeable for CounterpartyReceivedHTLCOutput {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.per_commitment_point, required),
+			(1, self.outpoint_confirmation_height, option), // Added in 0.1.4/0.2, not always set
 			(2, self.counterparty_delayed_payment_base_key, required),
 			(4, self.counterparty_htlc_base_key, required),
 			(6, self.htlc, required),
@@ -334,9 +352,11 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 		let mut htlc = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
+		let mut outpoint_confirmation_height = None;
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
+			(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2, not always set
 			(2, counterparty_delayed_payment_base_key, required),
 			(4, counterparty_htlc_base_key, required),
 			(6, htlc, required),
@@ -351,7 +371,8 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 			counterparty_delayed_payment_base_key: counterparty_delayed_payment_base_key.0.unwrap(),
 			counterparty_htlc_base_key: counterparty_htlc_base_key.0.unwrap(),
 			htlc: htlc.0.unwrap(),
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
+			outpoint_confirmation_height,
 		})
 	}
 }
@@ -362,31 +383,34 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 /// Preimage is only included as part of the witness in former case.
 ///
 /// Note that on upgrades, some features of existing outputs may be missed.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HolderHTLCOutput {
 	preimage: Option<PaymentPreimage>,
 	amount_msat: u64,
 	/// Defaults to 0 for HTLC-Success transactions, which have no expiry
 	cltv_expiry: u32,
 	channel_type_features: ChannelTypeFeatures,
+	outpoint_confirmation_height: Option<u32>,
 }
 
 impl HolderHTLCOutput {
-	pub(crate) fn build_offered(amount_msat: u64, cltv_expiry: u32, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build_offered(amount_msat: u64, cltv_expiry: u32, channel_type_features: ChannelTypeFeatures, outpoint_confirmation_height: u32) -> Self {
 		HolderHTLCOutput {
 			preimage: None,
 			amount_msat,
 			cltv_expiry,
 			channel_type_features,
+			outpoint_confirmation_height: Some(outpoint_confirmation_height),
 		}
 	}
 
-	pub(crate) fn build_accepted(preimage: PaymentPreimage, amount_msat: u64, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build_accepted(preimage: PaymentPreimage, amount_msat: u64, channel_type_features: ChannelTypeFeatures, outpoint_confirmation_height: u32) -> Self {
 		HolderHTLCOutput {
 			preimage: Some(preimage),
 			amount_msat,
 			cltv_expiry: 0,
 			channel_type_features,
+			outpoint_confirmation_height: Some(outpoint_confirmation_height),
 		}
 	}
 }
@@ -396,6 +420,7 @@ impl Writeable for HolderHTLCOutput {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.amount_msat, required),
+			(1, self.outpoint_confirmation_height, option), // Added in 0.1.4/0.2 and always set
 			(2, self.cltv_expiry, required),
 			(4, self.preimage, option),
 			(6, legacy_deserialization_prevention_marker, option),
@@ -412,9 +437,11 @@ impl Readable for HolderHTLCOutput {
 		let mut preimage = None;
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
+		let mut outpoint_confirmation_height = None;
 
 		read_tlv_fields!(reader, {
 			(0, amount_msat, required),
+			(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2 and always set
 			(2, cltv_expiry, required),
 			(4, preimage, option),
 			(6, _legacy_deserialization_prevention_marker, option),
@@ -427,7 +454,8 @@ impl Readable for HolderHTLCOutput {
 			amount_msat: amount_msat.0.unwrap(),
 			cltv_expiry: cltv_expiry.0.unwrap(),
 			preimage,
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
+			outpoint_confirmation_height,
 		})
 	}
 }
@@ -437,7 +465,7 @@ impl Readable for HolderHTLCOutput {
 /// witnessScript is used as part of the witness redeeming the funding utxo.
 ///
 /// Note that on upgrades, some features of existing outputs may be missed.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
 	funding_redeemscript: ScriptBuf,
 	pub(crate) funding_amount: Option<u64>,
@@ -496,7 +524,7 @@ impl Readable for HolderFundingOutput {
 ///
 /// The generic API offers access to an outputs common attributes or allow transformation such as
 /// finalizing an input claiming the output.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PackageSolvingData {
 	RevokedOutput(RevokedOutput),
 	RevokedHTLCOutput(RevokedHTLCOutput),
@@ -737,7 +765,7 @@ impl_writeable_tlv_based_enum_legacy!(PackageSolvingData, ;
 /// That way we avoid claiming in too many discrete transactions while also avoiding
 /// unnecessarily exposing ourselves to pinning attacks or delaying claims when we could have
 /// claimed at least part of the available outputs quickly and without risk.
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum AggregationCluster {
 	/// Our counterparty can potentially claim this output.
 	Pinnable,
@@ -748,7 +776,7 @@ enum AggregationCluster {
 
 /// A malleable package might be aggregated with other packages to save on fees.
 /// A untractable package has been counter-signed and aggregable will break cached counterparty signatures.
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum PackageMalleability {
 	Malleable(AggregationCluster),
 	Untractable,
@@ -763,7 +791,7 @@ enum PackageMalleability {
 ///
 /// As packages are time-sensitive, we fee-bump and rebroadcast them at scheduled intervals.
 /// Failing to confirm a package translate as a loss of funds for the user.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackageTemplate {
 	// List of onchain outputs and solving data to generate satisfying witnesses.
 	inputs: Vec<(BitcoinOutPoint, PackageSolvingData)>,
@@ -1394,7 +1422,7 @@ mod tests {
 				let secp_ctx = Secp256k1::new();
 				let dumb_scalar = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
-				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, Amount::ZERO, 0, $is_counterparty_balance_on_anchors))
+				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, Amount::ZERO, 0, $is_counterparty_balance_on_anchors, 0))
 			}
 		}
 	}
@@ -1407,7 +1435,7 @@ mod tests {
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: 1_000_000, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, 1_000_000 / 1_000, htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()))
+				PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, 1_000_000 / 1_000, htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), 0))
 			}
 		}
 	}
@@ -1420,7 +1448,7 @@ mod tests {
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: true, amount_msat: $amt, cltv_expiry: $expiry, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), htlc, $features))
+				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), htlc, $features, None))
 			}
 		}
 	}
@@ -1434,7 +1462,7 @@ mod tests {
 				let hash = PaymentHash([1; 32]);
 				let preimage = PaymentPreimage([2;32]);
 				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: $amt, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), preimage, htlc, $features))
+				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), preimage, htlc, $features, None))
 			}
 		}
 	}
@@ -1443,7 +1471,7 @@ mod tests {
 		($features: expr) => {
 			{
 				let preimage = PaymentPreimage([2;32]);
-				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_accepted(preimage, 0, $features))
+				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_accepted(preimage, 0, $features, 0))
 			}
 		}
 	}
@@ -1451,7 +1479,7 @@ mod tests {
 	macro_rules! dumb_offered_htlc_output {
 		($cltv_expiry: expr, $features: expr) => {
 			{
-				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_offered(0, $cltv_expiry, $features))
+				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_offered(0, $cltv_expiry, $features, 0))
 			}
 		}
 	}

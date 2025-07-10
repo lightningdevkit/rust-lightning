@@ -1429,6 +1429,7 @@ mod tests {
 					htlc.amount_msat,
 					htlc.cltv_expiry,
 					ChannelTypeFeatures::only_static_remote_key(),
+					0,
 				)),
 				0,
 			));
