@@ -36,7 +36,7 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::msgs::{self, BaseMessageHandler, Init, MessageSendEvent};
+use crate::ln::msgs::{self, BaseMessageHandler, Init, MessageSendEvent, SendOnlyMessageHandler};
 use crate::ln::our_peer_storage::DecryptedOurPeerStorage;
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
@@ -864,6 +864,25 @@ where
 	) -> Result<(), ()> {
 		Ok(())
 	}
+}
+
+impl<
+		ChannelSigner: EcdsaChannelSigner,
+		C: Deref,
+		T: Deref,
+		F: Deref,
+		L: Deref,
+		P: Deref,
+		ES: Deref,
+	> SendOnlyMessageHandler for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
+where
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: Persist<ChannelSigner>,
+	ES::Target: EntropySource,
+{
 }
 
 impl<

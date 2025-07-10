@@ -2177,6 +2177,13 @@ pub trait OnionMessageHandler: BaseMessageHandler {
 	fn timer_tick_occurred(&self);
 }
 
+/// A handler which can only be used to send messages.
+///
+/// This is implemented by [`ChainMonitor`].
+///
+/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
+pub trait SendOnlyMessageHandler: BaseMessageHandler {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Information communicated in the onion to the recipient for multi-part tracking and proof that
 /// the payment is associated with an invoice.
