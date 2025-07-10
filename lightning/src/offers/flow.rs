@@ -32,9 +32,7 @@ use crate::prelude::*;
 
 use crate::chain::BestBlock;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{
-	Verification, {PaymentId, CLTV_FAR_FAR_AWAY, MAX_SHORT_LIVED_RELATIVE_EXPIRY},
-};
+use crate::ln::channelmanager::{PaymentId, CLTV_FAR_FAR_AWAY, MAX_SHORT_LIVED_RELATIVE_EXPIRY};
 use crate::ln::inbound_payment;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::invoice::{
@@ -64,7 +62,6 @@ use {
 	crate::blinded_path::message::AsyncPaymentsContext,
 	crate::blinded_path::payment::AsyncBolt12OfferContext,
 	crate::offers::offer::Amount,
-	crate::offers::signer,
 	crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder},
 	crate::onion_message::async_payments::{
 		HeldHtlcAvailable, OfferPaths, OfferPathsRequest, ServeStaticInvoice,
@@ -559,37 +556,11 @@ where
 		&self, context: AsyncPaymentsContext,
 	) -> Result<(), ()> {
 		match context {
-			AsyncPaymentsContext::InboundPayment { nonce, hmac, path_absolute_expiry } => {
-				signer::verify_held_htlc_available_context(nonce, hmac, &self.inbound_payment_key)?;
-
+			AsyncPaymentsContext::InboundPayment { path_absolute_expiry } => {
 				if self.duration_since_epoch() > path_absolute_expiry {
 					return Err(());
 				}
 				Ok(())
-			},
-			_ => Err(()),
-		}
-	}
-
-	/// Verifies the provided [`AsyncPaymentsContext`] for an inbound [`ReleaseHeldHtlc`] message.
-	///
-	/// The context is verified using the `nonce` and `hmac` values, and if valid,
-	/// returns the associated [`PaymentId`].
-	///
-	/// # Errors
-	///
-	/// Returns `Err(())` if:
-	/// - The HMAC verification fails for outbound context.
-	///
-	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
-	#[cfg(async_payments)]
-	pub fn verify_outbound_async_payment_context(
-		&self, context: AsyncPaymentsContext,
-	) -> Result<PaymentId, ()> {
-		match context {
-			AsyncPaymentsContext::OutboundPayment { payment_id, hmac, nonce } => {
-				payment_id.verify_for_async_payment(hmac, nonce, &self.inbound_payment_key)?;
-				Ok(payment_id)
 			},
 			_ => Err(()),
 		}
@@ -734,7 +705,7 @@ where
 		let secp_ctx = &self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: None };
+		let context = OffersContext::OutboundPayment { payment_id, nonce };
 
 		let path = self
 			.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry), peers)
@@ -814,16 +785,12 @@ where
 			)
 			.map_err(|()| Bolt12SemanticError::MissingPaths)?;
 
-		let nonce = Nonce::from_entropy_source(entropy);
-		let hmac = signer::hmac_for_held_htlc_available_context(nonce, expanded_key);
 		let path_absolute_expiry = Duration::from_secs(inbound_payment::calculate_absolute_expiry(
 			created_at.as_secs(),
 			relative_expiry_secs,
 		));
 
 		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::InboundPayment {
-			nonce,
-			hmac,
 			path_absolute_expiry,
 		});
 
@@ -927,7 +894,6 @@ where
 		R::Target: Router,
 	{
 		let entropy = &*entropy_source;
-		let expanded_key = &self.inbound_payment_key;
 		let secp_ctx = &self.secp_ctx;
 
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
@@ -989,13 +955,8 @@ where
 
 		match response {
 			Ok(invoice) => {
-				let nonce = Nonce::from_entropy_source(entropy);
-				let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
-				let context = MessageContext::Offers(OffersContext::InboundPayment {
-					payment_hash,
-					nonce,
-					hmac,
-				});
+				let context =
+					MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
 				(OffersMessage::Invoice(invoice), Some(context))
 			},
@@ -1032,14 +993,7 @@ where
 		&self, invoice_request: InvoiceRequest, payment_id: PaymentId, nonce: Nonce,
 		peers: Vec<MessageForwardNode>,
 	) -> Result<(), Bolt12SemanticError> {
-		let expanded_key = &self.inbound_payment_key;
-
-		let hmac = payment_id.hmac_for_offer_payment(nonce, expanded_key);
-		let context = MessageContext::Offers(OffersContext::OutboundPayment {
-			payment_id,
-			nonce,
-			hmac: Some(hmac),
-		});
+		let context = MessageContext::Offers(OffersContext::OutboundPayment { payment_id, nonce });
 		let reply_paths = self
 			.create_blinded_paths(peers, context)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
@@ -1080,23 +1034,12 @@ where
 	/// to create blinded reply paths
 	///
 	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
-	pub fn enqueue_invoice<ES: Deref>(
-		&self, entropy_source: ES, invoice: Bolt12Invoice, refund: &Refund,
-		peers: Vec<MessageForwardNode>,
-	) -> Result<(), Bolt12SemanticError>
-	where
-		ES::Target: EntropySource,
-	{
-		let expanded_key = &self.inbound_payment_key;
-		let entropy = &*entropy_source;
-
+	pub fn enqueue_invoice(
+		&self, invoice: Bolt12Invoice, refund: &Refund, peers: Vec<MessageForwardNode>,
+	) -> Result<(), Bolt12SemanticError> {
 		let payment_hash = invoice.payment_hash();
 
-		let nonce = Nonce::from_entropy_source(entropy);
-		let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
-
-		let context =
-			MessageContext::Offers(OffersContext::InboundPayment { payment_hash, nonce, hmac });
+		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
 		let reply_paths = self
 			.create_blinded_paths(peers, context)
@@ -1157,23 +1100,11 @@ where
 	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
 	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 	#[cfg(async_payments)]
-	pub fn enqueue_held_htlc_available<ES: Deref>(
-		&self, entropy_source: ES, invoice: &StaticInvoice, payment_id: PaymentId,
-		peers: Vec<MessageForwardNode>,
-	) -> Result<(), Bolt12SemanticError>
-	where
-		ES::Target: EntropySource,
-	{
-		let expanded_key = &self.inbound_payment_key;
-		let entropy = &*entropy_source;
-
-		let nonce = Nonce::from_entropy_source(entropy);
-		let hmac = payment_id.hmac_for_async_payment(nonce, expanded_key);
-		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OutboundPayment {
-			payment_id,
-			nonce,
-			hmac,
-		});
+	pub fn enqueue_held_htlc_available(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId, peers: Vec<MessageForwardNode>,
+	) -> Result<(), Bolt12SemanticError> {
+		let context =
+			MessageContext::AsyncPayments(AsyncPaymentsContext::OutboundPayment { payment_id });
 
 		let reply_paths = self
 			.create_blinded_paths(peers, context)

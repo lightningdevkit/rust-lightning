@@ -30,8 +30,6 @@ use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey, Recipient};
 use crate::types::payment::PaymentHash;
 use crate::util::scid_utils;
 use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, Writeable, Writer};
-use bitcoin::hashes::hmac::Hmac;
-use bitcoin::hashes::sha256::Hash as Sha256;
 
 use core::mem;
 use core::ops::Deref;
@@ -406,12 +404,6 @@ pub enum OffersContext {
 		/// [`Refund`]: crate::offers::refund::Refund
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		nonce: Nonce,
-
-		/// Authentication code for the [`PaymentId`], which should be checked when the context is
-		/// used with an [`InvoiceError`].
-		///
-		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-		hmac: Option<Hmac<Sha256>>,
 	},
 	/// Context used by a [`BlindedMessagePath`] as a reply path for a [`Bolt12Invoice`].
 	///
@@ -424,19 +416,6 @@ pub enum OffersContext {
 		///
 		/// [`Bolt12Invoice::payment_hash`]: crate::offers::invoice::Bolt12Invoice::payment_hash
 		payment_hash: PaymentHash,
-
-		/// A nonce used for authenticating that a received [`InvoiceError`] is for a valid
-		/// sent [`Bolt12Invoice`].
-		///
-		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-		nonce: Nonce,
-
-		/// Authentication code for the [`PaymentHash`], which should be checked when the context is
-		/// used to log the received [`InvoiceError`].
-		///
-		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-		hmac: Hmac<Sha256>,
 	},
 }
 
@@ -544,35 +523,12 @@ pub enum AsyncPaymentsContext {
 		///
 		/// [`Offer`]: crate::offers::offer::Offer
 		payment_id: PaymentId,
-		/// A nonce used for authenticating that a [`ReleaseHeldHtlc`] message is valid for a preceding
-		/// [`HeldHtlcAvailable`] message.
-		///
-		/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
-		/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
-		nonce: Nonce,
-		/// Authentication code for the [`PaymentId`].
-		///
-		/// Prevents the recipient from being able to deanonymize us by creating a blinded path to us
-		/// containing the expected [`PaymentId`].
-		hmac: Hmac<Sha256>,
 	},
 	/// Context contained within the [`BlindedMessagePath`]s we put in static invoices, provided back
 	/// to us in corresponding [`HeldHtlcAvailable`] messages.
 	///
 	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
 	InboundPayment {
-		/// A nonce used for authenticating that a [`HeldHtlcAvailable`] message is valid for a
-		/// preceding static invoice.
-		///
-		/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
-		nonce: Nonce,
-		/// Authentication code for the [`HeldHtlcAvailable`] message.
-		///
-		/// Prevents nodes from creating their own blinded path to us, sending a [`HeldHtlcAvailable`]
-		/// message and trivially getting notified whenever we come online.
-		///
-		/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
-		hmac: Hmac<Sha256>,
 		/// The time as duration since the Unix epoch at which this path expires and messages sent over
 		/// it should be ignored. Without this, anyone with the path corresponding to this context is
 		/// able to trivially ask if we're online forever.
@@ -587,6 +543,14 @@ impl_writeable_tlv_based_enum!(MessageContext,
 	{3, DNSResolver} => (),
 );
 
+// NOTE:
+// Several TLV fields (`nonce`, `hmac`, etc.) were removed in LDK v0.2
+// following the introduction of `ReceiveAuthKey`-based authentication for
+// inbound `BlindedMessagePath`s. These fields are now commented out and
+// their `type` values must not be reused unless support for LDK v0.2
+// and earlier is fully dropped.
+//
+// For context-specific removals, see the commented-out fields within each enum variant.
 impl_writeable_tlv_based_enum!(OffersContext,
 	(0, InvoiceRequest) => {
 		(0, nonce, required),
@@ -594,12 +558,12 @@ impl_writeable_tlv_based_enum!(OffersContext,
 	(1, OutboundPayment) => {
 		(0, payment_id, required),
 		(1, nonce, required),
-		(2, hmac, option),
+		// Removed: (2, hmac, option)
 	},
 	(2, InboundPayment) => {
 		(0, payment_hash, required),
-		(1, nonce, required),
-		(2, hmac, required)
+		// Removed: (1, nonce, required),
+		// Removed: (2, hmac, required)
 	},
 	(3, StaticInvoiceRequested) => {
 		(0, recipient_id, required),
@@ -611,12 +575,12 @@ impl_writeable_tlv_based_enum!(OffersContext,
 impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	(0, OutboundPayment) => {
 		(0, payment_id, required),
-		(2, nonce, required),
-		(4, hmac, required),
+		// Removed: (2, nonce, required),
+		// Removed: (4, hmac, required),
 	},
 	(1, InboundPayment) => {
-		(0, nonce, required),
-		(2, hmac, required),
+		// Removed: (0, nonce, required),
+		// Removed: (2, hmac, required),
 		(4, path_absolute_expiry, required),
 	},
 	(2, OfferPaths) => {
