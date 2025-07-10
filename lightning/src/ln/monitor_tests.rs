@@ -717,8 +717,9 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	test_spendable_output(&nodes[0], &remote_txn[0], false);
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 
-	// After broadcasting the HTLC claim transaction, node A will still consider the HTLC
-	// possibly-claimable up to ANTI_REORG_DELAY, at which point it will drop it.
+	// After confirming the HTLC claim transaction, node A will no longer attempt to claim said
+	// HTLC, unless the transaction is reorged. However, we'll still report a
+	// `MaybeTimeoutClaimableHTLC` balance for it until we reach `ANTI_REORG_DELAY` confirmations.
 	mine_transaction(&nodes[0], &b_broadcast_txn[0]);
 	if prev_commitment_tx {
 		expect_payment_path_successful!(nodes[0]);
@@ -734,18 +735,10 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// When the HTLC timeout output is spendable in the next block, A should broadcast it
 	connect_blocks(&nodes[0], htlc_cltv_timeout - nodes[0].best_block_info().1);
 	let a_broadcast_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	// Aggregated claim transaction.
 	assert_eq!(a_broadcast_txn.len(), 1);
 	check_spends!(a_broadcast_txn[0], remote_txn[0]);
-	assert_eq!(a_broadcast_txn[0].input.len(), 2);
-	assert_ne!(a_broadcast_txn[0].input[0].previous_output.vout, a_broadcast_txn[0].input[1].previous_output.vout);
-	// a_broadcast_txn [0] and [1] should spend the HTLC outputs of the commitment tx
-	assert!(a_broadcast_txn[0].input.iter().any(|input| remote_txn[0].output[input.previous_output.vout as usize].value.to_sat() == 3_000));
+	assert_eq!(a_broadcast_txn[0].input.len(), 1);
 	assert!(a_broadcast_txn[0].input.iter().any(|input| remote_txn[0].output[input.previous_output.vout as usize].value.to_sat() == 4_000));
-
-	// Confirm node B's claim for node A to remove that claim from the aggregated claim transaction.
-	mine_transaction(&nodes[0], &b_broadcast_txn[0]);
-	let a_broadcast_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	let a_htlc_timeout_tx = a_broadcast_txn.into_iter().next_back().unwrap();
 
 	// Once the HTLC-Timeout transaction confirms, A will no longer consider the HTLC
