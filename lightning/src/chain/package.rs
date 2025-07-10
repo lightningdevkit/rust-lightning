@@ -810,6 +810,34 @@ impl PackageSolvingData {
 		}
 	}
 
+	fn input_confirmation_height(&self) -> Option<u32> {
+		match self {
+			PackageSolvingData::RevokedOutput(RevokedOutput {
+				outpoint_confirmation_height,
+				..
+			})
+			| PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput {
+				outpoint_confirmation_height,
+				..
+			})
+			| PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput {
+				outpoint_confirmation_height,
+				..
+			})
+			| PackageSolvingData::CounterpartyReceivedHTLCOutput(
+				CounterpartyReceivedHTLCOutput { outpoint_confirmation_height, .. },
+			)
+			| PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput {
+				outpoint_confirmation_height,
+				..
+			}) => *outpoint_confirmation_height,
+			// We don't bother to track `HolderFundingOutput`'s creation height as its the funding
+			// transaction itself and we build `HolderFundingOutput`s before we actually get the
+			// commitment transaction confirmed.
+			PackageSolvingData::HolderFundingOutput(_) => None,
+		}
+	}
+
 	#[rustfmt::skip]
 	fn as_tx_input(&self, previous_output: BitcoinOutPoint) -> TxIn {
 		let sequence = match self {
@@ -1177,6 +1205,12 @@ impl PackageTemplate {
 	pub(crate) fn outpoints(&self) -> Vec<&BitcoinOutPoint> {
 		self.inputs.iter().map(|(o, _)| o).collect()
 	}
+	pub(crate) fn outpoints_and_creation_heights(
+		&self,
+	) -> impl Iterator<Item = (&BitcoinOutPoint, Option<u32>)> {
+		self.inputs.iter().map(|(o, p)| (o, p.input_confirmation_height()))
+	}
+
 	pub(crate) fn inputs(&self) -> impl ExactSizeIterator<Item = &PackageSolvingData> {
 		self.inputs.iter().map(|(_, i)| i)
 	}

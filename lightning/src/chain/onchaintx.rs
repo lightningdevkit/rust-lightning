@@ -889,9 +889,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				// Because fuzzing can cause hash collisions, we can end up with conflicting claim
 				// ids here, so we only assert when not fuzzing.
 				debug_assert!(cfg!(fuzzing) || self.pending_claim_requests.get(&claim_id).is_none());
-				for k in req.outpoints() {
-					log_info!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
-					self.claimable_outpoints.insert(k.clone(), (claim_id, conf_height));
+				for (k, outpoint_confirmation_height) in req.outpoints_and_creation_heights() {
+					let creation_height = outpoint_confirmation_height.unwrap_or(conf_height);
+					log_info!(logger, "Registering claiming request for {}:{}, which exists as of height {creation_height}", k.txid, k.vout);
+					self.claimable_outpoints.insert(k.clone(), (claim_id, creation_height));
 				}
 				self.pending_claim_requests.insert(claim_id, req);
 			}
