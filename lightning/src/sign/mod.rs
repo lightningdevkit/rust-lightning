@@ -804,6 +804,15 @@ pub struct PeerStorageKey {
 	pub inner: [u8; 32],
 }
 
+/// A secret key used to authenticate message contexts in received [`BlindedMessagePath`]s.
+///
+/// This key ensures that a node only accepts incoming messages delivered through
+/// blinded paths that it constructed itself.
+///
+/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ReceiveAuthKey(pub [u8; 32]);
+
 /// Specifies the recipient of an invoice.
 ///
 /// This indicates to [`NodeSigner::sign_invoice`] what node secret key should be used to sign
