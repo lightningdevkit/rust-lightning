@@ -132,7 +132,7 @@ const HIGH_FREQUENCY_BUMP_INTERVAL: u32 = 1;
 ///
 /// CSV and pubkeys are used as part of a witnessScript redeeming a balance output, amount is used
 /// as part of the signature hash and revocation secret to generate a satisfying witness.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RevokedOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
@@ -143,6 +143,8 @@ pub(crate) struct RevokedOutput {
 	on_counterparty_tx_csv: u16,
 	is_counterparty_balance_on_anchors: Option<()>,
 	channel_parameters: Option<ChannelTransactionParameters>,
+	// Added in LDK 0.1.4/0.2 and always set since.
+	outpoint_confirmation_height: Option<u32>,
 }
 
 impl RevokedOutput {
@@ -150,6 +152,7 @@ impl RevokedOutput {
 	pub(crate) fn build(
 		per_commitment_point: PublicKey, per_commitment_key: SecretKey, amount: Amount,
 		is_counterparty_balance_on_anchors: bool, channel_parameters: ChannelTransactionParameters,
+		outpoint_confirmation_height: u32,
 	) -> Self {
 		let directed_params = channel_parameters.as_counterparty_broadcastable();
 		let counterparty_keys = directed_params.broadcaster_pubkeys();
@@ -166,12 +169,14 @@ impl RevokedOutput {
 			on_counterparty_tx_csv,
 			is_counterparty_balance_on_anchors: if is_counterparty_balance_on_anchors { Some(()) } else { None },
 			channel_parameters: Some(channel_parameters),
+			outpoint_confirmation_height: Some(outpoint_confirmation_height),
 		}
 	}
 }
 
 impl_writeable_tlv_based!(RevokedOutput, {
 	(0, per_commitment_point, required),
+	(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2 and always set
 	(2, counterparty_delayed_payment_base_key, required),
 	(4, counterparty_htlc_base_key, required),
 	(6, per_commitment_key, required),
@@ -190,7 +195,7 @@ impl_writeable_tlv_based!(RevokedOutput, {
 ///
 /// CSV is used as part of a witnessScript redeeming a balance output, amount is used as part
 /// of the signature hash and revocation secret to generate a satisfying witness.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RevokedHTLCOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
@@ -200,12 +205,15 @@ pub(crate) struct RevokedHTLCOutput {
 	amount: u64,
 	htlc: HTLCOutputInCommitment,
 	channel_parameters: Option<ChannelTransactionParameters>,
+	// Added in LDK 0.1.4/0.2 and always set since.
+	outpoint_confirmation_height: Option<u32>,
 }
 
 impl RevokedHTLCOutput {
 	pub(crate) fn build(
 		per_commitment_point: PublicKey, per_commitment_key: SecretKey,
 		htlc: HTLCOutputInCommitment, channel_parameters: ChannelTransactionParameters,
+		outpoint_confirmation_height: u32,
 	) -> Self {
 		let weight = if htlc.offered {
 			weight_revoked_offered_htlc(&channel_parameters.channel_type_features)
@@ -225,12 +233,14 @@ impl RevokedHTLCOutput {
 			amount: htlc.amount_msat / 1000,
 			htlc,
 			channel_parameters: Some(channel_parameters),
+			outpoint_confirmation_height: Some(outpoint_confirmation_height),
 		}
 	}
 }
 
 impl_writeable_tlv_based!(RevokedHTLCOutput, {
 	(0, per_commitment_point, required),
+	(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2 and always set
 	(2, counterparty_delayed_payment_base_key, required),
 	(4, counterparty_htlc_base_key, required),
 	(6, per_commitment_key, required),
@@ -248,7 +258,7 @@ impl_writeable_tlv_based!(RevokedHTLCOutput, {
 /// The preimage is used as part of the witness.
 ///
 /// Note that on upgrades, some features of existing outputs may be missed.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CounterpartyOfferedHTLCOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
@@ -257,12 +267,15 @@ pub(crate) struct CounterpartyOfferedHTLCOutput {
 	htlc: HTLCOutputInCommitment,
 	channel_type_features: ChannelTypeFeatures,
 	channel_parameters: Option<ChannelTransactionParameters>,
+	// Added in LDK 0.1.4/0.2 and always set since.
+	outpoint_confirmation_height: Option<u32>,
 }
 
 impl CounterpartyOfferedHTLCOutput {
 	pub(crate) fn build(
 		per_commitment_point: PublicKey, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment,
 		channel_parameters: ChannelTransactionParameters,
+		outpoint_confirmation_height: Option<u32>,
 	) -> Self {
 		let directed_params = channel_parameters.as_counterparty_broadcastable();
 		let counterparty_keys = directed_params.broadcaster_pubkeys();
@@ -277,6 +290,7 @@ impl CounterpartyOfferedHTLCOutput {
 			htlc,
 			channel_type_features,
 			channel_parameters: Some(channel_parameters),
+			outpoint_confirmation_height,
 		}
 	}
 }
@@ -287,6 +301,7 @@ impl Writeable for CounterpartyOfferedHTLCOutput {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.per_commitment_point, required),
+			(1, self.outpoint_confirmation_height, option), // Added in 0.1.4/0.2, not always set
 			(2, self.counterparty_delayed_payment_base_key, required),
 			(4, self.counterparty_htlc_base_key, required),
 			(6, self.preimage, required),
@@ -309,9 +324,11 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 		let mut channel_parameters = None;
+		let mut outpoint_confirmation_height = None;
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
+			(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2, not always set
 			(2, counterparty_delayed_payment_base_key, required),
 			(4, counterparty_htlc_base_key, required),
 			(6, preimage, required),
@@ -333,6 +350,7 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 			htlc: htlc.0.unwrap(),
 			channel_type_features,
 			channel_parameters,
+			outpoint_confirmation_height,
 		})
 	}
 }
@@ -343,7 +361,7 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 /// witnessScript.
 ///
 /// Note that on upgrades, some features of existing outputs may be missed.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CounterpartyReceivedHTLCOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
@@ -351,12 +369,14 @@ pub(crate) struct CounterpartyReceivedHTLCOutput {
 	htlc: HTLCOutputInCommitment,
 	channel_type_features: ChannelTypeFeatures,
 	channel_parameters: Option<ChannelTransactionParameters>,
+	outpoint_confirmation_height: Option<u32>,
 }
 
 impl CounterpartyReceivedHTLCOutput {
 	pub(crate) fn build(
 		per_commitment_point: PublicKey, htlc: HTLCOutputInCommitment,
 		channel_parameters: ChannelTransactionParameters,
+		outpoint_confirmation_height: Option<u32>,
 	) -> Self {
 		let directed_params = channel_parameters.as_counterparty_broadcastable();
 		let counterparty_keys = directed_params.broadcaster_pubkeys();
@@ -370,6 +390,7 @@ impl CounterpartyReceivedHTLCOutput {
 			htlc,
 			channel_type_features,
 			channel_parameters: Some(channel_parameters),
+			outpoint_confirmation_height,
 		}
 	}
 }
@@ -380,6 +401,7 @@ impl Writeable for CounterpartyReceivedHTLCOutput {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.per_commitment_point, required),
+			(1, self.outpoint_confirmation_height, option), // Added in 0.1.4/0.2, not always set
 			(2, self.counterparty_delayed_payment_base_key, required),
 			(4, self.counterparty_htlc_base_key, required),
 			(6, self.htlc, required),
@@ -400,9 +422,11 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 		let mut channel_parameters = None;
+		let mut outpoint_confirmation_height = None;
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
+			(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2, not always set
 			(2, counterparty_delayed_payment_base_key, required),
 			(4, counterparty_htlc_base_key, required),
 			(6, htlc, required),
@@ -422,6 +446,7 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 			htlc: htlc.0.unwrap(),
 			channel_type_features,
 			channel_parameters,
+			outpoint_confirmation_height,
 		})
 	}
 }
@@ -432,7 +457,7 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 /// Preimage is only included as part of the witness in former case.
 ///
 /// Note that on upgrades, some features of existing outputs may be missed.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HolderHTLCOutput {
 	preimage: Option<PaymentPreimage>,
 	amount_msat: u64,
@@ -440,11 +465,14 @@ pub(crate) struct HolderHTLCOutput {
 	cltv_expiry: u32,
 	channel_type_features: ChannelTypeFeatures,
 	htlc_descriptor: Option<HTLCDescriptor>,
+	outpoint_confirmation_height: Option<u32>,
 }
 
 impl HolderHTLCOutput {
 	#[rustfmt::skip]
-	pub(crate) fn build(htlc_descriptor: HTLCDescriptor) -> Self {
+	pub(crate) fn build(
+		htlc_descriptor: HTLCDescriptor, outpoint_confirmation_height: u32,
+	) -> Self {
 		let amount_msat = htlc_descriptor.htlc.amount_msat;
 		let channel_type_features = htlc_descriptor.channel_derivation_parameters
 			.transaction_parameters.channel_type_features.clone();
@@ -462,6 +490,7 @@ impl HolderHTLCOutput {
 			},
 			channel_type_features,
 			htlc_descriptor: Some(htlc_descriptor),
+			outpoint_confirmation_height: Some(outpoint_confirmation_height),
 		}
 	}
 
@@ -550,6 +579,7 @@ impl Writeable for HolderHTLCOutput {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.amount_msat, required),
+			(1, self.outpoint_confirmation_height, option), // Added in 0.1.4/0.2 and always set
 			(2, self.cltv_expiry, required),
 			(4, self.preimage, option),
 			(6, legacy_deserialization_prevention_marker, option),
@@ -568,9 +598,11 @@ impl Readable for HolderHTLCOutput {
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 		let mut htlc_descriptor = None;
+		let mut outpoint_confirmation_height = None;
 
 		read_tlv_fields!(reader, {
 			(0, amount_msat, required),
+			(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2 and always set
 			(2, cltv_expiry, required),
 			(4, preimage, option),
 			(6, _legacy_deserialization_prevention_marker, option),
@@ -588,6 +620,7 @@ impl Readable for HolderHTLCOutput {
 			preimage,
 			channel_type_features,
 			htlc_descriptor,
+			outpoint_confirmation_height,
 		})
 	}
 }
@@ -597,7 +630,7 @@ impl Readable for HolderHTLCOutput {
 /// witnessScript is used as part of the witness redeeming the funding utxo.
 ///
 /// Note that on upgrades, some features of existing outputs may be missed.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
 	funding_redeemscript: ScriptBuf,
 	pub(crate) funding_amount_sats: Option<u64>,
@@ -695,7 +728,7 @@ impl Readable for HolderFundingOutput {
 ///
 /// The generic API offers access to an outputs common attributes or allow transformation such as
 /// finalizing an input claiming the output.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PackageSolvingData {
 	RevokedOutput(RevokedOutput),
 	RevokedHTLCOutput(RevokedHTLCOutput),
@@ -1003,7 +1036,7 @@ impl_writeable_tlv_based_enum_legacy!(PackageSolvingData, ;
 /// That way we avoid claiming in too many discrete transactions while also avoiding
 /// unnecessarily exposing ourselves to pinning attacks or delaying claims when we could have
 /// claimed at least part of the available outputs quickly and without risk.
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum AggregationCluster {
 	/// Our counterparty can potentially claim this output.
 	Pinnable,
@@ -1014,7 +1047,7 @@ enum AggregationCluster {
 
 /// A malleable package might be aggregated with other packages to save on fees.
 /// A untractable package has been counter-signed and aggregable will break cached counterparty signatures.
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum PackageMalleability {
 	Malleable(AggregationCluster),
 	Untractable,
@@ -1029,7 +1062,7 @@ enum PackageMalleability {
 ///
 /// As packages are time-sensitive, we fee-bump and rebroadcast them at scheduled intervals.
 /// Failing to confirm a package translate as a loss of funds for the user.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackageTemplate {
 	// List of onchain outputs and solving data to generate satisfying witnesses.
 	inputs: Vec<(BitcoinOutPoint, PackageSolvingData)>,
@@ -1690,7 +1723,7 @@ mod tests {
 				let channel_parameters = ChannelTransactionParameters::test_dummy(0);
 				PackageSolvingData::RevokedOutput(RevokedOutput::build(
 					dumb_point, dumb_scalar, Amount::ZERO, $is_counterparty_balance_on_anchors,
-					channel_parameters,
+					channel_parameters, 0,
 				))
 			}
 		}
@@ -1709,7 +1742,7 @@ mod tests {
 				channel_parameters.channel_type_features =
 					ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 				PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput::build(
-					dumb_point, dumb_scalar, htlc, channel_parameters
+					dumb_point, dumb_scalar, htlc, channel_parameters, 0,
 				))
 			}
 		}
@@ -1727,7 +1760,7 @@ mod tests {
 				let mut channel_parameters = ChannelTransactionParameters::test_dummy(0);
 				channel_parameters.channel_type_features = $features;
 				PackageSolvingData::CounterpartyReceivedHTLCOutput(
-					CounterpartyReceivedHTLCOutput::build(dumb_point, htlc, channel_parameters)
+					CounterpartyReceivedHTLCOutput::build(dumb_point, htlc, channel_parameters, None)
 				)
 			}
 		}
@@ -1746,7 +1779,7 @@ mod tests {
 				let mut channel_parameters = ChannelTransactionParameters::test_dummy(0);
 				channel_parameters.channel_type_features = $features;
 				PackageSolvingData::CounterpartyOfferedHTLCOutput(
-					CounterpartyOfferedHTLCOutput::build(dumb_point, preimage, htlc, channel_parameters)
+					CounterpartyOfferedHTLCOutput::build(dumb_point, preimage, htlc, channel_parameters, None)
 				)
 			}
 		}
@@ -1784,6 +1817,7 @@ mod tests {
 						preimage: Some(preimage),
 						counterparty_sig: commitment_tx.counterparty_htlc_sigs[0].clone(),
 					},
+					0,
 				))
 			}
 		}
@@ -1820,6 +1854,7 @@ mod tests {
 						preimage: None,
 						counterparty_sig: commitment_tx.counterparty_htlc_sigs[0].clone(),
 					},
+					0,
 				))
 			}
 		}

@@ -1379,19 +1379,21 @@ mod tests {
 				holder_commit_txid,
 				htlc.transaction_output_index.unwrap(),
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(HTLCDescriptor {
-					channel_derivation_parameters: ChannelDerivationParameters {
-						value_satoshis: tx_handler.channel_value_satoshis,
-						keys_id: tx_handler.channel_keys_id,
-						transaction_parameters: tx_handler.channel_transaction_parameters.clone(),
+						channel_derivation_parameters: ChannelDerivationParameters {
+							value_satoshis: tx_handler.channel_value_satoshis,
+							keys_id: tx_handler.channel_keys_id,
+							transaction_parameters: tx_handler.channel_transaction_parameters.clone(),
+						},
+						commitment_txid: holder_commit_txid,
+						per_commitment_number: holder_commit.commitment_number(),
+						per_commitment_point: holder_commit.per_commitment_point(),
+						feerate_per_kw: holder_commit.feerate_per_kw(),
+						htlc: htlc.clone(),
+						preimage: None,
+						counterparty_sig: *counterparty_sig,
 					},
-					commitment_txid: holder_commit_txid,
-					per_commitment_number: holder_commit.commitment_number(),
-					per_commitment_point: holder_commit.per_commitment_point(),
-					feerate_per_kw: holder_commit.feerate_per_kw(),
-					htlc: htlc.clone(),
-					preimage: None,
-					counterparty_sig: *counterparty_sig,
-				})),
+					0
+				)),
 				0,
 			));
 		}
