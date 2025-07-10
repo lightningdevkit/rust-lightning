@@ -730,7 +730,7 @@ fn timeout_unreleased_payment() {
 		server.onion_messenger.next_onion_message_for_peer(sender.node.get_our_node_id()).unwrap();
 
 	// We handle the static invoice to held the pending HTLC
-	sender.onion_messenger.handle_onion_message(sender.node.get_our_node_id(), &static_invoice_om);
+	sender.onion_messenger.handle_onion_message(server.node.get_our_node_id(), &static_invoice_om);
 
 	// We advance enough time to expire the payment.
 	// We add 2 hours as is the margin added to remove stale payments in non-std implementation.
