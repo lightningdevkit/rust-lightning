@@ -60,7 +60,8 @@ pub(crate) const IDEMPOTENCY_TIMEOUT_TICKS: u8 = 7;
 const ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 
 #[cfg(all(async_payments, test))]
-pub(crate) const TEST_ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY: Duration  = ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY;
+pub(crate) const TEST_ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY: Duration =
+	ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY;
 
 /// Stores the session_priv for each part of a payment that is still pending. For versions 0.0.102
 /// and later, also stores information for retrying the payment.
@@ -107,6 +108,7 @@ pub(crate) enum PendingOutboundPayment {
 		invoice_request: InvoiceRequest,
 		static_invoice: StaticInvoice,
 		// Stale time expiration of how much time we will wait to the payment to fulfill.
+		//
 		// Defaults to [`ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY`].
 		expiry_time: StaleExpiration,
 	},
@@ -2687,7 +2689,9 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(6, route_params, required),
 		(8, invoice_request, required),
 		(10, static_invoice, required),
-		(12, expiry_time, required),
+		// Added in 0.2. Prior versions would have this TLV type defaulted to 0, which is safe because
+		// the type is not used.
+		(11, expiry_time, (default_value, StaleExpiration::AbsoluteTimeout(Duration::from_secs(0)))),
 	},
 	// Added in 0.1. Prior versions will drop these outbounds on downgrade, which is safe because
 	// no HTLCs are in-flight.

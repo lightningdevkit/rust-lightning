@@ -23,7 +23,9 @@ use crate::ln::msgs::{
 };
 use crate::ln::offers_tests;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
-use crate::ln::outbound_payment::{PendingOutboundPayment, Retry, TEST_ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY};
+use crate::ln::outbound_payment::{
+	PendingOutboundPayment, Retry, TEST_ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY,
+};
 use crate::offers::async_receive_offer_cache::{
 	TEST_MAX_CACHED_OFFERS_TARGET, TEST_MAX_UPDATE_ATTEMPTS,
 	TEST_MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS, TEST_OFFER_REFRESH_THRESHOLD,
@@ -696,7 +698,8 @@ fn timeout_unreleased_payment() {
 	let recipient = &nodes[2];
 
 	let recipient_id = vec![42; 32];
-	let inv_server_paths = server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
 
 	let static_invoice =
@@ -711,10 +714,8 @@ fn timeout_unreleased_payment() {
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), params)
 		.unwrap();
 
-	let invreq_om = sender
-		.onion_messenger
-		.next_onion_message_for_peer(server.node.get_our_node_id())
-		.unwrap();
+	let invreq_om =
+		sender.onion_messenger.next_onion_message_for_peer(server.node.get_our_node_id()).unwrap();
 	server.onion_messenger.handle_onion_message(sender.node.get_our_node_id(), &invreq_om);
 
 	let mut events = server.node.get_and_clear_pending_events();
@@ -725,21 +726,17 @@ fn timeout_unreleased_payment() {
 	};
 
 	server.node.send_static_invoice(static_invoice.clone(), reply_path).unwrap();
-	let static_invoice_om = server
-		.onion_messenger
-		.next_onion_message_for_peer(sender.node.get_our_node_id())
-		.unwrap();
+	let static_invoice_om =
+		server.onion_messenger.next_onion_message_for_peer(sender.node.get_our_node_id()).unwrap();
 
 	// We handle the static invoice to held the pending HTLC
-	sender
-		.onion_messenger
-		.handle_onion_message(sender.node.get_our_node_id(), &static_invoice_om);
+	sender.onion_messenger.handle_onion_message(sender.node.get_our_node_id(), &static_invoice_om);
 
 	// We advance enough time to expire the payment.
 	// We add 2 hours as is the margin added to remove stale payments in non-std implementation.
 	let timeout_time_expiry = TEST_ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY
-								+ Duration::from_secs(7200)
-								+ Duration::from_secs(1);
+		+ Duration::from_secs(7200)
+		+ Duration::from_secs(1);
 	advance_time_by(timeout_time_expiry, sender);
 	sender.node.timer_tick_occurred();
 	let events = sender.node.get_and_clear_pending_events();
