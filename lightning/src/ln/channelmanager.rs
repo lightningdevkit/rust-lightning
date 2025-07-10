@@ -722,6 +722,8 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 type PerSourcePendingForward =
 	(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>);
 
+type FailedHTLCForward = (HTLCSource, PaymentHash, HTLCFailReason, HTLCHandlingFailureType);
+
 mod fuzzy_channelmanager {
 	use super::*;
 
@@ -6315,24 +6317,12 @@ where
 		}
 	}
 
-	/// Processes HTLCs which are pending waiting on random forward delay.
-	///
-	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
-	/// Will likely generate further events.
-	pub fn process_pending_htlc_forwards(&self) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-
-		self.process_pending_update_add_htlcs();
-
-		let mut new_events = VecDeque::new();
-		let mut failed_forwards = Vec::new();
-		let mut phantom_receives: Vec<PerSourcePendingForward> = Vec::new();
-		{
-			let mut forward_htlcs = new_hash_map();
-			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
-
-			for (short_chan_id, mut pending_forwards) in forward_htlcs {
-				if short_chan_id != 0 {
+	#[rustfmt::skip]
+	fn process_forward_htlcs(
+		&self, short_chan_id: u64, pending_forwards: &mut Vec<HTLCForwardInfo>,
+		failed_forwards: &mut Vec<FailedHTLCForward>,
+		phantom_receives: &mut Vec<PerSourcePendingForward>,
+	) {
 					let mut forwarding_counterparty = None;
 					macro_rules! forwarding_channel_not_found {
 						($forward_infos: expr) => {
@@ -6450,7 +6440,7 @@ where
 						Some((cp_id, chan_id)) => (cp_id, chan_id),
 						None => {
 							forwarding_channel_not_found!(pending_forwards.drain(..));
-							continue;
+							return;
 						},
 					};
 					forwarding_counterparty = Some(counterparty_node_id);
@@ -6458,7 +6448,7 @@ where
 					let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
 					if peer_state_mutex_opt.is_none() {
 						forwarding_channel_not_found!(pending_forwards.drain(..));
-						continue;
+						return;
 					}
 					let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
@@ -6689,6 +6679,32 @@ where
 							}
 						}
 					}
+	}
+
+	/// Processes HTLCs which are pending waiting on random forward delay.
+	///
+	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
+	/// Will likely generate further events.
+	pub fn process_pending_htlc_forwards(&self) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		self.process_pending_update_add_htlcs();
+
+		let mut new_events = VecDeque::new();
+		let mut failed_forwards = Vec::new();
+		let mut phantom_receives: Vec<PerSourcePendingForward> = Vec::new();
+		{
+			let mut forward_htlcs = new_hash_map();
+			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
+
+			for (short_chan_id, mut pending_forwards) in forward_htlcs {
+				if short_chan_id != 0 {
+					self.process_forward_htlcs(
+						short_chan_id,
+						&mut pending_forwards,
+						&mut failed_forwards,
+						&mut phantom_receives,
+					);
 				} else {
 					'next_forwardable_htlc: for forward_info in pending_forwards.drain(..) {
 						match forward_info {
