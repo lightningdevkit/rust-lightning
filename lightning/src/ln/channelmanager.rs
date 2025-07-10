@@ -6383,10 +6383,11 @@ where
 							if let PendingHTLCRouting::Forward { ref onion_packet, .. } = routing {
 								let phantom_pubkey_res = self.node_signer.get_node_id(Recipient::PhantomNode);
 								if phantom_pubkey_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.chain_hash) {
-									let next_hop = match onion_utils::decode_next_payment_hop(
+									let decode_res = onion_utils::decode_next_payment_hop(
 										Recipient::PhantomNode, &onion_packet.public_key.unwrap(), &onion_packet.hop_data,
 										onion_packet.hmac, payment_hash, None, &*self.node_signer
-									) {
+									);
+									let next_hop = match decode_res {
 										Ok(res) => res,
 										Err(onion_utils::OnionDecodeErr::Malformed { err_msg, reason }) => {
 											let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).to_byte_array();
@@ -6403,10 +6404,11 @@ where
 									};
 									let phantom_shared_secret = next_hop.shared_secret().secret_bytes();
 									let current_height: u32 = self.best_block.read().unwrap().height;
-									match create_recv_pending_htlc_info(next_hop,
+									let create_res = create_recv_pending_htlc_info(next_hop,
 										incoming_shared_secret, payment_hash, outgoing_amt_msat,
 										outgoing_cltv_value, Some(phantom_shared_secret), false, None,
-										current_height)
+										current_height);
+									match create_res
 									{
 										Ok(info) => phantom_receives.push((
 											prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
@@ -6941,20 +6943,20 @@ where
 					// associated with the same payment_hash pending or not.
 					let payment_preimage = if has_recipient_created_payment_secret {
 						if let Some(ref payment_data) = payment_data {
-							let (payment_preimage, min_final_cltv_expiry_delta) =
-								match inbound_payment::verify(
-									payment_hash,
-									&payment_data,
-									self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
-									&self.inbound_payment_key,
-									&self.logger,
-								) {
-									Ok(result) => result,
-									Err(()) => {
-										log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", &payment_hash);
-										fail_htlc!(claimable_htlc, payment_hash);
-									},
-								};
+							let verify_res = inbound_payment::verify(
+								payment_hash,
+								&payment_data,
+								self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
+								&self.inbound_payment_key,
+								&self.logger,
+							);
+							let (payment_preimage, min_final_cltv_expiry_delta) = match verify_res {
+								Ok(result) => result,
+								Err(()) => {
+									log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", &payment_hash);
+									fail_htlc!(claimable_htlc, payment_hash);
+								},
+							};
 							if let Some(min_final_cltv_expiry_delta) = min_final_cltv_expiry_delta {
 								let expected_min_expiry_height = (self.current_best_block().height
 									+ min_final_cltv_expiry_delta as u32)
@@ -6975,11 +6977,12 @@ where
 					match claimable_htlc.onion_payload {
 						OnionPayload::Invoice { .. } => {
 							let payment_data = payment_data.unwrap();
-							let purpose = match events::PaymentPurpose::from_parts(
+							let from_parts_res = events::PaymentPurpose::from_parts(
 								payment_preimage,
 								payment_data.payment_secret,
 								payment_context,
-							) {
+							);
+							let purpose = match from_parts_res {
 								Ok(purpose) => purpose,
 								Err(()) => {
 									fail_htlc!(claimable_htlc, payment_hash);
@@ -7003,7 +7006,7 @@ where
 									},
 								};
 
-								let verified_invreq = match invoice_request_opt.and_then(|invreq| {
+								let verify_opt = invoice_request_opt.and_then(|invreq| {
 									invreq
 										.verify_using_recipient_data(
 											offer_nonce,
@@ -7011,7 +7014,8 @@ where
 											&self.secp_ctx,
 										)
 										.ok()
-								}) {
+								});
+								let verified_invreq = match verify_opt {
 									Some(verified_invreq) => {
 										if let Some(invreq_amt_msat) =
 											verified_invreq.amount_msats()
@@ -7031,11 +7035,12 @@ where
 										offer_id: verified_invreq.offer_id,
 										invoice_request: verified_invreq.fields(),
 									});
-								match events::PaymentPurpose::from_parts(
+								let from_parts_res = events::PaymentPurpose::from_parts(
 									Some(keysend_preimage),
 									payment_data.payment_secret,
 									Some(payment_purpose_context),
-								) {
+								);
+								match from_parts_res {
 									Ok(purpose) => purpose,
 									Err(()) => {
 										fail_htlc!(claimable_htlc, payment_hash);
