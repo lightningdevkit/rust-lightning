@@ -7070,25 +7070,23 @@ where
 		let mut new_events = VecDeque::new();
 		let mut failed_forwards = Vec::new();
 		let mut phantom_receives: Vec<PerSourcePendingForward> = Vec::new();
-		{
-			let mut forward_htlcs = new_hash_map();
-			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
+		let mut forward_htlcs = new_hash_map();
+		mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
 
-			for (short_chan_id, mut pending_forwards) in forward_htlcs {
-				if short_chan_id != 0 {
-					self.process_forward_htlcs(
-						short_chan_id,
-						&mut pending_forwards,
-						&mut failed_forwards,
-						&mut phantom_receives,
-					);
-				} else {
-					self.process_receive_htlcs(
-						&mut pending_forwards,
-						&mut new_events,
-						&mut failed_forwards,
-					);
-				}
+		for (short_chan_id, mut pending_forwards) in forward_htlcs {
+			if short_chan_id != 0 {
+				self.process_forward_htlcs(
+					short_chan_id,
+					&mut pending_forwards,
+					&mut failed_forwards,
+					&mut phantom_receives,
+				);
+			} else {
+				self.process_receive_htlcs(
+					&mut pending_forwards,
+					&mut new_events,
+					&mut failed_forwards,
+				);
 			}
 		}
 
