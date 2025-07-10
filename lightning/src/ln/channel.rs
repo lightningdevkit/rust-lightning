@@ -2354,7 +2354,7 @@ where
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	monitor_pending_finalized_fulfills: Vec<HTLCSource>,
 	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
-	monitor_pending_tx_signatures: Option<msgs::TxSignatures>,
+	monitor_pending_tx_signatures: bool,
 
 	/// If we went to send a revoke_and_ack but our signer was unable to give us a signature,
 	/// we should retry at some point in the future when the signer indicates it may have a
@@ -3297,7 +3297,7 @@ where
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
 			monitor_pending_update_adds: Vec::new(),
-			monitor_pending_tx_signatures: None,
+			monitor_pending_tx_signatures: false,
 
 			signer_pending_revoke_and_ack: false,
 			signer_pending_commitment_update: false,
@@ -3543,7 +3543,7 @@ where
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
 			monitor_pending_update_adds: Vec::new(),
-			monitor_pending_tx_signatures: None,
+			monitor_pending_tx_signatures: false,
 
 			signer_pending_revoke_and_ack: false,
 			signer_pending_commitment_update: false,
@@ -6687,12 +6687,12 @@ where
 
 		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 
-		if let Some(tx_signatures) = self.interactive_tx_signing_session.as_mut().and_then(
+		if let Some(_) = self.interactive_tx_signing_session.as_mut().and_then(
 			|session| session.received_commitment_signed()
 		) {
 			// We're up first for submitting our tx_signatures, but our monitor has not persisted yet
 			// so they'll be sent as soon as that's done.
-			self.context.monitor_pending_tx_signatures = Some(tx_signatures);
+			self.context.monitor_pending_tx_signatures = true;
 		}
 		// Only build the unsigned transaction for signing if there are any holder inputs to actually sign
 		let funding_tx_opt = self.interactive_tx_signing_session.as_ref().and_then(|session|
@@ -6785,7 +6785,7 @@ where
 			.expect("Signing session must exist for negotiated pending splice")
 			.received_commitment_signed();
 		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
-		self.context.monitor_pending_tx_signatures = tx_signatures;
+		self.context.monitor_pending_tx_signatures = tx_signatures.is_some();
 
 		Ok(self.push_ret_blockable_mon_update(monitor_update))
 	}
@@ -7655,7 +7655,7 @@ where
 
 				if is_monitor_update_in_progress {
 					log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
-					self.context.monitor_pending_tx_signatures = Some(holder_tx_signatures);
+					self.context.monitor_pending_tx_signatures = true;
 					return Ok(None);
 				}
 				return Ok(Some(holder_tx_signatures));
@@ -7733,7 +7733,7 @@ where
 			// and sets it as pending.
 			if holder_tx_signatures_opt.is_some() && self.is_awaiting_initial_mon_persist() {
 				log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
-				self.context.monitor_pending_tx_signatures = holder_tx_signatures_opt;
+				self.context.monitor_pending_tx_signatures = true;
 				return Ok((None, None));
 			}
 
@@ -7992,14 +7992,14 @@ where
 		// For channels established with V2 establishment we won't send a `tx_signatures` when we're in
 		// MonitorUpdateInProgress (and we assume the user will never directly broadcast the funding
 		// transaction and waits for us to do it).
-		let tx_signatures = self.context.monitor_pending_tx_signatures.take();
-		if tx_signatures.is_some() {
+		let tx_signatures = if self.context.monitor_pending_tx_signatures {
 			if self.context.channel_state.is_their_tx_signatures_sent() {
 				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			} else {
 				self.context.channel_state.set_our_tx_signatures_ready();
 			}
-		}
+			self.interactive_tx_signing_session.as_ref().and_then(|session| session.holder_tx_signatures().clone())
+		} else { None };
 
 		if self.context.channel_state.is_peer_disconnected() {
 			self.context.monitor_pending_revoke_and_ack = false;
@@ -8495,11 +8495,9 @@ where
 							if self.context.channel_state.is_monitor_update_in_progress() {
 								// The `monitor_pending_tx_signatures` field should have already been set in `commitment_signed_initial_v2`
 								// if we were up first for signing and had a monitor update in progress, but check again just in case.
-								debug_assert!(self.context.monitor_pending_tx_signatures.is_some(), "monitor_pending_tx_signatures should already be set");
+								debug_assert!(self.context.monitor_pending_tx_signatures, "monitor_pending_tx_signatures should already be set");
 								log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
-								if self.context.monitor_pending_tx_signatures.is_none() {
-									self.context.monitor_pending_tx_signatures = session.holder_tx_signatures().clone();
-								}
+								self.context.monitor_pending_tx_signatures = true;
 								None
 							} else {
 								// If `holder_tx_signatures` is `None` here, the `tx_signatures` message will be sent
@@ -13265,7 +13263,7 @@ where
 				monitor_pending_failures,
 				monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
 				monitor_pending_update_adds: monitor_pending_update_adds.unwrap_or_default(),
-				monitor_pending_tx_signatures: None,
+				monitor_pending_tx_signatures: false,
 
 				signer_pending_revoke_and_ack: false,
 				signer_pending_commitment_update: false,
