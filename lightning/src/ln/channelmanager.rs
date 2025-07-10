@@ -6284,7 +6284,7 @@ where
 				incoming_user_channel_id,
 				htlc_forwards.drain(..).collect(),
 			);
-			self.forward_htlcs_without_forward_event(&mut [pending_forwards]);
+			self.forward_htlcs(&mut [pending_forwards]);
 			for (htlc_fail, failure_type, failure_reason) in htlc_fails.drain(..) {
 				let failure = match htlc_fail {
 					HTLCFailureMsg::Relay(fail_htlc) => HTLCForwardInfo::FailHTLC {
@@ -10054,13 +10054,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	#[inline]
 	fn forward_htlcs(&self, per_source_pending_forwards: &mut [PerSourcePendingForward]) {
-		self.forward_htlcs_without_forward_event(per_source_pending_forwards);
-	}
-
-	#[inline]
-	fn forward_htlcs_without_forward_event(
-		&self, per_source_pending_forwards: &mut [PerSourcePendingForward],
-	) {
 		for &mut (
 			prev_short_channel_id,
 			prev_counterparty_node_id,
