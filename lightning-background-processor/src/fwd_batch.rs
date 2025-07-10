@@ -31,12 +31,24 @@ impl BatchDelay {
 }
 
 fn rand_batch_delay_millis() -> u16 {
-	const USIZE_LEN: usize = core::mem::size_of::<usize>();
-	let mut random_bytes = [0u8; USIZE_LEN];
-	possiblyrandom::getpossiblyrandom(&mut random_bytes);
+	const FALLBACK_DELAY: u16 = 50;
+	let delay;
 
-	let index = usize::from_be_bytes(random_bytes) % FWD_DELAYS_MILLIS.len();
-	*FWD_DELAYS_MILLIS.get(index).unwrap_or(&50)
+	#[cfg(feature = "std")]
+	{
+		const USIZE_LEN: usize = core::mem::size_of::<usize>();
+		let mut random_bytes = [0u8; USIZE_LEN];
+		possiblyrandom::getpossiblyrandom(&mut random_bytes);
+
+		let index = usize::from_be_bytes(random_bytes) % FWD_DELAYS_MILLIS.len();
+		delay = *FWD_DELAYS_MILLIS.get(index).unwrap_or(&FALLBACK_DELAY)
+	}
+	#[cfg(not(feature = "std"))]
+	{
+		delay = FALLBACK_DELAY
+	}
+
+	delay
 }
 
 // An array of potential forwarding delays (log-normal distribution, 10000 samples, mean = 50, sd = 0.5), generated via the following R-script:
@@ -48,6 +60,7 @@ fn rand_batch_delay_millis() -> u16 {
 // log_normal_data <- round(rlnorm(n, meanlog = meanlog, sdlog = sdlog))
 // cat(log_normal_data, file = "log_normal_data.txt", sep = ", ")
 // ```
+#[cfg(feature = "std")]
 static FWD_DELAYS_MILLIS: [u16; 10000] = [
 	38, 45, 109, 52, 53, 118, 63, 27, 35, 40, 92, 60, 61, 53, 38, 122, 64, 19, 71, 39, 29, 45, 30,
 	35, 37, 22, 76, 54, 28, 94, 62, 43, 78, 78, 75, 71, 66, 48, 43, 41, 35, 45, 27, 148, 91, 29,
