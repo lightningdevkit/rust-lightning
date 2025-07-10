@@ -128,7 +128,7 @@ impl OfferId {
 		Self(tagged_hash.to_bytes())
 	}
 
-	fn from_valid_invreq_tlv_stream(bytes: &[u8]) -> Self {
+	pub(super) fn from_valid_bolt12_tlv_stream(bytes: &[u8]) -> Self {
 		let tlv_stream = Offer::tlv_stream_iter(bytes);
 		let tagged_hash = TaggedHash::from_tlv_stream(Self::ID_TAG, tlv_stream);
 		Self(tagged_hash.to_bytes())
@@ -987,7 +987,7 @@ impl OfferContents {
 					secp_ctx,
 				)?;
 
-				let offer_id = OfferId::from_valid_invreq_tlv_stream(bytes);
+				let offer_id = OfferId::from_valid_bolt12_tlv_stream(bytes);
 
 				Ok((offer_id, keys))
 			},
