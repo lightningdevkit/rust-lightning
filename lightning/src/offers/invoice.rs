@@ -595,6 +595,7 @@ pub struct UnsignedBolt12Invoice {
 	experimental_bytes: Vec<u8>,
 	contents: InvoiceContents,
 	tagged_hash: TaggedHash,
+	offer_id: Option<OfferId>,
 }
 
 /// A function for signing an [`UnsignedBolt12Invoice`].
@@ -658,7 +659,11 @@ impl UnsignedBolt12Invoice {
 		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
 		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
 
-		Self { bytes, experimental_bytes, contents, tagged_hash }
+		let offer_id = match &contents {
+			InvoiceContents::ForOffer { .. } => Some(OfferId::from_valid_bolt12_tlv_stream(&bytes)),
+			InvoiceContents::ForRefund { .. } => None,
+		};
+		Self { bytes, experimental_bytes, contents, tagged_hash, offer_id }
 	}
 
 	/// Returns the [`TaggedHash`] of the invoice to sign.
@@ -686,9 +691,9 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 		// Append the experimental bytes after the signature.
 		$self.bytes.extend_from_slice(&$self.experimental_bytes);
 
-		let offer_id = match &self.contents {
+		let offer_id = match &$self.contents {
 			InvoiceContents::ForOffer { .. } => {
-				Some(OfferId::from_valid_bolt12_tlv_stream(&self.bytes))
+				Some(OfferId::from_valid_bolt12_tlv_stream(&$self.bytes))
 			},
 			InvoiceContents::ForRefund { .. } => None,
 		};
@@ -974,13 +979,6 @@ impl Bolt12Invoice {
 	/// Hash that was used for signing the invoice.
 	pub fn signable_hash(&self) -> [u8; 32] {
 		self.tagged_hash.as_digest().as_ref().clone()
-	}
-
-	/// Returns the [`OfferId`] if this invoice corresponds to an [`Offer`].
-	///
-	/// [`Offer`]: crate::offers::offer::Offer
-	pub fn offer_id(&self) -> Option<OfferId> {
-		self.offer_id
 	}
 
 	/// Verifies that the invoice was for a request or refund created using the given key by
@@ -1448,7 +1446,12 @@ impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
 			.map_or(0, |last_record| last_record.end);
 		let experimental_bytes = bytes.split_off(offset);
 
-		Ok(UnsignedBolt12Invoice { bytes, experimental_bytes, contents, tagged_hash })
+		let offer_id = match &contents {
+			InvoiceContents::ForOffer { .. } => Some(OfferId::from_valid_bolt12_tlv_stream(&bytes)),
+			InvoiceContents::ForRefund { .. } => None,
+		};
+
+		Ok(UnsignedBolt12Invoice { bytes, experimental_bytes, contents, tagged_hash, offer_id })
 	}
 }
 

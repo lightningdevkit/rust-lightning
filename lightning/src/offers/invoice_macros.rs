@@ -141,6 +141,13 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice
 	pub fn invoice_features(&$self) -> &Bolt12InvoiceFeatures {
 		$contents.features()
 	}
+
+	/// Returns the [`OfferId`] if this invoice corresponds to an [`Offer`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	pub fn offer_id(&$self) -> Option<OfferId> {
+		$self.offer_id
+	}
 } }
 
 pub(super) use invoice_accessors_common;
