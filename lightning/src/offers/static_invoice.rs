@@ -29,7 +29,7 @@ use crate::offers::merkle::{
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
 	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents,
-	OfferTlvStream, OfferTlvStreamRef, Quantity, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
+	OfferId, OfferTlvStream, OfferTlvStreamRef, Quantity, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
@@ -70,6 +70,7 @@ pub struct StaticInvoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,
 	signature: Signature,
+	offer_id: Option<OfferId>,
 }
 
 impl PartialEq for StaticInvoice {
@@ -198,6 +199,7 @@ pub struct UnsignedStaticInvoice {
 	experimental_bytes: Vec<u8>,
 	contents: InvoiceContents,
 	tagged_hash: TaggedHash,
+	offer_id: Option<OfferId>,
 }
 
 macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
@@ -330,7 +332,9 @@ impl UnsignedStaticInvoice {
 		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
 		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
 
-		Self { bytes, experimental_bytes, contents, tagged_hash }
+		// FIXME: we can have a static invoice for a Refund? if yes this should be optional
+		let offer_id = OfferId::from_valid_bolt12_tlv_stream(&bytes);
+		Self { bytes, experimental_bytes, contents, tagged_hash, offer_id: Some(offer_id) }
 	}
 
 	/// Signs the [`TaggedHash`] of the invoice using the given function.
@@ -347,7 +351,13 @@ impl UnsignedStaticInvoice {
 		// Append the experimental bytes after the signature.
 		self.bytes.extend_from_slice(&self.experimental_bytes);
 
-		Ok(StaticInvoice { bytes: self.bytes, contents: self.contents, signature })
+		let offer_id = OfferId::from_valid_bolt12_tlv_stream(&self.bytes);
+		Ok(StaticInvoice {
+			bytes: self.bytes,
+			contents: self.contents,
+			signature,
+			offer_id: Some(offer_id),
+		})
 	}
 
 	invoice_accessors_common!(self, self.contents, UnsignedStaticInvoice);
@@ -642,7 +652,9 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for StaticInvoice {
 		let pubkey = contents.signing_pubkey;
 		merkle::verify_signature(&signature, &tagged_hash, pubkey)?;
 
-		Ok(StaticInvoice { bytes, contents, signature })
+		// this is coming always from an offer, so this is always Some.
+		let offer_id = OfferId::from_valid_bolt12_tlv_stream(&bytes);
+		Ok(StaticInvoice { bytes, contents, signature, offer_id: Some(offer_id) })
 	}
 }
 
