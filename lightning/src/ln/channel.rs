@@ -1807,7 +1807,6 @@ where
 				};
 				let mut funded_channel = FundedChannel {
 					funding: chan.funding,
-					pending_funding: vec![],
 					context: chan.context,
 					interactive_tx_signing_session: chan.interactive_tx_signing_session,
 					holder_commitment_point,
@@ -2174,11 +2173,20 @@ impl FundingScope {
 	}
 }
 
-/// Info about a pending splice, used in the pre-splice channel
+/// Information about pending attempts at funding a channel. This includes funding currently under
+/// negotiation and any negotiated attempts waiting enough on-chain confirmations. More than one
+/// such attempt indicates use of RBF to increase the chances of confirmation.
 #[cfg(splicing)]
-struct PendingSplice {
+struct PendingFunding {
 	pub our_funding_contribution: i64,
+
+	/// The current funding attempt under negotiation. Once signatures have been exchanged, this
+	/// will move to `negotiated_candidates`.
 	funding: Option<FundingScope>,
+
+	/// Funding candidates that have been negotiated but have not reached enough confirmations
+	/// by both counterparties to have exchanged `splice_locked` and be promoted.
+	negotiated_candidates: Vec<FundingScope>,
 
 	/// The funding txid used in the `splice_locked` sent to the counterparty.
 	sent_funding_txid: Option<Txid>,
@@ -2188,13 +2196,16 @@ struct PendingSplice {
 }
 
 #[cfg(splicing)]
-impl PendingSplice {
+impl PendingFunding {
 	fn check_get_splice_locked<SP: Deref>(
-		&mut self, context: &ChannelContext<SP>, funding: &FundingScope, height: u32,
+		&mut self, context: &ChannelContext<SP>, confirmed_funding_index: usize, height: u32,
 	) -> Option<msgs::SpliceLocked>
 	where
 		SP::Target: SignerProvider,
 	{
+		debug_assert!(confirmed_funding_index < self.negotiated_candidates.len());
+
+		let funding = &self.negotiated_candidates[confirmed_funding_index];
 		if !context.check_funding_meets_minimum_depth(funding, height) {
 			return None;
 		}
@@ -5885,7 +5896,6 @@ where
 	SP::Target: SignerProvider,
 {
 	pub funding: FundingScope,
-	pending_funding: Vec<FundingScope>,
 	pub context: ChannelContext<SP>,
 	/// The signing session for the current interactive tx construction, if any.
 	///
@@ -5898,7 +5908,7 @@ where
 	holder_commitment_point: HolderCommitmentPoint,
 	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
 	#[cfg(splicing)]
-	pending_splice: Option<PendingSplice>,
+	pending_splice: Option<PendingFunding>,
 }
 
 #[cfg(splicing)]
@@ -5909,7 +5919,6 @@ macro_rules! promote_splice_funding {
 		}
 		core::mem::swap(&mut $self.funding, $funding);
 		$self.pending_splice = None;
-		$self.pending_funding.clear();
 		$self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
 	};
 }
@@ -5995,6 +6004,36 @@ where
 	SP::Target: SignerProvider,
 	<SP::Target as SignerProvider>::EcdsaSigner: EcdsaChannelSigner,
 {
+	#[cfg(splicing)]
+	fn pending_funding(&self) -> &[FundingScope] {
+		if let Some(pending_splice) = &self.pending_splice {
+			pending_splice.negotiated_candidates.as_slice()
+		} else {
+			&[]
+		}
+	}
+
+	#[cfg(not(splicing))]
+	fn pending_funding(&self) -> &[FundingScope] {
+		&[]
+	}
+
+	#[cfg(splicing)]
+	fn funding_and_pending_funding_iter_mut(&mut self) -> impl Iterator<Item = &mut FundingScope> {
+		core::iter::once(&mut self.funding).chain(
+			self.pending_splice
+				.as_mut()
+				.map(|pending_splice| pending_splice.negotiated_candidates.as_mut_slice())
+				.unwrap_or(&mut [])
+				.iter_mut(),
+		)
+	}
+
+	#[cfg(not(splicing))]
+	fn funding_and_pending_funding_iter_mut(&mut self) -> impl Iterator<Item = &mut FundingScope> {
+		core::iter::once(&mut self.funding)
+	}
+
 	#[rustfmt::skip]
 	fn check_remote_fee<F: Deref, L: Deref>(
 		channel_type: &ChannelTypeFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
@@ -6559,7 +6598,7 @@ where
 		}
 
 		core::iter::once(&self.funding)
-			.chain(self.pending_funding.iter())
+			.chain(self.pending_funding().iter())
 			.try_for_each(|funding| self.context.validate_update_add_htlc(funding, msg, fee_estimator))?;
 
 		// Now update local state:
@@ -6802,7 +6841,7 @@ where
 	{
 		self.commitment_signed_check_state()?;
 
-		if !self.pending_funding.is_empty() {
+		if !self.pending_funding().is_empty() {
 			return Err(ChannelError::close(
 				"Got a single commitment_signed message when expecting a batch".to_owned(),
 			));
@@ -6861,9 +6900,9 @@ where
 
 		// Any commitment_signed not associated with a FundingScope is ignored below if a
 		// pending splice transaction has confirmed since receiving the batch.
-		let mut commitment_txs = Vec::with_capacity(self.pending_funding.len() + 1);
+		let mut commitment_txs = Vec::with_capacity(self.pending_funding().len() + 1);
 		let mut htlc_data = None;
-		for funding in core::iter::once(&self.funding).chain(self.pending_funding.iter()) {
+		for funding in core::iter::once(&self.funding).chain(self.pending_funding().iter()) {
 			let funding_txid =
 				funding.get_funding_txid().expect("Funding txid must be known for pending scope");
 			let msg = messages.get(&funding_txid).ok_or_else(|| {
@@ -7265,9 +7304,7 @@ where
 
 		#[cfg(any(test, fuzzing))]
 		{
-			for funding in
-				core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut())
-			{
+			for funding in self.funding_and_pending_funding_iter_mut() {
 				*funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
 				*funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
 			}
@@ -7470,7 +7507,7 @@ where
 			}
 		}
 
-		for funding in core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut()) {
+		for funding in self.funding_and_pending_funding_iter_mut() {
 			funding.value_to_self_msat =
 				(funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 		}
@@ -7735,7 +7772,7 @@ where
 		}
 
 		let can_send_update_fee = core::iter::once(&self.funding)
-			.chain(self.pending_funding.iter())
+			.chain(self.pending_funding().iter())
 			.all(|funding| self.context.can_send_update_fee(funding, feerate_per_kw, fee_estimator, logger));
 		if !can_send_update_fee {
 			return None;
@@ -8025,14 +8062,14 @@ where
 		}
 
 		core::iter::once(&self.funding)
-			.chain(self.pending_funding.iter())
+			.chain(self.pending_funding().iter())
 			.try_for_each(|funding| FundedChannel::<SP>::check_remote_fee(funding.get_channel_type(), fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger))?;
 
 		self.context.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.context.update_time_counter += 1;
 
 		core::iter::once(&self.funding)
-			.chain(self.pending_funding.iter())
+			.chain(self.pending_funding().iter())
 			.try_for_each(|funding| self.context.validate_update_fee(funding, fee_estimator, msg))
 	}
 
@@ -9225,7 +9262,7 @@ where
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
 
 		core::iter::once(&self.funding)
-			.chain(self.pending_funding.iter())
+			.chain(self.pending_funding().iter())
 			.try_for_each(|funding| self.context.can_accept_incoming_htlc(funding, msg, dust_exposure_limiting_feerate, &logger))
 	}
 
@@ -9514,9 +9551,11 @@ where
 		L::Target: Logger,
 	{
 		debug_assert!(self.pending_splice.is_some());
-		debug_assert!(confirmed_funding_index < self.pending_funding.len());
 
 		let pending_splice = self.pending_splice.as_mut().unwrap();
+
+		debug_assert!(confirmed_funding_index < pending_splice.negotiated_candidates.len());
+
 		let splice_txid = match pending_splice.sent_funding_txid {
 			Some(sent_funding_txid) => sent_funding_txid,
 			None => {
@@ -9533,7 +9572,7 @@ where
 				&self.context.channel_id,
 			);
 
-			let funding = self.pending_funding.get_mut(confirmed_funding_index).unwrap();
+			let funding = &mut pending_splice.negotiated_candidates[confirmed_funding_index];
 			debug_assert_eq!(Some(splice_txid), funding.get_funding_txid());
 			promote_splice_funding!(self, funding);
 
@@ -9603,73 +9642,68 @@ where
 			}
 
 			#[cfg(splicing)]
-			let mut confirmed_funding_index = None;
-			#[cfg(splicing)]
-			let mut funding_already_confirmed = false;
-			#[cfg(splicing)]
-			for (index, funding) in self.pending_funding.iter_mut().enumerate() {
-				if self.context.check_for_funding_tx_confirmed(
-					funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
-				)? {
-					if funding_already_confirmed || confirmed_funding_index.is_some() {
-						let err_reason = "splice tx of another pending funding already confirmed";
-						return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
-					}
+			if let Some(pending_splice) = &mut self.pending_splice {
+				let mut confirmed_funding_index = None;
+				let mut funding_already_confirmed = false;
 
-					confirmed_funding_index = Some(index);
-				} else if funding.funding_tx_confirmation_height != 0 {
-					funding_already_confirmed = true;
-				}
-			}
-
-			#[cfg(splicing)]
-			if let Some(confirmed_funding_index) = confirmed_funding_index {
-				let pending_splice = match self.pending_splice.as_mut() {
-					Some(pending_splice) => pending_splice,
-					None => {
-						// TODO: Move pending_funding into pending_splice
-						debug_assert!(false);
-						let err = "expected a pending splice".to_string();
-						return Err(ClosureReason::ProcessingError { err });
-					},
-				};
-				let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
-
-				if let Some(splice_locked) = pending_splice.check_get_splice_locked(&self.context, funding, height) {
-					for &(idx, tx) in txdata.iter() {
-						if idx > index_in_block {
-							self.context.check_for_funding_tx_spent(funding, tx, logger)?;
+				for (index, funding) in pending_splice.negotiated_candidates.iter_mut().enumerate() {
+					if self.context.check_for_funding_tx_confirmed(
+						funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
+					)? {
+						if funding_already_confirmed || confirmed_funding_index.is_some() {
+							let err_reason = "splice tx of another pending funding already confirmed";
+							return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
 						}
+
+						confirmed_funding_index = Some(index);
+					} else if funding.funding_tx_confirmation_height != 0 {
+						funding_already_confirmed = true;
 					}
+				}
 
-					log_info!(
-						logger,
-						"Sending splice_locked txid {} to our peer for channel {}",
-						splice_locked.splice_txid,
-						&self.context.channel_id,
-					);
+				if let Some(confirmed_funding_index) = confirmed_funding_index {
+					if let Some(splice_locked) = pending_splice.check_get_splice_locked(
+						&self.context,
+						confirmed_funding_index,
+						height,
+					) {
+						for &(idx, tx) in txdata.iter() {
+							if idx > index_in_block {
+								let funding = &pending_splice.negotiated_candidates[confirmed_funding_index];
+								self.context.check_for_funding_tx_spent(funding, tx, logger)?;
+							}
+						}
 
-					let funding_promoted =
-						self.maybe_promote_splice_funding(confirmed_funding_index, logger);
-					let funding_txo = funding_promoted.then(|| {
-						self.funding
-							.get_funding_txo()
-							.expect("Splice FundingScope should always have a funding_txo")
-					});
-					let announcement_sigs = funding_promoted
-						.then(|| self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger))
-						.flatten();
+						log_info!(
+							logger,
+							"Sending splice_locked txid {} to our peer for channel {}",
+							splice_locked.splice_txid,
+							&self.context.channel_id,
+						);
 
-					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), announcement_sigs));
+						let funding_promoted =
+							self.maybe_promote_splice_funding(confirmed_funding_index, logger);
+						let funding_txo = funding_promoted.then(|| {
+							self.funding
+								.get_funding_txo()
+								.expect("Splice FundingScope should always have a funding_txo")
+						});
+						let announcement_sigs = funding_promoted
+							.then(|| self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger))
+							.flatten();
+
+						return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), announcement_sigs));
+					}
 				}
 			}
 
 			self.context.check_for_funding_tx_spent(&self.funding, tx, logger)?;
 			#[cfg(splicing)]
-			for funding in self.pending_funding.iter() {
-				self.context.check_for_funding_tx_spent(funding, tx, logger)?;
+			if let Some(pending_splice) = self.pending_splice.as_ref() {
+				for funding in pending_splice.negotiated_candidates.iter() {
+					self.context.check_for_funding_tx_spent(funding, tx, logger)?;
+				}
 			}
-
 		}
 
 		Ok((None, None))
@@ -9771,69 +9805,63 @@ where
 		}
 
 		#[cfg(splicing)]
-		let mut confirmed_funding_index = None;
-		#[cfg(splicing)]
-		for (index, funding) in self.pending_funding.iter().enumerate() {
-			if funding.funding_tx_confirmation_height != 0 {
-				if confirmed_funding_index.is_some() {
-					let err_reason = "splice tx of another pending funding already confirmed";
-					return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
+		if let Some(pending_splice) = &mut self.pending_splice {
+			let mut confirmed_funding_index = None;
+
+			for (index, funding) in pending_splice.negotiated_candidates.iter().enumerate() {
+				if funding.funding_tx_confirmation_height != 0 {
+					if confirmed_funding_index.is_some() {
+						let err_reason = "splice tx of another pending funding already confirmed";
+						return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
+					}
+
+					confirmed_funding_index = Some(index);
 				}
-
-				confirmed_funding_index = Some(index);
 			}
-		}
 
-		#[cfg(splicing)]
-		if let Some(confirmed_funding_index) = confirmed_funding_index {
-			let pending_splice = match self.pending_splice.as_mut() {
-				Some(pending_splice) => pending_splice,
-				None => {
-					// TODO: Move pending_funding into pending_splice
-					debug_assert!(false);
-					let err = "expected a pending splice".to_string();
-					return Err(ClosureReason::ProcessingError { err });
-				},
-			};
-			let funding = self.pending_funding.get_mut(confirmed_funding_index).unwrap();
+			if let Some(confirmed_funding_index) = confirmed_funding_index {
+				let funding = &mut pending_splice.negotiated_candidates[confirmed_funding_index];
 
-			// Check if the splice funding transaction was unconfirmed
-			if funding.get_funding_tx_confirmations(height) == 0 {
-				funding.funding_tx_confirmation_height = 0;
-				if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
-					if Some(sent_funding_txid) == funding.get_funding_txid() {
-						log_warn!(
-							logger,
-							"Unconfirming sent splice_locked txid {} for channel {}",
-							sent_funding_txid,
-							&self.context.channel_id,
-						);
-						pending_splice.sent_funding_txid = None;
+				// Check if the splice funding transaction was unconfirmed
+				if funding.get_funding_tx_confirmations(height) == 0 {
+					funding.funding_tx_confirmation_height = 0;
+					if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
+						if Some(sent_funding_txid) == funding.get_funding_txid() {
+							log_warn!(
+								logger,
+								"Unconfirming sent splice_locked txid {} for channel {}",
+								sent_funding_txid,
+								&self.context.channel_id,
+							);
+							pending_splice.sent_funding_txid = None;
+						}
 					}
 				}
-			}
 
-			let pending_splice = self.pending_splice.as_mut().unwrap();
-			let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
-			if let Some(splice_locked) = pending_splice.check_get_splice_locked(&self.context, funding, height) {
-				log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
+				if let Some(splice_locked) = pending_splice.check_get_splice_locked(
+					&self.context,
+					confirmed_funding_index,
+					height,
+				) {
+					log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
 
-				let funding_promoted =
-					self.maybe_promote_splice_funding(confirmed_funding_index, logger);
-				let funding_txo = funding_promoted.then(|| {
-					self.funding
-						.get_funding_txo()
-						.expect("Splice FundingScope should always have a funding_txo")
-				});
-				let announcement_sigs = funding_promoted
-					.then(|| chain_node_signer
-						.and_then(|(chain_hash, node_signer, user_config)|
-							self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
+					let funding_promoted =
+						self.maybe_promote_splice_funding(confirmed_funding_index, logger);
+					let funding_txo = funding_promoted.then(|| {
+						self.funding
+							.get_funding_txo()
+							.expect("Splice FundingScope should always have a funding_txo")
+					});
+					let announcement_sigs = funding_promoted
+						.then(|| chain_node_signer
+							.and_then(|(chain_hash, node_signer, user_config)|
+								self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
+							)
 						)
-					)
-					.flatten();
+						.flatten();
 
-				return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), timed_out_htlcs, announcement_sigs));
+					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), timed_out_htlcs, announcement_sigs));
+				}
 			}
 		}
 
@@ -9845,7 +9873,7 @@ where
 
 	pub fn get_relevant_txids(&self) -> impl Iterator<Item = (Txid, u32, Option<BlockHash>)> + '_ {
 		core::iter::once(&self.funding)
-			.chain(self.pending_funding.iter())
+			.chain(self.pending_funding().iter())
 			.map(|funding| {
 				(
 					funding.get_funding_txid(),
@@ -9875,8 +9903,8 @@ where
 	where
 		L::Target: Logger,
 	{
-		let unconfirmed_funding = core::iter::once(&mut self.funding)
-			.chain(self.pending_funding.iter_mut())
+		let unconfirmed_funding = self
+			.funding_and_pending_funding_iter_mut()
 			.find(|funding| funding.get_funding_txid() == Some(*txid));
 
 		if let Some(funding) = unconfirmed_funding {
@@ -10230,9 +10258,10 @@ where
 				self.context.channel_id(), err,
 			)})?;
 
-		self.pending_splice = Some(PendingSplice {
+		self.pending_splice = Some(PendingFunding {
 			our_funding_contribution: our_funding_contribution_satoshis,
 			funding: None,
+			negotiated_candidates: vec![],
 			sent_funding_txid: None,
 			received_funding_txid: None,
 		});
@@ -10349,8 +10378,8 @@ where
 
 		if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
 			if sent_funding_txid == msg.splice_txid {
-				if let Some(funding) = self
-					.pending_funding
+				if let Some(funding) = pending_splice
+					.negotiated_candidates
 					.iter_mut()
 					.find(|funding| funding.get_funding_txid() == Some(sent_funding_txid))
 				{
@@ -10548,7 +10577,7 @@ where
 		F::Target: FeeEstimator,
 	{
 		core::iter::once(&self.funding)
-			.chain(self.pending_funding.iter())
+			.chain(self.pending_funding().iter())
 			.map(|funding| self.context.get_available_balances_for_scope(funding, fee_estimator))
 			.reduce(|acc, e| {
 				AvailableBalances {
@@ -10595,7 +10624,7 @@ where
 		}
 		self.context.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
 
-		let update = if self.pending_funding.is_empty() {
+		let update = if self.pending_funding().is_empty() {
 			let (htlcs_ref, counterparty_commitment_tx) =
 				self.build_commitment_no_state_update(&self.funding, logger);
 			let htlc_outputs = htlcs_ref.into_iter()
@@ -10618,7 +10647,7 @@ where
 		} else {
 			let mut htlc_data = None;
 			let commitment_txs = core::iter::once(&self.funding)
-				.chain(self.pending_funding.iter())
+				.chain(self.pending_funding().iter())
 				.map(|funding| {
 					let (htlcs_ref, counterparty_commitment_tx) =
 						self.build_commitment_no_state_update(funding, logger);
@@ -10700,7 +10729,7 @@ where
 		L::Target: Logger,
 	{
 		core::iter::once(&self.funding)
-			.chain(self.pending_funding.iter())
+			.chain(self.pending_funding().iter())
 			.map(|funding| self.send_commitment_no_state_update_for_funding(funding, logger))
 			.collect::<Result<Vec<_>, ChannelError>>()
 	}
@@ -11477,7 +11506,6 @@ where
 
 		let mut channel = FundedChannel {
 			funding: self.funding,
-			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			holder_commitment_point,
@@ -11769,7 +11797,6 @@ where
 		// `ChannelMonitor`.
 		let mut channel = FundedChannel {
 			funding: self.funding,
-			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			holder_commitment_point,
@@ -12616,7 +12643,6 @@ where
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
-			(54, self.pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
 			(58, self.interactive_tx_signing_session, option), // Added in 0.2
@@ -12938,7 +12964,6 @@ where
 		let mut next_holder_commitment_point_opt: Option<PublicKey> = None;
 		let mut is_manual_broadcast = None;
 
-		let mut pending_funding = Some(Vec::new());
 		let mut historical_scids = Some(Vec::new());
 
 		let mut interactive_tx_signing_session: Option<InteractiveTxSigningSession> = None;
@@ -12980,7 +13005,6 @@ where
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
-			(54, pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec),
 			(57, holding_cell_failure_attribution_data, optional_vec),
 			(58, interactive_tx_signing_session, option), // Added in 0.2
@@ -13163,7 +13187,6 @@ where
 				short_channel_id,
 				minimum_depth_override,
 			},
-			pending_funding: pending_funding.unwrap(),
 			context: ChannelContext {
 				user_id,
 
