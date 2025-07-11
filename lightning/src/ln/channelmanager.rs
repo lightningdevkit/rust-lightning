@@ -6954,7 +6954,9 @@ where
 							.get_mut(&channel_id)
 							.and_then(Channel::as_funded_mut)
 						{
-							handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+							if chan.blocked_monitor_updates_pending() == 0 {
+								handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+							}
 						} else {
 							let update_actions = peer_state.monitor_update_blocked_actions
 								.remove(&channel_id).unwrap_or(Vec::new());
@@ -8246,8 +8248,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.and_then(Channel::as_funded_mut)
 		{
 			if chan.is_awaiting_monitor_update() {
-				log_trace!(logger, "Channel is open and awaiting update, resuming it");
-				handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+				if chan.blocked_monitor_updates_pending() == 0 {
+					log_trace!(logger, "Channel is open and awaiting update, resuming it");
+					handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+				} else {
+					log_trace!(logger, "Channel is open and awaiting update, leaving it blocked due to a blocked monitor update");
+				}
 			} else {
 				log_trace!(logger, "Channel is open but not awaiting update");
 			}

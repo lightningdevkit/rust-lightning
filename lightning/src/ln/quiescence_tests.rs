@@ -254,15 +254,26 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 
 	// We have two updates pending:
 	{
-		let chain_monitor = &nodes[0].chain_monitor;
+		let test_chain_mon = &nodes[0].chain_monitor;
 		let (_, latest_update) =
-			chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
+			test_chain_mon.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
 		let chain_monitor = &nodes[0].chain_monitor.chain_monitor;
 		// One for the latest commitment transaction update from the last `revoke_and_ack`
 		chain_monitor.channel_monitor_updated(chan_id, latest_update).unwrap();
-		expect_payment_sent(&nodes[0], preimage, None, true, true);
+		expect_payment_sent(&nodes[0], preimage, None, false, true);
+
+		let (_, new_latest_update) =
+			test_chain_mon.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
+		assert_eq!(new_latest_update, latest_update + 1);
 		// One for the commitment secret update from the last `revoke_and_ack`
-		chain_monitor.channel_monitor_updated(chan_id, latest_update + 1).unwrap();
+		chain_monitor.channel_monitor_updated(chan_id, new_latest_update).unwrap();
+		// Once that update completes, we'll get the `PaymentPathSuccessful` event
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		if let Event::PaymentPathSuccessful { .. } = &events[0] {
+		} else {
+			panic!("{events:?}");
+		}
 	}
 
 	// With the updates completed, we can now become quiescent.

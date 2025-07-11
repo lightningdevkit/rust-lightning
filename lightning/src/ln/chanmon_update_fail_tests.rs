@@ -3410,20 +3410,29 @@ fn test_inbound_reload_without_init_mon() {
 	do_test_inbound_reload_without_init_mon(false, false);
 }
 
-#[test]
-fn test_blocked_chan_preimage_release() {
+#[derive(PartialEq, Eq)]
+enum BlockedUpdateComplMode {
+	Async,
+	AtReload,
+	Sync,
+}
+
+fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode) {
 	// Test that even if a channel's `ChannelMonitorUpdate` flow is blocked waiting on an event to
 	// be handled HTLC preimage `ChannelMonitorUpdate`s will still go out.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_mon;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes_1_reload;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
 
-	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
 
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5_000_000);
@@ -3456,29 +3465,64 @@ fn test_blocked_chan_preimage_release() {
 	expect_payment_claimed!(nodes[0], payment_hash_2, 1_000_000);
 
 	let as_htlc_fulfill_updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	if completion_mode != BlockedUpdateComplMode::Sync {
+		// We use to incorrectly handle monitor update completion in cases where we completed a
+		// monitor update async or after reload. We test both based on the `completion_mode`.
+		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	}
 	nodes[1]
 		.node
 		.handle_update_fulfill_htlc(node_a_id, &as_htlc_fulfill_updates.update_fulfill_htlcs[0]);
 	check_added_monitors(&nodes[1], 1); // We generate only a preimage monitor update
 	assert!(get_monitor!(nodes[1], chan_id_2).get_stored_preimages().contains_key(&payment_hash_2));
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	if completion_mode == BlockedUpdateComplMode::AtReload {
+		let node_ser = nodes[1].node.encode();
+		let chan_mon_0 = get_monitor!(nodes[1], chan_id_1).encode();
+		let chan_mon_1 = get_monitor!(nodes[1], chan_id_2).encode();
+
+		let mons = &[&chan_mon_0[..], &chan_mon_1[..]];
+		reload_node!(nodes[1], &node_ser, mons, persister, new_chain_mon, nodes_1_reload);
+
+		nodes[0].node.peer_disconnected(node_b_id);
+		nodes[2].node.peer_disconnected(node_b_id);
+
+		let mut a_b_reconnect = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		a_b_reconnect.pending_htlc_claims.1 = 1;
+		// Note that we will expect no final RAA monitor update in
+		// `commitment_signed_dance_through_cp_raa` during the reconnect, matching the below case.
+		reconnect_nodes(a_b_reconnect);
+		reconnect_nodes(ReconnectArgs::new(&nodes[2], &nodes[1]));
+	} else if completion_mode == BlockedUpdateComplMode::Async {
+		let (latest_update, _) = get_latest_mon_update_id(&nodes[1], chan_id_2);
+		nodes[1]
+			.chain_monitor
+			.chain_monitor
+			.channel_monitor_updated(chan_id_2, latest_update)
+			.unwrap();
+	}
 
 	// Finish the CS dance between nodes[0] and nodes[1]. Note that until the event handling, the
 	// update_fulfill_htlc + CS is held, even though the preimage is already on disk for the
 	// channel.
-	nodes[1]
-		.node
-		.handle_commitment_signed_batch_test(node_a_id, &as_htlc_fulfill_updates.commitment_signed);
-	check_added_monitors(&nodes[1], 1);
-	let (a, raa) = do_main_commitment_signed_dance(&nodes[1], &nodes[0], false);
-	assert!(a.is_none());
+	// Note that when completing as a side effect of a reload we completed the CS dance in
+	// `reconnect_nodes` above.
+	if completion_mode != BlockedUpdateComplMode::AtReload {
+		nodes[1].node.handle_commitment_signed_batch_test(
+			node_a_id,
+			&as_htlc_fulfill_updates.commitment_signed,
+		);
+		check_added_monitors(&nodes[1], 1);
+		let (a, raa) = do_main_commitment_signed_dance(&nodes[1], &nodes[0], false);
+		assert!(a.is_none());
 
-	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
-	check_added_monitors(&nodes[1], 0);
-	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
+		check_added_monitors(&nodes[1], 0);
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	}
 
 	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 3);
+	assert_eq!(events.len(), 3, "{events:?}");
 	if let Event::PaymentSent { .. } = events[0] {
 	} else {
 		panic!();
@@ -3506,6 +3550,13 @@ fn test_blocked_chan_preimage_release() {
 	let commitment = bs_htlc_fulfill_updates.commitment_signed;
 	do_commitment_signed_dance(&nodes[2], &nodes[1], &commitment, false, false);
 	expect_payment_sent(&nodes[2], payment_preimage_2, None, true, true);
+}
+
+#[test]
+fn test_blocked_chan_preimage_release() {
+	do_test_blocked_chan_preimage_release(BlockedUpdateComplMode::AtReload);
+	do_test_blocked_chan_preimage_release(BlockedUpdateComplMode::Sync);
+	do_test_blocked_chan_preimage_release(BlockedUpdateComplMode::Async);
 }
 
 fn do_test_inverted_mon_completion_order(
