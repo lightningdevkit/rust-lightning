@@ -22,7 +22,7 @@ use crate::blinded_path::message::{AsyncPaymentsContext, DNSResolverContext, Off
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, Init, LightningError, MessageSendEvent,
-	OnionMessageHandler, RoutingMessageHandler, SocketAddress,
+	OnionMessageHandler, RoutingMessageHandler, SendOnlyMessageHandler, SocketAddress,
 };
 use crate::ln::peer_channel_encryptor::{
 	MessageBuf, NextNoiseStep, PeerChannelEncryptor, MSG_BUF_ALLOC_SIZE,
@@ -269,6 +269,8 @@ impl CustomOnionMessageHandler for IgnoringMessageHandler {
 		vec![]
 	}
 }
+
+impl SendOnlyMessageHandler for IgnoringMessageHandler {}
 
 impl OnionMessageContents for Infallible {
 	fn tlv_type(&self) -> u64 {
@@ -581,7 +583,7 @@ where
 	RM::Target: RoutingMessageHandler,
 	OM::Target: OnionMessageHandler,
 	CustomM::Target: CustomMessageHandler,
-	SM::Target: BaseMessageHandler,
+	SM::Target: SendOnlyMessageHandler,
 {
 	/// A message handler which handles messages specific to channels. Usually this is just a
 	/// [`ChannelManager`] object or an [`ErroringMessageHandler`].
@@ -604,8 +606,9 @@ where
 	/// [`IgnoringMessageHandler`].
 	pub custom_message_handler: CustomM,
 
-	/// A message handler which can be used to send messages. This should generally be a
-	/// [`ChainMonitor`].
+	/// A message handler which can be used to send messages.
+	///
+	/// This should generally be a [`ChainMonitor`].
 	///
 	/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 	pub send_only_message_handler: SM,
@@ -965,7 +968,7 @@ pub trait APeerManager {
 	type CMH: Deref<Target = Self::CMHT>;
 	type NST: NodeSigner + ?Sized;
 	type NS: Deref<Target = Self::NST>;
-	type SMT: BaseMessageHandler + ?Sized;
+	type SMT: SendOnlyMessageHandler + ?Sized;
 	type SM: Deref<Target = Self::SMT>;
 	/// Gets a reference to the underlying [`PeerManager`].
 	fn as_ref(
@@ -999,7 +1002,7 @@ where
 	L::Target: Logger,
 	CMH::Target: CustomMessageHandler,
 	NS::Target: NodeSigner,
-	SM::Target: BaseMessageHandler,
+	SM::Target: SendOnlyMessageHandler,
 {
 	type Descriptor = Descriptor;
 	type CMT = <CM as Deref>::Target;
@@ -1056,7 +1059,7 @@ pub struct PeerManager<
 	L::Target: Logger,
 	CMH::Target: CustomMessageHandler,
 	NS::Target: NodeSigner,
-	SM::Target: BaseMessageHandler,
+	SM::Target: SendOnlyMessageHandler,
 {
 	message_handler: MessageHandler<CM, RM, OM, CMH, SM>,
 	/// Connection state for each connected peer - we have an outer read-write lock which is taken
@@ -1140,7 +1143,7 @@ where
 	OM::Target: OnionMessageHandler,
 	L::Target: Logger,
 	NS::Target: NodeSigner,
-	SM::Target: BaseMessageHandler,
+	SM::Target: SendOnlyMessageHandler,
 {
 	/// Constructs a new `PeerManager` with the given `ChannelMessageHandler` and
 	/// `OnionMessageHandler`. No routing message handler is used and network graph messages are
@@ -1290,7 +1293,7 @@ where
 	L::Target: Logger,
 	CMH::Target: CustomMessageHandler,
 	NS::Target: NodeSigner,
-	SM::Target: BaseMessageHandler,
+	SM::Target: SendOnlyMessageHandler,
 {
 	/// Constructs a new `PeerManager` with the given message handlers.
 	///
@@ -3840,6 +3843,8 @@ mod tests {
 			InitFeatures::empty()
 		}
 	}
+
+	impl SendOnlyMessageHandler for TestBaseMsgHandler {}
 
 	fn create_peermgr_cfgs(peer_count: usize) -> Vec<PeerManagerCfg> {
 		let mut cfgs = Vec::new();
