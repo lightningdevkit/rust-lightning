@@ -233,17 +233,6 @@ pub(crate) fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_t
 		/ 1000
 }
 
-#[rustfmt::skip]
-pub(crate) fn htlc_tx_fees_sat(feerate_per_kw: u32, num_accepted_htlcs: usize, num_offered_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
-	let htlc_tx_fees_sat = if !channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		num_accepted_htlcs as u64 * htlc_success_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
-	  + num_offered_htlcs as u64 * htlc_timeout_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
-	} else {
-		0
-	};
-	htlc_tx_fees_sat
-}
-
 // Various functions for key derivation and transaction creation for use within channels. Primarily
 // used in Channel and ChannelMonitor.
 
