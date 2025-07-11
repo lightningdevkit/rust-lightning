@@ -1664,12 +1664,12 @@ where
 	/// send our peer to begin the channel reconnection process.
 	#[rustfmt::skip]
 	pub fn peer_connected_get_handshake<L: Deref>(
-		&mut self, chain_hash: ChainHash, their_features: &InitFeatures, logger: &L,
+		&mut self, chain_hash: ChainHash, logger: &L,
 	) -> ReconnectionMsg where L::Target: Logger {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) =>
-				ReconnectionMsg::Reestablish(chan.get_channel_reestablish(their_features, logger)),
+				ReconnectionMsg::Reestablish(chan.get_channel_reestablish(logger)),
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				chan.get_open_channel(chain_hash, logger)
 					.map(|msg| ReconnectionMsg::Open(OpenChannelMessage::V1(msg)))
@@ -10561,11 +10561,7 @@ where
 	}
 
 	#[cfg(splicing)]
-	fn maybe_get_your_last_funding_locked_txid(&self, features: &InitFeatures) -> Option<Txid> {
-		if !features.supports_splicing() {
-			return None;
-		}
-
+	fn maybe_get_your_last_funding_locked_txid(&self) -> Option<Txid> {
 		self.pending_splice
 			.as_ref()
 			.and_then(|pending_splice| pending_splice.received_funding_txid)
@@ -10574,16 +10570,12 @@ where
 			})
 	}
 	#[cfg(not(splicing))]
-	fn maybe_get_your_last_funding_locked_txid(&self, _features: &InitFeatures) -> Option<Txid> {
+	fn maybe_get_your_last_funding_locked_txid(&self) -> Option<Txid> {
 		None
 	}
 
 	#[cfg(splicing)]
-	fn maybe_get_my_current_funding_locked_txid(&self, features: &InitFeatures) -> Option<Txid> {
-		if !features.supports_splicing() {
-			return None;
-		}
-
+	fn maybe_get_my_current_funding_locked_txid(&self) -> Option<Txid> {
 		self.pending_splice
 			.as_ref()
 			.and_then(|pending_splice| pending_splice.sent_funding_txid)
@@ -10593,19 +10585,14 @@ where
 	}
 
 	#[cfg(not(splicing))]
-	fn maybe_get_my_current_funding_locked_txid(&self, _features: &InitFeatures) -> Option<Txid> {
+	fn maybe_get_my_current_funding_locked_txid(&self) -> Option<Txid> {
 		None
 	}
 
 	/// May panic if called on a channel that wasn't immediately-previously
 	/// self.remove_uncommitted_htlcs_and_mark_paused()'d
 	#[rustfmt::skip]
-	fn get_channel_reestablish<L: Deref>(
-		&mut self, their_features: &InitFeatures, logger: &L,
-	) -> msgs::ChannelReestablish
-	where
-		L::Target: Logger,
-	{
+	fn get_channel_reestablish<L: Deref>(&mut self, logger: &L) -> msgs::ChannelReestablish where L::Target: Logger {
 		assert!(self.context.channel_state.is_peer_disconnected());
 		assert_ne!(self.context.cur_counterparty_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
 		// This is generally the first function which gets called on any given channel once we're
@@ -10653,8 +10640,8 @@ where
 			your_last_per_commitment_secret: remote_last_secret,
 			my_current_per_commitment_point: dummy_pubkey,
 			next_funding_txid: self.maybe_get_next_funding_txid(),
-			your_last_funding_locked_txid: self.maybe_get_your_last_funding_locked_txid(their_features),
-			my_current_funding_locked_txid: self.maybe_get_my_current_funding_locked_txid(their_features),
+			your_last_funding_locked_txid: self.maybe_get_your_last_funding_locked_txid(),
+			my_current_funding_locked_txid: self.maybe_get_my_current_funding_locked_txid(),
 		}
 	}
 
@@ -14517,7 +14504,7 @@ mod tests {
 		// Now disconnect the two nodes and check that the commitment point in
 		// Node B's channel_reestablish message is sane.
 		assert!(node_b_chan.remove_uncommitted_htlcs_and_mark_paused(&&logger).is_ok());
-		let msg = node_b_chan.get_channel_reestablish(&channelmanager::provided_init_features(&config), &&logger);
+		let msg = node_b_chan.get_channel_reestablish(&&logger);
 		assert_eq!(msg.next_local_commitment_number, 1); // now called next_commitment_number
 		assert_eq!(msg.next_remote_commitment_number, 0); // now called next_revocation_number
 		assert_eq!(msg.your_last_per_commitment_secret, [0; 32]);
@@ -14525,7 +14512,7 @@ mod tests {
 		// Check that the commitment point in Node A's channel_reestablish message
 		// is sane.
 		assert!(node_a_chan.remove_uncommitted_htlcs_and_mark_paused(&&logger).is_ok());
-		let msg = node_a_chan.get_channel_reestablish(&channelmanager::provided_init_features(&config), &&logger);
+		let msg = node_a_chan.get_channel_reestablish(&&logger);
 		assert_eq!(msg.next_local_commitment_number, 1); // now called next_commitment_number
 		assert_eq!(msg.next_remote_commitment_number, 0); // now called next_revocation_number
 		assert_eq!(msg.your_last_per_commitment_secret, [0; 32]);
