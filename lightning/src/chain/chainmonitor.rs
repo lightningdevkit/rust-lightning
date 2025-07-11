@@ -813,25 +813,42 @@ where
 	}
 
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
+		static MAX_PEER_STORAGE_SIZE: usize = 65000;
 		let random_bytes = self.entropy_source.get_secure_random_bytes();
+		let random_usize = usize::from_le_bytes(random_bytes[0..8].try_into().unwrap());
 
-		// TODO(aditya): Choose n random channels so that peer storage does not exceed 64k.
 		let monitors = self.monitors.read().unwrap();
 		let mut monitors_list = PeerStorageMonitorHolderList { monitors: Vec::new() };
+		let mut curr_size = 0;
 
-		for (chan_id, mon) in monitors.iter() {
+		// Randomising Keys in the HashMap to fetch monitors without repetition.
+		let mut keys: Vec<&ChannelId> = monitors.keys().collect();
+		for i in (1..keys.len()).rev() {
+			let j = random_usize % (i + 1);
+			keys.swap(i, j);
+		}
+
+		for chan_id in keys {
+			let mon = &monitors[chan_id];
 			let mut ser_chan = VecWriter(Vec::new());
 			let min_seen_secret = mon.monitor.get_min_seen_secret();
 			let counterparty_node_id = mon.monitor.get_counterparty_node_id();
 
 			match write_util(&mon.monitor.inner.lock().unwrap(), true, &mut ser_chan) {
 				Ok(_) => {
+					let mut ser_channel = Vec::new();
 					let peer_storage_monitor = PeerStorageMonitorHolder {
 						channel_id: *chan_id,
 						min_seen_secret,
 						counterparty_node_id,
 						monitor_bytes: ser_chan.0,
 					};
+					peer_storage_monitor.write(&mut ser_channel).unwrap();
+
+					curr_size += ser_channel.len();
+					if curr_size > MAX_PEER_STORAGE_SIZE {
+						break;
+					}
 
 					monitors_list.monitors.push(peer_storage_monitor);
 				},
