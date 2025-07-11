@@ -206,21 +206,9 @@ pub(crate) struct PeerStorageMonitorHolderList {
 	pub(crate) monitors: Vec<PeerStorageMonitorHolder>,
 }
 
-impl Writeable for PeerStorageMonitorHolderList {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		encode_tlv_stream!(w, { (1, &self.monitors, required_vec) });
-		Ok(())
-	}
-}
-
-impl Readable for PeerStorageMonitorHolderList {
-	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let mut monitors: Option<Vec<PeerStorageMonitorHolder>> = None;
-		decode_tlv_stream!(r, { (1, monitors, optional_vec) });
-
-		Ok(PeerStorageMonitorHolderList { monitors: monitors.ok_or(DecodeError::InvalidValue)? })
-	}
-}
+impl_writeable_tlv_based!(PeerStorageMonitorHolderList, {
+	(1, monitors, required_vec),
+});
 
 #[cfg(test)]
 mod tests {
