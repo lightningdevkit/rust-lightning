@@ -1226,13 +1226,14 @@ impl OutboundPayments {
 		)
 	}
 
+	// Returns whether the data changed and needs to be repersisted.
 	#[rustfmt::skip]
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
 		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
 		best_block_height: u32,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, logger: &L,
 		send_payment_along_path: SP,
-	)
+	) -> bool
 	where
 		R::Target: Router,
 		ES::Target: EntropySource,
@@ -1243,6 +1244,7 @@ impl OutboundPayments {
 		L::Target: Logger,
 	{
 		let _single_thread = self.retry_lock.lock().unwrap();
+		let mut should_persist = false;
 		loop {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			let mut retry_id_route_params = None;
@@ -1262,7 +1264,8 @@ impl OutboundPayments {
 			}
 			core::mem::drop(outbounds);
 			if let Some((payment_hash, payment_id, route_params)) = retry_id_route_params {
-				self.find_route_and_send_payment(payment_hash, payment_id, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path)
+				self.find_route_and_send_payment(payment_hash, payment_id, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path);
+				should_persist = true;
 			} else { break }
 		}
 
@@ -1278,18 +1281,12 @@ impl OutboundPayments {
 						reason: *reason,
 					}, None));
 					retain = false;
+					should_persist = true;
 				}
 			}
 			retain
 		});
-	}
-
-	#[rustfmt::skip]
-	pub(super) fn needs_abandon(&self) -> bool {
-		let outbounds = self.pending_outbound_payments.lock().unwrap();
-		outbounds.iter().any(|(_, pmt)|
-			!pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 && !pmt.is_fulfilled() &&
-			!pmt.is_awaiting_invoice())
+		should_persist
 	}
 
 	#[rustfmt::skip]
@@ -2262,15 +2259,13 @@ impl OutboundPayments {
 		});
 	}
 
-	// Returns a bool indicating whether a PendingHTLCsForwardable event should be generated.
 	pub(super) fn fail_htlc<L: Deref>(
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
 		path: &Path, session_priv: &SecretKey, payment_id: &PaymentId,
 		probing_cookie_secret: [u8; 32], secp_ctx: &Secp256k1<secp256k1::All>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &L,
-	) -> bool
-	where
+	) where
 		L::Target: Logger,
 	{
 		#[cfg(any(test, feature = "_test_utils"))]
@@ -2298,8 +2293,6 @@ impl OutboundPayments {
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 
-		// If any payments already need retry, there's no need to generate a redundant
-		// `PendingHTLCsForwardable`.
 		let already_awaiting_retry = outbounds.iter().any(|(_, pmt)| {
 			let mut awaiting_retry = false;
 			if pmt.is_auto_retryable_now() {
@@ -2314,7 +2307,6 @@ impl OutboundPayments {
 		});
 
 		let mut full_failure_ev = None;
-		let mut pending_retry_ev = false;
 		let attempts_remaining =
 			if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
 				if !payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
@@ -2323,7 +2315,7 @@ impl OutboundPayments {
 						"Received duplicative fail for HTLC with payment_hash {}",
 						&payment_hash
 					);
-					return false;
+					return;
 				}
 				if payment.get().is_fulfilled() {
 					log_trace!(
@@ -2331,7 +2323,7 @@ impl OutboundPayments {
 						"Received failure of HTLC with payment_hash {} after payment completion",
 						&payment_hash
 					);
-					return false;
+					return;
 				}
 				let mut is_retryable_now = payment.get().is_auto_retryable_now();
 				if let Some(scid) = short_channel_id {
@@ -2379,7 +2371,7 @@ impl OutboundPayments {
 					"Received duplicative fail for HTLC with payment_hash {}",
 					&payment_hash
 				);
-				return false;
+				return;
 			};
 		core::mem::drop(outbounds);
 		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", &payment_hash);
@@ -2405,7 +2397,6 @@ impl OutboundPayments {
 				// payment will sit in our outbounds forever.
 				if attempts_remaining && !already_awaiting_retry {
 					debug_assert!(full_failure_ev.is_none());
-					pending_retry_ev = true;
 				}
 				events::Event::PaymentPathFailed {
 					payment_id: Some(*payment_id),
@@ -2428,7 +2419,6 @@ impl OutboundPayments {
 		if let Some(ev) = full_failure_ev {
 			pending_events.push_back((ev, None));
 		}
-		pending_retry_ev
 	}
 
 	#[rustfmt::skip]
