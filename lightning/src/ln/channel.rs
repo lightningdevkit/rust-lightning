@@ -1814,7 +1814,7 @@ where
 					#[cfg(splicing)]
 					pending_splice: None,
 				};
-				let res = funded_channel.commitment_signed_initial_v2(msg, best_block, signer_provider, logger)
+				let res = funded_channel.initial_commitment_signed_v2(msg, best_block, signer_provider, logger)
 					.map(|monitor| (Some(monitor), None))
 					// TODO: Change to `inspect_err` when MSRV is high enough.
 					.map_err(|err| {
@@ -2963,7 +2963,7 @@ where
 		self.context.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 
 		self.context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
-		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
+		let commitment_signed = self.context.get_initial_commitment_signed_v2(&self.funding, logger);
 		let commitment_signed = match commitment_signed {
 			Some(commitment_signed) => commitment_signed,
 			// TODO(splicing): Support async signing
@@ -5524,7 +5524,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn get_initial_commitment_signed<L: Deref>(
+	fn get_initial_commitment_signed_v2<L: Deref>(
 		&mut self, funding: &FundingScope, logger: &L
 	) -> Option<msgs::CommitmentSigned>
 	where
@@ -6640,7 +6640,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn commitment_signed_initial_v2<L: Deref>(
+	pub fn initial_commitment_signed_v2<L: Deref>(
 		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
 	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError>
 	where L::Target: Logger
@@ -8443,7 +8443,7 @@ where
 						// `tx_signatures` erroneously, this may end up resulting in a force close.
 						//
 						// TODO(dual_funding): For async signing support we need to hold back `tx_signatures` until the `commitment_signed` is ready.
-						let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger)
+						let commitment_signed = self.context.get_initial_commitment_signed_v2(&self.funding, logger)
 							// TODO(splicing): Support async signing
 							.ok_or_else(|| ChannelError::Close(
 									(
@@ -8471,7 +8471,7 @@ where
 					{
 						if self.context.channel_state.is_monitor_update_in_progress() {
 							// The `monitor_pending_tx_signatures` field should have already been
-							// set in `commitment_signed_initial_v2` if we were up first for signing
+							// set in `initial_commitment_signed_v2` if we were up first for signing
 							// and had a monitor update in progress.
 							if session.holder_sends_tx_signatures_first() {
 								debug_assert!(self.context.monitor_pending_tx_signatures.is_some());
