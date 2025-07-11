@@ -57,7 +57,8 @@ use lightning::routing::router::{
 };
 use lightning::routing::utxo::UtxoLookup;
 use lightning::sign::{
-	EntropySource, InMemorySigner, NodeSigner, PeerStorageKey, Recipient, SignerProvider,
+	EntropySource, InMemorySigner, NodeSigner, PeerStorageKey, ReceiveAuthKey, Recipient,
+	SignerProvider,
 };
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::{ChannelConfig, UserConfig};
@@ -173,8 +174,8 @@ impl MessageRouter for FuzzRouter {
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<PublicKey>,
-		_secp_ctx: &Secp256k1<T>,
+		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
+		_context: MessageContext, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		unreachable!()
 	}
@@ -437,6 +438,10 @@ impl NodeSigner for KeyProvider {
 
 	fn get_peer_storage_key(&self) -> PeerStorageKey {
 		PeerStorageKey { inner: [42; 32] }
+	}
+
+	fn get_receive_auth_key(&self) -> ReceiveAuthKey {
+		ReceiveAuthKey([41; 32])
 	}
 }
 

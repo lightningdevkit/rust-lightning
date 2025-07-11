@@ -545,24 +545,6 @@ pub trait Verification {
 	) -> Result<(), ()>;
 }
 
-impl Verification for PaymentHash {
-	/// Constructs an HMAC to include in [`OffersContext::InboundPayment`] for the payment hash
-	/// along with the given [`Nonce`].
-	fn hmac_for_offer_payment(
-		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_payment_hash(*self, nonce, expanded_key)
-	}
-
-	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
-	/// [`OffersContext::InboundPayment`].
-	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Result<(), ()> {
-		signer::verify_payment_hash(*self, hmac, nonce, expanded_key)
-	}
-}
-
 impl Verification for UnauthenticatedReceiveTlvs {
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
@@ -587,42 +569,6 @@ pub struct PaymentId(pub [u8; Self::LENGTH]);
 impl PaymentId {
 	/// Number of bytes in the id.
 	pub const LENGTH: usize = 32;
-
-	/// Constructs an HMAC to include in [`AsyncPaymentsContext::OutboundPayment`] for the payment id
-	/// along with the given [`Nonce`].
-	#[cfg(async_payments)]
-	pub fn hmac_for_async_payment(
-		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_async_payment_id(*self, nonce, expanded_key)
-	}
-
-	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
-	/// [`AsyncPaymentsContext::OutboundPayment`].
-	#[cfg(async_payments)]
-	pub fn verify_for_async_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Result<(), ()> {
-		signer::verify_async_payment_id(*self, hmac, nonce, expanded_key)
-	}
-}
-
-impl Verification for PaymentId {
-	/// Constructs an HMAC to include in [`OffersContext::OutboundPayment`] for the payment id
-	/// along with the given [`Nonce`].
-	fn hmac_for_offer_payment(
-		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_offer_payment_id(*self, nonce, expanded_key)
-	}
-
-	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
-	/// [`OffersContext::OutboundPayment`].
-	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Result<(), ()> {
-		signer::verify_offer_payment_id(*self, hmac, nonce, expanded_key)
-	}
 }
 
 impl PaymentId {
@@ -3750,7 +3696,7 @@ where
 		let flow = OffersMessageFlow::new(
 			ChainHash::using_genesis_block(params.network), params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
-			secp_ctx.clone(), message_router
+			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router
 		);
 
 		ChannelManager {
@@ -5322,10 +5268,7 @@ where
 				},
 			};
 
-			let entropy = &*self.entropy_source;
-
 			let enqueue_held_htlc_available_res = self.flow.enqueue_held_htlc_available(
-				entropy,
 				invoice,
 				payment_id,
 				self.get_peers_for_blinded_path(),
@@ -11323,7 +11266,7 @@ where
 
 				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
 
-				self.flow.enqueue_invoice(entropy, invoice.clone(), refund, self.get_peers_for_blinded_path())?;
+				self.flow.enqueue_invoice(invoice.clone(), refund, self.get_peers_for_blinded_path())?;
 
 				Ok(invoice)
 			},
@@ -13330,8 +13273,6 @@ where
 	fn handle_message(
 		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
 	) -> Option<(OffersMessage, ResponseInstruction)> {
-		let expanded_key = &self.inbound_payment_key;
-
 		macro_rules! handle_pay_invoice_res {
 			($res: expr, $invoice: expr, $logger: expr) => {{
 				let error = match $res {
@@ -13447,12 +13388,7 @@ where
 			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(invoice) => {
 				let payment_id = match context {
-					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if payment_id.verify_for_offer_payment(hmac, nonce, expanded_key).is_err() {
-							return None
-						}
-						payment_id
-					},
+					Some(OffersContext::OutboundPayment { payment_id, .. }) => payment_id,
 					_ => return None
 				};
 				let res = self.initiate_async_payment(&invoice, payment_id);
@@ -13460,12 +13396,7 @@ where
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
 				let payment_hash = match context {
-					Some(OffersContext::InboundPayment { payment_hash, nonce, hmac }) => {
-						match payment_hash.verify_for_offer_payment(hmac, nonce, expanded_key) {
-							Ok(_) => Some(payment_hash),
-							Err(_) => None,
-						}
-					},
+					Some(OffersContext::InboundPayment { payment_hash }) => Some(payment_hash),
 					_ => None,
 				};
 
@@ -13473,12 +13404,10 @@ where
 				log_trace!(logger, "Received invoice_error: {}", invoice_error);
 
 				match context {
-					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if let Ok(()) = payment_id.verify_for_offer_payment(hmac, nonce, expanded_key) {
-							self.abandon_payment_with_reason(
-								payment_id, PaymentFailureReason::InvoiceRequestRejected,
-							);
-						}
+					Some(OffersContext::OutboundPayment { payment_id, .. }) => {
+						self.abandon_payment_with_reason(
+							payment_id, PaymentFailureReason::InvoiceRequestRejected,
+						);
 					},
 					_ => {},
 				}
@@ -13627,15 +13556,18 @@ where
 	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
 		#[cfg(async_payments)]
 		{
-			if let Ok(payment_id) = self.flow.verify_outbound_async_payment_context(_context) {
-				if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
-					log_trace!(
-						self.logger,
-						"Failed to release held HTLC with payment id {}: {:?}",
-						payment_id,
-						e
-					);
-				}
+			let payment_id = match _context {
+				AsyncPaymentsContext::OutboundPayment { payment_id } => payment_id,
+				_ => return,
+			};
+
+			if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
+				log_trace!(
+					self.logger,
+					"Failed to release held HTLC with payment id {}: {:?}",
+					payment_id,
+					e
+				);
 			}
 		}
 	}
@@ -15760,7 +15692,7 @@ where
 		let flow = OffersMessageFlow::new(
 			chain_hash, best_block, our_network_pubkey,
 			highest_seen_timestamp, expanded_inbound_key,
-			secp_ctx.clone(), args.message_router
+			args.node_signer.get_receive_auth_key(), secp_ctx.clone(), args.message_router
 		).with_async_payments_offers_cache(async_receive_offer_cache);
 
 		let channel_manager = ChannelManager {

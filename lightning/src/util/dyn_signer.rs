@@ -14,8 +14,8 @@ use crate::ln::script::ShutdownScript;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
-use crate::sign::ChannelSigner;
 use crate::sign::InMemorySigner;
+use crate::sign::{ChannelSigner, ReceiveAuthKey};
 use crate::sign::{EntropySource, HTLCDescriptor, OutputSpender, PhantomKeysManager};
 use crate::sign::{
 	NodeSigner, PeerStorageKey, Recipient, SignerProvider, SpendableOutputDescriptor,
@@ -217,7 +217,8 @@ inner,
 		invoice: &crate::offers::invoice::UnsignedBolt12Invoice
 	) -> Result<secp256k1::schnorr::Signature, ()>,
 	fn get_inbound_payment_key(,) -> ExpandedKey,
-	fn get_peer_storage_key(,) -> PeerStorageKey
+	fn get_peer_storage_key(,) -> PeerStorageKey,
+	fn get_receive_auth_key(,) -> ReceiveAuthKey
 );
 
 delegate!(DynKeysInterface, SignerProvider,
@@ -282,7 +283,8 @@ delegate!(DynPhantomKeysInterface, NodeSigner,
 	fn sign_bolt12_invoice(, invoice: &crate::offers::invoice::UnsignedBolt12Invoice
 	) -> Result<secp256k1::schnorr::Signature, ()>,
 	fn get_inbound_payment_key(,) -> ExpandedKey,
-	fn get_peer_storage_key(,) -> PeerStorageKey
+	fn get_peer_storage_key(,) -> PeerStorageKey,
+	fn get_receive_auth_key(,) -> ReceiveAuthKey
 );
 
 impl SignerProvider for DynPhantomKeysInterface {
