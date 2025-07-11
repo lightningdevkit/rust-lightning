@@ -182,10 +182,12 @@ fn archive_fully_resolved_monitors() {
 
 	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
 
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), "".to_owned()).unwrap();
+	let message = "Channel force-closed".to_owned();
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	check_closed_broadcast!(nodes[0], true);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 1_000_000);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 1_000_000);
 
 	let commitment_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(commitment_tx.len(), 1);
@@ -930,12 +932,13 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 
 	// First confirm the commitment transaction on nodes[0], which should leave us with three
 	// claimable balances.
-	let error_message = "Channel force-closed";
+	let message = "Channel force-closed".to_owned();
 	let node_a_commitment_claimable = nodes[0].best_block_info().1 + BREAKDOWN_TIMEOUT as u32;
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	check_closed_broadcast!(nodes[0], true);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 1000000);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 1000000);
 	let commitment_tx = {
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 		assert_eq!(txn.len(), 1);
@@ -2338,11 +2341,12 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	// ensures that the HTLC timeout package is held until we reach its expiration height.
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 50_000_000);
 	route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
-	let error_message = "Channel force-closed";
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
+	let message = "Channel force-closed".to_owned();
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	check_closed_broadcast(&nodes[0], 1, true);
-	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false,
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event!(&nodes[0], 1, reason, false,
 		 [nodes[1].node.get_our_node_id()], 100000);
 
 	let commitment_tx = {
@@ -3055,11 +3059,15 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 
 	// Confirm the counterparty's commitment and reload the monitor (either before or after) such
 	// that we arrive at the correct `counterparty_payment_script` after the reload.
-	let error_message = "Channel force-closed";
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
+	let message = "Channel force-closed".to_owned();
+	nodes[0]
+		.node
+		.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone())
+		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	check_closed_broadcast(&nodes[0], 1, true);
-	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false,
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event!(&nodes[0], 1, reason, false,
 		 [nodes[1].node.get_our_node_id()], 100000);
 
 	let commitment_tx = {
@@ -3277,8 +3285,9 @@ fn test_update_replay_panics() {
 	// Create some updates to apply
 	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-	nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id(), "".to_owned()).unwrap();
-	let reason = ClosureReason::HolderForceClosed  { broadcasted_latest_txn: Some(true) };
+	let message = "Channel force-closed".to_owned();
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id(), message.clone()).unwrap();
+	let reason = ClosureReason::HolderForceClosed  { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[1], 1, reason, false, &[nodes[0].node.get_our_node_id()], 100_000);
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);

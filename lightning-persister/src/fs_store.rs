@@ -592,23 +592,19 @@ mod tests {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let node_a_id = nodes[0].node.get_our_node_id();
+
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-		let error_message = "Channel force-closed";
+
+		let message = "Channel force-closed".to_owned();
 		nodes[1]
 			.node
-			.force_close_broadcasting_latest_txn(
-				&chan.2,
-				&nodes[0].node.get_our_node_id(),
-				error_message.to_string(),
-			)
+			.force_close_broadcasting_latest_txn(&chan.2, &node_a_id, message.clone())
 			.unwrap();
-		check_closed_event!(
-			nodes[1],
-			1,
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) },
-			[nodes[0].node.get_our_node_id()],
-			100000
-		);
+		let reason =
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+		check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 
 		// Set the store's directory to read-only, which should result in
@@ -640,23 +636,19 @@ mod tests {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let node_a_id = nodes[0].node.get_our_node_id();
+
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-		let error_message = "Channel force-closed";
+
+		let message = "Channel force-closed".to_owned();
 		nodes[1]
 			.node
-			.force_close_broadcasting_latest_txn(
-				&chan.2,
-				&nodes[0].node.get_our_node_id(),
-				error_message.to_string(),
-			)
+			.force_close_broadcasting_latest_txn(&chan.2, &node_a_id, message.clone())
 			.unwrap();
-		check_closed_event!(
-			nodes[1],
-			1,
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) },
-			[nodes[0].node.get_our_node_id()],
-			100000
-		);
+		let reason =
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+		check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
 		let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();

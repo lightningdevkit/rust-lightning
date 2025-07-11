@@ -1477,12 +1477,13 @@ mod tests {
 
 		// Test that monitors with pending_claims are persisted on every block.
 		// Now, close channel_2 i.e. b/w node-0 and node-2 to create pending_claim in node[0].
+		let message = "Channel force-closed".to_owned();
 		nodes[0]
 			.node
-			.force_close_broadcasting_latest_txn(&channel_2, &node_c_id, "closed".to_string())
+			.force_close_broadcasting_latest_txn(&channel_2, &node_c_id, message.clone())
 			.unwrap();
 		let closure_reason =
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 		check_closed_event!(&nodes[0], 1, closure_reason, false, [node_c_id], 1000000);
 		check_closed_broadcast(&nodes[0], 1, true);
 		let close_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
