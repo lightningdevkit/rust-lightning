@@ -8808,7 +8808,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, peer_node_id: PublicKey, msg: msgs::PeerStorageRetrieval,
 	) -> Result<(), MsgHandleErrInternal> {
 		// TODO: Check if have any stale or missing ChannelMonitor.
-		let per_peer_state = self.per_peer_state.read().unwrap();
 		let logger = WithContext::from(&self.logger, Some(peer_node_id), None, None);
 		let err = || {
 			MsgHandleErrInternal::from_chan_no_close(
@@ -8834,6 +8833,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		};
 
 		log_trace!(logger, "Got valid {}-byte peer backup from {}", decrypted.len(), peer_node_id);
+		let per_peer_state = self.per_peer_state.read().unwrap();
 
 		let mut cursor = io::Cursor::new(decrypted);
 		match <PeerStorageMonitorHolderList as Readable>::read(&mut cursor) {
