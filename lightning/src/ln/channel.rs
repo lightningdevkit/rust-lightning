@@ -10576,6 +10576,12 @@ where
 		let next_local_commitment_number =
 			INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.transaction_number();
 
+		// The sending node:
+		//   - if it has sent `commitment_signed` for an interactive transaction construction but
+		//     it has not received `tx_signatures`:
+		//     - MUST set `next_funding_txid` to the txid of that interactive transaction.
+		//     - if it has not received `commitment_signed` for that interactive transaction:
+		//       - MUST set `next_commitment_number` to the commitment number of the `commitment_signed` it sent.
 		if let Some(session) = &self.interactive_tx_signing_session {
 			if !self.context.channel_state.is_their_tx_signatures_sent()
 				&& !session.has_received_commitment_signed()
