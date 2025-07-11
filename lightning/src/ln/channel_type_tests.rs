@@ -295,9 +295,9 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 }
 
 #[test]
-fn test_rejects_implicit_simple_anchors() {
-	// Tests that if `option_anchors` is being negotiated implicitly through the intersection of
-	// each side's `InitFeatures`, it is rejected.
+fn test_rejects_if_channel_type_not_set() {
+	// Tests that if `channel_type` is not set in `open_channel` and `accept_channel`, it is
+	// rejected.
 	let secp_ctx = Secp256k1::new();
 	let test_est = TestFeeEstimator::new(15000);
 	let fee_estimator = LowerBoundedFeeEstimator::new(&test_est);
@@ -311,13 +311,6 @@ fn test_rejects_implicit_simple_anchors() {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
 
 	let config = UserConfig::default();
-
-	// See feature bit assignments: https://github.com/lightning/bolts/blob/master/09-features.md
-	let static_remote_key_required: u64 = 1 << 12;
-	let simple_anchors_required: u64 = 1 << 20;
-	let raw_init_features = static_remote_key_required | simple_anchors_required;
-	let init_features_with_simple_anchors =
-		InitFeatures::from_le_bytes(raw_init_features.to_le_bytes().to_vec());
 
 	let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 		&fee_estimator,
@@ -336,20 +329,18 @@ fn test_rejects_implicit_simple_anchors() {
 	)
 	.unwrap();
 
-	// Set `channel_type` to `None` to force the implicit feature negotiation.
+	// Set `channel_type` to `None` to cause failure.
 	let mut open_channel_msg =
 		channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 	open_channel_msg.common_fields.channel_type = None;
 
-	// Since A supports both `static_remote_key` and `option_anchors`, but B only accepts
-	// `static_remote_key`, it will fail the channel.
 	let channel_b = InboundV1Channel::<&TestKeysInterface>::new(
 		&fee_estimator,
 		&&keys_provider,
 		&&keys_provider,
 		node_id_a,
 		&channelmanager::provided_channel_type_features(&config),
-		&init_features_with_simple_anchors,
+		&channelmanager::provided_init_features(&config),
 		&open_channel_msg,
 		7,
 		&config,
@@ -358,6 +349,104 @@ fn test_rejects_implicit_simple_anchors() {
 		/*is_0conf=*/ false,
 	);
 	assert!(channel_b.is_err());
+
+	open_channel_msg.common_fields.channel_type =
+		Some(channel_a.funding.get_channel_type().clone());
+	let mut channel_b = InboundV1Channel::<&TestKeysInterface>::new(
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_a,
+		&channelmanager::provided_channel_type_features(&config),
+		&channelmanager::provided_init_features(&config),
+		&open_channel_msg,
+		7,
+		&config,
+		0,
+		&&logger,
+		/*is_0conf=*/ false,
+	)
+	.unwrap();
+
+	// Set `channel_type` to `None` in `accept_channel` to cause failure.
+	let mut accept_channel_msg = channel_b.get_accept_channel_message(&&logger).unwrap();
+	accept_channel_msg.common_fields.channel_type = None;
+
+	let res = channel_a.accept_channel(
+		&accept_channel_msg,
+		&config.channel_handshake_limits,
+		&channelmanager::provided_init_features(&config),
+	);
+	assert!(res.is_err());
+}
+
+#[test]
+fn test_rejects_if_channel_type_differ() {
+	// Tests that if the `channel_type` in `accept_channel` does not match the one set in
+	// `open_channel` it rejects the channel.
+	let secp_ctx = Secp256k1::new();
+	let test_est = TestFeeEstimator::new(15000);
+	let fee_estimator = LowerBoundedFeeEstimator::new(&test_est);
+	let network = Network::Testnet;
+	let keys_provider = TestKeysInterface::new(&[42; 32], network);
+	let logger = TestLogger::new();
+
+	let node_id_a =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
+	let node_id_b =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
+
+	let config = UserConfig::default();
+
+	let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_b,
+		&channelmanager::provided_init_features(&config),
+		10000000,
+		100000,
+		42,
+		&config,
+		0,
+		42,
+		None,
+		&logger,
+	)
+	.unwrap();
+
+	let open_channel_msg =
+		channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
+
+	let mut channel_b = InboundV1Channel::<&TestKeysInterface>::new(
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_a,
+		&channelmanager::provided_channel_type_features(&config),
+		&channelmanager::provided_init_features(&config),
+		&open_channel_msg,
+		7,
+		&config,
+		0,
+		&&logger,
+		/*is_0conf=*/ false,
+	)
+	.unwrap();
+
+	// Change the `channel_type` in `accept_channel` msg to make it different from the one set in
+	// `open_channel` to cause failure.
+	let mut accept_channel_msg = channel_b.get_accept_channel_message(&&logger).unwrap();
+	let mut channel_type = channelmanager::provided_channel_type_features(&config);
+	channel_type.set_zero_conf_required();
+	accept_channel_msg.common_fields.channel_type = Some(channel_type.clone());
+
+	let res = channel_a.accept_channel(
+		&accept_channel_msg,
+		&config.channel_handshake_limits,
+		&channelmanager::provided_init_features(&config),
+	);
+	assert!(res.is_err());
 }
 
 #[test]
