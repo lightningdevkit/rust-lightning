@@ -8461,8 +8461,7 @@ where
 						});
 					}
 
-					// - if it has already received `commitment_signed` and it should sign first,
-					//   as specified in the [`tx_signatures` requirements](#the-tx_signatures-message):
+					// - if it has already received `commitment_signed` and it should sign first
 					//   - MUST send its `tx_signatures` for that funding transaction.
 					//
 					// - if it has already received `tx_signatures` for that funding transaction:
