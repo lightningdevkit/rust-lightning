@@ -5526,6 +5526,7 @@ where
 		let commitment_signed = self.get_initial_commitment_signed(&funding, logger);
 		let commitment_signed = match commitment_signed {
 			Some(commitment_signed) => commitment_signed,
+			// TODO(splicing): Support async signing
 			None => {
 				funding.channel_transaction_parameters.funding_outpoint = None;
 				return Err(msgs::TxAbort {
@@ -5636,7 +5637,7 @@ where
 				partial_signature_with_nonce: None,
 			})
 		} else {
-			// TODO: Support async signing
+			// TODO(splicing): Support async signing
 			None
 		}
 	}
@@ -8799,7 +8800,7 @@ where
 							// if next_commitment_number is zero:
 							//   MUST retransmit its commitment_signed for that funding transaction.
 							let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger)
-								// TODO Support async signing
+								// TODO(splicing): Support async signing
 								.ok_or_else(|| {
 									let message = "Failed to get signatures for new commitment_signed".to_owned();
 									ChannelError::Close(
