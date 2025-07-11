@@ -1878,7 +1878,7 @@ where
 					#[cfg(splicing)]
 					pending_splice: None,
 				};
-				let res = funded_channel.commitment_signed_initial_v2(msg, best_block, signer_provider, logger)
+				let res = funded_channel.initial_commitment_signed_v2(msg, best_block, signer_provider, logger)
 					.map(|monitor| (Some(monitor), None))
 					// TODO: Change to `inspect_err` when MSRV is high enough.
 					.map_err(|err| {
@@ -5524,7 +5524,7 @@ where
 			self.assert_no_commitment_advancement(holder_commitment_transaction_number, "initial commitment_signed");
 		}
 
-		let commitment_signed = self.get_initial_commitment_signed(&funding, logger);
+		let commitment_signed = self.get_initial_commitment_signed_v2(&funding, logger);
 		let commitment_signed = match commitment_signed {
 			Some(commitment_signed) => commitment_signed,
 			// TODO(splicing): Support async signing
@@ -5615,7 +5615,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn get_initial_commitment_signed<L: Deref>(
+	fn get_initial_commitment_signed_v2<L: Deref>(
 		&mut self, funding: &FundingScope, logger: &L
 	) -> Option<msgs::CommitmentSigned>
 	where
@@ -6929,7 +6929,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn commitment_signed_initial_v2<L: Deref>(
+	pub fn initial_commitment_signed_v2<L: Deref>(
 		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
 	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError>
 	where L::Target: Logger
@@ -8798,7 +8798,7 @@ where
 							// if it has not received tx_signatures for that funding transaction AND
 							// if next_commitment_number is zero:
 							//   MUST retransmit its commitment_signed for that funding transaction.
-							let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger)
+							let commitment_signed = self.context.get_initial_commitment_signed_v2(&self.funding, logger)
 								// TODO(splicing): Support async signing
 								.ok_or_else(|| {
 									let message = "Failed to get signatures for new commitment_signed".to_owned();
