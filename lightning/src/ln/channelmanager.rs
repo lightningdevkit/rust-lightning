@@ -5091,7 +5091,7 @@ where
 		)
 	}
 
-	#[cfg(all(test, async_payments))]
+	#[cfg(all(test))]
 	pub(crate) fn test_modify_pending_payment<Fn>(&self, payment_id: &PaymentId, mut callback: Fn)
 	where
 		Fn: FnMut(&mut PendingOutboundPayment),

@@ -2086,7 +2086,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
 						fee_msat: amt_msat,
-						cltv_expiry_delta: 24,
+						cltv_expiry_delta: 104,
 					},
 				],
 				hops: carol_blinded_hops,
@@ -2206,8 +2206,7 @@ fn test_trampoline_single_hop_receive() {
 	do_test_trampoline_single_hop_receive(false);
 }
 
-#[test]
-fn test_trampoline_unblinded_receive() {
+fn do_test_trampoline_unblinded_receive(underpay: bool) {
 	// Simulate a payment of A (0) -> B (1) -> C(Trampoline) (2)
 
 	const TOTAL_NODE_COUNT: usize = 3;
@@ -2277,7 +2276,7 @@ fn test_trampoline_unblinded_receive() {
 					node_features: NodeFeatures::empty(),
 					short_channel_id: bob_carol_scid,
 					channel_features: ChannelFeatures::empty(),
-					fee_msat: 0,
+					fee_msat: 0, // no routing fees because it's the final hop
 					cltv_expiry_delta: 48,
 					maybe_announced_channel: false,
 				}
@@ -2288,8 +2287,8 @@ fn test_trampoline_unblinded_receive() {
 					TrampolineHop {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
-						fee_msat: amt_msat,
-						cltv_expiry_delta: 24,
+						fee_msat: 0,
+						cltv_expiry_delta: 72,
 					},
 				],
 				hops: carol_blinded_hops,
@@ -2301,6 +2300,8 @@ fn test_trampoline_unblinded_receive() {
 		route_params: None,
 	};
 
+	let payment_id = PaymentId(payment_hash.0);
+
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
 
 	let replacement_onion = {
@@ -2311,17 +2312,18 @@ fn test_trampoline_unblinded_receive() {
 		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 
 		let blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
-		let (mut trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, amt_msat, &recipient_onion_fields, 32, &None).unwrap();
 
+		let (mut trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, amt_msat, &recipient_onion_fields, 32, &None).unwrap();
 		// pop the last dummy hop
 		trampoline_payloads.pop();
+		let replacement_payload_amount = if underpay { amt_msat * 2 } else { amt_msat };
 
 		trampoline_payloads.push(msgs::OutboundTrampolinePayload::Receive {
 			payment_data: Some(msgs::FinalOnionHopData {
 				payment_secret,
-				total_msat: amt_msat,
+				total_msat: replacement_payload_amount,
 			}),
-			sender_intended_htlc_amt_msat: amt_msat,
+			sender_intended_htlc_amt_msat: replacement_payload_amount,
 			cltv_expiry_height: 104,
 		});
 
@@ -2334,10 +2336,20 @@ fn test_trampoline_unblinded_receive() {
 			None,
 		).unwrap();
 
-		// Use a different session key to construct the replacement onion packet. Note that the sender isn't aware of
-		// this and won't be able to decode the fulfill hold times.
-		let outer_session_priv = secret_from_hex("e52c20461ed7acd46c4e7b591a37610519179482887bd73bf3b94617f8f03677");
+		// Get the original inner session private key that the ChannelManager generated so we can
+		// re-use it for the outer session private key. This way HMAC validation in attributable
+		// errors do not makes the test fail.
+		let mut orig_inner_priv_bytes = [0u8; 32];
+		nodes[0].node.test_modify_pending_payment(&payment_id, |pmt| {
+			if let crate::ln::outbound_payment::PendingOutboundPayment::Retryable { session_privs, .. } = pmt {
+				orig_inner_priv_bytes = *session_privs.iter().next().unwrap();
+			}
+		});
+		let inner_session_priv = SecretKey::from_slice(&orig_inner_priv_bytes).unwrap();
 
+		// Derive the outer session private key from the inner one.
+		let outer_session_priv_hash = Sha256::hash(&inner_session_priv.secret_bytes());
+		let outer_session_priv = SecretKey::from_slice(&outer_session_priv_hash.to_byte_array()).unwrap();
 		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
 		let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
 		let outer_packet = onion_utils::construct_onion_packet(
@@ -2367,11 +2379,51 @@ fn test_trampoline_unblinded_receive() {
 	});
 
 	let route: &[&Node] = &[&nodes[1], &nodes[2]];
-	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
-		.with_payment_secret(payment_secret);
+	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event);
+
+	let args = if underpay {
+		args.with_payment_preimage(payment_preimage)
+				.without_claimable_event()
+				.expect_failure(HTLCHandlingFailureType::Receive { payment_hash })
+	} else {
+			args.with_payment_secret(payment_secret)
+		};
+
 	do_pass_along_path(args);
 
-	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+	if underpay {
+		{
+			let unblinded_node_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+			nodes[1].node.handle_update_fail_htlc(
+				nodes[2].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+			);
+			do_commitment_signed_dance(&nodes[1], &nodes[2], &unblinded_node_updates.commitment_signed, true, false);
+		}
+		{
+			let unblinded_node_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_update_fail_htlc(
+				nodes[1].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+			);
+			do_commitment_signed_dance(&nodes[0], &nodes[1], &unblinded_node_updates.commitment_signed, false, false);
+		}
+		{
+		    let payment_failed_conditions = PaymentFailedConditions::new()
+				    .expected_htlc_error_data(LocalHTLCFailureReason::FinalIncorrectHTLCAmount, &[0, 0, 0, 0, 0, 0, 3, 232]);
+			  expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
+		}
+	} else {
+		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+	}
+}
+
+#[test]
+fn test_trampoline_unblinded_receive_underpay() {
+    do_test_trampoline_unblinded_receive(true);
+}
+
+#[test]
+fn test_trampoline_unblinded_receive_normal() {
+    do_test_trampoline_unblinded_receive(false);
 }
 
 #[test]
