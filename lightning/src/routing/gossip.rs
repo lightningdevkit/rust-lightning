@@ -2006,8 +2006,8 @@ where
 	///
 	/// All other parameters as used in [`msgs::UnsignedChannelAnnouncement`] fields.
 	pub fn add_channel_from_partial_announcement(
-		&self, short_channel_id: u64, timestamp: u64, features: ChannelFeatures, node_id_1: NodeId,
-		node_id_2: NodeId,
+		&self, short_channel_id: u64, capacity_sats: Option<u64>, timestamp: u64,
+		features: ChannelFeatures, node_id_1: NodeId, node_id_2: NodeId,
 	) -> Result<(), LightningError> {
 		if node_id_1 == node_id_2 {
 			return Err(LightningError {
@@ -2022,7 +2022,7 @@ where
 			one_to_two: None,
 			node_two: node_id_2,
 			two_to_one: None,
-			capacity_sats: None,
+			capacity_sats,
 			announcement_message: None,
 			announcement_received_time: timestamp,
 			node_one_counter: u32::max_value(),
