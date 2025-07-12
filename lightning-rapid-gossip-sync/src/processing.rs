@@ -267,8 +267,26 @@ where
 				latest_seen_timestamp
 			);
 
+			let mut funding_sats: Option<u64> = None;
+
+			if version >= 2 && has_additional_data {
+				// forwards compatibility
+				let additional_data: Vec<u8> = Readable::read(read_cursor)?;
+				let mut cursor = &additional_data[..];
+				let funding_sats_read: BigSize = Readable::read(&mut cursor)?;
+				funding_sats = Some(funding_sats_read.0);
+				if !cursor.is_empty() {
+					log_gossip!(
+						self.logger,
+						"Ignoring {} bytes of additional data in channel announcement",
+						cursor.len()
+					);
+				}
+			}
+
 			let announcement_result = network_graph.add_channel_from_partial_announcement(
 				short_channel_id,
+				funding_sats,
 				backdated_timestamp as u64,
 				features,
 				node_id_1,
@@ -285,16 +303,6 @@ where
 					);
 					return Err(lightning_error.into());
 				}
-			}
-
-			if version >= 2 && has_additional_data {
-				// forwards compatibility
-				let additional_data: Vec<u8> = Readable::read(read_cursor)?;
-				log_gossip!(
-					self.logger,
-					"Ignoring {} bytes of additional data in channel announcement",
-					additional_data.len()
-				);
 			}
 		}
 
@@ -664,7 +672,7 @@ mod tests {
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			0, 0, 0, 1, 0, 0, 1, 0, 255, 128, 0, 0, 0, 0, 0, 0, 1, 0, 147, 23, 23, 23, 23, 23, 23,
+			0, 0, 0, 1, 0, 0, 1, 0, 255, 128, 0, 0, 0, 0, 0, 0, 1, 0, 147, 42, 23, 23, 23, 23, 23,
 			23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23,
 			23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23,
 			23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23,
@@ -685,9 +693,11 @@ mod tests {
 			"Ignoring 255 bytes of additional data in node announcement",
 			3,
 		);
+		// Note that our extra data is 147 bytes long, but the first byte (42) is read as the
+		// channel's funding amount (as a BigSize).
 		logger.assert_log_contains(
 			"lightning_rapid_gossip_sync::processing",
-			"Ignoring 147 bytes of additional data in channel announcement",
+			"Ignoring 146 bytes of additional data in channel announcement",
 			1,
 		);
 		logger.assert_log_contains(
