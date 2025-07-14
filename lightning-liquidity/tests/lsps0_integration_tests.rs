@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{create_service_and_client_nodes, get_lsps_message};
+use common::{create_service_and_client_nodes, get_lsps_message, LSPSNodes};
 
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::event::LSPS0ClientEvent;
@@ -14,10 +14,18 @@ use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
+use lightning::ln::functional_test_utils::{
+	create_chanmon_cfgs, create_network, create_node_cfgs, create_node_chanmgrs,
+};
 use lightning::ln::peer_handler::CustomMessageHandler;
 
 #[test]
 fn list_protocols_integration_test() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let promise_secret = [42; 32];
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
 	#[cfg(lsps1_service)]
@@ -40,16 +48,13 @@ fn list_protocols_integration_test() {
 		lsps2_client_config: Some(lsps2_client_config),
 	};
 
-	let (service_node, client_node) = create_service_and_client_nodes(
-		"list_protocols_integration_test",
-		service_config,
-		client_config,
-	);
+	let service_node_id = nodes[0].node.get_our_node_id();
+	let client_node_id = nodes[1].node.get_our_node_id();
 
-	let service_node_id = service_node.channel_manager.get_our_node_id();
+	let LSPSNodes { service_node, client_node } =
+		create_service_and_client_nodes(nodes, service_config, client_config);
 
 	let client_handler = client_node.liquidity_manager.lsps0_client_handler();
-	let client_node_id = client_node.channel_manager.get_our_node_id();
 
 	client_handler.list_protocols(&service_node_id);
 	let list_protocols_request = get_lsps_message!(client_node, service_node_id);
