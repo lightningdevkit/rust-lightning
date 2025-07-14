@@ -915,20 +915,18 @@ impl NegotiationContext {
 	fn check_counterparty_fees(
 		&self, counterparty_fees_contributed: u64,
 	) -> Result<(), AbortReason> {
-		let counterparty_weight_contributed = self
+		let mut counterparty_weight_contributed = self
 			.remote_inputs_weight()
 			.to_wu()
 			.saturating_add(self.remote_outputs_weight().to_wu());
-		let mut required_counterparty_contribution_fee =
-			fee_for_weight(self.feerate_sat_per_kw, counterparty_weight_contributed);
 		if !self.holder_is_initiator {
 			// if is the non-initiator:
 			// 	- the initiator's fees do not cover the common fields (version, segwit marker + flag,
 			// 		input count, output count, locktime)
-			let tx_common_fields_fee =
-				fee_for_weight(self.feerate_sat_per_kw, TX_COMMON_FIELDS_WEIGHT);
-			required_counterparty_contribution_fee += tx_common_fields_fee;
+			counterparty_weight_contributed += TX_COMMON_FIELDS_WEIGHT;
 		}
+		let required_counterparty_contribution_fee =
+			fee_for_weight(self.feerate_sat_per_kw, counterparty_weight_contributed);
 		if counterparty_fees_contributed < required_counterparty_contribution_fee {
 			return Err(AbortReason::InsufficientFees);
 		}
@@ -2432,16 +2430,12 @@ mod tests {
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
 		});
-		let p2wpkh_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2WPKH_INPUT_WEIGHT_LOWER_BOUND);
-		let outputs_fee = fee_for_weight(
-			TEST_FEERATE_SATS_PER_KW,
-			get_output_weight(&generate_p2wsh_script_pubkey()).to_wu(),
-		);
-		let tx_common_fields_fee =
-			fee_for_weight(TEST_FEERATE_SATS_PER_KW, TX_COMMON_FIELDS_WEIGHT);
-
-		let amount_adjusted_with_p2wpkh_fee =
-			1_000_000 - p2wpkh_fee - outputs_fee - tx_common_fields_fee + 1;
+		let outputs_weight = get_output_weight(&generate_p2wsh_script_pubkey()).to_wu();
+		let amount_adjusted_with_p2wpkh_fee = 1_000_000
+			- fee_for_weight(
+				TEST_FEERATE_SATS_PER_KW,
+				P2WPKH_INPUT_WEIGHT_LOWER_BOUND + TX_COMMON_FIELDS_WEIGHT + outputs_weight,
+			);
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Single contribution, with P2WPKH input, insufficient fees",
 			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000)]),
@@ -2473,9 +2467,11 @@ mod tests {
 			outputs_b: vec![],
 			expect_error: None,
 		});
-		let p2wsh_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2WSH_INPUT_WEIGHT_LOWER_BOUND);
-		let amount_adjusted_with_p2wsh_fee =
-			1_000_000 - p2wsh_fee - outputs_fee - tx_common_fields_fee + 1;
+		let amount_adjusted_with_p2wsh_fee = 1_000_000
+			- fee_for_weight(
+				TEST_FEERATE_SATS_PER_KW,
+				P2WSH_INPUT_WEIGHT_LOWER_BOUND + TX_COMMON_FIELDS_WEIGHT + outputs_weight,
+			);
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Single contribution, with P2WSH input, insufficient fees",
 			inputs_a: generate_inputs(&[TestOutput::P2WSH(1_000_000)]),
@@ -2507,9 +2503,11 @@ mod tests {
 			outputs_b: vec![],
 			expect_error: None,
 		});
-		let p2tr_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2TR_INPUT_WEIGHT_LOWER_BOUND);
-		let amount_adjusted_with_p2tr_fee =
-			1_000_000 - p2tr_fee - outputs_fee - tx_common_fields_fee;
+		let amount_adjusted_with_p2tr_fee = 1_000_000
+			- fee_for_weight(
+				TEST_FEERATE_SATS_PER_KW,
+				P2TR_INPUT_WEIGHT_LOWER_BOUND + TX_COMMON_FIELDS_WEIGHT + outputs_weight,
+			);
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Single contribution, with P2TR input, insufficient fees",
 			inputs_a: generate_inputs(&[TestOutput::P2TR(1_000_000)]),
