@@ -7647,21 +7647,9 @@ where
 		}
 	}
 
-	fn fail_htlc_backwards_internal(
-		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
-		destination: HTLCHandlingFailureType,
-	) {
-		self.fail_htlc_backwards_internal_without_forward_event(
-			source,
-			payment_hash,
-			onion_error,
-			destination,
-		);
-	}
-
 	/// Fails an HTLC backwards to the sender of it to us.
 	/// Note that we do not assume that channels corresponding to failed HTLCs are still available.
-	fn fail_htlc_backwards_internal_without_forward_event(
+	fn fail_htlc_backwards_internal(
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
 		failure_type: HTLCHandlingFailureType,
 	) {
@@ -10194,7 +10182,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			for (htlc_source, payment_hash, failure_reason, destination) in
 				failed_intercept_forwards.drain(..)
 			{
-				self.fail_htlc_backwards_internal_without_forward_event(
+				self.fail_htlc_backwards_internal(
 					&htlc_source,
 					&payment_hash,
 					&failure_reason,
