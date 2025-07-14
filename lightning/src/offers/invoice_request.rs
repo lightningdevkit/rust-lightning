@@ -77,8 +77,9 @@ use crate::offers::merkle::{
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
-	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents,
-	OfferId, OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
+	Amount, CurrencyCode, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer,
+	OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES,
+	OFFER_TYPES,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
@@ -571,6 +572,34 @@ impl UnsignedInvoiceRequest {
 impl AsRef<TaggedHash> for UnsignedInvoiceRequest {
 	fn as_ref(&self) -> &TaggedHash {
 		&self.tagged_hash
+	}
+}
+
+/// A trait for converting fiat currencies into millisatoshis (msats).
+///
+/// Implementations must return the conversion rate in **msats per minor unit** of the currency,
+/// where the minor unit is determined by its ISO-4217 exponent:
+/// - USD (exponent 2) → per **cent** (0.01 USD), not per dollar.
+/// - JPY (exponent 0) → per **yen**.
+/// - KWD (exponent 3) → per **fils** (0.001 KWD).
+///
+/// # Caution
+///
+/// Returning msats per major unit will be off by a factor of 10^exponent (e.g. 100× for USD).
+///
+/// This convention ensures amounts remain precise and purely integer-based when parsing and
+/// validating BOLT12 invoice requests.
+pub trait CurrencyConversion {
+	/// Converts a fiat currency specified by its ISO-4217 code into **msats per minor unit**.
+	fn fiat_to_msats(&self, iso4217_code: CurrencyCode) -> Result<u64, ()>;
+}
+
+/// A default implementation of the `CurrencyConversion` trait that does not support any currency conversions.
+pub struct DefaultCurrencyConversion;
+
+impl CurrencyConversion for DefaultCurrencyConversion {
+	fn fiat_to_msats(&self, _iso4217_code: CurrencyCode) -> Result<u64, ()> {
+		Err(())
 	}
 }
 
