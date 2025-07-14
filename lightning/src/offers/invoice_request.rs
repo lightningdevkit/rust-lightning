@@ -106,6 +106,7 @@ use crate::offers::invoice::{
 
 #[allow(unused_imports)]
 use crate::prelude::*;
+use core::ops::Deref;
 
 /// Tag for the hash function used when signing an [`InvoiceRequest`]'s merkle root.
 pub const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice_request", "signature");
@@ -794,14 +795,17 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	///
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
-	pub fn respond_with(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash
-	) -> Result<$builder, Bolt12SemanticError> {
+	pub fn respond_with<CC: Deref>(
+		&$self, currency_conversion: CC, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash
+	) -> Result<$builder, Bolt12SemanticError>
+	where
+		CC::Target: CurrencyConversion
+	{
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
-		$contents.respond_with_no_std(payment_paths, payment_hash, created_at)
+		$contents.respond_with_no_std(currency_conversion, payment_paths, payment_hash, created_at)
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the request with the given required fields.
@@ -829,10 +833,13 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	///
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	/// [`OfferBuilder::deriving_signing_pubkey`]: crate::offers::offer::OfferBuilder::deriving_signing_pubkey
-	pub fn respond_with_no_std(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
+	pub fn respond_with_no_std<CC: Deref>(
+		&$self, currency_conversion: CC, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		created_at: core::time::Duration
-	) -> Result<$builder, Bolt12SemanticError> {
+	) -> Result<$builder, Bolt12SemanticError>
+	where
+		CC::Target: CurrencyConversion
+	{
 		if $contents.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
@@ -842,22 +849,33 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 			None => return Err(Bolt12SemanticError::MissingIssuerSigningPubkey),
 		};
 
-		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
+		<$builder>::for_offer(&$contents, currency_conversion, payment_paths, created_at, payment_hash, signing_pubkey)
 	}
 
 	#[cfg(test)]
 	#[allow(dead_code)]
-	pub(super) fn respond_with_no_std_using_signing_pubkey(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
-		created_at: core::time::Duration, signing_pubkey: PublicKey
+	pub(crate) fn respond_with_no_conversion(
+		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash, created_at: core::time::Duration
 	) -> Result<$builder, Bolt12SemanticError> {
+		$contents.respond_with_no_std(&DefaultCurrencyConversion, payment_paths, payment_hash, created_at)
+	}
+
+	#[cfg(test)]
+	#[allow(dead_code)]
+	pub(super) fn respond_with_no_std_using_signing_pubkey<CC: Deref>(
+		&$self, currency_conversion: CC, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
+		created_at: core::time::Duration, signing_pubkey: PublicKey
+	) -> Result<$builder, Bolt12SemanticError>
+	where
+		CC::Target: CurrencyConversion
+	{
 		debug_assert!($contents.contents.inner.offer.issuer_signing_pubkey().is_none());
 
 		if $contents.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
+		<$builder>::for_offer(&$contents, currency_conversion, payment_paths, created_at, payment_hash, signing_pubkey)
 	}
 } }
 
@@ -1013,6 +1031,37 @@ impl InvoiceRequest {
 			experimental_invoice_request_tlv_stream,
 		)
 	}
+
+	/// Computes the minimum invoice amount (in msats) required for this
+	/// `InvoiceRequest` to be valid, based on the Offer's amount and quantity.
+	///
+	/// Returns:
+	/// - `Ok(Some(x))` if the Offer specifies an amount. Any explicit
+	///   `InvoiceRequest` amount must be at least `x` msats.
+	/// - `Ok(None)` if the Offer does not specify an amount (donation). In this
+	///   case, any explicit InvoiceRequest amount is acceptable.
+	/// - `Err(_)` if converting the Offer amount to msats or scaling by quantity
+	///   results in an overflow or invalid value.
+	///
+	/// This does *not* inspect the amount explicitly given in the InvoiceRequest.
+	/// Instead, it provides the minimum amount the InvoiceRequest should specify
+	/// (if it specifies any) to satisfy the Offer.
+	pub(crate) fn min_invoice_request_amount<CC: Deref>(
+		&self, currency_conversion: CC,
+	) -> Result<Option<u64>, Bolt12SemanticError>
+	where
+		CC::Target: CurrencyConversion,
+	{
+		let quantity = self.quantity().unwrap_or(1);
+
+		self.amount()
+			.map(|amt| {
+				amt.to_msats(currency_conversion).and_then(|unit_msats| {
+					unit_msats.checked_mul(quantity).ok_or(Bolt12SemanticError::InvalidAmount)
+				})
+			})
+			.transpose()
+	}
 }
 
 macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
@@ -1026,14 +1075,17 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
-	pub fn respond_using_derived_keys(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash
-	) -> Result<$builder, Bolt12SemanticError> {
+	pub fn respond_using_derived_keys<CC: Deref>(
+		&$self, currency_conversion: CC, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash
+	) -> Result<$builder, Bolt12SemanticError>
+	where
+		CC::Target: CurrencyConversion
+	{
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
-		$self.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at)
+		$self.respond_using_derived_keys_no_std(currency_conversion, payment_paths, payment_hash, created_at)
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
@@ -1043,10 +1095,13 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	/// See [`InvoiceRequest::respond_with_no_std`] for further details.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn respond_using_derived_keys_no_std(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
+	pub fn respond_using_derived_keys_no_std<CC: Deref>(
+		&$self, currency_conversion: CC, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		created_at: core::time::Duration
-	) -> Result<$builder, Bolt12SemanticError> {
+	) -> Result<$builder, Bolt12SemanticError>
+	where
+		CC::Target: CurrencyConversion
+	{
 		if $self.inner.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
@@ -1059,7 +1114,7 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 		}
 
 		<$builder>::for_offer_using_keys(
-			&$self.inner, payment_paths, created_at, payment_hash, keys
+			&$self.inner, currency_conversion, payment_paths, created_at, payment_hash, keys
 		)
 	}
 } }
@@ -1757,7 +1812,7 @@ mod tests {
 			.unwrap();
 
 		let invoice = invoice_request
-			.respond_with_no_std(payment_paths(), payment_hash(), now())
+			.respond_with_no_conversion(payment_paths(), payment_hash(), now())
 			.unwrap()
 			.experimental_baz(42)
 			.build()
@@ -2341,7 +2396,7 @@ mod tests {
 			.features_unchecked(InvoiceRequestFeatures::unknown())
 			.build_and_sign()
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now())
+			.respond_with_no_conversion(payment_paths(), payment_hash(), now())
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnknownRequiredFeatures),

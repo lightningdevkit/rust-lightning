@@ -82,6 +82,7 @@ use crate::io;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::offers::invoice_request::CurrencyConversion;
 use crate::offers::merkle::{TaggedHash, TlvRecord, TlvStream};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -99,6 +100,7 @@ use bitcoin::secp256k1::{self, Keypair, PublicKey, Secp256k1};
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use core::num::NonZeroU64;
+use core::ops::Deref;
 use core::str::FromStr;
 use core::time::Duration;
 
@@ -1123,6 +1125,24 @@ pub enum Amount {
 		/// The amount in the currency unit adjusted by the ISO 4217 exponent (e.g., USD cents).
 		amount: u64,
 	},
+}
+
+impl Amount {
+	pub(crate) fn to_msats<CC: Deref>(
+		self, currency_conversion: CC,
+	) -> Result<u64, Bolt12SemanticError>
+	where
+		CC::Target: CurrencyConversion,
+	{
+		match self {
+			Amount::Bitcoin { amount_msats } => Ok(amount_msats),
+			Amount::Currency { iso4217_code, amount } => currency_conversion
+				.fiat_to_msats(iso4217_code)
+				.map_err(|_| Bolt12SemanticError::UnsupportedCurrency)?
+				.checked_mul(amount)
+				.ok_or(Bolt12SemanticError::InvalidAmount),
+		}
+	}
 }
 
 /// An ISO 4217 three-letter currency code (e.g., USD).
