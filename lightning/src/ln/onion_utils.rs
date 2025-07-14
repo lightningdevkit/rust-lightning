@@ -992,8 +992,13 @@ pub fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 where
 	L::Target: Logger,
 {
+	let mut trampoline_forward_path_option = None;
 	let (path, primary_session_priv) = match htlc_source {
 		HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
+		HTLCSource::TrampolineForward { ref hops, ref session_priv, .. } => {
+			trampoline_forward_path_option.replace(Path { hops: hops.clone(), blinded_tail: None });
+			(trampoline_forward_path_option.as_ref().unwrap(), session_priv)
+		},
 		_ => unreachable!(),
 	};
 
@@ -2119,8 +2124,8 @@ impl HTLCFailReason {
 				// failures here, but that would be insufficient as find_route
 				// generally ignores its view of our own channels as we provide them via
 				// ChannelDetails.
-				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
-					DecodedOnionFailure {
+				match htlc_source {
+					HTLCSource::OutboundRoute { ref path, .. } => DecodedOnionFailure {
 						network_update: None,
 						payment_failed_permanently: false,
 						short_channel_id: Some(path.hops[0].short_channel_id),
@@ -2132,9 +2137,21 @@ impl HTLCFailReason {
 						onion_error_data: Some(data.clone()),
 						#[cfg(test)]
 						attribution_failed_channel: None,
-					}
-				} else {
-					unreachable!();
+					},
+					HTLCSource::TrampolineForward { ref hops, .. } => DecodedOnionFailure {
+						network_update: None,
+						payment_failed_permanently: false,
+						short_channel_id: hops.first().map(|h| h.short_channel_id),
+						failed_within_blinded_path: false,
+						hold_times: Vec::new(),
+						#[cfg(any(test, feature = "_test_utils"))]
+						onion_error_code: Some(*failure_reason),
+						#[cfg(any(test, feature = "_test_utils"))]
+						onion_error_data: Some(data.clone()),
+						#[cfg(test)]
+						attribution_failed_channel: None,
+					},
+					_ => unreachable!(),
 				}
 			},
 		}
