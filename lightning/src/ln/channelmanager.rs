@@ -8274,24 +8274,43 @@ where
 								// payment claim from a `ChannelMonitor`. In some cases (MPP or
 								// if the HTLC was only recently removed) we make such claims
 								// after an HTLC has been removed from a channel entirely, and
-								// thus the RAA blocker has long since completed.
+								// thus the RAA blocker may have long since completed.
 								//
-								// In any other case, the RAA blocker must still be present and
-								// blocking RAAs.
-								debug_assert!(
-									during_init
-										|| peer_state
-											.actions_blocking_raa_monitor_updates
-											.get(&chan_id)
-											.unwrap()
-											.contains(&raa_blocker)
-								);
+								// However, its possible that the `ChannelMonitorUpdate` containing
+								// the preimage never completed and is still pending. In that case,
+								// we need to re-add the RAA blocker, which we do here. Handling
+								// the post-update action, below, will remove it again.
+								//
+								// In any other case (i.e. not during startup), the RAA blocker
+								// must still be present and blocking RAAs.
+								let actions = &mut peer_state.actions_blocking_raa_monitor_updates;
+								let actions_list = actions.entry(chan_id).or_insert_with(Vec::new);
+								if !actions_list.contains(&raa_blocker) {
+									debug_assert!(during_init);
+									actions_list.push(raa_blocker);
+								}
 							}
 							let action = if let Some(action) = action_opt {
 								action
 							} else {
 								return;
 							};
+
+							// If there are monitor updates in flight, we may be in the case
+							// described above, replaying a claim on startup which needs an RAA
+							// blocker to remain blocked. Thus, in such a case we simply push the
+							// post-update action to the blocked list and move on.
+							// In any case, we should err on the side of caution and not process
+							// the post-update action no matter the situation.
+							let in_flight_mons = peer_state.in_flight_monitor_updates.get(&chan_id);
+							if in_flight_mons.map(|(_, mons)| !mons.is_empty()).unwrap_or(false) {
+								peer_state
+									.monitor_update_blocked_actions
+									.entry(chan_id)
+									.or_insert_with(Vec::new)
+									.push(action);
+								return;
+							}
 
 							mem::drop(peer_state_opt);
 
