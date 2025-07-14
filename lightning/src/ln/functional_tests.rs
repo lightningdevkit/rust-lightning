@@ -760,10 +760,10 @@ pub fn test_duplicate_htlc_different_direction_onchain() {
 			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 			MessageSendEvent::HandleError {
 				node_id,
-				action: msgs::ErrorAction::DisconnectPeer { ref msg },
+				action: msgs::ErrorAction::SendErrorMessage { ref msg },
 			} => {
 				assert_eq!(node_id, node_b_id);
-				assert_eq!(msg.as_ref().unwrap().data, "Channel closed because commitment or closing transaction was confirmed on chain.");
+				assert_eq!(msg.data, "Channel closed because commitment or closing transaction was confirmed on chain.");
 			},
 			MessageSendEvent::UpdateHTLCs {
 				ref node_id,
@@ -984,11 +984,14 @@ pub fn channel_monitor_network_test() {
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]], 8000000);
 
 	// Simple case with no pending HTLCs:
-	let err = "Channel force-closed".to_string();
-	nodes[1].node.force_close_broadcasting_latest_txn(&chan_1.2, &node_a_id, err).unwrap();
+	let message = "Channel force-closed".to_owned();
+	nodes[1]
+		.node
+		.force_close_broadcasting_latest_txn(&chan_1.2, &node_a_id, message.clone())
+		.unwrap();
 	check_added_monitors(&nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
 	{
 		let mut node_txn = test_txn_broadcast(&nodes[1], &chan_1, None, HTLCType::NONE);
@@ -1013,10 +1016,10 @@ pub fn channel_monitor_network_test() {
 
 	// Simple case of one pending HTLC to HTLC-Timeout (note that the HTLC-Timeout is not
 	// broadcasted until we reach the timelock time).
-	let error_message = "Channel force-closed";
+	let message = "Channel force-closed".to_owned();
 	nodes[1]
 		.node
-		.force_close_broadcasting_latest_txn(&chan_2.2, &node_c_id, error_message.to_string())
+		.force_close_broadcasting_latest_txn(&chan_2.2, &node_c_id, message.clone())
 		.unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors(&nodes[1], 1);
@@ -1034,7 +1037,8 @@ pub fn channel_monitor_network_test() {
 	check_closed_broadcast!(nodes[2], true);
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
 	assert_eq!(nodes[2].node.list_channels().len(), 1);
-	let node_b_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let node_b_reason =
+		ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[1], 1, node_b_reason, [node_c_id], 100000);
 	check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed, [node_b_id], 100000);
 
@@ -1064,8 +1068,11 @@ pub fn channel_monitor_network_test() {
 
 	// nodes[3] gets the preimage, but nodes[2] already disconnected, resulting in a nodes[2]
 	// HTLC-Timeout and a nodes[3] claim against it (+ its own announces)
-	let err = "Channel force-closed".to_string();
-	nodes[2].node.force_close_broadcasting_latest_txn(&chan_3.2, &node_d_id, err).unwrap();
+	let message = "Channel force-closed".to_owned();
+	nodes[2]
+		.node
+		.force_close_broadcasting_latest_txn(&chan_3.2, &node_d_id, message.clone())
+		.unwrap();
 	check_added_monitors(&nodes[2], 1);
 	check_closed_broadcast!(nodes[2], true);
 	let node2_commitment_txid;
@@ -1084,7 +1091,8 @@ pub fn channel_monitor_network_test() {
 	check_closed_broadcast!(nodes[3], true);
 	assert_eq!(nodes[2].node.list_channels().len(), 0);
 	assert_eq!(nodes[3].node.list_channels().len(), 1);
-	let node_c_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let node_c_reason =
+		ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[2], 1, node_c_reason, [node_d_id], 100000);
 	check_closed_event!(nodes[3], 1, ClosureReason::CommitmentTxConfirmed, [node_c_id], 100000);
 
@@ -1108,7 +1116,7 @@ pub fn channel_monitor_network_test() {
 		};
 		match events[0] {
 			MessageSendEvent::HandleError {
-				action: ErrorAction::DisconnectPeer { .. },
+				action: ErrorAction::SendErrorMessage { .. },
 				node_id,
 			} => {
 				assert_eq!(node_id, node_e_id);
@@ -1143,7 +1151,7 @@ pub fn channel_monitor_network_test() {
 		};
 		match events[0] {
 			MessageSendEvent::HandleError {
-				action: ErrorAction::DisconnectPeer { .. },
+				action: ErrorAction::SendErrorMessage { .. },
 				node_id,
 			} => {
 				assert_eq!(node_id, node_d_id);
@@ -1929,7 +1937,7 @@ pub fn test_htlc_on_chain_success() {
 	let nodes_0_event = remove_first_msg_event_to_node(&node_a_id, &mut events);
 
 	match nodes_2_event {
-		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, .. } => {},
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -2505,7 +2513,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 	match nodes_2_event {
 		MessageSendEvent::HandleError {
 			action:
-				ErrorAction::DisconnectPeer { msg: Some(msgs::ErrorMessage { channel_id, ref data }) },
+				ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id, ref data } },
 			..
 		} => {
 			assert_eq!(channel_id, chan_2.2);
@@ -2752,20 +2760,17 @@ pub fn test_htlc_ignore_latest_remote_commitment() {
 		return;
 	}
 	let funding_tx = create_announced_chan_between_nodes(&nodes, 0, 1).3;
-	let error_message = "Channel force-closed";
+	let message = "Channel force-closed".to_owned();
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
+	let chan_id = nodes[0].node.list_channels()[0].channel_id;
 	nodes[0]
 		.node
-		.force_close_broadcasting_latest_txn(
-			&nodes[0].node.list_channels()[0].channel_id,
-			&node_b_id,
-			error_message.to_string(),
-		)
+		.force_close_broadcasting_latest_txn(&chan_id, &node_b_id, message.clone())
 		.unwrap();
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors(&nodes[0], 1);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
 
 	let node_txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
@@ -2832,15 +2837,15 @@ pub fn test_force_close_fail_back() {
 	// nodes[2] now has the latest commitment transaction, but hasn't revoked its previous
 	// state or updated nodes[1]' state. Now force-close and broadcast that commitment/HTLC
 	// transaction and ensure nodes[1] doesn't fail-backwards (this was originally a bug!).
-	let error_message = "Channel force-closed";
+	let message = "Channel force-closed".to_owned();
 	let channel_id = payment_event.commitment_msg[0].channel_id;
 	nodes[2]
 		.node
-		.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, error_message.to_string())
+		.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, message.clone())
 		.unwrap();
 	check_closed_broadcast!(nodes[2], true);
 	check_added_monitors(&nodes[2], 1);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[2], 1, reason, [node_b_id], 100000);
 
 	let commitment_tx = {
@@ -3880,11 +3885,14 @@ pub fn test_claim_sizeable_push_msat() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 98_000_000);
-	let err = "Channel force-closed".to_string();
-	nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &node_a_id, err).unwrap();
+	let message = "Channel force-closed".to_owned();
+	nodes[1]
+		.node
+		.force_close_broadcasting_latest_txn(&chan.2, &node_a_id, message.clone())
+		.unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors(&nodes[1], 1);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
 
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
@@ -3914,13 +3922,16 @@ pub fn test_claim_on_remote_sizeable_push_msat() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	let err = "Channel force-closed".to_string();
+	let message = "Channel force-closed".to_owned();
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 98_000_000);
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &node_b_id, err).unwrap();
+	nodes[0]
+		.node
+		.force_close_broadcasting_latest_txn(&chan.2, &node_b_id, message.clone())
+		.unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors(&nodes[0], 1);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
 
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -4382,7 +4393,7 @@ pub fn test_onchain_to_onchain_claim() {
 
 	match nodes_2_event {
 		MessageSendEvent::HandleError {
-			action: ErrorAction::DisconnectPeer { .. },
+			action: ErrorAction::SendErrorMessage { .. },
 			node_id: _,
 		} => {},
 		_ => panic!("Unexpected event"),
@@ -7313,12 +7324,12 @@ pub fn test_channel_conf_timeout() {
 	assert_eq!(close_ev.len(), 1);
 	match close_ev[0] {
 		MessageSendEvent::HandleError {
-			action: ErrorAction::DisconnectPeer { ref msg },
+			action: ErrorAction::SendErrorMessage { ref msg },
 			ref node_id,
 		} => {
 			assert_eq!(*node_id, node_a_id);
 			assert_eq!(
-				msg.as_ref().unwrap().data,
+				msg.data,
 				"Channel closed because funding transaction failed to confirm within 2016 blocks"
 			);
 		},
@@ -8522,15 +8533,15 @@ fn do_test_onchain_htlc_settlement_after_close(
 		force_closing_node = 1;
 		counterparty_node = 0;
 	}
-	let err = "Channel force-closed".to_string();
+	let message = "Channel force-closed".to_owned();
 	let counterparty_node_id = nodes[counterparty_node].node.get_our_node_id();
 	nodes[force_closing_node]
 		.node
-		.force_close_broadcasting_latest_txn(&chan_ab.2, &counterparty_node_id, err)
+		.force_close_broadcasting_latest_txn(&chan_ab.2, &counterparty_node_id, message.clone())
 		.unwrap();
 	check_closed_broadcast!(nodes[force_closing_node], true);
 	check_added_monitors(&nodes[force_closing_node], 1);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[force_closing_node], 1, reason, [counterparty_node_id], 100000);
 
 	if go_onchain_before_fulfill {
@@ -9258,9 +9269,9 @@ pub fn test_invalid_funding_tx() {
 	assert_eq!(events_2.len(), 1);
 	if let MessageSendEvent::HandleError { node_id, action } = &events_2[0] {
 		assert_eq!(*node_id, node_a_id);
-		if let msgs::ErrorAction::DisconnectPeer { msg } = action {
+		if let msgs::ErrorAction::SendErrorMessage { msg } = action {
 			assert_eq!(
-				msg.as_ref().unwrap().data,
+				msg.data,
 				"Channel closed because of an exception: ".to_owned() + expected_err
 			);
 		} else {
@@ -9397,11 +9408,14 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 	nodes[1].node.peer_disconnected(node_c_id);
 	nodes[2].node.peer_disconnected(node_b_id);
 
-	let err = "Channel force-closed".to_string();
-	nodes[1].node.force_close_broadcasting_latest_txn(&channel_id, &node_c_id, err).unwrap();
+	let message = "Channel force-closed".to_owned();
+	nodes[1]
+		.node
+		.force_close_broadcasting_latest_txn(&channel_id, &node_c_id, message.clone())
+		.unwrap();
 
 	check_closed_broadcast!(nodes[1], true);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[1], 1, reason, [node_c_id], 100000);
 	check_added_monitors(&nodes[1], 1);
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -10674,11 +10688,11 @@ pub fn test_non_final_funding_tx() {
 		},
 		_ => panic!(),
 	}
-	let err = "Error in transaction funding: Misuse error: Funding transaction absolute timelock is non-final".to_owned();
-	let reason = ClosureReason::ProcessingError { err };
+	let err = "Error in transaction funding: Misuse error: Funding transaction absolute timelock is non-final";
+	let reason = ClosureReason::ProcessingError { err: err.to_owned() };
 	let event = ExpectedCloseEvent::from_id_reason(temp_channel_id, false, reason);
 	check_closed_events(&nodes[0], &[event]);
-	assert_eq!(get_err_msg(&nodes[0], &node_b_id).data, "Failed to fund channel");
+	assert_eq!(get_err_msg(&nodes[0], &node_b_id).data, err);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -11003,7 +11017,7 @@ pub fn test_remove_expired_outbound_unfunded_channels() {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) };
+	let reason = ClosureReason::FundingTimedOut;
 	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 100000);
 }
 
@@ -11067,7 +11081,7 @@ pub fn test_remove_expired_inbound_unfunded_channels() {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) };
+	let reason = ClosureReason::FundingTimedOut;
 	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
 }
 
@@ -11106,7 +11120,7 @@ pub fn test_channel_close_when_not_timely_accepted() {
 
 	// Since we disconnected from peer and did not connect back within time,
 	// we should have forced-closed the channel by now.
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) };
+	let reason = ClosureReason::FundingTimedOut;
 	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 
@@ -11404,14 +11418,10 @@ pub fn test_close_in_funding_batch() {
 		_ => panic!("Unexpected message."),
 	}
 
-	// We broadcast the commitment transaction as part of the force-close.
-	{
-		let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
-		assert_eq!(broadcasted_txs.len(), 1);
-		assert!(broadcasted_txs[0].compute_txid() != tx.compute_txid());
-		assert_eq!(broadcasted_txs[0].input.len(), 1);
-		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.compute_txid());
-	}
+	// Because the funding was never broadcasted, we should never bother to broadcast the
+	// commitment transactions either.
+	let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
+	assert_eq!(broadcasted_txs.len(), 0);
 
 	// All channels in the batch should close immediately.
 	check_closed_events(
@@ -11510,14 +11520,10 @@ pub fn test_batch_funding_close_after_funding_signed() {
 		_ => panic!("Unexpected message."),
 	}
 
-	// We broadcast the commitment transaction as part of the force-close.
-	{
-		let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
-		assert_eq!(broadcasted_txs.len(), 1);
-		assert!(broadcasted_txs[0].compute_txid() != tx.compute_txid());
-		assert_eq!(broadcasted_txs[0].input.len(), 1);
-		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.compute_txid());
-	}
+	// Because the funding was never broadcasted, we should never bother to broadcast the
+	// commitment transactions either.
+	let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
+	assert_eq!(broadcasted_txs.len(), 0);
 
 	// All channels in the batch should close immediately.
 	check_closed_events(
@@ -11544,7 +11550,8 @@ pub fn test_batch_funding_close_after_funding_signed() {
 	assert!(nodes[0].node.list_channels().is_empty());
 }
 
-fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitment: bool) {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_funding_and_commitment_tx_confirm_same_block() {
 	// Tests that a node will forget the channel (when it only requires 1 confirmation) if the
 	// funding and commitment transaction confirm in the same block.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -11558,6 +11565,9 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 	);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
 	let funding_tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 0);
 	let chan_id = ChannelId::v1_from_funding_outpoint(chain::transaction::OutPoint {
 		txid: funding_tx.compute_txid(),
@@ -11567,50 +11577,28 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
 	assert_eq!(nodes[1].node.list_channels().len(), 1);
 
-	let (closing_node, other_node) =
-		if confirm_remote_commitment { (&nodes[1], &nodes[0]) } else { (&nodes[0], &nodes[1]) };
-	let closing_node_id = closing_node.node.get_our_node_id();
-	let other_node_id = other_node.node.get_our_node_id();
-
-	let err = "Channel force-closed".to_string();
-	closing_node.node.force_close_broadcasting_latest_txn(&chan_id, &other_node_id, err).unwrap();
-	let mut msg_events = closing_node.node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 1);
-	match msg_events.pop().unwrap() {
-		MessageSendEvent::HandleError {
-			action: msgs::ErrorAction::SendErrorMessage { .. },
-			..
-		} => {},
-		_ => panic!("Unexpected event"),
-	}
-	check_added_monitors(closing_node, 1);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
-	check_closed_event(closing_node, 1, reason, false, &[other_node_id], 1_000_000);
-
 	let commitment_tx = {
-		let mut txn = closing_node.tx_broadcaster.txn_broadcast();
+		let mon = get_monitor!(nodes[0], chan_id);
+		let mut txn = mon.unsafe_get_latest_holder_commitment_txn(&nodes[0].logger);
 		assert_eq!(txn.len(), 1);
-		let commitment_tx = txn.pop().unwrap();
-		check_spends!(commitment_tx, funding_tx);
-		commitment_tx
+		txn.pop().unwrap()
 	};
 
 	mine_transactions(&nodes[0], &[&funding_tx, &commitment_tx]);
 	mine_transactions(&nodes[1], &[&funding_tx, &commitment_tx]);
 
-	check_closed_broadcast(other_node, 1, true);
-	check_added_monitors(other_node, 1);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
-	check_closed_event(other_node, 1, reason, false, &[closing_node_id], 1_000_000);
+	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 1_000_000);
+
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 1_000_000);
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
-}
-
-#[xtest(feature = "_externalize_tests")]
-pub fn test_funding_and_commitment_tx_confirm_same_block() {
-	do_test_funding_and_commitment_tx_confirm_same_block(false);
-	do_test_funding_and_commitment_tx_confirm_same_block(true);
 }
 
 #[xtest(feature = "_externalize_tests")]

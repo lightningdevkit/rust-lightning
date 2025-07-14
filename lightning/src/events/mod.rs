@@ -318,23 +318,30 @@ pub enum ClosureReason {
 		/// [`UntrustedString`]: crate::types::string::UntrustedString
 		peer_msg: UntrustedString,
 	},
-	/// Closure generated from [`ChannelManager::force_close_channel`], called by the user.
+	/// Closure generated from [`ChannelManager::force_close_broadcasting_latest_txn`] or
+	/// [`ChannelManager::force_close_all_channels_broadcasting_latest_txn`], called by the user.
 	///
-	/// [`ChannelManager::force_close_channel`]: crate::ln::channelmanager::ChannelManager::force_close_channel.
+	/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
+	/// [`ChannelManager::force_close_all_channels_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_all_channels_broadcasting_latest_txn
 	HolderForceClosed {
 		/// Whether or not the latest transaction was broadcasted when the channel was force
 		/// closed.
 		///
-		/// Channels closed using [`ChannelManager::force_close_broadcasting_latest_txn`] will have
-		/// this field set to true, whereas channels closed using [`ChannelManager::force_close_without_broadcasting_txn`]
-		/// or force-closed prior to being funded will have this field set to false.
+		/// This will be set to `Some(true)` for any channels closed after their funding
+		/// transaction was (or might have been) broadcasted, and `Some(false)` for any channels
+		/// closed prior to their funding transaction being broadcasted.
 		///
 		/// This will be `None` for objects generated or written by LDK 0.0.123 and
 		/// earlier.
-		///
-		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn.
-		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn.
 		broadcasted_latest_txn: Option<bool>,
+		/// The error message provided to [`ChannelManager::force_close_broadcasting_latest_txn`] or
+		/// [`ChannelManager::force_close_all_channels_broadcasting_latest_txn`].
+		///
+		/// This will be the empty string for objects generated or written by LDK 0.1 and earlier.
+		///
+		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
+		/// [`ChannelManager::force_close_all_channels_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_all_channels_broadcasting_latest_txn
+		message: String,
 	},
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. Note the shutdown may have been initiated by us.
@@ -356,7 +363,8 @@ pub enum ClosureReason {
 	/// commitment transaction came from our counterparty, but it may also have come from
 	/// a copy of our own `ChannelMonitor`.
 	CommitmentTxConfirmed,
-	/// The funding transaction failed to confirm in a timely manner on an inbound channel.
+	/// The funding transaction failed to confirm in a timely manner on an inbound channel or the
+	/// counterparty failed to fund the channel in a timely manner.
 	FundingTimedOut,
 	/// Closure generated from processing an event, likely a HTLC forward/relay/reception.
 	ProcessingError {
@@ -383,6 +391,12 @@ pub enum ClosureReason {
 	/// The counterparty requested a cooperative close of a channel that had not been funded yet.
 	/// The channel has been immediately closed.
 	CounterpartyCoopClosedUnfundedChannel,
+	/// We requested a cooperative close of a channel that had not been funded yet.
+	/// The channel has been immediately closed.
+	///
+	/// Note that events containing this variant will be lost on downgrade to a version of LDK
+	/// prior to 0.2.
+	LocallyCoopClosedUnfundedChannel,
 	/// Another channel in the same funding batch closed before the funding transaction
 	/// was ready to be broadcast.
 	FundingBatchClosure,
@@ -412,12 +426,13 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::CounterpartyForceClosed { peer_msg } => {
 				f.write_fmt(format_args!("counterparty force-closed with message: {}", peer_msg))
 			},
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn } => {
-				f.write_str("user force-closed the channel")?;
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn, message } => {
+				f.write_str("user force-closed the channel with the message \"")?;
+				f.write_str(message)?;
 				if let Some(brodcasted) = broadcasted_latest_txn {
 					write!(
 						f,
-						" and {} the latest transaction",
+						"\" and {} the latest transaction",
 						if *brodcasted { "broadcasted" } else { "elected not to broadcast" }
 					)
 				} else {
@@ -454,6 +469,9 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::CounterpartyCoopClosedUnfundedChannel => {
 				f.write_str("the peer requested the unfunded channel be closed")
 			},
+			ClosureReason::LocallyCoopClosedUnfundedChannel => {
+				f.write_str("we requested the unfunded channel be closed")
+			},
 			ClosureReason::FundingBatchClosure => {
 				f.write_str("another channel in the same funding batch closed")
 			},
@@ -472,7 +490,10 @@ impl core::fmt::Display for ClosureReason {
 impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(0, CounterpartyForceClosed) => { (1, peer_msg, required) },
 	(1, FundingTimedOut) => {},
-	(2, HolderForceClosed) => { (1, broadcasted_latest_txn, option) },
+	(2, HolderForceClosed) => {
+		(1, broadcasted_latest_txn, option),
+		(3, message, (default_value, String::new())),
+	},
 	(6, CommitmentTxConfirmed) => {},
 	(4, LegacyCooperativeClosure) => {},
 	(8, ProcessingError) => { (1, err, required) },
@@ -487,6 +508,7 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 		(0, peer_feerate_sat_per_kw, required),
 		(2, required_feerate_sat_per_kw, required),
 	},
+	(25, LocallyCoopClosedUnfundedChannel) => {},
 );
 
 /// The type of HTLC handling performed in [`Event::HTLCHandlingFailed`].
@@ -1461,7 +1483,7 @@ pub enum Event {
 	///
 	/// To accept the request (and in the case of a dual-funded channel, not contribute funds),
 	/// call [`ChannelManager::accept_inbound_channel`].
-	/// To reject the request, call [`ChannelManager::force_close_without_broadcasting_txn`].
+	/// To reject the request, call [`ChannelManager::force_close_broadcasting_latest_txn`].
 	/// Note that a ['ChannelClosed`] event will _not_ be triggered if the channel is rejected.
 	///
 	/// The event is only triggered when a new open channel request is received and the
@@ -1472,27 +1494,27 @@ pub enum Event {
 	/// returning `Err(ReplayEvent ())`) and won't be persisted across restarts.
 	///
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-	/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+	/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
 	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 	OpenChannelRequest {
 		/// The temporary channel ID of the channel requested to be opened.
 		///
 		/// When responding to the request, the `temporary_channel_id` should be passed
 		/// back to the ChannelManager through [`ChannelManager::accept_inbound_channel`] to accept,
-		/// or through [`ChannelManager::force_close_without_broadcasting_txn`] to reject.
+		/// or through [`ChannelManager::force_close_broadcasting_latest_txn`] to reject.
 		///
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
 		temporary_channel_id: ChannelId,
 		/// The node_id of the counterparty requesting to open the channel.
 		///
 		/// When responding to the request, the `counterparty_node_id` should be passed
 		/// back to the `ChannelManager` through [`ChannelManager::accept_inbound_channel`] to
-		/// accept the request, or through [`ChannelManager::force_close_without_broadcasting_txn`] to reject the
-		/// request.
+		/// accept the request, or through [`ChannelManager::force_close_broadcasting_latest_txn`]
+		/// to reject the request.
 		///
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
+		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
 		counterparty_node_id: PublicKey,
 		/// The channel value of the requested channel.
 		funding_satoshis: u64,

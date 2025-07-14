@@ -261,8 +261,12 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	}
 
 	// ...and make sure we can force-close a frozen channel
-	let err_msg = "Channel force-closed".to_owned();
-	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, err_msg).unwrap();
+	let message = "Channel force-closed".to_owned();
+	let reason = ClosureReason::HolderForceClosed {
+		broadcasted_latest_txn: Some(true),
+		message: message.clone(),
+	};
+	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, message).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	check_closed_broadcast!(nodes[0], true);
 
@@ -270,7 +274,6 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	// PaymentPathFailed event
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
 	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
 }
 
@@ -3808,27 +3811,30 @@ fn do_test_durable_preimages_on_closed_channel(
 	let _ = get_revoke_commit_msgs!(nodes[1], node_c_id);
 
 	let mon_bc = get_monitor!(nodes[1], chan_id_bc).encode();
-	let err_msg = "Channel force-closed".to_owned();
 
 	if close_chans_before_reload {
 		if !close_only_a {
 			chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+			let message = "Channel force-closed".to_owned();
 			nodes[1]
 				.node
-				.force_close_broadcasting_latest_txn(&chan_id_bc, &node_c_id, err_msg.clone())
+				.force_close_broadcasting_latest_txn(&chan_id_bc, &node_c_id, message.clone())
 				.unwrap();
 			check_closed_broadcast(&nodes[1], 1, true);
-			let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+			let reason =
+				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 			check_closed_event(&nodes[1], 1, reason, false, &[node_c_id], 100000);
 		}
 
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+		let message = "Channel force-closed".to_owned();
 		nodes[1]
 			.node
-			.force_close_broadcasting_latest_txn(&chan_id_ab, &node_a_id, err_msg)
+			.force_close_broadcasting_latest_txn(&chan_id_ab, &node_a_id, message.clone())
 			.unwrap();
 		check_closed_broadcast(&nodes[1], 1, true);
-		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		let reason =
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 		check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
 	}
 
@@ -3850,8 +3856,11 @@ fn do_test_durable_preimages_on_closed_channel(
 	}
 
 	let err_msg = "Channel force-closed".to_owned();
+	let reason = ClosureReason::HolderForceClosed {
+		broadcasted_latest_txn: Some(true),
+		message: err_msg.clone(),
+	};
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &node_b_id, err_msg).unwrap();
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
 	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 100000);
 	let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_closing_tx.len(), 1);
@@ -4015,10 +4024,13 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	if close_during_reload {
 		// Test that we still free the B<->C channel if the A<->B channel closed while we reloaded
 		// (as learned about during the on-reload block connection).
+		let reason = ClosureReason::HolderForceClosed {
+			broadcasted_latest_txn: Some(true),
+			message: msg.clone(),
+		};
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &node_b_id, msg).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		check_closed_broadcast!(nodes[0], true);
-		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
 		check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 100_000);
 		let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		mine_transaction_without_consistency_checks(&nodes[1], &as_closing_tx[0]);
@@ -4343,12 +4355,13 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	let (payment_preimage, payment_hash, ..) =
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
 
+	let message = "Channel force-closed".to_owned();
 	nodes[0]
 		.node
-		.force_close_broadcasting_latest_txn(&chan_a.2, &node_b_id, String::new())
+		.force_close_broadcasting_latest_txn(&chan_a.2, &node_b_id, message.clone())
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
-	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[0], 1, a_reason, [node_b_id], 1000000);
 	check_closed_broadcast!(nodes[0], true);
 
@@ -4418,12 +4431,13 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 
 	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
+	let message = "Channel force-closed".to_owned();
 	nodes[0]
 		.node
-		.force_close_broadcasting_latest_txn(&chan_a.2, &node_b_id, String::new())
+		.force_close_broadcasting_latest_txn(&chan_a.2, &node_b_id, message.clone())
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
-	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[0], 1, a_reason, [node_b_id], 1000000);
 	check_closed_broadcast!(nodes[0], true);
 

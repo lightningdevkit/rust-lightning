@@ -3646,7 +3646,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs(ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) });
+		let reason = ClosureReason::HolderForceClosed {
+			broadcasted_latest_txn: Some(true),
+			message: "ChannelMonitor-initiated commitment transaction broadcast".to_owned(),
+		};
+		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs(reason);
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.update_claims_view_from_requests(
 			claimable_outpoints, self.best_block.height, self.best_block.height, broadcaster,
