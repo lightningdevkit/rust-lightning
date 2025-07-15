@@ -971,7 +971,8 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
 	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, err).unwrap();
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
-	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	let message = "Channel force-closed".to_owned();
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 10_000_000);
 
 	let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
