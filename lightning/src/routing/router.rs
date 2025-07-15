@@ -37,7 +37,6 @@ use crate::types::features::{
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
-
 use crate::io;
 use crate::prelude::*;
 use alloc::collections::BinaryHeap;
@@ -2453,7 +2452,7 @@ where L::Target: Logger {
 	let our_node_id = NodeId::from_pubkey(&our_node_pubkey);
 
 	if payee_node_id_opt.map_or(false, |payee| payee == our_node_id) {
-		return Err("Cannot generate a route to ourselves");
+		return create_self_payment_route(our_node_pubkey, route_params);
 	}
 	if our_node_id == maybe_dummy_payee_node_id {
 		return Err("Invalid origin node id provided, use a different one");
@@ -3725,6 +3724,25 @@ where L::Target: Logger {
 
 	log_info!(logger, "Got route: {}", log_route!(route));
 	Ok(route)
+}
+
+fn create_self_payment_route(our_node_pubkey: &PublicKey, route_params: &RouteParameters) -> Result<Route, &'static str> {
+	let path = Path {
+        hops: vec![RouteHop {
+            pubkey: our_node_pubkey.clone(),
+            short_channel_id: 0 , // Dummy short_channel_id specifying self payment
+            fee_msat: 0, // Zero fees
+            cltv_expiry_delta: MIN_FINAL_CLTV_EXPIRY_DELTA.into(),
+            node_features: NodeFeatures::empty(),
+            channel_features: ChannelFeatures::empty(),
+            maybe_announced_channel: false,
+        }],
+        blinded_tail: None,
+    };
+    Ok(Route {
+        paths: vec![path],
+        route_params: Some(route_params.clone()),
+    })
 }
 
 // When an adversarial intermediary node observes a payment, it may be able to infer its

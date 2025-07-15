@@ -4906,6 +4906,9 @@ where
 			path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage,
 			invoice_request, bolt12_invoice, session_priv_bytes
 		} = args;
+
+
+
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
 		let prng_seed = self.entropy_source.get_secure_random_bytes();
