@@ -6674,31 +6674,12 @@ where
 		}
 	}
 
-	/// Processes HTLCs which are pending waiting on random forward delay.
-	///
-	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
-	/// Will likely generate further events.
-	pub fn process_pending_htlc_forwards(&self) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-
-		self.process_pending_update_add_htlcs();
-
-		let mut new_events = VecDeque::new();
-		let mut failed_forwards = Vec::new();
-		let mut phantom_receives: Vec<PerSourcePendingForward> = Vec::new();
-		{
-			let mut forward_htlcs = new_hash_map();
-			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
-
-			for (short_chan_id, mut pending_forwards) in forward_htlcs {
-				if short_chan_id != 0 {
-					self.process_forward_htlcs(
-						short_chan_id,
-						&mut pending_forwards,
-						&mut failed_forwards,
-						&mut phantom_receives,
-					);
-				} else {
+	#[rustfmt::skip]
+	fn process_receive_htlcs(
+		&self, pending_forwards: &mut Vec<HTLCForwardInfo>,
+		new_events: &mut VecDeque<(Event, Option<EventCompletionAction>)>,
+		failed_forwards: &mut Vec<FailedHTLCForward>,
+	) {
 					'next_forwardable_htlc: for forward_info in pending_forwards.drain(..) {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
@@ -7090,6 +7071,38 @@ where
 							},
 						}
 					}
+	}
+
+	/// Processes HTLCs which are pending waiting on random forward delay.
+	///
+	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
+	/// Will likely generate further events.
+	pub fn process_pending_htlc_forwards(&self) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		self.process_pending_update_add_htlcs();
+
+		let mut new_events = VecDeque::new();
+		let mut failed_forwards = Vec::new();
+		let mut phantom_receives: Vec<PerSourcePendingForward> = Vec::new();
+		{
+			let mut forward_htlcs = new_hash_map();
+			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
+
+			for (short_chan_id, mut pending_forwards) in forward_htlcs {
+				if short_chan_id != 0 {
+					self.process_forward_htlcs(
+						short_chan_id,
+						&mut pending_forwards,
+						&mut failed_forwards,
+						&mut phantom_receives,
+					);
+				} else {
+					self.process_receive_htlcs(
+						&mut pending_forwards,
+						&mut new_events,
+						&mut failed_forwards,
+					);
 				}
 			}
 		}
