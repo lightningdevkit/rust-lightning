@@ -6317,6 +6317,74 @@ where
 		}
 	}
 
+	/// Processes HTLCs which are pending waiting on random forward delay.
+	///
+	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
+	/// Will likely generate further events.
+	pub fn process_pending_htlc_forwards(&self) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		self.process_pending_update_add_htlcs();
+
+		let mut new_events = VecDeque::new();
+		let mut failed_forwards = Vec::new();
+		let mut phantom_receives: Vec<PerSourcePendingForward> = Vec::new();
+		let mut forward_htlcs = new_hash_map();
+		mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
+
+		for (short_chan_id, mut pending_forwards) in forward_htlcs {
+			if short_chan_id != 0 {
+				self.process_forward_htlcs(
+					short_chan_id,
+					&mut pending_forwards,
+					&mut failed_forwards,
+					&mut phantom_receives,
+				);
+			} else {
+				self.process_receive_htlcs(
+					&mut pending_forwards,
+					&mut new_events,
+					&mut failed_forwards,
+				);
+			}
+		}
+
+		let best_block_height = self.best_block.read().unwrap().height;
+		self.pending_outbound_payments.check_retry_payments(
+			&self.router,
+			|| self.list_usable_channels(),
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			best_block_height,
+			&self.pending_events,
+			&self.logger,
+			|args| self.send_payment_along_path(args),
+		);
+
+		for (htlc_source, payment_hash, failure_reason, destination) in failed_forwards.drain(..) {
+			self.fail_htlc_backwards_internal(
+				&htlc_source,
+				&payment_hash,
+				&failure_reason,
+				destination,
+			);
+		}
+		self.forward_htlcs(&mut phantom_receives);
+
+		// Freeing the holding cell here is relatively redundant - in practice we'll do it when we
+		// next get a `get_and_clear_pending_msg_events` call, but some tests rely on it, and it's
+		// nice to do the work now if we can rather than while we're trying to get messages in the
+		// network stack.
+		self.check_free_holding_cells();
+
+		if new_events.is_empty() {
+			return;
+		}
+		let mut events = self.pending_events.lock().unwrap();
+		events.append(&mut new_events);
+	}
+
 	fn process_forward_htlcs(
 		&self, short_chan_id: u64, pending_forwards: &mut Vec<HTLCForwardInfo>,
 		failed_forwards: &mut Vec<FailedHTLCForward>,
@@ -7061,74 +7129,6 @@ where
 				},
 			}
 		}
-	}
-
-	/// Processes HTLCs which are pending waiting on random forward delay.
-	///
-	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
-	/// Will likely generate further events.
-	pub fn process_pending_htlc_forwards(&self) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-
-		self.process_pending_update_add_htlcs();
-
-		let mut new_events = VecDeque::new();
-		let mut failed_forwards = Vec::new();
-		let mut phantom_receives: Vec<PerSourcePendingForward> = Vec::new();
-		let mut forward_htlcs = new_hash_map();
-		mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
-
-		for (short_chan_id, mut pending_forwards) in forward_htlcs {
-			if short_chan_id != 0 {
-				self.process_forward_htlcs(
-					short_chan_id,
-					&mut pending_forwards,
-					&mut failed_forwards,
-					&mut phantom_receives,
-				);
-			} else {
-				self.process_receive_htlcs(
-					&mut pending_forwards,
-					&mut new_events,
-					&mut failed_forwards,
-				);
-			}
-		}
-
-		let best_block_height = self.best_block.read().unwrap().height;
-		self.pending_outbound_payments.check_retry_payments(
-			&self.router,
-			|| self.list_usable_channels(),
-			|| self.compute_inflight_htlcs(),
-			&self.entropy_source,
-			&self.node_signer,
-			best_block_height,
-			&self.pending_events,
-			&self.logger,
-			|args| self.send_payment_along_path(args),
-		);
-
-		for (htlc_source, payment_hash, failure_reason, destination) in failed_forwards.drain(..) {
-			self.fail_htlc_backwards_internal(
-				&htlc_source,
-				&payment_hash,
-				&failure_reason,
-				destination,
-			);
-		}
-		self.forward_htlcs(&mut phantom_receives);
-
-		// Freeing the holding cell here is relatively redundant - in practice we'll do it when we
-		// next get a `get_and_clear_pending_msg_events` call, but some tests rely on it, and it's
-		// nice to do the work now if we can rather than while we're trying to get messages in the
-		// network stack.
-		self.check_free_holding_cells();
-
-		if new_events.is_empty() {
-			return;
-		}
-		let mut events = self.pending_events.lock().unwrap();
-		events.append(&mut new_events);
 	}
 
 	/// Free the background events, generally called from [`PersistenceNotifierGuard`] constructors.
