@@ -125,10 +125,12 @@ jobs:
           cargo install cargo-llvm-cov
           export RUSTFLAGS="-Coverflow-checks=off"
           cargo llvm-cov --features rest-client,rpc-client,tokio,serde --codecov --hide-instantiations --output-path=target/codecov.json
+          curl --verbose -O https://cli.codecov.io/latest/linux/codecov
+          chmod +x codecov
           # Could you use this to fake the coverage report for your PR? Sure.
           # Will anyone be impressed by your amazing coverage? No
           # Maybe if codecov wasn't broken we wouldn't need to do this...
-          bash <(curl -s https://codecov.io/bash) -f target/codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57"
+          ./codecov --verbose upload-process --disable-search --fail-on-error -f target/codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57"
           cargo clean
       - name: Run fuzz coverage generation
         run: |
@@ -136,7 +138,7 @@ jobs:
           # Could you use this to fake the coverage report for your PR? Sure.
           # Will anyone be impressed by your amazing coverage? No
           # Maybe if codecov wasn't broken we wouldn't need to do this...
-          bash <(curl -s https://codecov.io/bash) -f fuzz-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57"
+          ./codecov --verbose upload-process --disable-search --fail-on-error -f fuzz-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57"
 
   benchmark:
     runs-on: ubuntu-latest
