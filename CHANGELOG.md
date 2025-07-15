@@ -1,3 +1,35 @@
+# 0.1.5 - Jul XXX, 2025 - "Async Path Reduction"
+
+## Performance Improvements
+ * `NetworkGraph`'s expensive internal consistency checks have now been
+   disabled in debug builds in addition to release builds (#3687).
+
+## Bug Fixes
+ * Pathfinding which results in a multi-path payment is now substantially
+   smarter, using fewer paths and better optimizing fees and successes (#3890).
+ * A counterparty delaying claiming multiple HTLCs with different expiries can
+   no longer cause our `ChannelMonitor` to continuously rebroadcast invalid
+   transactions or RBF bump attempts (#3923).
+ * Reorgs can no longer cause us to fail to claim HTLCs after a counterparty
+   delayed claiming multiple HTLCs with different expiries (#3923).
+ * Force-closing a channel while it is blocked on another channel's async
+   `ChannelMonitorUpdate` can no longer lead to a panic (#3858).
+ * `ChannelMonitorUpdate`s can no longer be released to storage too early when
+   doing async updates or on restart. This only impacts async
+   `ChannelMonitorUpdate` persistence and can lead to loss of funds only in rare
+   cases with `ChannelMonitorUpdate` persistence order inversions (#3907).
+
+## Security
+0.1.5 fixes a vulnerability which could allow a peer to overdraw their reserve
+value, potentially cutting into commitment transaction fees on channels with a
+low reserve.
+ * Due to a bug in checking whether an HTLC is dust during acceptance, near-dust
+   HTLCs were not counted towards the commitment transaction fee, but did
+   eventually contribute to it when we built a commitment transaction. This can
+   be used by a counterparty to overdraw their reserve value, or, for channels
+   with a low reserve value, cut into the commitment transaction fee (#3933).
+
+
 # 0.1.4 - May 23, 2025 - "Careful Validation of Bogus States"
 
 ## Bug Fixes
