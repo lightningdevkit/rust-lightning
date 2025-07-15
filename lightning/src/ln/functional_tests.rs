@@ -1969,45 +1969,9 @@ pub fn test_htlc_on_chain_success() {
 		_ => panic!("Unexpected event"),
 	}
 
-	macro_rules! check_tx_local_broadcast {
-		($node: expr, $htlc_offered: expr, $commitment_tx: expr) => {{
-			let mut node_txn = $node.tx_broadcaster.txn_broadcasted.lock().unwrap();
-			// HTLC timeout claims for non-anchor channels are only aggregated when claimed from the
-			// remote commitment transaction.
-			if $htlc_offered {
-				assert_eq!(node_txn.len(), 2);
-				for tx in node_txn.iter() {
-					check_spends!(tx, $commitment_tx);
-					assert_ne!(tx.lock_time, LockTime::ZERO);
-					assert_eq!(
-						tx.input[0].witness.last().unwrap().len(),
-						OFFERED_HTLC_SCRIPT_WEIGHT
-					);
-					assert!(tx.output[0].script_pubkey.is_p2wsh()); // revokeable output
-				}
-				assert_ne!(
-					node_txn[0].input[0].previous_output,
-					node_txn[1].input[0].previous_output
-				);
-			} else {
-				assert_eq!(node_txn.len(), 1);
-				check_spends!(node_txn[0], $commitment_tx);
-				assert_ne!(node_txn[0].lock_time, LockTime::ZERO);
-				assert_eq!(
-					node_txn[0].input[0].witness.last().unwrap().len(),
-					ACCEPTED_HTLC_SCRIPT_WEIGHT
-				);
-				assert!(node_txn[0].output[0].script_pubkey.is_p2wpkh()); // direct payment
-				assert_ne!(
-					node_txn[0].input[0].previous_output,
-					node_txn[0].input[1].previous_output
-				);
-			}
-			node_txn.clear();
-		}};
-	}
-	// nodes[1] now broadcasts its own timeout-claim of the output that nodes[2] just claimed via success.
-	check_tx_local_broadcast!(nodes[1], false, commitment_tx[0]);
+	// nodes[1] does not broadcast its own timeout-claim of the output as nodes[2] just claimed it
+	// via success.
+	assert!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 
 	// Broadcast legit commitment tx from A on B's chain
 	// Broadcast preimage tx by B on offered output from A commitment tx  on A's chain
@@ -2069,7 +2033,17 @@ pub fn test_htlc_on_chain_success() {
 			_ => panic!("Unexpected event"),
 		}
 	}
-	check_tx_local_broadcast!(nodes[0], true, node_a_commitment_tx[0]);
+	// HTLC timeout claims for non-anchor channels are only aggregated when claimed from the
+	// remote commitment transaction.
+	let mut node_txn = nodes[0].tx_broadcaster.txn_broadcast();
+	assert_eq!(node_txn.len(), 2);
+	for tx in node_txn.iter() {
+		check_spends!(tx, node_a_commitment_tx[0]);
+		assert_ne!(tx.lock_time, LockTime::ZERO);
+		assert_eq!(tx.input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		assert!(tx.output[0].script_pubkey.is_p2wsh()); // revokeable output
+	}
+	assert_ne!(node_txn[0].input[0].previous_output, node_txn[1].input[0].previous_output);
 }
 
 fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {

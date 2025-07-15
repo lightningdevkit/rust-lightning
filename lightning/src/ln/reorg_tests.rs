@@ -12,13 +12,14 @@
 //! Further functional tests which test blockchain reorganizations.
 
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, Balance, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::Confirm;
 use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
 use crate::ln::types::ChannelId;
 use crate::sign::OutputSpender;
+use crate::types::payment::PaymentHash;
 use crate::types::string::UntrustedString;
 use crate::util::ser::Writeable;
 
@@ -914,4 +915,227 @@ fn test_retries_own_commitment_broadcast_after_reorg() {
 	do_test_retries_own_commitment_broadcast_after_reorg(false, true);
 	do_test_retries_own_commitment_broadcast_after_reorg(true, false);
 	do_test_retries_own_commitment_broadcast_after_reorg(true, true);
+}
+
+fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
+	// Previously, we had a bug where if there were two HTLCs which expired at different heights,
+	// and a counterparty commitment transaction confirmed spending both of them, we'd continually
+	// rebroadcast attempted HTLC claims against the higher-expiry HTLC forever.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	// This test relies on being able to consolidate HTLC claims into a single transaction, which
+	// requires anchors:
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	config.manually_accept_inbound_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let (_, _, chan_id, funding_tx) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0);
+
+	// Route two non-dust HTLCs with different expiry, with a third having the same expiry as the
+	// second if `use_third_htlc` is set.
+	let (preimage_a, payment_hash_a, ..) = route_payment(&nodes[0], &[&nodes[1]], 100_000_000);
+	connect_blocks(&nodes[0], 2);
+	connect_blocks(&nodes[1], 2);
+	let (preimage_b, payment_hash_b, ..) = route_payment(&nodes[0], &[&nodes[1]], 100_000_000);
+	let payment_hash_c = if use_third_htlc {
+		route_payment(&nodes[0], &[&nodes[1]], 100_000_000).1
+	} else {
+		PaymentHash([0; 32])
+	};
+
+	// First disconnect peers so that we don't have to deal with messages:
+	nodes[0].node.peer_disconnected(node_b_id);
+	nodes[1].node.peer_disconnected(node_a_id);
+
+	// Give node B preimages so that it will claim the first two HTLCs on-chain.
+	nodes[1].node.claim_funds(preimage_a);
+	expect_payment_claimed!(nodes[1], payment_hash_a, 100_000_000);
+	nodes[1].node.claim_funds(preimage_b);
+	expect_payment_claimed!(nodes[1], payment_hash_b, 100_000_000);
+	check_added_monitors(&nodes[1], 2);
+
+	let err = "Channel force-closed".to_string();
+
+	// Force-close and fetch node B's commitment transaction and the transaction claiming the first
+	// two HTLCs.
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, err).unwrap();
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 10_000_000);
+
+	let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+	assert_eq!(txn.len(), 1);
+	let commitment_tx = txn.pop().unwrap();
+	check_spends!(commitment_tx, funding_tx);
+
+	mine_transaction(&nodes[0], &commitment_tx);
+	check_closed_broadcast(&nodes[0], 1, true);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 10_000_000);
+	check_added_monitors(&nodes[0], 1);
+
+	mine_transaction(&nodes[1], &commitment_tx);
+	let mut bump_events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(bump_events.len(), 1);
+	match bump_events.pop().unwrap() {
+		Event::BumpTransaction(bump_event) => {
+			nodes[1].bump_tx_handler.handle_event(&bump_event);
+		},
+		ev => panic!("Unexpected event {ev:?}"),
+	}
+
+	let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+	if nodes[1].connect_style.borrow().updates_best_block_first() {
+		assert_eq!(txn.len(), 2, "{txn:?}");
+		check_spends!(txn[0], funding_tx);
+	} else {
+		assert_eq!(txn.len(), 1, "{txn:?}");
+	}
+	let bs_htlc_spend_tx = txn.pop().unwrap();
+	check_spends!(bs_htlc_spend_tx, commitment_tx, coinbase_tx);
+
+	// Now connect blocks until the first HTLC expires
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV - 2);
+	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+	assert_eq!(txn.len(), 1);
+	let as_first_htlc_spend_tx = txn.pop().unwrap();
+	check_spends!(as_first_htlc_spend_tx, commitment_tx);
+
+	// But confirm B's dual-HTLC-claim transaction instead. A should now have nothing to broadcast
+	// as the third HTLC (if there is one) won't expire for another block.
+	mine_transaction(&nodes[0], &bs_htlc_spend_tx);
+	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+	assert_eq!(txn.len(), 0);
+
+	let sent_events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(sent_events.len(), 4, "{sent_events:?}");
+	let mut found_expected_events = [false, false, false, false];
+	for event in sent_events {
+		match event {
+			Event::PaymentSent { payment_hash, .. }|Event::PaymentPathSuccessful { payment_hash: Some(payment_hash), .. } => {
+				let path_success = matches!(event, Event::PaymentPathSuccessful { .. });
+				if payment_hash == payment_hash_a {
+					found_expected_events[0 + if path_success { 1 } else { 0 }] = true;
+				} else if payment_hash == payment_hash_b {
+					found_expected_events[2 + if path_success { 1 } else { 0 }] = true;
+				} else {
+					panic!("Wrong payment hash {event:?}");
+				}
+			},
+			_ => panic!("Wrong event {event:?}"),
+		}
+	}
+	assert_eq!(found_expected_events, [true, true, true, true]);
+
+	// However if we connect one more block the third HTLC will time out and A should claim it
+	connect_blocks(&nodes[0], 1);
+	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+	if use_third_htlc {
+		assert_eq!(txn.len(), 1);
+		let as_third_htlc_spend_tx = txn.pop().unwrap();
+		check_spends!(as_third_htlc_spend_tx, commitment_tx);
+		// Previously, node A would generate a bogus claim here, trying to claim both HTLCs B and C in
+		// one transaction, so we check that the single input being spent was not already spent in node
+		// B's HTLC claim transaction.
+		assert_eq!(as_third_htlc_spend_tx.input.len(), 1, "{as_third_htlc_spend_tx:?}");
+		for spent_input in bs_htlc_spend_tx.input.iter() {
+			let third_htlc_vout = as_third_htlc_spend_tx.input[0].previous_output.vout;
+			assert_ne!(third_htlc_vout, spent_input.previous_output.vout);
+		}
+
+		mine_transaction(&nodes[0], &as_third_htlc_spend_tx);
+
+		assert_eq!(&nodes[0].node.get_and_clear_pending_events(), &[]);
+	} else {
+		assert_eq!(txn.len(), 0);
+		// Connect a block so that both cases end with the same height
+		connect_blocks(&nodes[0], 1);
+	}
+
+	// At this point all HTLCs have been resolved and no further transactions should be generated.
+	// We connect blocks until one block before `bs_htlc_spend_tx` reaches `ANTI_REORG_DELAY`
+	// confirmations.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 4);
+	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+	assert_eq!(txn.len(), 0);
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	if reorg_out {
+		// Reorg out bs_htlc_spend_tx, letting node A claim all the HTLCs instead.
+		disconnect_blocks(&nodes[0], ANTI_REORG_DELAY - 2);
+		assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
+
+		// As soon as bs_htlc_spend_tx is disconnected, node A should consider all HTLCs
+		// claimable-on-timeout.
+		disconnect_blocks(&nodes[0], 1);
+		let balances = nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&[]);
+		assert_eq!(balances.len(), if use_third_htlc { 3 } else { 2 });
+		for balance in balances {
+			if let Balance::MaybeTimeoutClaimableHTLC { .. } = balance {
+			} else {
+				panic!("Unexpected balance {balance:?}");
+			}
+		}
+
+		connect_blocks(&nodes[0], 100);
+		let txn = nodes[0].tx_broadcaster.txn_broadcast();
+		let mut claiming_outpoints = new_hash_set();
+		for tx in txn.iter() {
+			for input in tx.input.iter() {
+				claiming_outpoints.insert(input.previous_output);
+			}
+		}
+		assert_eq!(claiming_outpoints.len(), if use_third_htlc { 3 } else { 2 });
+	} else {
+		// Connect a final block, which puts `bs_htlc_spend_tx` at `ANTI_REORG_DELAY` and we wipe
+		// the claimable balances for the first two HTLCs.
+		connect_blocks(&nodes[0], 1);
+		let balances = nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&[]);
+		assert_eq!(balances.len(), if use_third_htlc { 1 } else { 0 });
+
+		// Connect two more blocks to get `as_third_htlc_spend_tx` to `ANTI_REORG_DELAY` confs.
+		connect_blocks(&nodes[0], 2);
+		if use_third_htlc {
+			let failed_events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(failed_events.len(), 2);
+			let mut found_expected_events = [false, false];
+			for event in failed_events {
+				match event {
+					Event::PaymentFailed { payment_hash: Some(payment_hash), .. }|Event::PaymentPathFailed { payment_hash, .. } => {
+						let path_failed = matches!(event, Event::PaymentPathFailed { .. });
+						if payment_hash == payment_hash_c {
+							found_expected_events[if path_failed { 1 } else { 0 }] = true;
+						} else {
+							panic!("Wrong payment hash {event:?}");
+						}
+					},
+					_ => panic!("Wrong event {event:?}"),
+				}
+			}
+			assert_eq!(found_expected_events, [true, true]);
+		}
+
+		// Further, there should be no spendable balances.
+		assert!(nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+	}
+}
+
+#[test]
+fn test_split_htlc_expiry_tracking() {
+	do_test_split_htlc_expiry_tracking(true, true);
+	do_test_split_htlc_expiry_tracking(false, true);
+	do_test_split_htlc_expiry_tracking(true, false);
+	do_test_split_htlc_expiry_tracking(false, false);
 }

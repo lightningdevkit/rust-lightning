@@ -269,6 +269,9 @@ pub struct OnchainTxHandler<ChannelSigner: EcdsaChannelSigner> {
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	claimable_outpoints: HashMap<BitcoinOutPoint, (ClaimId, u32)>,
 
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) locktimed_packages: BTreeMap<u32, Vec<PackageTemplate>>,
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	locktimed_packages: BTreeMap<u32, Vec<PackageTemplate>>,
 
 	onchain_events_awaiting_threshold_conf: Vec<OnchainEventEntry>,
@@ -886,9 +889,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				// Because fuzzing can cause hash collisions, we can end up with conflicting claim
 				// ids here, so we only assert when not fuzzing.
 				debug_assert!(cfg!(fuzzing) || self.pending_claim_requests.get(&claim_id).is_none());
-				for k in req.outpoints() {
-					log_info!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
-					self.claimable_outpoints.insert(k.clone(), (claim_id, conf_height));
+				for (k, outpoint_confirmation_height) in req.outpoints_and_creation_heights() {
+					let creation_height = outpoint_confirmation_height.unwrap_or(conf_height);
+					log_info!(logger, "Registering claiming request for {}:{}, which exists as of height {creation_height}", k.txid, k.vout);
+					self.claimable_outpoints.insert(k.clone(), (claim_id, creation_height));
 				}
 				self.pending_claim_requests.insert(claim_id, req);
 			}
@@ -994,6 +998,17 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 						panic!("Inconsistencies between pending_claim_requests map and claimable_outpoints map");
 					}
 				}
+
+				// Also remove/split any locktimed packages whose inputs have been spent by this transaction.
+				self.locktimed_packages.retain(|_locktime, packages|{
+					packages.retain_mut(|package| {
+						if let Some(p) = package.split_package(&inp.previous_output) {
+							claimed_outputs_material.push(p);
+						}
+						!package.outpoints().is_empty()
+					});
+					!packages.is_empty()
+				});
 			}
 			for package in claimed_outputs_material.drain(..) {
 				let entry = OnchainEventEntry {
@@ -1135,6 +1150,13 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				//- resurect outpoint back in its claimable set and regenerate tx
 				match entry.event {
 					OnchainEvent::ContentiousOutpoint { package } => {
+						// We pass 0 to `package_locktime` to get the actual required locktime.
+						let package_locktime = package.package_locktime(0);
+						if package_locktime >= height {
+							self.locktimed_packages.entry(package_locktime).or_default().push(package);
+							continue;
+						}
+
 						if let Some(pending_claim) = self.claimable_outpoints.get(package.outpoints()[0]) {
 							if let Some(request) = self.pending_claim_requests.get_mut(&pending_claim.0) {
 								assert!(request.merge_package(package, height).is_ok());
@@ -1358,19 +1380,21 @@ mod tests {
 				holder_commit_txid,
 				htlc.transaction_output_index.unwrap(),
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(HTLCDescriptor {
-					channel_derivation_parameters: ChannelDerivationParameters {
-						value_satoshis: tx_handler.channel_value_satoshis,
-						keys_id: tx_handler.channel_keys_id,
-						transaction_parameters: tx_handler.channel_transaction_parameters.clone(),
+						channel_derivation_parameters: ChannelDerivationParameters {
+							value_satoshis: tx_handler.channel_value_satoshis,
+							keys_id: tx_handler.channel_keys_id,
+							transaction_parameters: tx_handler.channel_transaction_parameters.clone(),
+						},
+						commitment_txid: holder_commit_txid,
+						per_commitment_number: holder_commit.commitment_number(),
+						per_commitment_point: holder_commit.per_commitment_point(),
+						feerate_per_kw: holder_commit.feerate_per_kw(),
+						htlc: htlc.clone(),
+						preimage: None,
+						counterparty_sig: *counterparty_sig,
 					},
-					commitment_txid: holder_commit_txid,
-					per_commitment_number: holder_commit.commitment_number(),
-					per_commitment_point: holder_commit.per_commitment_point(),
-					feerate_per_kw: holder_commit.feerate_per_kw(),
-					htlc: htlc.clone(),
-					preimage: None,
-					counterparty_sig: *counterparty_sig,
-				})),
+					0
+				)),
 				0,
 			));
 		}

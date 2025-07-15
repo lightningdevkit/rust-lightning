@@ -3514,23 +3514,26 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				(payment_preimage.clone(), payment_info.clone().into_iter().collect())
 			});
 
-		let confirmed_spend_txid = self.funding_spend_confirmed.or_else(|| {
-			self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| match event.event {
-				OnchainEvent::FundingSpendConfirmation { .. } => Some(event.txid),
-				_ => None,
-			})
-		});
-		let confirmed_spend_txid = if let Some(txid) = confirmed_spend_txid {
-			txid
-		} else {
-			return;
-		};
+		let confirmed_spend_info = self.funding_spend_confirmed
+			.map(|txid| (txid, None))
+			.or_else(|| {
+				self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| match event.event {
+					OnchainEvent::FundingSpendConfirmation { .. } => Some((event.txid, Some(event.height))),
+					_ => None,
+				})
+			});
+		let (confirmed_spend_txid, confirmed_spend_height) =
+			if let Some((txid, height)) = confirmed_spend_info {
+				(txid, height)
+			} else {
+				return;
+			};
 
 		// If the channel is force closed, try to claim the output from this preimage.
 		// First check if a counterparty commitment transaction has been broadcasted:
 		macro_rules! claim_htlcs {
 			($commitment_number: expr, $txid: expr, $htlcs: expr) => {
-				let (htlc_claim_reqs, _) = self.get_counterparty_output_claim_info($commitment_number, $txid, None, $htlcs);
+				let (htlc_claim_reqs, _) = self.get_counterparty_output_claim_info($commitment_number, $txid, None, $htlcs, confirmed_spend_height);
 				let conf_target = self.closure_conf_target();
 				self.onchain_tx_handler.update_claims_view_from_requests(
 					htlc_claim_reqs, self.best_block.height, self.best_block.height, broadcaster,
@@ -4230,6 +4233,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						per_commitment_point, per_commitment_key, outp.value,
 						self.funding.channel_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx(),
 						self.funding.channel_parameters.clone(),
+						height,
 					);
 					let justice_package = PackageTemplate::build_package(
 						commitment_txid, idx as u32,
@@ -4254,6 +4258,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						let revk_htlc_outp = RevokedHTLCOutput::build(
 							per_commitment_point, per_commitment_key, htlc.clone(),
 							self.funding.channel_parameters.clone(),
+							height,
 						);
 						let counterparty_spendable_height = if htlc.offered {
 							htlc.cltv_expiry
@@ -4308,7 +4313,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 				), logger);
 			let (htlc_claim_reqs, counterparty_output_info) =
-				self.get_counterparty_output_claim_info(commitment_number, commitment_txid, Some(tx), per_commitment_option);
+				self.get_counterparty_output_claim_info(commitment_number, commitment_txid, Some(tx), per_commitment_option, Some(height));
 			to_counterparty_output_info = counterparty_output_info;
 			for req in htlc_claim_reqs {
 				claimable_outpoints.push(req);
@@ -4320,8 +4325,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	/// Returns the HTLC claim package templates and the counterparty output info
 	#[rustfmt::skip]
-	fn get_counterparty_output_claim_info(&self, commitment_number: u64, commitment_txid: Txid, tx: Option<&Transaction>, per_commitment_option: Option<&Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>)
-	-> (Vec<PackageTemplate>, CommitmentTxCounterpartyOutputInfo) {
+	fn get_counterparty_output_claim_info(
+		&self, commitment_number: u64, commitment_txid: Txid, tx: Option<&Transaction>,
+		per_commitment_option: Option<&Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>,
+		confirmation_height: Option<u32>,
+	) -> (Vec<PackageTemplate>, CommitmentTxCounterpartyOutputInfo) {
 		let mut claimable_outpoints = Vec::new();
 		let mut to_counterparty_output_info: CommitmentTxCounterpartyOutputInfo = None;
 
@@ -4378,15 +4386,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					let counterparty_htlc_outp = if htlc.offered {
 						PackageSolvingData::CounterpartyOfferedHTLCOutput(
 							CounterpartyOfferedHTLCOutput::build(
-								*per_commitment_point, preimage.unwrap(), htlc.clone(),
+								*per_commitment_point, preimage.unwrap(),
+								htlc.clone(),
 								self.funding.channel_parameters.clone(),
+								confirmation_height,
 							)
 						)
 					} else {
 						PackageSolvingData::CounterpartyReceivedHTLCOutput(
 							CounterpartyReceivedHTLCOutput::build(
-								*per_commitment_point, htlc.clone(),
+								*per_commitment_point,
+								htlc.clone(),
 								self.funding.channel_parameters.clone(),
+								confirmation_height,
 							)
 						)
 					};
@@ -4430,6 +4442,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				let revk_outp = RevokedOutput::build(
 					per_commitment_point, per_commitment_key, tx.output[idx].value, false,
 					self.funding.channel_parameters.clone(),
+					height,
 				);
 				let justice_package = PackageTemplate::build_package(
 					htlc_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp),
@@ -4511,7 +4524,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					.expect("Expected transaction output index for non-dust HTLC");
 				PackageTemplate::build_package(
 					tx.txid(), transaction_output_index,
-					PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(htlc_descriptor)),
+					PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(htlc_descriptor, conf_height)),
 					counterparty_spendable_height,
 				)
 			})
@@ -4691,7 +4704,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				let txid = self.funding.current_holder_commitment_tx.trust().txid();
 				let vout = htlc_descriptor.htlc.transaction_output_index
 					.expect("Expected transaction output index for non-dust HTLC");
-				let htlc_output = HolderHTLCOutput::build(htlc_descriptor);
+				let htlc_output = HolderHTLCOutput::build(htlc_descriptor, 0);
 				if let Some(htlc_tx) = htlc_output.get_maybe_signed_htlc_tx(
 					&mut self.onchain_tx_handler, &::bitcoin::OutPoint { txid, vout },
 				) {
