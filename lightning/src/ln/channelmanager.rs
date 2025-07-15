@@ -6317,368 +6317,361 @@ where
 		}
 	}
 
-	#[rustfmt::skip]
 	fn process_forward_htlcs(
 		&self, short_chan_id: u64, pending_forwards: &mut Vec<HTLCForwardInfo>,
 		failed_forwards: &mut Vec<FailedHTLCForward>,
 		phantom_receives: &mut Vec<PerSourcePendingForward>,
 	) {
-					let mut forwarding_counterparty = None;
-					macro_rules! forwarding_channel_not_found {
-						($forward_infos: expr) => {
-							for forward_info in $forward_infos {
-								match forward_info {
-									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-										prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
-										prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
-											routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
-											outgoing_cltv_value, ..
-										}
-									}) => {
-										let cltv_expiry = routing.incoming_cltv_expiry();
-										macro_rules! failure_handler {
-											($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
-												let logger = WithContext::from(&self.logger, forwarding_counterparty, Some(prev_channel_id), Some(payment_hash));
-												log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
-
-												let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-													short_channel_id: prev_short_channel_id,
-													user_channel_id: Some(prev_user_channel_id),
-													channel_id: prev_channel_id,
-													outpoint: prev_funding_outpoint,
-													counterparty_node_id: prev_counterparty_node_id,
-													htlc_id: prev_htlc_id,
-													incoming_packet_shared_secret: incoming_shared_secret,
-													phantom_shared_secret: $phantom_ss,
-													blinded_failure: routing.blinded_failure(),
-													cltv_expiry,
-												});
-
-												let reason = if $next_hop_unknown {
-													HTLCHandlingFailureType::InvalidForward { requested_forward_scid: short_chan_id }
-												} else {
-													HTLCHandlingFailureType::Receive{ payment_hash }
-												};
-
-												failed_forwards.push((htlc_source, payment_hash,
-													HTLCFailReason::reason($reason, $err_data),
-													reason
-												));
-												continue;
-											}
-										}
-										macro_rules! fail_forward {
-											($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {
-												{
-													failure_handler!($msg, $reason, $err_data, $phantom_ss, true);
-												}
-											}
-										}
-										macro_rules! failed_payment {
-											($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {
-												{
-													failure_handler!($msg, $reason, $err_data, $phantom_ss, false);
-												}
-											}
-										}
-										if let PendingHTLCRouting::Forward { ref onion_packet, .. } = routing {
-											let phantom_pubkey_res = self.node_signer.get_node_id(Recipient::PhantomNode);
-											if phantom_pubkey_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.chain_hash) {
-												let next_hop = match onion_utils::decode_next_payment_hop(
-													Recipient::PhantomNode, &onion_packet.public_key.unwrap(), &onion_packet.hop_data,
-													onion_packet.hmac, payment_hash, None, &*self.node_signer
-												) {
-													Ok(res) => res,
-													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, reason }) => {
-														let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).to_byte_array();
-														// In this scenario, the phantom would have sent us an
-														// `update_fail_malformed_htlc`, meaning here we encrypt the error as
-														// if it came from us (the second-to-last hop) but contains the sha256
-														// of the onion.
-														failed_payment!(err_msg, reason, sha256_of_onion.to_vec(), None);
-													},
-													Err(onion_utils::OnionDecodeErr::Relay { err_msg, reason, shared_secret, .. }) => {
-														let phantom_shared_secret = shared_secret.secret_bytes();
-														failed_payment!(err_msg, reason, Vec::new(), Some(phantom_shared_secret));
-													},
-												};
-												let phantom_shared_secret = next_hop.shared_secret().secret_bytes();
-												let current_height: u32 = self.best_block.read().unwrap().height;
-												match create_recv_pending_htlc_info(next_hop,
-													incoming_shared_secret, payment_hash, outgoing_amt_msat,
-													outgoing_cltv_value, Some(phantom_shared_secret), false, None,
-													current_height)
-												{
-													Ok(info) => phantom_receives.push((
-														prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
-														prev_channel_id, prev_user_channel_id, vec![(info, prev_htlc_id)]
-													)),
-													Err(InboundHTLCErr { reason, err_data, msg }) => failed_payment!(msg, reason, err_data, Some(phantom_shared_secret))
-												}
-											} else {
-												fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id),
-												LocalHTLCFailureReason::UnknownNextPeer, Vec::new(), None);
-											}
-										} else {
-											fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id),
-											LocalHTLCFailureReason::UnknownNextPeer, Vec::new(), None);
-										}
-									},
-									HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
-										// Channel went away before we could fail it. This implies
-										// the channel is now on chain and our counterparty is
-										// trying to broadcast the HTLC-Timeout, but that's their
-										// problem, not ours.
-									}
-								}
+		let mut forwarding_counterparty = None;
+		macro_rules! forwarding_channel_not_found {
+			($forward_infos: expr) => {
+				for forward_info in $forward_infos {
+					match forward_info {
+						HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+							prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
+							prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
+								routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
+								outgoing_cltv_value, ..
 							}
-						}
-					}
-					let chan_info_opt =
-						self.short_to_chan_info.read().unwrap().get(&short_chan_id).cloned();
-					let (counterparty_node_id, forward_chan_id) = match chan_info_opt {
-						Some((cp_id, chan_id)) => (cp_id, chan_id),
-						None => {
-							forwarding_channel_not_found!(pending_forwards.drain(..));
-							return;
-						},
-					};
-					forwarding_counterparty = Some(counterparty_node_id);
-					let per_peer_state = self.per_peer_state.read().unwrap();
-					let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
-					if peer_state_mutex_opt.is_none() {
-						forwarding_channel_not_found!(pending_forwards.drain(..));
-						return;
-					}
-					let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
-					let peer_state = &mut *peer_state_lock;
-					let mut draining_pending_forwards = pending_forwards.drain(..);
-					while let Some(forward_info) = draining_pending_forwards.next() {
-						let queue_fail_htlc_res = match forward_info {
-							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-								prev_short_channel_id,
-								prev_htlc_id,
-								prev_channel_id,
-								prev_funding_outpoint,
-								prev_user_channel_id,
-								prev_counterparty_node_id,
-								forward_info:
-									PendingHTLCInfo {
-										incoming_shared_secret,
-										payment_hash,
-										outgoing_amt_msat,
-										outgoing_cltv_value,
-										routing:
-											PendingHTLCRouting::Forward {
-												ref onion_packet,
-												blinded,
-												incoming_cltv_expiry,
-												..
-											},
-										skimmed_fee_msat,
-										..
-									},
-							}) => {
-								let htlc_source =
-									HTLCSource::PreviousHopData(HTLCPreviousHopData {
+						}) => {
+							let cltv_expiry = routing.incoming_cltv_expiry();
+							macro_rules! failure_handler {
+								($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
+									let logger = WithContext::from(&self.logger, forwarding_counterparty, Some(prev_channel_id), Some(payment_hash));
+									log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+
+									let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
 										user_channel_id: Some(prev_user_channel_id),
-										counterparty_node_id: prev_counterparty_node_id,
 										channel_id: prev_channel_id,
 										outpoint: prev_funding_outpoint,
+										counterparty_node_id: prev_counterparty_node_id,
 										htlc_id: prev_htlc_id,
 										incoming_packet_shared_secret: incoming_shared_secret,
-										// Phantom payments are only PendingHTLCRouting::Receive.
-										phantom_shared_secret: None,
-										blinded_failure: blinded.map(|b| b.failure),
-										cltv_expiry: incoming_cltv_expiry,
+										phantom_shared_secret: $phantom_ss,
+										blinded_failure: routing.blinded_failure(),
+										cltv_expiry,
 									});
-								let next_blinding_point = blinded.and_then(|b| {
-									b.next_blinding_override.or_else(|| {
-										let encrypted_tlvs_ss = self
-											.node_signer
-											.ecdh(Recipient::Node, &b.inbound_blinding_point, None)
-											.unwrap()
-											.secret_bytes();
-										onion_utils::next_hop_pubkey(
-											&self.secp_ctx,
-											b.inbound_blinding_point,
-											&encrypted_tlvs_ss,
-										)
-										.ok()
-									})
-								});
 
-								// Forward the HTLC over the most appropriate channel with the corresponding peer,
-								// applying non-strict forwarding.
-								// The channel with the least amount of outbound liquidity will be used to maximize the
-								// probability of being able to successfully forward a subsequent HTLC.
-								let maybe_optimal_channel = peer_state
-									.channel_by_id
-									.values_mut()
-									.filter_map(Channel::as_funded_mut)
-									.filter_map(|chan| {
-										let balances =
-											chan.get_available_balances(&self.fee_estimator);
-										let is_in_range = (balances.next_outbound_htlc_minimum_msat
-											..=balances.next_outbound_htlc_limit_msat)
-											.contains(&outgoing_amt_msat);
-										if is_in_range && chan.context.is_usable() {
-											Some((chan, balances))
-										} else {
-											None
-										}
-									})
-									.min_by_key(|(_, balances)| {
-										balances.next_outbound_htlc_limit_msat
-									})
-									.map(|(c, _)| c);
-								let optimal_channel = match maybe_optimal_channel {
-									Some(chan) => chan,
-									None => {
-										// Fall back to the specified channel to return an appropriate error.
-										if let Some(chan) = peer_state
-											.channel_by_id
-											.get_mut(&forward_chan_id)
-											.and_then(Channel::as_funded_mut)
-										{
-											chan
-										} else {
-											let fwd_iter = core::iter::once(forward_info)
-												.chain(draining_pending_forwards);
-											forwarding_channel_not_found!(fwd_iter);
-											break;
-										}
-									},
-								};
-
-								let logger = WithChannelContext::from(
-									&self.logger,
-									&optimal_channel.context,
-									Some(payment_hash),
-								);
-								let channel_description =
-									if optimal_channel.funding.get_short_channel_id()
-										== Some(short_chan_id)
-									{
-										"specified"
+									let reason = if $next_hop_unknown {
+										HTLCHandlingFailureType::InvalidForward { requested_forward_scid: short_chan_id }
 									} else {
-										"alternate"
+										HTLCHandlingFailureType::Receive{ payment_hash }
 									};
-								log_trace!(logger, "Forwarding HTLC from SCID {} with payment_hash {} and next hop SCID {} over {} channel {} with corresponding peer {}",
-									prev_short_channel_id, &payment_hash, short_chan_id, channel_description, optimal_channel.context.channel_id(), &counterparty_node_id);
-								if let Err((reason, msg)) = optimal_channel.queue_add_htlc(
-									outgoing_amt_msat,
-									payment_hash,
-									outgoing_cltv_value,
-									htlc_source.clone(),
-									onion_packet.clone(),
-									skimmed_fee_msat,
-									next_blinding_point,
-									&self.fee_estimator,
-									&&logger,
-								) {
-									log_trace!(logger, "Failed to forward HTLC with payment_hash {} to peer {}: {}", &payment_hash, &counterparty_node_id, msg);
 
-									if let Some(chan) = peer_state
-										.channel_by_id
-										.get_mut(&forward_chan_id)
-										.and_then(Channel::as_funded_mut)
-									{
-										let data = self.get_htlc_inbound_temp_fail_data(reason);
-										let failure_type = HTLCHandlingFailureType::Forward {
-											node_id: Some(chan.context.get_counterparty_node_id()),
-											channel_id: forward_chan_id,
-										};
-										failed_forwards.push((
-											htlc_source,
-											payment_hash,
-											HTLCFailReason::reason(reason, data),
-											failure_type,
-										));
-									} else {
-										forwarding_channel_not_found!(core::iter::once(
-											forward_info
-										)
-										.chain(draining_pending_forwards));
-										break;
-									}
+									failed_forwards.push((htlc_source, payment_hash,
+										HTLCFailReason::reason($reason, $err_data),
+										reason
+									));
+									continue;
 								}
-								None
-							},
-							HTLCForwardInfo::AddHTLC { .. } => {
-								panic!("short_channel_id != 0 should imply any pending_forward entries are of type Forward");
-							},
-							HTLCForwardInfo::FailHTLC { htlc_id, ref err_packet } => {
-								if let Some(chan) = peer_state
-									.channel_by_id
-									.get_mut(&forward_chan_id)
-									.and_then(Channel::as_funded_mut)
-								{
-									let logger =
-										WithChannelContext::from(&self.logger, &chan.context, None);
-									log_trace!(logger, "Failing HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
-									Some((
-										chan.queue_fail_htlc(htlc_id, err_packet.clone(), &&logger),
-										htlc_id,
-									))
-								} else {
-									forwarding_channel_not_found!(core::iter::once(forward_info)
-										.chain(draining_pending_forwards));
-									break;
-								}
-							},
-							HTLCForwardInfo::FailMalformedHTLC {
-								htlc_id,
-								failure_code,
-								sha256_of_onion,
-							} => {
-								if let Some(chan) = peer_state
-									.channel_by_id
-									.get_mut(&forward_chan_id)
-									.and_then(Channel::as_funded_mut)
-								{
-									let logger =
-										WithChannelContext::from(&self.logger, &chan.context, None);
-									log_trace!(logger, "Failing malformed HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
-									let res = chan.queue_fail_malformed_htlc(
-										htlc_id,
-										failure_code,
-										sha256_of_onion,
-										&&logger,
-									);
-									Some((res, htlc_id))
-								} else {
-									forwarding_channel_not_found!(core::iter::once(forward_info)
-										.chain(draining_pending_forwards));
-									break;
-								}
-							},
-						};
-						if let Some((queue_fail_htlc_res, htlc_id)) = queue_fail_htlc_res {
-							if let Err(e) = queue_fail_htlc_res {
-								if let ChannelError::Ignore(msg) = e {
-									if let Some(chan) = peer_state
-										.channel_by_id
-										.get_mut(&forward_chan_id)
-										.and_then(Channel::as_funded_mut)
-									{
-										let logger = WithChannelContext::from(
-											&self.logger,
-											&chan.context,
-											None,
-										);
-										log_trace!(logger, "Failed to fail HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
-									}
-								} else {
-									panic!("Stated return value requirements in queue_fail_{{malformed_}}htlc() were not met");
-								}
-								// fail-backs are best-effort, we probably already have one
-								// pending, and if not that's OK, if not, the channel is on
-								// the chain and sending the HTLC-Timeout is their problem.
 							}
+							macro_rules! fail_forward {
+								($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {
+									{
+										failure_handler!($msg, $reason, $err_data, $phantom_ss, true);
+									}
+								}
+							}
+							macro_rules! failed_payment {
+								($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {
+									{
+										failure_handler!($msg, $reason, $err_data, $phantom_ss, false);
+									}
+								}
+							}
+							if let PendingHTLCRouting::Forward { ref onion_packet, .. } = routing {
+								let phantom_pubkey_res = self.node_signer.get_node_id(Recipient::PhantomNode);
+								if phantom_pubkey_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.chain_hash) {
+									let next_hop = match onion_utils::decode_next_payment_hop(
+										Recipient::PhantomNode, &onion_packet.public_key.unwrap(), &onion_packet.hop_data,
+										onion_packet.hmac, payment_hash, None, &*self.node_signer
+									) {
+										Ok(res) => res,
+										Err(onion_utils::OnionDecodeErr::Malformed { err_msg, reason }) => {
+											let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).to_byte_array();
+											// In this scenario, the phantom would have sent us an
+											// `update_fail_malformed_htlc`, meaning here we encrypt the error as
+											// if it came from us (the second-to-last hop) but contains the sha256
+											// of the onion.
+											failed_payment!(err_msg, reason, sha256_of_onion.to_vec(), None);
+										},
+										Err(onion_utils::OnionDecodeErr::Relay { err_msg, reason, shared_secret, .. }) => {
+											let phantom_shared_secret = shared_secret.secret_bytes();
+											failed_payment!(err_msg, reason, Vec::new(), Some(phantom_shared_secret));
+										},
+									};
+									let phantom_shared_secret = next_hop.shared_secret().secret_bytes();
+									let current_height: u32 = self.best_block.read().unwrap().height;
+									match create_recv_pending_htlc_info(next_hop,
+										incoming_shared_secret, payment_hash, outgoing_amt_msat,
+										outgoing_cltv_value, Some(phantom_shared_secret), false, None,
+										current_height)
+									{
+										Ok(info) => phantom_receives.push((
+											prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+											prev_channel_id, prev_user_channel_id, vec![(info, prev_htlc_id)]
+										)),
+										Err(InboundHTLCErr { reason, err_data, msg }) => failed_payment!(msg, reason, err_data, Some(phantom_shared_secret))
+									}
+								} else {
+									fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id),
+									LocalHTLCFailureReason::UnknownNextPeer, Vec::new(), None);
+								}
+							} else {
+								fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id),
+								LocalHTLCFailureReason::UnknownNextPeer, Vec::new(), None);
+							}
+						},
+						HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
+							// Channel went away before we could fail it. This implies
+							// the channel is now on chain and our counterparty is
+							// trying to broadcast the HTLC-Timeout, but that's their
+							// problem, not ours.
 						}
 					}
+				}
+			}
+		}
+		let chan_info_opt = self.short_to_chan_info.read().unwrap().get(&short_chan_id).cloned();
+		let (counterparty_node_id, forward_chan_id) = match chan_info_opt {
+			Some((cp_id, chan_id)) => (cp_id, chan_id),
+			None => {
+				forwarding_channel_not_found!(pending_forwards.drain(..));
+				return;
+			},
+		};
+		forwarding_counterparty = Some(counterparty_node_id);
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
+		if peer_state_mutex_opt.is_none() {
+			forwarding_channel_not_found!(pending_forwards.drain(..));
+			return;
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		let mut draining_pending_forwards = pending_forwards.drain(..);
+		while let Some(forward_info) = draining_pending_forwards.next() {
+			let queue_fail_htlc_res = match forward_info {
+				HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+					prev_short_channel_id,
+					prev_htlc_id,
+					prev_channel_id,
+					prev_funding_outpoint,
+					prev_user_channel_id,
+					prev_counterparty_node_id,
+					forward_info:
+						PendingHTLCInfo {
+							incoming_shared_secret,
+							payment_hash,
+							outgoing_amt_msat,
+							outgoing_cltv_value,
+							routing:
+								PendingHTLCRouting::Forward {
+									ref onion_packet,
+									blinded,
+									incoming_cltv_expiry,
+									..
+								},
+							skimmed_fee_msat,
+							..
+						},
+				}) => {
+					let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+						short_channel_id: prev_short_channel_id,
+						user_channel_id: Some(prev_user_channel_id),
+						counterparty_node_id: prev_counterparty_node_id,
+						channel_id: prev_channel_id,
+						outpoint: prev_funding_outpoint,
+						htlc_id: prev_htlc_id,
+						incoming_packet_shared_secret: incoming_shared_secret,
+						// Phantom payments are only PendingHTLCRouting::Receive.
+						phantom_shared_secret: None,
+						blinded_failure: blinded.map(|b| b.failure),
+						cltv_expiry: incoming_cltv_expiry,
+					});
+					let next_blinding_point = blinded.and_then(|b| {
+						b.next_blinding_override.or_else(|| {
+							let encrypted_tlvs_ss = self
+								.node_signer
+								.ecdh(Recipient::Node, &b.inbound_blinding_point, None)
+								.unwrap()
+								.secret_bytes();
+							onion_utils::next_hop_pubkey(
+								&self.secp_ctx,
+								b.inbound_blinding_point,
+								&encrypted_tlvs_ss,
+							)
+							.ok()
+						})
+					});
+
+					// Forward the HTLC over the most appropriate channel with the corresponding peer,
+					// applying non-strict forwarding.
+					// The channel with the least amount of outbound liquidity will be used to maximize the
+					// probability of being able to successfully forward a subsequent HTLC.
+					let maybe_optimal_channel = peer_state
+						.channel_by_id
+						.values_mut()
+						.filter_map(Channel::as_funded_mut)
+						.filter_map(|chan| {
+							let balances = chan.get_available_balances(&self.fee_estimator);
+							let is_in_range = (balances.next_outbound_htlc_minimum_msat
+								..=balances.next_outbound_htlc_limit_msat)
+								.contains(&outgoing_amt_msat);
+							if is_in_range && chan.context.is_usable() {
+								Some((chan, balances))
+							} else {
+								None
+							}
+						})
+						.min_by_key(|(_, balances)| balances.next_outbound_htlc_limit_msat)
+						.map(|(c, _)| c);
+					let optimal_channel = match maybe_optimal_channel {
+						Some(chan) => chan,
+						None => {
+							// Fall back to the specified channel to return an appropriate error.
+							if let Some(chan) = peer_state
+								.channel_by_id
+								.get_mut(&forward_chan_id)
+								.and_then(Channel::as_funded_mut)
+							{
+								chan
+							} else {
+								let fwd_iter =
+									core::iter::once(forward_info).chain(draining_pending_forwards);
+								forwarding_channel_not_found!(fwd_iter);
+								break;
+							}
+						},
+					};
+
+					let logger = WithChannelContext::from(
+						&self.logger,
+						&optimal_channel.context,
+						Some(payment_hash),
+					);
+					let channel_description =
+						if optimal_channel.funding.get_short_channel_id() == Some(short_chan_id) {
+							"specified"
+						} else {
+							"alternate"
+						};
+					log_trace!(logger, "Forwarding HTLC from SCID {} with payment_hash {} and next hop SCID {} over {} channel {} with corresponding peer {}",
+						prev_short_channel_id, &payment_hash, short_chan_id, channel_description, optimal_channel.context.channel_id(), &counterparty_node_id);
+					if let Err((reason, msg)) = optimal_channel.queue_add_htlc(
+						outgoing_amt_msat,
+						payment_hash,
+						outgoing_cltv_value,
+						htlc_source.clone(),
+						onion_packet.clone(),
+						skimmed_fee_msat,
+						next_blinding_point,
+						&self.fee_estimator,
+						&&logger,
+					) {
+						log_trace!(
+							logger,
+							"Failed to forward HTLC with payment_hash {} to peer {}: {}",
+							&payment_hash,
+							&counterparty_node_id,
+							msg
+						);
+
+						if let Some(chan) = peer_state
+							.channel_by_id
+							.get_mut(&forward_chan_id)
+							.and_then(Channel::as_funded_mut)
+						{
+							let data = self.get_htlc_inbound_temp_fail_data(reason);
+							let failure_type = HTLCHandlingFailureType::Forward {
+								node_id: Some(chan.context.get_counterparty_node_id()),
+								channel_id: forward_chan_id,
+							};
+							failed_forwards.push((
+								htlc_source,
+								payment_hash,
+								HTLCFailReason::reason(reason, data),
+								failure_type,
+							));
+						} else {
+							forwarding_channel_not_found!(
+								core::iter::once(forward_info).chain(draining_pending_forwards)
+							);
+							break;
+						}
+					}
+					None
+				},
+				HTLCForwardInfo::AddHTLC { .. } => {
+					panic!("short_channel_id != 0 should imply any pending_forward entries are of type Forward");
+				},
+				HTLCForwardInfo::FailHTLC { htlc_id, ref err_packet } => {
+					if let Some(chan) = peer_state
+						.channel_by_id
+						.get_mut(&forward_chan_id)
+						.and_then(Channel::as_funded_mut)
+					{
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						log_trace!(logger, "Failing HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
+						Some((chan.queue_fail_htlc(htlc_id, err_packet.clone(), &&logger), htlc_id))
+					} else {
+						forwarding_channel_not_found!(
+							core::iter::once(forward_info).chain(draining_pending_forwards)
+						);
+						break;
+					}
+				},
+				HTLCForwardInfo::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
+					if let Some(chan) = peer_state
+						.channel_by_id
+						.get_mut(&forward_chan_id)
+						.and_then(Channel::as_funded_mut)
+					{
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						log_trace!(logger, "Failing malformed HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
+						let res = chan.queue_fail_malformed_htlc(
+							htlc_id,
+							failure_code,
+							sha256_of_onion,
+							&&logger,
+						);
+						Some((res, htlc_id))
+					} else {
+						forwarding_channel_not_found!(
+							core::iter::once(forward_info).chain(draining_pending_forwards)
+						);
+						break;
+					}
+				},
+			};
+			if let Some((queue_fail_htlc_res, htlc_id)) = queue_fail_htlc_res {
+				if let Err(e) = queue_fail_htlc_res {
+					if let ChannelError::Ignore(msg) = e {
+						if let Some(chan) = peer_state
+							.channel_by_id
+							.get_mut(&forward_chan_id)
+							.and_then(Channel::as_funded_mut)
+						{
+							let logger =
+								WithChannelContext::from(&self.logger, &chan.context, None);
+							log_trace!(
+								logger,
+								"Failed to fail HTLC with ID {} backwards to short_id {}: {}",
+								htlc_id,
+								short_chan_id,
+								msg
+							);
+						}
+					} else {
+						panic!("Stated return value requirements in queue_fail_{{malformed_}}htlc() were not met");
+					}
+					// fail-backs are best-effort, we probably already have one
+					// pending, and if not that's OK, if not, the channel is on
+					// the chain and sending the HTLC-Timeout is their problem.
+				}
+			}
+		}
 	}
 
 	/// Processes HTLCs which are pending waiting on random forward delay.
