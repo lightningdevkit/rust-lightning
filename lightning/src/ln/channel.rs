@@ -5191,14 +5191,14 @@ where
 		// committed outbound HTLCs, see below.
 		let mut included_htlcs = 0;
 		for ref htlc in context.pending_inbound_htlcs.iter() {
-			if htlc.amount_msat / 1000 <= real_dust_limit_timeout_sat {
+			if htlc.amount_msat / 1000 < real_dust_limit_timeout_sat {
 				continue
 			}
 			included_htlcs += 1;
 		}
 
 		for ref htlc in context.pending_outbound_htlcs.iter() {
-			if htlc.amount_msat / 1000 <= real_dust_limit_success_sat {
+			if htlc.amount_msat / 1000 < real_dust_limit_success_sat {
 				continue
 			}
 			// We only include outbound HTLCs if it will not be included in their next commitment_signed,
