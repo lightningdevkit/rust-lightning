@@ -723,7 +723,8 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	}
 
 	#[rustfmt::skip]
-	pub fn abandon_claim(&mut self, outpoint: &BitcoinOutPoint) {
+	pub fn abandon_claim(&mut self, outpoint: &BitcoinOutPoint) -> bool {
+		let mut found_claim = false;
 		let claim_id = self.claimable_outpoints.get(outpoint).map(|(claim_id, _)| *claim_id)
 			.or_else(|| {
 				self.pending_claim_requests.iter()
@@ -733,13 +734,23 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		if let Some(claim_id) = claim_id {
 			if let Some(claim) = self.pending_claim_requests.remove(&claim_id) {
 				for outpoint in claim.outpoints() {
-					self.claimable_outpoints.remove(outpoint);
+					if self.claimable_outpoints.remove(outpoint).is_some() {
+						found_claim = true;
+					}
 				}
 			}
 		} else {
-			self.locktimed_packages.values_mut().for_each(|claims|
-				claims.retain(|claim| !claim.outpoints().contains(&outpoint)));
+			self.locktimed_packages.values_mut().for_each(|claims| {
+				claims.retain(|claim| {
+					let includes_outpoint = claim.outpoints().contains(&outpoint);
+					if includes_outpoint {
+						found_claim = true;
+					}
+					!includes_outpoint
+				})
+			});
 		}
+		found_claim
 	}
 
 	/// Upon channelmonitor.block_connected(..) or upon provision of a preimage on the forward link
