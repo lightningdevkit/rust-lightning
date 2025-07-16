@@ -7625,11 +7625,12 @@ where
 		}
 	}
 
-	fn verify_interactive_tx_signatures(&mut self, _witnesses: &Vec<Witness>) {
-		if let Some(ref mut _signing_session) = self.interactive_tx_signing_session {
-			// Check that sighash_all was used:
-			// TODO(dual_funding): Check sig for sighash
-		}
+	#[cfg(splicing)]
+	fn is_splicing(&self) -> bool {
+		self.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| Some(pending_splice.funding.is_some()))
+			.unwrap_or(false)
 	}
 
 	pub fn funding_transaction_signed<L: Deref>(
@@ -7638,14 +7639,21 @@ where
 	where
 		L::Target: Logger,
 	{
-		self.verify_interactive_tx_signatures(&witnesses);
 		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
+			signing_session.verify_interactive_tx_signatures(&self.context.secp_ctx, &witnesses)?;
 			let logger = WithChannelContext::from(logger, &self.context, None);
 			if let Some(holder_tx_signatures) = signing_session
 				.provide_holder_witnesses(self.context.channel_id, witnesses)
 				.map_err(|err| APIError::APIMisuseError { err })?
 			{
-				if self.is_awaiting_initial_mon_persist() {
+				#[cfg(splicing)]
+				let is_monitor_update_in_progress = self.is_awaiting_initial_mon_persist()
+					|| self.is_splicing()
+						&& self.context.channel_state.is_monitor_update_in_progress();
+				#[cfg(not(splicing))]
+				let is_monitor_update_in_progress = self.is_awaiting_initial_mon_persist();
+
+				if is_monitor_update_in_progress {
 					log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
 					self.context.monitor_pending_tx_signatures = Some(holder_tx_signatures);
 					return Ok(None);
