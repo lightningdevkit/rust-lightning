@@ -1152,7 +1152,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	channel_keys_id: [u8; 32],
 	holder_revocation_basepoint: RevocationBasepoint,
 	channel_id: ChannelId,
-	first_confirmed_funding_txo: OutPoint,
+	first_negotiated_funding_txo: OutPoint,
 
 	counterparty_commitment_params: CounterpartyCommitmentParameters,
 
@@ -1575,7 +1575,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(21, self.balances_empty_height, option),
 			(23, self.holder_pays_commitment_tx_fee, option),
 			(25, self.payment_preimages, required),
-			(27, self.first_confirmed_funding_txo, required),
+			(27, self.first_negotiated_funding_txo, required),
 			(29, self.initial_counterparty_commitment_tx, option),
 			(31, self.funding.channel_parameters, required),
 			(32, self.pending_funding, optional_vec),
@@ -1761,7 +1761,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			channel_keys_id,
 			holder_revocation_basepoint,
 			channel_id,
-			first_confirmed_funding_txo: funding_outpoint,
+			first_negotiated_funding_txo: funding_outpoint,
 
 			counterparty_commitment_params,
 			their_cur_per_commitment_points: None,
@@ -1820,7 +1820,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// [`Persist`]: crate::chain::chainmonitor::Persist
 	pub fn persistence_key(&self) -> MonitorName {
 		let inner = self.inner.lock().unwrap();
-		let funding_outpoint = inner.first_confirmed_funding_txo;
+		let funding_outpoint = inner.first_negotiated_funding_txo;
 		let channel_id = inner.channel_id;
 		if ChannelId::v1_from_funding_outpoint(funding_outpoint) == channel_id {
 			MonitorName::V1Channel(funding_outpoint)
@@ -5724,7 +5724,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut channel_id = None;
 		let mut holder_pays_commitment_tx_fee = None;
 		let mut payment_preimages_with_info: Option<HashMap<_, _>> = None;
-		let mut first_confirmed_funding_txo = RequiredWrapper(None);
+		let mut first_negotiated_funding_txo = RequiredWrapper(None);
 		let mut channel_parameters = None;
 		let mut pending_funding = None;
 		read_tlv_fields!(reader, {
@@ -5741,7 +5741,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(21, balances_empty_height, option),
 			(23, holder_pays_commitment_tx_fee, option),
 			(25, payment_preimages_with_info, option),
-			(27, first_confirmed_funding_txo, (default_value, outpoint)),
+			(27, first_negotiated_funding_txo, (default_value, outpoint)),
 			(29, initial_counterparty_commitment_tx, option),
 			(31, channel_parameters, (option: ReadableArgs, None)),
 			(32, pending_funding, optional_vec),
@@ -5873,7 +5873,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			channel_keys_id,
 			holder_revocation_basepoint,
 			channel_id,
-			first_confirmed_funding_txo: first_confirmed_funding_txo.0.unwrap(),
+			first_negotiated_funding_txo: first_negotiated_funding_txo.0.unwrap(),
 
 			counterparty_commitment_params,
 			their_cur_per_commitment_points,
