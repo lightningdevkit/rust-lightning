@@ -210,12 +210,14 @@ pub(crate) struct NegotiatedTxInput {
 	txin: TxIn,
 	// The weight of the input including an estimate of its witness weight.
 	weight: Weight,
+	prev_output: TxOut,
 }
 
 impl_writeable_tlv_based!(NegotiatedTxInput, {
 	(1, serial_id, required),
 	(3, txin, required),
 	(5, weight, required),
+	(7, prev_output, required),
 });
 
 impl_writeable_tlv_based!(ConstructedTransaction, {
@@ -1365,6 +1367,13 @@ impl InputOwned {
 			InputOwned::Shared(shared) => estimate_input_weight(&shared.prev_output),
 		}
 	}
+
+	fn into_tx_in_with_prev_output(self) -> (TxIn, TxOut) {
+		match self {
+			InputOwned::Single(single) => (single.input, single.prev_output),
+			InputOwned::Shared(shared) => (shared.input, shared.prev_output),
+		}
+	}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1536,7 +1545,8 @@ impl InteractiveTxInput {
 
 	fn into_negotiated_input(self) -> NegotiatedTxInput {
 		let weight = self.input.estimate_input_weight();
-		NegotiatedTxInput { serial_id: self.serial_id, txin: self.input.into_tx_in(), weight }
+		let (txin, prev_output) = self.input.into_tx_in_with_prev_output();
+		NegotiatedTxInput { serial_id: self.serial_id, txin, weight, prev_output }
 	}
 }
 
