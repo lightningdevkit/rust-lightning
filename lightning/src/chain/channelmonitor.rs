@@ -565,6 +565,13 @@ enum OnchainEvent {
 		/// output (and generate a SpendableOutput event).
 		on_to_local_output_csv: Option<u16>,
 	},
+	/// An alternative funding transaction (due to a splice/RBF) has confirmed but can no longer be
+	/// locked not as the monitor is no longer allowing updates. Note that we wait to promote the
+	/// corresponding `FundingScope` until we see a
+	/// [`ChannelMonitorUpdateStep::RenegotiatedFundingLocked`], but this event is only applicable
+	/// once [`ChannelMonitor::no_further_updates_allowed`] returns true. We promote the
+	/// `FundingScope` once the funding transaction is irrevocably confirmed.
+	AlternativeFundingConfirmation {},
 }
 
 impl Writeable for OnchainEventEntry {
@@ -609,6 +616,7 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 	(1, MaturingOutput) => {
 		(0, descriptor, required),
 	},
+	(2, AlternativeFundingConfirmation) => {},
 	(3, FundingSpendConfirmation) => {
 		(0, on_local_output_csv, option),
 		(1, commitment_tx_to_counterparty_output, option),
@@ -618,7 +626,6 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 		(2, preimage, option),
 		(4, on_to_local_output_csv, option),
 	},
-
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -677,6 +684,7 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		channel_parameters: ChannelTransactionParameters,
 		holder_commitment_tx: HolderCommitmentTransaction,
 		counterparty_commitment_tx: CommitmentTransaction,
+		confirmation_depth: u32,
 	},
 	RenegotiatedFundingLocked {
 		funding_txid: Txid,
@@ -744,6 +752,7 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 		(1, channel_parameters, (required: ReadableArgs, None)),
 		(3, holder_commitment_tx, required),
 		(5, counterparty_commitment_tx, required),
+		(7, confirmation_depth, required),
 	},
 	(12, RenegotiatedFundingLocked) => {
 		(1, funding_txid, required),
@@ -1280,6 +1289,8 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// commitment transactions, their ordering with respect to each other must remain the same.
 	current_holder_htlc_data: CommitmentHTLCData,
 	prev_holder_htlc_data: Option<CommitmentHTLCData>,
+
+	alternative_funding_confirmed: Option<(Txid, u32)>,
 }
 
 // Macro helper to access holder commitment HTLC data (including both non-dust and dust) while
@@ -1555,6 +1566,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(29, self.initial_counterparty_commitment_tx, option),
 			(31, self.funding.channel_parameters, required),
 			(32, self.pending_funding, optional_vec),
+			(34, self.alternative_funding_confirmed, option),
 		});
 
 		Ok(())
@@ -1780,6 +1792,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			// There are never any HTLCs in the initial commitment transaction
 			current_holder_htlc_data: CommitmentHTLCData::new(),
 			prev_holder_htlc_data: None,
+
+			alternative_funding_confirmed: None,
 		})
 	}
 
@@ -3413,7 +3427,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let mut other_commitment_tx = None::<&CommitmentTransaction>;
 		for (funding, commitment_tx) in
-			core::iter::once(&self.funding).chain(self.pending_funding.iter()).zip(commitment_txs)
+			core::iter::once(&self.funding).chain(&self.pending_funding).zip(commitment_txs)
 		{
 			let trusted_tx = &commitment_tx.trust().built_transaction().transaction;
 			if trusted_tx.input.len() != 1 {
@@ -3468,7 +3482,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.current_holder_commitment_number = current_funding_commitment_tx.commitment_number();
 		self.onchain_tx_handler.provide_latest_holder_tx(current_funding_commitment_tx.clone());
 		for (funding, mut commitment_tx) in core::iter::once(&mut self.funding)
-			.chain(self.pending_funding.iter_mut())
+			.chain(&mut self.pending_funding)
 			.zip(commitment_txs.into_iter())
 		{
 			mem::swap(&mut commitment_tx, &mut funding.current_holder_commitment_tx);
@@ -3676,7 +3690,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&mut self, logger: &WithChannelMonitor<L>,
 		channel_parameters: &ChannelTransactionParameters,
 		alternative_holder_commitment_tx: &HolderCommitmentTransaction,
-		alternative_counterparty_commitment_tx: &CommitmentTransaction,
+		alternative_counterparty_commitment_tx: &CommitmentTransaction, confirmation_depth: u32,
 	) -> Result<(), ()>
 	where
 		L::Target: Logger,
@@ -3803,9 +3817,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if new_funding.is_none() {
 			return Err(());
 		}
-		let mut new_funding = new_funding.unwrap();
+		let new_funding = new_funding.unwrap();
 
-		mem::swap(&mut self.funding, &mut new_funding);
+		mem::swap(&mut self.funding, new_funding);
 		self.onchain_tx_handler.update_after_renegotiated_funding_locked(
 			self.funding.current_holder_commitment_tx.clone(),
 			self.funding.prev_holder_commitment_tx.clone(),
@@ -3928,11 +3942,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::RenegotiatedFunding {
 					channel_parameters, holder_commitment_tx, counterparty_commitment_tx,
+					confirmation_depth,
 				} => {
 					log_trace!(logger, "Updating ChannelMonitor with alternative holder and counterparty commitment transactions for funding txid {}",
 						channel_parameters.funding_outpoint.unwrap().txid);
 					if let Err(_) = self.renegotiated_funding(
 						logger, channel_parameters, holder_commitment_tx, counterparty_commitment_tx,
+						*confirmation_depth,
 					) {
 						ret = Err(());
 					}
@@ -4873,6 +4889,50 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 
+			// A splice/dual-funded RBF transaction has confirmed. We can't promote the
+			// `FundingScope` scope until we see the
+			// [`ChannelMonitorUpdateStep::RenegotiatedFundingLocked`] for it, but we track the txid
+			// so we know which holder commitment transaction we may need to broadcast.
+			if let Some(alternative_funding) = self.pending_funding.iter()
+				.find(|funding| funding.funding_txid() == txid)
+			{
+				debug_assert!(self.funding_spend_confirmed.is_none());
+				debug_assert!(
+					!self.onchain_events_awaiting_threshold_conf.iter()
+						.any(|e| matches!(e.event, OnchainEvent::FundingSpendConfirmation { .. }))
+				);
+
+				let (desc, msg) = if alternative_funding.channel_parameters.splice_parent_funding_txid.is_some() {
+					debug_assert!(tx.input.iter().any(|input| {
+						let funding_outpoint = self.funding.funding_outpoint().into_bitcoin_outpoint();
+						input.previous_output == funding_outpoint
+					}));
+					("Splice", "splice_locked")
+				} else {
+					("RBF", "channel_ready")
+				};
+				let action = if self.no_further_updates_allowed() {
+					if self.holder_tx_signed {
+						", broadcasting post-splice holder commitment transaction".to_string()
+					} else {
+						"".to_string()
+					}
+				} else {
+					format!(", waiting for `{msg}` exchange")
+				};
+				log_info!(logger, "{desc} for channel {} confirmed with txid {txid}{action}", self.channel_id());
+
+				self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
+					txid,
+					transaction: Some((*tx).clone()),
+					height,
+					block_hash: Some(block_hash),
+					event: OnchainEvent::AlternativeFundingConfirmation {},
+				});
+
+				continue 'tx_iter;
+			}
+
 			if tx.input.len() == 1 {
 				// Assuming our keys were not leaked (in which case we're screwed no matter what),
 				// commitment transactions and HTLC transactions will all only ever have one input
@@ -5004,7 +5064,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let unmatured_htlcs: Vec<_> = self.onchain_events_awaiting_threshold_conf
 			.iter()
 			.filter_map(|entry| match &entry.event {
-				OnchainEvent::HTLCUpdate { source, .. } => Some(source),
+				OnchainEvent::HTLCUpdate { source, .. } => Some(source.clone()),
 				_ => None,
 			})
 			.collect();
@@ -5019,7 +5079,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					#[cfg(debug_assertions)]
 					{
 						debug_assert!(
-							!unmatured_htlcs.contains(&&source),
+							!unmatured_htlcs.contains(&source),
 							"An unmature HTLC transaction conflicts with a maturing one; failed to \
 							 call either transaction_unconfirmed for the conflicting transaction \
 							 or block_disconnected for a block containing it.");
@@ -5065,6 +5125,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				OnchainEvent::FundingSpendConfirmation { commitment_tx_to_counterparty_output, .. } => {
 					self.funding_spend_confirmed = Some(entry.txid);
 					self.confirmed_commitment_tx_counterparty_output = commitment_tx_to_counterparty_output;
+				},
+				OnchainEvent::AlternativeFundingConfirmation {} => {
+					// An alternative funding transaction has irrevocably confirmed and we're no
+					// longer allowing monitor updates, so promote the `FundingScope` now.
+					debug_assert!(self.no_further_updates_allowed());
+					debug_assert_ne!(self.funding.funding_txid(), entry.txid);
+					if let Err(_) = self.promote_funding(entry.txid) {
+						log_error!(logger, "Missing scope for alternative funding confirmation with txid {}", entry.txid);
+					}
 				},
 			}
 		}
@@ -5173,6 +5242,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	{
 		log_trace!(logger, "Block {} at height {} disconnected", header.block_hash(), height);
 
+		self.alternative_funding_confirmed.take_if(|(_, conf_height)| *conf_height == height);
+
 		//We may discard:
 		//- htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
 		//- maturing spendable output has transaction paying us has been disconnected
@@ -5199,6 +5270,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
+		self.alternative_funding_confirmed.take_if(|(funding_txid, _)| funding_txid == txid);
+
 		let mut removed_height = None;
 		for entry in self.onchain_events_awaiting_threshold_conf.iter() {
 			if entry.txid == *txid {
@@ -5870,6 +5943,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut first_negotiated_funding_txo = RequiredWrapper(None);
 		let mut channel_parameters = None;
 		let mut pending_funding = None;
+		let mut alternative_funding_confirmed = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -5888,6 +5962,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(29, initial_counterparty_commitment_tx, option),
 			(31, channel_parameters, (option: ReadableArgs, None)),
 			(32, pending_funding, optional_vec),
+			(34, alternative_funding_confirmed, option),
 		});
 		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
 			if payment_preimages_with_info.len() != payment_preimages.len() {
@@ -6057,6 +6132,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			current_holder_htlc_data,
 			prev_holder_htlc_data,
+
+			alternative_funding_confirmed,
 		})))
 	}
 }

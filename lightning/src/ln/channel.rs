@@ -6842,6 +6842,11 @@ where
 			);
 		}
 
+		let confirmation_depth = self
+			.context
+			.minimum_depth(pending_splice_funding)
+			.expect("ChannelContext::minimum_depth should be set for FundedChannel");
+
 		log_info!(logger, "Received splice initial commitment_signed from peer for channel {} with funding txid {}",
 			&self.context.channel_id(), pending_splice_funding.get_funding_txo().unwrap().txid);
 
@@ -6852,6 +6857,7 @@ where
 				channel_parameters: pending_splice_funding.channel_transaction_parameters.clone(),
 				holder_commitment_tx,
 				counterparty_commitment_tx,
+				confirmation_depth,
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};
