@@ -1226,14 +1226,12 @@ impl OutboundPayments {
 		)
 	}
 
-	#[rustfmt::skip]
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
-		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
-		best_block_height: u32,
-		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, logger: &L,
-		send_payment_along_path: SP,
-	)
-	where
+		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES,
+		node_signer: &NS, best_block_height: u32,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		logger: &L, send_payment_along_path: SP,
+	) where
 		R::Target: Router,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
@@ -1248,35 +1246,71 @@ impl OutboundPayments {
 			let mut retry_id_route_params = None;
 			for (pmt_id, pmt) in outbounds.iter_mut() {
 				if pmt.is_auto_retryable_now() {
-					if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, payment_params: Some(params), payment_hash, remaining_max_total_routing_fee_msat, .. } = pmt {
+					if let PendingOutboundPayment::Retryable {
+						pending_amt_msat,
+						total_msat,
+						payment_params: Some(params),
+						payment_hash,
+						remaining_max_total_routing_fee_msat,
+						..
+					} = pmt
+					{
 						if pending_amt_msat < total_msat {
-							retry_id_route_params = Some((*payment_hash, *pmt_id, RouteParameters {
-								final_value_msat: *total_msat - *pending_amt_msat,
-								payment_params: params.clone(),
-								max_total_routing_fee_msat: *remaining_max_total_routing_fee_msat,
-							}));
-							break
+							retry_id_route_params = Some((
+								*payment_hash,
+								*pmt_id,
+								RouteParameters {
+									final_value_msat: *total_msat - *pending_amt_msat,
+									payment_params: params.clone(),
+									max_total_routing_fee_msat:
+										*remaining_max_total_routing_fee_msat,
+								},
+							));
+							break;
 						}
-					} else { debug_assert!(false); }
+					} else {
+						debug_assert!(false);
+					}
 				}
 			}
 			core::mem::drop(outbounds);
 			if let Some((payment_hash, payment_id, route_params)) = retry_id_route_params {
-				self.find_route_and_send_payment(payment_hash, payment_id, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path)
-			} else { break }
+				self.find_route_and_send_payment(
+					payment_hash,
+					payment_id,
+					route_params,
+					router,
+					first_hops(),
+					&inflight_htlcs,
+					entropy_source,
+					node_signer,
+					best_block_height,
+					logger,
+					pending_events,
+					&send_payment_along_path,
+				)
+			} else {
+				break;
+			}
 		}
 
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		outbounds.retain(|pmt_id, pmt| {
 			let mut retain = true;
-			if !pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 && !pmt.is_awaiting_invoice() {
+			if !pmt.is_auto_retryable_now()
+				&& pmt.remaining_parts() == 0
+				&& !pmt.is_awaiting_invoice()
+			{
 				pmt.mark_abandoned(PaymentFailureReason::RetriesExhausted);
 				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = pmt {
-					pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
-						payment_id: *pmt_id,
-						payment_hash: Some(*payment_hash),
-						reason: *reason,
-					}, None));
+					pending_events.lock().unwrap().push_back((
+						events::Event::PaymentFailed {
+							payment_id: *pmt_id,
+							payment_hash: Some(*payment_hash),
+							reason: *reason,
+						},
+						None,
+					));
 					retain = false;
 				}
 			}
@@ -1284,12 +1318,14 @@ impl OutboundPayments {
 		});
 	}
 
-	#[rustfmt::skip]
 	pub(super) fn needs_abandon(&self) -> bool {
 		let outbounds = self.pending_outbound_payments.lock().unwrap();
-		outbounds.iter().any(|(_, pmt)|
-			!pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 && !pmt.is_fulfilled() &&
-			!pmt.is_awaiting_invoice())
+		outbounds.iter().any(|(_, pmt)| {
+			!pmt.is_auto_retryable_now()
+				&& pmt.remaining_parts() == 0
+				&& !pmt.is_fulfilled()
+				&& !pmt.is_awaiting_invoice()
+		})
 	}
 
 	#[rustfmt::skip]
