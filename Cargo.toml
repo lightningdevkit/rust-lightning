@@ -67,4 +67,5 @@ check-cfg = [
     "cfg(require_route_graph_test)",
     "cfg(splicing)",
     "cfg(simple_close)",
+    "cfg(peer_storage)",
 ]

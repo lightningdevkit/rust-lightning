@@ -28,6 +28,8 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+#[cfg(peer_storage)]
+use crate::chain::channelmonitor::write_chanmon_internal;
 use crate::chain::channelmonitor::{
 	Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
 	WithChannelMonitor,
@@ -36,8 +38,11 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::msgs::{self, BaseMessageHandler, Init, MessageSendEvent, SendOnlyMessageHandler};
-use crate::ln::our_peer_storage::DecryptedOurPeerStorage;
+#[cfg(peer_storage)]
+use crate::ln::msgs::PeerStorage;
+use crate::ln::msgs::{BaseMessageHandler, Init, MessageSendEvent, SendOnlyMessageHandler};
+#[cfg(peer_storage)]
+use crate::ln::our_peer_storage::{DecryptedOurPeerStorage, PeerStorageMonitorHolder};
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -47,8 +52,12 @@ use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::persist::MonitorName;
+#[cfg(peer_storage)]
+use crate::util::ser::{VecWriter, Writeable};
 use crate::util::wakers::{Future, Notifier};
 use bitcoin::secp256k1::PublicKey;
+#[cfg(peer_storage)]
+use core::iter::Cycle;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -264,7 +273,7 @@ pub struct ChainMonitor<
 	logger: L,
 	fee_estimator: F,
 	persister: P,
-	entropy_source: ES,
+	_entropy_source: ES,
 	/// "User-provided" (ie persistence-completion/-failed) [`MonitorEvent`]s. These came directly
 	/// from the user and not from a [`ChannelMonitor`].
 	pending_monitor_events: Mutex<Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>>,
@@ -278,6 +287,7 @@ pub struct ChainMonitor<
 	/// Messages to send to the peer. This is currently used to distribute PeerStorage to channel partners.
 	pending_send_only_events: Mutex<Vec<MessageSendEvent>>,
 
+	#[cfg(peer_storage)]
 	our_peerstorage_encryption_key: PeerStorageKey,
 }
 
@@ -477,7 +487,7 @@ where
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	pub fn new(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P,
-		entropy_source: ES, our_peerstorage_encryption_key: PeerStorageKey,
+		_entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey,
 	) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
@@ -486,12 +496,13 @@ where
 			logger,
 			fee_estimator: feeest,
 			persister,
-			entropy_source,
+			_entropy_source,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Notifier::new(),
 			pending_send_only_events: Mutex::new(Vec::new()),
-			our_peerstorage_encryption_key,
+			#[cfg(peer_storage)]
+			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
 		}
 	}
 
@@ -804,23 +815,90 @@ where
 
 	/// This function collects the counterparty node IDs from all monitors into a `HashSet`,
 	/// ensuring unique IDs are returned.
+	#[cfg(peer_storage)]
 	fn all_counterparty_node_ids(&self) -> HashSet<PublicKey> {
 		let mon = self.monitors.read().unwrap();
 		mon.values().map(|monitor| monitor.monitor.get_counterparty_node_id()).collect()
 	}
 
+	#[cfg(peer_storage)]
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
-		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage`.
+		let mut monitors_list: Vec<PeerStorageMonitorHolder> = Vec::new();
+		let random_bytes = self._entropy_source.get_secure_random_bytes();
 
-		let random_bytes = self.entropy_source.get_secure_random_bytes();
-		let serialised_channels = Vec::new();
+		const MAX_PEER_STORAGE_SIZE: usize = 65531;
+		const USIZE_LEN: usize = core::mem::size_of::<usize>();
+		let mut random_bytes_cycle_iter = random_bytes.iter().cycle();
+
+		let mut current_size = 0;
+		let monitors_lock = self.monitors.read().unwrap();
+		let mut channel_ids = monitors_lock.keys().copied().collect();
+
+		fn next_random_id(
+			channel_ids: &mut Vec<ChannelId>,
+			random_bytes_cycle_iter: &mut Cycle<core::slice::Iter<u8>>,
+		) -> Option<ChannelId> {
+			if channel_ids.is_empty() {
+				return None;
+			}
+			let random_idx = {
+				let mut usize_bytes = [0u8; USIZE_LEN];
+				usize_bytes.iter_mut().for_each(|b| {
+					*b = *random_bytes_cycle_iter.next().expect("A cycle never ends")
+				});
+				// Take one more to introduce a slight misalignment.
+				random_bytes_cycle_iter.next().expect("A cycle never ends");
+				usize::from_le_bytes(usize_bytes) % channel_ids.len()
+			};
+			Some(channel_ids.swap_remove(random_idx))
+		}
+
+		while let Some(channel_id) = next_random_id(&mut channel_ids, &mut random_bytes_cycle_iter)
+		{
+			let monitor_holder = if let Some(monitor_holder) = monitors_lock.get(&channel_id) {
+				monitor_holder
+			} else {
+				debug_assert!(
+					false,
+					"Tried to access non-existing monitor, this should never happen"
+				);
+				break;
+			};
+
+			let mut serialized_channel = VecWriter(Vec::new());
+			let min_seen_secret = monitor_holder.monitor.get_min_seen_secret();
+			let counterparty_node_id = monitor_holder.monitor.get_counterparty_node_id();
+			{
+				let inner_lock = monitor_holder.monitor.inner.lock().unwrap();
+
+				write_chanmon_internal(&inner_lock, true, &mut serialized_channel)
+					.expect("can not write Channel Monitor for peer storage message");
+			}
+			let peer_storage_monitor = PeerStorageMonitorHolder {
+				channel_id,
+				min_seen_secret,
+				counterparty_node_id,
+				monitor_bytes: serialized_channel.0,
+			};
+
+			let serialized_length = peer_storage_monitor.serialized_length();
+
+			if current_size + serialized_length > MAX_PEER_STORAGE_SIZE {
+				continue;
+			} else {
+				current_size += serialized_length;
+				monitors_list.push(peer_storage_monitor);
+			}
+		}
+
+		let serialised_channels = monitors_list.encode();
 		let our_peer_storage = DecryptedOurPeerStorage::new(serialised_channels);
 		let cipher = our_peer_storage.encrypt(&self.our_peerstorage_encryption_key, &random_bytes);
 
 		log_debug!(self.logger, "Sending Peer Storage to {}", log_pubkey!(their_node_id));
 		let send_peer_storage_event = MessageSendEvent::SendPeerStorage {
 			node_id: their_node_id,
-			msg: msgs::PeerStorage { data: cipher.into_vec() },
+			msg: PeerStorage { data: cipher.into_vec() },
 		};
 
 		self.pending_send_only_events.lock().unwrap().push(send_peer_storage_event)
@@ -920,6 +998,7 @@ where
 			)
 		});
 
+		#[cfg(peer_storage)]
 		// Send peer storage everytime a new block arrives.
 		for node_id in self.all_counterparty_node_ids() {
 			self.send_peer_storage(node_id);
@@ -1021,6 +1100,7 @@ where
 			)
 		});
 
+		#[cfg(peer_storage)]
 		// Send peer storage everytime a new block arrives.
 		for node_id in self.all_counterparty_node_ids() {
 			self.send_peer_storage(node_id);
