@@ -565,6 +565,13 @@ enum OnchainEvent {
 		/// output (and generate a SpendableOutput event).
 		on_to_local_output_csv: Option<u16>,
 	},
+	/// An alternative funding transaction (due to a splice/RBF) has confirmed but can no longer be
+	/// locked now as the monitor is no longer allowing updates. Note that we wait to promote the
+	/// corresponding `FundingScope` until we see a
+	/// [`ChannelMonitorUpdateStep::RenegotiatedFundingLocked`], but this event is only applicable
+	/// once [`ChannelMonitor::no_further_updates_allowed`] returns true. We promote the
+	/// `FundingScope` once the funding transaction is irrevocably confirmed.
+	AlternativeFundingConfirmation {},
 }
 
 impl Writeable for OnchainEventEntry {
@@ -609,6 +616,7 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 	(1, MaturingOutput) => {
 		(0, descriptor, required),
 	},
+	(2, AlternativeFundingConfirmation) => {},
 	(3, FundingSpendConfirmation) => {
 		(0, on_local_output_csv, option),
 		(1, commitment_tx_to_counterparty_output, option),
@@ -618,7 +626,6 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 		(2, preimage, option),
 		(4, on_to_local_output_csv, option),
 	},
-
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1280,6 +1287,15 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// commitment transactions, their ordering with respect to each other must remain the same.
 	current_holder_htlc_data: CommitmentHTLCData,
 	prev_holder_htlc_data: Option<CommitmentHTLCData>,
+
+	// Upon confirmation, tracks the txid and confirmation height of a renegotiated funding
+	// transaction found in `Self::pending_funding`. Used to determine which commitment we should
+	// broadcast when necessary.
+	//
+	// "Alternative" in this context means a `FundingScope` other than the currently locked one
+	// found at `Self::funding`. We don't use the term "renegotiated", as the currently locked
+	// `FundingScope` could be one that was renegotiated.
+	alternative_funding_confirmed: Option<(Txid, u32)>,
 }
 
 // Macro helper to access holder commitment HTLC data (including both non-dust and dust) while
@@ -1555,6 +1571,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(29, self.initial_counterparty_commitment_tx, option),
 			(31, self.funding.channel_parameters, required),
 			(32, self.pending_funding, optional_vec),
+			(34, self.alternative_funding_confirmed, option),
 		});
 
 		Ok(())
@@ -1780,6 +1797,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			// There are never any HTLCs in the initial commitment transaction
 			current_holder_htlc_data: CommitmentHTLCData::new(),
 			prev_holder_htlc_data: None,
+
+			alternative_funding_confirmed: None,
 		})
 	}
 
@@ -3815,6 +3834,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		for funding in self.pending_funding.drain(..) {
 			self.outputs_to_watch.remove(&funding.funding_txid());
 		}
+		if let Some((alternative_funding_txid, _)) = self.alternative_funding_confirmed.take() {
+			debug_assert_eq!(alternative_funding_txid, new_funding_txid);
+		}
 
 		Ok(())
 	}
@@ -4873,6 +4895,44 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 
+			// A splice/dual-funded RBF transaction has confirmed. We can't promote the
+			// `FundingScope` scope until we see the
+			// [`ChannelMonitorUpdateStep::RenegotiatedFundingLocked`] for it, but we track the txid
+			// so we know which holder commitment transaction we may need to broadcast.
+			if let Some(_alternative_funding) = self
+				.pending_funding
+				.iter()
+				.find(|funding| funding.funding_txid() == txid)
+			{
+				debug_assert!(self.alternative_funding_confirmed.is_none());
+				debug_assert!(
+					!self.onchain_events_awaiting_threshold_conf.iter()
+						.any(|e| matches!(e.event, OnchainEvent::AlternativeFundingConfirmation {}))
+				);
+				debug_assert!(self.funding_spend_confirmed.is_none());
+				debug_assert!(
+					!self.onchain_events_awaiting_threshold_conf.iter()
+						.any(|e| matches!(e.event, OnchainEvent::FundingSpendConfirmation { .. }))
+				);
+
+				self.alternative_funding_confirmed = Some((txid, height));
+
+				if self.no_further_updates_allowed() {
+					// We can no longer rely on
+					// [`ChannelMonitorUpdateStep::RenegotiatedFundingLocked`] to promote the
+					// scope; do so when the funding is no longer under reorg risk.
+					self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
+						txid,
+						transaction: Some((*tx).clone()),
+						height,
+						block_hash: Some(block_hash),
+						event: OnchainEvent::AlternativeFundingConfirmation {},
+					});
+				}
+
+				continue 'tx_iter;
+			}
+
 			if tx.input.len() == 1 {
 				// Assuming our keys were not leaked (in which case we're screwed no matter what),
 				// commitment transactions and HTLC transactions will all only ever have one input
@@ -5004,7 +5064,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let unmatured_htlcs: Vec<_> = self.onchain_events_awaiting_threshold_conf
 			.iter()
 			.filter_map(|entry| match &entry.event {
-				OnchainEvent::HTLCUpdate { source, .. } => Some(source),
+				OnchainEvent::HTLCUpdate { source, .. } => Some(source.clone()),
 				_ => None,
 			})
 			.collect();
@@ -5019,7 +5079,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					#[cfg(debug_assertions)]
 					{
 						debug_assert!(
-							!unmatured_htlcs.contains(&&source),
+							!unmatured_htlcs.contains(&source),
 							"An unmature HTLC transaction conflicts with a maturing one; failed to \
 							 call either transaction_unconfirmed for the conflicting transaction \
 							 or block_disconnected for a block containing it.");
@@ -5065,6 +5125,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				OnchainEvent::FundingSpendConfirmation { commitment_tx_to_counterparty_output, .. } => {
 					self.funding_spend_confirmed = Some(entry.txid);
 					self.confirmed_commitment_tx_counterparty_output = commitment_tx_to_counterparty_output;
+				},
+				OnchainEvent::AlternativeFundingConfirmation {} => {
+					// An alternative funding transaction has irrevocably confirmed and we're no
+					// longer allowing monitor updates, so promote the `FundingScope` now.
+					debug_assert!(self.no_further_updates_allowed());
+					debug_assert_ne!(self.funding.funding_txid(), entry.txid);
+					if let Err(_) = self.promote_funding(entry.txid) {
+						debug_assert!(false);
+						log_error!(logger, "Missing scope for alternative funding confirmation with txid {}", entry.txid);
+					}
 				},
 			}
 		}
@@ -5178,6 +5248,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		//- maturing spendable output has transaction paying us has been disconnected
 		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height < height);
 
+		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
+		if let Some((_, conf_height)) = self.alternative_funding_confirmed.as_ref() {
+			if *conf_height == height {
+				self.alternative_funding_confirmed.take();
+			}
+		}
+
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.block_disconnected(
@@ -5216,6 +5293,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 
 		debug_assert!(!self.onchain_events_awaiting_threshold_conf.iter().any(|ref entry| entry.txid == *txid));
+
+		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
+		if let Some((alternative_funding_txid, _)) = self.alternative_funding_confirmed.as_ref() {
+			if alternative_funding_txid == txid {
+				self.alternative_funding_confirmed.take();
+			}
+		}
 
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.transaction_unconfirmed(
@@ -5870,6 +5954,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut first_negotiated_funding_txo = RequiredWrapper(None);
 		let mut channel_parameters = None;
 		let mut pending_funding = None;
+		let mut alternative_funding_confirmed = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -5888,6 +5973,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(29, initial_counterparty_commitment_tx, option),
 			(31, channel_parameters, (option: ReadableArgs, None)),
 			(32, pending_funding, optional_vec),
+			(34, alternative_funding_confirmed, option),
 		});
 		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
 			if payment_preimages_with_info.len() != payment_preimages.len() {
@@ -6057,6 +6143,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			current_holder_htlc_data,
 			prev_holder_htlc_data,
+
+			alternative_funding_confirmed,
 		})))
 	}
 }
