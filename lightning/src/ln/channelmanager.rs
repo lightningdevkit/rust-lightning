@@ -8860,7 +8860,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// We can get the channel type at this point already as we'll need it immediately in both the
 		// manual and the automatic acceptance cases.
 		let channel_type = channel::channel_type_from_open_channel(
-			common_fields, &peer_state.latest_features, &self.channel_type_features()
+			common_fields, &self.channel_type_features()
 		).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, common_fields.temporary_channel_id))?;
 
 		// If we're doing manual acceptance checks on the channel, then defer creation until we're sure we want to accept.
@@ -14106,7 +14106,7 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	features.set_basic_mpp_optional();
 	features.set_wumbo_optional();
 	features.set_shutdown_any_segwit_optional();
-	features.set_channel_type_optional();
+	features.set_channel_type_required();
 	features.set_scid_privacy_optional();
 	features.set_zero_conf_optional();
 	features.set_route_blinding_optional();
