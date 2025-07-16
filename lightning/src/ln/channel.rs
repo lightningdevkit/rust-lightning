@@ -2452,6 +2452,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		self.latest_monitor_update_id
 	}
 
+	pub fn get_latest_unblocked_monitor_update_id(&self) -> u64 {
+		if self.blocked_monitor_updates.is_empty() {
+			return self.get_latest_monitor_update_id();
+		}
+		self.blocked_monitor_updates[0].update.update_id - 1
+	}
+
 	pub fn should_announce(&self) -> bool {
 		self.config.announce_for_forwarding
 	}
@@ -3209,7 +3216,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// Creates a set of keys for build_commitment_transaction to generate a transaction which we
 	/// will sign and send to our counterparty.
 	/// If an Err is returned, it is a ChannelError::Close (for get_funding_created)
-	fn build_remote_transaction_keys(&self) -> TxCreationKeys {
+	pub fn build_remote_transaction_keys(&self) -> TxCreationKeys {
 		let revocation_basepoint = &self.get_holder_pubkeys().revocation_basepoint;
 		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
@@ -3767,14 +3774,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		// committed outbound HTLCs, see below.
 		let mut included_htlcs = 0;
 		for ref htlc in context.pending_inbound_htlcs.iter() {
-			if htlc.amount_msat / 1000 <= real_dust_limit_timeout_sat {
+			if htlc.amount_msat / 1000 < real_dust_limit_timeout_sat {
 				continue
 			}
 			included_htlcs += 1;
 		}
 
 		for ref htlc in context.pending_outbound_htlcs.iter() {
-			if htlc.amount_msat / 1000 <= real_dust_limit_success_sat {
+			if htlc.amount_msat / 1000 < real_dust_limit_success_sat {
 				continue
 			}
 			// We only include outbound HTLCs if it will not be included in their next commitment_signed,
@@ -3890,7 +3897,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			// monitor update to the user, even if we return one).
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
 			if !self.channel_state.is_pre_funded_state() {
-				self.latest_monitor_update_id += 1;
+				self.latest_monitor_update_id = self.get_latest_unblocked_monitor_update_id() + 1;
 				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					counterparty_node_id: Some(self.counterparty_node_id),
@@ -5934,6 +5941,7 @@ impl<SP: Deref> Channel<SP> where
 	{
 		assert!(self.context.channel_state.is_monitor_update_in_progress());
 		self.context.channel_state.clear_monitor_update_in_progress();
+		assert_eq!(self.blocked_monitor_updates_pending(), 0);
 
 		// If we're past (or at) the AwaitingChannelReady stage on an outbound channel, try to
 		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
@@ -7128,8 +7136,7 @@ impl<SP: Deref> Channel<SP> where
 
 	/// Gets the latest [`ChannelMonitorUpdate`] ID which has been released and is in-flight.
 	pub fn get_latest_unblocked_monitor_update_id(&self) -> u64 {
-		if self.context.blocked_monitor_updates.is_empty() { return self.context.get_latest_monitor_update_id(); }
-		self.context.blocked_monitor_updates[0].update.update_id - 1
+		self.context.get_latest_unblocked_monitor_update_id()
 	}
 
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
