@@ -25,7 +25,9 @@ use bitcoin::hashes::ripemd160::Hash as Ripemd160;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
 
-use crate::chain::chaininterface::fee_for_weight;
+use crate::chain::chaininterface::{
+	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
+};
 use crate::chain::package::WEIGHT_REVOKED_OUTPUT;
 use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
@@ -242,6 +244,22 @@ pub(crate) fn htlc_tx_fees_sat(feerate_per_kw: u32, num_accepted_htlcs: usize, n
 		0
 	};
 	htlc_tx_fees_sat
+}
+
+/// Returns a fee estimate for the commitment transaction depending on channel type.
+pub(super) fn commitment_sat_per_1000_weight_for_type<F: Deref>(
+	fee_estimator: &LowerBoundedFeeEstimator<F>, channel_type: &ChannelTypeFeatures,
+) -> u32
+where
+	F::Target: FeeEstimator,
+{
+	if channel_type.supports_anchor_zero_fee_commitments() {
+		0
+	} else if channel_type.supports_anchors_zero_fee_htlc_tx() {
+		fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee)
+	} else {
+		fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee)
+	}
 }
 
 // Various functions for key derivation and transaction creation for use within channels. Primarily

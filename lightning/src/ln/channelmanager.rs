@@ -56,6 +56,7 @@ use crate::events::{
 	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
 };
 use crate::events::{FundingInfo, PaidBolt12Invoice};
+use crate::ln::chan_utils::commitment_sat_per_1000_weight_for_type;
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::channel::PendingV2Channel;
@@ -7216,9 +7217,6 @@ where
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut should_persist = NotifyOption::SkipPersistNoEvents;
 
-			let non_anchor_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
-			let anchor_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee);
-
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -7226,12 +7224,7 @@ where
 				for (chan_id, chan) in peer_state.channel_by_id.iter_mut()
 					.filter_map(|(chan_id, chan)| chan.as_funded_mut().map(|chan| (chan_id, chan)))
 				{
-					let is_anchors_chan = chan.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx();
-					let new_feerate = if is_anchors_chan {
-						anchor_feerate
-					} else {
-						non_anchor_feerate
-					};
+					let new_feerate = commitment_sat_per_1000_weight_for_type(&self.fee_estimator, chan.funding.get_channel_type());
 					let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
 					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 				}
@@ -7266,13 +7259,6 @@ where
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut should_persist = NotifyOption::SkipPersistNoEvents;
 
-			let non_anchor_feerate = self
-				.fee_estimator
-				.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
-			let anchor_feerate = self
-				.fee_estimator
-				.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee);
-
 			let mut handle_errors: Vec<(Result<(), _>, _)> = Vec::new();
 			let mut timed_out_mpp_htlcs = Vec::new();
 			let mut pending_peers_awaiting_removal = Vec::new();
@@ -7287,11 +7273,7 @@ where
 					peer_state.channel_by_id.retain(|chan_id, chan| {
 						match chan.as_funded_mut() {
 							Some(funded_chan) => {
-								let new_feerate = if funded_chan.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-									anchor_feerate
-								} else {
-									non_anchor_feerate
-								};
+								let new_feerate = commitment_sat_per_1000_weight_for_type(&self.fee_estimator, funded_chan.funding.get_channel_type());
 								let chan_needs_persist = self.update_channel_fee(chan_id, funded_chan, new_feerate);
 								if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 

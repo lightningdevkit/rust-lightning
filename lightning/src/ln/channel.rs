@@ -41,10 +41,11 @@ use crate::ln::chan_utils;
 #[cfg(splicing)]
 use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 use crate::ln::chan_utils::{
-	get_commitment_transaction_number_obscure_factor, htlc_success_tx_weight,
-	htlc_timeout_tx_weight, max_htlcs, ChannelPublicKeys, ChannelTransactionParameters,
-	ClosingTransaction, CommitmentTransaction, CounterpartyChannelTransactionParameters,
-	CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HolderCommitmentTransaction,
+	commitment_sat_per_1000_weight_for_type, get_commitment_transaction_number_obscure_factor,
+	htlc_success_tx_weight, htlc_timeout_tx_weight, max_htlcs, ChannelPublicKeys,
+	ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
+	CounterpartyChannelTransactionParameters, CounterpartyCommitmentSecrets,
+	HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::channel_state::{
 	ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails,
@@ -3398,16 +3399,7 @@ where
 		debug_assert!(!channel_type.supports_any_optional_bits());
 		debug_assert!(!channel_type.requires_unknown_bits_from(&channelmanager::provided_channel_type_features(&config)));
 
-		let commitment_feerate = if channel_type.supports_anchor_zero_fee_commitments() {
-			0
-		} else {
-			let commitment_conf_target = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-				ConfirmationTarget::AnchorChannelFee
-			} else {
-				ConfirmationTarget::NonAnchorChannelFee
-			};
-			fee_estimator.bounded_sat_per_1000_weight(commitment_conf_target)
-		};
+		let commitment_feerate = commitment_sat_per_1000_weight_for_type(&fee_estimator, &channel_type);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
 		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
@@ -5449,20 +5441,7 @@ where
 
 		let next_channel_type = get_initial_channel_type(user_config, &eligible_features);
 
-		// Note that we can't get `anchor_zero_fee_commitments` type here, which requires zero
-		// fees, because we downgrade from this channel type first. If there were a superior
-		// channel type that downgrades to `anchor_zero_fee_commitments`, we'd need to handle
-		// fee setting differently here. If we proceeded to open a `anchor_zero_fee_commitments`
-		// channel with non-zero fees, we could produce a non-standard commitment transaction that
-		// puts us at risk of losing funds. We would expect our peer to reject such a channel
-		// open, but we don't want to rely on their validation.
-		assert!(!next_channel_type.supports_anchor_zero_fee_commitments());
-		let conf_target = if next_channel_type.supports_anchors_zero_fee_htlc_tx() {
-			ConfirmationTarget::AnchorChannelFee
-		} else {
-			ConfirmationTarget::NonAnchorChannelFee
-		};
-		self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(conf_target);
+		self.feerate_per_kw = commitment_sat_per_1000_weight_for_type(&fee_estimator, &next_channel_type);
 	 	funding.channel_transaction_parameters.channel_type_features = next_channel_type;
 
 		Ok(())
