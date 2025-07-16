@@ -7991,7 +7991,11 @@ where
 			})
 			.and_then(|signing_session| {
 				signing_session
-					.provide_holder_witnesses(self.context.channel_id, witnesses)
+					.provide_holder_witnesses(
+						&self.context.secp_ctx,
+						self.context.channel_id,
+						witnesses,
+					)
 					.map_err(|err| APIError::APIMisuseError { err })
 			})?;
 

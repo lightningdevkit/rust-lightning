@@ -5933,19 +5933,32 @@ where
 	/// counterparty's signature(s) the funding transaction will automatically be broadcast via the
 	/// [`BroadcasterInterface`] provided when this `ChannelManager` was constructed.
 	///
-	/// `SIGHASH_ALL` MUST be used for all signatures when providing signatures.
+	/// `SIGHASH_ALL` MUST be used for all signatures when providing signatures, otherwise your
+	/// funds can be held hostage!
 	///
-	/// <div class="warning">
-	/// WARNING: LDK makes no attempt to prevent the counterparty from using non-standard inputs which
-	///  will prevent the funding transaction from being relayed on the bitcoin network and hence being
-	///  confirmed.
-	/// </div>
+	/// LDK checks the following:
+	///  * Each input spends an output that is one of P2WPKH, P2WSH, or P2TR.
+	///    These were already checked by LDK when the inputs to be contributed were provided.
+	///  * All signatures use the `SIGHASH_ALL` sighash type.
+	///  * P2WPKH and P2TR key path spends are valid (verifies signatures)
+	///
+	/// NOTE:
+	///  * When checking P2WSH spends, LDK tries to decode 70-72 byte witness elements as ECDSA
+	///    signatures with a sighash flag. If the internal DER-decoding fails, then LDK just
+	///    assumes it wasn't a signature and carries with checks. If the element can be decoded
+	///    as an ECDSA signature, the the sighash flag must be `SIGHASH_ALL`.
+	///  * When checking P2TR script-path spends, LDK assumes all elements of exactly 65 bytes
+	///    with the last byte matching any valid sighash flag byte are schnorr signatures and checks
+	///    that the sighash type is `SIGHASH_ALL`. If the last byte is not any valid sighash flag, the
+	///    element is assumed not to be a signature and is ignored. Elements of 64 bytes are not
+	///    checked because if they were schnorr signatures then they would implicitly be `SIGHASH_DEFAULT`
+	///    which is an alias of `SIGHASH_ALL`.
 	///
 	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
 	/// `counterparty_node_id` is provided.
 	///
 	/// Returns [`APIMisuseError`] when a channel is not in a state where it is expecting funding
-	/// signatures.
+	/// signatures or if any of the checks described above fail.
 	///
 	/// [`FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
