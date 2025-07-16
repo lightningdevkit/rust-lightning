@@ -1403,7 +1403,6 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
-	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
@@ -1413,7 +1412,9 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 		U48(self.commitment_transaction_number_obscure_factor).write(writer)?;
 
 		self.destination_script.write(writer)?;
-		if let Some(ref broadcasted_holder_revokable_script) = self.broadcasted_holder_revokable_script {
+		if let Some(ref broadcasted_holder_revokable_script) =
+			self.broadcasted_holder_revokable_script
+		{
 			writer.write_all(&[0; 1])?;
 			broadcasted_holder_revokable_script.0.write(writer)?;
 			broadcasted_holder_revokable_script.1.write(writer)?;
@@ -1476,27 +1477,34 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		writer.write_all(&(self.funding.counterparty_claimable_outpoints.len() as u64).to_be_bytes())?;
+		writer.write_all(
+			&(self.funding.counterparty_claimable_outpoints.len() as u64).to_be_bytes(),
+		)?;
 		for (ref txid, ref htlc_infos) in self.funding.counterparty_claimable_outpoints.iter() {
 			writer.write_all(&txid[..])?;
 			writer.write_all(&(htlc_infos.len() as u64).to_be_bytes())?;
 			for &(ref htlc_output, ref htlc_source) in htlc_infos.iter() {
-				debug_assert!(htlc_source.is_none() || Some(**txid) == self.funding.current_counterparty_commitment_txid
+				debug_assert!(
+					htlc_source.is_none()
+						|| Some(**txid) == self.funding.current_counterparty_commitment_txid
 						|| Some(**txid) == self.funding.prev_counterparty_commitment_txid,
-					"HTLC Sources for all revoked commitment transactions should be none!");
+					"HTLC Sources for all revoked commitment transactions should be none!"
+				);
 				serialize_htlc_in_commitment!(htlc_output);
 				htlc_source.as_ref().map(|b| b.as_ref()).write(writer)?;
 			}
 		}
 
-		writer.write_all(&(self.counterparty_commitment_txn_on_chain.len() as u64).to_be_bytes())?;
+		writer
+			.write_all(&(self.counterparty_commitment_txn_on_chain.len() as u64).to_be_bytes())?;
 		for (ref txid, commitment_number) in self.counterparty_commitment_txn_on_chain.iter() {
 			writer.write_all(&txid[..])?;
 			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 		}
 
 		writer.write_all(&(self.counterparty_hash_commitment_number.len() as u64).to_be_bytes())?;
-		for (ref payment_hash, commitment_number) in self.counterparty_hash_commitment_number.iter() {
+		for (ref payment_hash, commitment_number) in self.counterparty_hash_commitment_number.iter()
+		{
 			writer.write_all(&payment_hash.0[..])?;
 			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 		}
@@ -1504,17 +1512,22 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 		if let Some(holder_commitment_tx) = &self.funding.prev_holder_commitment_tx {
 			writer.write_all(&[1; 1])?;
 			write_legacy_holder_commitment_data(
-				writer, holder_commitment_tx, &self.prev_holder_htlc_data.as_ref().unwrap(),
+				writer,
+				holder_commitment_tx,
+				&self.prev_holder_htlc_data.as_ref().unwrap(),
 			)?;
 		} else {
 			writer.write_all(&[0; 1])?;
 		}
 
 		write_legacy_holder_commitment_data(
-			writer, &self.funding.current_holder_commitment_tx, &self.current_holder_htlc_data,
+			writer,
+			&self.funding.current_holder_commitment_tx,
+			&self.current_holder_htlc_data,
 		)?;
 
-		writer.write_all(&byte_utils::be48_to_array(self.current_counterparty_commitment_number))?;
+		writer
+			.write_all(&byte_utils::be48_to_array(self.current_counterparty_commitment_number))?;
 		writer.write_all(&byte_utils::be48_to_array(self.current_holder_commitment_number))?;
 
 		writer.write_all(&(self.payment_preimages.len() as u64).to_be_bytes())?;
@@ -1522,12 +1535,19 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			writer.write_all(&payment_preimage.0[..])?;
 		}
 
-		writer.write_all(&(self.pending_monitor_events.iter().filter(|ev| match ev {
-			MonitorEvent::HTLCEvent(_) => true,
-			MonitorEvent::HolderForceClosed(_) => true,
-			MonitorEvent::HolderForceClosedWithInfo { .. } => true,
-			_ => false,
-		}).count() as u64).to_be_bytes())?;
+		writer.write_all(
+			&(self
+				.pending_monitor_events
+				.iter()
+				.filter(|ev| match ev {
+					MonitorEvent::HTLCEvent(_) => true,
+					MonitorEvent::HolderForceClosed(_) => true,
+					MonitorEvent::HolderForceClosedWithInfo { .. } => true,
+					_ => false,
+				})
+				.count() as u64)
+				.to_be_bytes(),
+		)?;
 		for event in self.pending_monitor_events.iter() {
 			match event {
 				MonitorEvent::HTLCEvent(upd) => {
@@ -1551,7 +1571,8 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 		self.best_block.block_hash.write(writer)?;
 		writer.write_all(&self.best_block.height.to_be_bytes())?;
 
-		writer.write_all(&(self.onchain_events_awaiting_threshold_conf.len() as u64).to_be_bytes())?;
+		writer
+			.write_all(&(self.onchain_events_awaiting_threshold_conf.len() as u64).to_be_bytes())?;
 		for ref entry in self.onchain_events_awaiting_threshold_conf.iter() {
 			entry.write(writer)?;
 		}
@@ -1579,7 +1600,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 				let mut pending_monitor_events = self.pending_monitor_events.clone();
 				pending_monitor_events.push(MonitorEvent::HolderForceClosed(*outpoint));
 				pending_monitor_events
-			}
+			},
 			_ => self.pending_monitor_events.clone(),
 		};
 
