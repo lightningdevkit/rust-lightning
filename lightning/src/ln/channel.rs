@@ -7738,6 +7738,8 @@ where
 			})
 			.and_then(|signing_session| {
 				signing_session
+					.verify_interactive_tx_signatures(&self.context.secp_ctx, &witnesses)?;
+				signing_session
 					.provide_holder_witnesses(self.context.channel_id, witnesses)
 					.map_err(|err| APIError::APIMisuseError { err })
 			})

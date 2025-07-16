@@ -9,15 +9,21 @@
 
 use crate::io_extras::sink;
 use crate::prelude::*;
+use crate::util::errors::APIError;
 
 use bitcoin::absolute::LockTime as AbsoluteLockTime;
 use bitcoin::amount::Amount;
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
+use bitcoin::key::Secp256k1;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{Message, PublicKey};
+use bitcoin::sighash::SighashCache;
 use bitcoin::transaction::Version;
-use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Weight, Witness};
+use bitcoin::{
+	sighash, EcdsaSighashType, OutPoint, ScriptBuf, Sequence, TapSighashType, Transaction, TxIn,
+	TxOut, Txid, Weight, Witness, XOnlyPublicKey,
+};
 
 use crate::chain::chaininterface::fee_for_weight;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
@@ -213,6 +219,16 @@ pub(crate) struct NegotiatedTxInput {
 	prev_output: TxOut,
 }
 
+impl NegotiatedTxInput {
+	pub(super) fn is_local(&self, holder_is_initiator: bool) -> bool {
+		!is_serial_id_valid_for_counterparty(holder_is_initiator, self.serial_id)
+	}
+
+	pub(super) fn prev_output(&self) -> &TxOut {
+		&self.prev_output
+	}
+}
+
 impl_writeable_tlv_based!(NegotiatedTxInput, {
 	(1, serial_id, required),
 	(3, txin, required),
@@ -363,6 +379,10 @@ impl ConstructedTransaction {
 			.zip(witnesses)
 			.for_each(|(input, witness)| input.witness = witness);
 	}
+
+	pub fn holder_is_initiator(&self) -> bool {
+		self.holder_is_initiator
+	}
 }
 
 /// The InteractiveTxSigningSession coordinates the signing flow of interactively constructed
@@ -512,6 +532,175 @@ impl InteractiveTxSigningSession {
 			input: inputs.iter().cloned().map(|input| input.txin).collect(),
 			output: outputs.iter().cloned().map(|output| output.into_tx_out()).collect(),
 		}
+	}
+
+	pub fn verify_interactive_tx_signatures(
+		&self, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, witnesses: &Vec<Witness>,
+	) -> Result<(), APIError> {
+		let unsigned_tx = self.unsigned_tx();
+		let built_tx = unsigned_tx.build_unsigned_tx();
+		let prev_outputs: Vec<&TxOut> =
+			unsigned_tx.inputs().map(|input| input.prev_output()).collect::<Vec<_>>();
+		let all_prevouts = sighash::Prevouts::All(&prev_outputs[..]);
+
+		let mut cache = SighashCache::new(&built_tx);
+
+		let script_pubkeys = unsigned_tx
+			.inputs()
+			.enumerate()
+			.filter(|(_, input)| input.is_local(unsigned_tx.holder_is_initiator()));
+
+		'inputs: for ((input_idx, input), witness) in script_pubkeys.zip(witnesses) {
+			if witness.is_empty() {
+				let err = format!("The witness for input at index {input_idx} is empty");
+				return Err(APIError::APIMisuseError { err });
+			}
+
+			let prev_output = input.prev_output();
+			let script_pubkey = &prev_output.script_pubkey;
+
+			// P2WPKH
+			if script_pubkey.is_p2wpkh() {
+				if witness.len() != 2 {
+					let err = format!("The witness for input at index {input_idx} does not have the correct number of elements for a P2WPKH spend. Expected 2 got {}", witness.len());
+					return Err(APIError::APIMisuseError { err });
+				}
+				let pubkey = PublicKey::from_slice(&witness[1]).map_err(|_| {
+					let err = format!("The witness for input at index {input_idx} contains an invalid ECDSA public key");
+					APIError::APIMisuseError { err }
+				})?;
+
+				let sig =
+					bitcoin::ecdsa::Signature::from_slice(&witness[0]).map_err(|_| {
+						let err = format!("The witness for input at index {input_idx} contains an invalid signature");
+						APIError::APIMisuseError { err }
+					})?;
+				if !matches!(sig.sighash_type, EcdsaSighashType::All) {
+					let err = format!("Signature does not use SIGHASH_ALL for input at index {input_idx} for P2WPKH spend");
+					return Err(APIError::APIMisuseError { err });
+				}
+
+				let sighash = cache
+					.p2wpkh_signature_hash(
+						input_idx,
+						script_pubkey,
+						prev_output.value,
+						EcdsaSighashType::All,
+					)
+					.map_err(|_| {
+						debug_assert!(false, "Funding transaction sighash should be calculable");
+						APIError::APIMisuseError {
+							err: "The transaction sighash could not be calculated".to_string(),
+						}
+					})?;
+				let msg = Message::from_digest_slice(&sighash[..])
+					.expect("Sighash is a SHA256 which is 32 bytes long");
+				secp_ctx.verify_ecdsa(&msg, &sig.signature, &pubkey).map_err(|_| {
+					let err = format!("Failed signature verification for input at index {input_idx} for P2WPKH spend");
+					APIError::APIMisuseError { err }
+				})?;
+
+				continue 'inputs;
+			}
+
+			// P2TR key path spend witness includes signature and optional annex
+			if script_pubkey.is_p2tr() && witness.len() == 1 {
+				let pubkey = match script_pubkey.instructions().nth(1) {
+						Some(Ok(bitcoin::script::Instruction::PushBytes(push_bytes))) => {
+							XOnlyPublicKey::from_slice(push_bytes.as_bytes())
+						},
+						_ => {
+							let err = format!("The scriptPubKey of the previous output for input at index {input_idx} for a P2TR key path spend is invalid");
+							return Err(APIError::APIMisuseError { err })
+						},
+					}.map_err(|_| {
+						let err = format!("The scriptPubKey of the previous output for input at index {input_idx} for a P2TR key path spend has an invalid public key");
+						APIError::APIMisuseError { err }
+					})?;
+
+				let sig = bitcoin::taproot::Signature::from_slice(&witness[0]).map_err(|_| {
+					let err = format!("The witness for input at index {input_idx} for a P2TR key path spend has an invalid signature");
+					APIError::APIMisuseError { err }
+				})?;
+				if !matches!(sig.sighash_type, TapSighashType::Default | TapSighashType::All) {
+					let err = format!("Signature does not use SIGHASH_DEFAULT or SIGHASH_ALL for input at index {input_idx} for P2TR key path spend");
+					return Err(APIError::APIMisuseError { err });
+				}
+
+				let sighash = cache
+					.taproot_key_spend_signature_hash(input_idx, &all_prevouts, sig.sighash_type)
+					.map_err(|_| {
+						debug_assert!(false, "Funding transaction sighash should be calculable");
+						APIError::APIMisuseError {
+							err: "The transaction sighash could not be calculated".to_string(),
+						}
+					})?;
+				let msg = Message::from_digest_slice(&sighash[..])
+					.expect("Sighash is a SHA256 which is 32 bytes long");
+				secp_ctx.verify_schnorr(&sig.signature, &msg, &pubkey).map_err(|_| {
+					let err = format!("Failed signature verification for input at index {input_idx} for P2TR key path spend");
+					APIError::APIMisuseError { err }
+				})?;
+
+				continue 'inputs;
+			}
+
+			// P2WSH - No validation just sighash checks
+			if script_pubkey.is_p2wsh() {
+				'elements: for element in witness {
+					match element.len() {
+						// Possibly a DER-encoded ECDSA signature with a sighash type byte assuming low-S
+						70..=72 => {
+							if bitcoin::ecdsa::Signature::from_slice(element)
+								.map(|sig| matches!(sig.sighash_type, EcdsaSighashType::All))
+								.unwrap_or(true)
+							{
+								continue 'elements;
+							}
+
+							let err = format!("An ECDSA signature in the witness for input {input_idx} does not use SIGHASH_ALL");
+							return Err(APIError::APIMisuseError { err });
+						},
+						_ => continue 'elements,
+					}
+				}
+				continue 'inputs;
+			}
+
+			// P2TR script path - No validation, just sighash checks
+			if script_pubkey.is_p2tr() {
+				'elements: for element in witness {
+					match element.len() {
+						// Schnorr sig + sighash type byte.
+						// If this were just 64 bytes, it would implicitly be SIGHASH_DEFAULT (= SIGHASH_ALL)
+						65 => {
+							if bitcoin::taproot::Signature::from_slice(element)
+								.map(|sig| matches!(sig.sighash_type, TapSighashType::All))
+								.unwrap_or(true)
+							{
+								continue 'elements;
+							}
+
+							let err = format!("A (likely) Schnorr signature in the witness for input {input_idx} does not use SIGHASH_DEFAULT or SIGHASH_ALL");
+							return Err(APIError::APIMisuseError { err });
+						},
+						_ => continue 'elements,
+					}
+				}
+				continue 'inputs;
+			}
+
+			debug_assert!(
+				false,
+				"We don't allow contributing inputs that are not spending P2WPKH, P2WSH, or P2TR"
+			);
+			let err = format!(
+				"Input at index {input_idx} does not spend from one of P2WPKH, P2WSH, or P2TR"
+			);
+			return Err(APIError::APIMisuseError { err });
+		}
+
+		Ok(())
 	}
 }
 
@@ -1317,13 +1506,6 @@ impl InputOwned {
 		}
 	}
 
-	pub fn into_tx_in(self) -> TxIn {
-		match self {
-			InputOwned::Single(single) => single.input,
-			InputOwned::Shared(shared) => shared.input,
-		}
-	}
-
 	pub fn value(&self) -> u64 {
 		match self {
 			InputOwned::Single(single) => single.prev_output.value.to_sat(),
@@ -1525,10 +1707,6 @@ impl InteractiveTxInput {
 
 	pub fn txin_mut(&mut self) -> &mut TxIn {
 		self.input.tx_in_mut()
-	}
-
-	pub fn into_txin(self) -> TxIn {
-		self.input.into_tx_in()
 	}
 
 	pub fn value(&self) -> u64 {
@@ -1992,23 +2170,27 @@ mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::sign::EntropySource;
 	use crate::util::atomic_counter::AtomicCounter;
+	use crate::util::errors::APIError;
 	use crate::util::ser::TransactionU16LenLimited;
 	use bitcoin::absolute::LockTime as AbsoluteLockTime;
 	use bitcoin::amount::Amount;
 	use bitcoin::hashes::Hash;
-	use bitcoin::key::UntweakedPublicKey;
-	use bitcoin::opcodes;
+	use bitcoin::hex::FromHex;
+	use bitcoin::key::{TweakedPublicKey, UntweakedPublicKey};
 	use bitcoin::script::Builder;
 	use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 	use bitcoin::transaction::Version;
+	use bitcoin::{opcodes, Txid, WScriptHash, Weight, XOnlyPublicKey};
 	use bitcoin::{
 		OutPoint, PubkeyHash, ScriptBuf, Sequence, Transaction, TxIn, TxOut, WPubkeyHash, Witness,
 	};
 	use core::ops::Deref;
+	use core::str::FromStr;
 
 	use super::{
-		get_output_weight, P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
-		P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
+		get_output_weight, AddingRole, ConstructedTransaction, InteractiveTxOutput,
+		InteractiveTxSigningSession, NegotiatedTxInput, OutputOwned, P2TR_INPUT_WEIGHT_LOWER_BOUND,
+		P2WPKH_INPUT_WEIGHT_LOWER_BOUND, P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
 	};
 
 	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
@@ -3093,6 +3275,333 @@ mod tests {
 				100,
 			);
 			assert_eq!(res, Ok(Some(262)));
+		}
+	}
+
+	#[test]
+	fn test_verify_tx_signatures_p2tr() {
+		let witnesses = vec![
+			Witness::from_slice(&[
+				&<Vec<u8>>::from_hex("e612c3728bcc6ed6c4ef67238e57f0332fa77a4c2e76db183e28b7f3cea5eab6b235b6f0cbab8035fd79b3c1990c5c3f3a56e2c7d5e4609b390ddaad8ac1c1d7").unwrap(),
+			]),
+			Witness::from_slice(&[
+				&<Vec<u8>>::from_hex("30440220036e88464b21c8bd819d97ae746622da00053ec1374a932f33aa1ab60170c9da022041cabc146ebdd12f6316a2f72f870771e8e6ff51f3cadad4027eab2e4437701101").unwrap(),
+				&<Vec<u8>>::from_hex("030c7196376bc1df61b6da6ee711868fd30e370dd273332bfb02a2287d11e2e9c5").unwrap(),
+			]),
+			// P2WSH (Swept lightning anchor)
+			Witness::from_slice(&[
+				&vec![], // empty
+				&<Vec<u8>>::from_hex("2102fd481d39bdbc090313b530fddfd1aa004a9e3263da1406cf806670fdeb8ebb91ac736460b268").unwrap(),
+			]),
+			// P2WSH (Swept lightning anchor)
+			Witness::from_slice(&[
+				&vec![], // empty
+				&<Vec<u8>>::from_hex("2102fd481d39bdbc090313b530fddfd1aa004a9e3263da1406cf806670fdeb8ebb91ac736460b268").unwrap(),
+			]),
+			// P2WSH (Swept lightning anchor)
+			Witness::from_slice(&[
+				&vec![], // empty
+				&<Vec<u8>>::from_hex("2102fd481d39bdbc090313b530fddfd1aa004a9e3263da1406cf806670fdeb8ebb91ac736460b268").unwrap(),
+			])
+		];
+
+		let inputs = vec![
+			NegotiatedTxInput {
+				serial_id: 0,
+				txin: TxIn {
+					previous_output: OutPoint {
+						txid: Txid::from_str(
+							"a51dbae3855a7bfcc7ebb746cbfe16f2d81b6e2d7360d668958ac8eaa4f88ed0",
+						)
+						.unwrap(),
+						vout: 0,
+					},
+					script_sig: ScriptBuf::new(),
+					sequence: Sequence(0xFFFFFFFF),
+					witness: Witness::new(),
+				},
+				weight: Weight::from_wu(0),
+				prev_output: TxOut {
+					value: Amount::from_sat(17414236),
+					script_pubkey: ScriptBuf::new_p2tr_tweaked(
+						TweakedPublicKey::dangerous_assume_tweaked(XOnlyPublicKey::from_slice(
+							&<[u8; 32]>::from_hex(
+								"7434164bd41e2185651f084b6a79e11ce57abe69093b7f939bb1c8786e5d233b",
+							)
+							.unwrap(),
+						).unwrap()),
+					),
+				},
+			},
+			NegotiatedTxInput {
+				serial_id: 2,
+				txin: TxIn {
+					previous_output: OutPoint {
+						txid: Txid::from_str(
+							"242e3e6441abe5f16b5c5903ce217f7e8205e061ac2c60f012318785c09ce03a",
+						)
+						.unwrap(),
+						vout: 0,
+					},
+					script_sig: ScriptBuf::new(),
+					sequence: Sequence(0xFFFFFFFF),
+					witness: Witness::new(),
+				},
+				weight: Weight::from_wu(0),
+				prev_output: TxOut {
+					value: Amount::from_sat(227321),
+					script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array(
+						<[u8; 20]>::from_hex("92b8c3a56fac121ddcdffbc85b02fb9ef681038a").unwrap(),
+					)),
+				},
+			},
+			NegotiatedTxInput {
+				serial_id: 4,
+				txin: TxIn {
+					previous_output: OutPoint {
+						txid: Txid::from_str(
+							"725490dc8a5f0221a614eef0070307992e395922ab907e79274f8cb2d2200d03",
+						)
+						.unwrap(),
+						vout: 0,
+					},
+					script_sig: ScriptBuf::new(),
+					sequence: Sequence(0x10),
+					witness: Witness::new(),
+				},
+				weight: Weight::from_wu(0),
+				prev_output: TxOut {
+					value: Amount::from_sat(330),
+					script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array(
+						<[u8; 32]>::from_hex(
+							"97a4f4b73947411e18486b7182063f160f9b3a238664b91ff70a56eaffca8b9d",
+						)
+						.unwrap(),
+					)),
+				},
+			},
+			NegotiatedTxInput {
+				serial_id: 6,
+				txin: TxIn {
+					previous_output: OutPoint {
+						txid: Txid::from_str(
+							"993a45407e8360aabf3f3a7f5987a2246ed96ffa718e29c28ade1061b0782e7d",
+						)
+						.unwrap(),
+						vout: 0,
+					},
+					script_sig: ScriptBuf::new(),
+					sequence: Sequence(0x10),
+					witness: Witness::new(),
+				},
+				weight: Weight::from_wu(0),
+				prev_output: TxOut {
+					value: Amount::from_sat(330),
+					script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array(
+						<[u8; 32]>::from_hex(
+							"0d0f49839e6bbf78271ea31d979895758ed66312b4fbab215da8a68a951f36ee",
+						)
+						.unwrap(),
+					)),
+				},
+			},
+			NegotiatedTxInput {
+				serial_id: 8,
+				txin: TxIn {
+					previous_output: OutPoint {
+						txid: Txid::from_str(
+							"993a45407e8360aabf3f3a7f5987a2246ed96ffa718e29c28ade1061b0782e7d",
+						)
+						.unwrap(),
+						vout: 1,
+					},
+					script_sig: ScriptBuf::new(),
+					sequence: Sequence(0x10),
+					witness: Witness::new(),
+				},
+				weight: Weight::from_wu(0),
+				prev_output: TxOut {
+					value: Amount::from_sat(330),
+					script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array(
+						<[u8; 32]>::from_hex(
+							"f2c42991382f63a20308c35ce67133cd8564ede8f8615062d814ec69112ddd46",
+						)
+						.unwrap(),
+					)),
+				},
+			},
+		];
+		let outputs: Vec<InteractiveTxOutput> =
+			vec![InteractiveTxOutput {
+			serial_id: 10,
+			added_by: AddingRole::Local,
+			output: OutputOwned::Single(TxOut {
+				value: Amount::from_sat(17641732),
+				script_pubkey: ScriptBuf::new_p2tr_tweaked(
+					TweakedPublicKey::dangerous_assume_tweaked(XOnlyPublicKey::from_slice(
+						&<[u8; 32]>::from_hex(
+							"7434164bd41e2185651f084b6a79e11ce57abe69093b7f939bb1c8786e5d233b",
+						)
+						.unwrap(),
+					).unwrap()),
+				),
+			}),
+		}];
+		let unsigned_tx = ConstructedTransaction {
+			holder_is_initiator: true,
+			inputs,
+			outputs,
+			local_inputs_value_satoshis: 0,
+			local_outputs_value_satoshis: 0,
+			remote_inputs_value_satoshis: 0,
+			remote_outputs_value_satoshis: 0,
+			lock_time: AbsoluteLockTime::from_consensus(0),
+			holder_sends_tx_signatures_first: false,
+		};
+
+		let secp_ctx = Secp256k1::new();
+
+		let session = InteractiveTxSigningSession {
+			unsigned_tx,
+			holder_sends_tx_signatures_first: false,
+			has_received_commitment_signed: false,
+			has_received_tx_signatures: false,
+			holder_tx_signatures: None,
+		};
+
+		assert!(session.verify_interactive_tx_signatures(&secp_ctx, &witnesses).is_ok());
+	}
+
+	#[test]
+	fn test_verify_tx_signatures_p2wpkh_anyonecanpay_should_fail() {
+		// Using on-chain transaction: fe62d242fbdd57a3bdb0d158b80e3c77754f17653eb23e3b64203076e6966cae
+		let witnesses = vec![
+			Witness::from_slice(&[
+				&<Vec<u8>>::from_hex("3045022100d84f8fb0f82c22128ba75b54e6c1be27aeee967acfe0a6e624a47acdf20cf3c102200248271599dba21f24ab8593529ca95a2f27aebd953b12c5f8aff3809c97439981").unwrap(),
+				&<Vec<u8>>::from_hex("025ede2bca4b5a86da349fb8827eec4bb95afb513bb8c260867bbd55e7d0a2f48d").unwrap(),
+			])
+		];
+
+		let inputs = vec![NegotiatedTxInput {
+			serial_id: 0,
+			txin: TxIn {
+				previous_output: OutPoint {
+					txid: Txid::from_str(
+						"c0b69c20f3ccb8763770348478b0ec66f135a0100b69d069e0164c42a8a98908",
+					)
+					.unwrap(),
+					vout: 0,
+				},
+				script_sig: ScriptBuf::new(),
+				sequence: Sequence(0xFFFFFFFD),
+				witness: Witness::new(),
+			},
+			weight: Weight::from_wu(0),
+			prev_output: TxOut {
+				value: Amount::from_sat(228980),
+				script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array(
+					<[u8; 20]>::from_hex("cc054f448ca15a5aa1b21f2adb6607fec4410b6d").unwrap(),
+				)),
+			},
+		}];
+
+		let outputs: Vec<InteractiveTxOutput> = vec![
+			InteractiveTxOutput {
+				serial_id: 2,
+				added_by: AddingRole::Local,
+				output: OutputOwned::Single(TxOut {
+					value: Amount::from_sat(547),
+					script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array(
+						<[u8; 20]>::from_hex("bd42e2a4f83e5d905bccf4dcff7bb88e51474905").unwrap(),
+					)),
+				}),
+			},
+			InteractiveTxOutput {
+				serial_id: 4,
+				added_by: AddingRole::Local,
+				output: OutputOwned::Single(TxOut {
+					value: Amount::from_sat(330),
+					script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array(
+						<[u8; 32]>::from_hex(
+							"003d7374616d703a7b2270223a227372632d3230222c226f70223a227472616e",
+						)
+						.unwrap(),
+					)),
+				}),
+			},
+			InteractiveTxOutput {
+				serial_id: 6,
+				added_by: AddingRole::Local,
+				output: OutputOwned::Single(TxOut {
+					value: Amount::from_sat(330),
+					script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array(
+						<[u8; 32]>::from_hex(
+							"73666572222c227469636b223a2249524f4e42222c22616d74223a3130307d00",
+						)
+						.unwrap(),
+					)),
+				}),
+			},
+			InteractiveTxOutput {
+				serial_id: 8,
+				added_by: AddingRole::Local,
+				output: OutputOwned::Single(TxOut {
+					value: Amount::from_sat(217956),
+					script_pubkey: ScriptBuf::new_p2tr_tweaked(
+						TweakedPublicKey::dangerous_assume_tweaked(XOnlyPublicKey::from_slice(
+							&<[u8; 32]>::from_hex(
+								"2838c8f586f4dcdb5fb080a9c28497287e46cab65c8dcf9de27e659afe2564a6",
+							)
+							.unwrap(),
+						).unwrap()),
+					),
+				}),
+			},
+			InteractiveTxOutput {
+				serial_id: 10,
+				added_by: AddingRole::Local,
+				output: OutputOwned::Single(TxOut {
+					value: Amount::from_sat(8980),
+					script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array(
+						<[u8; 20]>::from_hex(
+							"cc054f448ca15a5aa1b21f2adb6607fec4410b6d",
+						)
+						.unwrap(),
+					)),
+				}),
+			},
+		];
+
+		let unsigned_tx = ConstructedTransaction {
+			holder_is_initiator: true,
+			inputs,
+			outputs,
+			local_inputs_value_satoshis: 0,
+			local_outputs_value_satoshis: 0,
+			remote_inputs_value_satoshis: 0,
+			remote_outputs_value_satoshis: 0,
+			lock_time: AbsoluteLockTime::from_consensus(0),
+			holder_sends_tx_signatures_first: false,
+		};
+
+		let secp_ctx = Secp256k1::new();
+
+		let session = InteractiveTxSigningSession {
+			unsigned_tx,
+			holder_sends_tx_signatures_first: false,
+			has_received_commitment_signed: false,
+			has_received_tx_signatures: false,
+			holder_tx_signatures: None,
+		};
+
+		match session.verify_interactive_tx_signatures(&secp_ctx, &witnesses) {
+			Ok(_) => panic!("Should not be valid"),
+			Err(err) => {
+				assert_eq!(
+					err,
+					APIError::APIMisuseError { err: "Signature does not use SIGHASH_ALL for input at index 0 for P2WPKH spend".to_string() }
+				);
+			},
 		}
 	}
 }
