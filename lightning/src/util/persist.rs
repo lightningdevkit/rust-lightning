@@ -9,6 +9,7 @@
 //! and [`ChannelMonitor`] all in one place.
 //!
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+//! [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
 
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::{BlockHash, Txid};
@@ -24,10 +25,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::Persist;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::chain::transaction::OutPoint;
-use crate::ln::channelmanager::AChannelManager;
 use crate::ln::types::ChannelId;
-use crate::routing::gossip::NetworkGraph;
-use crate::routing::scoring::WriteableScore;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
@@ -65,17 +63,29 @@ pub const ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "archiv
 pub const ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 
 /// The primary namespace under which the [`NetworkGraph`] will be persisted.
+///
+/// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
 pub const NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
 /// The secondary namespace under which the [`NetworkGraph`] will be persisted.
+///
+/// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
 pub const NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The key under which the [`NetworkGraph`] will be persisted.
+///
+/// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
 pub const NETWORK_GRAPH_PERSISTENCE_KEY: &str = "network_graph";
 
 /// The primary namespace under which the [`WriteableScore`] will be persisted.
+///
+/// [`WriteableScore`]: crate::routing::scoring::WriteableScore
 pub const SCORER_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
 /// The secondary namespace under which the [`WriteableScore`] will be persisted.
+///
+/// [`WriteableScore`]: crate::routing::scoring::WriteableScore
 pub const SCORER_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The key under which the [`WriteableScore`] will be persisted.
+///
+/// [`WriteableScore`]: crate::routing::scoring::WriteableScore
 pub const SCORER_PERSISTENCE_KEY: &str = "scorer";
 
 /// The primary namespace under which [`OutputSweeper`] state will be persisted.
@@ -197,61 +207,6 @@ pub fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
 	}
 
 	Ok(())
-}
-
-/// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
-///
-/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-pub trait Persister<'a, CM: Deref, L: Deref, S: Deref>
-where
-	CM::Target: 'static + AChannelManager,
-	L::Target: 'static + Logger,
-	S::Target: WriteableScore<'a>,
-{
-	/// Persist the given ['ChannelManager'] to disk, returning an error if persistence failed.
-	///
-	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error>;
-
-	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
-	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error>;
-
-	/// Persist the given [`WriteableScore`] to disk, returning an error if persistence failed.
-	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error>;
-}
-
-impl<'a, A: KVStore + ?Sized, CM: Deref, L: Deref, S: Deref> Persister<'a, CM, L, S> for A
-where
-	CM::Target: 'static + AChannelManager,
-	L::Target: 'static + Logger,
-	S::Target: WriteableScore<'a>,
-{
-	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error> {
-		self.write(
-			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_KEY,
-			&channel_manager.get_cm().encode(),
-		)
-	}
-
-	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error> {
-		self.write(
-			NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-			NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-			NETWORK_GRAPH_PERSISTENCE_KEY,
-			&network_graph.encode(),
-		)
-	}
-
-	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error> {
-		self.write(
-			SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-			SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-			SCORER_PERSISTENCE_KEY,
-			&scorer.encode(),
-		)
-	}
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSigner> for K {

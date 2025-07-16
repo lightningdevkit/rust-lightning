@@ -1,0 +1,5 @@
+## API Updates (0.2)
+
+* The `Persister` trait has been removed, and `KVStore` is now used directly. If you're persisting `ChannelManager`,
+`NetworkGraph`, or `Scorer` to a custom location, you can maintain that behavior by intercepting and rewriting the
+corresponding namespaces and keys.
