@@ -1108,6 +1108,10 @@ impl FundingScope {
 	fn is_splice(&self) -> bool {
 		self.channel_parameters.splice_parent_funding_txid.is_some()
 	}
+
+	fn channel_type_features(&self) -> &ChannelTypeFeatures {
+		&self.channel_parameters.channel_type_features
+	}
 }
 
 impl_writeable_tlv_based!(FundingScope, {
@@ -3610,7 +3614,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// Assume that the broadcasted commitment transaction confirmed in the current best
 				// block. Even if not, its a reasonable metric for the bump criteria on the HTLC
 				// transactions.
-				let (claim_reqs, _) = self.get_broadcasted_holder_claims(holder_commitment_tx, self.best_block.height);
+				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.funding, holder_commitment_tx, self.best_block.height);
 				let conf_target = self.closure_conf_target();
 				self.onchain_tx_handler.update_claims_view_from_requests(
 					claim_reqs, self.best_block.height, self.best_block.height, broadcaster,
@@ -3621,25 +3625,37 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	#[rustfmt::skip]
-	fn generate_claimable_outpoints_and_watch_outputs(&mut self, reason: ClosureReason) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
-		let holder_commitment_tx = &self.funding.current_holder_commitment_tx;
+	fn generate_claimable_outpoints_and_watch_outputs(
+		&mut self, generate_monitor_event_with_reason: Option<ClosureReason>,
+	) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
+		let funding = self.alternative_funding_confirmed
+			.map(|(alternative_funding_txid, _)| {
+				self.pending_funding
+					.iter()
+					.find(|funding| funding.funding_txid() == alternative_funding_txid)
+					.expect("FundingScope for confirmed alternative funding must exist")
+			})
+			.unwrap_or(&self.funding);
+		let holder_commitment_tx = &funding.current_holder_commitment_tx;
 		let funding_outp = HolderFundingOutput::build(
 			holder_commitment_tx.clone(),
-			self.funding.channel_parameters.clone(),
+			funding.channel_parameters.clone(),
 		);
-		let funding_outpoint = self.get_funding_txo();
+		let funding_outpoint = funding.funding_outpoint();
 		let commitment_package = PackageTemplate::build_package(
 			funding_outpoint.txid.clone(), funding_outpoint.index as u32,
 			PackageSolvingData::HolderFundingOutput(funding_outp),
 			self.best_block.height,
 		);
 		let mut claimable_outpoints = vec![commitment_package];
-		let event = MonitorEvent::HolderForceClosedWithInfo {
-			reason,
-			outpoint: funding_outpoint,
-			channel_id: self.channel_id,
-		};
-		self.pending_monitor_events.push(event);
+		if let Some(reason) = generate_monitor_event_with_reason {
+			let event = MonitorEvent::HolderForceClosedWithInfo {
+				reason,
+				outpoint: funding_outpoint,
+				channel_id: self.channel_id,
+			};
+			self.pending_monitor_events.push(event);
+		}
 
 		// Although we aren't signing the transaction directly here, the transaction will be signed
 		// in the claim that is queued to OnchainTxHandler. We set holder_tx_signed here to reject
@@ -3649,12 +3665,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// We can't broadcast our HTLC transactions while the commitment transaction is
 		// unconfirmed. We'll delay doing so until we detect the confirmed commitment in
 		// `transactions_confirmed`.
-		if !self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+		if !funding.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 			// Because we're broadcasting a commitment transaction, we should construct the package
 			// assuming it gets confirmed in the next block. Sadly, we have code which considers
 			// "not yet confirmed" things as discardable, so we cannot do that here.
 			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(
-				holder_commitment_tx, self.best_block.height,
+				&funding, holder_commitment_tx, self.best_block.height,
 			);
 			let new_outputs = self.get_broadcasted_holder_watch_outputs(holder_commitment_tx);
 			if !new_outputs.is_empty() {
@@ -3678,7 +3694,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			broadcasted_latest_txn: Some(true),
 			message: "ChannelMonitor-initiated commitment transaction broadcast".to_owned(),
 		};
-		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs(reason);
+		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.update_claims_view_from_requests(
 			claimable_outpoints, self.best_block.height, self.best_block.height, broadcaster,
@@ -3829,6 +3845,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		for funding in self.pending_funding.drain(..) {
 			self.outputs_to_watch.remove(&funding.funding_txid());
 		}
+		self.alternative_funding_confirmed.take();
 
 		Ok(())
 	}
@@ -4523,7 +4540,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	#[rustfmt::skip]
 	fn get_broadcasted_holder_htlc_descriptors(
-		&self, holder_tx: &HolderCommitmentTransaction,
+		&self, funding: &FundingScope, holder_tx: &HolderCommitmentTransaction,
 	) -> Vec<HTLCDescriptor> {
 		let tx = holder_tx.trust();
 		let mut htlcs = Vec::with_capacity(holder_tx.nondust_htlcs().len());
@@ -4541,11 +4558,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			};
 
 			htlcs.push(HTLCDescriptor {
-				// TODO(splicing): Consider alternative funding scopes.
 				channel_derivation_parameters: ChannelDerivationParameters {
-					value_satoshis: self.funding.channel_parameters.channel_value_satoshis,
+					value_satoshis: funding.channel_parameters.channel_value_satoshis,
 					keys_id: self.channel_keys_id,
-					transaction_parameters: self.funding.channel_parameters.clone(),
+					transaction_parameters: funding.channel_parameters.clone(),
 				},
 				commitment_txid: tx.txid(),
 				per_commitment_number: tx.commitment_number(),
@@ -4565,7 +4581,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	// script so we can detect whether a holder transaction has been seen on-chain.
 	#[rustfmt::skip]
 	fn get_broadcasted_holder_claims(
-		&self, holder_tx: &HolderCommitmentTransaction, conf_height: u32,
+		&self, funding: &FundingScope, holder_tx: &HolderCommitmentTransaction, conf_height: u32,
 	) -> (Vec<PackageTemplate>, Option<(ScriptBuf, PublicKey, RevocationKey)>) {
 		let tx = holder_tx.trust();
 		let keys = tx.keys();
@@ -4576,7 +4592,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			redeem_script.to_p2wsh(), holder_tx.per_commitment_point(), keys.revocation_key.clone(),
 		));
 
-		let claim_requests = self.get_broadcasted_holder_htlc_descriptors(holder_tx).into_iter()
+		let claim_requests = self.get_broadcasted_holder_htlc_descriptors(funding, holder_tx).into_iter()
 			.map(|htlc_descriptor| {
 				let counterparty_spendable_height = if htlc_descriptor.htlc.offered {
 					conf_height
@@ -4643,7 +4659,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			is_holder_tx = true;
 			log_info!(logger, "Got broadcast of latest holder commitment tx {}, searching for available HTLCs to claim", commitment_txid);
 			let holder_commitment_tx = &self.funding.current_holder_commitment_tx;
-			let res = self.get_broadcasted_holder_claims(holder_commitment_tx, height);
+			let res =
+				self.get_broadcasted_holder_claims(&self.funding, holder_commitment_tx, height);
 			let mut to_watch = self.get_broadcasted_holder_watch_outputs(holder_commitment_tx);
 			append_onchain_update!(res, to_watch);
 			fail_unbroadcast_htlcs!(
@@ -4660,7 +4677,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if holder_commitment_tx.trust().txid() == commitment_txid {
 				is_holder_tx = true;
 				log_info!(logger, "Got broadcast of previous holder commitment tx {}, searching for available HTLCs to claim", commitment_txid);
-				let res = self.get_broadcasted_holder_claims(holder_commitment_tx, height);
+				let res =
+					self.get_broadcasted_holder_claims(&self.funding, holder_commitment_tx, height);
 				let mut to_watch = self.get_broadcasted_holder_watch_outputs(holder_commitment_tx);
 				append_onchain_update!(res, to_watch);
 				fail_unbroadcast_htlcs!(
@@ -4687,52 +4705,70 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// been replaced by another.
 	#[rustfmt::skip]
 	pub fn cancel_prev_commitment_claims<L: Deref>(
-		&mut self, logger: &L, confirmed_commitment_txid: &Txid
+		&mut self, logger: &L, new_confirmed_commitment_txid: &Txid
 	) where L::Target: Logger {
 		for (counterparty_commitment_txid, _) in &self.counterparty_commitment_txn_on_chain {
 			// Cancel any pending claims for counterparty commitments we've seen confirm.
-			if counterparty_commitment_txid == confirmed_commitment_txid {
+			if counterparty_commitment_txid == new_confirmed_commitment_txid {
 				continue;
 			}
 			// If we have generated claims for counterparty_commitment_txid earlier, we can rely on always
 			// having claim related htlcs for counterparty_commitment_txid in counterparty_claimable_outpoints.
-			for (htlc, _) in self.funding.counterparty_claimable_outpoints.get(counterparty_commitment_txid).unwrap_or(&vec![]) {
-				log_trace!(logger, "Canceling claims for previously confirmed counterparty commitment {}",
-					counterparty_commitment_txid);
-				let mut outpoint = BitcoinOutPoint { txid: *counterparty_commitment_txid, vout: 0 };
-				if let Some(vout) = htlc.transaction_output_index {
-					outpoint.vout = vout;
-					self.onchain_tx_handler.abandon_claim(&outpoint);
+			for funding in core::iter::once(&self.funding).chain(self.pending_funding.iter()) {
+				let mut found_claim = false;
+				for (htlc, _) in funding.counterparty_claimable_outpoints.get(counterparty_commitment_txid).unwrap_or(&vec![]) {
+					let mut outpoint = BitcoinOutPoint { txid: *counterparty_commitment_txid, vout: 0 };
+					if let Some(vout) = htlc.transaction_output_index {
+						outpoint.vout = vout;
+						if self.onchain_tx_handler.abandon_claim(&outpoint) {
+							found_claim = true;
+						}
+					}
+				}
+				if found_claim {
+					log_trace!(logger, "Canceled claims for previously confirmed counterparty commitment with txid {counterparty_commitment_txid}");
 				}
 			}
 		}
 		// Cancel any pending claims for any holder commitments in case they had previously
 		// confirmed or been signed (in which case we will start attempting to claim without
 		// waiting for confirmation).
-		if self.funding.current_holder_commitment_tx.trust().txid() != *confirmed_commitment_txid {
-			let txid = self.funding.current_holder_commitment_tx.trust().txid();
-			log_trace!(logger, "Canceling claims for previously broadcast holder commitment {}", txid);
-			let mut outpoint = BitcoinOutPoint { txid, vout: 0 };
-			for htlc in self.funding.current_holder_commitment_tx.nondust_htlcs() {
-				if let Some(vout) = htlc.transaction_output_index {
-					outpoint.vout = vout;
-					self.onchain_tx_handler.abandon_claim(&outpoint);
-				} else {
-					debug_assert!(false, "Expected transaction output index for non-dust HTLC");
-				}
-			}
-		}
-		if let Some(prev_holder_commitment_tx) = &self.funding.prev_holder_commitment_tx {
-			let txid = prev_holder_commitment_tx.trust().txid();
-			if txid != *confirmed_commitment_txid {
-				log_trace!(logger, "Canceling claims for previously broadcast holder commitment {}", txid);
+		for funding in core::iter::once(&self.funding).chain(self.pending_funding.iter()) {
+			if funding.current_holder_commitment_tx.trust().txid() != *new_confirmed_commitment_txid {
+				let mut found_claim = false;
+				let txid = funding.current_holder_commitment_tx.trust().txid();
 				let mut outpoint = BitcoinOutPoint { txid, vout: 0 };
-				for htlc in prev_holder_commitment_tx.nondust_htlcs() {
+				for htlc in funding.current_holder_commitment_tx.nondust_htlcs() {
 					if let Some(vout) = htlc.transaction_output_index {
 						outpoint.vout = vout;
-						self.onchain_tx_handler.abandon_claim(&outpoint);
+						if self.onchain_tx_handler.abandon_claim(&outpoint) {
+							found_claim = true;
+						}
 					} else {
 						debug_assert!(false, "Expected transaction output index for non-dust HTLC");
+					}
+				}
+				if found_claim {
+					log_trace!(logger, "Canceled claims for previously broadcast holder commitment with txid {txid}");
+				}
+			}
+			if let Some(prev_holder_commitment_tx) = &funding.prev_holder_commitment_tx {
+				let txid = prev_holder_commitment_tx.trust().txid();
+				if txid != *new_confirmed_commitment_txid {
+					let mut found_claim = false;
+					let mut outpoint = BitcoinOutPoint { txid, vout: 0 };
+					for htlc in prev_holder_commitment_tx.nondust_htlcs() {
+						if let Some(vout) = htlc.transaction_output_index {
+							outpoint.vout = vout;
+							if self.onchain_tx_handler.abandon_claim(&outpoint) {
+								found_claim = true;
+							}
+						} else {
+							debug_assert!(false, "Expected transaction output index for non-dust HTLC");
+						}
+					}
+					if found_claim {
+						log_trace!(logger, "Canceled claims for previously broadcast holder commitment with txid {txid}");
 					}
 				}
 			}
@@ -4761,7 +4797,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			return holder_transactions;
 		}
 
-		self.get_broadcasted_holder_htlc_descriptors(&self.funding.current_holder_commitment_tx)
+		self.get_broadcasted_holder_htlc_descriptors(&self.funding, &self.funding.current_holder_commitment_tx)
 			.into_iter()
 			.for_each(|htlc_descriptor| {
 				let txid = self.funding.current_holder_commitment_tx.trust().txid();
@@ -4822,7 +4858,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
 			let conf_target = self.closure_conf_target();
 			self.onchain_tx_handler.block_disconnected(
-				height + 1, broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
+				height + 1, &broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
 			);
 			Vec::new()
 		} else { Vec::new() }
@@ -4857,6 +4893,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let mut watch_outputs = Vec::new();
 		let mut claimable_outpoints = Vec::new();
+		let mut should_broadcast_commitment = false;
 		'tx_iter: for tx in &txn_matched {
 			let txid = tx.compute_txid();
 			log_trace!(logger, "Transaction {} confirmed in block {}", txid , block_hash);
@@ -4930,6 +4967,26 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					event: OnchainEvent::AlternativeFundingConfirmation {},
 				});
 
+				if self.holder_tx_signed {
+					// Cancel any previous claims that are no longer valid as they stemmed from a
+					// different funding transaction.
+					let alternative_holder_commitment_txid =
+						alternative_funding.current_holder_commitment_tx.trust().txid();
+					self.cancel_prev_commitment_claims(&logger, &alternative_holder_commitment_txid);
+
+					// Queue claims for the alternative holder commitment since it is the only one
+					// that can currently confirm so far (until we see a reorg of its funding
+					// transaction).
+					//
+					// It's possible we process a counterparty commitment within this same block
+					// that would invalidate our holder commitment. If we were to broadcast our
+					// holder commitment now, we wouldn't be able to cancel it via our usual
+					// `cancel_prev_commitment_claims` path once we see a confirmed counterparty
+					// commitment since the claim would still be pending in `claimable_outpoints`
+					// (i.e., it wouldn't have been registered with the `OnchainTxHandler` yet).
+					should_broadcast_commitment = true;
+				}
+
 				continue 'tx_iter;
 			}
 
@@ -4966,6 +5023,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							commitment_tx_to_counterparty_output = counterparty_output_idx_sats;
 
 							claimable_outpoints.append(&mut new_outpoints);
+
+							// We've just seen the counterparty commitment confirm, which conflicts
+							// with our holder commitment, so make sure we no longer attempt to
+							// broadcast it.
+							should_broadcast_commitment = false;
 						}
 					}
 					self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
@@ -5015,6 +5077,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.best_block = BestBlock::new(block_hash, height);
 		}
 
+		if should_broadcast_commitment {
+			let (mut claimables, mut outputs) =
+				self.generate_claimable_outpoints_and_watch_outputs(None);
+			claimable_outpoints.append(&mut claimables);
+			watch_outputs.append(&mut outputs);
+		}
+
 		self.block_confirmed(height, block_hash, txn_matched, watch_outputs, claimable_outpoints, &broadcaster, &fee_estimator, logger)
 	}
 
@@ -5048,7 +5117,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
 		if should_broadcast {
-			let (mut new_outpoints, mut new_outputs) = self.generate_claimable_outpoints_and_watch_outputs(ClosureReason::HTLCsTimedOut);
+			let (mut new_outpoints, mut new_outputs) = self.generate_claimable_outpoints_and_watch_outputs(Some(ClosureReason::HTLCsTimedOut));
 			claimable_outpoints.append(&mut new_outpoints);
 			watch_outputs.append(&mut new_outputs);
 		}
@@ -5242,18 +5311,39 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	{
 		log_trace!(logger, "Block {} at height {} disconnected", header.block_hash(), height);
 
-		self.alternative_funding_confirmed.take_if(|(_, conf_height)| *conf_height == height);
-
-		//We may discard:
-		//- htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
-		//- maturing spendable output has transaction paying us has been disconnected
-		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height < height);
-
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.block_disconnected(
-			height, broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator, logger
+			height, &broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator, logger
 		);
+
+		self.alternative_funding_confirmed.take_if(|(_, conf_height)| *conf_height == height);
+
+		//- htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
+		//- maturing spendable output has transaction paying us has been disconnected
+		let mut queue_new_commitment_claims = false;
+		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
+			let retain = entry.height < height;
+			if !retain && matches!(entry.event, OnchainEvent::AlternativeFundingConfirmation {})
+				&& self.holder_tx_signed
+			{
+				queue_new_commitment_claims = true;
+			}
+			retain
+		});
+		if queue_new_commitment_claims {
+			// Cancel any previous claims that are no longer valid as they stemmed from a
+			// different funding transaction.
+			let new_holder_commitment_txid =
+				self.funding.current_holder_commitment_tx.trust().txid();
+			self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
+
+			// Queue claims for the new holder commitment since it is the only one that can
+			// currently confirm (until we see an alternative funding transaction confirm).
+			self.queue_latest_holder_commitment_txn_for_broadcast(
+				&broadcaster, &bounded_fee_estimator, logger,
+			);
+		}
 
 		self.best_block = BestBlock::new(header.prev_blockhash, height - 1);
 	}
@@ -5270,6 +5360,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
+		let conf_target = self.closure_conf_target();
+		self.onchain_tx_handler.transaction_unconfirmed(
+			txid, &broadcaster, conf_target, &self.destination_script, fee_estimator, logger
+		);
+
 		self.alternative_funding_confirmed.take_if(|(funding_txid, _)| funding_txid == txid);
 
 		let mut removed_height = None;
@@ -5282,18 +5377,36 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		if let Some(removed_height) = removed_height {
 			log_info!(logger, "transaction_unconfirmed of txid {} implies height {} was reorg'd out", txid, removed_height);
-			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| if entry.height >= removed_height {
-				log_info!(logger, "Transaction {} reorg'd out", entry.txid);
-				false
-			} else { true });
+			let mut queue_new_commitment_claims = false;
+			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
+				let retain = entry.height < removed_height;
+				if !retain && matches!(entry.event, OnchainEvent::AlternativeFundingConfirmation {})
+					&& self.holder_tx_signed
+				{
+					queue_new_commitment_claims = true;
+				}
+				if !retain {
+					log_info!(logger, "Transaction {} reorg'd out", entry.txid);
+				}
+				retain
+			});
+			if queue_new_commitment_claims {
+				// Cancel any previous claims that are no longer valid as they stemmed from a
+				// different funding transaction.
+				let new_holder_commitment_txid =
+					self.funding.current_holder_commitment_tx.trust().txid();
+				self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
+
+				// Queue claims for the new holder commitment since it is the only one that can
+				// currently confirm (until we see an alternative funding transaction confirm).
+				self.queue_latest_holder_commitment_txn_for_broadcast(
+					&broadcaster, fee_estimator, logger,
+				);
+			}
 		}
 
 		debug_assert!(!self.onchain_events_awaiting_threshold_conf.iter().any(|ref entry| entry.txid == *txid));
 
-		let conf_target = self.closure_conf_target();
-		self.onchain_tx_handler.transaction_unconfirmed(
-			txid, broadcaster, conf_target, &self.destination_script, fee_estimator, logger
-		);
 	}
 
 	/// Filters a block's `txdata` for transactions spending watched outputs or for any child
