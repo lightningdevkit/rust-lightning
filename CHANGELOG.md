@@ -1,4 +1,4 @@
-# 0.1.5 - Jul XXX, 2025 - "Async Path Reduction"
+# 0.1.5 - Jul 16, 2025 - "Async Path Reduction"
 
 ## Performance Improvements
  * `NetworkGraph`'s expensive internal consistency checks have now been
