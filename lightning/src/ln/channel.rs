@@ -1821,7 +1821,11 @@ where
 			ChannelPhase::Funded(mut funded_channel) => {
 				#[cfg(splicing)]
 				let has_negotiated_pending_splice = funded_channel.pending_splice.as_ref()
-					.map(|pending_splice| pending_splice.funding.is_some())
+					.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+					.filter(|funding_negotiation| {
+						matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures(_))
+					})
+					.map(|funding_negotiation| funding_negotiation.as_funding().is_some())
 					.unwrap_or(false);
 				#[cfg(splicing)]
 				let session_received_commitment_signed = funded_channel
@@ -2171,13 +2175,31 @@ impl FundingScope {
 #[cfg(splicing)]
 struct PendingSplice {
 	pub our_funding_contribution: i64,
-	funding: Option<FundingScope>,
+	funding_negotiation: Option<FundingNegotiation>,
 
 	/// The funding txid used in the `splice_locked` sent to the counterparty.
 	sent_funding_txid: Option<Txid>,
 
 	/// The funding txid used in the `splice_locked` received from the counterparty.
 	received_funding_txid: Option<Txid>,
+}
+
+#[cfg(splicing)]
+enum FundingNegotiation {
+	AwaitingAck(FundingNegotiationContext),
+	ConstructingTransaction(FundingScope, InteractiveTxConstructor),
+	AwaitingSignatures(FundingScope),
+}
+
+#[cfg(splicing)]
+impl FundingNegotiation {
+	fn as_funding(&self) -> Option<&FundingScope> {
+		match self {
+			FundingNegotiation::AwaitingAck(_) => None,
+			FundingNegotiation::ConstructingTransaction(funding, _) => Some(funding),
+			FundingNegotiation::AwaitingSignatures(funding) => Some(funding),
+		}
+	}
 }
 
 #[cfg(splicing)]
@@ -6808,7 +6830,11 @@ where
 		let pending_splice_funding = self
 			.pending_splice
 			.as_ref()
-			.and_then(|pending_splice| pending_splice.funding.as_ref())
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+			.filter(|funding_negotiation| {
+				matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures(_))
+			})
+			.and_then(|funding_negotiation| funding_negotiation.as_funding())
 			.expect("Funding must exist for negotiated pending splice");
 		let (holder_commitment_tx, _) = self.context.validate_commitment_signed(
 			pending_splice_funding,
@@ -10436,7 +10462,7 @@ where
 
 		self.pending_splice = Some(PendingSplice {
 			our_funding_contribution: our_funding_contribution_satoshis,
-			funding: None,
+			funding_negotiation: None,
 			sent_funding_txid: None,
 			received_funding_txid: None,
 		});
