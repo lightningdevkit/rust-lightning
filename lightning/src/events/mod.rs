@@ -1159,7 +1159,11 @@ pub enum Event {
 		error_code: Option<u16>,
 		#[cfg(any(test, feature = "_test_utils"))]
 		error_data: Option<Vec<u8>>,
-		#[cfg(any(test, feature = "_test_utils"))]
+		/// The hold times as reported by each hop. The unit in which the hold times are expressed are 100's of
+		/// milliseconds. So a hop reporting 2 is a hold time that corresponds to roughly 200 milliseconds. As earlier
+		/// hops hold on to an HTLC for longer, the hold times in the list are expected to decrease. When our peer
+		/// didn't provide attribution data, the list is empty. The same applies to HTLCs that were resolved onchain.
+		/// Because of unavailability of hold times, the list may be shorter than the number of hops in the path.
 		hold_times: Vec<u32>,
 	},
 	/// Indicates that a probe payment we sent returned successful, i.e., only failed at the destination.
@@ -1798,7 +1802,6 @@ impl Writeable for Event {
 				ref error_code,
 				#[cfg(any(test, feature = "_test_utils"))]
 				ref error_data,
-				#[cfg(any(test, feature = "_test_utils"))]
 				ref hold_times,
 			} => {
 				3u8.write(writer)?;
@@ -1806,8 +1809,6 @@ impl Writeable for Event {
 				error_code.write(writer)?;
 				#[cfg(any(test, feature = "_test_utils"))]
 				error_data.write(writer)?;
-				#[cfg(any(test, feature = "_test_utils"))]
-				hold_times.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(1, None::<NetworkUpdate>, option), // network_update in LDK versions prior to 0.0.114
@@ -1819,6 +1820,7 @@ impl Writeable for Event {
 					(9, None::<RouteParameters>, option), // retry in LDK versions prior to 0.0.115
 					(11, payment_id, option),
 					(13, failure, required),
+					(15, *hold_times, optional_vec),
 				});
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
@@ -2244,8 +2246,6 @@ impl MaybeReadable for Event {
 					let error_code = Readable::read(reader)?;
 					#[cfg(any(test, feature = "_test_utils"))]
 					let error_data = Readable::read(reader)?;
-					#[cfg(any(test, feature = "_test_utils"))]
-					let hold_times = Readable::read(reader)?;
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_failed_permanently = false;
 					let mut network_update = None;
@@ -2254,6 +2254,7 @@ impl MaybeReadable for Event {
 					let mut short_channel_id = None;
 					let mut payment_id = None;
 					let mut failure_opt = None;
+					let mut hold_times = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, network_update, upgradable_option),
@@ -2265,7 +2266,9 @@ impl MaybeReadable for Event {
 						(7, short_channel_id, option),
 						(11, payment_id, option),
 						(13, failure_opt, upgradable_option),
+						(15, hold_times, optional_vec),
 					});
+					let hold_times = hold_times.unwrap_or(Vec::new());
 					let failure =
 						failure_opt.unwrap_or_else(|| PathFailure::OnPath { network_update });
 					Ok(Some(Event::PaymentPathFailed {
@@ -2279,7 +2282,6 @@ impl MaybeReadable for Event {
 						error_code,
 						#[cfg(any(test, feature = "_test_utils"))]
 						error_data,
-						#[cfg(any(test, feature = "_test_utils"))]
 						hold_times,
 					}))
 				};
