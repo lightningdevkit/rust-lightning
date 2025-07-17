@@ -25,7 +25,9 @@ use bitcoin::hashes::ripemd160::Hash as Ripemd160;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
 
-use crate::chain::chaininterface::fee_for_weight;
+use crate::chain::chaininterface::{
+	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
+};
 use crate::chain::package::WEIGHT_REVOKED_OUTPUT;
 use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
@@ -233,15 +235,45 @@ pub(crate) fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_t
 		/ 1000
 }
 
+/// Returns the fees for success and timeout second stage HTLC transactions.
+pub(super) fn second_stage_tx_fees_sat(
+	channel_type: &ChannelTypeFeatures, feerate_sat_per_1000_weight: u32,
+) -> (u64, u64) {
+	if channel_type.supports_anchors_zero_fee_htlc_tx()
+		|| channel_type.supports_anchor_zero_fee_commitments()
+	{
+		(0, 0)
+	} else {
+		(
+			feerate_sat_per_1000_weight as u64 * htlc_success_tx_weight(channel_type) / 1000,
+			feerate_sat_per_1000_weight as u64 * htlc_timeout_tx_weight(channel_type) / 1000,
+		)
+	}
+}
+
 #[rustfmt::skip]
 pub(crate) fn htlc_tx_fees_sat(feerate_per_kw: u32, num_accepted_htlcs: usize, num_offered_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
-	let htlc_tx_fees_sat = if !channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		num_accepted_htlcs as u64 * htlc_success_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
-	  + num_offered_htlcs as u64 * htlc_timeout_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
-	} else {
+	let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
+		channel_type_features, feerate_per_kw,
+	);
+
+	num_accepted_htlcs as u64 * htlc_success_tx_fee_sat + num_offered_htlcs as u64 * htlc_timeout_tx_fee_sat
+}
+
+/// Returns a fee estimate for the commitment transaction depending on channel type.
+pub(super) fn commitment_sat_per_1000_weight_for_type<F: Deref>(
+	fee_estimator: &LowerBoundedFeeEstimator<F>, channel_type: &ChannelTypeFeatures,
+) -> u32
+where
+	F::Target: FeeEstimator,
+{
+	if channel_type.supports_anchor_zero_fee_commitments() {
 		0
-	};
-	htlc_tx_fees_sat
+	} else if channel_type.supports_anchors_zero_fee_htlc_tx() {
+		fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee)
+	} else {
+		fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee)
+	}
 }
 
 // Various functions for key derivation and transaction creation for use within channels. Primarily
@@ -806,16 +838,17 @@ pub(crate) fn build_htlc_input(commitment_txid: &Txid, htlc: &HTLCOutputInCommit
 pub(crate) fn build_htlc_output(
 	feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey
 ) -> TxOut {
-	let weight = if htlc.offered {
-		htlc_timeout_tx_weight(channel_type_features)
-	} else {
-		htlc_success_tx_weight(channel_type_features)
-	};
-	let output_value = if channel_type_features.supports_anchors_zero_fee_htlc_tx() && !channel_type_features.supports_anchors_nonzero_fee_htlc_tx() {
-		htlc.to_bitcoin_amount()
-	} else {
-		let total_fee = Amount::from_sat(feerate_per_kw as u64 * weight / 1000);
-		htlc.to_bitcoin_amount() - total_fee
+	let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
+		channel_type_features, feerate_per_kw,
+	);
+
+	let output_value = {
+		let total_fee = if htlc.offered {
+			htlc_timeout_tx_fee_sat
+		} else {
+			htlc_success_tx_fee_sat
+		};
+		htlc.to_bitcoin_amount() - Amount::from_sat(total_fee)
 	};
 
 	TxOut {

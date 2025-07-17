@@ -41,8 +41,8 @@ use crate::ln::chan_utils;
 #[cfg(splicing)]
 use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 use crate::ln::chan_utils::{
-	get_commitment_transaction_number_obscure_factor, htlc_success_tx_weight,
-	htlc_timeout_tx_weight, max_htlcs, ChannelPublicKeys, ChannelTransactionParameters,
+	commitment_sat_per_1000_weight_for_type, get_commitment_transaction_number_obscure_factor,
+	max_htlcs, second_stage_tx_fees_sat, ChannelPublicKeys, ChannelTransactionParameters,
 	ClosingTransaction, CommitmentTransaction, CounterpartyChannelTransactionParameters,
 	CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
@@ -289,17 +289,14 @@ impl InboundHTLCOutput {
 		&self, local: bool, feerate_per_kw: u32, broadcaster_dust_limit_sat: u64,
 		features: &ChannelTypeFeatures,
 	) -> bool {
-		let htlc_tx_fee_sat = if features.supports_anchors_zero_fee_htlc_tx() {
-			0
+		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
+			second_stage_tx_fees_sat(features, feerate_per_kw);
+
+		let htlc_tx_fee_sat = if !local {
+			// This is an offered HTLC.
+			htlc_timeout_tx_fee_sat
 		} else {
-			let htlc_tx_weight = if !local {
-				// this is an offered htlc
-				htlc_timeout_tx_weight(features)
-			} else {
-				htlc_success_tx_weight(features)
-			};
-			// As required by the spec, round down
-			feerate_per_kw as u64 * htlc_tx_weight / 1000
+			htlc_success_tx_fee_sat
 		};
 		self.amount_msat / 1000 < broadcaster_dust_limit_sat + htlc_tx_fee_sat
 	}
@@ -435,17 +432,14 @@ impl OutboundHTLCOutput {
 		&self, local: bool, feerate_per_kw: u32, broadcaster_dust_limit_sat: u64,
 		features: &ChannelTypeFeatures,
 	) -> bool {
-		let htlc_tx_fee_sat = if features.supports_anchors_zero_fee_htlc_tx() {
-			0
+		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
+			second_stage_tx_fees_sat(features, feerate_per_kw);
+
+		let htlc_tx_fee_sat = if local {
+			// This is an offered HTLC.
+			htlc_timeout_tx_fee_sat
 		} else {
-			let htlc_tx_weight = if local {
-				// this is an offered htlc
-				htlc_timeout_tx_weight(features)
-			} else {
-				htlc_success_tx_weight(features)
-			};
-			// As required by the spec, round down
-			feerate_per_kw as u64 * htlc_tx_weight / 1000
+			htlc_success_tx_fee_sat
 		};
 		self.amount_msat / 1000 < broadcaster_dust_limit_sat + htlc_tx_fee_sat
 	}
@@ -3398,16 +3392,7 @@ where
 		debug_assert!(!channel_type.supports_any_optional_bits());
 		debug_assert!(!channel_type.requires_unknown_bits_from(&channelmanager::provided_channel_type_features(&config)));
 
-		let commitment_feerate = if channel_type.supports_anchor_zero_fee_commitments() {
-			0
-		} else {
-			let commitment_conf_target = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-				ConfirmationTarget::AnchorChannelFee
-			} else {
-				ConfirmationTarget::NonAnchorChannelFee
-			};
-			fee_estimator.bounded_sat_per_1000_weight(commitment_conf_target)
-		};
+		let commitment_feerate = commitment_sat_per_1000_weight_for_type(&fee_estimator, &channel_type);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
 		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
@@ -3979,19 +3964,30 @@ where
 		cmp::max(self.config.options.cltv_expiry_delta, MIN_CLTV_EXPIRY_DELTA)
 	}
 
+	/// Returns a maximum "sane" fee rate used to reason about our dust exposure.
+	/// Will be Some if the `channel_type`'s dust exposure depends on its commitment fee rate, and
+	/// None otherwise.
 	fn get_dust_exposure_limiting_feerate<F: Deref>(
-		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> u32
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>, channel_type: &ChannelTypeFeatures,
+	) -> Option<u32>
 	where
 		F::Target: FeeEstimator,
 	{
-		fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MaximumFeeEstimate)
+		if channel_type.supports_anchor_zero_fee_commitments() {
+			None
+		} else {
+			Some(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MaximumFeeEstimate))
+		}
 	}
 
-	pub fn get_max_dust_htlc_exposure_msat(&self, limiting_feerate_sat_per_kw: u32) -> u64 {
+	/// Returns the maximum configured dust exposure.
+	///
+	/// Uses a default of 1 sat/vbyte if `limiting_feerate_sat_per_kw` is `None` and the dust
+	/// exposure policy depends on fee rate.
+	pub fn get_max_dust_htlc_exposure_msat(&self, limiting_feerate_sat_per_kw: Option<u32>) -> u64 {
 		match self.config.options.max_dust_htlc_exposure {
 			MaxDustHTLCExposure::FeeRateMultiplier(multiplier) => {
-				(limiting_feerate_sat_per_kw as u64).saturating_mul(multiplier)
+				(limiting_feerate_sat_per_kw.unwrap_or(250) as u64).saturating_mul(multiplier)
 			},
 			MaxDustHTLCExposure::FixedLimitMsat(limit) => limit,
 		}
@@ -4117,7 +4113,9 @@ where
 			return Err(ChannelError::close("Remote side tried to send more than the total value of the channel".to_owned()));
 		}
 
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
+			&fee_estimator, funding.get_channel_type(),
+		);
 		let htlc_stats = self.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 		if htlc_stats.pending_inbound_htlcs + 1 > self.holder_max_accepted_htlcs as usize {
 			return Err(ChannelError::close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.holder_max_accepted_htlcs)));
@@ -4193,7 +4191,9 @@ where
 		F::Target: FeeEstimator,
 	{
 		// Check that we won't be pushed over our dust exposure limit by the feerate increase.
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
+			&fee_estimator, funding.get_channel_type(),
+		);
 		let htlc_stats = self.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 		let max_dust_htlc_exposure_msat = self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
@@ -4310,7 +4310,9 @@ where
 		L::Target: Logger,
 	{
 		// Before proposing a feerate update, check that we can actually afford the new fee.
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
+			&fee_estimator, funding.get_channel_type(),
+		);
 		let htlc_stats = self.get_pending_htlc_stats(funding, Some(feerate_per_kw), dust_exposure_limiting_feerate);
 		let stats = self.build_commitment_stats(funding, true, true, Some(feerate_per_kw), Some(htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize));
 		let holder_balance_msat = stats.local_balance_before_fee_msat - htlc_stats.outbound_holding_cell_msat;
@@ -4338,7 +4340,7 @@ where
 	#[rustfmt::skip]
 	fn can_accept_incoming_htlc<L: Deref>(
 		&self, funding: &FundingScope, msg: &msgs::UpdateAddHTLC,
-		dust_exposure_limiting_feerate: u32, logger: &L,
+		dust_exposure_limiting_feerate: Option<u32>, logger: &L,
 	) -> Result<(), LocalHTLCFailureReason>
 	where
 		L::Target: Logger,
@@ -4352,13 +4354,11 @@ where
 				on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
 			return Err(LocalHTLCFailureReason::DustLimitCounterparty)
 		}
-		let htlc_success_dust_limit = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			0
-		} else {
-			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
-			dust_buffer_feerate * htlc_success_tx_weight(funding.get_channel_type()) / 1000
-		};
-		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
+		let dust_buffer_feerate = self.get_dust_buffer_feerate(None);
+		let (htlc_success_tx_fee_sat, _) = second_stage_tx_fees_sat(
+			&funding.get_channel_type(), dust_buffer_feerate,
+		);
+		let exposure_dust_limit_success_sats = htlc_success_tx_fee_sat + self.holder_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
 			let on_holder_tx_dust_htlc_exposure_msat = htlc_stats.on_holder_tx_dust_exposure_msat;
 			if on_holder_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
@@ -4388,14 +4388,22 @@ where
 				funding.get_channel_type()
 			);
 
-			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
-			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
-			// side, only on the sender's. Note that with anchor outputs we are no longer as
-			// sensitive to fee spikes, so we need to account for them.
+			// `Some(())` is for the fee spike buffer we keep for the remote if the channel is
+			// not zero fee. This deviates from the spec because the fee spike buffer requirement
+			// doesn't exist on the receiver's side, only on the sender's. Note that with anchor
+			// outputs we are no longer as sensitive to fee spikes, so we need to account for them.
 			//
 			// A `None` `HTLCCandidate` is used as in this case because we're already accounting for
 			// the incoming HTLC as it has been fully committed by both sides.
-			let mut remote_fee_cost_incl_stuck_buffer_msat = self.next_remote_commit_tx_fee_msat(funding, None, Some(()));
+			let fee_spike_buffer_htlc = if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+				None
+			} else {
+				Some(())
+			};
+
+			let mut remote_fee_cost_incl_stuck_buffer_msat = self.next_remote_commit_tx_fee_msat(
+				funding, None, fee_spike_buffer_htlc,
+			);
 			if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 			}
@@ -4678,18 +4686,14 @@ where
 	#[rustfmt::skip]
 	fn get_pending_htlc_stats(
 		&self, funding: &FundingScope, outbound_feerate_update: Option<u32>,
-		dust_exposure_limiting_feerate: u32,
+		dust_exposure_limiting_feerate: Option<u32>,
 	) -> HTLCStats {
 		let context = self;
-		let uses_0_htlc_fee_anchors = funding.get_channel_type().supports_anchors_zero_fee_htlc_tx();
 
-		let dust_buffer_feerate = context.get_dust_buffer_feerate(outbound_feerate_update);
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if uses_0_htlc_fee_anchors {
-			(0, 0)
-		} else {
-			(dust_buffer_feerate as u64 * htlc_timeout_tx_weight(funding.get_channel_type()) / 1000,
-				dust_buffer_feerate as u64 * htlc_success_tx_weight(funding.get_channel_type()) / 1000)
-		};
+		let dust_buffer_feerate = self.get_dust_buffer_feerate(outbound_feerate_update);
+		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
+			funding.get_channel_type(), dust_buffer_feerate,
+		);
 
 		let mut on_holder_tx_dust_exposure_msat = 0;
 		let mut on_counterparty_tx_dust_exposure_msat = 0;
@@ -4700,8 +4704,8 @@ where
 		let mut pending_inbound_htlcs_value_msat = 0;
 
 		{
-			let counterparty_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
-			let holder_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
+			let counterparty_dust_limit_timeout_sat = htlc_timeout_tx_fee_sat + context.counterparty_dust_limit_satoshis;
+			let holder_dust_limit_success_sat = htlc_success_tx_fee_sat + context.holder_dust_limit_satoshis;
 			for htlc in context.pending_inbound_htlcs.iter() {
 				pending_inbound_htlcs_value_msat += htlc.amount_msat;
 				if htlc.amount_msat / 1000 < counterparty_dust_limit_timeout_sat {
@@ -4720,8 +4724,8 @@ where
 		let mut on_holder_tx_outbound_holding_cell_htlcs_count = 0;
 		let mut pending_outbound_htlcs = self.pending_outbound_htlcs.len();
 		{
-			let counterparty_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
-			let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
+			let counterparty_dust_limit_success_sat = htlc_success_tx_fee_sat + context.counterparty_dust_limit_satoshis;
+			let holder_dust_limit_timeout_sat = htlc_timeout_tx_fee_sat + context.holder_dust_limit_satoshis;
 			for htlc in context.pending_outbound_htlcs.iter() {
 				pending_outbound_htlcs_value_msat += htlc.amount_msat;
 				if htlc.amount_msat / 1000 < counterparty_dust_limit_success_sat {
@@ -4757,7 +4761,15 @@ where
 		let excess_feerate_opt = outbound_feerate_update
 			.or(self.pending_update_fee.map(|(fee, _)| fee))
 			.unwrap_or(self.feerate_per_kw)
-			.checked_sub(dust_exposure_limiting_feerate);
+			.checked_sub(dust_exposure_limiting_feerate.unwrap_or(0));
+
+		// Dust exposure is only decoupled from feerate for zero fee commitment channels.
+		let is_zero_fee_comm = funding.get_channel_type().supports_anchor_zero_fee_commitments();
+		debug_assert_eq!(is_zero_fee_comm, dust_exposure_limiting_feerate.is_none());
+		if is_zero_fee_comm {
+			debug_assert_eq!(excess_feerate_opt, Some(0));
+		}
+
 		let extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat = excess_feerate_opt.map(|excess_feerate| {
 			let extra_htlc_commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1 + on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
 			let extra_htlc_htlc_tx_fees_sat = chan_utils::htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
@@ -4812,13 +4824,12 @@ where
 			}
 		}
 		let mut inbound_details = Vec::new();
-		let htlc_success_dust_limit = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			0
-		} else {
-			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
-			dust_buffer_feerate * htlc_success_tx_weight(funding.get_channel_type()) / 1000
-		};
-		let holder_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
+
+		let dust_buffer_feerate = self.get_dust_buffer_feerate(None);
+		let (htlc_success_tx_fee_sat, _) = second_stage_tx_fees_sat(
+			funding.get_channel_type(), dust_buffer_feerate,
+		);
+		let holder_dust_limit_success_sat = htlc_success_tx_fee_sat + self.holder_dust_limit_satoshis;
 		for htlc in self.pending_inbound_htlcs.iter() {
 			if let Some(state_details) = (&htlc.state).into() {
 				inbound_details.push(InboundHTLCDetails{
@@ -4838,13 +4849,12 @@ where
 	#[rustfmt::skip]
 	pub fn get_pending_outbound_htlc_details(&self, funding: &FundingScope) -> Vec<OutboundHTLCDetails> {
 		let mut outbound_details = Vec::new();
-		let htlc_timeout_dust_limit = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			0
-		} else {
-			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
-			dust_buffer_feerate * htlc_success_tx_weight(funding.get_channel_type()) / 1000
-		};
-		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
+
+		let dust_buffer_feerate = self.get_dust_buffer_feerate(None);
+		let (_, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
+			funding.get_channel_type(), dust_buffer_feerate,
+		);
+		let holder_dust_limit_timeout_sat = htlc_timeout_tx_fee_sat + self.holder_dust_limit_satoshis;
 		for htlc in self.pending_outbound_htlcs.iter() {
 			outbound_details.push(OutboundHTLCDetails{
 				htlc_id: Some(htlc.htlc_id),
@@ -4889,7 +4899,9 @@ where
 		// Note that we have to handle overflow due to the case mentioned in the docs in general
 		// here.
 
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
+			&fee_estimator, funding.get_channel_type(),
+		);
 		let htlc_stats = context.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 
 		// Subtract any non-HTLC outputs from the local and remote balances
@@ -4905,6 +4917,9 @@ where
 					funding.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000);
 
 		let mut available_capacity_msat = outbound_capacity_msat;
+		let (real_htlc_success_tx_fee_sat, real_htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
+				funding.get_channel_type(), context.feerate_per_kw,
+		);
 
 		if funding.is_outbound() {
 			// We should mind channel commit tx fee when computing how much of the available capacity
@@ -4914,15 +4929,18 @@ where
 			// and the answer will in turn change the amount itself — making it a circular
 			// dependency.
 			// This complicates the computation around dust-values, up to the one-htlc-value.
-			let mut real_dust_limit_timeout_sat = context.holder_dust_limit_satoshis;
-			if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-				real_dust_limit_timeout_sat += context.feerate_per_kw as u64 * htlc_timeout_tx_weight(funding.get_channel_type()) / 1000;
-			}
+			let fee_spike_buffer_htlc = if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+				None
+			} else {
+				Some(())
+			};
 
+			let real_dust_limit_timeout_sat = real_htlc_timeout_tx_fee_sat + context.holder_dust_limit_satoshis;
 			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000, HTLCInitiator::LocalOffered);
-			let mut max_reserved_commit_tx_fee_msat = context.next_local_commit_tx_fee_msat(funding, htlc_above_dust, Some(()));
+			let mut max_reserved_commit_tx_fee_msat = context.next_local_commit_tx_fee_msat(&funding, htlc_above_dust, fee_spike_buffer_htlc);
 			let htlc_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000 - 1, HTLCInitiator::LocalOffered);
-			let mut min_reserved_commit_tx_fee_msat = context.next_local_commit_tx_fee_msat(funding, htlc_dust, Some(()));
+			let mut min_reserved_commit_tx_fee_msat = context.next_local_commit_tx_fee_msat(&funding, htlc_dust, fee_spike_buffer_htlc);
+
 			if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				max_reserved_commit_tx_fee_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 				min_reserved_commit_tx_fee_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
@@ -4945,11 +4963,7 @@ where
 		} else {
 			// If the channel is inbound (i.e. counterparty pays the fee), we need to make sure
 			// sending a new HTLC won't reduce their balance below our reserve threshold.
-			let mut real_dust_limit_success_sat = context.counterparty_dust_limit_satoshis;
-			if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-				real_dust_limit_success_sat += context.feerate_per_kw as u64 * htlc_success_tx_weight(funding.get_channel_type()) / 1000;
-			}
-
+			let real_dust_limit_success_sat = real_htlc_success_tx_fee_sat + context.counterparty_dust_limit_satoshis;
 			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_success_sat * 1000, HTLCInitiator::LocalOffered);
 			let max_reserved_commit_tx_fee_msat = context.next_remote_commit_tx_fee_msat(funding, Some(htlc_above_dust), None);
 
@@ -4971,35 +4985,34 @@ where
 		let mut dust_exposure_dust_limit_msat = 0;
 		let max_dust_htlc_exposure_msat = context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			(context.counterparty_dust_limit_satoshis, context.holder_dust_limit_satoshis)
-		} else {
-			let dust_buffer_feerate = context.get_dust_buffer_feerate(None) as u64;
-			(context.counterparty_dust_limit_satoshis + dust_buffer_feerate * htlc_success_tx_weight(funding.get_channel_type()) / 1000,
-			 context.holder_dust_limit_satoshis       + dust_buffer_feerate * htlc_timeout_tx_weight(funding.get_channel_type()) / 1000)
-		};
+		let dust_buffer_feerate = self.get_dust_buffer_feerate(None);
+		let (buffer_htlc_success_tx_fee_sat, buffer_htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
+			funding.get_channel_type(), dust_buffer_feerate,
+		);
+		let buffer_dust_limit_success_sat = buffer_htlc_success_tx_fee_sat + context.counterparty_dust_limit_satoshis;
+		let buffer_dust_limit_timeout_sat = buffer_htlc_timeout_tx_fee_sat + context.holder_dust_limit_satoshis;
 
 		if let Some(extra_htlc_dust_exposure) = htlc_stats.extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat {
 			if extra_htlc_dust_exposure > max_dust_htlc_exposure_msat {
 				// If adding an extra HTLC would put us over the dust limit in total fees, we cannot
 				// send any non-dust HTLCs.
-				available_capacity_msat = cmp::min(available_capacity_msat, htlc_success_dust_limit * 1000);
+				available_capacity_msat = cmp::min(available_capacity_msat, buffer_dust_limit_success_sat * 1000);
 			}
 		}
 
-		if htlc_stats.on_counterparty_tx_dust_exposure_msat.saturating_add(htlc_success_dust_limit * 1000) > max_dust_htlc_exposure_msat.saturating_add(1) {
+		if htlc_stats.on_counterparty_tx_dust_exposure_msat.saturating_add(buffer_dust_limit_success_sat * 1000) > max_dust_htlc_exposure_msat.saturating_add(1) {
 			// Note that we don't use the `counterparty_tx_dust_exposure` (with
 			// `htlc_dust_exposure_msat`) here as it only applies to non-dust HTLCs.
 			remaining_msat_below_dust_exposure_limit =
 				Some(max_dust_htlc_exposure_msat.saturating_sub(htlc_stats.on_counterparty_tx_dust_exposure_msat));
-			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_success_dust_limit * 1000);
+			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, buffer_dust_limit_success_sat * 1000);
 		}
 
-		if htlc_stats.on_holder_tx_dust_exposure_msat as i64 + htlc_timeout_dust_limit as i64 * 1000 - 1 > max_dust_htlc_exposure_msat.try_into().unwrap_or(i64::max_value()) {
+		if htlc_stats.on_holder_tx_dust_exposure_msat as i64 + buffer_dust_limit_timeout_sat as i64 * 1000 - 1 > max_dust_htlc_exposure_msat.try_into().unwrap_or(i64::max_value()) {
 			remaining_msat_below_dust_exposure_limit = Some(cmp::min(
 				remaining_msat_below_dust_exposure_limit.unwrap_or(u64::max_value()),
 				max_dust_htlc_exposure_msat.saturating_sub(htlc_stats.on_holder_tx_dust_exposure_msat)));
-			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_timeout_dust_limit * 1000);
+			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, buffer_dust_limit_timeout_sat * 1000);
 		}
 
 		if let Some(remaining_limit_msat) = remaining_msat_below_dust_exposure_limit {
@@ -5043,14 +5056,17 @@ where
 		let context = self;
 		assert!(funding.is_outbound());
 
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			(0, 0)
-		} else {
-			(context.feerate_per_kw as u64 * htlc_success_tx_weight(funding.get_channel_type()) / 1000,
-				context.feerate_per_kw as u64 * htlc_timeout_tx_weight(funding.get_channel_type()) / 1000)
-		};
-		let real_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
-		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
+		if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+			debug_assert_eq!(context.feerate_per_kw, 0);
+			debug_assert!(fee_spike_buffer_htlc.is_none());
+			return 0;
+		}
+
+		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
+			funding.get_channel_type(), context.feerate_per_kw,
+		);
+		let real_dust_limit_success_sat = htlc_success_tx_fee_sat + context.holder_dust_limit_satoshis;
+		let real_dust_limit_timeout_sat = htlc_timeout_tx_fee_sat + context.holder_dust_limit_satoshis;
 
 		let mut addl_htlcs = 0;
 		if fee_spike_buffer_htlc.is_some() { addl_htlcs += 1; }
@@ -5147,19 +5163,22 @@ where
 	fn next_remote_commit_tx_fee_msat(
 		&self, funding: &FundingScope, htlc: Option<HTLCCandidate>, fee_spike_buffer_htlc: Option<()>,
 	) -> u64 {
-		debug_assert!(htlc.is_some() || fee_spike_buffer_htlc.is_some(), "At least one of the options must be set");
-
 		let context = self;
 		assert!(!funding.is_outbound());
 
-		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			(0, 0)
-		} else {
-			(context.feerate_per_kw as u64 * htlc_success_tx_weight(funding.get_channel_type()) / 1000,
-				context.feerate_per_kw as u64 * htlc_timeout_tx_weight(funding.get_channel_type()) / 1000)
-		};
-		let real_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
-		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
+		if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+			debug_assert_eq!(context.feerate_per_kw, 0);
+			debug_assert!(fee_spike_buffer_htlc.is_none());
+			return 0
+		}
+
+		debug_assert!(htlc.is_some() || fee_spike_buffer_htlc.is_some(), "At least one of the options must be set");
+
+		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
+			funding.get_channel_type(), context.feerate_per_kw,
+		);
+		let real_dust_limit_success_sat = htlc_success_tx_fee_sat + context.counterparty_dust_limit_satoshis;
+		let real_dust_limit_timeout_sat = htlc_timeout_tx_fee_sat + context.counterparty_dust_limit_satoshis;
 
 		let mut addl_htlcs = 0;
 		if fee_spike_buffer_htlc.is_some() { addl_htlcs += 1; }
@@ -5441,20 +5460,7 @@ where
 
 		let next_channel_type = get_initial_channel_type(user_config, &eligible_features);
 
-		// Note that we can't get `anchor_zero_fee_commitments` type here, which requires zero
-		// fees, because we downgrade from this channel type first. If there were a superior
-		// channel type that downgrades to `anchor_zero_fee_commitments`, we'd need to handle
-		// fee setting differently here. If we proceeded to open a `anchor_zero_fee_commitments`
-		// channel with non-zero fees, we could produce a non-standard commitment transaction that
-		// puts us at risk of losing funds. We would expect our peer to reject such a channel
-		// open, but we don't want to rely on their validation.
-		assert!(!next_channel_type.supports_anchor_zero_fee_commitments());
-		let conf_target = if next_channel_type.supports_anchors_zero_fee_htlc_tx() {
-			ConfirmationTarget::AnchorChannelFee
-		} else {
-			ConfirmationTarget::NonAnchorChannelFee
-		};
-		self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(conf_target);
+		self.feerate_per_kw = commitment_sat_per_1000_weight_for_type(&fee_estimator, &next_channel_type);
 	 	funding.channel_transaction_parameters.channel_type_features = next_channel_type;
 
 		Ok(())
@@ -7838,6 +7844,10 @@ where
 			panic!("Cannot update fee while peer is disconnected/we're awaiting a monitor update (ChannelManager should have caught this)");
 		}
 
+		// Sending a fee update for zero fee commitments will trigger a warning and disconnect
+		// from our peer, but does not result in a loss of funds so we do not panic here.
+		debug_assert!(!self.funding.get_channel_type().supports_anchor_zero_fee_commitments());
+
 		let can_send_update_fee = core::iter::once(&self.funding)
 			.chain(self.pending_funding.iter())
 			.all(|funding| self.context.can_send_update_fee(funding, feerate_per_kw, fee_estimator, logger));
@@ -8100,6 +8110,12 @@ where
 			// unable to increase the fee, we don't try to force-close directly here.
 			return Ok(());
 		}
+
+		if self.funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+			debug_assert_eq!(self.context.feerate_per_kw, 0);
+			return Ok(());
+		}
+
 		if self.context.feerate_per_kw < min_feerate {
 			log_info!(logger,
 				"Closing channel as feerate of {} is below required {} (the minimum required rate over the past day)",
@@ -8126,6 +8142,9 @@ where
 		}
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fee update message while quiescent".to_owned()));
+		}
+		if self.funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+			return Err(ChannelError::WarnAndDisconnect("Update fee message received for zero fee commitment channel".to_owned()));
 		}
 
 		core::iter::once(&self.funding)
@@ -9338,7 +9357,9 @@ where
 			return Err(LocalHTLCFailureReason::ChannelClosed)
 		}
 
-		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(
+			&fee_estimator, self.funding.get_channel_type(),
+		);
 
 		core::iter::once(&self.funding)
 			.chain(self.pending_funding.iter())
@@ -13545,9 +13566,7 @@ mod tests {
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 	use crate::chain::transaction::OutPoint;
 	use crate::chain::BestBlock;
-	use crate::ln::chan_utils::{
-		self, commit_tx_fee_sat, htlc_success_tx_weight, htlc_timeout_tx_weight,
-	};
+	use crate::ln::chan_utils::{self, commit_tx_fee_sat};
 	use crate::ln::channel::{
 		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate, HTLCInitiator,
 		HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState, InboundV1Channel,
@@ -13860,16 +13879,19 @@ mod tests {
 
 		let commitment_tx_fee_0_htlcs = commit_tx_fee_sat(chan.context.feerate_per_kw, 0, chan.funding.get_channel_type()) * 1000;
 		let commitment_tx_fee_1_htlc = commit_tx_fee_sat(chan.context.feerate_per_kw, 1, chan.funding.get_channel_type()) * 1000;
+		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) = chan_utils::second_stage_tx_fees_sat(
+			&chan.funding.get_channel_type(), 253
+		);
 
 		// If HTLC_SUCCESS_TX_WEIGHT and HTLC_TIMEOUT_TX_WEIGHT were swapped: then this HTLC would be
 		// counted as dust when it shouldn't be.
-		let htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(chan.funding.get_channel_type()) / 1000) + chan.context.holder_dust_limit_satoshis + 1) * 1000;
+		let htlc_amt_above_timeout = (htlc_timeout_tx_fee_sat + chan.context.holder_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(htlc_amt_above_timeout, HTLCInitiator::LocalOffered);
 		let commitment_tx_fee = chan.context.next_local_commit_tx_fee_msat(&chan.funding, htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
 
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
-		let dust_htlc_amt_below_success = ((253 * htlc_success_tx_weight(chan.funding.get_channel_type()) / 1000) + chan.context.holder_dust_limit_satoshis - 1) * 1000;
+		let dust_htlc_amt_below_success = (htlc_success_tx_fee_sat + chan.context.holder_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(dust_htlc_amt_below_success, HTLCInitiator::RemoteOffered);
 		let commitment_tx_fee = chan.context.next_local_commit_tx_fee_msat(&chan.funding, htlc_candidate, None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
@@ -13877,13 +13899,13 @@ mod tests {
 		chan.funding.channel_transaction_parameters.is_outbound_from_holder = false;
 
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
-		let dust_htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(chan.funding.get_channel_type()) / 1000) + chan.context.counterparty_dust_limit_satoshis + 1) * 1000;
+		let dust_htlc_amt_above_timeout = (htlc_timeout_tx_fee_sat + chan.context.counterparty_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(dust_htlc_amt_above_timeout, HTLCInitiator::LocalOffered);
 		let commitment_tx_fee = chan.context.next_remote_commit_tx_fee_msat(&chan.funding, Some(htlc_candidate), None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
 
 		// If swapped: this HTLC would be counted as dust when it shouldn't be.
-		let htlc_amt_below_success = ((253 * htlc_success_tx_weight(chan.funding.get_channel_type()) / 1000) + chan.context.counterparty_dust_limit_satoshis - 1) * 1000;
+		let htlc_amt_below_success = (htlc_success_tx_fee_sat + chan.context.counterparty_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(htlc_amt_below_success, HTLCInitiator::RemoteOffered);
 		let commitment_tx_fee = chan.context.next_remote_commit_tx_fee_msat(&chan.funding, Some(htlc_candidate), None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
