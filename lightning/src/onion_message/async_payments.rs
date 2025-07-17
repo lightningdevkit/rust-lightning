@@ -28,7 +28,11 @@ const RELEASE_HELD_HTLC_TLV_TYPE: u64 = 74;
 
 /// A handler for an [`OnionMessage`] containing an async payments message as its payload.
 ///
+/// The [`AsyncPaymentsContext`]s provided to each method was authenticated by the
+/// [`OnionMessenger`] as coming from a blinded path that we created.
+///
 /// [`OnionMessage`]: crate::ln::msgs::OnionMessage
+/// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
 pub trait AsyncPaymentsMessageHandler {
 	/// Handle an [`OfferPathsRequest`] message. If we are a static invoice server and the message was
 	/// sent over paths that we previously provided to an async recipient, an [`OfferPaths`] message

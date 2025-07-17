@@ -906,6 +906,9 @@ pub trait CustomOnionMessageHandler {
 
 	/// Called with the custom message that was received, returning a response to send, if any.
 	///
+	/// If the provided `context` is `Some`, then the message was sent to a blinded path that we
+	/// created and was authenticated as such by the [`OnionMessenger`].
+	///
 	/// The returned [`Self::CustomMessage`], if any, is enqueued to be sent by [`OnionMessenger`].
 	fn handle_custom_message(
 		&self, message: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>,

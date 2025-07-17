@@ -68,7 +68,12 @@ pub trait DNSResolverMessageHandler {
 
 	/// Handle a [`DNSSECProof`] message (in response to a [`DNSSECQuery`] we presumably sent).
 	///
+	/// The provided [`DNSResolverContext`] was authenticated by the [`OnionMessenger`] as coming from
+	/// a blinded path that we created.
+	///
 	/// With this, we should be able to validate the DNS record we requested.
+	///
+	/// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
 	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext);
 
 	/// Gets the node feature flags which this handler itself supports. Useful for setting the

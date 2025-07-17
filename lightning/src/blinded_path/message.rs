@@ -608,10 +608,8 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 /// [`DNSSECProof`]: crate::onion_message::dns_resolution::DNSSECProof
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct DNSResolverContext {
-	/// A nonce which uniquely describes a DNS resolution.
-	///
-	/// When we receive a DNSSEC proof message, we should check that it was sent over the blinded
-	/// path we included in the request by comparing a stored nonce with this one.
+	/// A nonce which uniquely describes a DNS resolution, useful for looking up metadata about the
+	/// request.
 	pub nonce: [u8; 16],
 }
 

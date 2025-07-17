@@ -40,6 +40,14 @@ pub trait OffersMessageHandler {
 	/// Handles the given message by either responding with an [`Bolt12Invoice`], sending a payment,
 	/// or replying with an error.
 	///
+	/// If the provided [`OffersContext`] is `Some`, then the message was sent to a blinded path that we
+	/// created and was authenticated as such by the [`OnionMessenger`]. There is one exception to
+	/// this: [`OffersContext::InvoiceRequest`].
+	///
+	/// In order to support offers created prior to LDK 0.2, [`OffersContext::InvoiceRequest`]s are
+	/// not authenticated by the [`OnionMessenger`]. It is the responsibility of message handling code
+	/// to authenticate the provided [`OffersContext`] in this case.
+	///
 	/// The returned [`OffersMessage`], if any, is enqueued to be sent by [`OnionMessenger`].
 	///
 	/// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
