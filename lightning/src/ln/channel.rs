@@ -41,8 +41,8 @@ use crate::ln::chan_utils;
 #[cfg(splicing)]
 use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 use crate::ln::chan_utils::{
-	commitment_sat_per_1000_weight_for_type, get_commitment_transaction_number_obscure_factor,
-	max_htlcs, second_stage_tx_fees_sat, ChannelPublicKeys, ChannelTransactionParameters,
+	get_commitment_transaction_number_obscure_factor, max_htlcs, second_stage_tx_fees_sat,
+	selected_commitment_sat_per_1000_weight, ChannelPublicKeys, ChannelTransactionParameters,
 	ClosingTransaction, CommitmentTransaction, CounterpartyChannelTransactionParameters,
 	CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
@@ -3392,7 +3392,9 @@ where
 		debug_assert!(!channel_type.supports_any_optional_bits());
 		debug_assert!(!channel_type.requires_unknown_bits_from(&channelmanager::provided_channel_type_features(&config)));
 
-		let commitment_feerate = commitment_sat_per_1000_weight_for_type(&fee_estimator, &channel_type);
+		let commitment_feerate = selected_commitment_sat_per_1000_weight(
+			&fee_estimator, &channel_type,
+		);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
 		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
@@ -5460,7 +5462,9 @@ where
 
 		let next_channel_type = get_initial_channel_type(user_config, &eligible_features);
 
-		self.feerate_per_kw = commitment_sat_per_1000_weight_for_type(&fee_estimator, &next_channel_type);
+		self.feerate_per_kw = selected_commitment_sat_per_1000_weight(
+			&fee_estimator, &next_channel_type,
+		);
 	 	funding.channel_transaction_parameters.channel_type_features = next_channel_type;
 
 		Ok(())

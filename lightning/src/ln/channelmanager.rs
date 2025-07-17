@@ -56,7 +56,7 @@ use crate::events::{
 	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
 };
 use crate::events::{FundingInfo, PaidBolt12Invoice};
-use crate::ln::chan_utils::commitment_sat_per_1000_weight_for_type;
+use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::channel::PendingV2Channel;
@@ -7231,7 +7231,9 @@ where
 				for (chan_id, chan) in peer_state.channel_by_id.iter_mut()
 					.filter_map(|(chan_id, chan)| chan.as_funded_mut().map(|chan| (chan_id, chan)))
 				{
-					let new_feerate = commitment_sat_per_1000_weight_for_type(&self.fee_estimator, chan.funding.get_channel_type());
+					let new_feerate = selected_commitment_sat_per_1000_weight(
+						&self.fee_estimator, chan.funding.get_channel_type(),
+					);
 					let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
 					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 				}
@@ -7280,7 +7282,9 @@ where
 					peer_state.channel_by_id.retain(|chan_id, chan| {
 						match chan.as_funded_mut() {
 							Some(funded_chan) => {
-								let new_feerate = commitment_sat_per_1000_weight_for_type(&self.fee_estimator, funded_chan.funding.get_channel_type());
+								let new_feerate = selected_commitment_sat_per_1000_weight(
+									&self.fee_estimator, funded_chan.funding.get_channel_type(),
+								);
 								let chan_needs_persist = self.update_channel_fee(chan_id, funded_chan, new_feerate);
 								if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 

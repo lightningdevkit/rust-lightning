@@ -260,8 +260,9 @@ pub(crate) fn htlc_tx_fees_sat(feerate_per_kw: u32, num_accepted_htlcs: usize, n
 	num_accepted_htlcs as u64 * htlc_success_tx_fee_sat + num_offered_htlcs as u64 * htlc_timeout_tx_fee_sat
 }
 
-/// Returns a fee estimate for the commitment transaction depending on channel type.
-pub(super) fn commitment_sat_per_1000_weight_for_type<F: Deref>(
+/// Returns a fee estimate for the commitment transaction that we would ideally like to set,
+/// depending on channel type.
+pub(super) fn selected_commitment_sat_per_1000_weight<F: Deref>(
 	fee_estimator: &LowerBoundedFeeEstimator<F>, channel_type: &ChannelTypeFeatures,
 ) -> u32
 where
