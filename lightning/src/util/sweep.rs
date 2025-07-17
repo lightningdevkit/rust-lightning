@@ -23,8 +23,8 @@ use crate::sync::Arc;
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 use crate::util::persist::{
-	KVStoreSync, OUTPUT_SWEEPER_PERSISTENCE_KEY, OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
-	OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+	KVStore, KVStoreSync, KVStoreSyncWrapper, OUTPUT_SWEEPER_PERSISTENCE_KEY,
+	OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 use crate::{impl_writeable_tlv_based, log_debug, log_error};
@@ -36,6 +36,7 @@ use bitcoin::{BlockHash, ScriptBuf, Transaction, Txid};
 
 use core::future::Future;
 use core::ops::Deref;
+use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task;
 
@@ -347,7 +348,7 @@ where
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter,
-	K::Target: KVStoreSync,
+	K::Target: KVStore,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -363,13 +364,54 @@ where
 }
 
 impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
+	OutputSweeper<B, D, E, F, KVStoreSyncWrapper<K>, L, O>
+where
+	B::Target: BroadcasterInterface,
+	D::Target: ChangeDestinationSource,
+	E::Target: FeeEstimator,
+	F::Target: Filter + Send + Sync,
+	K::Target: KVStoreSync,
+	L::Target: Logger,
+	O::Target: OutputSpender,
+{
+	/// Constructs a new [`OutputSweeper`] based on a [`KVStoreSync`].
+	pub fn new_with_kv_store_sync(
+		best_block: BestBlock, broadcaster: B, fee_estimator: E, chain_data_source: Option<F>,
+		output_spender: O, change_destination_source: D, kv_store_sync: K, logger: L,
+	) -> Self {
+		let kv_store = KVStoreSyncWrapper(kv_store_sync);
+
+		Self::new(
+			best_block,
+			broadcaster,
+			fee_estimator,
+			chain_data_source,
+			output_spender,
+			change_destination_source,
+			kv_store,
+			logger,
+		)
+	}
+
+	/// Reads an [`OutputSweeper`] from the given reader and returns it with a synchronous [`KVStoreSync`].
+	pub fn read_with_kv_store_sync<R: io::Read>(
+		reader: &mut R, args: (B, E, Option<F>, O, D, K, L),
+	) -> Result<Self, DecodeError> {
+		let kv_store = KVStoreSyncWrapper(args.5);
+		let args = (args.0, args.1, args.2, args.3, args.4, kv_store, args.6);
+
+		Self::read(reader, args)
+	}
+}
+
+impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
 	OutputSweeper<B, D, E, F, K, L, O>
 where
 	B::Target: BroadcasterInterface,
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter,
-	K::Target: KVStoreSync,
+	K::Target: KVStore,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -411,7 +453,7 @@ where
 	/// Returns `Err` on persistence failure, in which case the call may be safely retried.
 	///
 	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
-	pub fn track_spendable_outputs(
+	pub async fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
 		exclude_static_outputs: bool, delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
@@ -427,29 +469,32 @@ where
 			return Ok(());
 		}
 
-		let mut state_lock = self.sweeper_state.lock().unwrap();
-		for descriptor in relevant_descriptors {
-			let output_info = TrackedSpendableOutput {
-				descriptor,
-				channel_id,
-				status: OutputSpendStatus::PendingInitialBroadcast {
-					delayed_until_height: delay_until_height,
-				},
-			};
+		self.update_state(|state_lock| -> Result<((), bool), ()> {
+			for descriptor in relevant_descriptors {
+				let output_info = TrackedSpendableOutput {
+					descriptor,
+					channel_id,
+					status: OutputSpendStatus::PendingInitialBroadcast {
+						delayed_until_height: delay_until_height,
+					},
+				};
 
-			if state_lock.outputs.iter().find(|o| o.descriptor == output_info.descriptor).is_some()
-			{
-				continue;
+				if state_lock
+					.outputs
+					.iter()
+					.find(|o| o.descriptor == output_info.descriptor)
+					.is_some()
+				{
+					continue;
+				}
+
+				state_lock.outputs.push(output_info);
+				state_lock.dirty = true;
 			}
 
-			state_lock.outputs.push(output_info);
-		}
-		self.persist_state(&*state_lock).map_err(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		})?;
-		state_lock.dirty = false;
-
-		Ok(())
+			Ok(((), false))
+		})
+		.await
 	}
 
 	/// Returns a list of the currently tracked spendable outputs.
@@ -505,22 +550,18 @@ where
 		};
 
 		// See if there is anything to sweep before requesting a change address.
-		{
-			let mut sweeper_state = self.sweeper_state.lock().unwrap();
+		let has_respends = self
+			.update_state(|sweeper_state| -> Result<(bool, bool), ()> {
+				let cur_height = sweeper_state.best_block.height;
+				let has_respends = sweeper_state.outputs.iter().any(|o| filter_fn(o, cur_height));
 
-			let cur_height = sweeper_state.best_block.height;
-			let has_respends = sweeper_state.outputs.iter().any(|o| filter_fn(o, cur_height));
-			if !has_respends {
-				// If there is nothing to sweep, we still persist the state if it is dirty.
-				if sweeper_state.dirty {
-					self.persist_state(&sweeper_state).map_err(|e| {
-						log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-					})?;
-					sweeper_state.dirty = false;
-				}
+				// If there are respends, we can postpone persisting a potentially dirty state until after the sweep.
+				Ok((has_respends, has_respends))
+			})
+			.await?;
 
-				return Ok(());
-			}
+		if !has_respends {
+			return Ok(());
 		}
 
 		// Request a new change address outside of the mutex to avoid the mutex crossing await.
@@ -528,62 +569,59 @@ where
 			self.change_destination_source.get_change_destination_script().await?;
 
 		// Sweep the outputs.
-		{
-			let mut sweeper_state = self.sweeper_state.lock().unwrap();
+		let spending_tx = self
+			.update_state(|sweeper_state| -> Result<(Option<Transaction>, bool), ()> {
+				let cur_height = sweeper_state.best_block.height;
+				let cur_hash = sweeper_state.best_block.block_hash;
 
-			let cur_height = sweeper_state.best_block.height;
-			let cur_hash = sweeper_state.best_block.block_hash;
+				let respend_descriptors: Vec<&SpendableOutputDescriptor> = sweeper_state
+					.outputs
+					.iter()
+					.filter(|o| filter_fn(*o, cur_height))
+					.map(|o| &o.descriptor)
+					.collect();
 
-			let respend_descriptors: Vec<&SpendableOutputDescriptor> = sweeper_state
-				.outputs
-				.iter()
-				.filter(|o| filter_fn(*o, cur_height))
-				.map(|o| &o.descriptor)
-				.collect();
+				// Generate the spending transaction and broadcast it.
+				if !respend_descriptors.is_empty() {
+					let spending_tx = self
+						.spend_outputs(
+							&sweeper_state,
+							&respend_descriptors,
+							change_destination_script,
+						)
+						.map_err(|e| {
+							log_error!(self.logger, "Error spending outputs: {:?}", e);
+						})?;
 
-			if respend_descriptors.is_empty() {
-				// It could be that a tx confirmed and there is now nothing to sweep anymore. We still persist the state
-				// if it is dirty.
-				if sweeper_state.dirty {
-					self.persist_state(&sweeper_state).map_err(|e| {
-						log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-					})?;
-					sweeper_state.dirty = false;
+					log_debug!(
+						self.logger,
+						"Generating and broadcasting sweeping transaction {}",
+						spending_tx.compute_txid()
+					);
+
+					// As we didn't modify the state so far, the same filter_fn yields the same elements as
+					// above.
+					let respend_outputs =
+						sweeper_state.outputs.iter_mut().filter(|o| filter_fn(&**o, cur_height));
+					for output_info in respend_outputs {
+						if let Some(filter) = self.chain_data_source.as_ref() {
+							let watched_output = output_info.to_watched_output(cur_hash);
+							filter.register_output(watched_output);
+						}
+
+						output_info.status.broadcast(cur_hash, cur_height, spending_tx.clone());
+						sweeper_state.dirty = true;
+					}
+
+					Ok((Some(spending_tx), false))
+				} else {
+					Ok((None, false))
 				}
+			})
+			.await?;
 
-				return Ok(());
-			}
-
-			let spending_tx = self
-				.spend_outputs(&sweeper_state, &respend_descriptors, change_destination_script)
-				.map_err(|e| {
-					log_error!(self.logger, "Error spending outputs: {:?}", e);
-				})?;
-
-			log_debug!(
-				self.logger,
-				"Generating and broadcasting sweeping transaction {}",
-				spending_tx.compute_txid()
-			);
-
-			// As we didn't modify the state so far, the same filter_fn yields the same elements as
-			// above.
-			let respend_outputs =
-				sweeper_state.outputs.iter_mut().filter(|o| filter_fn(&**o, cur_height));
-			for output_info in respend_outputs {
-				if let Some(filter) = self.chain_data_source.as_ref() {
-					let watched_output = output_info.to_watched_output(cur_hash);
-					filter.register_output(watched_output);
-				}
-
-				output_info.status.broadcast(cur_hash, cur_height, spending_tx.clone());
-			}
-
-			self.persist_state(&sweeper_state).map_err(|e| {
-				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-			})?;
-			sweeper_state.dirty = false;
-
+		// Persistence completely successfully. If we have a spending transaction, we broadcast it.
+		if let Some(spending_tx) = spending_tx {
 			self.broadcaster.broadcast_transactions(&[&spending_tx]);
 		}
 
@@ -612,25 +650,45 @@ where
 		sweeper_state.dirty = true;
 	}
 
-	fn persist_state(&self, sweeper_state: &SweeperState) -> Result<(), io::Error> {
-		self.kv_store
-			.write(
-				OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
-				OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
-				OUTPUT_SWEEPER_PERSISTENCE_KEY,
-				&sweeper_state.encode(),
-			)
-			.map_err(|e| {
-				log_error!(
-					self.logger,
-					"Write for key {}/{}/{} failed due to: {}",
-					OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
-					OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
-					OUTPUT_SWEEPER_PERSISTENCE_KEY,
-					e
-				);
-				e
-			})
+	fn persist_state<'a>(
+		&self, sweeper_state: &SweeperState,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'a + Send>> {
+		let encoded = sweeper_state.encode();
+
+		self.kv_store.write(
+			OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
+			OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+			OUTPUT_SWEEPER_PERSISTENCE_KEY,
+			&encoded,
+		)
+	}
+
+	/// Updates the sweeper state by executing the given callback. Persists the state afterwards if it is marked dirty,
+	/// unless skip_persist is true. Returning true for skip_persist allows the callback to postpone persisting a
+	/// potentially dirty state.
+	async fn update_state<X>(
+		&self, callback: impl FnOnce(&mut SweeperState) -> Result<(X, bool), ()>,
+	) -> Result<X, ()> {
+		let (fut, res) = {
+			let mut state_lock = self.sweeper_state.lock().unwrap();
+
+			let (res, skip_persist) = callback(&mut state_lock)?;
+			if !state_lock.dirty || skip_persist {
+				return Ok(res);
+			}
+
+			state_lock.dirty = false;
+
+			(self.persist_state(&state_lock), res)
+		};
+
+		fut.await.map_err(|e| {
+			self.sweeper_state.lock().unwrap().dirty = true;
+
+			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		})?;
+
+		Ok(res)
 	}
 
 	fn spend_outputs(
@@ -684,7 +742,7 @@ where
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
-	K::Target: KVStoreSync,
+	K::Target: KVStore,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -731,7 +789,7 @@ where
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
-	K::Target: KVStoreSync,
+	K::Target: KVStore,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -828,7 +886,7 @@ where
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
-	K::Target: KVStoreSync,
+	K::Target: KVStore,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -877,7 +935,7 @@ where
 	D::Target: ChangeDestinationSource,
 	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
-	K::Target: KVStoreSync,
+	K::Target: KVStore,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -933,7 +991,17 @@ where
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
-	sweeper: Arc<OutputSweeper<B, Arc<ChangeDestinationSourceSyncWrapper<D>>, E, F, K, L, O>>,
+	sweeper: Arc<
+		OutputSweeper<
+			B,
+			Arc<ChangeDestinationSourceSyncWrapper<D>>,
+			E,
+			F,
+			Arc<KVStoreSyncWrapper<K>>,
+			L,
+			O,
+		>,
+	>,
 }
 
 impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
@@ -954,6 +1022,8 @@ where
 	) -> Self {
 		let change_destination_source =
 			Arc::new(ChangeDestinationSourceSyncWrapper::new(change_destination_source));
+
+		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store));
 
 		let sweeper = OutputSweeper::new(
 			best_block,
@@ -983,17 +1053,26 @@ where
 		}
 	}
 
-	/// Tells the sweeper to track the given outputs descriptors. Wraps [`OutputSweeper::track_spendable_outputs`].
+	/// Wrapper around [`OutputSweeper::track_spendable_outputs`].
 	pub fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
 		exclude_static_outputs: bool, delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
-		self.sweeper.track_spendable_outputs(
+		let mut fut = Box::pin(self.sweeper.track_spendable_outputs(
 			output_descriptors,
 			channel_id,
 			exclude_static_outputs,
 			delay_until_height,
-		)
+		));
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("OutputSweeper::track_spendable_outputs should not be pending in a sync context");
+			},
+		}
 	}
 
 	/// Returns a list of the currently tracked spendable outputs. Wraps [`OutputSweeper::tracked_spendable_outputs`].
@@ -1005,7 +1084,17 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn sweeper_async(
 		&self,
-	) -> Arc<OutputSweeper<B, Arc<ChangeDestinationSourceSyncWrapper<D>>, E, F, K, L, O>> {
+	) -> Arc<
+		OutputSweeper<
+			B,
+			Arc<ChangeDestinationSourceSyncWrapper<D>>,
+			E,
+			F,
+			Arc<KVStoreSyncWrapper<K>>,
+			L,
+			O,
+		>,
+	> {
 		Arc::clone(&self.sweeper)
 	}
 }

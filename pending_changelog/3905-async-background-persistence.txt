@@ -3,3 +3,7 @@
 * The `Persister` trait has been removed, and `KVStore` is now used directly. If you're persisting `ChannelManager`,
 `NetworkGraph`, or `Scorer` to a custom location, you can maintain that behavior by intercepting and rewriting the
 corresponding namespaces and keys.
+
+* The `KVStore` trait has been updated to be asynchronous, while the original synchronous version is now available as
+`KVStoreSync`. For channel persistence, `KVStoreSync` is still mandatory. However, for background persistence, an
+asynchronous `KVStore` can be provided optionally.

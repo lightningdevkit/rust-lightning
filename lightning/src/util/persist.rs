@@ -14,7 +14,9 @@
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::{BlockHash, Txid};
 use core::cmp;
+use core::future::Future;
 use core::ops::Deref;
+use core::pin::Pin;
 use core::str::FromStr;
 
 use crate::prelude::*;
@@ -108,6 +110,79 @@ pub const OUTPUT_SWEEPER_PERSISTENCE_KEY: &str = "output_sweeper";
 /// updates applied to be current) with another implementation.
 pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 
+/// A synchronous version of the [`KVStore`] trait.
+pub trait KVStoreSync {
+	/// A synchronous version of the [`KVStore::read`] method.
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> Result<Vec<u8>, io::Error>;
+	/// A synchronous version of the [`KVStore::write`] method.
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> Result<(), io::Error>;
+	/// A synchronous version of the [`KVStore::remove`] method.
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> Result<(), io::Error>;
+	/// A synchronous version of the [`KVStore::list`] method.
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> Result<Vec<String>, io::Error>;
+}
+
+/// A wrapper around a [`KVStoreSync`] that implements the [`KVStore`] trait. It is not necessary to use this type
+/// directly.
+pub struct KVStoreSyncWrapper<K: Deref>(pub K)
+where
+	K::Target: KVStoreSync;
+
+impl<K: Deref> Deref for KVStoreSyncWrapper<K>
+where
+	K::Target: KVStoreSync,
+{
+	type Target = Self;
+	fn deref(&self) -> &Self::Target {
+		self
+	}
+}
+
+impl<K: Deref> KVStore for KVStoreSyncWrapper<K>
+where
+	K::Target: KVStoreSync,
+{
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>> {
+		let res = self.0.read(primary_namespace, secondary_namespace, key);
+
+		Box::pin(async move { res })
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+		let res = self.0.write(primary_namespace, secondary_namespace, key, buf);
+
+		Box::pin(async move { res })
+	}
+
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+		let res = self.0.remove(primary_namespace, secondary_namespace, key, lazy);
+
+		Box::pin(async move { res })
+	}
+
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>> {
+		let res = self.0.list(primary_namespace, secondary_namespace);
+
+		Box::pin(async move { res })
+	}
+}
+
 /// Provides an interface that allows storage and retrieval of persisted values that are associated
 /// with given keys.
 ///
@@ -129,7 +204,7 @@ pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 /// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
 /// interface can use a concatenation of `[{primary_namespace}/[{secondary_namespace}/]]{key}` to
 /// recover a `key` compatible with the data model previously assumed by `KVStorePersister::persist`.
-pub trait KVStoreSync {
+pub trait KVStore {
 	/// Returns the data stored for the given `primary_namespace`, `secondary_namespace`, and
 	/// `key`.
 	///
@@ -139,14 +214,16 @@ pub trait KVStoreSync {
 	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Result<Vec<u8>, io::Error>;
-	/// Persists the given data under the given `key`.
+	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>>;
+	/// Persists the given data under the given `key`. Note that the order of multiple writes calls needs to be retained
+	/// when persisting asynchronously. One possible way to accomplish this is by assigning a version number to each
+	/// write before returning the future, and then during asynchronous execution, ensuring that the writes are executed in
+	/// the correct order.
 	///
-	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present
-	/// in the store.
+	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present in the store.
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
-	) -> Result<(), io::Error>;
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>>;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
 	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
@@ -164,7 +241,7 @@ pub trait KVStoreSync {
 	/// invokation or not.
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
-	) -> Result<(), io::Error>;
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>>;
 	/// Returns a list of keys that are stored under the given `secondary_namespace` in
 	/// `primary_namespace`.
 	///
@@ -172,10 +249,10 @@ pub trait KVStoreSync {
 	/// returned keys. Returns an empty list if `primary_namespace` or `secondary_namespace` is unknown.
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> Result<Vec<String>, io::Error>;
+	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>>;
 }
 
-/// Provides additional interface methods that are required for [`KVStoreSync`]-to-[`KVStoreSync`]
+/// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
 /// data migration.
 pub trait MigratableKVStore: KVStoreSync {
 	/// Returns *all* known keys as a list of `primary_namespace`, `secondary_namespace`, `key` tuples.
