@@ -5044,7 +5044,7 @@ where
 	/// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
 	/// number of pending HTLCs that are on track to be in our next commitment tx.
 	///
-	/// Optionally includes the `HTLCCandidate` given by `htlc` and an additional non-dust HTLC if
+	/// Includes the `HTLCCandidate` given by `htlc` and an additional non-dust HTLC if
 	/// `fee_spike_buffer_htlc` is `Some`.
 	///
 	/// The first extra HTLC is useful for determining whether we can accept a further HTLC, the
