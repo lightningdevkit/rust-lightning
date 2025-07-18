@@ -277,6 +277,10 @@ impl NodeSigner for KeyProvider {
 		unreachable!()
 	}
 
+	fn sign_message(&self, msg: &[u8]) -> Result<String, ()> {
+		Ok(lightning::util::message_signing::sign(msg, &self.node_secret))
+	}
+
 	fn get_peer_storage_key(&self) -> PeerStorageKey {
 		unreachable!()
 	}
