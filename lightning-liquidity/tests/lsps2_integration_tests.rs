@@ -2,8 +2,7 @@
 
 mod common;
 
-use common::create_service_and_client_nodes;
-use common::{get_lsps_message, Node};
+use common::{create_service_and_client_nodes, get_lsps_message, LSPSNodes, LiquidityNode};
 
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::ser::LSPSDateTime;
@@ -13,17 +12,22 @@ use lightning_liquidity::lsps2::event::LSPS2ServiceEvent;
 use lightning_liquidity::lsps2::msgs::LSPS2RawOpeningFeeParams;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
 use lightning_liquidity::lsps2::utils::is_valid_opening_fee_params;
+use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use lightning::ln::channelmanager::{InterceptId, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use lightning::ln::functional_test_utils::{
+	create_chanmon_cfgs, create_node_cfgs, create_node_chanmgrs,
+};
+use lightning::ln::functional_test_utils::{create_network, Node};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::log_error;
 use lightning::routing::router::{RouteHint, RouteHintHop};
+use lightning::sign::NodeSigner;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Logger;
 
 use lightning_invoice::{Bolt11Invoice, InvoiceBuilder, RoutingFees};
 
-use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 use lightning_types::payment::PaymentHash;
 
 use bitcoin::hashes::{sha256, Hash};
@@ -36,11 +40,10 @@ use std::time::Duration;
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
 
-fn setup_test_lsps2(
-	persist_dir: &str,
-) -> (bitcoin::secp256k1::PublicKey, bitcoin::secp256k1::PublicKey, Node, Node, [u8; 32]) {
+fn setup_test_lsps2_nodes<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>,
+) -> (LSPSNodes<'a, 'b, 'c>, [u8; 32]) {
 	let promise_secret = [42; 32];
-	let signing_key = SecretKey::from_slice(&promise_secret).unwrap();
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
 	let service_config = LiquidityServiceConfig {
 		#[cfg(lsps1_service)]
@@ -54,29 +57,22 @@ fn setup_test_lsps2(
 		lsps1_client_config: None,
 		lsps2_client_config: Some(lsps2_client_config),
 	};
+	let lsps_nodes = create_service_and_client_nodes(nodes, service_config, client_config);
 
-	let (service_node, client_node) =
-		create_service_and_client_nodes(persist_dir, service_config, client_config);
-
-	let secp = bitcoin::secp256k1::Secp256k1::new();
-	let service_node_id = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &signing_key);
-	let client_node_id = client_node.channel_manager.get_our_node_id();
-
-	(service_node_id, client_node_id, service_node, client_node, promise_secret)
+	(lsps_nodes, promise_secret)
 }
 
 fn create_jit_invoice(
-	node: &Node, service_node_id: PublicKey, intercept_scid: u64, cltv_expiry_delta: u32,
-	payment_size_msat: Option<u64>, description: &str, expiry_secs: u32,
+	node: &LiquidityNode<'_, '_, '_>, service_node_id: PublicKey, intercept_scid: u64,
+	cltv_expiry_delta: u32, payment_size_msat: Option<u64>, description: &str, expiry_secs: u32,
 ) -> Result<Bolt11Invoice, ()> {
 	// LSPS2 requires min_final_cltv_expiry_delta to be at least 2 more than usual.
 	let min_final_cltv_expiry_delta = MIN_FINAL_CLTV_EXPIRY_DELTA + 2;
 	let (payment_hash, payment_secret) = node
-		.channel_manager
+		.node
 		.create_inbound_payment(None, expiry_secs, Some(min_final_cltv_expiry_delta))
 		.map_err(|e| {
 			log_error!(node.logger, "Failed to register inbound payment: {:?}", e);
-			()
 		})?;
 
 	let route_hint = RouteHint(vec![RouteHintHop {
@@ -90,7 +86,6 @@ fn create_jit_invoice(
 
 	let payment_hash = sha256::Hash::from_slice(&payment_hash.0).map_err(|e| {
 		log_error!(node.logger, "Invalid payment hash: {:?}", e);
-		()
 	})?;
 
 	let currency = Network::Bitcoin.into();
@@ -107,20 +102,30 @@ fn create_jit_invoice(
 		invoice_builder = invoice_builder.amount_milli_satoshis(amount_msat).basic_mpp();
 	}
 
-	invoice_builder
-		.build_signed(|hash| {
-			Secp256k1::new().sign_ecdsa_recoverable(hash, &node.keys_manager.get_node_secret_key())
+	let raw_invoice = invoice_builder.build_raw().map_err(|e| {
+		log_error!(node.inner.logger, "Failed to build raw invoice: {:?}", e);
+	})?;
+
+	let sign_fn =
+		node.inner.keys_manager.sign_invoice(&raw_invoice, lightning::sign::Recipient::Node);
+
+	raw_invoice.sign(|_| sign_fn).and_then(|signed_raw| {
+		Bolt11Invoice::from_signed(signed_raw).map_err(|e| {
+			log_error!(node.inner.logger, "Failed to create invoice from signed raw: {:?}", e);
 		})
-		.map_err(|e| {
-			log_error!(node.logger, "Failed to build and sign invoice: {}", e);
-			()
-		})
+	})
 }
 
 #[test]
 fn invoice_generation_flow() {
-	let (service_node_id, client_node_id, service_node, client_node, promise_secret) =
-		setup_test_lsps2("invoice_generation_flow");
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes(nodes);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
 
 	let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
@@ -210,7 +215,7 @@ fn invoice_generation_flow() {
 
 	let user_channel_id = 42;
 	let cltv_expiry_delta = 144;
-	let intercept_scid = service_node.channel_manager.get_intercept_scid();
+	let intercept_scid = service_node.node.get_intercept_scid();
 	let client_trusts_lsp = true;
 
 	service_handler
@@ -261,8 +266,15 @@ fn invoice_generation_flow() {
 
 #[test]
 fn channel_open_failed() {
-	let (service_node_id, client_node_id, service_node, client_node, _) =
-		setup_test_lsps2("channel_open_failed");
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
 
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
 	let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
@@ -314,7 +326,7 @@ fn channel_open_failed() {
 	let _buy_event = service_node.liquidity_manager.next_event().unwrap();
 	let user_channel_id = 42;
 	let cltv_expiry_delta = 144;
-	let intercept_scid = service_node.channel_manager.get_intercept_scid();
+	let intercept_scid = service_node.node.get_intercept_scid();
 	let client_trusts_lsp = true;
 
 	service_handler
@@ -389,8 +401,14 @@ fn channel_open_failed() {
 
 #[test]
 fn channel_open_failed_nonexistent_channel() {
-	let (_, client_node_id, service_node, _, _) =
-		setup_test_lsps2("channel_open_failed_nonexistent_channel");
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+
+	let client_node_id = client_node.inner.node.get_our_node_id();
 
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
 
@@ -409,8 +427,15 @@ fn channel_open_failed_nonexistent_channel() {
 
 #[test]
 fn channel_open_abandoned() {
-	let (service_node_id, client_node_id, service_node, client_node, _) =
-		setup_test_lsps2("channel_open_abandoned");
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
 
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
 	let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
@@ -462,7 +487,7 @@ fn channel_open_abandoned() {
 	let _buy_event = service_node.liquidity_manager.next_event().unwrap();
 	let user_channel_id = 42;
 	let cltv_expiry_delta = 144;
-	let intercept_scid = service_node.channel_manager.get_intercept_scid();
+	let intercept_scid = service_node.node.get_intercept_scid();
 	let client_trusts_lsp = true;
 
 	service_handler
@@ -486,8 +511,14 @@ fn channel_open_abandoned() {
 
 #[test]
 fn channel_open_abandoned_nonexistent_channel() {
-	let (_, client_node_id, service_node, _, _) =
-		setup_test_lsps2("channel_open_abandoned_nonexistent_channel");
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+
+	let client_node_id = client_node.inner.node.get_our_node_id();
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
 
 	// Call channel_open_abandoned with a nonexistent user_channel_id
@@ -505,8 +536,15 @@ fn channel_open_abandoned_nonexistent_channel() {
 
 #[test]
 fn max_pending_requests_per_peer_rejected() {
-	let (service_node_id, client_node_id, service_node, client_node, _) =
-		setup_test_lsps2("max_pending_requests_per_peer_rejected");
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
 
 	let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
 
@@ -553,8 +591,14 @@ fn max_pending_requests_per_peer_rejected() {
 
 #[test]
 fn max_total_requests_buy_rejected() {
-	let (service_node_id, _, service_node, client_node, _) =
-		setup_test_lsps2("max_total_requests_buy_rejected");
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+
+	let service_node_id = service_node.inner.node.get_our_node_id();
 
 	let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
@@ -676,9 +720,15 @@ fn max_total_requests_buy_rejected() {
 
 #[test]
 fn invalid_token_flow() {
-	let (service_node_id, client_node_id, service_node, client_node, _promise_secret) =
-		setup_test_lsps2("invalid_token_flow");
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
 
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
 	let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
 
@@ -749,8 +799,14 @@ fn invalid_token_flow() {
 
 #[test]
 fn opening_fee_params_menu_is_sorted_by_spec() {
-	let (service_node_id, client_node_id, service_node, client_node, _secret) =
-		setup_test_lsps2("opening_fee_params_menu_is_sorted_by_spec");
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
 
 	let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();

@@ -486,7 +486,7 @@ pub struct NodeCfg<'a> {
 	pub override_init_features: Rc<RefCell<Option<InitFeatures>>>,
 }
 
-pub(crate) type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
+pub type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 	&'node_cfg TestChainMonitor<'chan_mon_cfg>,
 	&'chan_mon_cfg test_utils::TestBroadcaster,
 	&'node_cfg test_utils::TestKeysInterface,
