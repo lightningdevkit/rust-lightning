@@ -128,7 +128,10 @@ impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32])> for ChaChaDualPolyRea
 			ChaChaDualPolyReader { chacha: &mut chacha, poly: &mut mac, read_len: 0, read: s };
 
 		let readable: T = Readable::read(&mut chacha_stream)?;
-		chacha_stream.read.eat_remaining()?;
+		while chacha_stream.read.bytes_remain() {
+			let mut buf = [0; 256];
+			chacha_stream.read(&mut buf)?;
+		}
 
 		let read_len = chacha_stream.read_len;
 
@@ -203,7 +206,10 @@ impl<T: Readable> LengthReadableArgs<[u8; 32]> for ChaChaPolyReadAdapter<T> {
 		let s = FixedLengthReader::new(r, decrypted_len);
 		let mut chacha_stream = ChaChaPolyReader { chacha: &mut chacha, read: s };
 		let readable: T = Readable::read(&mut chacha_stream)?;
-		chacha_stream.read.eat_remaining()?;
+		while chacha_stream.read.bytes_remain() {
+			let mut buf = [0; 256];
+			chacha_stream.read(&mut buf)?;
+		}
 
 		let mut tag = [0 as u8; 16];
 		r.read_exact(&mut tag)?;
