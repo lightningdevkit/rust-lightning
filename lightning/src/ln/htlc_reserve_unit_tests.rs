@@ -678,7 +678,7 @@ pub fn holding_cell_htlc_counting() {
 	expect_and_process_pending_htlcs(&nodes[1], true);
 	let fail = HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 };
 	let events = nodes[1].node.get_and_clear_pending_events();
-	expect_pending_htlcs_forwardable_conditions(events, &[fail]);
+	expect_htlc_failure_conditions(events, &[fail]);
 	check_added_monitors(&nodes[1], 1);
 
 	let bs_fail_updates = get_htlc_update_msgs!(nodes[1], node_a_id);

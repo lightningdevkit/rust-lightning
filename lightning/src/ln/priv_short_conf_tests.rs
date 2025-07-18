@@ -707,7 +707,7 @@ fn test_scid_alias_returned() {
 		node_id: Some(node_c_id),
 		channel_id: chan.0.channel_id,
 	}];
-	expect_pending_htlcs_forwardable_conditions(events, &expected_failures);
+	expect_htlc_failure_conditions(events, &expected_failures);
 	check_added_monitors!(nodes[1], 1);
 
 	let bs_updates = get_htlc_update_msgs!(nodes[1], node_a_id);

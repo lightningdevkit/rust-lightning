@@ -2438,7 +2438,7 @@ fn test_phantom_onion_hmac_failure() {
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_update_add_htlcs();
 
 	// Modify the payload so the phantom hop's HMAC is bogus.
@@ -2461,7 +2461,7 @@ fn test_phantom_onion_hmac_failure() {
 		}
 	};
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_conditions(
+	expect_htlc_failure_conditions(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash }],
 	);
@@ -2511,7 +2511,7 @@ fn test_phantom_invalid_onion_payload() {
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_update_add_htlcs();
 
 	// Modify the onion packet to have an invalid payment amount.
@@ -2562,7 +2562,7 @@ fn test_phantom_invalid_onion_payload() {
 		}
 	}
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_conditions(
+	expect_htlc_failure_conditions(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash }],
 	);
@@ -2610,7 +2610,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_update_add_htlcs();
 
 	// Modify the payload so the phantom hop's HMAC is bogus.
@@ -2628,7 +2628,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 		}
 	}
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_conditions(
+	expect_htlc_failure_conditions(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash }],
 	);
@@ -2680,9 +2680,9 @@ fn test_phantom_failure_too_low_cltv() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_conditions(
+	expect_htlc_failure_conditions(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash }],
 	);
@@ -2838,11 +2838,11 @@ fn test_phantom_failure_too_low_recv_amt() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_conditions(
+	expect_htlc_failure_conditions(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash: payment_hash.clone() }],
 	);
@@ -2958,9 +2958,9 @@ fn test_phantom_failure_reject_payment() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(
 		nodes[1],
@@ -2971,7 +2971,7 @@ fn test_phantom_failure_reject_payment() {
 		route.paths[0].hops.last().unwrap().pubkey
 	);
 	nodes[1].node.fail_htlc_backwards(&payment_hash);
-	expect_pending_htlcs_forwardable_conditions(
+	expect_htlc_failure_conditions(
 		nodes[1].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash }],
 	);

@@ -6559,7 +6559,7 @@ pub fn test_check_htlc_underpaying() {
 	expect_and_process_pending_htlcs(&nodes[1], true);
 	let events = nodes[1].node.get_and_clear_pending_events();
 	let fail = HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash };
-	expect_pending_htlcs_forwardable_conditions(events, &[fail]);
+	expect_htlc_failure_conditions(events, &[fail]);
 
 	// Node 3 is expecting payment of 100_000 but received 10_000,
 	// it should fail htlc like we didn't know the preimage.
@@ -6900,7 +6900,7 @@ pub fn test_bump_penalty_txn_on_revoked_htlcs() {
 	);
 	connect_block(&nodes[0], &block_129);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	expect_pending_htlcs_forwardable_conditions(
+	expect_htlc_failure_conditions(
 		events[0..1].to_vec(),
 		&[HTLCHandlingFailureType::Receive { payment_hash: failed_payment_hash }],
 	);
@@ -7211,7 +7211,7 @@ pub fn test_bump_txn_sanitize_tracking_maps() {
 
 	// Broadcast set of revoked txn on A
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + 2 - CHAN_CONFIRM_DEPTH);
-	expect_pending_htlcs_forwardable_conditions(
+	expect_htlc_failure_conditions(
 		nodes[0].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_2 }],
 	);
@@ -7990,7 +7990,7 @@ pub fn test_bad_secret_hash() {
 			expect_and_process_pending_htlcs(&nodes[1], true);
 			let events = nodes[1].node.get_and_clear_pending_events();
 			let fail = HTLCHandlingFailureType::Receive { payment_hash: $payment_hash };
-			expect_pending_htlcs_forwardable_conditions(events, &[fail]);
+			expect_htlc_failure_conditions(events, &[fail]);
 			check_added_monitors(&nodes[1], 1);
 
 			// We should fail the payment back
@@ -9498,7 +9498,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		// the first HTLC delivered above.
 	}
 
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_htlc_forwards();
 
 	if test_for_second_fail_panic {
@@ -9509,7 +9509,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 			HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash },
 			HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash },
 		];
-		expect_pending_htlcs_forwardable_conditions(
+		expect_htlc_failure_conditions(
 			nodes[1].node.get_and_clear_pending_events(),
 			expected_destinations,
 		);
@@ -9543,7 +9543,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		}
 	} else {
 		// Let the second HTLC fail and claim the first
-		expect_pending_htlcs_forwardable_conditions(
+		expect_htlc_failure_conditions(
 			nodes[1].node.get_and_clear_pending_events(),
 			&[HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }],
 		);
@@ -9673,13 +9673,10 @@ pub fn test_inconsistent_mpp_params() {
 		// amount. It will assume the second is a privacy attack (no longer particularly relevant
 		// post-payment_secrets) and fail back the new HTLC.
 	}
-	expect_pending_htlcs_forwardable_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
 	nodes[3].node.process_pending_htlc_forwards();
 	let fail_type = HTLCHandlingFailureType::Receive { payment_hash: hash };
-	expect_pending_htlcs_forwardable_conditions(
-		nodes[3].node.get_and_clear_pending_events(),
-		&[fail_type],
-	);
+	expect_htlc_failure_conditions(nodes[3].node.get_and_clear_pending_events(), &[fail_type]);
 	nodes[3].node.process_pending_htlc_forwards();
 
 	check_added_monitors(&nodes[3], 1);
@@ -10758,7 +10755,7 @@ fn do_payment_with_custom_min_final_cltv_expiry(valid_delta: bool, use_user_hash
 		expect_and_process_pending_htlcs(&nodes[1], true);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		let fail_type = HTLCHandlingFailureType::Receive { payment_hash: hash };
-		expect_pending_htlcs_forwardable_conditions(events, &[fail_type]);
+		expect_htlc_failure_conditions(events, &[fail_type]);
 
 		check_added_monitors(&nodes[1], 1);
 

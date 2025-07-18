@@ -1859,7 +1859,7 @@ fn test_monitor_update_fail_claim() {
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 0);
 	commitment_signed_dance!(nodes[1], nodes[2], payment_event.commitment_msg, false, true);
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 
 	let (_, payment_hash_3, payment_secret_3) = get_payment_preimage_hash!(nodes[0]);
 	let id_3 = PaymentId(payment_hash_3.0);
@@ -2949,10 +2949,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	if htlc_status == HTLCStatusAtDupClaim::HoldingCell {
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &as_raa.unwrap());
 		check_added_monitors!(nodes[1], 1);
-		expect_pending_htlcs_forwardable_conditions(
-			nodes[1].node.get_and_clear_pending_events(),
-			&[],
-		); // We finally receive the second payment, but don't claim it
+		expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]); // We finally receive the second payment, but don't claim it
 
 		bs_updates = Some(get_htlc_update_msgs!(nodes[1], node_a_id));
 		assert_eq!(bs_updates.as_ref().unwrap().update_fulfill_htlcs.len(), 1);

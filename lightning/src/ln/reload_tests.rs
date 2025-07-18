@@ -559,7 +559,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 			let raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 			nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &raa);
 			check_added_monitors(&nodes[1], 1);
-			expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+			expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 		}
 	} else {
 		send_payment(&nodes[0], &[&nodes[1]], 8000000);
@@ -959,7 +959,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	// (and the HTLC itself) to be missing on reload even though its present when we serialized.
 	let node_encoded = nodes[1].node.encode();
 
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 
 	let mut intercept_id = None;
 	let mut expected_outbound_amount_msat = None;

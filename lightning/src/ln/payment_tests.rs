@@ -161,7 +161,7 @@ fn mpp_retry() {
 	expect_and_process_pending_htlcs(&nodes[2], true);
 	let events = nodes[2].node.get_and_clear_pending_events();
 	let fail = HTLCHandlingFailureType::Forward { node_id: Some(node_d_id), channel_id: chan_4_id };
-	expect_pending_htlcs_forwardable_conditions(events, &[fail]);
+	expect_htlc_failure_conditions(events, &[fail]);
 	let htlc_updates = get_htlc_update_msgs!(nodes[2], node_a_id);
 	assert!(htlc_updates.update_add_htlcs.is_empty());
 	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
@@ -279,7 +279,7 @@ fn mpp_retry_overpay() {
 	expect_and_process_pending_htlcs(&nodes[2], true);
 	let events = nodes[2].node.get_and_clear_pending_events();
 	let fail = HTLCHandlingFailureType::Forward { node_id: Some(node_d_id), channel_id: chan_4_id };
-	expect_pending_htlcs_forwardable_conditions(events, &[fail]);
+	expect_htlc_failure_conditions(events, &[fail]);
 
 	let htlc_updates = get_htlc_update_msgs!(nodes[2], node_a_id);
 	assert!(htlc_updates.update_add_htlcs.is_empty());
@@ -571,7 +571,7 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	let update_add_1 = update_1.update_add_htlcs[0].clone();
 	nodes[3].node.handle_update_add_htlc(node_b_id, &update_add_1);
 	commitment_signed_dance!(nodes[3], nodes[1], update_1.commitment_signed, false, true);
-	expect_pending_htlcs_forwardable_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
 	nodes[3].node.process_pending_update_add_htlcs();
 
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
@@ -620,7 +620,7 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	let update_add_3 = update_3.update_add_htlcs[0].clone();
 	nodes[3].node.handle_update_add_htlc(node_c_id, &update_add_3);
 	commitment_signed_dance!(nodes[3], nodes[2], update_3.commitment_signed, false, true);
-	expect_pending_htlcs_forwardable_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
 	nodes[3].node.process_pending_update_add_htlcs();
 
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
@@ -2192,10 +2192,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		nodes[1].node.fail_intercepted_htlc(intercept_id).unwrap();
 		let fail =
 			HTLCHandlingFailureType::InvalidForward { requested_forward_scid: intercept_scid };
-		expect_pending_htlcs_forwardable_conditions(
-			nodes[1].node.get_and_clear_pending_events(),
-			&[fail],
-		);
+		expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[fail]);
 		nodes[1].node.process_pending_htlc_forwards();
 		let update_fail = get_htlc_update_msgs!(nodes[1], node_a_id);
 		check_added_monitors!(&nodes[1], 1);
@@ -2538,12 +2535,9 @@ fn do_automatic_retries(test: AutoRetry) {
 			let mut update_add = update_0.update_add_htlcs[0].clone();
 			nodes[1].node.handle_update_add_htlc(node_a_id, &update_add);
 			commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
-			expect_pending_htlcs_forwardable_conditions(
-				nodes[1].node.get_and_clear_pending_events(),
-				&[],
-			);
+			expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 			nodes[1].node.process_pending_htlc_forwards();
-			expect_pending_htlcs_forwardable_conditions(
+			expect_htlc_failure_conditions(
 				nodes[1].node.get_and_clear_pending_events(),
 				&[HTLCHandlingFailureType::Forward {
 					node_id: Some(node_c_id),
@@ -2934,7 +2928,7 @@ fn auto_retry_partial_failure() {
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_second_raa);
 	check_added_monitors!(nodes[1], 1);
 
-	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, amt_msat);
 	nodes[1].node.claim_funds(payment_preimage);
@@ -4404,7 +4398,7 @@ fn test_retry_custom_tlvs() {
 	expect_and_process_pending_htlcs(&nodes[1], true);
 	let events = nodes[1].node.get_and_clear_pending_events();
 	let fail = HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2_id };
-	expect_pending_htlcs_forwardable_conditions(events, &[fail]);
+	expect_htlc_failure_conditions(events, &[fail]);
 	check_added_monitors!(nodes[1], 1);
 
 	let htlc_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
@@ -4571,7 +4565,7 @@ fn do_test_custom_tlvs_consistency(
 		check_added_monitors!(nodes[3], 0);
 		commitment_signed_dance!(nodes[3], nodes[2], payment_event.commitment_msg, true, true);
 	}
-	expect_pending_htlcs_forwardable_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
+	expect_htlc_failure_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
 	nodes[3].node.process_pending_htlc_forwards();
 
 	if let Some(expected_tlvs) = expected_receive_tlvs {
@@ -4758,12 +4752,9 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	// the payment metadata was modified, failing only the one modified HTLC and retaining the
 	// other.
 	if do_modify {
-		expect_pending_htlcs_forwardable_conditions(
-			nodes[3].node.get_and_clear_pending_events(),
-			&[],
-		);
+		expect_htlc_failure_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
 		nodes[3].node.process_pending_htlc_forwards();
-		expect_pending_htlcs_forwardable_conditions(
+		expect_htlc_failure_conditions(
 			nodes[3].node.get_and_clear_pending_events(),
 			&[HTLCHandlingFailureType::Receive { payment_hash }],
 		);
@@ -4777,7 +4768,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 		let events = nodes[2].node.get_and_clear_pending_events();
 		let fail_type =
 			HTLCHandlingFailureType::Forward { node_id: Some(node_d_id), channel_id: cd_chan_id };
-		expect_pending_htlcs_forwardable_conditions(events, &[fail_type]);
+		expect_htlc_failure_conditions(events, &[fail_type]);
 	} else {
 		expect_and_process_pending_htlcs(&nodes[3], false);
 		expect_payment_claimable!(nodes[3], payment_hash, payment_secret, amt_msat);
@@ -4881,7 +4872,7 @@ fn test_htlc_forward_considers_anchor_outputs_value() {
 	expect_and_process_pending_htlcs(&nodes[1], true);
 	let events = nodes[1].node.get_and_clear_pending_events();
 	let fail = HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_id_2 };
-	expect_pending_htlcs_forwardable_conditions(events, &[fail]);
+	expect_htlc_failure_conditions(events, &[fail]);
 	check_added_monitors(&nodes[1], 1);
 
 	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -5080,7 +5071,7 @@ fn test_non_strict_forwarding() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	let fail =
 		HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: routed_chan_id };
-	expect_pending_htlcs_forwardable_conditions(events, &[fail]);
+	expect_htlc_failure_conditions(events, &[fail]);
 
 	let updates = get_htlc_update_msgs!(nodes[1], node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
