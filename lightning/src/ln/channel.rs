@@ -7500,7 +7500,6 @@ where
 					true
 				}
 			});
-			let now = duration_since_epoch();
 			pending_outbound_htlcs.retain(|htlc| {
 				if let &OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) = &htlc.state {
 					log_trace!(
@@ -7511,7 +7510,7 @@ where
 					// We really want take() here, but, again, non-mut ref :(
 					match outcome.clone() {
 						OutboundHTLCOutcome::Failure(mut reason) => {
-							hold_time(htlc.send_timestamp, now).map(|hold_time| {
+							hold_time_since(htlc.send_timestamp).map(|hold_time| {
 								reason.set_hold_time(hold_time);
 							});
 							revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
@@ -13598,7 +13597,7 @@ where
 	}
 }
 
-pub(crate) fn duration_since_epoch() -> Option<Duration> {
+fn duration_since_epoch() -> Option<Duration> {
 	#[cfg(not(feature = "std"))]
 	let now = None;
 
@@ -13614,9 +13613,9 @@ pub(crate) fn duration_since_epoch() -> Option<Duration> {
 
 /// Returns the time expressed in hold time units (1 unit = 100 ms) that has elapsed between send_timestamp and now. If
 /// any of the arguments are `None`, returns `None`.
-pub(crate) fn hold_time(send_timestamp: Option<Duration>, now: Option<Duration>) -> Option<u32> {
+pub(crate) fn hold_time_since(send_timestamp: Option<Duration>) -> Option<u32> {
 	send_timestamp.and_then(|t| {
-		now.map(|now| {
+		duration_since_epoch().map(|now| {
 			let elapsed = now.saturating_sub(t).as_millis() / HOLD_TIME_UNIT_MILLIS;
 			u32::try_from(elapsed).unwrap_or(u32::MAX)
 		})

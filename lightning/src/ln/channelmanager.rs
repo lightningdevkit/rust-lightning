@@ -60,11 +60,10 @@ use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::channel::{
-	self, hold_time, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, InboundV1Channel,
-	OutboundV1Channel, ReconnectionMsg, ShutdownResult, UpdateFulfillCommitFetch,
-	WithChannelContext,
+	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, FundedChannel,
+	InboundV1Channel, OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult,
+	UpdateFulfillCommitFetch, WithChannelContext,
 };
-use crate::ln::channel::{duration_since_epoch, PendingV2Channel};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::inbound_payment;
 use crate::ln::msgs;
@@ -8299,8 +8298,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
 
 				// Obtain hold time, if available.
-				let now = duration_since_epoch();
-				let hold_time = hold_time(send_timestamp, now).unwrap_or(0);
+				let hold_time = hold_time_since(send_timestamp).unwrap_or(0);
 
 				// If attribution data was received from downstream, we shift it and get it ready for adding our hold
 				// time. Note that fulfilled HTLCs take a fast path to the incoming side. We don't need to wait for RAA
