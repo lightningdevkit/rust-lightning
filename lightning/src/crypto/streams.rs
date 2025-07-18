@@ -51,6 +51,10 @@ impl<'a, T: Writeable> Writeable for ChaChaPolyWriteAdapter<'a, T> {
 
 		Ok(())
 	}
+
+	fn serialized_length(&self) -> usize {
+		self.writeable.serialized_length() + 16
+	}
 }
 
 /// Encrypts the provided plaintext with the given key using ChaCha20Poly1305 in the modified
