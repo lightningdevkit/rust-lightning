@@ -12840,7 +12840,7 @@ where
 			(58, self.interactive_tx_signing_session, option), // Added in 0.2
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
-			(61, fulfill_attribution_data, optional_vec),
+			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
 		});
 
 		Ok(())
@@ -13237,12 +13237,12 @@ where
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
 			(54, pending_funding, optional_vec), // Added in 0.2
-			(55, removed_htlc_attribution_data, optional_vec),
-			(57, holding_cell_attribution_data, optional_vec),
+			(55, removed_htlc_attribution_data, optional_vec), // Added in 0.2
+			(57, holding_cell_attribution_data, optional_vec), // Added in 0.2
 			(58, interactive_tx_signing_session, option), // Added in 0.2
 			(59, minimum_depth_override, option), // Added in 0.2
 			(60, historical_scids, optional_vec), // Added in 0.2
-			(61, fulfill_attribution_data, optional_vec),
+			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
