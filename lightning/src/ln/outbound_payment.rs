@@ -54,6 +54,15 @@ use crate::sync::Mutex;
 /// [`ChannelManager::timer_tick_occurred`]: crate::ln::channelmanager::ChannelManager::timer_tick_occurred
 pub(crate) const IDEMPOTENCY_TIMEOUT_TICKS: u8 = 7;
 
+#[cfg(async_payments)]
+/// The default relative expiration to wait for a pending outbound HTLC to a often-offline
+/// payee to fulfill.
+const ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 24 * 7);
+
+#[cfg(all(async_payments, test))]
+pub(crate) const TEST_ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY: Duration =
+	ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY;
+
 /// Stores the session_priv for each part of a payment that is still pending. For versions 0.0.102
 /// and later, also stores information for retrying the payment.
 pub(crate) enum PendingOutboundPayment {
@@ -98,6 +107,11 @@ pub(crate) enum PendingOutboundPayment {
 		route_params: RouteParameters,
 		invoice_request: InvoiceRequest,
 		static_invoice: StaticInvoice,
+		// The deadline as duration since the Unix epoch for the async recipient to come online,
+		// after which we'll fail the payment.
+		//
+		// Defaults to [`ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY`].
+		expiry_time: Duration,
 	},
 	Retryable {
 		retry_strategy: Option<Retry>,
@@ -1164,6 +1178,7 @@ impl OutboundPayments {
 						abandon_with_entry!(entry, PaymentFailureReason::RouteNotFound);
 						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded))
 					}
+					let absolute_expiry = duration_since_epoch.saturating_add(ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY);
 
 					*entry.into_mut() = PendingOutboundPayment::StaticInvoiceReceived {
 						payment_hash,
@@ -1176,6 +1191,7 @@ impl OutboundPayments {
 							.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
 							.invoice_request,
 						static_invoice: invoice.clone(),
+						expiry_time: absolute_expiry,
 					};
 					return Ok(())
 				},
@@ -2279,11 +2295,12 @@ impl OutboundPayments {
 					true
 				}
 			},
-			PendingOutboundPayment::StaticInvoiceReceived { route_params, payment_hash, .. } => {
-				let is_stale =
+			PendingOutboundPayment::StaticInvoiceReceived { route_params, payment_hash, expiry_time, .. } => {
+				let is_stale = *expiry_time < duration_since_epoch;
+				let is_static_invoice_stale =
 					route_params.payment_params.expiry_time.unwrap_or(u64::MAX) <
 					duration_since_epoch.as_secs();
-				if is_stale {
+				if is_stale || is_static_invoice_stale {
 					let fail_ev = events::Event::PaymentFailed {
 						payment_id: *payment_id,
 						payment_hash: Some(*payment_hash),
@@ -2698,6 +2715,9 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(6, route_params, required),
 		(8, invoice_request, required),
 		(10, static_invoice, required),
+		// Added in 0.2. Prior versions would have this TLV type defaulted to 0, which is safe because
+		// the type is not used.
+		(11, expiry_time, (default_value, Duration::from_secs(0))),
 	},
 	// Added in 0.1. Prior versions will drop these outbounds on downgrade, which is safe because
 	// no HTLCs are in-flight.
@@ -3348,6 +3368,7 @@ mod tests {
 			route_params,
 			invoice_request: dummy_invoice_request(),
 			static_invoice: dummy_static_invoice(),
+			expiry_time: Duration::from_secs(absolute_expiry + 2),
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);
@@ -3397,6 +3418,7 @@ mod tests {
 			route_params,
 			invoice_request: dummy_invoice_request(),
 			static_invoice: dummy_static_invoice(),
+			expiry_time: now(),
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);

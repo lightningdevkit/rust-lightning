@@ -23,8 +23,9 @@ use crate::ln::msgs::{
 };
 use crate::ln::offers_tests;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
-use crate::ln::outbound_payment::PendingOutboundPayment;
-use crate::ln::outbound_payment::Retry;
+use crate::ln::outbound_payment::{
+	PendingOutboundPayment, Retry, TEST_ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY,
+};
 use crate::offers::async_receive_offer_cache::{
 	TEST_MAX_CACHED_OFFERS_TARGET, TEST_MAX_UPDATE_ATTEMPTS,
 	TEST_MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS, TEST_OFFER_REFRESH_THRESHOLD,
@@ -681,6 +682,74 @@ fn expired_static_invoice_fail() {
 	}
 	// TODO: the sender doesn't reply with InvoiceError right now because the always-online node
 	// doesn't currently provide them with a reply path to do so.
+}
+
+#[cfg_attr(feature = "std", ignore)]
+#[test]
+fn timeout_unreleased_payment() {
+	// If a server holds a pending HTLC for too long, payment is considered expired.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	let sender = &nodes[0];
+	let server = &nodes[1];
+	let recipient = &nodes[2];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	let static_invoice =
+		pass_static_invoice_server_messages(server, recipient, recipient_id.clone()).invoice;
+	let offer = recipient.node.get_async_receive_offer().unwrap();
+
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	let params = RouteParametersConfig::default();
+	sender
+		.node
+		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), params)
+		.unwrap();
+
+	let invreq_om =
+		sender.onion_messenger.next_onion_message_for_peer(server.node.get_our_node_id()).unwrap();
+	server.onion_messenger.handle_onion_message(sender.node.get_our_node_id(), &invreq_om);
+
+	let mut events = server.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let reply_path = match events.pop().unwrap() {
+		Event::StaticInvoiceRequested { reply_path, .. } => reply_path,
+		_ => panic!(),
+	};
+
+	server.node.send_static_invoice(static_invoice.clone(), reply_path).unwrap();
+	let static_invoice_om =
+		server.onion_messenger.next_onion_message_for_peer(sender.node.get_our_node_id()).unwrap();
+
+	// We handle the static invoice to held the pending HTLC
+	sender.onion_messenger.handle_onion_message(server.node.get_our_node_id(), &static_invoice_om);
+
+	// We advance enough time to expire the payment.
+	// We add 2 hours as is the margin added to remove stale payments in non-std implementation.
+	let timeout_time_expiry = TEST_ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY
+		+ Duration::from_secs(7200)
+		+ Duration::from_secs(1);
+	advance_time_by(timeout_time_expiry, sender);
+	sender.node.timer_tick_occurred();
+	let events = sender.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentFailed { payment_id: ev_payment_id, reason, .. } => {
+			assert_eq!(reason.unwrap(), PaymentFailureReason::PaymentExpired);
+			assert_eq!(ev_payment_id, payment_id);
+		},
+		_ => panic!(),
+	}
 }
 
 #[test]

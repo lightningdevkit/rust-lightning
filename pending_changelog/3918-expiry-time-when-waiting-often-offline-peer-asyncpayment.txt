@@ -1,0 +1,4 @@
+ ## API Updates (0.2)
+
+* Upgrading to v0.2.0 will timeout any pending async payment waiting for the often offline peer
+  come online.
