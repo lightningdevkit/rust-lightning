@@ -463,7 +463,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_update_add_htlc(&self, their_node_id: PublicKey, msg: &msgs::UpdateAddHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
-	fn handle_update_fulfill_htlc(&self, their_node_id: PublicKey, msg: &msgs::UpdateFulfillHTLC) {
+	fn handle_update_fulfill_htlc(&self, their_node_id: PublicKey, msg: msgs::UpdateFulfillHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
 	fn handle_update_fail_htlc(&self, their_node_id: PublicKey, msg: &msgs::UpdateFailHTLC) {
@@ -2544,7 +2544,7 @@ where
 				self.message_handler.chan_handler.handle_update_add_htlc(their_node_id, &msg);
 			},
 			wire::Message::UpdateFulfillHTLC(msg) => {
-				self.message_handler.chan_handler.handle_update_fulfill_htlc(their_node_id, &msg);
+				self.message_handler.chan_handler.handle_update_fulfill_htlc(their_node_id, msg);
 			},
 			wire::Message::UpdateFailHTLC(msg) => {
 				self.message_handler.chan_handler.handle_update_fail_htlc(their_node_id, &msg);
