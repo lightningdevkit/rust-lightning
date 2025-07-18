@@ -18,9 +18,10 @@ use super::dns_resolution::DNSResolverMessage;
 use super::messenger::CustomOnionMessageHandler;
 use super::offers::OffersMessage;
 use crate::blinded_path::message::{BlindedMessagePath, ForwardTlvs, NextMessageHop, ReceiveTlvs};
-use crate::crypto::streams::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
+use crate::crypto::streams::{ChaChaDualPolyReadAdapter, ChaChaPolyWriteAdapter};
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
+use crate::sign::ReceiveAuthKey;
 use crate::util::logger::Logger;
 use crate::util::ser::{
 	BigSize, FixedLengthReader, LengthLimitedRead, LengthReadable, LengthReadableArgs, Readable,
@@ -112,7 +113,14 @@ pub(super) enum Payload<T: OnionMessageContents> {
 	/// This payload is for an intermediate hop.
 	Forward(ForwardControlTlvs),
 	/// This payload is for the final hop.
-	Receive { control_tlvs: ReceiveControlTlvs, reply_path: Option<BlindedMessagePath>, message: T },
+	Receive {
+		/// The [`ReceiveControlTlvs`] were authenticated with the additional key which was
+		/// provided to [`ReadableArgs::read`].
+		control_tlvs_authenticated: bool,
+		control_tlvs: ReceiveControlTlvs,
+		reply_path: Option<BlindedMessagePath>,
+		message: T,
+	},
 }
 
 /// The contents of an [`OnionMessage`] as read from the wire.
@@ -223,6 +231,7 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_bytes),
 				reply_path,
 				message,
+				control_tlvs_authenticated: _,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, reply_path, option),
@@ -238,6 +247,7 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 				control_tlvs: ReceiveControlTlvs::Unblinded(control_tlvs),
 				reply_path,
 				message,
+				control_tlvs_authenticated: _,
 			} => {
 				let write_adapter = ChaChaPolyWriteAdapter::new(self.1, &control_tlvs);
 				_encode_varint_length_prefixed_tlv!(w, {
@@ -252,22 +262,25 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 }
 
 // Uses the provided secret to simultaneously decode and decrypt the control TLVs and data TLV.
-impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized> ReadableArgs<(SharedSecret, &H, &L)>
+impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
+	ReadableArgs<(SharedSecret, &H, ReceiveAuthKey, &L)>
 	for Payload<ParsedOnionMessageContents<<H as CustomOnionMessageHandler>::CustomMessage>>
 {
-	fn read<R: Read>(r: &mut R, args: (SharedSecret, &H, &L)) -> Result<Self, DecodeError> {
-		let (encrypted_tlvs_ss, handler, logger) = args;
+	fn read<R: Read>(
+		r: &mut R, args: (SharedSecret, &H, ReceiveAuthKey, &L),
+	) -> Result<Self, DecodeError> {
+		let (encrypted_tlvs_ss, handler, receive_tlvs_key, logger) = args;
 
 		let v: BigSize = Readable::read(r)?;
 		let mut rd = FixedLengthReader::new(r, v.0);
 		let mut reply_path: Option<BlindedMessagePath> = None;
-		let mut read_adapter: Option<ChaChaPolyReadAdapter<ControlTlvs>> = None;
+		let mut read_adapter: Option<ChaChaDualPolyReadAdapter<ControlTlvs>> = None;
 		let rho = onion_utils::gen_rho_from_shared_secret(&encrypted_tlvs_ss.secret_bytes());
 		let mut message_type: Option<u64> = None;
 		let mut message = None;
 		decode_tlv_stream_with_custom_tlv_decode!(&mut rd, {
 			(2, reply_path, option),
-			(4, read_adapter, (option: LengthReadableArgs, rho)),
+			(4, read_adapter, (option: LengthReadableArgs, (rho, receive_tlvs_key.0))),
 		}, |msg_type, msg_reader| {
 			if msg_type < 64 { return Ok(false) }
 			// Don't allow reading more than one data TLV from an onion message.
@@ -304,17 +317,18 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized> ReadableArgs<(Sh
 
 		match read_adapter {
 			None => return Err(DecodeError::InvalidValue),
-			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Forward(tlvs) }) => {
-				if message_type.is_some() {
+			Some(ChaChaDualPolyReadAdapter { readable: ControlTlvs::Forward(tlvs), used_aad }) => {
+				if used_aad || message_type.is_some() {
 					return Err(DecodeError::InvalidValue);
 				}
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
-			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Receive(tlvs) }) => {
+			Some(ChaChaDualPolyReadAdapter { readable: ControlTlvs::Receive(tlvs), used_aad }) => {
 				Ok(Payload::Receive {
 					control_tlvs: ReceiveControlTlvs::Unblinded(tlvs),
 					reply_path,
 					message: message.ok_or(DecodeError::InvalidValue)?,
+					control_tlvs_authenticated: used_aad,
 				})
 			},
 		}

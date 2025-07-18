@@ -24,7 +24,9 @@ use lightning::onion_message::messenger::{
 };
 use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use lightning::onion_message::packet::OnionMessageContents;
-use lightning::sign::{EntropySource, NodeSigner, PeerStorageKey, Recipient, SignerProvider};
+use lightning::sign::{
+	EntropySource, NodeSigner, PeerStorageKey, ReceiveAuthKey, Recipient, SignerProvider,
+};
 use lightning::types::features::InitFeatures;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{LengthReadable, Writeable, Writer};
@@ -104,8 +106,8 @@ impl MessageRouter for TestMessageRouter {
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<PublicKey>,
-		_secp_ctx: &Secp256k1<T>,
+		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
+		_context: MessageContext, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		unreachable!()
 	}
@@ -277,6 +279,10 @@ impl NodeSigner for KeyProvider {
 
 	fn get_peer_storage_key(&self) -> PeerStorageKey {
 		unreachable!()
+	}
+
+	fn get_receive_auth_key(&self) -> ReceiveAuthKey {
+		ReceiveAuthKey([41; 32])
 	}
 }
 
