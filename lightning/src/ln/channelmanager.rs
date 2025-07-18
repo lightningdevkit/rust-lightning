@@ -3947,7 +3947,8 @@ where
 		let flow = OffersMessageFlow::new(
 			ChainHash::using_genesis_block(params.network), params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
-			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
+			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, false,
+			logger.clone(),
 		);
 
 		ChannelManager {
@@ -15328,7 +15329,7 @@ where
 					None => return None,
 				};
 
-				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
+				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context, responder.clone()) {
 					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
 					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot, invoice_request }) => {
 						self.pending_events.lock().unwrap().push_back((Event::StaticInvoiceRequested {
@@ -15337,6 +15338,7 @@ where
 
 						return None
 					},
+					Ok(InvreqResponseInstructions::AsynchronouslyHandleResponse) => return None,
 					Err(_) => return None,
 				};
 
@@ -18135,6 +18137,7 @@ where
 			args.node_signer.get_receive_auth_key(),
 			secp_ctx.clone(),
 			args.message_router,
+			false,
 			args.logger.clone(),
 		)
 		.with_async_payments_offers_cache(async_receive_offer_cache);

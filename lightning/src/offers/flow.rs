@@ -71,6 +71,32 @@ use {
 	crate::onion_message::dns_resolution::{DNSResolverMessage, DNSSECQuery, OMNameResolver},
 };
 
+/// Defines the events that can be optionally triggered when processing offers messages.
+///
+/// Once generated, these events are stored in the [`OffersMessageFlow`], where they can be
+/// manually inspected and responded to.
+pub enum OfferMessageFlowEvent {
+	/// Notifies that an [`InvoiceRequest`] has been received.
+	///
+	/// To respond to this message:
+	/// - Based on the variant of [`InvoiceRequestVerifiedFromOffer`], create the appropriate invoice builder:
+	///   - [`InvoiceRequestVerifiedFromOffer::DerivedKeys`] → use
+	///     [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_keys`]
+	///   - [`InvoiceRequestVerifiedFromOffer::ExplicitKeys`] → use
+	///     [`OffersMessageFlow::create_invoice_builder_from_invoice_request_without_keys`]
+	/// - After building the invoice, sign it and send it back using the provided reply path via
+	///   [`OffersMessageFlow::enqueue_invoice_using_reply_paths`].
+	///
+	/// If the invoice request is invalid, respond with an [`InvoiceError`] using
+	/// [`OffersMessageFlow::enqueue_invoice_error`].
+	InvoiceRequestReceived {
+		/// The received, verified invoice request.
+		invoice_request: InvoiceRequestVerifiedFromOffer,
+		/// The reply path to use when responding to the invoice request.
+		reply_path: BlindedMessagePath,
+	},
+}
+
 /// A BOLT12 offers code and flow utility provider, which facilitates
 /// BOLT12 builder generation and onion message handling.
 ///
@@ -93,6 +119,8 @@ where
 	secp_ctx: Secp256k1<secp256k1::All>,
 	message_router: MR,
 
+	pub(crate) enable_events: bool,
+
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -105,6 +133,8 @@ where
 	pub(crate) hrn_resolver: OMNameResolver,
 	#[cfg(feature = "dnssec")]
 	pending_dns_onion_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
+
+	pending_flow_events: Mutex<Vec<OfferMessageFlowEvent>>,
 
 	logger: L,
 }
@@ -119,7 +149,7 @@ where
 		chain_hash: ChainHash, best_block: BestBlock, our_network_pubkey: PublicKey,
 		current_timestamp: u32, inbound_payment_key: inbound_payment::ExpandedKey,
 		receive_auth_key: ReceiveAuthKey, secp_ctx: Secp256k1<secp256k1::All>, message_router: MR,
-		logger: L,
+		enable_events: bool, logger: L,
 	) -> Self {
 		Self {
 			chain_hash,
@@ -134,6 +164,8 @@ where
 			secp_ctx,
 			message_router,
 
+			enable_events,
+
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
 
@@ -143,6 +175,8 @@ where
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
 
 			async_receive_offer_cache: Mutex::new(AsyncReceiveOfferCache::new()),
+
+			pending_flow_events: Mutex::new(Vec::new()),
 
 			logger,
 		}
@@ -158,6 +192,18 @@ where
 	) -> Self {
 		self.async_receive_offer_cache = Mutex::new(async_receive_offer_cache);
 		self
+	}
+
+	/// Enables [`OfferMessageFlowEvent`] for this flow.
+	///
+	/// By default, events are not emitted when processing offers messages. Calling this method
+	/// sets the internal `enable_events` flag to `true`, allowing you to receive [`OfferMessageFlowEvent`]
+	/// such as [`OfferMessageFlowEvent::InvoiceRequestReceived`].
+	///
+	/// This is useful when you want to manually inspect, handle, or respond to incoming
+	/// offers messages rather than having them processed automatically.
+	pub fn enable_events(&mut self) {
+		self.enable_events = true;
 	}
 
 	/// Sets the [`BlindedMessagePath`]s that we will use as an async recipient to interactively build
@@ -416,6 +462,8 @@ pub enum InvreqResponseInstructions {
 		/// [`OffersMessageFlow::enqueue_invoice_request_to_forward`].
 		invoice_request: InvoiceRequest,
 	},
+	/// We are recipient of this payment, and should handle the response asynchronously.
+	AsynchronouslyHandleResponse,
 }
 
 /// Parameters for the reply path to a [`HeldHtlcAvailable`] onion message.
@@ -444,6 +492,7 @@ where
 	L::Target: Logger,
 {
 	/// Verifies an [`InvoiceRequest`] using the provided [`OffersContext`] or the [`InvoiceRequest::metadata`].
+	/// It also helps determine the response instructions, corresponding to the verified invoice request must be taken.
 	///
 	/// - If an [`OffersContext::InvoiceRequest`] with a `nonce` is provided, verification is performed using recipient context data.
 	/// - If no context is provided but the [`InvoiceRequest`] contains [`Offer`] metadata, verification is performed using that metadata.
@@ -456,6 +505,7 @@ where
 	/// - The verification process (via recipient context data or metadata) fails.
 	pub fn verify_invoice_request(
 		&self, invoice_request: InvoiceRequest, context: Option<OffersContext>,
+		responder: Responder,
 	) -> Result<InvreqResponseInstructions, ()> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
@@ -489,7 +539,18 @@ where
 			None => invoice_request.verify_using_metadata(expanded_key, secp_ctx),
 		}?;
 
-		Ok(InvreqResponseInstructions::SendInvoice(invoice_request))
+		if self.enable_events {
+			self.pending_flow_events.lock().unwrap().push(
+				OfferMessageFlowEvent::InvoiceRequestReceived {
+					invoice_request,
+					reply_path: responder.into_blinded_path(),
+				},
+			);
+
+			Ok(InvreqResponseInstructions::AsynchronouslyHandleResponse)
+		} else {
+			Ok(InvreqResponseInstructions::SendInvoice(invoice_request))
+		}
 	}
 
 	/// Verifies a [`Bolt12Invoice`] using the provided [`OffersContext`] or the invoice's payer metadata,
@@ -1374,6 +1435,11 @@ where
 		Ok(())
 	}
 
+	/// Enqueues the generated [`OfferMessageFlowEvent`] to be processed.
+	pub fn enqueue_flow_event(&self, flow_event: OfferMessageFlowEvent) {
+		self.pending_flow_events.lock().unwrap().push(flow_event);
+	}
+
 	/// Gets the enqueued [`OffersMessage`] with their corresponding [`MessageSendInstructions`].
 	pub fn release_pending_offers_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_offers_messages.lock().unwrap())
@@ -1384,6 +1450,11 @@ where
 		&self,
 	) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
+	}
+
+	/// Gets the enqueued [`OfferMessageFlowEvent`] to be processed.
+	pub fn release_pending_flow_events(&self) -> Vec<OfferMessageFlowEvent> {
+		core::mem::take(&mut self.pending_flow_events.lock().unwrap())
 	}
 
 	/// Gets the enqueued [`DNSResolverMessage`] with their corresponding [`MessageSendInstructions`].
