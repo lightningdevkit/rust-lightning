@@ -7898,7 +7898,7 @@ where
 					};
 
 				let attribution_data = process_fulfill_attribution_data(
-					attribution_data.as_ref(),
+					attribution_data,
 					&htlc.prev_hop.incoming_packet_shared_secret,
 					0,
 				);
@@ -8263,7 +8263,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
 		next_channel_outpoint: OutPoint, next_channel_id: ChannelId,
-		next_user_channel_id: Option<u128>, attribution_data: Option<&AttributionData>,
+		next_user_channel_id: Option<u128>, attribution_data: Option<AttributionData>,
 		send_timestamp: Option<Duration>,
 	) {
 		match source {
@@ -9868,7 +9868,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	fn internal_update_fulfill_htlc(
-		&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC,
+		&self, counterparty_node_id: &PublicKey, msg: msgs::UpdateFulfillHTLC,
 	) -> Result<(), MsgHandleErrInternal> {
 		let funding_txo;
 		let next_user_channel_id;
@@ -9927,7 +9927,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			funding_txo,
 			msg.channel_id,
 			Some(next_user_channel_id),
-			msg.attribution_data.as_ref(),
+			msg.attribution_data,
 			send_timestamp,
 		);
 
@@ -13489,7 +13489,7 @@ where
 		&self, counterparty_node_id: PublicKey, msg: msgs::UpdateFulfillHTLC,
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let res = self.internal_update_fulfill_htlc(&counterparty_node_id, &msg);
+		let res = self.internal_update_fulfill_htlc(&counterparty_node_id, msg);
 		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 

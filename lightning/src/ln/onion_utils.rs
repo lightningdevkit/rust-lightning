@@ -2871,12 +2871,10 @@ fn process_failure_packet(
 /// attribution data is passed in, a new `AttributionData` field is instantiated. It is needless to say that in that
 /// case the sender won't receive any hold times from nodes downstream of the current node.
 pub(crate) fn process_fulfill_attribution_data(
-	attribution_data: Option<&AttributionData>, shared_secret: &[u8], hold_time: u32,
+	attribution_data: Option<AttributionData>, shared_secret: &[u8], hold_time: u32,
 ) -> AttributionData {
 	let mut attribution_data =
-		attribution_data.map_or(AttributionData::new(), |attribution_data| {
-			let mut attribution_data = attribution_data.clone();
-
+		attribution_data.map_or(AttributionData::new(), |mut attribution_data| {
 			// Shift the existing attribution data to the right to make space for the new hold time and HMACs.
 			attribution_data.shift_right();
 
