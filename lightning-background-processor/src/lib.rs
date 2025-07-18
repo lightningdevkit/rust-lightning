@@ -2521,6 +2521,7 @@ mod tests {
 				.network_graph
 				.add_channel_from_partial_announcement(
 					42,
+					None,
 					53,
 					features,
 					$nodes[0].node.get_our_node_id().into(),
