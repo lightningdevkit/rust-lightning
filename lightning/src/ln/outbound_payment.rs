@@ -1687,7 +1687,6 @@ impl OutboundPayments {
 					error_code: None,
 					#[cfg(any(test, feature = "_test_utils"))]
 					error_data: None,
-					#[cfg(any(test, feature = "_test_utils"))]
 					hold_times: Vec::new(),
 				};
 				events.push_back((event, None));
@@ -2176,6 +2175,7 @@ impl OutboundPayments {
 						payment_id,
 						payment_hash,
 						path,
+						hold_times: Vec::new(),
 					}, Some(ev_completion_action)));
 				}
 			}
@@ -2185,12 +2185,12 @@ impl OutboundPayments {
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn finalize_claims(&self, sources: Vec<HTLCSource>,
+	pub(super) fn finalize_claims<I: Iterator<Item = (HTLCSource, Vec<u32>)>>(&self, sources: I,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>)
 	{
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		let mut pending_events = pending_events.lock().unwrap();
-		for source in sources {
+		for (source, hold_times) in sources {
 			if let HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } = source {
 				let mut session_priv_bytes = [0; 32];
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
@@ -2203,6 +2203,7 @@ impl OutboundPayments {
 							payment_id,
 							payment_hash,
 							path,
+							hold_times
 						}, None));
 					}
 				}
@@ -2326,6 +2327,7 @@ impl OutboundPayments {
 			short_channel_id,
 			payment_failed_permanently,
 			failed_within_blinded_path,
+			hold_times,
 			..
 		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 
@@ -2454,7 +2456,6 @@ impl OutboundPayments {
 					error_code: onion_error_code.map(|f| f.failure_code()),
 					#[cfg(any(test, feature = "_test_utils"))]
 					error_data: onion_error_data,
-					#[cfg(any(test, feature = "_test_utils"))]
 					hold_times,
 				}
 			}

@@ -140,7 +140,7 @@ enum FeeUpdateState {
 enum InboundHTLCRemovalReason {
 	FailRelay(msgs::OnionErrorPacket),
 	FailMalformed(([u8; 32], u16)),
-	Fulfill(PaymentPreimage),
+	Fulfill(PaymentPreimage, Option<AttributionData>),
 }
 
 /// Represents the resolution status of an inbound HTLC.
@@ -236,7 +236,7 @@ impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
 			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed(_)) =>
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) =>
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_, _)) =>
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill),
 		}
 	}
@@ -268,7 +268,7 @@ impl InboundHTLCState {
 
 	fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(preimage)) => {
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(preimage, _)) => {
 				Some(*preimage)
 			},
 			_ => None,
@@ -347,11 +347,11 @@ impl From<&OutboundHTLCState> for OutboundHTLCStateDetails {
 			// the state yet.
 			OutboundHTLCState::RemoteRemoved(_) =>
 				OutboundHTLCStateDetails::Committed,
-			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) =>
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _)) =>
 				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
 			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Failure(_)) =>
 				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
-			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) =>
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _)) =>
 				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
 			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Failure(_)) =>
 				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
@@ -386,9 +386,9 @@ impl OutboundHTLCState {
 	#[rustfmt::skip]
 	fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(preimage))
-			| OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(preimage))
-			| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(preimage)) => {
+			OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(preimage, _))
+			| OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(preimage, _))
+			| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(preimage, _)) => {
 				Some(*preimage)
 			},
 			_ => None,
@@ -401,14 +401,14 @@ impl OutboundHTLCState {
 enum OutboundHTLCOutcome {
 	/// We started always filling in the preimages here in 0.0.105, and the requirement
 	/// that the preimages always be filled in was added in 0.2.
-	Success(PaymentPreimage),
+	Success(PaymentPreimage, Option<AttributionData>),
 	Failure(HTLCFailReason),
 }
 
 impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
 	fn into(self) -> Option<&'a HTLCFailReason> {
 		match self {
-			OutboundHTLCOutcome::Success(_) => None,
+			OutboundHTLCOutcome::Success(_, _) => None,
 			OutboundHTLCOutcome::Failure(ref r) => Some(r),
 		}
 	}
@@ -462,6 +462,7 @@ enum HTLCUpdateAwaitingACK {
 	},
 	ClaimHTLC {
 		payment_preimage: PaymentPreimage,
+		attribution_data: Option<AttributionData>,
 		htlc_id: u64,
 	},
 	FailHTLC {
@@ -1177,7 +1178,7 @@ pub(super) struct MonitorRestoreUpdates {
 	pub order: RAACommitmentOrder,
 	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
-	pub finalized_claimed_htlcs: Vec<HTLCSource>,
+	pub finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 	pub pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 	pub funding_broadcastable: Option<Transaction>,
 	pub channel_ready: Option<msgs::ChannelReady>,
@@ -2307,7 +2308,7 @@ where
 	// but need to handle this somehow or we run the risk of losing HTLCs!
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
-	monitor_pending_finalized_fulfills: Vec<HTLCSource>,
+	monitor_pending_finalized_fulfills: Vec<(HTLCSource, Option<AttributionData>)>,
 	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 	monitor_pending_tx_signatures: Option<msgs::TxSignatures>,
 
@@ -4141,7 +4142,7 @@ where
 		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = {
 			let mut removed_outbound_total_msat = 0;
 			for htlc in self.pending_outbound_htlcs.iter() {
-				if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
+				if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _)) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _)) = htlc.state {
 					removed_outbound_total_msat += htlc.amount_msat;
 				}
 			}
@@ -4373,7 +4374,7 @@ where
 		if !funding.is_outbound() {
 			let mut removed_outbound_total_msat = 0;
 			for htlc in self.pending_outbound_htlcs.iter() {
-				if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
+				if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _)) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _)) = htlc.state {
 					removed_outbound_total_msat += htlc.amount_msat;
 				}
 			}
@@ -6157,7 +6158,7 @@ where
 		assert!(!self.context.channel_state.can_generate_new_commitment());
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
 		let fulfill_resp =
-			self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, None, logger);
+			self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, None, None, logger);
 		self.context.latest_monitor_update_id = mon_update_id;
 		if let UpdateFulfillFetch::NewClaim { update_blocked, .. } = fulfill_resp {
 			assert!(update_blocked); // The HTLC must have ended up in the holding cell.
@@ -6166,7 +6167,8 @@ where
 
 	fn get_update_fulfill_htlc<L: Deref>(
 		&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage,
-		payment_info: Option<PaymentClaimDetails>, logger: &L,
+		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
+		logger: &L,
 	) -> UpdateFulfillFetch
 	where
 		L::Target: Logger,
@@ -6200,7 +6202,7 @@ where
 				match htlc.state {
 					InboundHTLCState::Committed => {},
 					InboundHTLCState::LocalRemoved(ref reason) => {
-						if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
+						if let &InboundHTLCRemovalReason::Fulfill(_, _) = reason {
 						} else {
 							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", &htlc.payment_hash, &self.context.channel_id());
 							debug_assert!(
@@ -6281,6 +6283,7 @@ where
 			self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
 				payment_preimage: payment_preimage_arg,
 				htlc_id: htlc_id_arg,
+				attribution_data,
 			});
 			return UpdateFulfillFetch::NewClaim {
 				monitor_update,
@@ -6311,6 +6314,7 @@ where
 			);
 			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(
 				payment_preimage_arg.clone(),
+				attribution_data,
 			));
 		}
 
@@ -6319,13 +6323,20 @@ where
 
 	pub fn get_update_fulfill_htlc_and_commit<L: Deref>(
 		&mut self, htlc_id: u64, payment_preimage: PaymentPreimage,
-		payment_info: Option<PaymentClaimDetails>, logger: &L,
+		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
+		logger: &L,
 	) -> UpdateFulfillCommitFetch
 	where
 		L::Target: Logger,
 	{
 		let release_cs_monitor = self.context.blocked_monitor_updates.is_empty();
-		match self.get_update_fulfill_htlc(htlc_id, payment_preimage, payment_info, logger) {
+		match self.get_update_fulfill_htlc(
+			htlc_id,
+			payment_preimage,
+			payment_info,
+			attribution_data,
+			logger,
+		) {
 			UpdateFulfillFetch::NewClaim {
 				mut monitor_update,
 				htlc_value_msat,
@@ -6634,7 +6645,7 @@ where
 	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, outcome: OutboundHTLCOutcome) -> Result<&OutboundHTLCOutput, ChannelError> {
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
-				if let OutboundHTLCOutcome::Success(ref payment_preimage) = outcome {
+				if let OutboundHTLCOutcome::Success(ref payment_preimage, ..) = outcome {
 					let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
 					if payment_hash != htlc.payment_hash {
 						return Err(ChannelError::close(format!("Remote tried to fulfill HTLC ({}) with an incorrect preimage", htlc_id)));
@@ -6657,7 +6668,7 @@ where
 
 	pub fn update_fulfill_htlc(
 		&mut self, msg: &msgs::UpdateFulfillHTLC,
-	) -> Result<(HTLCSource, u64, Option<u64>), ChannelError> {
+	) -> Result<(HTLCSource, u64, Option<u64>, Option<Duration>), ChannelError> {
 		if self.context.channel_state.is_remote_stfu_sent()
 			|| self.context.channel_state.is_quiescent()
 		{
@@ -6676,9 +6687,11 @@ where
 			));
 		}
 
-		let outcome = OutboundHTLCOutcome::Success(msg.payment_preimage);
-		self.mark_outbound_htlc_removed(msg.htlc_id, outcome)
-			.map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
+		let outcome =
+			OutboundHTLCOutcome::Success(msg.payment_preimage, msg.attribution_data.clone());
+		self.mark_outbound_htlc_removed(msg.htlc_id, outcome).map(|htlc| {
+			(htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat, htlc.send_timestamp)
+		})
 	}
 
 	#[rustfmt::skip]
@@ -7035,9 +7048,9 @@ where
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
 				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
-				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
+				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None);
 				mem::swap(outcome, &mut reason);
-				if let OutboundHTLCOutcome::Success(preimage) = reason {
+				if let OutboundHTLCOutcome::Success(preimage, _) = reason {
 					// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
 					// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
 					// have a `Success(None)` reason. In this case we could forget some HTLC
@@ -7238,7 +7251,11 @@ where
 						}
 						None
 					},
-					&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, htlc_id, .. } => {
+					&HTLCUpdateAwaitingACK::ClaimHTLC {
+						ref payment_preimage,
+						htlc_id,
+						ref attribution_data,
+					} => {
 						// If an HTLC claim was previously added to the holding cell (via
 						// `get_update_fulfill_htlc`, then generating the claim message itself must
 						// not fail - any in between attempts to claim the HTLC will have resulted
@@ -7249,8 +7266,13 @@ where
 						// `ChannelMonitorUpdate` to the user, making this one redundant, however
 						// there's no harm in including the extra `ChannelMonitorUpdateStep` here.
 						// We do not bother to track and include `payment_info` here, however.
-						let fulfill =
-							self.get_update_fulfill_htlc(htlc_id, *payment_preimage, None, logger);
+						let fulfill = self.get_update_fulfill_htlc(
+							htlc_id,
+							*payment_preimage,
+							None,
+							attribution_data.clone(),
+							logger,
+						);
 						let mut additional_monitor_update =
 							if let UpdateFulfillFetch::NewClaim { monitor_update, .. } = fulfill {
 								monitor_update
@@ -7469,7 +7491,7 @@ where
 			pending_inbound_htlcs.retain(|htlc| {
 				if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
 					log_trace!(logger, " ...removing inbound LocalRemoved {}", &htlc.payment_hash);
-					if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
+					if let &InboundHTLCRemovalReason::Fulfill(_, _) = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
 					}
 					*expecting_peer_commitment_signed = true;
@@ -7487,19 +7509,21 @@ where
 						&htlc.payment_hash
 					);
 					// We really want take() here, but, again, non-mut ref :(
-					if let OutboundHTLCOutcome::Failure(mut reason) = outcome.clone() {
-						if let (Some(timestamp), Some(now)) = (htlc.send_timestamp, now) {
-							let elapsed_millis = now.saturating_sub(timestamp).as_millis();
-							let elapsed_units = elapsed_millis / HOLD_TIME_UNIT_MILLIS;
-							let hold_time = u32::try_from(elapsed_units).unwrap_or(u32::MAX);
-							reason.set_hold_time(hold_time);
-						}
-
-						revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
-					} else {
-						finalized_claimed_htlcs.push(htlc.source.clone());
-						// They fulfilled, so we sent them money
-						value_to_self_msat_diff -= htlc.amount_msat as i64;
+					match outcome.clone() {
+						OutboundHTLCOutcome::Failure(mut reason) => {
+							hold_time(htlc.send_timestamp, now).map(|hold_time| {
+								reason.set_hold_time(hold_time);
+							});
+							revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
+						},
+						OutboundHTLCOutcome::Success(_, attribution_data) => {
+							// Even though a fast track was taken for fulfilled HTLCs to the incoming side, we still
+							// pass along attribution data here so that we can include hold time information in the
+							// final PaymentPathSuccessful events.
+							finalized_claimed_htlcs.push((htlc.source.clone(), attribution_data));
+							// They fulfilled, so we sent them money
+							value_to_self_msat_diff -= htlc.amount_msat as i64;
+						},
 					}
 					false
 				} else {
@@ -7583,7 +7607,7 @@ where
 				{
 					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
 					// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
-					let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
+					let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None);
 					mem::swap(outcome, &mut reason);
 					htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
 					require_commitment = true;
@@ -7986,7 +8010,7 @@ where
 		&mut self, resend_raa: bool, resend_commitment: bool, resend_channel_ready: bool,
 		mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
-		mut pending_finalized_claimed_htlcs: Vec<HTLCSource>,
+		mut pending_finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 	) {
 		self.context.monitor_pending_revoke_and_ack |= resend_raa;
 		self.context.monitor_pending_commitment_signed |= resend_commitment;
@@ -8349,11 +8373,15 @@ where
 							failure_code: failure_code.clone(),
 						});
 					},
-					&InboundHTLCRemovalReason::Fulfill(ref payment_preimage) => {
+					&InboundHTLCRemovalReason::Fulfill(
+						ref payment_preimage,
+						ref attribution_data,
+					) => {
 						update_fulfill_htlcs.push(msgs::UpdateFulfillHTLC {
 							channel_id: self.context.channel_id(),
 							htlc_id: htlc.htlc_id,
 							payment_preimage: payment_preimage.clone(),
+							attribution_data: attribution_data.clone(),
 						});
 					},
 				}
@@ -10721,7 +10749,7 @@ where
 			if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
 				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
-				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
+				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None);
 				mem::swap(outcome, &mut reason);
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
 			}
@@ -12441,7 +12469,7 @@ where
 				dropped_inbound_htlcs += 1;
 			}
 		}
-		let mut removed_htlc_failure_attribution_data: Vec<&Option<AttributionData>> = Vec::new();
+		let mut removed_htlc_attribution_data: Vec<&Option<AttributionData>> = Vec::new();
 		(self.context.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
 		for htlc in self.context.pending_inbound_htlcs.iter() {
 			if let &InboundHTLCState::RemoteAnnounced(_) = &htlc.state {
@@ -12473,15 +12501,16 @@ where
 						}) => {
 							0u8.write(writer)?;
 							data.write(writer)?;
-							removed_htlc_failure_attribution_data.push(&attribution_data);
+							removed_htlc_attribution_data.push(&attribution_data);
 						},
 						InboundHTLCRemovalReason::FailMalformed((hash, code)) => {
 							1u8.write(writer)?;
 							(hash, code).write(writer)?;
 						},
-						InboundHTLCRemovalReason::Fulfill(preimage) => {
+						InboundHTLCRemovalReason::Fulfill(preimage, attribution_data) => {
 							2u8.write(writer)?;
 							preimage.write(writer)?;
+							removed_htlc_attribution_data.push(&attribution_data);
 						},
 					}
 				},
@@ -12491,6 +12520,7 @@ where
 		// The elements of this vector will always be `Some` starting in 0.2,
 		// but we still serialize the option to maintain backwards compatibility
 		let mut preimages: Vec<Option<&PaymentPreimage>> = vec![];
+		let mut fulfill_attribution_data = vec![];
 		let mut pending_outbound_skimmed_fees: Vec<Option<u64>> = Vec::new();
 		let mut pending_outbound_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 
@@ -12516,16 +12546,18 @@ where
 				},
 				&OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref outcome) => {
 					3u8.write(writer)?;
-					if let OutboundHTLCOutcome::Success(preimage) = outcome {
+					if let OutboundHTLCOutcome::Success(preimage, attribution_data) = outcome {
 						preimages.push(Some(preimage));
+						fulfill_attribution_data.push(attribution_data);
 					}
 					let reason: Option<&HTLCFailReason> = outcome.into();
 					reason.write(writer)?;
 				},
 				&OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) => {
 					4u8.write(writer)?;
-					if let OutboundHTLCOutcome::Success(preimage) = outcome {
+					if let OutboundHTLCOutcome::Success(preimage, attribution_data) = outcome {
 						preimages.push(Some(preimage));
+						fulfill_attribution_data.push(attribution_data);
 					}
 					let reason: Option<&HTLCFailReason> = outcome.into();
 					reason.write(writer)?;
@@ -12540,7 +12572,7 @@ where
 			Vec::with_capacity(holding_cell_htlc_update_count);
 		let mut holding_cell_blinding_points: Vec<Option<PublicKey>> =
 			Vec::with_capacity(holding_cell_htlc_update_count);
-		let mut holding_cell_failure_attribution_data: Vec<Option<&AttributionData>> =
+		let mut holding_cell_attribution_data: Vec<Option<&AttributionData>> =
 			Vec::with_capacity(holding_cell_htlc_update_count);
 		// Vec of (htlc_id, failure_code, sha256_of_onion)
 		let mut malformed_htlcs: Vec<(u64, u16, [u8; 32])> = Vec::new();
@@ -12566,10 +12598,17 @@ where
 					holding_cell_skimmed_fees.push(skimmed_fee_msat);
 					holding_cell_blinding_points.push(blinding_point);
 				},
-				&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, ref htlc_id } => {
+				&HTLCUpdateAwaitingACK::ClaimHTLC {
+					ref payment_preimage,
+					ref htlc_id,
+					ref attribution_data,
+				} => {
 					1u8.write(writer)?;
 					payment_preimage.write(writer)?;
 					htlc_id.write(writer)?;
+
+					// Store the attribution data for later writing.
+					holding_cell_attribution_data.push(attribution_data.as_ref());
 				},
 				&HTLCUpdateAwaitingACK::FailHTLC { ref htlc_id, ref err_packet } => {
 					2u8.write(writer)?;
@@ -12577,8 +12616,7 @@ where
 					err_packet.data.write(writer)?;
 
 					// Store the attribution data for later writing.
-					holding_cell_failure_attribution_data
-						.push(err_packet.attribution_data.as_ref());
+					holding_cell_attribution_data.push(err_packet.attribution_data.as_ref());
 				},
 				&HTLCUpdateAwaitingACK::FailMalformedHTLC {
 					htlc_id,
@@ -12595,7 +12633,7 @@ where
 
 					// Push 'None' attribution data for FailMalformedHTLC, because FailMalformedHTLC uses the same
 					// type 2 and is deserialized as a FailHTLC.
-					holding_cell_failure_attribution_data.push(None);
+					holding_cell_attribution_data.push(None);
 				},
 			}
 		}
@@ -12798,11 +12836,12 @@ where
 			(51, is_manual_broadcast, option), // Added in 0.0.124
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
 			(54, self.pending_funding, optional_vec), // Added in 0.2
-			(55, removed_htlc_failure_attribution_data, optional_vec), // Added in 0.2
-			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
+			(55, removed_htlc_attribution_data, optional_vec), // Added in 0.2
+			(57, holding_cell_attribution_data, optional_vec), // Added in 0.2
 			(58, self.interactive_tx_signing_session, option), // Added in 0.2
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
+			(61, fulfill_attribution_data, optional_vec),
 		});
 
 		Ok(())
@@ -12894,7 +12933,7 @@ where
 								attribution_data: None,
 							}),
 							1 => InboundHTLCRemovalReason::FailMalformed(Readable::read(reader)?),
-							2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?),
+							2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?, None),
 							_ => return Err(DecodeError::InvalidValue),
 						};
 						InboundHTLCState::LocalRemoved(reason)
@@ -12924,7 +12963,7 @@ where
 						let outcome = match option {
 							Some(r) => OutboundHTLCOutcome::Failure(r),
 							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
-							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None),
 						};
 						OutboundHTLCState::RemoteRemoved(outcome)
 					},
@@ -12933,7 +12972,7 @@ where
 						let outcome = match option {
 							Some(r) => OutboundHTLCOutcome::Failure(r),
 							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
-							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None),
 						};
 						OutboundHTLCState::AwaitingRemoteRevokeToRemove(outcome)
 					},
@@ -12942,7 +12981,7 @@ where
 						let outcome = match option {
 							Some(r) => OutboundHTLCOutcome::Failure(r),
 							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
-							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None),
 						};
 						OutboundHTLCState::AwaitingRemovedRemoteRevoke(outcome)
 					},
@@ -12973,6 +13012,7 @@ where
 				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
 					payment_preimage: Readable::read(reader)?,
 					htlc_id: Readable::read(reader)?,
+					attribution_data: None,
 				},
 				2 => HTLCUpdateAwaitingACK::FailHTLC {
 					htlc_id: Readable::read(reader)?,
@@ -13117,6 +13157,7 @@ where
 		// Starting in 0.2, all the elements in this vector will be `Some`, but they are still
 		// serialized as options to maintain backwards compatibility
 		let mut preimages: Vec<Option<PaymentPreimage>> = Vec::new();
+		let mut fulfill_attribution_data: Option<Vec<Option<AttributionData>>> = None;
 
 		// If we read an old Channel, for simplicity we just treat it as "we never sent an
 		// AnnouncementSignatures" which implies we'll re-send it on reconnect, but that's fine.
@@ -13144,8 +13185,8 @@ where
 		let mut pending_outbound_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 
-		let mut removed_htlc_failure_attribution_data: Option<Vec<Option<AttributionData>>> = None;
-		let mut holding_cell_failure_attribution_data: Option<Vec<Option<AttributionData>>> = None;
+		let mut removed_htlc_attribution_data: Option<Vec<Option<AttributionData>>> = None;
+		let mut holding_cell_attribution_data: Option<Vec<Option<AttributionData>>> = None;
 
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
 		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
@@ -13197,33 +13238,37 @@ where
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
 			(54, pending_funding, optional_vec), // Added in 0.2
-			(55, removed_htlc_failure_attribution_data, optional_vec),
-			(57, holding_cell_failure_attribution_data, optional_vec),
+			(55, removed_htlc_attribution_data, optional_vec),
+			(57, holding_cell_attribution_data, optional_vec),
 			(58, interactive_tx_signing_session, option), // Added in 0.2
 			(59, minimum_depth_override, option), // Added in 0.2
 			(60, historical_scids, optional_vec), // Added in 0.2
+			(61, fulfill_attribution_data, optional_vec),
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
 
 		let mut iter = preimages.into_iter();
+		let mut fulfill_attribution_data_iter = fulfill_attribution_data.map(Vec::into_iter);
 		for htlc in pending_outbound_htlcs.iter_mut() {
 			match &mut htlc.state {
 				OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(
 					ref mut preimage,
-				)) => {
-					// This variant was initialized like this further above
-					debug_assert_eq!(preimage, &PaymentPreimage([0u8; 32]));
-					// Flatten and unwrap the preimage; they are always set starting in 0.2.
-					*preimage = iter.next().flatten().ok_or(DecodeError::InvalidValue)?;
-				},
-				OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(
+					ref mut attribution_data,
+				))
+				| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(
 					ref mut preimage,
+					ref mut attribution_data,
 				)) => {
 					// This variant was initialized like this further above
 					debug_assert_eq!(preimage, &PaymentPreimage([0u8; 32]));
 					// Flatten and unwrap the preimage; they are always set starting in 0.2.
 					*preimage = iter.next().flatten().ok_or(DecodeError::InvalidValue)?;
+
+					*attribution_data = fulfill_attribution_data_iter
+						.as_mut()
+						.and_then(Iterator::next)
+						.ok_or(DecodeError::InvalidValue)?;
 				},
 				_ => {},
 			}
@@ -13301,46 +13346,48 @@ where
 			}
 		}
 
-		if let Some(attribution_data_list) = removed_htlc_failure_attribution_data {
-			let mut removed_htlc_relay_failures =
-				pending_inbound_htlcs.iter_mut().filter_map(|status| {
-					if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(
-						ref mut packet,
-					)) = &mut status.state
-					{
-						Some(&mut packet.attribution_data)
-					} else {
-						None
+		if let Some(attribution_data_list) = removed_htlc_attribution_data {
+			let mut removed_htlcs = pending_inbound_htlcs.iter_mut().filter_map(|status| {
+				if let InboundHTLCState::LocalRemoved(reason) = &mut status.state {
+					match reason {
+						InboundHTLCRemovalReason::FailRelay(ref mut packet) => {
+							Some(&mut packet.attribution_data)
+						},
+						InboundHTLCRemovalReason::Fulfill(_, ref mut attribution_data) => {
+							Some(attribution_data)
+						},
+						_ => None,
 					}
-				});
+				} else {
+					None
+				}
+			});
 
 			for attribution_data in attribution_data_list {
-				*removed_htlc_relay_failures.next().ok_or(DecodeError::InvalidValue)? =
-					attribution_data;
+				*removed_htlcs.next().ok_or(DecodeError::InvalidValue)? = attribution_data;
 			}
-			if removed_htlc_relay_failures.next().is_some() {
+			if removed_htlcs.next().is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
 
-		if let Some(attribution_data_list) = holding_cell_failure_attribution_data {
-			let mut holding_cell_failures =
-				holding_cell_htlc_updates.iter_mut().filter_map(|upd| {
-					if let HTLCUpdateAwaitingACK::FailHTLC {
+		if let Some(attribution_data_list) = holding_cell_attribution_data {
+			let mut holding_cell_htlcs =
+				holding_cell_htlc_updates.iter_mut().filter_map(|upd| match upd {
+					HTLCUpdateAwaitingACK::FailHTLC {
 						err_packet: OnionErrorPacket { ref mut attribution_data, .. },
 						..
-					} = upd
-					{
+					} => Some(attribution_data),
+					HTLCUpdateAwaitingACK::ClaimHTLC { attribution_data, .. } => {
 						Some(attribution_data)
-					} else {
-						None
-					}
+					},
+					_ => None,
 				});
 
 			for attribution_data in attribution_data_list {
-				*holding_cell_failures.next().ok_or(DecodeError::InvalidValue)? = attribution_data;
+				*holding_cell_htlcs.next().ok_or(DecodeError::InvalidValue)? = attribution_data;
 			}
-			if holding_cell_failures.next().is_some() {
+			if holding_cell_htlcs.next().is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -13551,7 +13598,7 @@ where
 	}
 }
 
-fn duration_since_epoch() -> Option<Duration> {
+pub(crate) fn duration_since_epoch() -> Option<Duration> {
 	#[cfg(not(feature = "std"))]
 	let now = None;
 
@@ -13563,6 +13610,17 @@ fn duration_since_epoch() -> Option<Duration> {
 	);
 
 	now
+}
+
+/// Returns the time expressed in hold time units (1 unit = 100 ms) that has elapsed between send_timestamp and now. If
+/// any of the arguments are `None`, returns `None`.
+pub(crate) fn hold_time(send_timestamp: Option<Duration>, now: Option<Duration>) -> Option<u32> {
+	send_timestamp.and_then(|t| {
+		now.map(|now| {
+			let elapsed = now.saturating_sub(t).as_millis() / HOLD_TIME_UNIT_MILLIS;
+			u32::try_from(elapsed).unwrap_or(u32::MAX)
+		})
+	})
 }
 
 #[cfg(test)]
@@ -14324,17 +14382,16 @@ mod tests {
 			skimmed_fee_msat: None,
 			blinding_point: None,
 		};
-		let dummy_holding_cell_claim_htlc = HTLCUpdateAwaitingACK::ClaimHTLC {
+		let dummy_holding_cell_claim_htlc = |attribution_data| HTLCUpdateAwaitingACK::ClaimHTLC {
 			payment_preimage: PaymentPreimage([42; 32]),
 			htlc_id: 0,
+			attribution_data,
 		};
-		let dummy_holding_cell_failed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailHTLC {
-			htlc_id,
-			err_packet: msgs::OnionErrorPacket {
-				data: vec![42],
-				attribution_data: Some(AttributionData::new()),
-			},
-		};
+		let dummy_holding_cell_failed_htlc =
+			|htlc_id, attribution_data| HTLCUpdateAwaitingACK::FailHTLC {
+				htlc_id,
+				err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data },
+			};
 		let dummy_holding_cell_malformed_htlc =
 			|htlc_id| HTLCUpdateAwaitingACK::FailMalformedHTLC {
 				htlc_id,
@@ -14342,29 +14399,45 @@ mod tests {
 				sha256_of_onion: [0; 32],
 			};
 		let mut holding_cell_htlc_updates = Vec::with_capacity(12);
-		for i in 0..12 {
-			if i % 5 == 0 {
-				holding_cell_htlc_updates.push(dummy_holding_cell_add_htlc.clone());
-			} else if i % 5 == 1 {
-				holding_cell_htlc_updates.push(dummy_holding_cell_claim_htlc.clone());
-			} else if i % 5 == 2 {
-				let mut dummy_add = dummy_holding_cell_add_htlc.clone();
-				if let HTLCUpdateAwaitingACK::AddHTLC {
-					ref mut blinding_point,
-					ref mut skimmed_fee_msat,
-					..
-				} = &mut dummy_add
-				{
-					*blinding_point = Some(test_utils::pubkey(42 + i));
-					*skimmed_fee_msat = Some(42);
-				} else {
-					panic!()
-				}
-				holding_cell_htlc_updates.push(dummy_add);
-			} else if i % 5 == 3 {
-				holding_cell_htlc_updates.push(dummy_holding_cell_malformed_htlc(i as u64));
-			} else {
-				holding_cell_htlc_updates.push(dummy_holding_cell_failed_htlc(i as u64));
+		for i in 0..16 {
+			match i % 7 {
+				0 => {
+					holding_cell_htlc_updates.push(dummy_holding_cell_add_htlc.clone());
+				},
+				1 => {
+					holding_cell_htlc_updates.push(dummy_holding_cell_claim_htlc(None));
+				},
+				2 => {
+					holding_cell_htlc_updates
+						.push(dummy_holding_cell_claim_htlc(Some(AttributionData::new())));
+				},
+				3 => {
+					let mut dummy_add = dummy_holding_cell_add_htlc.clone();
+					if let HTLCUpdateAwaitingACK::AddHTLC {
+						ref mut blinding_point,
+						ref mut skimmed_fee_msat,
+						..
+					} = &mut dummy_add
+					{
+						*blinding_point = Some(test_utils::pubkey(42 + i));
+						*skimmed_fee_msat = Some(42);
+					} else {
+						panic!()
+					}
+					holding_cell_htlc_updates.push(dummy_add);
+				},
+				4 => {
+					holding_cell_htlc_updates.push(dummy_holding_cell_malformed_htlc(i as u64));
+				},
+				5 => {
+					holding_cell_htlc_updates.push(dummy_holding_cell_failed_htlc(i as u64, None));
+				},
+				_ => {
+					holding_cell_htlc_updates.push(dummy_holding_cell_failed_htlc(
+						i as u64,
+						Some(AttributionData::new()),
+					));
+				},
 			}
 		}
 		chan.context.holding_cell_htlc_updates = holding_cell_htlc_updates.clone();

@@ -2733,6 +2733,7 @@ mod tests {
 				payment_id: PaymentId([42; 32]),
 				payment_hash: None,
 				path: path.clone(),
+				hold_times: Vec::new(),
 			});
 			let event = $receive.expect("PaymentPathSuccessful not handled within deadline");
 			match event {

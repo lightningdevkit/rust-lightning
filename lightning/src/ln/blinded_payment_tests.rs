@@ -2341,6 +2341,8 @@ fn test_trampoline_unblinded_receive() {
 			None,
 		).unwrap();
 
+		// Use a different session key to construct the replacement onion packet. Note that the sender isn't aware of
+		// this and won't be able to decode the fulfill hold times.
 		let outer_session_priv = secret_from_hex("e52c20461ed7acd46c4e7b591a37610519179482887bd73bf3b94617f8f03677");
 
 		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();

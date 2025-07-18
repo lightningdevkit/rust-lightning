@@ -1813,6 +1813,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 		channel_id: chan.2,
 		htlc_id: 0,
 		payment_preimage: our_payment_preimage,
+		attribution_data: None,
 	};
 
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &update_msg);
