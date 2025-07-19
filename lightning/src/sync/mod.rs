@@ -20,11 +20,11 @@ pub(crate) trait LockTestExt<'a> {
 	fn unsafe_well_ordered_double_lock_self(&'a self) -> Self::ExclLock;
 }
 
-#[cfg(all(feature = "std", not(ldk_bench), test))]
+#[cfg(all(not(ldk_bench), test))]
 mod debug_sync;
-#[cfg(all(feature = "std", not(ldk_bench), test))]
+#[cfg(all(not(ldk_bench), test))]
 pub use debug_sync::*;
-#[cfg(all(feature = "std", not(ldk_bench), test))]
+#[cfg(all(not(ldk_bench), test))]
 // Note that to make debug_sync's regex work this must not contain `debug_string` in the module name
 mod test_lockorder_checks;
 
@@ -63,7 +63,7 @@ mod ext_impl {
 	}
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), any(ldk_bench, not(test))))]
 mod nostd_sync;
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), any(ldk_bench, not(test))))]
 pub use nostd_sync::*;

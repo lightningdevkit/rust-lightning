@@ -1,6 +1,7 @@
 pub use alloc::sync::Arc;
 use core::fmt;
 use core::ops::{Deref, DerefMut};
+#[cfg(feature = "std")]
 use core::time::Duration;
 
 use std::cell::RefCell;
@@ -10,6 +11,7 @@ use std::sync::RwLock as StdRwLock;
 use std::sync::RwLockReadGuard as StdRwLockReadGuard;
 use std::sync::RwLockWriteGuard as StdRwLockWriteGuard;
 
+#[cfg(feature = "std")]
 use parking_lot::Condvar as StdCondvar;
 use parking_lot::Mutex as StdMutex;
 use parking_lot::MutexGuard as StdMutexGuard;
@@ -34,10 +36,12 @@ impl Backtrace {
 
 pub type LockResult<Guard> = Result<Guard, ()>;
 
+#[cfg(feature = "std")]
 pub struct Condvar {
 	inner: StdCondvar,
 }
 
+#[cfg(feature = "std")]
 impl Condvar {
 	pub fn new() -> Condvar {
 		Condvar { inner: StdCondvar::new() }
@@ -287,6 +291,7 @@ pub struct MutexGuard<'a, T: Sized + 'a> {
 }
 
 impl<'a, T: Sized> MutexGuard<'a, T> {
+	#[cfg(feature = "std")]
 	fn into_inner(self) -> StdMutexGuard<'a, T> {
 		// Somewhat unclear why we cannot move out of self.lock, but doing so gets E0509.
 		unsafe {
@@ -329,6 +334,19 @@ impl<T> Mutex<T> {
 			inner: StdMutex::new(inner),
 			poisoned: AtomicBool::new(false),
 			deps: LockMetadata::new(),
+		}
+	}
+
+	#[cfg(test)]
+	/// Takes a lock without any deadlock detection logic. This should never exist in production
+	/// code (the deadlock detection logic is important!) but can be used in tests where we're
+	/// willing to risk deadlocks (accepting that simply no existing tests hit them).
+	pub fn deadlocking_lock<'a>(&'a self) -> MutexGuard<'a, T> {
+		let lock = self.inner.lock();
+		if self.poisoned.load(Ordering::Acquire) {
+			panic!();
+		} else {
+			MutexGuard { mutex: self, lock: Some(lock) }
 		}
 	}
 
@@ -441,6 +459,14 @@ impl<T> RwLock<T> {
 		// such a deadlock.
 		LockMetadata::pre_lock(&self.deps, false);
 		self.inner.read().map(|guard| RwLockReadGuard { lock: self, guard }).map_err(|_| ())
+	}
+
+	#[cfg(test)]
+	/// Takes a read lock without any deadlock detection logic. This should never exist in
+	/// production code (the deadlock detection logic is important!) but can be used in tests where
+	/// we're willing to risk deadlocks (accepting that simply no existing tests hit them).
+	pub fn deadlocking_read<'a>(&'a self) -> RwLockReadGuard<'a, T> {
+		self.inner.read().map(|guard| RwLockReadGuard { lock: self, guard }).unwrap()
 	}
 
 	pub fn write<'a>(&'a self) -> LockResult<RwLockWriteGuard<'a, T>> {
