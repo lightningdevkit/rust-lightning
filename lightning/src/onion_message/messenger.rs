@@ -540,6 +540,14 @@ where
 	entropy_source: ES,
 }
 
+// Target total length (in hops) for non-compact blinded paths.
+// We pad with dummy hops until the path reaches this length,
+// obscuring the recipient's true position.
+//
+// Compact paths are optimized for minimal size, so we avoid
+// adding dummy hops to them.
+pub(crate) const PADDED_PATH_LENGTH: usize = 4;
+
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> DefaultMessageRouter<G, L, ES>
 where
 	L::Target: Logger,
@@ -595,40 +603,46 @@ where
 			a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
 		});
 
-		let entropy = &**entropy_source;
-		let paths = peer_info
-			.into_iter()
-			.map(|(peer, _, _)| {
-				BlindedMessagePath::new(
-					&[peer],
-					recipient,
-					local_node_receive_key,
-					context.clone(),
-					entropy,
-					secp_ctx,
-				)
-			})
-			.take(MAX_PATHS)
-			.collect::<Result<Vec<_>, _>>();
+		let build_path = |intermediate_hops: &[MessageForwardNode]| {
+			let dummy_hops_count = if compact_paths {
+				0
+			} else {
+				// Add one for the final recipient TLV
+				PADDED_PATH_LENGTH.saturating_sub(intermediate_hops.len() + 1)
+			};
 
-		let mut paths = match paths {
-			Ok(paths) if !paths.is_empty() => Ok(paths),
-			_ => {
-				if is_recipient_announced {
-					BlindedMessagePath::new(
-						&[],
-						recipient,
-						local_node_receive_key,
-						context,
-						&**entropy_source,
-						secp_ctx,
-					)
+			BlindedMessagePath::new_with_dummy_hops(
+				intermediate_hops,
+				recipient,
+				dummy_hops_count,
+				local_node_receive_key,
+				context.clone(),
+				&**entropy_source,
+				secp_ctx,
+			)
+		};
+
+		// Try to create paths from peer info, fall back to direct path if needed
+		let mut paths = peer_info
+			.into_iter()
+			.map(|(peer, _, _)| build_path(&[peer]))
+			.take(MAX_PATHS)
+			.collect::<Result<Vec<_>, _>>()
+			.ok()
+			.filter(|paths| !paths.is_empty())
+			.or_else(|| {
+				is_recipient_announced
+					.then(|| build_path(&[]))
+					.and_then(|result| result.ok())
 					.map(|path| vec![path])
-				} else {
-					Err(())
-				}
-			},
-		}?;
+			})
+			.ok_or(())?;
+
+		// Sanity check: Ones the paths are created for the non-compact case, ensure
+		// each of them are of the length `PADDED_PATH_LENGTH`.
+		if !compact_paths {
+			debug_assert!(paths.iter().all(|path| path.blinded_hops().len() == PADDED_PATH_LENGTH));
+		}
 
 		if compact_paths {
 			for path in &mut paths {
