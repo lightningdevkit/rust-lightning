@@ -16,7 +16,9 @@ use super::async_payments::AsyncPaymentsMessage;
 use super::dns_resolution::DNSResolverMessage;
 use super::messenger::CustomOnionMessageHandler;
 use super::offers::OffersMessage;
-use crate::blinded_path::message::{BlindedMessagePath, ForwardTlvs, NextMessageHop, ReceiveTlvs};
+use crate::blinded_path::message::{
+	BlindedMessagePath, DummyTlv, ForwardTlvs, NextMessageHop, ReceiveTlvs,
+};
 use crate::crypto::streams::{ChaChaDualPolyReadAdapter, ChaChaPolyWriteAdapter};
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
@@ -111,6 +113,12 @@ impl LengthReadable for Packet {
 pub(super) enum Payload<T: OnionMessageContents> {
 	/// This payload is for an intermediate hop.
 	Forward(ForwardControlTlvs),
+	/// This payload is a dummy hop, and is intended to be peeled.
+	Dummy {
+		/// The payload was authenticated with the additional key that was
+		/// provided to [`ReadableArgs::read`].
+		control_tlvs_authenticated: bool,
+	},
 	/// This payload is for the final hop.
 	Receive {
 		/// The [`ReceiveControlTlvs`] were authenticated with the additional key which was
@@ -237,6 +245,10 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 				let write_adapter = ChaChaPolyWriteAdapter::new(self.1, &control_tlvs);
 				_encode_varint_length_prefixed_tlv!(w, { (4, write_adapter, required) })
 			},
+			Payload::Dummy { control_tlvs_authenticated: _ } => {
+				let write_adapter = ChaChaPolyWriteAdapter::new(self.1, &DummyTlv);
+				_encode_varint_length_prefixed_tlv!(w, { (4, write_adapter, required) })
+			},
 			Payload::Receive {
 				control_tlvs: ReceiveControlTlvs::Unblinded(control_tlvs),
 				reply_path,
@@ -316,6 +328,9 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 				}
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
+			Some(ChaChaDualPolyReadAdapter { readable: ControlTlvs::Dummy, used_aad }) => {
+				Ok(Payload::Dummy { control_tlvs_authenticated: used_aad })
+			},
 			Some(ChaChaDualPolyReadAdapter { readable: ControlTlvs::Receive(tlvs), used_aad }) => {
 				Ok(Payload::Receive {
 					control_tlvs: ReceiveControlTlvs::Unblinded(tlvs),
@@ -335,6 +350,8 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 pub(crate) enum ControlTlvs {
 	/// This onion message is intended to be forwarded.
 	Forward(ForwardTlvs),
+	/// This onion message is a dummy, and is intended to be peeled by the final recipient.
+	Dummy,
 	/// This onion message is intended to be received.
 	Receive(ReceiveTlvs),
 }
@@ -350,6 +367,7 @@ impl Readable for ControlTlvs {
 			(4, next_node_id, option),
 			(8, next_blinding_override, option),
 			(65537, context, option),
+			(65539, is_dummy, option),
 		});
 
 		let next_hop = match (short_channel_id, next_node_id) {
@@ -359,18 +377,13 @@ impl Readable for ControlTlvs {
 			(None, None) => None,
 		};
 
-		let valid_fwd_fmt = next_hop.is_some();
-		let valid_recv_fmt = next_hop.is_none() && next_blinding_override.is_none();
-
-		let payload_fmt = if valid_fwd_fmt {
-			ControlTlvs::Forward(ForwardTlvs {
-				next_hop: next_hop.unwrap(),
-				next_blinding_override,
-			})
-		} else if valid_recv_fmt {
-			ControlTlvs::Receive(ReceiveTlvs { context })
-		} else {
-			return Err(DecodeError::InvalidValue);
+		let payload_fmt = match (next_hop, next_blinding_override, is_dummy) {
+			(Some(hop), _, None) => {
+				ControlTlvs::Forward(ForwardTlvs { next_hop: hop, next_blinding_override })
+			},
+			(None, None, Some(())) => ControlTlvs::Dummy,
+			(None, None, None) => ControlTlvs::Receive(ReceiveTlvs { context }),
+			_ => return Err(DecodeError::InvalidValue),
 		};
 
 		Ok(payload_fmt)
@@ -381,6 +394,7 @@ impl Writeable for ControlTlvs {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
 			Self::Forward(tlvs) => tlvs.write(w),
+			Self::Dummy => DummyTlv.write(w),
 			Self::Receive(tlvs) => tlvs.write(w),
 		}
 	}

@@ -266,6 +266,23 @@ pub(crate) struct ForwardTlvs {
 	pub(crate) next_blinding_override: Option<PublicKey>,
 }
 
+/// Represents the dummy TLV encoded immediately before the actual [`ReceiveTlvs`] in a blinded path.
+/// These TLVs are intended for the final node and are recursively authenticated until the real
+/// [`ReceiveTlvs`] is reached.
+///
+/// Their purpose is to arbitrarily extend the path length, obscuring the receiver's position in the
+/// route and thereby enhancing privacy.
+pub(crate) struct DummyTlv;
+
+impl Writeable for DummyTlv {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		encode_tlv_stream!(writer, {
+			(65539, (), required),
+		});
+		Ok(())
+	}
+}
+
 /// Similar to [`ForwardTlvs`], but these TLVs are for the final node.
 pub(crate) struct ReceiveTlvs {
 	/// If `context` is `Some`, it is used to identify the blinded path that this onion message is
