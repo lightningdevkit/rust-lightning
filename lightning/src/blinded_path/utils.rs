@@ -276,16 +276,43 @@ impl<T: Writeable> Writeable for BlindedPathWithPadding<T> {
 }
 
 #[cfg(test)]
-/// Checks if all the packets in the blinded path are properly padded.
+/// Verifies whether all hops in the blinded path follow the expected padding scheme.
+///
+/// In the padded encoding scheme, each hop's encrypted payload is expected to be of the form:
+/// `n * padding_round_off + extra`, where:
+/// - `padding_round_off` is the fixed block size to which unencrypted payloads are padded.
+/// - `n` is a positive integer (n ≥ 1).
+/// - `extra` is the fixed overhead added during encryption (assumed uniform across hops).
+///
+/// This function infers the `extra` from the first hop, and checks that all other hops conform
+/// to the same pattern.
+///
+/// # Returns
+/// - `true` if all hop payloads are padded correctly.
+/// - `false` if padding is incorrectly applied or intentionally absent (e.g., in compact paths).
 pub fn is_padded(hops: &[BlindedHop], padding_round_off: usize) -> bool {
 	let first_hop = hops.first().expect("BlindedPath must have at least one hop");
-	let first_payload_size = first_hop.encrypted_payload.len();
+	let first_len = first_hop.encrypted_payload.len();
 
-	// The unencrypted payload data is padded before getting encrypted.
-	// Assuming the first payload is padded properly, get the extra data length.
-	let extra_length = first_payload_size % padding_round_off;
-	hops.iter().all(|hop| {
-		// Check that every packet is padded to the round off length subtracting the extra length.
-		(hop.encrypted_payload.len() - extra_length) % padding_round_off == 0
-	})
+	// Early rejection: if the first hop is too small, it can't be correctly padded.
+	if first_len <= padding_round_off {
+		return false;
+	}
+
+	let extra = first_len % padding_round_off;
+
+	// Helper to check if a hop follows the padding pattern
+	let is_hop_padded = |hop: &BlindedHop| {
+		let len = hop.encrypted_payload.len();
+		len > extra && (len - extra) % padding_round_off == 0
+	};
+
+	// All hops must follow the same padding structure AND
+	// all hops except the final one must have the same length as the first
+	// to ensure proper masking.
+	hops.iter().all(is_hop_padded)
+		&& hops
+			.iter()
+			.take(hops.len().saturating_sub(1))
+			.all(|hop| hop.encrypted_payload.len() == first_len)
 }

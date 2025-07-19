@@ -60,7 +60,7 @@ use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
-use crate::onion_message::messenger::{Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion};
+use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, PADDED_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{PaymentParameters, RouteParameters, RouteParametersConfig};
@@ -433,6 +433,76 @@ fn prefers_more_connected_nodes_in_blinded_paths() {
 		let introduction_node_id = resolve_introduction_node(david, &path);
 		assert_eq!(introduction_node_id, nodes[4].node.get_our_node_id());
 	}
+}
+
+/// Tests the dummy hop behavior of Offers based on the message router used:
+/// - Compact paths (`DefaultMessageRouter`) should not include dummy hops.
+/// - Node ID paths (`NodeIdMessageRouter`) may include 0 to [`MAX_DUMMY_HOPS_COUNT`] dummy hops.
+///
+/// Also verifies that the resulting paths are functional: the counterparty can respond with a valid `invoice_request`.
+#[test]
+fn check_dummy_hop_pattern_in_offer() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	// Case 1: DefaultMessageRouter → uses compact blinded paths (via SCIDs)
+	// Expected: No dummy hops; each path contains only the recipient.
+	let default_router = DefaultMessageRouter::new(alice.network_graph, alice.keys_manager);
+
+	let compact_offer = alice.node
+		.create_offer_builder_using_router(&default_router).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	assert!(!compact_offer.paths().is_empty());
+
+	for path in compact_offer.paths() {
+		assert_eq!(
+			path.blinded_hops().len(), 1,
+			"Compact paths must include only the recipient"
+		);
+	}
+
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&compact_offer, None, None, None, payment_id, Retry::Attempts(0), RouteParametersConfig::default()).unwrap();
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+
+	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
+	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
+
+	// Case 2: NodeIdMessageRouter → uses node ID-based blinded paths
+	// Expected: 0 to MAX_DUMMY_HOPS_COUNT dummy hops, followed by recipient.
+	let node_id_router = NodeIdMessageRouter::new(alice.network_graph, alice.keys_manager);
+
+	let padded_offer = alice.node
+		.create_offer_builder_using_router(&node_id_router).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	assert!(!padded_offer.paths().is_empty());
+	assert!(padded_offer.paths().iter().all(|path| path.blinded_hops().len() == PADDED_PATH_LENGTH));
+
+	let payment_id = PaymentId([2; 32]);
+	bob.node.pay_for_offer(&padded_offer, None, None, None, payment_id, Retry::Attempts(0), RouteParametersConfig::default()).unwrap();
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+
+	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
+	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
 }
 
 /// Checks that blinded paths are compact for short-lived offers.
