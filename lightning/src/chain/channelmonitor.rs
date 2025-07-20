@@ -5787,6 +5787,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								on_to_local_output_csv: None,
 							},
 						});
+						self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
 						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),
@@ -5810,6 +5811,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								on_to_local_output_csv: None,
 							},
 						});
+						self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
 						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),
