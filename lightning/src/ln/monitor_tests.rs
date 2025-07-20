@@ -12,6 +12,7 @@
 //! Further functional tests which test blockchain reorganizations.
 
 use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor};
+use crate::chain::Watch;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATENCY_GRACE_PERIOD_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, Balance, BalanceSource, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
@@ -3299,4 +3300,168 @@ fn test_claim_event_never_handled() {
 	// The reload logic spuriously generates a redundant payment preimage-containing
 	// `ChannelMonitorUpdate`.
 	check_added_monitors(&nodes[1], 2);
+}
+
+fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool) {
+	// `MonitorEvent`s aren't delivered to the `ChannelManager` in a durable fashion - if the
+	// `ChannelManager` fetches the pending `MonitorEvent`s, then the `ChannelMonitor` gets
+	// persisted (i.e. due to a block update) then the node crashes, prior to persisting the
+	// `ChannelManager` again, the `MonitorEvent` and its effects on the `ChannelManger` will be
+	// lost. This isn't likely in a sync persist environment, but in an async one this could be an
+	// issue.
+	//
+	// Note that this is only an issue for closed channels - `MonitorEvent`s only inform the
+	// `ChannelManager` that a channel is closed (which the `ChannelManager` will learn on startup
+	// or when it next tries to advance the channel state), that `ChannelMonitorUpdate` writes
+	// completed (which the `ChannelManager` will detect on startup), or that HTLCs resolved
+	// on-chain post closure. Of the three, only the last is problematic to lose prior to a reload.
+	//
+	// Here we test that losing `MonitorEvent`s that contain HTLC resolution preimages does not
+	// cause us to lose funds or miss a `PaymentSent` event.
+	let mut cfg = test_default_channel_config();
+	cfg.manually_accept_inbound_channels = true;
+	cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	let cfgs = [Some(cfg.clone()), Some(cfg.clone()), Some(cfg.clone())];
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_mon;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &cfgs);
+	let node_b_reload;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	let chan_a = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0).2;
+	let chan_b = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).2;
+
+	let (preimage_a, hash_a, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+	let (preimage_b, hash_b, ..) = route_payment(&nodes[1], &[&nodes[2]], 1_000_000);
+
+	nodes[1].node.peer_disconnected(nodes[2].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(nodes[1].node.get_our_node_id());
+
+	nodes[2].node.claim_funds(preimage_a);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], hash_a, 1_000_000);
+	nodes[2].node.claim_funds(preimage_b);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], hash_b, 1_000_000);
+
+	// Force-close the channel, confirming a commitment transaction then letting C claim the HTLCs.
+	let message = "Closed".to_owned();
+	nodes[2]
+		.node
+		.force_close_broadcasting_latest_txn(&chan_b, &node_b_id, message.clone())
+		.unwrap();
+	check_added_monitors(&nodes[2], 1);
+	let c_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event!(nodes[2], 1, c_reason, [node_b_id], 1_000_000);
+	check_closed_broadcast!(nodes[2], true);
+
+	handle_bump_events(&nodes[2], true, 0);
+	let cs_commit_tx = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(cs_commit_tx.len(), 1);
+
+	let message = "Closed".to_owned();
+	nodes[1]
+		.node
+		.force_close_broadcasting_latest_txn(&chan_b, &node_c_id, message.clone())
+		.unwrap();
+	check_added_monitors(&nodes[1], 1);
+	let b_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event!(nodes[1], 1, b_reason, [node_c_id], 1_000_000);
+	check_closed_broadcast!(nodes[1], true);
+
+	handle_bump_events(&nodes[1], true, 0);
+	let bs_commit_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(bs_commit_tx.len(), 1);
+
+	let selected_commit_tx = if on_counterparty_tx {
+		&cs_commit_tx[0]
+	} else {
+		&bs_commit_tx[0]
+	};
+
+	mine_transaction(&nodes[2], selected_commit_tx);
+	let mut cs_transactions = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	let c_replays_commitment = nodes[2].connect_style.borrow().updates_best_block_first();
+	let cs_htlc_claims = if on_counterparty_tx {
+		assert_eq!(cs_transactions.len(), 0);
+
+		handle_bump_events(&nodes[2], c_replays_commitment, 1);
+		let mut cs_transactions =
+			nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		if c_replays_commitment {
+			assert_eq!(cs_transactions.len(), 3);
+			check_spends!(cs_transactions[1], cs_transactions[0], coinbase_tx);
+		} else {
+			assert_eq!(cs_transactions.len(), 1);
+		}
+		vec![cs_transactions.pop().unwrap()]
+	} else {
+		assert_eq!(cs_transactions.len(), 1);
+		cs_transactions
+	};
+
+	assert_eq!(cs_htlc_claims.len(), 1);
+	check_spends!(cs_htlc_claims[0], selected_commit_tx, coinbase_tx);
+
+	// Now replay the claims on node B, which should generate preimage-containing `MonitorUpdate`s
+	mine_transaction(&nodes[1], selected_commit_tx);
+	mine_transaction(&nodes[1], &cs_htlc_claims[0]);
+
+	// Now simulate a restart where the B<->C ChannelMonitor has been persisted (i.e. because we
+	// just processed a new block) but the ChannelManager was not. This should be exceedingly rare
+	// given we have to be connecting a block at the right moment and not manage to get a
+	// ChannelManager persisted after it does a thing that should immediately precede persistence,
+	// but with async persist it is more common.
+	//
+	// We do this by wiping the `MonitorEvent`s from the monitors and then reloading with the
+	// latest state.
+	let mon_events = nodes[1].chain_monitor.chain_monitor.release_pending_monitor_events();
+	assert_eq!(mon_events.len(), 1);
+	assert_eq!(mon_events[0].2.len(), 3);
+
+	let node_ser = nodes[1].node.encode();
+	let mon_a_ser = get_monitor!(nodes[1], chan_a).encode();
+	let mon_b_ser = get_monitor!(nodes[1], chan_b).encode();
+	let mons = &[&mon_a_ser[..], &mon_b_ser[..]];
+	reload_node!(nodes[1], cfg, &node_ser, mons, persister, new_chain_mon, node_b_reload);
+
+	let preimage_events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(preimage_events.len(), 2, "{preimage_events:?}");
+	for ev in preimage_events {
+		match ev {
+			Event::PaymentSent { payment_hash, .. } => {
+				assert_eq!(payment_hash, hash_b);
+			},
+			Event::PaymentForwarded { claim_from_onchain_tx, .. } => {
+				assert!(claim_from_onchain_tx);
+			},
+			_ => panic!("Wrong event {ev:?}"),
+		}
+	}
+
+	// After the background events are processed in `get_and_clear_pending_events`, above, node B
+	// will create the requisite `ChannelMontiorUpdate` for claiming the forwarded payment back.
+	// The HTLC, however, is added to the holding cell for replay after the peer connects, below.
+	check_added_monitors(&nodes[1], 1);
+
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.pending_cell_htlc_claims = (1, 0);
+	reconnect_nodes(reconnect_args);
+	expect_payment_sent(&nodes[0], preimage_a, None, true, true);
+}
+
+#[test]
+fn test_lost_preimage_monitor_events() {
+	do_test_lost_preimage_monitor_events(true);
+	do_test_lost_preimage_monitor_events(false);
 }
