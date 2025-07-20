@@ -3105,18 +3105,7 @@ macro_rules! handle_error {
 	} };
 }
 
-/// When a channel is removed, two things need to happen:
-/// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
-/// (b) [`ChannelManager::finish_close_channel`] needs to be called without holding any locks
-///     (except [`ChannelManager::total_consistency_lock`].
-///
-/// Note that this step can be skipped if the channel was never opened (through the creation of a
-/// [`ChannelMonitor`]/channel funding transaction) to begin with.
-///
-/// For non-coop-close cases, you should generally prefer to call `convert_channel_err` and
-/// [`handle_error`] instead (which delegate to this and [`ChannelManager::finish_close_channel`]),
-/// as they ensure the relevant messages go out as well. In a coop close case, calling this
-/// directly avoids duplicate error messages.
+/// Do not call this directly, use `convert_channel_err` instead.
 #[rustfmt::skip]
 macro_rules! locked_close_channel {
 	($self: ident, $chan_context: expr, UNFUNDED) => {{
@@ -3164,7 +3153,18 @@ macro_rules! locked_close_channel {
 	}}
 }
 
-/// Returns (boolean indicating if we should remove the Channel object from memory, a mapped error)
+/// When a channel is removed, two things need to happen:
+/// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
+/// (b) [`handle_error`] needs to be called without holding any locks (except
+///     [`ChannelManager::total_consistency_lock`]), which then calls
+///     [`ChannelManager::finish_close_channel`].
+///
+/// Note that this step can be skipped if the channel was never opened (through the creation of a
+/// [`ChannelMonitor`]/channel funding transaction) to begin with.
+///
+/// Returns `(boolean indicating if we should remove the Channel object from memory, a mapped
+/// error)`, except in the `COOP_CLOSE` case, where the bool is elided (it is always implicitly
+/// true).
 #[rustfmt::skip]
 macro_rules! convert_channel_err {
 	($self: ident, $peer_state: expr, $err: expr, $chan: expr, $close: expr, $locked_close: expr, $channel_id: expr, _internal) => { {
@@ -4235,13 +4235,10 @@ where
 	}
 
 	/// When a channel is removed, two things need to happen:
-	/// (a) [`locked_close_channel`] must be called in the same `per_peer_state` lock as
-	///     the channel-closing action,
-	/// (b) this needs to be called without holding any locks (except
-	///     [`ChannelManager::total_consistency_lock`].
-	///
-	/// In non-coop-close cases, this is generally accomplished by calling [`convert_channel_err`]
-	/// followed by [`handle_error`].
+	/// (a) [`convert_channel_err`] must be called in the same `per_peer_state` lock as the
+	///     channel-closing action,
+	/// (b) [`handle_error`] needs to be called without holding any locks (except
+	///     [`ChannelManager::total_consistency_lock`]), which then calls this.
 	#[rustfmt::skip]
 	fn finish_close_channel(&self, mut shutdown_res: ShutdownResult) {
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
