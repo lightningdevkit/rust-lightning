@@ -48,8 +48,9 @@ use bitcoin::block::{Block, Header};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::pow::Work;
 
-use lightning::chain;
 use lightning::chain::Listen;
+use lightning::util::hash_tables::{new_hash_map, HashMap};
+use lightning::{chain, impl_writeable_tlv_based};
 
 use std::future::Future;
 use std::ops::Deref;
@@ -155,6 +156,12 @@ pub struct BlockHeaderData {
 	pub chainwork: Work,
 }
 
+impl_writeable_tlv_based!(BlockHeaderData, {
+	(0, header, required),
+	(2, height, required),
+	(4, chainwork, required),
+});
+
 /// A block including either all its transactions or only the block header.
 ///
 /// [`BlockSource`] may be implemented to either always return full blocks or, in the case of
@@ -212,21 +219,35 @@ pub trait Cache {
 }
 
 /// Unbounded cache of block headers keyed by block hash.
-pub type UnboundedCache = std::collections::HashMap<BlockHash, ValidatedBlockHeader>;
+pub struct UnboundedCache {
+	pub(crate) inner: HashMap<BlockHash, ValidatedBlockHeader>,
+}
+
+impl UnboundedCache {
+	/// Returns a new `UnboundedCache`
+	pub fn new() -> Self {
+		let inner = new_hash_map();
+		Self { inner }
+	}
+}
 
 impl Cache for UnboundedCache {
 	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader> {
-		self.get(block_hash)
+		self.inner.get(block_hash)
 	}
 
 	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader) {
-		self.insert(block_hash, block_header);
+		self.inner.insert(block_hash, block_header);
 	}
 
 	fn block_disconnected(&mut self, block_hash: &BlockHash) -> Option<ValidatedBlockHeader> {
-		self.remove(block_hash)
+		self.inner.remove(block_hash)
 	}
 }
+
+impl_writeable_tlv_based!(UnboundedCache, {
+	(0, inner, required),
+});
 
 impl<'a, P: Poll, C: Cache, L: Deref> SpvClient<'a, P, C, L>
 where
