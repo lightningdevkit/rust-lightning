@@ -1461,6 +1461,19 @@ where
 	Funded(FundedChannel<SP>),
 }
 
+pub(super) enum CommitmentSignedResult<SP: Deref>
+where
+	SP::Target: SignerProvider,
+{
+	ChannelMonitor(ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>),
+	ChannelMonitorWithUnsignedFundingTransaction(
+		ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+		Transaction,
+	),
+	ChannelMonitorUpdate(ChannelMonitorUpdate),
+	None,
+}
+
 impl<SP: Deref> Channel<SP>
 where
 	SP::Target: SignerProvider,
@@ -1786,7 +1799,7 @@ where
 	#[rustfmt::skip]
 	pub fn commitment_signed<L: Deref>(
 		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(Option<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>, Option<ChannelMonitorUpdate>, Option<Transaction>), ChannelError>
+	) -> Result<CommitmentSignedResult<SP>, ChannelError>
 	where
 		L::Target: Logger
 	{
@@ -1813,7 +1826,15 @@ where
 					pending_splice: None,
 				};
 				let res = funded_channel.commitment_signed_initial_v2(msg, best_block, signer_provider, logger)
-					.map(|(monitor, funding_tx_opt)| (Some(monitor), None, funding_tx_opt))
+					.map(|(monitor, funding_tx_opt)| {
+						if let Some(funding_tx) = funding_tx_opt {
+							CommitmentSignedResult::ChannelMonitorWithUnsignedFundingTransaction(
+								monitor, funding_tx,
+							)
+						} else {
+							CommitmentSignedResult::ChannelMonitor(monitor)
+						}
+					})
 					// TODO: Change to `inspect_err` when MSRV is high enough.
 					.map_err(|err| {
 						// We always expect a `ChannelError` close.
@@ -1840,15 +1861,33 @@ where
 				let res = if has_negotiated_pending_splice && !session_received_commitment_signed {
 					funded_channel
 						.splice_initial_commitment_signed(msg, logger)
-						.map(|monitor_update_opt| (None, monitor_update_opt, None))
+						.map(|monitor_update_opt|
+							if let Some(monitor_update) = monitor_update_opt {
+								CommitmentSignedResult::ChannelMonitorUpdate(monitor_update)
+							} else {
+								CommitmentSignedResult::None
+							}
+						)
 				} else {
 					funded_channel.commitment_signed(msg, logger)
-						.map(|monitor_update_opt| (None, monitor_update_opt, None))
+						.map(|monitor_update_opt|
+							if let Some(monitor_update) = monitor_update_opt {
+								CommitmentSignedResult::ChannelMonitorUpdate(monitor_update)
+							} else {
+								CommitmentSignedResult::None
+							}
+						)
 				};
 
 				#[cfg(not(splicing))]
 				let res = funded_channel.commitment_signed(msg, logger)
-					.map(|monitor_update_opt| (None, monitor_update_opt, None));
+					.map(|monitor_update_opt|
+						if let Some(monitor_update) = monitor_update_opt {
+							CommitmentSignedResult::ChannelMonitorUpdate(monitor_update)
+						} else {
+							CommitmentSignedResult::None
+						}
+					);
 
 				self.phase = ChannelPhase::Funded(funded_channel);
 				res

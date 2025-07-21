@@ -130,8 +130,10 @@ use crate::util::ser::{
 };
 use crate::util::wakers::{Future, Notifier};
 
+use super::channel::CommitmentSignedResult;
 #[cfg(all(test, async_payments))]
 use crate::blinded_path::payment::BlindedPaymentPath;
+
 #[cfg(async_payments)]
 use {
 	crate::blinded_path::message::BlindedMessagePath,
@@ -9638,37 +9640,44 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let chan = chan_entry.get_mut();
 				let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 				let funding_txo = chan.funding().get_funding_txo();
-				let (monitor_opt, monitor_update_opt, funding_tx_opt) = try_channel_entry!(
+				let res = try_channel_entry!(
 					self, peer_state, chan.commitment_signed(msg, best_block, &self.signer_provider, &&logger),
 					chan_entry);
 
 				if let Some(chan) = chan.as_funded_mut() {
-					if let Some(unsigned_transaction) = funding_tx_opt {
-						let mut pending_events = self.pending_events.lock().unwrap();
-						pending_events.push_back((
-							Event::FundingTransactionReadyForSigning {
-								unsigned_transaction,
-								counterparty_node_id: *counterparty_node_id,
-								channel_id: msg.channel_id,
-								user_channel_id: chan.context.get_user_id(),
-							}, None));
-					}
-					if let Some(monitor) = monitor_opt {
-						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
-						if let Ok(persist_state) = monitor_res {
-							handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
-								per_peer_state, chan, INITIAL_MONITOR);
-						} else {
-							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-							log_error!(logger, "Persisting initial ChannelMonitor failed, implying the channel ID was duplicated");
-							let msg = "Channel ID was a duplicate";
-							let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-							let err = ChannelError::Close((msg.to_owned(), reason));
-							try_channel_entry!(self, peer_state, Err(err), chan_entry)
-						}
-					} else if let Some(monitor_update) = monitor_update_opt {
-						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
-							peer_state, per_peer_state, chan);
+					let monitor = match res {
+						CommitmentSignedResult::ChannelMonitor(monitor) => monitor,
+						CommitmentSignedResult::ChannelMonitorWithUnsignedFundingTransaction(monitor, unsigned_transaction) => {
+							let mut pending_events = self.pending_events.lock().unwrap();
+							pending_events.push_back((
+								Event::FundingTransactionReadyForSigning {
+									unsigned_transaction,
+									counterparty_node_id: *counterparty_node_id,
+									channel_id: msg.channel_id,
+									user_channel_id: chan.context.get_user_id(),
+								}, None));
+
+							monitor
+						},
+						CommitmentSignedResult::ChannelMonitorUpdate(monitor_update) => {
+							handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
+								peer_state, per_peer_state, chan);
+							return Ok(());
+						},
+						CommitmentSignedResult::None => return Ok(()),
+					};
+
+					let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
+					if let Ok(persist_state) = monitor_res {
+						handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
+							per_peer_state, chan, INITIAL_MONITOR);
+					} else {
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						log_error!(logger, "Persisting initial ChannelMonitor failed, implying the channel ID was duplicated");
+						let msg = "Channel ID was a duplicate";
+						let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+						let err = ChannelError::Close((msg.to_owned(), reason));
+						try_channel_entry!(self, peer_state, Err(err), chan_entry)
 					}
 				}
 				Ok(())
