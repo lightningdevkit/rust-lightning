@@ -1032,6 +1032,11 @@ impl Bolt12Invoice {
 			InvoiceContents::ForRefund { .. } => self.message_paths().is_empty(),
 		}
 	}
+
+	/// Returns the [`TaggedHash`] of the invoice that was signed.
+	pub fn tagged_hash(&self) -> &TaggedHash {
+		&self.tagged_hash
+	}
 }
 
 impl PartialEq for Bolt12Invoice {
@@ -3559,5 +3564,38 @@ mod tests {
 				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedPaths)
 			),
 		}
+	}
+
+	#[test]
+	fn verifies_invoice_signature_with_tagged_hash() {
+		let secp_ctx = Secp256k1::new();
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let node_id = recipient_pubkey();
+		let payment_paths = payment_paths();
+		let now = Duration::from_secs(123456);
+		let payment_id = PaymentId([1; 32]);
+
+		let offer = OfferBuilder::new(node_id).amount_msats(1000).build().unwrap();
+
+		let invoice_request = offer
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
+			.unwrap();
+
+		let invoice = invoice_request
+			.respond_with_no_std(payment_paths, payment_hash(), now)
+			.unwrap()
+			.build()
+			.unwrap()
+			.sign(recipient_sign)
+			.unwrap();
+
+		let issuer_sign_pubkey = offer.issuer_signing_pubkey().unwrap();
+		let tagged_hash = invoice.tagged_hash();
+		let signature = invoice.signature();
+		assert!(merkle::verify_signature(&signature, tagged_hash, issuer_sign_pubkey).is_ok());
 	}
 }
