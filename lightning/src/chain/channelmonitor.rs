@@ -531,7 +531,9 @@ enum OnchainEvent {
 	},
 	/// An output waiting on [`ANTI_REORG_DELAY`] confirmations before we hand the user the
 	/// [`SpendableOutputDescriptor`].
-	MaturingOutput { descriptor: SpendableOutputDescriptor },
+	MaturingOutput {
+		descriptor: SpendableOutputDescriptor,
+	},
 	/// A spend of the funding output, either a commitment transaction or a cooperative closing
 	/// transaction.
 	FundingSpendConfirmation {
@@ -572,6 +574,17 @@ enum OnchainEvent {
 	/// once [`ChannelMonitor::no_further_updates_allowed`] returns true. We promote the
 	/// `FundingScope` once the funding transaction is irrevocably confirmed.
 	AlternativeFundingConfirmation {},
+	// We've negotiated and locked (via a [`ChannelMonitorUpdateStep::RenegotiatedFundingLocked`]) a
+	// zero conf funding transcation. If confirmations were required, we'd remove all alternative
+	// funding transactions and their associated holder commitment transactions, as we assume they
+	// can no longer confirm. However, with zero conf funding transactions, we cannot guarantee
+	// this. Ultimately an alternative funding transaction could actually end up on chain, and we
+	// must still be able to claim our funds from it.
+	//
+	// This event will only be generated when a
+	// [`ChannelMonitorUpdateStep::RenegotiatedFundingLocked`] is applied for a zero conf funding
+	// transaction.
+	ZeroConfFundingReorgSafety {},
 }
 
 impl Writeable for OnchainEventEntry {
@@ -621,6 +634,7 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 		(0, on_local_output_csv, option),
 		(1, commitment_tx_to_counterparty_output, option),
 	},
+	(4, ZeroConfFundingReorgSafety) => {},
 	(5, HTLCSpendConfirmation) => {
 		(0, commitment_tx_output_idx, required),
 		(2, preimage, option),
@@ -1295,6 +1309,11 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	prev_holder_htlc_data: Option<CommitmentHTLCData>,
 
 	alternative_funding_confirmed: Option<(Txid, u32)>,
+
+	// If a funding transaction has been renegotiated for the channel and it requires zero
+	// confirmations to be considered locked, we wait for `ANTI_REORG_DELAY` confirmations until we
+	// no longer track alternative funding candidates.
+	wait_for_0conf_funding_reorg_safety: bool,
 }
 
 // Macro helper to access holder commitment HTLC data (including both non-dust and dust) while
@@ -1552,6 +1571,8 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			_ => self.pending_monitor_events.clone(),
 		};
 
+		let wait_for_0conf_funding_reorg_safety = self.wait_for_0conf_funding_reorg_safety.then(|| ());
+
 		write_tlv_fields!(writer, {
 			(1, self.funding_spend_confirmed, option),
 			(3, self.htlcs_resolved_on_chain, required_vec),
@@ -1571,6 +1592,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(31, self.funding.channel_parameters, required),
 			(32, self.pending_funding, optional_vec),
 			(34, self.alternative_funding_confirmed, option),
+			(36, wait_for_0conf_funding_reorg_safety, option),
 		});
 
 		Ok(())
@@ -1798,6 +1820,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			prev_holder_htlc_data: None,
 
 			alternative_funding_confirmed: None,
+			wait_for_0conf_funding_reorg_safety: false,
 		})
 	}
 
@@ -3419,6 +3442,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.update_holder_commitment_data(vec![holder_commitment_tx], htlc_data, claimed_htlcs)
 	}
 
+	// TODO(splicing): Consider `wait_for_0conf_funding_reorg_safety`.
 	fn verify_matching_commitment_transactions<
 		'a,
 		I: ExactSizeIterator<Item = &'a CommitmentTransaction>,
@@ -3795,14 +3819,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if let Some(parent_funding_txid) = channel_parameters.splice_parent_funding_txid.as_ref() {
 			// Only one splice can be negotiated at a time after we've exchanged `channel_ready`
 			// (implying our funding is confirmed) that spends our currently locked funding.
-			if !self.pending_funding.is_empty() {
+			if !self.pending_funding.is_empty() && !self.wait_for_0conf_funding_reorg_safety {
 				log_error!(
 					logger,
 					"Negotiated splice while channel is pending channel_ready/splice_locked"
 				);
 				return Err(());
 			}
-			if *parent_funding_txid != self.funding.funding_txid() {
+			if *parent_funding_txid != self.funding.funding_txid()
+				|| alternative_funding_outpoint.txid != self.funding.funding_txid()
+			{
 				log_error!(
 					logger,
 					"Negotiated splice that does not spend currently locked funding transaction"
@@ -3821,6 +3847,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			vec![(alternative_funding_outpoint.index as u32, script_pubkey)],
 		);
 		self.pending_funding.push(alternative_funding);
+
+		// FIXME: Wait for anything below `ANTI_REORG_DELAY`, not just zero conf?
+		if !self.wait_for_0conf_funding_reorg_safety {
+			self.wait_for_0conf_funding_reorg_safety = confirmation_depth == 0;
+		}
 
 		Ok(())
 	}
@@ -3841,11 +3872,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.funding.prev_holder_commitment_tx.clone(),
 		);
 
+		if self.wait_for_0conf_funding_reorg_safety {
+			return Ok(());
+		}
+
 		// The swap above places the previous `FundingScope` into `pending_funding`.
 		for funding in self.pending_funding.drain(..) {
 			self.outputs_to_watch.remove(&funding.funding_txid());
 		}
 		self.alternative_funding_confirmed.take();
+
+		// Make sure we're no longer waiting for zero conf funding reorg safety if a non-zero conf
+		// splice is negotiated and locked after a zero conf one.
+		self.wait_for_0conf_funding_reorg_safety = false;
 
 		Ok(())
 	}
@@ -4926,20 +4965,33 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 
-			// A splice/dual-funded RBF transaction has confirmed. We can't promote the
-			// `FundingScope` scope until we see the
+			// A splice/dual-funded RBF transaction has confirmed. If it's not zero conf, we can't
+			// promote the `FundingScope` scope until we see the
 			// [`ChannelMonitorUpdateStep::RenegotiatedFundingLocked`] for it, but we track the txid
 			// so we know which holder commitment transaction we may need to broadcast.
-			if let Some(alternative_funding) = self.pending_funding.iter()
+			if let Some((confirmed_funding, is_funding_locked)) = self
+				.pending_funding
+				.iter()
 				.find(|funding| funding.funding_txid() == txid)
+				.map(|funding| (funding, false))
+				.or_else(|| {
+					(self.funding.funding_txid() == txid).then(|| &self.funding)
+						.filter(|_| self.wait_for_0conf_funding_reorg_safety)
+						.map(|funding| (funding, true))
+				})
 			{
+				debug_assert!(self.alternative_funding_confirmed.is_none());
+				debug_assert!(
+					!self.onchain_events_awaiting_threshold_conf.iter()
+						.any(|e| matches!(e.event, OnchainEvent::AlternativeFundingConfirmation {}))
+				);
 				debug_assert!(self.funding_spend_confirmed.is_none());
 				debug_assert!(
 					!self.onchain_events_awaiting_threshold_conf.iter()
 						.any(|e| matches!(e.event, OnchainEvent::FundingSpendConfirmation { .. }))
 				);
 
-				let (desc, msg) = if alternative_funding.channel_parameters.splice_parent_funding_txid.is_some() {
+				let (desc, msg) = if confirmed_funding.is_splice() {
 					debug_assert!(tx.input.iter().any(|input| {
 						let funding_outpoint = self.funding.funding_outpoint().into_bitcoin_outpoint();
 						input.previous_output == funding_outpoint
@@ -4948,36 +5000,77 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				} else {
 					("RBF", "channel_ready")
 				};
-				let action = if self.no_further_updates_allowed() {
-					if self.holder_tx_signed {
-						", broadcasting post-splice holder commitment transaction".to_string()
-					} else {
-						"".to_string()
-					}
-				} else {
+				let action = if self.holder_tx_signed {
+					", broadcasting post-splice holder commitment transaction".to_string()
+				} else if !self.no_further_updates_allowed() && !is_funding_locked {
 					format!(", waiting for `{msg}` exchange")
+				} else {
+					"".to_string()
 				};
 				log_info!(logger, "{desc} for channel {} confirmed with txid {txid}{action}", self.channel_id());
 
-				self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-					txid,
-					transaction: Some((*tx).clone()),
-					height,
-					block_hash: Some(block_hash),
-					event: OnchainEvent::AlternativeFundingConfirmation {},
-				});
+				if is_funding_locked {
+					// We can only have already processed the
+					// [`ChannelMonitorUpdateStep::RenegotiatedFundingLocked`] if we're zero conf,
+					// but we still track the alternative funding transactions until we're no longer
+					// under reorg risk.
+					debug_assert!(self.wait_for_0conf_funding_reorg_safety);
 
-				if self.holder_tx_signed {
+					let event_entry = OnchainEventEntry {
+						txid,
+						transaction: Some((*tx).clone()),
+						height,
+						block_hash: Some(block_hash),
+						event: OnchainEvent::ZeroConfFundingReorgSafety {},
+					};
+
+					if let Some(event) = self.onchain_events_awaiting_threshold_conf
+						.iter_mut()
+						.find(|e| matches!(e.event, OnchainEvent::ZeroConfFundingReorgSafety {}))
+					{
+						// Since channels may chain multiple zero conf splices, we only want to track
+						// one event overall.
+						*event = event_entry;
+					} else {
+						self.onchain_events_awaiting_threshold_conf.push(event_entry);
+					}
+				} else {
+					debug_assert!(
+						!self.onchain_events_awaiting_threshold_conf.iter()
+							.any(|e| matches!(e.event, OnchainEvent::ZeroConfFundingReorgSafety {}))
+					);
+
+					self.alternative_funding_confirmed = Some((txid, height));
+
+					if self.no_further_updates_allowed() {
+						// We can no longer rely on
+						// [`ChannelMonitorUpdateStep::RenegotiatedFundingLocked`] to promote the
+						// scope, do so when the funding is no longer under reorg risk.
+						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
+							txid,
+							transaction: Some((*tx).clone()),
+							height,
+							block_hash: Some(block_hash),
+							event: OnchainEvent::AlternativeFundingConfirmation {},
+						});
+					}
+				}
+
+				// If we've previously broadcast a holder commitment, queue claims for the
+				// alternative holder commitment now that it is the only one that can confirm (until
+				// we see a reorg of its funding transaction). We also choose to broadcast if our
+				// intended funding transaction was locked with zero confirmations, but another
+				// funding transaction has now confirmed, since commitment updates were only made to
+				// the locked funding.
+				if self.holder_tx_signed ||
+					(self.wait_for_0conf_funding_reorg_safety && !is_funding_locked)
+				{
 					// Cancel any previous claims that are no longer valid as they stemmed from a
 					// different funding transaction.
 					let alternative_holder_commitment_txid =
-						alternative_funding.current_holder_commitment_tx.trust().txid();
+						confirmed_funding.current_holder_commitment_tx.trust().txid();
 					self.cancel_prev_commitment_claims(&logger, &alternative_holder_commitment_txid);
 
-					// Queue claims for the alternative holder commitment since it is the only one
-					// that can currently confirm so far (until we see a reorg of its funding
-					// transaction).
-					//
 					// It's possible we process a counterparty commitment within this same block
 					// that would invalidate our holder commitment. If we were to broadcast our
 					// holder commitment now, we wouldn't be able to cancel it via our usual
@@ -5202,6 +5295,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					debug_assert_ne!(self.funding.funding_txid(), entry.txid);
 					if let Err(_) = self.promote_funding(entry.txid) {
 						log_error!(logger, "Missing scope for alternative funding confirmation with txid {}", entry.txid);
+					}
+				},
+				OnchainEvent::ZeroConfFundingReorgSafety {} => {
+					if self.wait_for_0conf_funding_reorg_safety {
+						debug_assert_eq!(self.funding.funding_txid(), entry.txid);
+						debug_assert!(self.alternative_funding_confirmed.is_none());
+						self
+							.pending_funding
+							.drain(..)
+							.for_each(|funding| {
+								self.outputs_to_watch.remove(&funding.funding_txid());
+							});
+						self.wait_for_0conf_funding_reorg_safety = false;
+					} else {
+						debug_assert!(false, "These events can only be generated when wait_for_0conf_funding_reorg_safety is set");
 					}
 				},
 			}
@@ -6057,6 +6165,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut channel_parameters = None;
 		let mut pending_funding = None;
 		let mut alternative_funding_confirmed = None;
+		let mut wait_for_0conf_funding_reorg_safety: Option<()> = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6076,6 +6185,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(31, channel_parameters, (option: ReadableArgs, None)),
 			(32, pending_funding, optional_vec),
 			(34, alternative_funding_confirmed, option),
+			(36, wait_for_0conf_funding_reorg_safety, option),
 		});
 		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
 			if payment_preimages_with_info.len() != payment_preimages.len() {
@@ -6247,6 +6357,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			prev_holder_htlc_data,
 
 			alternative_funding_confirmed,
+			wait_for_0conf_funding_reorg_safety: wait_for_0conf_funding_reorg_safety.is_some(),
 		})))
 	}
 }
