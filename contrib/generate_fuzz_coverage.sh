@@ -1,15 +1,19 @@
 #!/bin/bash
-set -e
-set -x
+set -ex
 
 # Parse command line arguments
 OUTPUT_DIR="coverage-report"
+OUTPUT_CODECOV_JSON=0
 while [[ $# -gt 0 ]]; do
     case $1 in
         --output-dir)
             OUTPUT_DIR="$2"
             shift 2
             ;;
+		--output-codecov-json)
+			OUTPUT_CODECOV_JSON=1
+			shift 1
+			;;
         *)
             echo "Unknown option: $1"
             echo "Usage: $0 [--output-dir OUTPUT_DIRECTORY]"
@@ -54,34 +58,12 @@ mkdir -p "$OUTPUT_DIR"
 export RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz"
 
 # dont run this command when running in CI
-if [ "$CI" != "true" ] && [ "$GITHUB_ACTIONS" != "true" ]; then
+if [ "$OUTPUT_CODECOV_JSON" = "0" ]; then
     cargo llvm-cov --html --ignore-filename-regex "fuzz/" --output-dir "$OUTPUT_DIR"
-
-    # Check if coverage report was generated successfully
-    # The report is generated in $OUTPUT_DIR/html/index.html when using --html --output-dir
-    if [ ! -f "$OUTPUT_DIR/html/index.html" ]; then
-        echo "Error: Failed to generate coverage report at $OUTPUT_DIR/html/index.html"
-        echo "Contents of $OUTPUT_DIR:"
-        ls -la "$OUTPUT_DIR" || echo "Directory $OUTPUT_DIR does not exist"
-        if [ -d "$OUTPUT_DIR/html" ]; then
-            echo "Contents of $OUTPUT_DIR/html:"
-            ls -la "$OUTPUT_DIR/html"
-        fi
-        exit 1
-    fi
     echo "Coverage report generated in $OUTPUT_DIR/html/index.html"
-fi
-
-# Generate codecov JSON format if running in CI environment
-if [ "$CI" = "true" ] || [ "$GITHUB_ACTIONS" = "true" ]; then
-    echo "CI environment detected, generating codecov JSON format..."
+else
     cargo llvm-cov --codecov --ignore-filename-regex "fuzz/" --output-path "$OUTPUT_DIR/fuzz-codecov.json"
-    
-    if [ -f "$OUTPUT_DIR/fuzz-codecov.json" ] && [[ "$OUTPUT_DIR" == *"target/"* ]]; then
-        TARGET_DIR="../target"
-        cp "$OUTPUT_DIR/fuzz-codecov.json" "$TARGET_DIR/fuzz-codecov.json"
-        echo "Fuzz codecov report copied to $TARGET_DIR/fuzz-codecov.json"
-    fi
+    echo "Fuzz codecov report available at $OUTPUT_DIR/fuzz-codecov.json"
 fi
 
 
