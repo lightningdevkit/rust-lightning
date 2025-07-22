@@ -78,7 +78,7 @@ fn payment_metadata_end_to_end_for_invoice_with_amount() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], &send_event.commitment_msg, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	let mut events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -146,7 +146,7 @@ fn payment_metadata_end_to_end_for_invoice_with_no_amount() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], &send_event.commitment_msg, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	let mut events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);

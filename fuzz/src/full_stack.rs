@@ -640,7 +640,6 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	let mut loss_detector =
 		MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), peer_manager);
 
-	let mut should_forward = false;
 	let mut payments_received: Vec<PaymentHash> = Vec::new();
 	let mut intercepted_htlcs: Vec<InterceptId> = Vec::new();
 	let mut payments_sent: u16 = 0;
@@ -790,10 +789,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				}
 			},
 			7 => {
-				if should_forward {
-					channelmanager.process_pending_htlc_forwards();
-					should_forward = false;
-				}
+				channelmanager.process_pending_htlc_forwards();
 			},
 			8 => {
 				for payment in payments_received.drain(..) {
@@ -1008,9 +1004,6 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				Event::PaymentClaimable { payment_hash, .. } => {
 					//TODO: enhance by fetching random amounts from fuzz input?
 					payments_received.push(payment_hash);
-				},
-				Event::PendingHTLCsForwardable { .. } => {
-					should_forward = true;
 				},
 				Event::HTLCIntercepted { intercept_id, .. } => {
 					if !intercepted_htlcs.contains(&intercept_id) {

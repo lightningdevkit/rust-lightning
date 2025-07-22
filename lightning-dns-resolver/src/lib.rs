@@ -179,10 +179,7 @@ mod test {
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::logger::Logger;
 
-	use lightning::{
-		commitment_signed_dance, expect_payment_claimed, expect_pending_htlcs_forwardable,
-		get_htlc_update_msgs,
-	};
+	use lightning::{commitment_signed_dance, expect_payment_claimed, get_htlc_update_msgs};
 	use lightning_types::string::UntrustedString;
 
 	use std::ops::Deref;
@@ -427,7 +424,7 @@ mod test {
 		let updates = get_htlc_update_msgs!(nodes[0], payee_id);
 		nodes[1].node.handle_update_add_htlc(payer_id, &updates.update_add_htlcs[0]);
 		commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_and_process_pending_htlcs(&nodes[1], false);
 
 		let claimable_events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(claimable_events.len(), 1);

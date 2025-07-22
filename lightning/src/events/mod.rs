@@ -50,7 +50,6 @@ use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{OutPoint, Transaction};
 use core::ops::Deref;
-use core::time::Duration;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -1206,21 +1205,6 @@ pub enum Event {
 		/// with channels in the public network graph.
 		short_channel_id: Option<u64>,
 	},
-	/// Used to indicate that [`ChannelManager::process_pending_htlc_forwards`] should be called at
-	/// a time in the future.
-	///
-	/// # Failure Behavior and Persistence
-	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`) and will be regenerated after restarts.
-	///
-	/// [`ChannelManager::process_pending_htlc_forwards`]: crate::ln::channelmanager::ChannelManager::process_pending_htlc_forwards
-	PendingHTLCsForwardable {
-		/// The minimum amount of time that should be waited prior to calling
-		/// process_pending_htlc_forwards. To increase the effort required to correlate payments,
-		/// you should wait a random amount of time in roughly the range (now + time_forwardable,
-		/// now + 5*time_forwardable).
-		time_forwardable: Duration,
-	},
 	/// Used to indicate that we've intercepted an HTLC forward. This event will only be generated if
 	/// you've encoded an intercept scid in the receiver's invoice route hints using
 	/// [`ChannelManager::get_intercept_scid`] and have set [`UserConfig::accept_intercept_htlcs`].
@@ -1823,11 +1807,7 @@ impl Writeable for Event {
 					(15, *hold_times, optional_vec),
 				});
 			},
-			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
-				4u8.write(writer)?;
-				// Note that we now ignore these on the read end as we'll re-generate them in
-				// ChannelManager, we write them here only for backwards compatibility.
-			},
+			// 4u8 used to be `PendingHTLCsForwardable`
 			&Event::SpendableOutputs { ref outputs, channel_id } => {
 				5u8.write(writer)?;
 				write_tlv_fields!(writer, {

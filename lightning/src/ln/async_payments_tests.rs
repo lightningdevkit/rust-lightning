@@ -1153,7 +1153,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	// Fail the HTLC backwards to enable us to more easily modify the now-Retryable outbound to test
 	// failures on the recipient's end.
 	nodes[2].node.fail_htlc_backwards(&payment_hash);
-	expect_pending_htlcs_forwardable_conditions(
+	expect_htlc_failure_conditions(
 		nodes[2].node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash }],
 	);

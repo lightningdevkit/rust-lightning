@@ -141,7 +141,7 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 		get_event_msg!(local_node, MessageSendEvent::SendRevokeAndACK, remote_node_id);
 	remote_node.node.handle_revoke_and_ack(local_node_id, &last_revoke_and_ack);
 	check_added_monitors(remote_node, 1);
-	expect_pending_htlcs_forwardable!(remote_node);
+	expect_and_process_pending_htlcs(remote_node, false);
 	expect_htlc_handling_failed_destinations!(
 		remote_node.node.get_and_clear_pending_events(),
 		&[HTLCHandlingFailureType::Receive { payment_hash }]
@@ -387,7 +387,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	let update_add = get_htlc_update_msgs!(&nodes[0], node_id_1);
 	nodes[1].node.handle_update_add_htlc(node_id_0, &update_add.update_add_htlcs[0]);
 	commitment_signed_dance!(&nodes[1], &nodes[0], update_add.commitment_signed, false);
-	expect_pending_htlcs_forwardable!(&nodes[1]);
+	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_payment_claimable!(nodes[1], payment_hash2, payment_secret2, payment_amount);
 
 	// Have nodes[1] attempt to fail/claim nodes[0]'s payment. Since nodes[1] already sent out
@@ -395,7 +395,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	if fail_htlc {
 		nodes[1].node.fail_htlc_backwards(&payment_hash2);
 		let failed_payment = HTLCHandlingFailureType::Receive { payment_hash: payment_hash2 };
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[1], [failed_payment]);
+		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[failed_payment]);
 	} else {
 		nodes[1].node.claim_funds(payment_preimage2);
 		check_added_monitors(&nodes[1], 1);
@@ -428,8 +428,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 
 	// The payment from nodes[0] should now be seen as failed/successful.
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 3);
-	assert!(events.iter().find(|e| matches!(e, Event::PendingHTLCsForwardable { .. })).is_some());
+	assert_eq!(events.len(), 2);
 	if fail_htlc {
 		assert!(events.iter().find(|e| matches!(e, Event::PaymentFailed { .. })).is_some());
 		assert!(events.iter().find(|e| matches!(e, Event::PaymentPathFailed { .. })).is_some());
@@ -445,7 +444,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	if fail_htlc {
 		nodes[0].node.fail_htlc_backwards(&payment_hash1);
 		let failed_payment = HTLCHandlingFailureType::Receive { payment_hash: payment_hash1 };
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[0], [failed_payment]);
+		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[0], &[failed_payment]);
 	} else {
 		nodes[0].node.claim_funds(payment_preimage1);
 	}

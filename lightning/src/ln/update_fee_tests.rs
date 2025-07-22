@@ -136,13 +136,6 @@ pub fn test_async_inbound_update_fee() {
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_second_revoke);
 	check_added_monitors(&nodes[0], 1);
 
-	let events_2 = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events_2.len(), 1);
-	match events_2[0] {
-		Event::PendingHTLCsForwardable { .. } => {}, // If we actually processed we'd receive the payment
-		_ => panic!("Unexpected event"),
-	}
-
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_second_revoke); // deliver (6)
 	check_added_monitors(&nodes[1], 1);
 }
@@ -726,7 +719,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	check_added_monitors(&nodes[0], 1);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	expect_pending_htlcs_forwardable!(nodes[0]);
+	expect_and_process_pending_htlcs(&nodes[0], false);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -1136,12 +1129,7 @@ pub fn do_cannot_afford_on_holding_cell_release(
 		panic!();
 	}
 
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	assert!(matches!(events[0], Event::PendingHTLCsForwardable { .. }));
-
 	// Release the update_fee from its holding cell
-
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	if can_afford {
 		// We could afford the update_fee, sanity check everything

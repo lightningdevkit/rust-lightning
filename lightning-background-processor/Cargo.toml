@@ -25,6 +25,7 @@ bitcoin-io = { version = "0.1.2", default-features = false }
 lightning = { version = "0.2.0", path = "../lightning", default-features = false }
 lightning-rapid-gossip-sync = { version = "0.2.0", path = "../lightning-rapid-gossip-sync", default-features = false }
 lightning-liquidity = { version = "0.2.0", path = "../lightning-liquidity", default-features = false }
+possiblyrandom = { version = "0.2", path = "../possiblyrandom", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1.35", features = [ "macros", "rt", "rt-multi-thread", "sync", "time" ] }

@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 //! Utilities that take care of tasks that (1) need to happen periodically to keep Rust-Lightning
 //! running properly, and (2) either can or should be run in the background.
 #![cfg_attr(feature = "std", doc = "See docs for [`BackgroundProcessor`] for more details.")]
@@ -16,6 +25,10 @@ extern crate alloc;
 #[macro_use]
 extern crate lightning;
 extern crate lightning_rapid_gossip_sync;
+
+mod fwd_batch;
+
+use fwd_batch::BatchDelay;
 
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -101,59 +114,59 @@ pub struct BackgroundProcessor {
 }
 
 #[cfg(not(test))]
-const FRESHNESS_TIMER: u64 = 60;
+const FRESHNESS_TIMER: Duration = Duration::from_secs(60);
 #[cfg(test)]
-const FRESHNESS_TIMER: u64 = 1;
+const FRESHNESS_TIMER: Duration = Duration::from_secs(1);
 
 #[cfg(all(not(test), not(debug_assertions)))]
-const PING_TIMER: u64 = 10;
+const PING_TIMER: Duration = Duration::from_secs(10);
 /// Signature operations take a lot longer without compiler optimisations.
 /// Increasing the ping timer allows for this but slower devices will be disconnected if the
 /// timeout is reached.
 #[cfg(all(not(test), debug_assertions))]
-const PING_TIMER: u64 = 30;
+const PING_TIMER: Duration = Duration::from_secs(30);
 #[cfg(test)]
-const PING_TIMER: u64 = 1;
+const PING_TIMER: Duration = Duration::from_secs(1);
 
 #[cfg(not(test))]
-const ONION_MESSAGE_HANDLER_TIMER: u64 = 10;
+const ONION_MESSAGE_HANDLER_TIMER: Duration = Duration::from_secs(10);
 #[cfg(test)]
-const ONION_MESSAGE_HANDLER_TIMER: u64 = 1;
+const ONION_MESSAGE_HANDLER_TIMER: Duration = Duration::from_secs(1);
 
 /// Prune the network graph of stale entries hourly.
-const NETWORK_PRUNE_TIMER: u64 = 60 * 60;
+const NETWORK_PRUNE_TIMER: Duration = Duration::from_secs(60 * 60);
 
 #[cfg(not(test))]
-const SCORER_PERSIST_TIMER: u64 = 60 * 5;
+const SCORER_PERSIST_TIMER: Duration = Duration::from_secs(60 * 5);
 #[cfg(test)]
-const SCORER_PERSIST_TIMER: u64 = 1;
+const SCORER_PERSIST_TIMER: Duration = Duration::from_secs(1);
 
 #[cfg(not(test))]
-const FIRST_NETWORK_PRUNE_TIMER: u64 = 60;
+const FIRST_NETWORK_PRUNE_TIMER: Duration = Duration::from_secs(60);
 #[cfg(test)]
-const FIRST_NETWORK_PRUNE_TIMER: u64 = 1;
+const FIRST_NETWORK_PRUNE_TIMER: Duration = Duration::from_secs(1);
 
 #[cfg(not(test))]
-const REBROADCAST_TIMER: u64 = 30;
+const REBROADCAST_TIMER: Duration = Duration::from_secs(30);
 #[cfg(test)]
-const REBROADCAST_TIMER: u64 = 1;
+const REBROADCAST_TIMER: Duration = Duration::from_secs(1);
 
 #[cfg(not(test))]
-const SWEEPER_TIMER: u64 = 30;
+const SWEEPER_TIMER: Duration = Duration::from_secs(30);
 #[cfg(test)]
-const SWEEPER_TIMER: u64 = 1;
+const SWEEPER_TIMER: Duration = Duration::from_secs(1);
 
 /// core::cmp::min is not currently const, so we define a trivial (and equivalent) replacement
-const fn min_u64(a: u64, b: u64) -> u64 {
-	if a < b {
+const fn min_duration(a: Duration, b: Duration) -> Duration {
+	if a.as_nanos() < b.as_nanos() {
 		a
 	} else {
 		b
 	}
 }
-const FASTEST_TIMER: u64 = min_u64(
-	min_u64(FRESHNESS_TIMER, PING_TIMER),
-	min_u64(SCORER_PERSIST_TIMER, min_u64(FIRST_NETWORK_PRUNE_TIMER, REBROADCAST_TIMER)),
+const FASTEST_TIMER: Duration = min_duration(
+	min_duration(FRESHNESS_TIMER, PING_TIMER),
+	min_duration(SCORER_PERSIST_TIMER, min_duration(FIRST_NETWORK_PRUNE_TIMER, REBROADCAST_TIMER)),
 );
 
 /// Either [`P2PGossipSync`] or [`RapidGossipSync`].
@@ -319,7 +332,7 @@ macro_rules! define_run_body {
 		$peer_manager: ident, $gossip_sync: ident,
 		$process_sweeper: expr,
 		$logger: ident, $scorer: ident, $loop_exit_check: expr, $await: expr, $get_timer: expr,
-		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr,
+		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr, $batch_delay: expr,
 	) => { {
 		log_trace!($logger, "Calling ChannelManager's timer_tick_occurred on startup");
 		$channel_manager.get_cm().timer_tick_occurred();
@@ -335,6 +348,9 @@ macro_rules! define_run_body {
 		let mut last_sweeper_call = $get_timer(SWEEPER_TIMER);
 		let mut have_pruned = false;
 		let mut have_decayed_scorer = false;
+
+		let mut cur_batch_delay = $batch_delay.get();
+		let mut last_forwards_processing_call = $get_timer(cur_batch_delay);
 
 		loop {
 			$process_channel_manager_events;
@@ -360,12 +376,25 @@ macro_rules! define_run_body {
 				break;
 			}
 
+			if $timer_elapsed(&mut last_forwards_processing_call, cur_batch_delay) {
+				$channel_manager.get_cm().process_pending_htlc_forwards();
+				cur_batch_delay = $batch_delay.next();
+				last_forwards_processing_call = $get_timer(cur_batch_delay);
+			}
+
+			// Checke whether to exit the loop again, as some time might have passed since we
+			// checked above.
+			if $loop_exit_check {
+				log_trace!($logger, "Terminating background processor.");
+				break;
+			}
+
 			// We wait up to 100ms, but track how long it takes to detect being put to sleep,
 			// see `await_start`'s use below.
 			let mut await_start = None;
-			if $check_slow_await { await_start = Some($get_timer(1)); }
+			if $check_slow_await { await_start = Some($get_timer(Duration::from_secs(1))); }
 			$await;
-			let await_slow = if $check_slow_await { $timer_elapsed(&mut await_start.unwrap(), 1) } else { false };
+			let await_slow = if $check_slow_await { $timer_elapsed(&mut await_start.unwrap(), Duration::from_secs(1)) } else { false };
 
 			// Exit the loop if the background processor was requested to stop.
 			if $loop_exit_check {
@@ -514,12 +543,14 @@ pub(crate) mod futures_util {
 		C: Future<Output = ()> + Unpin,
 		D: Future<Output = ()> + Unpin,
 		E: Future<Output = bool> + Unpin,
+		F: Future<Output = bool> + Unpin,
 	> {
 		pub a: A,
 		pub b: B,
 		pub c: C,
 		pub d: D,
 		pub e: E,
+		pub f: F,
 	}
 
 	pub(crate) enum SelectorOutput {
@@ -528,6 +559,7 @@ pub(crate) mod futures_util {
 		C,
 		D,
 		E(bool),
+		F(bool),
 	}
 
 	impl<
@@ -536,7 +568,8 @@ pub(crate) mod futures_util {
 			C: Future<Output = ()> + Unpin,
 			D: Future<Output = ()> + Unpin,
 			E: Future<Output = bool> + Unpin,
-		> Future for Selector<A, B, C, D, E>
+			F: Future<Output = bool> + Unpin,
+		> Future for Selector<A, B, C, D, E, F>
 	{
 		type Output = SelectorOutput;
 		fn poll(
@@ -569,6 +602,12 @@ pub(crate) mod futures_util {
 			match Pin::new(&mut self.e).poll(ctx) {
 				Poll::Ready(res) => {
 					return Poll::Ready(SelectorOutput::E(res));
+				},
+				Poll::Pending => {},
+			}
+			match Pin::new(&mut self.f).poll(ctx) {
+				Poll::Ready(res) => {
+					return Poll::Ready(SelectorOutput::F(res));
 				},
 				Poll::Pending => {},
 			}
@@ -854,6 +893,7 @@ where
 			event_handler(event).await
 		})
 	};
+	let mut batch_delay = BatchDelay::new();
 	define_run_body!(
 		persister,
 		chain_monitor,
@@ -892,10 +932,15 @@ where
 				b: chain_monitor.get_update_future(),
 				c: om_fut,
 				d: lm_fut,
-				e: sleeper(if mobile_interruptable_platform {
+				e: sleeper(if channel_manager.get_cm().needs_pending_htlc_processing() {
+					batch_delay.get()
+				} else {
+					Duration::MAX
+				}),
+				f: sleeper(if mobile_interruptable_platform {
 					Duration::from_millis(100)
 				} else {
-					Duration::from_secs(FASTEST_TIMER)
+					FASTEST_TIMER
 				}),
 			};
 			match fut.await {
@@ -903,9 +948,12 @@ where
 				SelectorOutput::E(exit) => {
 					should_break = exit;
 				},
+				SelectorOutput::F(exit) => {
+					should_break = exit;
+				},
 			}
 		},
-		|t| sleeper(Duration::from_secs(t)),
+		|t| sleeper(t),
 		|fut: &mut SleepFuture, _| {
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
@@ -919,6 +967,7 @@ where
 		},
 		mobile_interruptable_platform,
 		fetch_time,
+		batch_delay,
 	)
 }
 
@@ -1042,6 +1091,7 @@ impl BackgroundProcessor {
 				}
 				event_handler.handle_event(event)
 			};
+			let mut batch_delay = BatchDelay::new();
 			define_run_body!(
 				persister,
 				chain_monitor,
@@ -1085,10 +1135,16 @@ impl BackgroundProcessor {
 							&chain_monitor.get_update_future(),
 						),
 					};
-					sleeper.wait_timeout(Duration::from_millis(100));
+					let batch_delay = if channel_manager.get_cm().needs_pending_htlc_processing() {
+						batch_delay.get()
+					} else {
+						Duration::MAX
+					};
+					let fastest_timeout = batch_delay.min(Duration::from_millis(100));
+					sleeper.wait_timeout(fastest_timeout);
 				},
 				|_| Instant::now(),
-				|time: &Instant, dur| time.elapsed().as_secs() > dur,
+				|time: &Instant, dur| time.elapsed() > dur,
 				false,
 				|| {
 					use std::time::SystemTime;
@@ -1098,6 +1154,7 @@ impl BackgroundProcessor {
 							.expect("Time should be sometime after 1970"),
 					)
 				},
+				batch_delay,
 			)
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
@@ -1206,7 +1263,8 @@ mod tests {
 	use std::time::Duration;
 	use std::{env, fs};
 
-	const EVENT_DEADLINE: u64 = 5 * FRESHNESS_TIMER;
+	const EVENT_DEADLINE: Duration =
+		Duration::from_millis(5 * (FRESHNESS_TIMER.as_millis() as u64));
 
 	#[derive(Clone, Hash, PartialEq, Eq)]
 	struct TestDescriptor {}
@@ -2244,7 +2302,7 @@ mod tests {
 		// Open a channel and check that the FundingGenerationReady event was handled.
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
 		let (temporary_channel_id, funding_tx) = funding_generation_recv
-			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
+			.recv_timeout(EVENT_DEADLINE)
 			.expect("FundingGenerationReady not handled within deadline");
 		nodes[0]
 			.node
@@ -2256,7 +2314,7 @@ mod tests {
 		let msg_1 = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, node_0_id);
 		nodes[0].node.handle_funding_signed(node_1_id, &msg_1);
 		channel_pending_recv
-			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
+			.recv_timeout(EVENT_DEADLINE)
 			.expect("ChannelPending not handled within deadline");
 
 		// Confirm the funding transaction.
@@ -2318,9 +2376,8 @@ mod tests {
 		let commitment_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
 		confirm_transaction_depth(&mut nodes[0], &commitment_tx, BREAKDOWN_TIMEOUT as u32);
 
-		let event = receiver
-			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
-			.expect("Events not handled within deadline");
+		let event =
+			receiver.recv_timeout(EVENT_DEADLINE).expect("Events not handled within deadline");
 		match event {
 			Event::SpendableOutputs { outputs, channel_id } => {
 				nodes[0]
@@ -2472,8 +2529,8 @@ mod tests {
 
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
 		assert_eq!(
-			first_event_recv.recv_timeout(Duration::from_secs(EVENT_DEADLINE)).unwrap(),
-			second_event_recv.recv_timeout(Duration::from_secs(EVENT_DEADLINE)).unwrap()
+			first_event_recv.recv_timeout(EVENT_DEADLINE).unwrap(),
+			second_event_recv.recv_timeout(EVENT_DEADLINE).unwrap()
 		);
 
 		if !std::thread::panicking() {
@@ -2601,7 +2658,7 @@ mod tests {
 
 		do_test_not_pruning_network_graph_until_graph_sync_completion!(
 			nodes,
-			receiver.recv_timeout(Duration::from_secs(super::FIRST_NETWORK_PRUNE_TIMER * 5)),
+			receiver.recv_timeout(super::FIRST_NETWORK_PRUNE_TIMER * 5),
 			std::thread::sleep(Duration::from_millis(1))
 		);
 
@@ -2650,8 +2707,7 @@ mod tests {
 				{
 					let mut i = 0;
 					loop {
-						tokio::time::sleep(Duration::from_secs(super::FIRST_NETWORK_PRUNE_TIMER))
-							.await;
+						tokio::time::sleep(super::FIRST_NETWORK_PRUNE_TIMER).await;
 						if let Ok(()) = receiver.try_recv() {
 							break Ok::<(), ()>(());
 						}
@@ -2799,10 +2855,7 @@ mod tests {
 			Some(Arc::clone(&nodes[0].scorer)),
 		);
 
-		do_test_payment_path_scoring!(
-			nodes,
-			receiver.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
-		);
+		do_test_payment_path_scoring!(nodes, receiver.recv_timeout(EVENT_DEADLINE));
 
 		if !std::thread::panicking() {
 			bg_processor.stop().unwrap();

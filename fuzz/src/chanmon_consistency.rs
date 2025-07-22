@@ -86,7 +86,7 @@ use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey}
 use lightning::util::dyn_signer::DynSigner;
 
 use std::cell::RefCell;
-use std::cmp::{self, Ordering};
+use std::cmp;
 use std::mem;
 use std::sync::atomic;
 use std::sync::{Arc, Mutex};
@@ -1309,28 +1309,6 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				// deduplicate the calls here.
 				let mut claim_set = new_hash_map();
 				let mut events = nodes[$node].get_and_clear_pending_events();
-				// Sort events so that PendingHTLCsForwardable get processed last. This avoids a
-				// case where we first process a PendingHTLCsForwardable, then claim/fail on a
-				// PaymentClaimable, claiming/failing two HTLCs, but leaving a just-generated
-				// PaymentClaimable event for the second HTLC in our pending_events (and breaking
-				// our claim_set deduplication).
-				events.sort_by(|a, b| {
-					if let events::Event::PaymentClaimable { .. } = a {
-						if let events::Event::PendingHTLCsForwardable { .. } = b {
-							Ordering::Less
-						} else {
-							Ordering::Equal
-						}
-					} else if let events::Event::PendingHTLCsForwardable { .. } = a {
-						if let events::Event::PaymentClaimable { .. } = b {
-							Ordering::Greater
-						} else {
-							Ordering::Equal
-						}
-					} else {
-						Ordering::Equal
-					}
-				});
 				let had_events = !events.is_empty();
 				for event in events.drain(..) {
 					match event {
@@ -1357,9 +1335,6 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						},
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
 						events::Event::ChannelReady { .. } => {},
-						events::Event::PendingHTLCsForwardable { .. } => {
-							nodes[$node].process_pending_htlc_forwards();
-						},
 						events::Event::HTLCHandlingFailed { .. } => {},
 						_ => {
 							if out.may_fail.load(atomic::Ordering::Acquire) {
@@ -1369,6 +1344,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							}
 						},
 					}
+				}
+				while nodes[$node].needs_pending_htlc_processing() {
+					nodes[$node].process_pending_htlc_forwards();
 				}
 				had_events
 			}};
@@ -1811,8 +1789,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 								last_pass_no_updates = false;
 								continue;
 							}
-							// ...making sure any pending PendingHTLCsForwardable events are handled and
-							// payments claimed.
+							// ...making sure any payments are claimed.
 							if process_events!(0, false) {
 								last_pass_no_updates = false;
 								continue;
