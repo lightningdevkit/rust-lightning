@@ -1600,24 +1600,22 @@ where
 
 pub(super) enum HandleTxCompleteValue {
 	SendTxMessage(InteractiveTxMessageSend),
-	SendTxComplete(InteractiveTxMessageSend, InteractiveTxSigningSession),
-	NegotiationComplete(InteractiveTxSigningSession),
+	SendTxComplete(InteractiveTxMessageSend, bool),
+	NegotiationComplete,
 }
 
 impl HandleTxCompleteValue {
-	pub fn into_msg_send_event_or_signing_session(
+	pub fn into_msg_send_event(
 		self, counterparty_node_id: PublicKey,
-	) -> (Option<MessageSendEvent>, Option<InteractiveTxSigningSession>) {
+	) -> (Option<MessageSendEvent>, bool) {
 		match self {
 			HandleTxCompleteValue::SendTxMessage(msg) => {
-				(Some(msg.into_msg_send_event(counterparty_node_id)), None)
+				(Some(msg.into_msg_send_event(counterparty_node_id)), false)
 			},
-			HandleTxCompleteValue::SendTxComplete(msg, signing_session) => {
-				(Some(msg.into_msg_send_event(counterparty_node_id)), Some(signing_session))
+			HandleTxCompleteValue::SendTxComplete(msg, negotiation_complete) => {
+				(Some(msg.into_msg_send_event(counterparty_node_id)), negotiation_complete)
 			},
-			HandleTxCompleteValue::NegotiationComplete(signing_session) => {
-				(None, Some(signing_session))
-			},
+			HandleTxCompleteValue::NegotiationComplete => (None, true),
 		}
 	}
 }
@@ -1625,19 +1623,19 @@ impl HandleTxCompleteValue {
 pub(super) struct HandleTxCompleteResult(pub Result<HandleTxCompleteValue, msgs::TxAbort>);
 
 impl HandleTxCompleteResult {
-	pub fn into_msg_send_event_or_signing_session(
+	pub fn into_msg_send_event(
 		self, counterparty_node_id: PublicKey,
-	) -> (Option<MessageSendEvent>, Option<InteractiveTxSigningSession>) {
+	) -> (Option<MessageSendEvent>, bool) {
 		match self.0 {
 			Ok(interactive_tx_msg_send) => {
-				interactive_tx_msg_send.into_msg_send_event_or_signing_session(counterparty_node_id)
+				interactive_tx_msg_send.into_msg_send_event(counterparty_node_id)
 			},
 			Err(tx_abort_msg) => (
 				Some(MessageSendEvent::SendTxAbort {
 					node_id: counterparty_node_id,
 					msg: tx_abort_msg,
 				}),
-				None,
+				false,
 			),
 		}
 	}
@@ -1835,8 +1833,8 @@ impl InteractiveTxConstructor {
 			StateMachine::ReceivedTxComplete(_) => {
 				let msg_send = self.maybe_send_message()?;
 				match &self.state_machine {
-					StateMachine::NegotiationComplete(s) => {
-						Ok(HandleTxCompleteValue::SendTxComplete(msg_send, s.0.clone()))
+					StateMachine::NegotiationComplete(_) => {
+						Ok(HandleTxCompleteValue::SendTxComplete(msg_send, true))
 					},
 					StateMachine::SentChangeMsg(_) => {
 						Ok(HandleTxCompleteValue::SendTxMessage(msg_send))
@@ -1847,9 +1845,7 @@ impl InteractiveTxConstructor {
 					},
 				}
 			},
-			StateMachine::NegotiationComplete(s) => {
-				Ok(HandleTxCompleteValue::NegotiationComplete(s.0.clone()))
-			},
+			StateMachine::NegotiationComplete(_) => Ok(HandleTxCompleteValue::NegotiationComplete),
 			_ => {
 				debug_assert!(
 					false,
@@ -1857,6 +1853,13 @@ impl InteractiveTxConstructor {
 				);
 				Err(AbortReason::InvalidStateTransition)
 			},
+		}
+	}
+
+	pub fn into_signing_session(self) -> InteractiveTxSigningSession {
+		match self.state_machine {
+			StateMachine::NegotiationComplete(s) => s.0,
+			_ => panic!("Signing session is not ready yet"),
 		}
 	}
 }
@@ -2082,7 +2085,7 @@ mod tests {
 			),
 			outputs_to_contribute: session.outputs_a,
 		}) {
-			Ok(r) => r,
+			Ok(r) => Some(r),
 			Err(abort_reason) => {
 				assert_eq!(
 					Some((abort_reason, ErrorCulprit::NodeA)),
@@ -2119,7 +2122,7 @@ mod tests {
 			),
 			outputs_to_contribute: session.outputs_b,
 		}) {
-			Ok(r) => r,
+			Ok(r) => Some(r),
 			Err(abort_reason) => {
 				assert_eq!(
 					Some((abort_reason, ErrorCulprit::NodeB)),
@@ -2136,35 +2139,44 @@ mod tests {
 				match msg {
 					InteractiveTxMessageSend::TxAddInput(msg) => for_constructor
 						.handle_tx_add_input(&msg)
-						.map(|msg_send| (Some(msg_send), None)),
+						.map(|msg_send| (Some(msg_send), false)),
 					InteractiveTxMessageSend::TxAddOutput(msg) => for_constructor
 						.handle_tx_add_output(&msg)
-						.map(|msg_send| (Some(msg_send), None)),
+						.map(|msg_send| (Some(msg_send), false)),
 					InteractiveTxMessageSend::TxComplete(msg) => {
 						for_constructor.handle_tx_complete(&msg).map(|value| match value {
 							HandleTxCompleteValue::SendTxMessage(msg_send) => {
-								(Some(msg_send), None)
+								(Some(msg_send), false)
 							},
-							HandleTxCompleteValue::SendTxComplete(msg_send, tx) => {
-								(Some(msg_send), Some(tx))
-							},
-							HandleTxCompleteValue::NegotiationComplete(tx) => (None, Some(tx)),
+							HandleTxCompleteValue::SendTxComplete(
+								msg_send,
+								negotiation_complete,
+							) => (Some(msg_send), negotiation_complete),
+							HandleTxCompleteValue::NegotiationComplete => (None, true),
 						})
 					},
 				}
 			};
 
-		let mut message_send_a = constructor_a.take_initiator_first_message();
+		let mut message_send_a = constructor_a.as_mut().unwrap().take_initiator_first_message();
 		let mut message_send_b = None;
 		let mut final_tx_a = None;
 		let mut final_tx_b = None;
-		while final_tx_a.is_none() || final_tx_b.is_none() {
+		while constructor_a.is_some() || constructor_b.is_some() {
 			if let Some(message_send_a) = message_send_a.take() {
-				match handle_message_send(message_send_a, &mut constructor_b) {
-					Ok((msg_send, interactive_signing_session)) => {
+				match handle_message_send(message_send_a, constructor_b.as_mut().unwrap()) {
+					Ok((msg_send, negotiation_complete)) => {
 						message_send_b = msg_send;
-						final_tx_b = interactive_signing_session
-							.map(|session| session.unsigned_tx.compute_txid());
+						if negotiation_complete {
+							final_tx_b = Some(
+								constructor_b
+									.take()
+									.unwrap()
+									.into_signing_session()
+									.unsigned_tx
+									.compute_txid(),
+							);
+						}
 					},
 					Err(abort_reason) => {
 						let error_culprit = match abort_reason {
@@ -2185,11 +2197,19 @@ mod tests {
 				}
 			}
 			if let Some(message_send_b) = message_send_b.take() {
-				match handle_message_send(message_send_b, &mut constructor_a) {
-					Ok((msg_send, interactive_signing_session)) => {
+				match handle_message_send(message_send_b, constructor_a.as_mut().unwrap()) {
+					Ok((msg_send, negotiation_complete)) => {
 						message_send_a = msg_send;
-						final_tx_a = interactive_signing_session
-							.map(|session| session.unsigned_tx.compute_txid());
+						if negotiation_complete {
+							final_tx_a = Some(
+								constructor_a
+									.take()
+									.unwrap()
+									.into_signing_session()
+									.unsigned_tx
+									.compute_txid(),
+							);
+						}
 					},
 					Err(abort_reason) => {
 						let error_culprit = match abort_reason {

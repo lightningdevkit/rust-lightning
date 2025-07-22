@@ -66,6 +66,7 @@ use crate::ln::channel::{
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::inbound_payment;
+use crate::ln::interactivetxs::{HandleTxCompleteResult, InteractiveTxMessageSendResult};
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError,
@@ -9590,28 +9591,29 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	#[rustfmt::skip]
-	fn internal_tx_msg<HandleTxMsgFn: Fn(&mut Channel<SP>) -> Result<MessageSendEvent, &'static str>>(
-		&self, counterparty_node_id: &PublicKey, channel_id: ChannelId, tx_msg_handler: HandleTxMsgFn
+	fn internal_tx_msg<HandleTxMsgFn: Fn(&mut Channel<SP>) -> Option<MessageSendEvent>>(
+		&self, counterparty_node_id: &PublicKey, channel_id: ChannelId,
+		tx_msg_handler: HandleTxMsgFn,
 	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
-					channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::send_err_msg_no_close(
+				format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
+				channel_id,
+			)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let channel = chan_entry.get_mut();
 				let msg_send_event = match tx_msg_handler(channel) {
-					Ok(msg_send_event) => msg_send_event,
-					Err(tx_msg_str) =>  return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
-						format!("Got a {tx_msg_str} message with no interactive transaction construction expected or in-progress")
-					), channel_id)),
+					Some(msg_send_event) => msg_send_event,
+					None => {
+						let err = ChannelError::Warn("Received unexpected interactive transaction negotiation message".to_owned());
+						return Err(MsgHandleErrInternal::from_chan_no_close(err, channel_id))
+					},
 				};
 				peer_state.pending_msg_events.push(msg_send_event);
 				Ok(())
@@ -9629,12 +9631,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => {
-					Ok(unfunded_channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id))
-				},
-				None => Err("tx_add_input"),
-			}
+			Some(
+				InteractiveTxMessageSendResult(
+					channel
+						.interactive_tx_constructor_mut()?
+						.handle_tx_add_input(msg)
+						.map_err(|reason| reason.into_tx_abort_msg(msg.channel_id)),
+				)
+				.into_msg_send_event(counterparty_node_id),
+			)
 		})
 	}
 
@@ -9642,15 +9647,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => {
-					let msg_send_event = unfunded_channel
-						.tx_add_output(msg)
-						.into_msg_send_event(counterparty_node_id);
-					Ok(msg_send_event)
-				},
-				None => Err("tx_add_output"),
-			}
+			Some(
+				InteractiveTxMessageSendResult(
+					channel
+						.interactive_tx_constructor_mut()?
+						.handle_tx_add_output(msg)
+						.map_err(|reason| reason.into_tx_abort_msg(msg.channel_id)),
+				)
+				.into_msg_send_event(counterparty_node_id),
+			)
 		})
 	}
 
@@ -9658,15 +9663,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => {
-					let msg_send_event = unfunded_channel
-						.tx_remove_input(msg)
-						.into_msg_send_event(counterparty_node_id);
-					Ok(msg_send_event)
-				},
-				None => Err("tx_remove_input"),
-			}
+			Some(
+				InteractiveTxMessageSendResult(
+					channel
+						.interactive_tx_constructor_mut()?
+						.handle_tx_remove_input(msg)
+						.map_err(|reason| reason.into_tx_abort_msg(msg.channel_id)),
+				)
+				.into_msg_send_event(counterparty_node_id),
+			)
 		})
 	}
 
@@ -9674,15 +9679,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => {
-					let msg_send_event = unfunded_channel
-						.tx_remove_output(msg)
-						.into_msg_send_event(counterparty_node_id);
-					Ok(msg_send_event)
-				},
-				None => Err("tx_remove_output"),
-			}
+			Some(
+				InteractiveTxMessageSendResult(
+					channel
+						.interactive_tx_constructor_mut()?
+						.handle_tx_remove_output(msg)
+						.map_err(|reason| reason.into_tx_abort_msg(msg.channel_id)),
+				)
+				.into_msg_send_event(counterparty_node_id),
+			)
 		})
 	}
 
@@ -9700,23 +9705,27 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				let (msg_send_event_opt, signing_session_opt) = match chan_entry.get_mut().as_unfunded_v2_mut() {
-					Some(chan) => chan.tx_complete(msg)
-						.into_msg_send_event_or_signing_session(counterparty_node_id),
+				let (msg_send_event_opt, negotiation_complete) = match chan_entry.get_mut().interactive_tx_constructor_mut() {
+					Some(interactive_tx_constructor) => {
+						HandleTxCompleteResult(
+							interactive_tx_constructor
+								.handle_tx_complete(msg)
+								.map_err(|reason| reason.into_tx_abort_msg(msg.channel_id)),
+						)
+						.into_msg_send_event(counterparty_node_id)
+					},
 					None => {
-						let msg = "Got a tx_complete message with no interactive transaction construction expected or in-progress";
-						let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-						let err = ChannelError::Close((msg.to_owned(), reason));
-						try_channel_entry!(self, peer_state, Err(err), chan_entry)
+						let err = ChannelError::Warn("Received unexpected tx_complete message".to_owned());
+						return Err(MsgHandleErrInternal::from_chan_no_close(err, msg.channel_id))
 					},
 				};
 				if let Some(msg_send_event) = msg_send_event_opt {
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
-				if let Some(signing_session) = signing_session_opt {
+				if negotiation_complete {
 					let (commitment_signed, funding_ready_for_sig_event_opt) = chan_entry
 						.get_mut()
-						.funding_tx_constructed(signing_session, &self.logger)
+						.funding_tx_constructed(&self.logger)
 						.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
 					if let Some(funding_ready_for_sig_event) = funding_ready_for_sig_event_opt {
 						let mut pending_events = self.pending_events.lock().unwrap();

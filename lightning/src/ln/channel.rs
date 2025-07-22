@@ -58,9 +58,8 @@ use crate::ln::channelmanager::{
 #[cfg(splicing)]
 use crate::ln::interactivetxs::{calculate_change_output_value, AbortReason};
 use crate::ln::interactivetxs::{
-	get_output_weight, HandleTxCompleteResult, InteractiveTxConstructor,
-	InteractiveTxConstructorArgs, InteractiveTxMessageSendResult, InteractiveTxSigningSession,
-	SharedOwnedInput, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
+	get_output_weight, InteractiveTxConstructor, InteractiveTxConstructorArgs,
+	InteractiveTxSigningSession, SharedOwnedInput, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
@@ -1728,6 +1727,15 @@ where
 		}
 	}
 
+	pub fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
+		match &mut self.phase {
+			ChannelPhase::UnfundedV2(chan) => chan.interactive_tx_constructor.as_mut(),
+			#[cfg(splicing)]
+			ChannelPhase::Funded(chan) => chan.interactive_tx_constructor_mut(),
+			_ => None,
+		}
+	}
+
 	#[rustfmt::skip]
 	pub fn funding_signed<L: Deref>(
 		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
@@ -1761,16 +1769,71 @@ where
 	}
 
 	pub fn funding_tx_constructed<L: Deref>(
-		&mut self, signing_session: InteractiveTxSigningSession, logger: &L,
+		&mut self, logger: &L,
 	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
 	where
 		L::Target: Logger,
 	{
-		if let ChannelPhase::UnfundedV2(chan) = &mut self.phase {
-			let logger = WithChannelContext::from(logger, &chan.context, None);
-			chan.funding_tx_constructed(signing_session, &&logger)
-		} else {
-			Err(ChannelError::Warn("Got a tx_complete message with no interactive transaction construction expected or in-progress".to_owned()))
+		let logger = WithChannelContext::from(logger, self.context(), None);
+		match &mut self.phase {
+			ChannelPhase::UnfundedV2(chan) => {
+				let mut signing_session = chan
+					.interactive_tx_constructor
+					.take()
+					.expect("PendingV2Channel::interactive_tx_constructor should be set")
+					.into_signing_session();
+				let (commitment_signed, event) = chan.context.funding_tx_constructed(
+					&mut chan.funding,
+					&mut signing_session,
+					false,
+					chan.unfunded_context.transaction_number(),
+					&&logger,
+				)?;
+
+				chan.interactive_tx_signing_session = Some(signing_session);
+
+				return Ok((commitment_signed, event));
+			},
+			#[cfg(splicing)]
+			ChannelPhase::Funded(chan) => {
+				if let Some(pending_splice) = chan.pending_splice.as_mut() {
+					if let Some(funding_negotiation) = pending_splice.funding_negotiation.take() {
+						if let FundingNegotiation::ConstructingTransaction(
+							mut funding,
+							interactive_tx_constructor,
+						) = funding_negotiation
+						{
+							let mut signing_session =
+								interactive_tx_constructor.into_signing_session();
+							let (commitment_signed, event) = chan.context.funding_tx_constructed(
+								&mut funding,
+								&mut signing_session,
+								true,
+								chan.holder_commitment_point.transaction_number(),
+								&&logger,
+							)?;
+
+							chan.interactive_tx_signing_session = Some(signing_session);
+							pending_splice.funding_negotiation =
+								Some(FundingNegotiation::AwaitingSignatures(funding));
+
+							return Ok((commitment_signed, event));
+						} else {
+							// Replace the taken state
+							pending_splice.funding_negotiation = Some(funding_negotiation);
+						}
+					}
+				}
+
+				return Err(ChannelError::Warn(
+					"Got a tx_complete message in an invalid state".to_owned(),
+				));
+			},
+			_ => {
+				return Err(ChannelError::Warn(
+					"Got a tx_complete message in an invalid phase".to_owned(),
+				))
+			},
 		}
 	}
 
@@ -2771,170 +2834,6 @@ where
 				)
 			},
 		)
-	}
-}
-
-impl<SP: Deref> PendingV2Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
-	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor
-				.handle_tx_add_input(msg)
-				.map_err(|reason| reason.into_tx_abort_msg(self.context.channel_id())),
-			None => Err(msgs::TxAbort {
-				channel_id: self.context.channel_id(),
-				data: b"No interactive transaction negotiation in progress".to_vec(),
-			}),
-		})
-	}
-
-	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput) -> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor
-				.handle_tx_add_output(msg)
-				.map_err(|reason| reason.into_tx_abort_msg(self.context.channel_id())),
-			None => Err(msgs::TxAbort {
-				channel_id: self.context.channel_id(),
-				data: b"No interactive transaction negotiation in progress".to_vec(),
-			}),
-		})
-	}
-
-	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor
-				.handle_tx_remove_input(msg)
-				.map_err(|reason| reason.into_tx_abort_msg(self.context.channel_id())),
-			None => Err(msgs::TxAbort {
-				channel_id: self.context.channel_id(),
-				data: b"No interactive transaction negotiation in progress".to_vec(),
-			}),
-		})
-	}
-
-	pub fn tx_remove_output(
-		&mut self, msg: &msgs::TxRemoveOutput,
-	) -> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor
-				.handle_tx_remove_output(msg)
-				.map_err(|reason| reason.into_tx_abort_msg(self.context.channel_id())),
-			None => Err(msgs::TxAbort {
-				channel_id: self.context.channel_id(),
-				data: b"No interactive transaction negotiation in progress".to_vec(),
-			}),
-		})
-	}
-
-	pub fn tx_complete(&mut self, msg: &msgs::TxComplete) -> HandleTxCompleteResult {
-		let tx_constructor = match &mut self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor,
-			None => {
-				let tx_abort = msgs::TxAbort {
-					channel_id: msg.channel_id,
-					data: b"No interactive transaction negotiation in progress".to_vec(),
-				};
-				return HandleTxCompleteResult(Err(tx_abort));
-			},
-		};
-
-		let tx_complete = match tx_constructor.handle_tx_complete(msg) {
-			Ok(tx_complete) => tx_complete,
-			Err(reason) => {
-				return HandleTxCompleteResult(Err(reason.into_tx_abort_msg(msg.channel_id)))
-			},
-		};
-
-		HandleTxCompleteResult(Ok(tx_complete))
-	}
-
-	#[rustfmt::skip]
-	pub fn funding_tx_constructed<L: Deref>(
-		&mut self, mut signing_session: InteractiveTxSigningSession, logger: &L
-	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
-	where
-		L::Target: Logger
-	{
-		let transaction_number = self.unfunded_context.transaction_number();
-
-		let mut output_index = None;
-		let expected_spk = self.funding.get_funding_redeemscript().to_p2wsh();
-		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
-			if outp.script_pubkey() == &expected_spk && outp.value() == self.funding.get_value_satoshis() {
-				if output_index.is_some() {
-					let msg = "Multiple outputs matched the expected script and value";
-					let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-					return Err(ChannelError::Close((msg.to_owned(), reason)));
-				}
-				output_index = Some(idx as u16);
-			}
-		}
-		let outpoint = if let Some(output_index) = output_index {
-			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
-		} else {
-			let msg = "No output matched the funding script_pubkey";
-			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-			return Err(ChannelError::Close((msg.to_owned(), reason)));
-		};
-		self.funding.channel_transaction_parameters.funding_outpoint = Some(outpoint);
-
-		self.context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
-		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
-		let commitment_signed = match commitment_signed {
-			Ok(commitment_signed) => commitment_signed,
-			Err(e) => {
-				self.funding.channel_transaction_parameters.funding_outpoint = None;
-				return Err(e)
-			},
-		};
-
-		let funding_ready_for_sig_event = if signing_session.local_inputs_count() == 0 {
-			debug_assert_eq!(self.funding_negotiation_context.our_funding_contribution_satoshis, 0);
-			if signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new()).is_err() {
-				debug_assert!(
-					false,
-					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
-				);
-				let msg = "V2 channel rejected due to sender error";
-				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-				return Err(ChannelError::Close((msg.to_owned(), reason)));
-			}
-			None
-		} else {
-			// TODO(dual_funding): Send event for signing if we've contributed funds.
-			// Inform the user that SIGHASH_ALL must be used for all signatures when contributing
-			// inputs/signatures.
-			// Also warn the user that we don't do anything to prevent the counterparty from
-			// providing non-standard witnesses which will prevent the funding transaction from
-			// confirming. This warning must appear in doc comments wherever the user is contributing
-			// funds, whether they are initiator or acceptor.
-			//
-			// The following warning can be used when the APIs allowing contributing inputs become available:
-			// <div class="warning">
-			// WARNING: LDK makes no attempt to prevent the counterparty from using non-standard inputs which
-			// will prevent the funding transaction from being relayed on the bitcoin network and hence being
-			// confirmed.
-			// </div>
-			debug_assert!(
-				false,
-				"We don't support users providing inputs but somehow we had more than zero inputs",
-			);
-			let msg = "V2 channel rejected due to sender error";
-			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-			return Err(ChannelError::Close((msg.to_owned(), reason)));
-		};
-
-		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
-		channel_state.set_interactive_signing();
-		self.context.channel_state = channel_state;
-
-		// Clear the interactive transaction constructor
-		self.interactive_tx_constructor.take();
-		self.interactive_tx_signing_session = Some(signing_session);
-
-		Ok((commitment_signed, funding_ready_for_sig_event))
 	}
 }
 
@@ -5421,6 +5320,102 @@ where
 		Ok(())
 	}
 
+	#[rustfmt::skip]
+	fn funding_tx_constructed<L: Deref>(
+		&mut self, funding: &mut FundingScope, signing_session: &mut InteractiveTxSigningSession,
+		is_splice: bool, holder_commitment_transaction_number: u64, logger: &L
+	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
+	where
+		L::Target: Logger
+	{
+		let mut output_index = None;
+		let expected_spk = funding.get_funding_redeemscript().to_p2wsh();
+		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
+			if outp.script_pubkey() == &expected_spk && outp.value() == funding.get_value_satoshis() {
+				if output_index.is_some() {
+					let msg = "Multiple outputs matched the expected script and value";
+					let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+					return Err(ChannelError::Close((msg.to_owned(), reason)));
+				}
+				output_index = Some(idx as u16);
+			}
+		}
+		let outpoint = if let Some(output_index) = output_index {
+			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
+		} else {
+			let msg = "No output matched the funding script_pubkey";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
+		};
+		funding
+			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
+
+		if is_splice {
+			debug_assert_eq!(
+				holder_commitment_transaction_number,
+				self.cur_counterparty_commitment_transaction_number,
+			);
+			let message = "TODO Forced error, incomplete implementation".to_owned();
+			// TODO(splicing) Forced error, as the use case is not complete
+			return Err(ChannelError::Close((
+				message.clone(),
+				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false), message }
+			)));
+		} else {
+			self.assert_no_commitment_advancement(holder_commitment_transaction_number, "initial commitment_signed");
+		}
+
+		let commitment_signed = self.get_initial_commitment_signed(&funding, logger);
+		let commitment_signed = match commitment_signed {
+			Ok(commitment_signed) => commitment_signed,
+			Err(e) => {
+				funding.channel_transaction_parameters.funding_outpoint = None;
+				return Err(e)
+			},
+		};
+
+		let funding_ready_for_sig_event = if signing_session.local_inputs_count() == 0 {
+			if signing_session.provide_holder_witnesses(self.channel_id, Vec::new()).is_err() {
+				debug_assert!(
+					false,
+					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
+				);
+				let msg = "V2 channel rejected due to sender error";
+				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+				return Err(ChannelError::Close((msg.to_owned(), reason)));
+			}
+			None
+		} else {
+			// TODO(dual_funding): Send event for signing if we've contributed funds.
+			// Inform the user that SIGHASH_ALL must be used for all signatures when contributing
+			// inputs/signatures.
+			// Also warn the user that we don't do anything to prevent the counterparty from
+			// providing non-standard witnesses which will prevent the funding transaction from
+			// confirming. This warning must appear in doc comments wherever the user is contributing
+			// funds, whether they are initiator or acceptor.
+			//
+			// The following warning can be used when the APIs allowing contributing inputs become available:
+			// <div class="warning">
+			// WARNING: LDK makes no attempt to prevent the counterparty from using non-standard inputs which
+			// will prevent the funding transaction from being relayed on the bitcoin network and hence being
+			// confirmed.
+			// </div>
+			debug_assert!(
+				false,
+				"We don't support users providing inputs but somehow we had more than zero inputs",
+			);
+			let msg = "V2 channel rejected due to sender error";
+			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+			return Err(ChannelError::Close((msg.to_owned(), reason)));
+		};
+
+		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
+		channel_state.set_interactive_signing();
+		self.channel_state = channel_state;
+
+		Ok((commitment_signed, funding_ready_for_sig_event))
+	}
+
 	/// Asserts that the commitment tx numbers have not advanced from their initial number.
 	#[rustfmt::skip]
 	fn assert_no_commitment_advancement(&self, holder_commitment_transaction_number: u64, msg_name: &str) {
@@ -6034,6 +6029,22 @@ where
 
 	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
 		self.context.force_shutdown(&self.funding, closure_reason)
+	}
+
+	#[cfg(splicing)]
+	fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
+		self.pending_splice
+			.as_mut()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_mut())
+			.and_then(|funding_negotiation| {
+				if let FundingNegotiation::ConstructingTransaction(_, interactive_tx_constructor) =
+					funding_negotiation
+				{
+					Some(interactive_tx_constructor)
+				} else {
+					None
+				}
+			})
 	}
 
 	#[rustfmt::skip]
