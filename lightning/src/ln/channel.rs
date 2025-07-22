@@ -2253,14 +2253,10 @@ impl FundingScope {
 		debug_assert!(post_value_to_self_msat_signed >= 0);
 		let post_value_to_self_msat = post_value_to_self_msat_signed as u64;
 
+		// Rotate the pubkeys using the prev_funding_txid as a tweak
 		let prev_funding_txid = prev_funding.get_funding_txid();
-		// Update the splicing 'tweak', this will rotate the keys in the signer
-		let holder_pubkeys = match &context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.pubkeys(prev_funding_txid, &context.secp_ctx),
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!(),
-		};
+		let holder_pubkeys = context.holder_pubkeys(prev_funding_txid);
+
 		let channel_parameters = &prev_funding.channel_transaction_parameters;
 		let mut post_channel_transaction_parameters = ChannelTransactionParameters {
 			holder_pubkeys,
@@ -2280,7 +2276,7 @@ impl FundingScope {
 			.pubkeys
 			.funding_pubkey = counterparty_funding_pubkey;
 
-		// New reserve values are based on the new channel value, and v2-specific
+		// New reserve values are based on the new channel value and are v2-specific
 		let counterparty_selected_channel_reserve_satoshis = Some(get_v2_channel_reserve_satoshis(
 			post_channel_value,
 			context.counterparty_dust_limit_satoshis,
@@ -3757,6 +3753,17 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_mut_signer(&mut self) -> &mut ChannelSignerType<SP> {
 		return &mut self.holder_signer;
+	}
+
+	/// Returns holder pubkeys to use for the channel.
+	#[cfg(splicing)]
+	fn holder_pubkeys(&self, prev_funding_txid: Option<Txid>) -> ChannelPublicKeys {
+		match &self.holder_signer {
+			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.pubkeys(prev_funding_txid, &self.secp_ctx),
+			// TODO (taproot|arik)
+			#[cfg(taproot)]
+			_ => todo!(),
+		}
 	}
 
 	/// Only allowed immediately after deserialization if get_outbound_scid_alias returns 0,
@@ -10405,9 +10412,10 @@ where
 	fn get_splice_init(
 		&self, our_funding_contribution_satoshis: i64, funding_feerate_per_kw: u32, locktime: u32,
 	) -> msgs::SpliceInit {
-		// TODO(splicing): The exisiting pubkey is reused, but a new one should be generated. See #3542.
-		// Note that channel_keys_id is supposed NOT to change
-		let funding_pubkey = self.funding.get_holder_pubkeys().funding_pubkey.clone();
+		// Rotate the pubkeys using the prev_funding_txid as a tweak
+		let prev_funding_txid = self.funding.get_funding_txid();
+		let funding_pubkey = self.context.holder_pubkeys(prev_funding_txid).funding_pubkey;
+
 		msgs::SpliceInit {
 			channel_id: self.context.channel_id,
 			funding_contribution_satoshis: our_funding_contribution_satoshis,
@@ -10539,6 +10547,8 @@ where
 		// FIXME: Propagate message
 		let _msg = interactive_tx_constructor.take_initiator_first_message();
 
+		let funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
+
 		self.pending_splice = Some(PendingSplice {
 			funding_negotiation: Some(FundingNegotiation::Pending(
 				splice_funding,
@@ -10548,22 +10558,12 @@ where
 			sent_funding_txid: None,
 		});
 
-		Ok(splice_ack_msg)
-	}
-
-	/// Get the splice_ack message that can be sent in response to splice initiation.
-	#[cfg(splicing)]
-	pub fn get_splice_ack(&self, our_funding_contribution_satoshis: i64) -> msgs::SpliceAck {
-		// TODO(splicing): The exisiting pubkey is reused, but a new one should be generated. See #3542.
-		// Note that channel_keys_id is supposed NOT to change
-		let splice_ack_msg = msgs::SpliceAck {
+		Ok(msgs::SpliceAck {
 			channel_id: self.context.channel_id,
 			funding_contribution_satoshis: our_funding_contribution_satoshis,
-			funding_pubkey: self.funding.get_holder_pubkeys().funding_pubkey,
+			funding_pubkey,
 			require_confirmed_inputs: None,
-		};
-		// TODO(splicing): start interactive funding negotiation
-		splice_ack_msg
+		})
 	}
 
 	/// Handle splice_ack
