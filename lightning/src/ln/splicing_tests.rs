@@ -43,9 +43,9 @@ fn test_v1_splice_in() {
 	assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 
 	let expected_initiator_funding_key =
-		"03c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b";
+		"020abf01c18d5a2543124a12150d698ebf3a8e17df9993521151a49e115678ceea";
 	let expected_acceptor_funding_key =
-		"039481c28b904cbe12681e79937373fc76245c1b29871028ae60ba3152162c319b";
+		"036b47248c628fca98159f30f6b03a6cf0be0c4808cff17c75dc855fe94a244766";
 
 	// ==== Channel is now ready for normal operation
 
