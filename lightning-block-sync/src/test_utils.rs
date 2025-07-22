@@ -273,9 +273,9 @@ impl chain::Listen for MockChainListener {
 					new_best_block.block_hash, new_best_block.height,
 				);
 			},
-			Some(expected_block) => {
-				assert_eq!(new_best_block.block_hash, expected_block.header.prev_blockhash);
-				assert_eq!(new_best_block.height, expected_block.height - 1);
+			Some(disconnected_block) => {
+				assert_eq!(new_best_block.block_hash, disconnected_block.header.prev_blockhash);
+				assert_eq!(new_best_block.height, disconnected_block.height - 1);
 			},
 		}
 	}
