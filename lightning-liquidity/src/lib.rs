@@ -46,7 +46,7 @@
 #![allow(ellipsis_inclusive_range_patterns)]
 #![allow(clippy::drop_non_drop)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
 
 #[macro_use]
 extern crate alloc;

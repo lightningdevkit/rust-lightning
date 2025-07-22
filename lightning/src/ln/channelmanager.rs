@@ -8340,6 +8340,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					hold_time,
 				);
 
+				#[cfg(test)]
+				let claiming_chan_funding_outpoint = hop_data.outpoint;
 				self.claim_funds_from_hop(
 					hop_data,
 					payment_preimage,
@@ -8358,6 +8360,50 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// monitor updates still in flight. In that case, we shouldn't
 							// immediately free, but instead let that monitor update complete
 							// in the background.
+							#[cfg(test)]
+							{
+								let per_peer_state = self.per_peer_state.deadlocking_read();
+								// The channel we'd unblock should already be closed, or...
+								let channel_closed = per_peer_state
+									.get(&next_channel_counterparty_node_id)
+									.map(|lck| lck.deadlocking_lock())
+									.map(|peer| !peer.channel_by_id.contains_key(&next_channel_id))
+									.unwrap_or(true);
+								let background_events =
+									self.pending_background_events.lock().unwrap();
+								// there should be a `BackgroundEvent` pending...
+								let matching_bg_event =
+									background_events.iter().any(|ev| {
+										match ev {
+											// to apply a monitor update that blocked the claiming channel,
+											BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+												funding_txo, update, ..
+											} => {
+												if *funding_txo == claiming_chan_funding_outpoint {
+													assert!(update.updates.iter().any(|upd|
+														if let ChannelMonitorUpdateStep::PaymentPreimage {
+															payment_preimage: update_preimage, ..
+														} = upd {
+															payment_preimage == *update_preimage
+														} else { false }
+													), "{:?}", update);
+													true
+												} else { false }
+											},
+											// or the monitor update has completed and will unblock
+											// immediately once we get going.
+											BackgroundEvent::MonitorUpdatesComplete {
+												channel_id, ..
+											} =>
+												*channel_id == prev_channel_id,
+										}
+									});
+								assert!(
+									channel_closed || matching_bg_event,
+									"{:?}",
+									*background_events
+								);
+							}
 							(None, None)
 						} else if definitely_duplicate {
 							if let Some(other_chan) = chan_to_release {
