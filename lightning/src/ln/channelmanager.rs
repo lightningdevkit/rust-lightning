@@ -10731,15 +10731,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						&self.node_signer,
 						self.chain_hash,
 						&self.default_configuration,
-						&self.best_block.read().unwrap(),
+						self.best_block.read().unwrap().height,
 						&&logger,
 					);
-					let (funding_txo, announcement_sigs_opt) =
-						try_channel_entry!(self, peer_state, result, chan_entry);
-
-					if funding_txo.is_some() {
-						let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
-						insert_short_channel_id!(short_to_chan_info, chan);
+					let splice_promotion = try_channel_entry!(self, peer_state, result, chan_entry);
+					if let Some(splice_promotion) = splice_promotion {
+						{
+							let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+							insert_short_channel_id!(short_to_chan_info, chan);
+						}
 
 						let mut pending_events = self.pending_events.lock().unwrap();
 						pending_events.push_back((
@@ -10747,26 +10747,39 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								channel_id: chan.context.channel_id(),
 								user_channel_id: chan.context.get_user_id(),
 								counterparty_node_id: chan.context.get_counterparty_node_id(),
-								funding_txo: funding_txo
-									.map(|outpoint| outpoint.into_bitcoin_outpoint()),
+								funding_txo: Some(
+									splice_promotion.funding_txo.into_bitcoin_outpoint(),
+								),
 								channel_type: chan.funding.get_channel_type().clone(),
 							},
 							None,
 						));
-					}
 
-					if let Some(announcement_sigs) = announcement_sigs_opt {
-						log_trace!(
-							logger,
-							"Sending announcement_signatures for channel {}",
-							chan.context.channel_id()
-						);
-						peer_state.pending_msg_events.push(
-							MessageSendEvent::SendAnnouncementSignatures {
-								node_id: counterparty_node_id.clone(),
-								msg: announcement_sigs,
-							},
-						);
+						if let Some(announcement_sigs) = splice_promotion.announcement_sigs {
+							log_trace!(
+								logger,
+								"Sending announcement_signatures for channel {}",
+								chan.context.channel_id()
+							);
+							peer_state.pending_msg_events.push(
+								MessageSendEvent::SendAnnouncementSignatures {
+									node_id: counterparty_node_id.clone(),
+									msg: announcement_sigs,
+								},
+							);
+						}
+
+						if let Some(monitor_update) = splice_promotion.monitor_update {
+							handle_new_monitor_update!(
+								self,
+								splice_promotion.funding_txo,
+								monitor_update,
+								peer_state_lock,
+								peer_state,
+								per_peer_state,
+								chan
+							);
+						}
 					}
 				} else {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close(
@@ -12912,7 +12925,7 @@ where
 pub(super) enum FundingConfirmedMessage {
 	Establishment(msgs::ChannelReady),
 	#[cfg(splicing)]
-	Splice(msgs::SpliceLocked, Option<OutPoint>),
+	Splice(msgs::SpliceLocked, Option<OutPoint>, Option<ChannelMonitorUpdate>),
 }
 
 impl<
@@ -12949,6 +12962,8 @@ where
 
 		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
+		#[cfg(splicing)]
+		let mut to_process_monitor_update_actions = Vec::new();
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
@@ -12986,23 +13001,40 @@ where
 										}
 									},
 									#[cfg(splicing)]
-									Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)) => {
-										if funding_txo.is_some() {
+									Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update_opt)) => {
+										let counterparty_node_id = funded_channel.context.get_counterparty_node_id();
+										let channel_id = funded_channel.context.channel_id();
+
+										if let Some(funding_txo) = funding_txo {
 											let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
 											insert_short_channel_id!(short_to_chan_info, funded_channel);
 
+											if let Some(monitor_update) = monitor_update_opt {
+												handle_new_monitor_update!(
+													self,
+													funding_txo,
+													monitor_update,
+													peer_state,
+													funded_channel.context,
+													REMAIN_LOCKED_UPDATE_ACTIONS_PROCESSED_LATER
+												);
+												to_process_monitor_update_actions.push((
+													counterparty_node_id, channel_id
+												));
+											}
+
 											let mut pending_events = self.pending_events.lock().unwrap();
 											pending_events.push_back((events::Event::ChannelReady {
-												channel_id: funded_channel.context.channel_id(),
+												channel_id,
 												user_channel_id: funded_channel.context.get_user_id(),
-												counterparty_node_id: funded_channel.context.get_counterparty_node_id(),
-												funding_txo: funding_txo.map(|outpoint| outpoint.into_bitcoin_outpoint()),
+												counterparty_node_id,
+												funding_txo: Some(funding_txo.into_bitcoin_outpoint()),
 												channel_type: funded_channel.funding.get_channel_type().clone(),
 											}, None));
 										}
 
 										pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
-											node_id: funded_channel.context.get_counterparty_node_id(),
+											node_id: counterparty_node_id,
 											msg: splice_locked,
 										});
 									},
@@ -13090,6 +13122,42 @@ where
 						}
 					}
 				});
+			}
+		}
+
+		#[cfg(splicing)]
+		for (counterparty_node_id, channel_id) in to_process_monitor_update_actions {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				let has_in_flight_updates = peer_state
+					.in_flight_monitor_updates
+					.get(&channel_id)
+					.map(|in_flight_updates| !in_flight_updates.1.is_empty())
+					.unwrap_or(false);
+				if let Some(chan) = peer_state.channel_by_id
+					.get_mut(&channel_id)
+					.and_then(Channel::as_funded_mut)
+				{
+					if !has_in_flight_updates && chan.blocked_monitor_updates_pending() == 0 {
+						handle_monitor_update_completion!(
+							self,
+							peer_state_lock,
+							peer_state,
+							per_peer_state,
+							chan
+						);
+					}
+				} else {
+					let update_actions = peer_state
+						.monitor_update_blocked_actions
+						.remove(&channel_id)
+						.unwrap_or(Vec::new());
+					mem::drop(peer_state_lock);
+					mem::drop(per_peer_state);
+					self.handle_monitor_update_completion_actions(update_actions);
+				}
 			}
 		}
 

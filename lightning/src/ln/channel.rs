@@ -5989,6 +5989,13 @@ type BestBlockUpdatedRes = (
 	Option<msgs::AnnouncementSignatures>,
 );
 
+#[cfg(splicing)]
+pub struct SpliceFundingPromotion {
+	pub funding_txo: OutPoint,
+	pub monitor_update: Option<ChannelMonitorUpdate>,
+	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
+}
+
 impl<SP: Deref> FundedChannel<SP>
 where
 	SP::Target: SignerProvider,
@@ -9684,46 +9691,38 @@ where
 		self.context.check_funding_meets_minimum_depth(funding, height)
 	}
 
+	/// Returns `Some` if a splice [`FundingScope`] was promoted.
 	#[cfg(splicing)]
-	fn maybe_promote_splice_funding<L: Deref>(
-		&mut self, confirmed_funding_index: usize, logger: &L,
-	) -> bool
+	fn maybe_promote_splice_funding<NS: Deref, L: Deref>(
+		&mut self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
+		block_height: u32, logger: &L,
+	) -> Option<SpliceFundingPromotion>
 	where
+		NS::Target: NodeSigner,
 		L::Target: Logger,
 	{
 		debug_assert!(self.pending_splice.is_some());
-		debug_assert!(confirmed_funding_index < self.pending_funding.len());
 
 		let pending_splice = self.pending_splice.as_mut().unwrap();
 		let splice_txid = match pending_splice.sent_funding_txid {
 			Some(sent_funding_txid) => sent_funding_txid,
 			None => {
 				debug_assert!(false);
-				return false;
+				return None;
 			},
 		};
 
-		if pending_splice.sent_funding_txid == pending_splice.received_funding_txid {
-			log_info!(
-				logger,
-				"Promoting splice funding txid {} for channel {}",
-				splice_txid,
-				&self.context.channel_id,
-			);
-
-			let funding = self.pending_funding.get_mut(confirmed_funding_index).unwrap();
-			debug_assert_eq!(Some(splice_txid), funding.get_funding_txid());
-			promote_splice_funding!(self, funding);
-
-			return true;
-		} else if let Some(received_funding_txid) = pending_splice.received_funding_txid {
-			log_warn!(
-				logger,
-				"Mismatched splice_locked txid for channel {}; sent txid {}; received txid {}",
-				&self.context.channel_id,
-				splice_txid,
-				received_funding_txid,
-			);
+		if let Some(received_funding_txid) = pending_splice.received_funding_txid {
+			if splice_txid != received_funding_txid {
+				log_warn!(
+					logger,
+					"Mismatched splice_locked txid for channel {}; sent txid {}; received txid {}",
+					&self.context.channel_id,
+					splice_txid,
+					received_funding_txid,
+				);
+				return None;
+			}
 		} else {
 			log_info!(
 				logger,
@@ -9731,9 +9730,47 @@ where
 				splice_txid,
 				&self.context.channel_id,
 			);
+			return None;
 		}
 
-		return false;
+		log_info!(
+			logger,
+			"Promoting splice funding txid {} for channel {}",
+			splice_txid,
+			&self.context.channel_id,
+		);
+
+		{
+			// Scope `funding` since it is swapped within `promote_splice_funding` and we don't want
+			// to unintentionally use it.
+			let funding = self
+				.pending_funding
+				.iter_mut()
+				.find(|funding| funding.get_funding_txid() == Some(splice_txid))
+				.unwrap();
+			promote_splice_funding!(self, funding);
+		}
+
+		let funding_txo = self
+			.funding
+			.get_funding_txo()
+			.expect("Splice FundingScope should always have a funding_txo");
+
+		self.context.latest_monitor_update_id += 1;
+		let monitor_update = ChannelMonitorUpdate {
+			update_id: self.context.latest_monitor_update_id,
+			updates: vec![ChannelMonitorUpdateStep::RenegotiatedFundingLocked {
+				funding_txid: funding_txo.txid,
+			}],
+			channel_id: Some(self.context.channel_id()),
+		};
+		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+		let monitor_update = self.push_ret_blockable_mon_update(monitor_update);
+
+		let announcement_sigs =
+			self.get_announcement_sigs(node_signer, chain_hash, user_config, block_height, logger);
+
+		Some(SpliceFundingPromotion { funding_txo, monitor_update, announcement_sigs })
 	}
 
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
@@ -9827,18 +9864,16 @@ where
 						&self.context.channel_id,
 					);
 
-					let funding_promoted =
-						self.maybe_promote_splice_funding(confirmed_funding_index, logger);
-					let funding_txo = funding_promoted.then(|| {
-						self.funding
-							.get_funding_txo()
-							.expect("Splice FundingScope should always have a funding_txo")
-					});
-					let announcement_sigs = funding_promoted
-						.then(|| self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger))
-						.flatten();
+					let (funding_txo, monitor_update, announcement_sigs) =
+						self.maybe_promote_splice_funding(
+							node_signer, chain_hash, user_config, height, logger,
+						).map(|splice_promotion| (
+							Some(splice_promotion.funding_txo),
+							splice_promotion.monitor_update,
+							splice_promotion.announcement_sigs,
+						)).unwrap_or((None, None, None));
 
-					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), announcement_sigs));
+					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update)), announcement_sigs));
 				}
 			}
 
@@ -9995,23 +10030,22 @@ where
 			let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
 			if let Some(splice_locked) = pending_splice.check_get_splice_locked(&self.context, funding, height) {
 				log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
+				debug_assert!(chain_node_signer.is_some());
 
-				let funding_promoted =
-					self.maybe_promote_splice_funding(confirmed_funding_index, logger);
-				let funding_txo = funding_promoted.then(|| {
-					self.funding
-						.get_funding_txo()
-						.expect("Splice FundingScope should always have a funding_txo")
-				});
-				let announcement_sigs = funding_promoted
-					.then(|| chain_node_signer
-						.and_then(|(chain_hash, node_signer, user_config)|
-							self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
-						)
-					)
-					.flatten();
+				let (funding_txo, monitor_update, announcement_sigs) = chain_node_signer
+					.and_then(|(chain_hash, node_signer, user_config)| {
+						// We can only promote on blocks connected, which is when we expect
+						// `chain_node_signer` to be `Some`.
+						self.maybe_promote_splice_funding(node_signer, chain_hash, user_config, height, logger)
+					})
+					.map(|splice_promotion| (
+						Some(splice_promotion.funding_txo),
+						splice_promotion.monitor_update,
+						splice_promotion.announcement_sigs,
+					))
+					.unwrap_or((None, None, None));
 
-				return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo)), timed_out_htlcs, announcement_sigs));
+				return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update)), timed_out_htlcs, announcement_sigs));
 			}
 		}
 
@@ -10505,8 +10539,8 @@ where
 	#[cfg(splicing)]
 	pub fn splice_locked<NS: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceLocked, node_signer: &NS, chain_hash: ChainHash,
-		user_config: &UserConfig, best_block: &BestBlock, logger: &L,
-	) -> Result<(Option<OutPoint>, Option<msgs::AnnouncementSignatures>), ChannelError>
+		user_config: &UserConfig, block_height: u32, logger: &L,
+	) -> Result<Option<SpliceFundingPromotion>, ChannelError>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger,
@@ -10525,56 +10559,33 @@ where
 			},
 		};
 
-		if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
-			if sent_funding_txid == msg.splice_txid {
-				if let Some(funding) = self
-					.pending_funding
-					.iter_mut()
-					.find(|funding| funding.get_funding_txid() == Some(sent_funding_txid))
-				{
-					log_info!(
-						logger,
-						"Promoting splice funding txid {} for channel {}",
-						msg.splice_txid,
-						&self.context.channel_id,
-					);
-					promote_splice_funding!(self, funding);
-					let funding_txo = self
-						.funding
-						.get_funding_txo()
-						.expect("Splice FundingScope should always have a funding_txo");
-					let announcement_sigs = self.get_announcement_sigs(
-						node_signer,
-						chain_hash,
-						user_config,
-						best_block.height,
-						logger,
-					);
-					return Ok((Some(funding_txo), announcement_sigs));
-				}
+		if !self
+			.pending_funding
+			.iter()
+			.any(|funding| funding.get_funding_txid() == Some(msg.splice_txid))
+		{
+			let err = "unknown splice funding txid";
+			return Err(ChannelError::close(err.to_string()));
+		}
+		pending_splice.received_funding_txid = Some(msg.splice_txid);
 
-				let err = "unknown splice funding txid";
-				return Err(ChannelError::close(err.to_string()));
-			} else {
-				log_warn!(
-					logger,
-					"Mismatched splice_locked txid for channel {}; sent txid {}; received txid {}",
-					&self.context.channel_id,
-					sent_funding_txid,
-					msg.splice_txid,
-				);
-			}
-		} else {
+		if pending_splice.sent_funding_txid.is_none() {
 			log_info!(
 				logger,
 				"Waiting for enough confirmations to send splice_locked txid {} for channel {}",
 				msg.splice_txid,
 				&self.context.channel_id,
 			);
+			return Ok(None);
 		}
 
-		pending_splice.received_funding_txid = Some(msg.splice_txid);
-		Ok((None, None))
+		Ok(self.maybe_promote_splice_funding(
+			node_signer,
+			chain_hash,
+			user_config,
+			block_height,
+			logger,
+		))
 	}
 
 	// Send stuff to our remote peers:

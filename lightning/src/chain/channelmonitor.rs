@@ -678,6 +678,9 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		holder_commitment_tx: HolderCommitmentTransaction,
 		counterparty_commitment_tx: CommitmentTransaction,
 	},
+	RenegotiatedFundingLocked {
+		funding_txid: Txid,
+	},
 }
 
 impl ChannelMonitorUpdateStep {
@@ -693,6 +696,7 @@ impl ChannelMonitorUpdateStep {
 			ChannelMonitorUpdateStep::ChannelForceClosed { .. } => "ChannelForceClosed",
 			ChannelMonitorUpdateStep::ShutdownScript { .. } => "ShutdownScript",
 			ChannelMonitorUpdateStep::RenegotiatedFunding { .. } => "RenegotiatedFunding",
+			ChannelMonitorUpdateStep::RenegotiatedFundingLocked { .. } => "RenegotiatedFundingLocked",
 		}
 	}
 }
@@ -740,6 +744,9 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 		(1, channel_parameters, (required: ReadableArgs, None)),
 		(3, holder_commitment_tx, required),
 		(5, counterparty_commitment_tx, required),
+	},
+	(12, RenegotiatedFundingLocked) => {
+		(1, funding_txid, required),
 	},
 );
 
@@ -1088,6 +1095,10 @@ impl FundingScope {
 	fn funding_txid(&self) -> Txid {
 		self.funding_outpoint().txid
 	}
+
+	fn is_splice(&self) -> bool {
+		self.channel_parameters.splice_parent_funding_txid.is_some()
+	}
 }
 
 impl_writeable_tlv_based!(FundingScope, {
@@ -1115,7 +1126,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	channel_keys_id: [u8; 32],
 	holder_revocation_basepoint: RevocationBasepoint,
 	channel_id: ChannelId,
-	first_confirmed_funding_txo: OutPoint,
+	first_negotiated_funding_txo: OutPoint,
 
 	counterparty_commitment_params: CounterpartyCommitmentParameters,
 
@@ -1183,8 +1194,6 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// interface knows about the TXOs that we want to be notified of spends of. We could probably
 	// be smart and derive them from the above storage fields, but its much simpler and more
 	// Obviously Correct (tm) if we just keep track of them explicitly.
-	//
-	// TODO: Remove entries for stale funding transactions on `splice_locked`.
 	outputs_to_watch: HashMap<Txid, Vec<(u32, ScriptBuf)>>,
 
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -1542,7 +1551,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(21, self.balances_empty_height, option),
 			(23, self.holder_pays_commitment_tx_fee, option),
 			(25, self.payment_preimages, required),
-			(27, self.first_confirmed_funding_txo, required),
+			(27, self.first_negotiated_funding_txo, required),
 			(29, self.initial_counterparty_commitment_tx, option),
 			(31, self.funding.channel_parameters, required),
 			(32, self.pending_funding, optional_vec),
@@ -1726,7 +1735,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			channel_keys_id,
 			holder_revocation_basepoint,
 			channel_id,
-			first_confirmed_funding_txo: funding_outpoint,
+			first_negotiated_funding_txo: funding_outpoint,
 
 			counterparty_commitment_params,
 			their_cur_per_commitment_points: None,
@@ -1785,7 +1794,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// [`Persist`]: crate::chain::chainmonitor::Persist
 	pub fn persistence_key(&self) -> MonitorName {
 		let inner = self.inner.lock().unwrap();
-		let funding_outpoint = inner.first_confirmed_funding_txo;
+		let funding_outpoint = inner.first_negotiated_funding_txo;
 		let channel_id = inner.channel_id;
 		if ChannelId::v1_from_funding_outpoint(funding_outpoint) == channel_id {
 			MonitorName::V1Channel(funding_outpoint)
@@ -3770,6 +3779,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				);
 				return Err(());
 			}
+		} else if self.funding.is_splice() {
+			// If we've already spliced at least once, we're no longer able to RBF the original
+			// funding transaction.
+			return Err(());
 		}
 
 		let script_pubkey = channel_parameters.make_funding_redeemscript().to_p2wsh();
@@ -3778,6 +3791,30 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			vec![(alternative_funding_outpoint.index as u32, script_pubkey)],
 		);
 		self.pending_funding.push(alternative_funding);
+
+		Ok(())
+	}
+
+	fn promote_funding(&mut self, new_funding_txid: Txid) -> Result<(), ()> {
+		let new_funding = self
+			.pending_funding
+			.iter_mut()
+			.find(|funding| funding.funding_txid() == new_funding_txid);
+		if new_funding.is_none() {
+			return Err(());
+		}
+		let mut new_funding = new_funding.unwrap();
+
+		mem::swap(&mut self.funding, &mut new_funding);
+		self.onchain_tx_handler.update_after_renegotiated_funding_locked(
+			self.funding.current_holder_commitment_tx.clone(),
+			self.funding.prev_holder_commitment_tx.clone(),
+		);
+
+		// The swap above places the previous `FundingScope` into `pending_funding`.
+		for funding in self.pending_funding.drain(..) {
+			self.outputs_to_watch.remove(&funding.funding_txid());
+		}
 
 		Ok(())
 	}
@@ -3900,6 +3937,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						ret = Err(());
 					}
 				},
+				ChannelMonitorUpdateStep::RenegotiatedFundingLocked { funding_txid } => {
+					log_trace!(logger, "Updating ChannelMonitor with locked renegotiated funding txid {}", funding_txid);
+					if let Err(_) = self.promote_funding(*funding_txid) {
+						log_error!(logger, "Unknown funding with txid {} became locked", funding_txid);
+						ret = Err(());
+					}
+				},
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
 					log_trace!(logger, "Updating ChannelMonitor: channel force closed, should broadcast: {}", should_broadcast);
 					self.lockdown_from_offchain = true;
@@ -3953,7 +3997,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					|ChannelMonitorUpdateStep::LatestCounterpartyCommitment { .. }
 					|ChannelMonitorUpdateStep::ShutdownScript { .. }
 					|ChannelMonitorUpdateStep::CommitmentSecret { .. }
-					|ChannelMonitorUpdateStep::RenegotiatedFunding { .. } =>
+					|ChannelMonitorUpdateStep::RenegotiatedFunding { .. }
+					|ChannelMonitorUpdateStep::RenegotiatedFundingLocked { .. } =>
 						is_pre_close_update = true,
 				// After a channel is closed, we don't communicate with our peer about it, so the
 				// only things we will update is getting a new preimage (from a different channel)
@@ -5822,7 +5867,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut channel_id = None;
 		let mut holder_pays_commitment_tx_fee = None;
 		let mut payment_preimages_with_info: Option<HashMap<_, _>> = None;
-		let mut first_confirmed_funding_txo = RequiredWrapper(None);
+		let mut first_negotiated_funding_txo = RequiredWrapper(None);
 		let mut channel_parameters = None;
 		let mut pending_funding = None;
 		read_tlv_fields!(reader, {
@@ -5839,7 +5884,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(21, balances_empty_height, option),
 			(23, holder_pays_commitment_tx_fee, option),
 			(25, payment_preimages_with_info, option),
-			(27, first_confirmed_funding_txo, (default_value, outpoint)),
+			(27, first_negotiated_funding_txo, (default_value, outpoint)),
 			(29, initial_counterparty_commitment_tx, option),
 			(31, channel_parameters, (option: ReadableArgs, None)),
 			(32, pending_funding, optional_vec),
@@ -5969,7 +6014,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			channel_keys_id,
 			holder_revocation_basepoint,
 			channel_id,
-			first_confirmed_funding_txo: first_confirmed_funding_txo.0.unwrap(),
+			first_negotiated_funding_txo: first_negotiated_funding_txo.0.unwrap(),
 
 			counterparty_commitment_params,
 			their_cur_per_commitment_points,

@@ -1238,6 +1238,15 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		self.prev_holder_commitment = Some(replace(&mut self.holder_commitment, tx));
 	}
 
+	/// Replaces the current/prev holder commitment transactions spending the currently confirmed
+	/// funding outpoint with those spending the new funding outpoint.
+	pub(crate) fn update_after_renegotiated_funding_locked(
+		&mut self, current: HolderCommitmentTransaction, prev: Option<HolderCommitmentTransaction>,
+	) {
+		self.holder_commitment = current;
+		self.prev_holder_commitment = prev;
+	}
+
 	// Deprecated as of 0.2, only use in cases where it was not previously available.
 	pub(crate) fn channel_parameters(&self) -> &ChannelTransactionParameters {
 		&self.channel_transaction_parameters
