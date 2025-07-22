@@ -281,6 +281,12 @@ pub fn is_padded(hops: &[BlindedHop], padding_round_off: usize) -> bool {
 	let first_hop = hops.first().expect("BlindedPath must have at least one hop");
 	let first_payload_size = first_hop.encrypted_payload.len();
 
+	// If the hops are padded correctly, the first payload size must be at least
+	// the padding round off size.
+	if first_payload_size < padding_round_off {
+		return false;
+	}
+
 	// The unencrypted payload data is padded before getting encrypted.
 	// Assuming the first payload is padded properly, get the extra data length.
 	let extra_length = first_payload_size % padding_round_off;

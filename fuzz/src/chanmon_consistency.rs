@@ -332,7 +332,7 @@ impl NodeSigner for KeyProvider {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn get_inbound_payment_key(&self) -> ExpandedKey {
+	fn get_expanded_key(&self) -> ExpandedKey {
 		#[rustfmt::skip]
 		let random_bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_secret[31]];
 		ExpandedKey::new(random_bytes)
