@@ -4140,12 +4140,17 @@ where
 		// Channel state once they will not be present in the next received commitment
 		// transaction).
 		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = {
-			let mut removed_outbound_total_msat = 0;
-			for htlc in self.pending_outbound_htlcs.iter() {
-				if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _)) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _)) = htlc.state {
-					removed_outbound_total_msat += htlc.amount_msat;
-				}
-			}
+			let removed_outbound_total_msat: u64 = self.pending_outbound_htlcs
+				.iter()
+				.filter_map(|htlc| {
+					matches!(
+						htlc.state,
+						OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _))
+						| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _))
+					)
+					.then_some(htlc.amount_msat)
+				})
+				.sum();
 			let pending_value_to_self_msat =
 				funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
 			let pending_remote_value_msat =
@@ -4372,13 +4377,17 @@ where
 		}
 
 		if !funding.is_outbound() {
-			let mut removed_outbound_total_msat = 0;
-			for htlc in self.pending_outbound_htlcs.iter() {
-				if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _)) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _)) = htlc.state {
-					removed_outbound_total_msat += htlc.amount_msat;
-				}
-			}
-
+			let removed_outbound_total_msat: u64 = self.pending_outbound_htlcs
+				.iter()
+				.filter_map(|htlc| {
+					matches!(
+						htlc.state,
+						OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _))
+						| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _))
+					)
+					.then_some(htlc.amount_msat)
+				})
+				.sum();
 			let pending_value_to_self_msat =
 				funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
 			let pending_remote_value_msat =
@@ -4615,7 +4624,7 @@ where
 			broadcaster_dust_limit_sat,
 			logger,
 		);
-		debug_assert_eq!(stats, self.build_commitment_stats(funding, local, generated_by_local, None, None));
+		debug_assert_eq!(stats, self.build_commitment_stats(funding, local, generated_by_local, None, None), "Caught an inconsistency between `TxBuilder::build_commitment_transaction` and the rest of the `TxBuilder` methods");
 
 		// This populates the HTLC-source table with the indices from the HTLCs in the commitment
 		// transaction.
