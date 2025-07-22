@@ -1075,6 +1075,7 @@ enum BackgroundEvent {
 	/// on a channel.
 	MonitorUpdatesComplete {
 		counterparty_node_id: PublicKey,
+		funding_txo: OutPoint,
 		channel_id: ChannelId,
 	},
 }
@@ -3235,8 +3236,21 @@ macro_rules! emit_channel_ready_event {
 	}
 }
 
+/// Handles the completion steps for when a [`ChannelMonitorUpdate`] is applied to a live channel.
+///
+/// You should not add new direct calls to this, generally, rather rely on
+/// `handle_new_monitor_update` or [`ChannelManager::channel_monitor_updated`] to call it for you.
+///
+/// Requires that  the in-flight monitor update set for this channel is empty!
 macro_rules! handle_monitor_update_completion {
 	($self: ident, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
+		#[cfg(debug_assertions)]
+		if let Some(funding_txo) = $chan.context.get_funding_txo() {
+			let in_flight_updates =
+				$peer_state.in_flight_monitor_updates.get(&funding_txo);
+			assert!(in_flight_updates.map(|updates| updates.is_empty()).unwrap_or(true));
+		}
+		debug_assert!($chan.is_awaiting_monitor_update());
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
 
 		let update_actions = $peer_state.monitor_update_blocked_actions
@@ -4101,19 +4115,7 @@ where
 			// TODO: If we do the `in_flight_monitor_updates.is_empty()` check in
 			// `locked_close_channel` we can skip the locks here.
 			if let Some(funding_txo) = shutdown_res.channel_funding_txo {
-				let per_peer_state = self.per_peer_state.read().unwrap();
-				if let Some(peer_state_mtx) = per_peer_state.get(&shutdown_res.counterparty_node_id) {
-					let mut peer_state = peer_state_mtx.lock().unwrap();
-					if peer_state.in_flight_monitor_updates.get(&funding_txo).map(|l| l.is_empty()).unwrap_or(true) {
-						let update_actions = peer_state.monitor_update_blocked_actions
-							.remove(&shutdown_res.channel_id).unwrap_or(Vec::new());
-
-						mem::drop(peer_state);
-						mem::drop(per_peer_state);
-
-						self.handle_monitor_update_completion_actions(update_actions);
-					}
-				}
+				self.channel_monitor_updated(&funding_txo, &shutdown_res.channel_id, None, Some(&shutdown_res.counterparty_node_id));
 			}
 		}
 		let mut shutdown_results = Vec::new();
@@ -6411,21 +6413,8 @@ where
 				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, funding_txo, channel_id, update } => {
 					self.apply_post_close_monitor_update(counterparty_node_id, channel_id, funding_txo, update);
 				},
-				BackgroundEvent::MonitorUpdatesComplete { counterparty_node_id, channel_id } => {
-					let per_peer_state = self.per_peer_state.read().unwrap();
-					if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-						let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-						let peer_state = &mut *peer_state_lock;
-						if let Some(ChannelPhase::Funded(chan)) = peer_state.channel_by_id.get_mut(&channel_id) {
-							handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
-						} else {
-							let update_actions = peer_state.monitor_update_blocked_actions
-								.remove(&channel_id).unwrap_or(Vec::new());
-							mem::drop(peer_state_lock);
-							mem::drop(per_peer_state);
-							self.handle_monitor_update_completion_actions(update_actions);
-						}
-					}
+				BackgroundEvent::MonitorUpdatesComplete { counterparty_node_id, funding_txo, channel_id } => {
+					self.channel_monitor_updated(&funding_txo, &channel_id, None, Some(&counterparty_node_id));
 				},
 			}
 		}
@@ -7785,7 +7774,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		(htlc_forwards, decode_update_add_htlcs)
 	}
 
-	fn channel_monitor_updated(&self, funding_txo: &OutPoint, channel_id: &ChannelId, highest_applied_update_id: u64, counterparty_node_id: Option<&PublicKey>) {
+	fn channel_monitor_updated(&self, funding_txo: &OutPoint, channel_id: &ChannelId, highest_applied_update_id: Option<u64>, counterparty_node_id: Option<&PublicKey>) {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
 		let counterparty_node_id = match counterparty_node_id {
@@ -7807,15 +7796,32 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
+		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(*channel_id), None);
 		let remaining_in_flight =
 			if let Some(pending) = peer_state.in_flight_monitor_updates.get_mut(funding_txo) {
-				pending.retain(|upd| upd.update_id > highest_applied_update_id);
+				if let Some(highest_applied_update_id) = highest_applied_update_id {
+					pending.retain(|upd| upd.update_id > highest_applied_update_id);
+					log_trace!(
+						logger,
+						"ChannelMonitor updated to {highest_applied_update_id}. {} pending in-flight updates.",
+						pending.len()
+					);
+				} else if let Some(update) = pending.get(0) {
+					log_trace!(
+						logger,
+						"ChannelMonitor updated to {}. {} pending in-flight updates.",
+						update.update_id - 1,
+						pending.len()
+					);
+				} else {
+					log_trace!(
+						logger,
+						"ChannelMonitor updated. {} pending in-flight updates.",
+						pending.len()
+					);
+				}
 				pending.len()
 			} else { 0 };
-
-		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(*channel_id), None);
-		log_trace!(logger, "ChannelMonitor updated to {}. {} pending in-flight updates.",
-			highest_applied_update_id, remaining_in_flight);
 
 		if remaining_in_flight != 0 {
 			return;
@@ -9651,7 +9657,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					},
 					MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id } => {
-						self.channel_monitor_updated(&funding_txo, &channel_id, monitor_update_id, counterparty_node_id.as_ref());
+						self.channel_monitor_updated(
+							&funding_txo,
+							&channel_id,
+							Some(monitor_update_id),
+							counterparty_node_id.as_ref(),
+						);
 					},
 				}
 			}
@@ -13929,6 +13940,7 @@ where
 					pending_background_events.push(
 						BackgroundEvent::MonitorUpdatesComplete {
 							counterparty_node_id: $counterparty_node_id,
+							funding_txo: $funding_txo,
 							channel_id: $monitor.channel_id(),
 						});
 				} else {
@@ -15321,7 +15333,7 @@ mod tests {
 
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
-		nodes[0].node.force_close_channel_with_peer(&chan.2, &nodes[1].node.get_our_node_id(), None, true).unwrap();
+		nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id(), "".to_string()).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
 
