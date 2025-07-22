@@ -7238,12 +7238,12 @@ where
 							fee_estimator,
 							logger,
 						) {
-							Ok(update_add_msg_opt) => {
-								// `send_htlc` only returns `Ok(None)`, when an update goes into
+							Ok(can_add_htlc) => {
+								// `send_htlc` only returns `Ok(false)`, when an update goes into
 								// the holding cell, but since we're currently freeing it, we should
-								// always expect to see the `update_add` go out.
+								// always expect to see the htlc added.
 								debug_assert!(
-									update_add_msg_opt.is_some(),
+									can_add_htlc,
 									"Must generate new update if we're freeing the holding cell"
 								);
 								update_add_count += 1;
@@ -10601,7 +10601,7 @@ where
 			fee_estimator,
 			logger,
 		)
-		.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
+		.map(|can_add_htlc| assert!(!can_add_htlc, "We forced holding cell?"))
 		.map_err(|err| {
 			debug_assert!(err.0.is_temporary(), "Queuing HTLC should return temporary error");
 			err
@@ -10611,8 +10611,9 @@ where
 	/// Adds a pending outbound HTLC to this channel, note that you probably want
 	/// [`Self::send_htlc_and_commit`] instead cause you'll want both messages at once.
 	///
-	/// This returns an optional UpdateAddHTLC as we may be in a state where we cannot add HTLCs on
-	/// the wire:
+	/// This returns a boolean indicating whether we are in a state where we can add HTLCs on the wire.
+	/// Reasons we may not be able to add HTLCs on the wire include:
+	///
 	/// * In cases where we're waiting on the remote peer to send us a revoke_and_ack, we
 	///   wouldn't be able to determine what they actually ACK'ed if we have two sets of updates
 	///   awaiting ACK.
@@ -10629,7 +10630,7 @@ where
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
 		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> Result<Option<msgs::UpdateAddHTLC>, (LocalHTLCFailureReason, String)>
+	) -> Result<bool, (LocalHTLCFailureReason, String)>
 	where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
@@ -10710,7 +10711,7 @@ where
 				skimmed_fee_msat,
 				blinding_point,
 			});
-			return Ok(None);
+			return Ok(false);
 		}
 
 		// Record the approximate time when the HTLC is sent to the peer. This timestamp is later used to calculate the
@@ -10731,20 +10732,9 @@ where
 			skimmed_fee_msat,
 			send_timestamp,
 		});
-
-		let res = msgs::UpdateAddHTLC {
-			channel_id: self.context.channel_id,
-			htlc_id: self.context.next_holder_htlc_id,
-			amount_msat,
-			payment_hash,
-			cltv_expiry,
-			onion_routing_packet,
-			skimmed_fee_msat,
-			blinding_point,
-		};
 		self.context.next_holder_htlc_id += 1;
 
-		Ok(Some(res))
+		Ok(true)
 	}
 
 	#[rustfmt::skip]
@@ -11003,20 +10993,13 @@ where
 			logger,
 		);
 		// All [`LocalHTLCFailureReason`] errors are temporary, so they are [`ChannelError::Ignore`].
-		match send_res.map_err(|(_, msg)| ChannelError::Ignore(msg))? {
-			Some(_) => {
-				let monitor_update = self.build_commitment_no_status_check(logger);
-				self.monitor_updating_paused(
-					false,
-					true,
-					false,
-					Vec::new(),
-					Vec::new(),
-					Vec::new(),
-				);
-				Ok(self.push_ret_blockable_mon_update(monitor_update))
-			},
-			None => Ok(None),
+		let can_add_htlc = send_res.map_err(|(_, msg)| ChannelError::Ignore(msg))?;
+		if can_add_htlc {
+			let monitor_update = self.build_commitment_no_status_check(logger);
+			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
+			Ok(self.push_ret_blockable_mon_update(monitor_update))
+		} else {
+			Ok(None)
 		}
 	}
 
