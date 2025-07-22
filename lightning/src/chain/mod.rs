@@ -86,8 +86,11 @@ pub trait Listen {
 
 	/// Notifies the listener that one or more blocks were removed in anticipation of a reorg.
 	///
-	/// Indicates the new best tip is the provided [`BestBlock`].
-	fn blocks_disconnected(&self, new_best_block: BestBlock);
+	/// The provided [`BestBlock`] is the new best block after disconnecting blocks in the reorg
+	/// but before connecting new ones (i.e. the "fork point" block). For backwards compatibility,
+	/// you may instead walk the chain backwards, calling `blocks_disconnected` for each block
+	/// which is disconnected in a reorg.
+	fn blocks_disconnected(&self, fork_point_block: BestBlock);
 }
 
 /// The `Confirm` trait is used to notify LDK when relevant transactions have been confirmed on
