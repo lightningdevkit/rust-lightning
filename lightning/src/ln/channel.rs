@@ -10582,22 +10582,32 @@ where
 	/// Queues up an outbound HTLC to send by placing it in the holding cell. You should call
 	/// [`Self::maybe_free_holding_cell_htlcs`] in order to actually generate and send the
 	/// commitment update.
-	#[rustfmt::skip]
 	pub fn queue_add_htlc<F: Deref, L: Deref>(
-		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
-		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
-		blinding_point: Option<PublicKey>, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
+		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
+		blinding_point: Option<PublicKey>, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<(), (LocalHTLCFailureReason, String)>
-	where F::Target: FeeEstimator, L::Target: Logger
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
-		self
-			.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, true,
-				skimmed_fee_msat, blinding_point, fee_estimator, logger)
-			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
-			.map_err(|err| {
-				debug_assert!(err.0.is_temporary(), "Queuing HTLC should return temporary error");
-				err
-			})
+		self.send_htlc(
+			amount_msat,
+			payment_hash,
+			cltv_expiry,
+			source,
+			onion_routing_packet,
+			true,
+			skimmed_fee_msat,
+			blinding_point,
+			fee_estimator,
+			logger,
+		)
+		.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
+		.map_err(|err| {
+			debug_assert!(err.0.is_temporary(), "Queuing HTLC should return temporary error");
+			err
+		})
 	}
 
 	/// Adds a pending outbound HTLC to this channel, note that you probably want
@@ -10616,18 +10626,19 @@ where
 	/// on this [`FundedChannel`] if `force_holding_cell` is false.
 	///
 	/// `Err`'s will always be temporary channel failures.
-	#[rustfmt::skip]
 	fn send_htlc<F: Deref, L: Deref>(
-		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
-		onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
+		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
+		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
 		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<Option<msgs::UpdateAddHTLC>, (LocalHTLCFailureReason, String)>
-	where F::Target: FeeEstimator, L::Target: Logger
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
-		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) ||
-			self.context.channel_state.is_local_shutdown_sent() ||
-			self.context.channel_state.is_remote_shutdown_sent()
+		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_))
+			|| self.context.channel_state.is_local_shutdown_sent()
+			|| self.context.channel_state.is_remote_shutdown_sent()
 		{
 			return Err((LocalHTLCFailureReason::ChannelNotReady,
 				"Cannot send HTLC until channel is fully established and we haven't started shutting down".to_owned()));
@@ -10639,13 +10650,23 @@ where
 
 		let available_balances = self.get_available_balances(fee_estimator);
 		if amount_msat < available_balances.next_outbound_htlc_minimum_msat {
-			return Err((LocalHTLCFailureReason::HTLCMinimum, format!("Cannot send less than our next-HTLC minimum - {} msat",
-				available_balances.next_outbound_htlc_minimum_msat)));
+			return Err((
+				LocalHTLCFailureReason::HTLCMinimum,
+				format!(
+					"Cannot send less than our next-HTLC minimum - {} msat",
+					available_balances.next_outbound_htlc_minimum_msat
+				),
+			));
 		}
 
 		if amount_msat > available_balances.next_outbound_htlc_limit_msat {
-			return Err((LocalHTLCFailureReason::HTLCMaximum, format!("Cannot send more than our next-HTLC maximum - {} msat",
-				available_balances.next_outbound_htlc_limit_msat)));
+			return Err((
+				LocalHTLCFailureReason::HTLCMaximum,
+				format!(
+					"Cannot send more than our next-HTLC maximum - {} msat",
+					available_balances.next_outbound_htlc_limit_msat
+				),
+			));
 		}
 
 		if self.context.channel_state.is_peer_disconnected() {
@@ -10655,16 +10676,26 @@ where
 			// disconnected during the time the previous hop was doing the commitment dance we may
 			// end up getting here after the forwarding delay. In any case, returning an
 			// IgnoreError will get ChannelManager to do the right thing and fail backwards now.
-			return Err((LocalHTLCFailureReason::PeerOffline,
-				"Cannot send an HTLC while disconnected from channel counterparty".to_owned()));
+			return Err((
+				LocalHTLCFailureReason::PeerOffline,
+				"Cannot send an HTLC while disconnected from channel counterparty".to_owned(),
+			));
 		}
 
 		let need_holding_cell = !self.context.channel_state.can_generate_new_commitment();
-		log_debug!(logger, "Pushing new outbound HTLC with hash {} for {} msat {}",
-			payment_hash, amount_msat,
-			if force_holding_cell { "into holding cell" }
-			else if need_holding_cell { "into holding cell as we're awaiting an RAA or monitor" }
-			else { "to peer" });
+		log_debug!(
+			logger,
+			"Pushing new outbound HTLC with hash {} for {} msat {}",
+			payment_hash,
+			amount_msat,
+			if force_holding_cell {
+				"into holding cell"
+			} else if need_holding_cell {
+				"into holding cell as we're awaiting an RAA or monitor"
+			} else {
+				"to peer"
+			}
+		);
 
 		if need_holding_cell {
 			force_holding_cell = true;
@@ -10952,24 +10983,42 @@ where
 	///
 	/// Shorthand for calling [`Self::send_htlc`] followed by a commitment update, see docs on
 	/// [`Self::send_htlc`] and [`Self::build_commitment_no_state_update`] for more info.
-	#[rustfmt::skip]
 	pub fn send_htlc_and_commit<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
-	where F::Target: FeeEstimator, L::Target: Logger
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
-		let send_res = self.send_htlc(amount_msat, payment_hash, cltv_expiry, source,
-			onion_routing_packet, false, skimmed_fee_msat, None, fee_estimator, logger);
+		let send_res = self.send_htlc(
+			amount_msat,
+			payment_hash,
+			cltv_expiry,
+			source,
+			onion_routing_packet,
+			false,
+			skimmed_fee_msat,
+			None,
+			fee_estimator,
+			logger,
+		);
 		// All [`LocalHTLCFailureReason`] errors are temporary, so they are [`ChannelError::Ignore`].
 		match send_res.map_err(|(_, msg)| ChannelError::Ignore(msg))? {
 			Some(_) => {
 				let monitor_update = self.build_commitment_no_status_check(logger);
-				self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
+				self.monitor_updating_paused(
+					false,
+					true,
+					false,
+					Vec::new(),
+					Vec::new(),
+					Vec::new(),
+				);
 				Ok(self.push_ret_blockable_mon_update(monitor_update))
 			},
-			None => Ok(None)
+			None => Ok(None),
 		}
 	}
 
