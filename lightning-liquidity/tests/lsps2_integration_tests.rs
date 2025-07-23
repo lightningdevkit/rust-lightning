@@ -1188,7 +1188,7 @@ fn full_lsps2_flow() {
 	assert!(events.is_empty(), "Expected no events from service node, got: {:?}", events);
 
 	client_node.inner.node.claim_funds(preimage.unwrap());
-
+	/// TODO SIMPLIFY: put the payment_forwarded call inside a PaymentForwardedEvent
 	let expected_paths: &[&[&lightning::ln::functional_test_utils::Node<'_, '_, '_>]] =
 		&[&[&service_node.inner, &client_node.inner]];
 
@@ -1196,7 +1196,7 @@ fn full_lsps2_flow() {
 	let total_fee_msat = pass_claimed_payment_along_route(args);
 
 	service_handler.payment_forwarded(channel_id).unwrap();
-
+	///
 	match service_node.liquidity_manager.next_event().unwrap() {
 		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::BroadcastFundingTransaction {
 			counterparty_node_id,
