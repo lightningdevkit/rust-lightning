@@ -21,7 +21,6 @@ jobs:
       - name: Install Rust stable toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain stable
-          rustup override set stable
       - name: Run externalized tests
         run: |
           cd ext-functional-test-demo
@@ -43,7 +42,6 @@ jobs:
       - name: Install Rust ${{ matrix.toolchain }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ matrix.toolchain }}
-          rustup override set ${{ matrix.toolchain }}
       - name: Install no-std-check dependencies for ARM Embedded
         if: "matrix.platform == 'self-hosted'"
         run: |
@@ -77,7 +75,6 @@ jobs:
       - name: Install Rust ${{ matrix.toolchain }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ matrix.toolchain }}
-          rustup override set ${{ matrix.toolchain }}
       - name: Set RUSTFLAGS to deny warnings
         if: "matrix.toolchain == '1.75.0'"
         run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
@@ -150,7 +147,6 @@ jobs:
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-          rustup override set ${{ env.TOOLCHAIN }}
       - name: Cache routing graph snapshot
         id: cache-graph
         uses: actions/cache@v4
@@ -217,7 +213,6 @@ jobs:
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-          rustup override set ${{ env.TOOLCHAIN }}
       - name: Fetch full tree and rebase on upstream
         run: |
           git remote add upstream https://github.com/lightningdevkit/rust-lightning
@@ -240,7 +235,6 @@ jobs:
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-          rustup override set ${{ env.TOOLCHAIN }}
       - name: Run cargo check for release build.
         run: |
           cargo check --release
@@ -267,7 +261,6 @@ jobs:
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-          rustup override set ${{ env.TOOLCHAIN }}
       - name: Install dependencies for honggfuzz
         run: |
           sudo apt-get update
@@ -295,7 +288,6 @@ jobs:
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-          rustup override set ${{ env.TOOLCHAIN }}
       - name: Install clippy
         run: |
           rustup component add clippy
@@ -313,7 +305,6 @@ jobs:
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-          rustup override set ${{ env.TOOLCHAIN }}
       - name: Install rustfmt
         run: |
           rustup component add rustfmt
