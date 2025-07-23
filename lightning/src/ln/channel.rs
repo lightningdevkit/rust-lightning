@@ -10577,8 +10577,6 @@ where
 		Ok((None, None))
 	}
 
-	// Send stuff to our remote peers:
-
 	/// Queues up an outbound HTLC to send by placing it in the holding cell. You should call
 	/// [`Self::maybe_free_holding_cell_htlcs`] in order to actually generate and send the
 	/// commitment update.
