@@ -135,7 +135,7 @@ use crate::offers::merkle::{
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
-	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OfferTlvStream,
+	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OfferId, OfferTlvStream,
 	OfferTlvStreamRef, Quantity, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -686,6 +686,13 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 		// Append the experimental bytes after the signature.
 		$self.bytes.extend_from_slice(&$self.experimental_bytes);
 
+		let offer_id = match &$self.contents {
+			InvoiceContents::ForOffer { .. } => {
+				Some(OfferId::from_valid_bolt12_tlv_stream(&$self.bytes))
+			},
+			InvoiceContents::ForRefund { .. } => None,
+		};
+
 		Ok(Bolt12Invoice {
 			#[cfg(not(c_bindings))]
 			bytes: $self.bytes,
@@ -700,6 +707,7 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 			tagged_hash: $self.tagged_hash,
 			#[cfg(c_bindings)]
 			tagged_hash: $self.tagged_hash.clone(),
+			offer_id,
 		})
 	}
 } }
@@ -734,6 +742,7 @@ pub struct Bolt12Invoice {
 	contents: InvoiceContents,
 	signature: Signature,
 	tagged_hash: TaggedHash,
+	offer_id: Option<OfferId>,
 }
 
 /// The contents of an [`Bolt12Invoice`] for responding to either an [`Offer`] or a [`Refund`].
@@ -965,6 +974,13 @@ impl Bolt12Invoice {
 	/// Hash that was used for signing the invoice.
 	pub fn signable_hash(&self) -> [u8; 32] {
 		self.tagged_hash.as_digest().as_ref().clone()
+	}
+
+	/// Returns the [`OfferId`] if this invoice corresponds to an [`Offer`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	pub fn offer_id(&self) -> Option<OfferId> {
+		self.offer_id
 	}
 
 	/// Verifies that the invoice was for a request or refund created using the given key by
@@ -1631,7 +1647,11 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 		let pubkey = contents.fields().signing_pubkey;
 		merkle::verify_signature(&signature, &tagged_hash, pubkey)?;
 
-		Ok(Bolt12Invoice { bytes, contents, signature, tagged_hash })
+		let offer_id = match &contents {
+			InvoiceContents::ForOffer { .. } => Some(OfferId::from_valid_bolt12_tlv_stream(&bytes)),
+			InvoiceContents::ForRefund { .. } => None,
+		};
+		Ok(Bolt12Invoice { bytes, contents, signature, tagged_hash, offer_id })
 	}
 }
 
@@ -1790,7 +1810,6 @@ mod tests {
 	use bitcoin::script::ScriptBuf;
 	use bitcoin::secp256k1::{self, Keypair, Message, Secp256k1, SecretKey, XOnlyPublicKey};
 	use bitcoin::{CompressedPublicKey, WitnessProgram, WitnessVersion};
-
 	use core::time::Duration;
 
 	use crate::blinded_path::message::BlindedMessagePath;
@@ -3564,6 +3583,51 @@ mod tests {
 				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedPaths)
 			),
 		}
+	}
+
+	#[test]
+	fn invoice_offer_id_matches_offer_id() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
+		let offer = OfferBuilder::new(recipient_pubkey()).amount_msats(1000).build().unwrap();
+
+		let offer_id = offer.id();
+
+		let invoice_request = offer
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
+			.unwrap();
+
+		let invoice = invoice_request
+			.respond_with_no_std(payment_paths(), payment_hash(), now())
+			.unwrap()
+			.build()
+			.unwrap()
+			.sign(recipient_sign)
+			.unwrap();
+
+		assert_eq!(invoice.offer_id(), Some(offer_id));
+	}
+
+	#[test]
+	fn refund_invoice_has_no_offer_id() {
+		let refund =
+			RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap().build().unwrap();
+
+		let invoice = refund
+			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.unwrap()
+			.build()
+			.unwrap()
+			.sign(recipient_sign)
+			.unwrap();
+
+		assert_eq!(invoice.offer_id(), None);
 	}
 
 	#[test]

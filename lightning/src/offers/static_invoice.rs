@@ -29,7 +29,7 @@ use crate::offers::merkle::{
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
 	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents,
-	OfferTlvStream, OfferTlvStreamRef, Quantity, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
+	OfferId, OfferTlvStream, OfferTlvStreamRef, Quantity, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
@@ -70,6 +70,7 @@ pub struct StaticInvoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,
 	signature: Signature,
+	offer_id: OfferId,
 }
 
 impl PartialEq for StaticInvoice {
@@ -347,7 +348,8 @@ impl UnsignedStaticInvoice {
 		// Append the experimental bytes after the signature.
 		self.bytes.extend_from_slice(&self.experimental_bytes);
 
-		Ok(StaticInvoice { bytes: self.bytes, contents: self.contents, signature })
+		let offer_id = OfferId::from_valid_bolt12_tlv_stream(&self.bytes);
+		Ok(StaticInvoice { bytes: self.bytes, contents: self.contents, signature, offer_id })
 	}
 
 	invoice_accessors_common!(self, self.contents, UnsignedStaticInvoice);
@@ -405,6 +407,13 @@ impl StaticInvoice {
 	/// duration since the Unix epoch.
 	pub fn is_offer_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
 		self.contents.is_offer_expired_no_std(duration_since_epoch)
+	}
+
+	/// Returns the [`OfferId`] corresponding to the originating [`Offer`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	pub fn offer_id(&self) -> OfferId {
+		self.offer_id
 	}
 
 	#[allow(unused)] // TODO: remove this once we remove the `async_payments` cfg flag
@@ -642,7 +651,8 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for StaticInvoice {
 		let pubkey = contents.signing_pubkey;
 		merkle::verify_signature(&signature, &tagged_hash, pubkey)?;
 
-		Ok(StaticInvoice { bytes, contents, signature })
+		let offer_id = OfferId::from_valid_bolt12_tlv_stream(&bytes);
+		Ok(StaticInvoice { bytes, contents, signature, offer_id })
 	}
 }
 
@@ -1665,5 +1675,38 @@ mod tests {
 				);
 			},
 		}
+	}
+
+	#[test]
+	fn static_invoice_offer_id_matches_offer_id() {
+		let node_id = recipient_pubkey();
+		let payment_paths = payment_paths();
+		let now = now();
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			.path(blinded_path())
+			.build()
+			.unwrap();
+
+		let offer_id = offer.id();
+
+		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths.clone(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			nonce,
+			&secp_ctx,
+		)
+		.unwrap()
+		.build_and_sign(&secp_ctx)
+		.unwrap();
+
+		assert_eq!(invoice.offer_id(), offer_id);
 	}
 }
