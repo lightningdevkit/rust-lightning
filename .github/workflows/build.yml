@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   ext-test:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ ubuntu-latest, windows-latest, macos-latest ]
+        platform: [ self-hosted, windows-latest, macos-latest ]
         toolchain: [ stable, beta, 1.63.0 ] # 1.63.0 is the MSRV for all crates but `lightning-transaction-sync`.
         exclude:
           - platform: windows-latest
@@ -45,13 +45,13 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ matrix.toolchain }}
           rustup override set ${{ matrix.toolchain }}
       - name: Install no-std-check dependencies for ARM Embedded
-        if: "matrix.platform == 'ubuntu-latest'"
+        if: "matrix.platform == 'self-hosted'"
         run: |
           rustup target add thumbv7m-none-eabi
           sudo apt-get -y install gcc-arm-none-eabi
           sudo apt-get clean
       - name: shellcheck the CI and `contrib` scripts
-        if: "matrix.platform == 'ubuntu-latest'"
+        if: "matrix.platform == 'self-hosted'"
         run: |
           sudo apt-get -y install shellcheck
           sudo apt-get clean
@@ -111,7 +111,7 @@ jobs:
   coverage:
     strategy:
       fail-fast: false
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -206,7 +206,7 @@ jobs:
           RUSTFLAGS="--cfg=ldk_bench --cfg=require_route_graph_test" cargo bench
 
   check_commits:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     env:
       TOOLCHAIN: stable
     steps:
@@ -258,7 +258,7 @@ jobs:
           RUSTDOCFLAGS: '--cfg=taproot'
 
   fuzz:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     env:
       TOOLCHAIN: 1.63
     steps:
