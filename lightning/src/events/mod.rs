@@ -2161,10 +2161,8 @@ impl Writeable for Event {
 			},
 			&Event::FundingTransactionReadyForSigning { .. } => {
 				49u8.write(writer)?;
-				// We never write out FundingTransactionReadyForSigning events as, upon disconnection, peers
-				// drop any V2-established/spliced channels which have not yet exchanged the initial `commitment_signed`.
-				// We only exhange the initial `commitment_signed` after the client calls
-				// `ChannelManager::funding_transaction_signed` and ALWAYS before we send a `tx_signatures`
+				// We never write out FundingTransactionReadyForSigning events as they will be regenerated when
+				// necessary.
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
