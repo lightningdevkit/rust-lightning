@@ -160,4 +160,16 @@ pub enum LSPS2ServiceEvent {
 		/// The intercept short channel id to use in the route hint.
 		intercept_scid: u64,
 	},
+	/// You should broadcast the funding transaction for the channel you opened.
+	///
+	/// On a client_trusts_lsp context, the client has claimed the payment, so now
+	/// you must broadcast the funding transaction.
+	BroadcastFundingTransaction {
+		/// The node id of the counterparty.
+		counterparty_node_id: PublicKey,
+		/// The user channel id that was used to open the channel.
+		user_channel_id: u128,
+		/// The funding transaction to broadcast.
+		funding_tx: bitcoin::Transaction,
+	},
 }
