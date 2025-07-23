@@ -7516,7 +7516,6 @@ where
 					true
 				}
 			});
-			let now = duration_since_epoch();
 			pending_outbound_htlcs.retain(|htlc| {
 				if let &OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) = &htlc.state {
 					log_trace!(
@@ -7527,7 +7526,7 @@ where
 					// We really want take() here, but, again, non-mut ref :(
 					match outcome.clone() {
 						OutboundHTLCOutcome::Failure(mut reason) => {
-							hold_time(htlc.send_timestamp, now).map(|hold_time| {
+							hold_time_since(htlc.send_timestamp).map(|hold_time| {
 								reason.set_hold_time(hold_time);
 							});
 							revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
@@ -12884,7 +12883,7 @@ where
 			(58, self.interactive_tx_signing_session, option), // Added in 0.2
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
-			(61, fulfill_attribution_data, optional_vec),
+			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
 		});
 
 		Ok(())
@@ -13281,12 +13280,12 @@ where
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
 			(54, pending_funding, optional_vec), // Added in 0.2
-			(55, removed_htlc_attribution_data, optional_vec),
-			(57, holding_cell_attribution_data, optional_vec),
+			(55, removed_htlc_attribution_data, optional_vec), // Added in 0.2
+			(57, holding_cell_attribution_data, optional_vec), // Added in 0.2
 			(58, interactive_tx_signing_session, option), // Added in 0.2
 			(59, minimum_depth_override, option), // Added in 0.2
 			(60, historical_scids, optional_vec), // Added in 0.2
-			(61, fulfill_attribution_data, optional_vec),
+			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -13641,7 +13640,7 @@ where
 	}
 }
 
-pub(crate) fn duration_since_epoch() -> Option<Duration> {
+fn duration_since_epoch() -> Option<Duration> {
 	#[cfg(not(feature = "std"))]
 	let now = None;
 
@@ -13657,9 +13656,9 @@ pub(crate) fn duration_since_epoch() -> Option<Duration> {
 
 /// Returns the time expressed in hold time units (1 unit = 100 ms) that has elapsed between send_timestamp and now. If
 /// any of the arguments are `None`, returns `None`.
-pub(crate) fn hold_time(send_timestamp: Option<Duration>, now: Option<Duration>) -> Option<u32> {
+pub(crate) fn hold_time_since(send_timestamp: Option<Duration>) -> Option<u32> {
 	send_timestamp.and_then(|t| {
-		now.map(|now| {
+		duration_since_epoch().map(|now| {
 			let elapsed = now.saturating_sub(t).as_millis() / HOLD_TIME_UNIT_MILLIS;
 			u32::try_from(elapsed).unwrap_or(u32::MAX)
 		})

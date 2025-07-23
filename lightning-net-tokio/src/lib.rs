@@ -721,7 +721,7 @@ mod tests {
 		#[cfg(simple_close)]
 		fn handle_closing_sig(&self, _their_node_id: PublicKey, _msg: ClosingSig) {}
 		fn handle_update_add_htlc(&self, _their_node_id: PublicKey, _msg: &UpdateAddHTLC) {}
-		fn handle_update_fulfill_htlc(&self, _their_node_id: PublicKey, _msg: &UpdateFulfillHTLC) {}
+		fn handle_update_fulfill_htlc(&self, _their_node_id: PublicKey, _msg: UpdateFulfillHTLC) {}
 		fn handle_update_fail_htlc(&self, _their_node_id: PublicKey, _msg: &UpdateFailHTLC) {}
 		fn handle_update_fail_malformed_htlc(
 			&self, _their_node_id: PublicKey, _msg: &UpdateFailMalformedHTLC,

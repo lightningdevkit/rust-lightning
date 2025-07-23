@@ -141,10 +141,10 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 
 	check_added_monitors!(nodes[1], 1);
 	// Which should result in an immediate claim/fail of the HTLC:
-	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let mut htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	if claim {
 		assert_eq!(htlc_updates.update_fulfill_htlcs.len(), 1);
-		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &htlc_updates.update_fulfill_htlcs[0]);
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), htlc_updates.update_fulfill_htlcs.remove(0));
 	} else {
 		assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
 		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]);

@@ -198,8 +198,8 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 	nodes[1].node.claim_funds(preimage);
 	check_added_monitors(&nodes[1], 1);
 
-	let update = get_htlc_update_msgs!(&nodes[1], node_id_0);
-	nodes[0].node.handle_update_fulfill_htlc(node_id_1, &update.update_fulfill_htlcs[0]);
+	let mut update = get_htlc_update_msgs!(&nodes[1], node_id_0);
+	nodes[0].node.handle_update_fulfill_htlc(node_id_1, update.update_fulfill_htlcs.remove(0));
 	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &update.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 
@@ -412,13 +412,13 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 
 	// Now that quiescence is over, nodes are allowed to make updates again. nodes[1] will have its
 	// outbound HTLC finally go out, along with the fail/claim of nodes[0]'s payment.
-	let update = get_htlc_update_msgs!(&nodes[1], node_id_0);
+	let mut update = get_htlc_update_msgs!(&nodes[1], node_id_0);
 	check_added_monitors(&nodes[1], 1);
 	nodes[0].node.handle_update_add_htlc(node_id_1, &update.update_add_htlcs[0]);
 	if fail_htlc {
 		nodes[0].node.handle_update_fail_htlc(node_id_1, &update.update_fail_htlcs[0]);
 	} else {
-		nodes[0].node.handle_update_fulfill_htlc(node_id_1, &update.update_fulfill_htlcs[0]);
+		nodes[0].node.handle_update_fulfill_htlc(node_id_1, update.update_fulfill_htlcs.remove(0));
 	}
 	commitment_signed_dance!(&nodes[0], &nodes[1], update.commitment_signed, false);
 
@@ -450,11 +450,11 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	}
 	check_added_monitors(&nodes[0], 1);
 
-	let update = get_htlc_update_msgs!(&nodes[0], node_id_1);
+	let mut update = get_htlc_update_msgs!(&nodes[0], node_id_1);
 	if fail_htlc {
 		nodes[1].node.handle_update_fail_htlc(node_id_0, &update.update_fail_htlcs[0]);
 	} else {
-		nodes[1].node.handle_update_fulfill_htlc(node_id_0, &update.update_fulfill_htlcs[0]);
+		nodes[1].node.handle_update_fulfill_htlc(node_id_0, update.update_fulfill_htlcs.remove(0));
 	}
 	commitment_signed_dance!(&nodes[1], &nodes[0], update.commitment_signed, false);
 

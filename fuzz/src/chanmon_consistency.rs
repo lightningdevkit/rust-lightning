@@ -1138,7 +1138,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 											dest.handle_update_add_htlc(nodes[$node].get_our_node_id(), &new_msg);
 										}
 									}
-									for update_fulfill in update_fulfill_htlcs.iter() {
+									let processed_change = !update_add_htlcs.is_empty() || !update_fulfill_htlcs.is_empty() ||
+										!update_fail_htlcs.is_empty() || !update_fail_malformed_htlcs.is_empty();
+									for update_fulfill in update_fulfill_htlcs {
 										out.locked_write(format!("Delivering update_fulfill_htlc from node {} to node {}.\n", $node, idx).as_bytes());
 										dest.handle_update_fulfill_htlc(nodes[$node].get_our_node_id(), update_fulfill);
 									}
@@ -1154,8 +1156,6 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 										out.locked_write(format!("Delivering update_fee from node {} to node {}.\n", $node, idx).as_bytes());
 										dest.handle_update_fee(nodes[$node].get_our_node_id(), &msg);
 									}
-									let processed_change = !update_add_htlcs.is_empty() || !update_fulfill_htlcs.is_empty() ||
-										!update_fail_htlcs.is_empty() || !update_fail_malformed_htlcs.is_empty();
 									if $limit_events != ProcessMessages::AllMessages && processed_change {
 										// If we only want to process some messages, don't deliver the CS until later.
 										extra_ev = Some(MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates: CommitmentUpdate {

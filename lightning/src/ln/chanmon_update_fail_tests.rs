@@ -114,9 +114,9 @@ fn test_monitor_and_persister_update_fail() {
 	expect_payment_claimed!(nodes[1], payment_hash, 9_000_000);
 	check_added_monitors!(nodes[1], 1);
 
-	let updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut updates = get_htlc_update_msgs!(nodes[1], node_a_id);
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &updates.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
 
 	{
 		let mut per_peer_lock;
@@ -360,7 +360,8 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			assert!(update_fee.is_none());
 
 			if (disconnect_count & 16) == 0 {
-				nodes[0].node.handle_update_fulfill_htlc(node_b_id, &update_fulfill_htlcs[0]);
+				let fulfill_msg = update_fulfill_htlcs[0].clone();
+				nodes[0].node.handle_update_fulfill_htlc(node_b_id, fulfill_msg);
 				let events_3 = nodes[0].node.get_and_clear_pending_events();
 				assert_eq!(events_3.len(), 1);
 				match events_3[0] {
@@ -467,7 +468,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 
 			nodes[0].node.handle_update_fulfill_htlc(
 				node_b_id,
-				&bs_resp.2.as_ref().unwrap().update_fulfill_htlcs[0],
+				bs_resp.2.as_ref().unwrap().update_fulfill_htlcs[0].clone(),
 			);
 			let events_3 = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events_3.len(), 1);
@@ -1286,7 +1287,7 @@ fn test_monitor_update_fail_reestablish() {
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
 	assert!(updates.update_fee.is_none());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
-	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &updates.update_fulfill_htlcs[0]);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, updates.update_fulfill_htlcs.remove(0));
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1348,7 +1349,7 @@ fn test_monitor_update_fail_reestablish() {
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
 	assert!(updates.update_fee.is_none());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &updates.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
 	commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
 	expect_payment_sent!(nodes[0], payment_preimage);
 }
@@ -1556,13 +1557,14 @@ fn claim_while_disconnected_monitor_update_fail() {
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[1], 0);
 
-	let bs_msgs = nodes[1].node.get_and_clear_pending_msg_events();
+	let mut bs_msgs = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(bs_msgs.len(), 2);
 
-	match bs_msgs[0] {
-		MessageSendEvent::UpdateHTLCs { ref node_id, channel_id: _, ref updates } => {
-			assert_eq!(*node_id, node_a_id);
-			nodes[0].node.handle_update_fulfill_htlc(node_b_id, &updates.update_fulfill_htlcs[0]);
+	match bs_msgs.remove(0) {
+		MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, mut updates } => {
+			assert_eq!(node_id, node_a_id);
+			let update_fulfill = updates.update_fulfill_htlcs.remove(0);
+			nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill);
 			expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
 			nodes[0]
 				.node
@@ -1576,7 +1578,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 		_ => panic!("Unexpected event"),
 	}
 
-	match bs_msgs[1] {
+	match bs_msgs[0] {
 		MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 			assert_eq!(*node_id, node_a_id);
 			nodes[0].node.handle_revoke_and_ack(node_b_id, msg);
@@ -1882,9 +1884,9 @@ fn test_monitor_update_fail_claim() {
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 	check_added_monitors!(nodes[1], 0);
 
-	let bs_fulfill_update = get_htlc_update_msgs!(nodes[1], node_a_id);
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &bs_fulfill_update.update_fulfill_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], bs_fulfill_update.commitment_signed, false);
+	let mut bs_fulfill = get_htlc_update_msgs!(nodes[1], node_a_id);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_fulfill.update_fulfill_htlcs.remove(0));
+	commitment_signed_dance!(nodes[0], nodes[1], bs_fulfill.commitment_signed, false);
 	expect_payment_sent!(nodes[0], payment_preimage_1);
 
 	// Get the payment forwards, note that they were batched into one commitment update.
@@ -2087,8 +2089,8 @@ fn monitor_update_claim_fail_no_response() {
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 
-	let bs_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &bs_updates.update_fulfill_htlcs[0]);
+	let mut bs_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_updates.update_fulfill_htlcs.remove(0));
 	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false);
 	expect_payment_sent!(nodes[0], payment_preimage_1);
 
@@ -2490,9 +2492,9 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	check_added_monitors!(nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 2000);
 
-	let cs_updates = get_htlc_update_msgs!(nodes[2], node_b_id);
-	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &cs_updates.update_fulfill_htlcs[0]);
-	let bs_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut cs_updates = get_htlc_update_msgs!(nodes[2], node_b_id);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, cs_updates.update_fulfill_htlcs.remove(0));
+	let mut bs_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 
@@ -2506,7 +2508,7 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 		&[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_id_2 }],
 	);
 
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &bs_updates.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_updates.update_fulfill_htlcs.remove(0));
 	expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, true, true);
 	expect_payment_path_successful!(nodes[0]);
@@ -2783,13 +2785,14 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	check_added_monitors!(nodes[0], 1);
 
 	let commitment_msg = match events.pop().unwrap() {
-		MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, updates } => {
+		MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, mut updates } => {
 			assert_eq!(node_id, node_b_id);
 			assert!(updates.update_fail_htlcs.is_empty());
 			assert!(updates.update_fail_malformed_htlcs.is_empty());
 			assert!(updates.update_fee.is_none());
 			assert_eq!(updates.update_fulfill_htlcs.len(), 1);
-			nodes[1].node.handle_update_fulfill_htlc(node_a_id, &updates.update_fulfill_htlcs[0]);
+			let update_fulfill = updates.update_fulfill_htlcs.remove(0);
+			nodes[1].node.handle_update_fulfill_htlc(node_a_id, update_fulfill);
 			expect_payment_sent(&nodes[1], payment_preimage_0, None, false, false);
 			assert_eq!(updates.update_add_htlcs.len(), 1);
 			nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
@@ -2916,7 +2919,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		);
 		fulfill_msg.attribution_data = cs_updates.update_fulfill_htlcs[0].attribution_data.clone();
 	}
-	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &fulfill_msg);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, fulfill_msg);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
 
@@ -2926,7 +2929,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		assert_eq!(bs_updates.as_ref().unwrap().update_fulfill_htlcs.len(), 1);
 		nodes[0].node.handle_update_fulfill_htlc(
 			node_b_id,
-			&bs_updates.as_ref().unwrap().update_fulfill_htlcs[0],
+			bs_updates.as_mut().unwrap().update_fulfill_htlcs.remove(0),
 		);
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 		if htlc_status == HTLCStatusAtDupClaim::Cleared {
@@ -2968,7 +2971,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		assert_eq!(bs_updates.as_ref().unwrap().update_fulfill_htlcs.len(), 1);
 		nodes[0].node.handle_update_fulfill_htlc(
 			node_b_id,
-			&bs_updates.as_ref().unwrap().update_fulfill_htlcs[0],
+			bs_updates.as_mut().unwrap().update_fulfill_htlcs.remove(0),
 		);
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 	}
@@ -3148,7 +3151,7 @@ fn double_temp_error() {
 		}
 	};
 	assert_eq!(node_id, node_a_id);
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &update_fulfill_1);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill_1);
 	check_added_monitors!(nodes[0], 0);
 	expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_signed_b1);
@@ -3192,7 +3195,7 @@ fn double_temp_error() {
 	check_added_monitors!(nodes[0], 1);
 	expect_payment_path_successful!(nodes[0]);
 
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &update_fulfill_2);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill_2);
 	check_added_monitors!(nodes[0], 0);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed_b2, false);
@@ -3458,11 +3461,11 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_1, 1_000_000);
 
-	let cs_htlc_fulfill_updates = get_htlc_update_msgs!(nodes[2], node_b_id);
+	let mut cs_htlc_fulfill = get_htlc_update_msgs!(nodes[2], node_b_id);
 	nodes[1]
 		.node
-		.handle_update_fulfill_htlc(node_c_id, &cs_htlc_fulfill_updates.update_fulfill_htlcs[0]);
-	let commitment = cs_htlc_fulfill_updates.commitment_signed;
+		.handle_update_fulfill_htlc(node_c_id, cs_htlc_fulfill.update_fulfill_htlcs.remove(0));
+	let commitment = cs_htlc_fulfill.commitment_signed;
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &commitment, false, false);
 	check_added_monitors(&nodes[1], 0);
 
@@ -3473,7 +3476,7 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 	check_added_monitors(&nodes[0], 1);
 	expect_payment_claimed!(nodes[0], payment_hash_2, 1_000_000);
 
-	let as_htlc_fulfill_updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let mut as_htlc_fulfill = get_htlc_update_msgs!(nodes[0], node_b_id);
 	if completion_mode != BlockedUpdateComplMode::Sync {
 		// We use to incorrectly handle monitor update completion in cases where we completed a
 		// monitor update async or after reload. We test both based on the `completion_mode`.
@@ -3481,7 +3484,7 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 	}
 	nodes[1]
 		.node
-		.handle_update_fulfill_htlc(node_a_id, &as_htlc_fulfill_updates.update_fulfill_htlcs[0]);
+		.handle_update_fulfill_htlc(node_a_id, as_htlc_fulfill.update_fulfill_htlcs.remove(0));
 	check_added_monitors(&nodes[1], 1); // We generate only a preimage monitor update
 	assert!(get_monitor!(nodes[1], chan_id_2).get_stored_preimages().contains_key(&payment_hash_2));
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -3517,10 +3520,9 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 	// Note that when completing as a side effect of a reload we completed the CS dance in
 	// `reconnect_nodes` above.
 	if completion_mode != BlockedUpdateComplMode::AtReload {
-		nodes[1].node.handle_commitment_signed_batch_test(
-			node_a_id,
-			&as_htlc_fulfill_updates.commitment_signed,
-		);
+		nodes[1]
+			.node
+			.handle_commitment_signed_batch_test(node_a_id, &as_htlc_fulfill.commitment_signed);
 		check_added_monitors(&nodes[1], 1);
 		let (a, raa) = do_main_commitment_signed_dance(&nodes[1], &nodes[0], false);
 		assert!(a.is_none());
@@ -3550,13 +3552,13 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 
 	// When we fetch the next update the message getter will generate the next update for nodes[2],
 	// generating a further monitor update.
-	let bs_htlc_fulfill_updates = get_htlc_update_msgs!(nodes[1], node_c_id);
+	let mut bs_htlc_fulfill = get_htlc_update_msgs!(nodes[1], node_c_id);
 	check_added_monitors(&nodes[1], 1);
 
 	nodes[2]
 		.node
-		.handle_update_fulfill_htlc(node_b_id, &bs_htlc_fulfill_updates.update_fulfill_htlcs[0]);
-	let commitment = bs_htlc_fulfill_updates.commitment_signed;
+		.handle_update_fulfill_htlc(node_b_id, bs_htlc_fulfill.update_fulfill_htlcs.remove(0));
+	let commitment = bs_htlc_fulfill.commitment_signed;
 	do_commitment_signed_dance(&nodes[2], &nodes[1], &commitment, false, false);
 	expect_payment_sent(&nodes[2], payment_preimage_2, None, true, true);
 }
@@ -3613,8 +3615,8 @@ fn do_test_inverted_mon_completion_order(
 	expect_payment_claimed!(nodes[2], payment_hash, 100_000);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	let cs_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
-	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &cs_updates.update_fulfill_htlcs[0]);
+	let mut cs_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, cs_updates.update_fulfill_htlcs.remove(0));
 
 	// B generates a new monitor update for the A <-> B channel, but doesn't send the new messages
 	// for it since the monitor update is marked in-progress.
@@ -3732,10 +3734,10 @@ fn do_test_inverted_mon_completion_order(
 		// node A.
 	}
 
-	let bs_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	let mut bs_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	check_added_monitors(&nodes[1], 1);
 
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &bs_updates.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_updates.update_fulfill_htlcs.remove(0));
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &bs_updates.commitment_signed, false, false);
 
 	expect_payment_forwarded!(
@@ -3801,8 +3803,8 @@ fn do_test_durable_preimages_on_closed_channel(
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	let cs_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
-	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &cs_updates.update_fulfill_htlcs[0]);
+	let mut cs_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, cs_updates.update_fulfill_htlcs.remove(0));
 
 	// B generates a new monitor update for the A <-> B channel, but doesn't send the new messages
 	// for it since the monitor update is marked in-progress.
@@ -3995,8 +3997,8 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	let cs_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
-	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &cs_updates.update_fulfill_htlcs[0]);
+	let mut cs_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, cs_updates.update_fulfill_htlcs.remove(0));
 
 	// B generates a new monitor update for the A <-> B channel, but doesn't send the new messages
 	// for it since the monitor update is marked in-progress.
@@ -4111,17 +4113,18 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 
-	let cs_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
+	let mut cs_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
 	if hold_chan_a {
 		// The first update will be on the A <-> B channel, which we optionally allow to complete.
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	}
-	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &cs_updates.update_fulfill_htlcs[0]);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, cs_updates.update_fulfill_htlcs.remove(0));
 	check_added_monitors(&nodes[1], 1);
 
 	if !hold_chan_a {
-		let bs_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
-		nodes[0].node.handle_update_fulfill_htlc(node_b_id, &bs_updates.update_fulfill_htlcs[0]);
+		let mut bs_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+		let mut update_fulfill = bs_updates.update_fulfill_htlcs.remove(0);
+		nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill);
 		commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false);
 		expect_payment_sent!(&nodes[0], payment_preimage);
 	}
@@ -4189,7 +4192,8 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 		assert_eq!(a_update.len(), 1);
 		assert_eq!(c_update.len(), 1);
 
-		nodes[0].node.handle_update_fulfill_htlc(node_b_id, &a_update[0].update_fulfill_htlcs[0]);
+		let update_fulfill = a_update[0].update_fulfill_htlcs[0].clone();
+		nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill);
 		commitment_signed_dance!(nodes[0], nodes[1], a_update[0].commitment_signed, false);
 		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
@@ -4261,9 +4265,9 @@ fn test_partial_claim_mon_update_compl_actions() {
 	// blocks.
 	nodes[3].chain_monitor.complete_sole_pending_chan_update(&chan_3_id);
 	expect_payment_claimed!(&nodes[3], payment_hash, 200_000);
-	let updates = get_htlc_update_msgs(&nodes[3], &node_b_id);
+	let mut updates = get_htlc_update_msgs(&nodes[3], &node_b_id);
 
-	nodes[1].node.handle_update_fulfill_htlc(node_d_id, &updates.update_fulfill_htlcs[0]);
+	nodes[1].node.handle_update_fulfill_htlc(node_d_id, updates.update_fulfill_htlcs.remove(0));
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[3], Some(1000), false, false);
 	let _bs_updates_for_a = get_htlc_update_msgs(&nodes[1], &node_a_id);
@@ -4299,8 +4303,9 @@ fn test_partial_claim_mon_update_compl_actions() {
 	}
 
 	match remove_first_msg_event_to_node(&node_c_id, &mut ds_msgs) {
-		MessageSendEvent::UpdateHTLCs { updates, .. } => {
-			nodes[2].node.handle_update_fulfill_htlc(node_d_id, &updates.update_fulfill_htlcs[0]);
+		MessageSendEvent::UpdateHTLCs { mut updates, .. } => {
+			let update_fulfill = updates.update_fulfill_htlcs.remove(0);
+			nodes[2].node.handle_update_fulfill_htlc(node_d_id, update_fulfill);
 			check_added_monitors(&nodes[2], 1);
 			expect_payment_forwarded!(nodes[2], nodes[0], nodes[3], Some(1000), false, false);
 			let _cs_updates_for_a = get_htlc_update_msgs(&nodes[2], &node_a_id);
@@ -4385,9 +4390,9 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	check_added_monitors!(nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 
-	let updates = get_htlc_update_msgs!(nodes[2], node_b_id);
+	let mut updates = get_htlc_update_msgs!(nodes[2], node_b_id);
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &updates.update_fulfill_htlcs[0]);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, updates.update_fulfill_htlcs.remove(0));
 	check_added_monitors!(nodes[1], 1);
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
 
@@ -4596,7 +4601,7 @@ fn test_single_channel_multiple_mpp() {
 		do_a_write_background.send(()).unwrap();
 	});
 	block_thrd2.store(false, Ordering::Release);
-	let first_updates = get_htlc_update_msgs(&nodes[8], &node_h_id);
+	let mut first_updates = get_htlc_update_msgs(&nodes[8], &node_h_id);
 	thrd2.join().unwrap();
 
 	// Disconnect node 6 from all its peers so it doesn't bother to fail the HTLCs back
@@ -4607,7 +4612,8 @@ fn test_single_channel_multiple_mpp() {
 	nodes[7].node.peer_disconnected(node_f_id);
 	nodes[7].node.peer_disconnected(node_g_id);
 
-	nodes[7].node.handle_update_fulfill_htlc(node_i_id, &first_updates.update_fulfill_htlcs[0]);
+	let first_update_fulfill = first_updates.update_fulfill_htlcs.remove(0);
+	nodes[7].node.handle_update_fulfill_htlc(node_i_id, first_update_fulfill);
 	check_added_monitors(&nodes[7], 1);
 	expect_payment_forwarded!(nodes[7], nodes[1], nodes[8], Some(1000), false, false);
 	nodes[7].node.handle_commitment_signed_batch_test(node_i_id, &first_updates.commitment_signed);
@@ -4654,22 +4660,22 @@ fn test_single_channel_multiple_mpp() {
 	nodes[8].node.handle_commitment_signed_batch_test(node_h_id, &cs);
 	check_added_monitors(&nodes[8], 1);
 
-	let (updates, raa) = get_updates_and_revoke(&nodes[8], &node_h_id);
+	let (mut updates, raa) = get_updates_and_revoke(&nodes[8], &node_h_id);
 
-	nodes[7].node.handle_update_fulfill_htlc(node_i_id, &updates.update_fulfill_htlcs[0]);
+	nodes[7].node.handle_update_fulfill_htlc(node_i_id, updates.update_fulfill_htlcs.remove(0));
 	expect_payment_forwarded!(nodes[7], nodes[2], nodes[8], Some(1000), false, false);
-	nodes[7].node.handle_update_fulfill_htlc(node_i_id, &updates.update_fulfill_htlcs[1]);
+	nodes[7].node.handle_update_fulfill_htlc(node_i_id, updates.update_fulfill_htlcs.remove(0));
 	expect_payment_forwarded!(nodes[7], nodes[3], nodes[8], Some(1000), false, false);
 	let mut next_source = 4;
-	if let Some(update) = updates.update_fulfill_htlcs.get(2) {
-		nodes[7].node.handle_update_fulfill_htlc(node_i_id, update);
+	if let Some(update) = updates.update_fulfill_htlcs.get(0) {
+		nodes[7].node.handle_update_fulfill_htlc(node_i_id, update.clone());
 		expect_payment_forwarded!(nodes[7], nodes[4], nodes[8], Some(1000), false, false);
 		next_source += 1;
 	}
 
 	nodes[7].node.handle_commitment_signed_batch_test(node_i_id, &updates.commitment_signed);
 	nodes[7].node.handle_revoke_and_ack(node_i_id, &raa);
-	if updates.update_fulfill_htlcs.get(2).is_some() {
+	if updates.update_fulfill_htlcs.get(0).is_some() {
 		check_added_monitors(&nodes[7], 5);
 	} else {
 		check_added_monitors(&nodes[7], 4);
@@ -4681,22 +4687,22 @@ fn test_single_channel_multiple_mpp() {
 	nodes[8].node.handle_commitment_signed_batch_test(node_h_id, &cs);
 	check_added_monitors(&nodes[8], 2);
 
-	let (updates, raa) = get_updates_and_revoke(&nodes[8], &node_h_id);
+	let (mut updates, raa) = get_updates_and_revoke(&nodes[8], &node_h_id);
 
-	nodes[7].node.handle_update_fulfill_htlc(node_i_id, &updates.update_fulfill_htlcs[0]);
+	nodes[7].node.handle_update_fulfill_htlc(node_i_id, updates.update_fulfill_htlcs.remove(0));
 	expect_payment_forwarded!(nodes[7], nodes[next_source], nodes[8], Some(1000), false, false);
 	next_source += 1;
-	nodes[7].node.handle_update_fulfill_htlc(node_i_id, &updates.update_fulfill_htlcs[1]);
+	nodes[7].node.handle_update_fulfill_htlc(node_i_id, updates.update_fulfill_htlcs.remove(0));
 	expect_payment_forwarded!(nodes[7], nodes[next_source], nodes[8], Some(1000), false, false);
 	next_source += 1;
-	if let Some(update) = updates.update_fulfill_htlcs.get(2) {
-		nodes[7].node.handle_update_fulfill_htlc(node_i_id, update);
+	if let Some(update) = updates.update_fulfill_htlcs.get(0) {
+		nodes[7].node.handle_update_fulfill_htlc(node_i_id, update.clone());
 		expect_payment_forwarded!(nodes[7], nodes[next_source], nodes[8], Some(1000), false, false);
 	}
 
 	nodes[7].node.handle_commitment_signed_batch_test(node_i_id, &updates.commitment_signed);
 	nodes[7].node.handle_revoke_and_ack(node_i_id, &raa);
-	if updates.update_fulfill_htlcs.get(2).is_some() {
+	if updates.update_fulfill_htlcs.get(0).is_some() {
 		check_added_monitors(&nodes[7], 5);
 	} else {
 		check_added_monitors(&nodes[7], 4);

@@ -60,11 +60,10 @@ use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::channel::{
-	self, hold_time, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, InboundV1Channel,
-	OutboundV1Channel, ReconnectionMsg, ShutdownResult, UpdateFulfillCommitFetch,
-	WithChannelContext,
+	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, FundedChannel,
+	InboundV1Channel, OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult,
+	UpdateFulfillCommitFetch, WithChannelContext,
 };
-use crate::ln::channel::{duration_since_epoch, PendingV2Channel};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::inbound_payment;
 use crate::ln::msgs;
@@ -7924,7 +7923,7 @@ where
 					};
 
 				let attribution_data = process_fulfill_attribution_data(
-					attribution_data.as_ref(),
+					attribution_data,
 					&htlc.prev_hop.incoming_packet_shared_secret,
 					0,
 				);
@@ -8289,7 +8288,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
 		next_channel_outpoint: OutPoint, next_channel_id: ChannelId,
-		next_user_channel_id: Option<u128>, attribution_data: Option<&AttributionData>,
+		next_user_channel_id: Option<u128>, attribution_data: Option<AttributionData>,
 		send_timestamp: Option<Duration>,
 	) {
 		match source {
@@ -8324,8 +8323,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
 
 				// Obtain hold time, if available.
-				let now = duration_since_epoch();
-				let hold_time = hold_time(send_timestamp, now).unwrap_or(0);
+				let hold_time = hold_time_since(send_timestamp).unwrap_or(0);
 
 				// If attribution data was received from downstream, we shift it and get it ready for adding our hold
 				// time. Note that fulfilled HTLCs take a fast path to the incoming side. We don't need to wait for RAA
@@ -9941,7 +9939,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	fn internal_update_fulfill_htlc(
-		&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC,
+		&self, counterparty_node_id: &PublicKey, msg: msgs::UpdateFulfillHTLC,
 	) -> Result<(), MsgHandleErrInternal> {
 		let funding_txo;
 		let next_user_channel_id;
@@ -10000,7 +9998,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			funding_txo,
 			msg.channel_id,
 			Some(next_user_channel_id),
-			msg.attribution_data.as_ref(),
+			msg.attribution_data,
 			send_timestamp,
 		);
 
@@ -13520,7 +13518,7 @@ where
 	}
 
 	fn handle_update_fulfill_htlc(
-		&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateFulfillHTLC,
+		&self, counterparty_node_id: PublicKey, msg: msgs::UpdateFulfillHTLC,
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_update_fulfill_htlc(&counterparty_node_id, msg);
@@ -17068,20 +17066,20 @@ mod tests {
 		expect_payment_claimed!(nodes[1], our_payment_hash, 200_000);
 		check_added_monitors!(nodes[1], 2);
 
-		let bs_first_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &bs_first_updates.update_fulfill_htlcs[0]);
+		let mut bs_1st_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_1st_updates.update_fulfill_htlcs.remove(0));
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
-		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_first_updates.commitment_signed);
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_1st_updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
 		check_added_monitors!(nodes[1], 1);
-		let bs_second_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let mut bs_2nd_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_first_cs);
 		check_added_monitors!(nodes[1], 1);
 		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &bs_second_updates.update_fulfill_htlcs[0]);
-		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_2nd_updates.update_fulfill_htlcs.remove(0));
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_2nd_updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
@@ -18344,9 +18342,10 @@ pub mod bench {
 				expect_payment_claimed!(ANodeHolder { node: &$node_b }, payment_hash, 10_000);
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
-					MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, updates } => {
+					MessageSendEvent::UpdateHTLCs { node_id, mut updates, .. } => {
 						assert_eq!(node_id, $node_a.get_our_node_id());
-						$node_a.handle_update_fulfill_htlc($node_b.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+						let fulfill = updates.update_fulfill_htlcs.remove(0);
+						$node_a.handle_update_fulfill_htlc($node_b.get_our_node_id(), fulfill);
 						$node_a.handle_commitment_signed_batch_test($node_b.get_our_node_id(), &updates.commitment_signed);
 					},
 					_ => panic!("Failed to generate claim event"),

@@ -110,7 +110,7 @@ pub(crate) enum PendingOutboundPayment {
 		// The deadline as duration since the Unix epoch for the async recipient to come online,
 		// after which we'll fail the payment.
 		//
-		// Defaults to [`ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY`].
+		// Defaults to creation time + [`ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY`].
 		expiry_time: Duration,
 	},
 	Retryable {

@@ -3733,7 +3733,7 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 			($node: expr, $prev_node: expr) => {{
 				$node.node.handle_update_fulfill_htlc(
 					$prev_node.node.get_our_node_id(),
-					&next_msgs.as_ref().unwrap().0,
+					next_msgs.as_ref().unwrap().0.clone(),
 				);
 				check_added_monitors!($node, 0);
 				assert!($node.node.get_and_clear_pending_msg_events().is_empty());
@@ -3744,7 +3744,7 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 			($idx: expr, $node: expr, $prev_node: expr, $next_node: expr, $new_msgs: expr) => {{
 				$node.node.handle_update_fulfill_htlc(
 					$prev_node.node.get_our_node_id(),
-					&next_msgs.as_ref().unwrap().0,
+					next_msgs.as_ref().unwrap().0.clone(),
 				);
 				let mut fee = {
 					let (base_fee, prop_fee) = {
@@ -4923,7 +4923,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				node_a.node.handle_update_add_htlc(node_b_id, &update_add);
 			}
 			for update_fulfill in commitment_update.update_fulfill_htlcs {
-				node_a.node.handle_update_fulfill_htlc(node_b_id, &update_fulfill);
+				node_a.node.handle_update_fulfill_htlc(node_b_id, update_fulfill);
 			}
 			for update_fail in commitment_update.update_fail_htlcs {
 				node_a.node.handle_update_fail_htlc(node_b_id, &update_fail);
@@ -5002,7 +5002,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				node_b.node.handle_update_add_htlc(node_a_id, &update_add);
 			}
 			for update_fulfill in commitment_update.update_fulfill_htlcs {
-				node_b.node.handle_update_fulfill_htlc(node_a_id, &update_fulfill);
+				node_b.node.handle_update_fulfill_htlc(node_a_id, update_fulfill);
 			}
 			for update_fail in commitment_update.update_fail_htlcs {
 				node_b.node.handle_update_fail_htlc(node_a_id, &update_fail);

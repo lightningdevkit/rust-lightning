@@ -899,8 +899,9 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	check_added_monitors!(nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_1, 1_000_000);
 
-	let htlc_fulfill = get_htlc_update_msgs!(nodes[2], node_b_id);
-	nodes[1].node.handle_update_fulfill_htlc(node_c_id, &htlc_fulfill.update_fulfill_htlcs[0]);
+	let mut htlc_fulfill = get_htlc_update_msgs!(nodes[2], node_b_id);
+	let fulfill_msg = htlc_fulfill.update_fulfill_htlcs.remove(0);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, fulfill_msg);
 	check_added_monitors!(nodes[1], 1);
 	commitment_signed_dance!(nodes[1], nodes[2], htlc_fulfill.commitment_signed, false);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
@@ -1404,8 +1405,9 @@ fn test_fulfill_restart_failure() {
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 100_000);
 
-	let htlc_fulfill = get_htlc_update_msgs!(nodes[1], node_a_id);
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &htlc_fulfill.update_fulfill_htlcs[0]);
+	let mut htlc_fulfill = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let fulfill_msg = htlc_fulfill.update_fulfill_htlcs.remove(0);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, fulfill_msg);
 	expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 
 	// Now reload nodes[1]...
@@ -2994,10 +2996,10 @@ fn auto_retry_partial_failure() {
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, amt_msat);
 	nodes[1].node.claim_funds(payment_preimage);
 	expect_payment_claimed!(nodes[1], payment_hash, amt_msat);
-	let bs_claim = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut bs_claim = get_htlc_update_msgs!(nodes[1], node_a_id);
 	assert_eq!(bs_claim.update_fulfill_htlcs.len(), 1);
 
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &bs_claim.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_claim.update_fulfill_htlcs.remove(0));
 	expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_claim.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
@@ -3005,7 +3007,7 @@ fn auto_retry_partial_failure() {
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_third_raa);
 	check_added_monitors!(nodes[1], 4);
-	let bs_2nd_claim = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut bs_2nd_claim = get_htlc_update_msgs!(nodes[1], node_a_id);
 
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_third_cs);
 	check_added_monitors!(nodes[1], 1);
@@ -3015,8 +3017,10 @@ fn auto_retry_partial_failure() {
 	check_added_monitors!(nodes[0], 1);
 	expect_payment_path_successful!(nodes[0]);
 
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &bs_2nd_claim.update_fulfill_htlcs[0]);
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &bs_2nd_claim.update_fulfill_htlcs[1]);
+	let bs_second_fulfill_a = bs_2nd_claim.update_fulfill_htlcs.remove(0);
+	let bs_second_fulfill_b = bs_2nd_claim.update_fulfill_htlcs.remove(0);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_second_fulfill_a);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_second_fulfill_b);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_2nd_claim.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
 	let (as_fourth_raa, as_fourth_cs) = get_revoke_commit_msgs!(nodes[0], node_b_id);
@@ -4061,14 +4065,14 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	expect_payment_claimed!(nodes[1], our_payment_hash, 1_000_000);
 
 	if at_midpoint {
-		let updates = get_htlc_update_msgs!(nodes[1], node_a_id);
-		nodes[0].node.handle_update_fulfill_htlc(node_b_id, &updates.update_fulfill_htlcs[0]);
+		let mut updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+		nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
 		nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 	} else {
-		let htlc_fulfill = get_htlc_update_msgs!(nodes[1], node_a_id);
-		nodes[0].node.handle_update_fulfill_htlc(node_b_id, &htlc_fulfill.update_fulfill_htlcs[0]);
-		commitment_signed_dance!(nodes[0], nodes[1], htlc_fulfill.commitment_signed, false);
+		let mut fulfill = get_htlc_update_msgs!(nodes[1], node_a_id);
+		nodes[0].node.handle_update_fulfill_htlc(node_b_id, fulfill.update_fulfill_htlcs.remove(0));
+		commitment_signed_dance!(nodes[0], nodes[1], fulfill.commitment_signed, false);
 		// Ignore the PaymentSent event which is now pending on nodes[0] - if we were to handle it we'd
 		// be expected to ignore the eventual conflicting PaymentFailed, but by not looking at it we
 		// expect to get the PaymentSent again later.
@@ -4280,11 +4284,12 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		check_added_monitors(&nodes[1], 1);
 		expect_payment_forwarded!(nodes[1], nodes[0], nodes[3], Some(1000), false, true);
 
-		let bs_claims = nodes[1].node.get_and_clear_pending_msg_events();
+		let mut bs_claims = nodes[1].node.get_and_clear_pending_msg_events();
 		check_added_monitors(&nodes[1], 1);
 		assert_eq!(bs_claims.len(), 1);
-		if let MessageSendEvent::UpdateHTLCs { updates, .. } = &bs_claims[0] {
-			nodes[0].node.handle_update_fulfill_htlc(node_b_id, &updates.update_fulfill_htlcs[0]);
+		if let MessageSendEvent::UpdateHTLCs { mut updates, .. } = bs_claims.remove(0) {
+			let fulfill = updates.update_fulfill_htlcs.remove(0);
+			nodes[0].node.handle_update_fulfill_htlc(node_b_id, fulfill);
 			commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false, true);
 		} else {
 			panic!();
@@ -4292,11 +4297,13 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 
 		expect_payment_sent!(nodes[0], payment_preimage);
 
-		let ds_claim_msgs = nodes[3].node.get_and_clear_pending_msg_events();
+		let mut ds_claim_msgs = nodes[3].node.get_and_clear_pending_msg_events();
 		assert_eq!(ds_claim_msgs.len(), 1);
-		let cs_claim_msgs = if let MessageSendEvent::UpdateHTLCs { updates, .. } = &ds_claim_msgs[0]
+		let mut cs_claim_msgs = if let MessageSendEvent::UpdateHTLCs { mut updates, .. } =
+			ds_claim_msgs.remove(0)
 		{
-			nodes[2].node.handle_update_fulfill_htlc(node_d_id, &updates.update_fulfill_htlcs[0]);
+			let fulfill = updates.update_fulfill_htlcs.remove(0);
+			nodes[2].node.handle_update_fulfill_htlc(node_d_id, fulfill);
 			let cs_claim_msgs = nodes[2].node.get_and_clear_pending_msg_events();
 			check_added_monitors(&nodes[2], 1);
 			commitment_signed_dance!(nodes[2], nodes[3], updates.commitment_signed, false, true);
@@ -4307,8 +4314,9 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		};
 
 		assert_eq!(cs_claim_msgs.len(), 1);
-		if let MessageSendEvent::UpdateHTLCs { updates, .. } = &cs_claim_msgs[0] {
-			nodes[0].node.handle_update_fulfill_htlc(node_c_id, &updates.update_fulfill_htlcs[0]);
+		if let MessageSendEvent::UpdateHTLCs { mut updates, .. } = cs_claim_msgs.remove(0) {
+			let fulfill = updates.update_fulfill_htlcs.remove(0);
+			nodes[0].node.handle_update_fulfill_htlc(node_c_id, fulfill);
 			commitment_signed_dance!(nodes[0], nodes[2], updates.commitment_signed, false, true);
 		} else {
 			panic!();

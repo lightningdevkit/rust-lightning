@@ -825,20 +825,20 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 
 	// Handle the update_fulfill_htlc, but fail to persist the monitor update when handling the
 	// commitment_signed.
-	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
+	let mut events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
-	match events_2[0] {
+	match events_2.remove(0) {
 		MessageSendEvent::UpdateHTLCs {
 			node_id: _,
 			channel_id: _,
-			updates: msgs::CommitmentUpdate { ref update_fulfill_htlcs, ref commitment_signed, .. },
+			updates: msgs::CommitmentUpdate { mut update_fulfill_htlcs, commitment_signed, .. },
 		} => {
-			nodes[0].node.handle_update_fulfill_htlc(node_b_id, &update_fulfill_htlcs[0]);
+			nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill_htlcs.remove(0));
 			expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
 			if monitor_update_failure {
 				chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 			}
-			nodes[0].node.handle_commitment_signed_batch_test(node_b_id, commitment_signed);
+			nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_signed);
 			if monitor_update_failure {
 				assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 			} else {
@@ -1401,8 +1401,8 @@ fn test_no_disconnect_while_async_commitment_signed_expecting_remote_revoke_and_
 
 	// After processing the `update_fulfill`, they'll only be able to send `revoke_and_ack` until
 	// the `commitment_signed` is no longer pending.
-	let update = get_htlc_update_msgs!(&nodes[1], node_a_id);
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &update.update_fulfill_htlcs[0]);
+	let mut update = get_htlc_update_msgs!(&nodes[1], node_a_id);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update.update_fulfill_htlcs.remove(0));
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &update.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 

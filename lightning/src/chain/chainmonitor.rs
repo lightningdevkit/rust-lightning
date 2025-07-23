@@ -1394,8 +1394,8 @@ mod tests {
 		// Now manually walk the commitment signed dance - because we claimed two payments
 		// back-to-back it doesn't fit into the neat walk commitment_signed_dance does.
 
-		let updates = get_htlc_update_msgs!(nodes[1], node_a_id);
-		nodes[0].node.handle_update_fulfill_htlc(node_b_id, &updates.update_fulfill_htlcs[0]);
+		let mut updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+		nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
 		expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
 		nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
@@ -1403,18 +1403,18 @@ mod tests {
 
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &as_first_raa);
 		check_added_monitors!(nodes[1], 1);
-		let bs_second_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+		let mut bs_2nd_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
 		nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_first_update);
 		check_added_monitors!(nodes[1], 1);
 		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
 
 		nodes[0]
 			.node
-			.handle_update_fulfill_htlc(node_b_id, &bs_second_updates.update_fulfill_htlcs[0]);
+			.handle_update_fulfill_htlc(node_b_id, bs_2nd_updates.update_fulfill_htlcs.remove(0));
 		expect_payment_sent(&nodes[0], payment_preimage_2, None, false, false);
 		nodes[0]
 			.node
-			.handle_commitment_signed_batch_test(node_b_id, &bs_second_updates.commitment_signed);
+			.handle_commitment_signed_batch_test(node_b_id, &bs_2nd_updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_first_raa);
 		expect_payment_path_successful!(nodes[0]);

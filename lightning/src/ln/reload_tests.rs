@@ -880,14 +880,15 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 
 		// Once we call `get_and_clear_pending_msg_events` the holding cell is cleared and the HTLC
 		// claim should fly.
-		let ds_msgs = nodes[3].node.get_and_clear_pending_msg_events();
+		let mut ds_msgs = nodes[3].node.get_and_clear_pending_msg_events();
 		check_added_monitors!(nodes[3], 1);
 		assert_eq!(ds_msgs.len(), 2);
 		if let MessageSendEvent::SendChannelUpdate { .. } = ds_msgs[0] {} else { panic!(); }
 
-		let cs_updates = match ds_msgs[1] {
-			MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
-				nodes[2].node.handle_update_fulfill_htlc(nodes[3].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+		let mut cs_updates = match ds_msgs.remove(1) {
+			MessageSendEvent::UpdateHTLCs { mut updates, .. } => {
+				let mut fulfill = updates.update_fulfill_htlcs.remove(0);
+				nodes[2].node.handle_update_fulfill_htlc(nodes[3].node.get_our_node_id(), fulfill);
 				check_added_monitors!(nodes[2], 1);
 				let cs_updates = get_htlc_update_msgs!(nodes[2], nodes[0].node.get_our_node_id());
 				expect_payment_forwarded!(nodes[2], nodes[0], nodes[3], Some(1000), false, false);
@@ -897,7 +898,8 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 			_ => panic!(),
 		};
 
-		nodes[0].node.handle_update_fulfill_htlc(nodes[2].node.get_our_node_id(), &cs_updates.update_fulfill_htlcs[0]);
+		let fulfill = cs_updates.update_fulfill_htlcs.remove(0);
+		nodes[0].node.handle_update_fulfill_htlc(nodes[2].node.get_our_node_id(), fulfill);
 		commitment_signed_dance!(nodes[0], nodes[2], cs_updates.commitment_signed, false, true);
 		expect_payment_sent!(nodes[0], payment_preimage);
 
@@ -1064,19 +1066,13 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	}
 	check_added_monitors!(nodes[1], 1);
 
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	match &events[0] {
-		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { update_fulfill_htlcs, update_fail_htlcs, commitment_signed, .. }, .. } => {
-			if claim_htlc {
-				nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &update_fulfill_htlcs[0]);
-			} else {
-				nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
-			}
-			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false);
-		},
-		_ => panic!("Unexpected event"),
+	let mut update = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	if claim_htlc {
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), update.update_fulfill_htlcs.remove(0));
+	} else {
+		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update.update_fail_htlcs[0]);
 	}
+	commitment_signed_dance!(nodes[0], nodes[1], update.commitment_signed, false);
 
 	if claim_htlc {
 		expect_payment_sent!(nodes[0], payment_preimage);

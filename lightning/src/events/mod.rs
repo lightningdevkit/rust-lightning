@@ -1101,11 +1101,22 @@ pub enum Event {
 		///
 		/// May contain a closed channel if the HTLC sent along the path was fulfilled on chain.
 		path: Path,
-		/// The hold times as reported by each hop. The unit in which the hold times are expressed are 100's of
-		/// milliseconds. So a hop reporting 2 is a hold time that corresponds to roughly 200 milliseconds. As earlier
-		/// hops hold on to an HTLC for longer, the hold times in the list are expected to decrease. When our peer
-		/// didn't provide attribution data, the list is empty. The same applies to HTLCs that were resolved onchain.
-		/// Because of unavailability of hold times, the list may be shorter than the number of hops in the path.
+		/// The time that each hop indicated it held the HTLC.
+		///
+		/// The unit in which the hold times are expressed are 100's of milliseconds. So a hop
+		/// reporting 2 is a hold time that corresponds to between 200 and 299 milliseconds.
+		///
+		/// We expect that at each hop the actual hold time will be strictly greater than the hold
+		/// time of the following hops, as a node along the path shouldn't have completed the HTLC
+		/// until the next node has completed it. Note that because hold times are in 100's of ms,
+		/// hold times as reported are likely to often be equal across hops.
+		///
+		/// If our peer didn't provide attribution data or the HTLC resolved on chain, the list
+		/// will be empty.
+		///
+		/// Each entry will correspond with one entry in [`Path::hops`], or, thereafter, the
+		/// [`BlindedTail::trampoline_hops`] in [`Path::blinded_tail`]. Because not all nodes
+		/// support hold times, the list may be shorter than the number of hops in the path.
 		hold_times: Vec<u32>,
 	},
 	/// Indicates an outbound HTLC we sent failed, likely due to an intermediary node being unable to
@@ -1158,11 +1169,22 @@ pub enum Event {
 		error_code: Option<u16>,
 		#[cfg(any(test, feature = "_test_utils"))]
 		error_data: Option<Vec<u8>>,
-		/// The hold times as reported by each hop. The unit in which the hold times are expressed are 100's of
-		/// milliseconds. So a hop reporting 2 is a hold time that corresponds to roughly 200 milliseconds. As earlier
-		/// hops hold on to an HTLC for longer, the hold times in the list are expected to decrease. When our peer
-		/// didn't provide attribution data, the list is empty. The same applies to HTLCs that were resolved onchain.
-		/// Because of unavailability of hold times, the list may be shorter than the number of hops in the path.
+		/// The time that each hop indicated it held the HTLC.
+		///
+		/// The unit in which the hold times are expressed are 100's of milliseconds. So a hop
+		/// reporting 2 is a hold time that corresponds to between 200 and 299 milliseconds.
+		///
+		/// We expect that at each hop the actual hold time will be strictly greater than the hold
+		/// time of the following hops, as a node along the path shouldn't have completed the HTLC
+		/// until the next node has completed it. Note that because hold times are in 100's of ms,
+		/// hold times as reported are likely to often be equal across hops.
+		///
+		/// If our peer didn't provide attribution data or the HTLC resolved on chain, the list
+		/// will be empty.
+		///
+		/// Each entry will correspond with one entry in [`Path::hops`], or, thereafter, the
+		/// [`BlindedTail::trampoline_hops`] in [`Path::blinded_tail`]. Because not all nodes
+		/// support hold times, the list may be shorter than the number of hops in the path.
 		hold_times: Vec<u32>,
 	},
 	/// Indicates that a probe payment we sent returned successful, i.e., only failed at the destination.

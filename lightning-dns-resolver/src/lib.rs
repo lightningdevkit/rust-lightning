@@ -455,8 +455,8 @@ mod test {
 		}
 
 		check_added_monitors(&nodes[1], 1);
-		let updates = get_htlc_update_msgs!(nodes[1], payer_id);
-		nodes[0].node.handle_update_fulfill_htlc(payee_id, &updates.update_fulfill_htlcs[0]);
+		let mut updates = get_htlc_update_msgs!(nodes[1], payer_id);
+		nodes[0].node.handle_update_fulfill_htlc(payee_id, updates.update_fulfill_htlcs.remove(0));
 		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
 
 		expect_payment_sent(&nodes[0], our_payment_preimage, None, true, true);

@@ -2021,7 +2021,7 @@ pub trait ChannelMessageHandler: BaseMessageHandler {
 	/// Handle an incoming `update_add_htlc` message from the given peer.
 	fn handle_update_add_htlc(&self, their_node_id: PublicKey, msg: &UpdateAddHTLC);
 	/// Handle an incoming `update_fulfill_htlc` message from the given peer.
-	fn handle_update_fulfill_htlc(&self, their_node_id: PublicKey, msg: &UpdateFulfillHTLC);
+	fn handle_update_fulfill_htlc(&self, their_node_id: PublicKey, msg: UpdateFulfillHTLC);
 	/// Handle an incoming `update_fail_htlc` message from the given peer.
 	fn handle_update_fail_htlc(&self, their_node_id: PublicKey, msg: &UpdateFailHTLC);
 	/// Handle an incoming `update_fail_malformed_htlc` message from the given peer.

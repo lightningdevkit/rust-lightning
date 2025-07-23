@@ -552,7 +552,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 3_000_100);
 
-	let b_htlc_msgs = get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
+	let mut b_htlc_msgs = get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
 	// We claim the dust payment here as well, but it won't impact our claimable balances as its
 	// dust and thus doesn't appear on chain at all.
 	nodes[1].node.claim_funds(dust_payment_preimage);
@@ -565,7 +565,8 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 
 	if prev_commitment_tx {
 		// To build a previous commitment transaction, deliver one round of commitment messages.
-		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &b_htlc_msgs.update_fulfill_htlcs[0]);
+		let bs_fulfill = b_htlc_msgs.update_fulfill_htlcs.remove(0);
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_fulfill);
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &b_htlc_msgs.commitment_signed);
 		check_added_monitors!(nodes[0], 1);

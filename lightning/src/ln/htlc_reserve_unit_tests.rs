@@ -505,7 +505,7 @@ pub fn channel_reserve_in_flight_removes() {
 	nodes[1].node.claim_funds(payment_preimage_1);
 	expect_payment_claimed!(nodes[1], payment_hash_1, payment_value_1);
 	check_added_monitors(&nodes[1], 1);
-	let bs_removes = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut bs_removes = get_htlc_update_msgs!(nodes[1], node_a_id);
 
 	// This claim goes in B's holding cell, allowing us to have a pending B->A RAA which does not
 	// remove the second HTLC when we send the HTLC back from B to A.
@@ -514,7 +514,7 @@ pub fn channel_reserve_in_flight_removes() {
 	check_added_monitors(&nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &bs_removes.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_removes.update_fulfill_htlcs.remove(0));
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_removes.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
@@ -528,7 +528,7 @@ pub fn channel_reserve_in_flight_removes() {
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_raa);
 	check_added_monitors(&nodes[1], 1);
-	let bs_cs = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut bs_cs = get_htlc_update_msgs!(nodes[1], node_a_id);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_raa);
 	check_added_monitors(&nodes[0], 1);
@@ -543,7 +543,7 @@ pub fn channel_reserve_in_flight_removes() {
 	// However, the RAA A generates here *does* fully resolve the HTLC from B's point of view (as A
 	// can no longer broadcast a commitment transaction with it and B has the preimage so can go
 	// on-chain as necessary).
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &bs_cs.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_cs.update_fulfill_htlcs.remove(0));
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_cs.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
@@ -1817,7 +1817,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 		attribution_data: None,
 	};
 
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &update_msg);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_msg);
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
@@ -1967,7 +1967,7 @@ pub fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 
 	update_fulfill_msg.htlc_id = 1;
 
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &update_fulfill_msg);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill_msg);
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
@@ -2026,7 +2026,7 @@ pub fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 
 	update_fulfill_msg.payment_preimage = PaymentPreimage([1; 32]);
 
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, &update_fulfill_msg);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill_msg);
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
