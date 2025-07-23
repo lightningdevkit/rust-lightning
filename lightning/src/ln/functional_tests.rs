@@ -9019,7 +9019,7 @@ pub fn test_duplicate_chan_id() {
 			} => {
 				// Technically, at this point, nodes[1] would be justified in thinking both
 				// channels are closed, but currently we do not, so we just move forward with it.
-				assert_eq!(msg.channel_id, channel_id);
+				assert_eq!(msg.channel_id, funding_created.temporary_channel_id);
 				assert_eq!(node_id, node_a_id);
 			},
 			_ => panic!("Unexpected event"),
