@@ -10536,8 +10536,7 @@ where
 					err
 				))
 			})?;
-		// FIXME: Propagate message
-		let _msg = interactive_tx_constructor.take_initiator_first_message();
+		debug_assert!(interactive_tx_constructor.take_initiator_first_message().is_none());
 
 		let funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
 
