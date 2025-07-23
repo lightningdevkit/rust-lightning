@@ -6,10 +6,14 @@ use common::{create_service_and_client_nodes, get_lsps_message, LSPSNodes, Liqui
 
 use lightning::check_added_monitors;
 use lightning::events::Event;
+use lightning::get_event_msg;
 use lightning::ln::channelmanager::PaymentId;
 use lightning::ln::channelmanager::Retry;
 use lightning::ln::functional_test_utils::create_chan_between_nodes_with_value;
+use lightning::ln::functional_test_utils::create_funding_transaction;
 use lightning::ln::functional_test_utils::do_commitment_signed_dance;
+use lightning::ln::functional_test_utils::expect_channel_pending_event;
+use lightning::ln::functional_test_utils::expect_channel_ready_event;
 use lightning::ln::functional_test_utils::expect_payment_sent;
 use lightning::ln::functional_test_utils::pass_claimed_payment_along_route;
 use lightning::ln::functional_test_utils::test_default_channel_config;
@@ -17,6 +21,8 @@ use lightning::ln::functional_test_utils::ClaimAlongRouteArgs;
 use lightning::ln::functional_test_utils::SendEvent;
 use lightning::ln::msgs::BaseMessageHandler;
 use lightning::ln::msgs::ChannelMessageHandler;
+use lightning::ln::msgs::MessageSendEvent;
+use lightning::ln::types::ChannelId;
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::ser::LSPSDateTime;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
@@ -912,8 +918,13 @@ fn full_lsps2_flow() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut service_node_config = test_default_channel_config();
 	service_node_config.accept_intercept_htlcs = true;
-	let node_chanmgrs =
-		create_node_chanmgrs(3, &node_cfgs, &[Some(service_node_config), None, None]);
+	let mut client_node_config = test_default_channel_config();
+	client_node_config.manually_accept_inbound_channels = true;
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(service_node_config), Some(client_node_config), None],
+	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes(nodes);
 	let LSPSNodes { service_node, client_node, payer_node_optional } = lsps_nodes;
@@ -1123,11 +1134,17 @@ fn full_lsps2_flow() {
 		other => panic!("Expected OpenChannel event, got: {:?}", other),
 	};
 
-	let (_, _, _, channel_id, _) = create_chan_between_nodes_with_value(
-		&service_node.inner,
-		&client_node.inner,
-		*expected_outbound_amount_msat,
-		0,
+	let result =
+		service_handler.channel_needs_manual_broadcast(user_channel_id, &client_node_id).unwrap();
+	assert!(result, "Channel should require manual broadcast");
+
+	let channel_id = create_channel_with_manual_broadcast(
+		&service_node_id,
+		&client_node_id,
+		&service_node,
+		&client_node,
+		user_channel_id,
+		expected_outbound_amount_msat,
 	);
 
 	service_handler.channel_ready(user_channel_id, &channel_id, &client_node_id).unwrap();
@@ -1166,7 +1183,13 @@ fn full_lsps2_flow() {
 		other => panic!("Expected PaymentClaimable event on client, got: {:?}", other),
 	};
 
+	let events = service_node.liquidity_manager.get_and_clear_pending_events();
+	assert!(events.is_empty(), "Expected no events from service node, got: {:?}", events);
+
 	client_node.inner.node.claim_funds(preimage.unwrap());
+
+	// TODO: Call service_manager payment_forwarded when service gets the payment forwarded event
+	// TODO: in here check that the service node got a BroadcastFundingTransaction event
 
 	let expected_paths: &[&[&lightning::ln::functional_test_utils::Node<'_, '_, '_>]] =
 		&[&[&service_node.inner, &client_node.inner]];
@@ -1175,4 +1198,130 @@ fn full_lsps2_flow() {
 	let total_fee_msat = pass_claimed_payment_along_route(args);
 
 	expect_payment_sent(&payer_node, preimage.unwrap(), Some(Some(total_fee_msat)), true, true);
+}
+
+fn create_channel_with_manual_broadcast(
+	service_node_id: &PublicKey, client_node_id: &PublicKey, service_node: &LiquidityNode,
+	client_node: &LiquidityNode, user_channel_id: u128, expected_outbound_amount_msat: &u64,
+) -> ChannelId {
+	assert!(service_node
+		.node
+		.create_channel(
+			*client_node_id,
+			*expected_outbound_amount_msat,
+			0,
+			user_channel_id,
+			None,
+			None
+		)
+		.is_ok());
+	let open_channel =
+		get_event_msg!(service_node, MessageSendEvent::SendOpenChannel, *client_node_id);
+
+	client_node.node.handle_open_channel(*service_node_id, &open_channel);
+
+	let events = client_node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			client_node
+				.node
+				.accept_inbound_channel_from_trusted_peer_0conf(
+					&temporary_channel_id,
+					&service_node_id,
+					user_channel_id,
+					None,
+				)
+				.unwrap();
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	let accept_channel =
+		get_event_msg!(client_node, MessageSendEvent::SendAcceptChannel, *service_node_id);
+	assert_eq!(accept_channel.common_fields.minimum_depth, 0);
+
+	service_node.node.handle_accept_channel(*client_node_id, &accept_channel);
+	let (temp_channel_id, tx, funding_outpoint) = create_funding_transaction(
+		&service_node,
+		&client_node_id,
+		*expected_outbound_amount_msat,
+		42,
+	);
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+	service_handler
+		.store_funding_transaction(user_channel_id, &client_node_id, tx.clone())
+		.unwrap();
+	service_node
+		.node
+		.funding_transaction_generated_manual_broadcast(temp_channel_id, *client_node_id, tx)
+		.unwrap();
+
+	let funding_created =
+		get_event_msg!(service_node, MessageSendEvent::SendFundingCreated, *client_node_id);
+	client_node.node.handle_funding_created(*service_node_id, &funding_created);
+	check_added_monitors!(client_node.inner, 1);
+
+	let bs_signed_locked = client_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(bs_signed_locked.len(), 2);
+
+	let as_channel_ready;
+	match &bs_signed_locked[0] {
+		MessageSendEvent::SendFundingSigned { node_id, msg } => {
+			assert_eq!(*node_id, *service_node_id);
+			service_node.node.handle_funding_signed(*client_node_id, &msg);
+			let events = &service_node.node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 2);
+			match &events[0] {
+				Event::FundingTxBroadcastSafe {
+					funding_txo,
+					user_channel_id,
+					counterparty_node_id,
+					..
+				} => {
+					assert_eq!(funding_txo.txid, funding_outpoint.txid);
+					assert_eq!(funding_txo.vout, funding_outpoint.index as u32);
+
+					service_handler
+						.funding_tx_broadcast_safe(*user_channel_id, counterparty_node_id)
+						.unwrap();
+				},
+				_ => panic!("Unexpected event"),
+			};
+			match &events[1] {
+				Event::ChannelPending { counterparty_node_id, .. } => {
+					assert_eq!(counterparty_node_id, client_node_id);
+				},
+				_ => panic!("Unexpected event"),
+			}
+			expect_channel_pending_event(&client_node, &service_node_id);
+			check_added_monitors!(service_node.inner, 1);
+
+			as_channel_ready =
+				get_event_msg!(service_node, MessageSendEvent::SendChannelReady, *client_node_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	match &bs_signed_locked[1] {
+		MessageSendEvent::SendChannelReady { node_id, msg } => {
+			assert_eq!(*node_id, *service_node_id);
+			service_node.node.handle_channel_ready(*client_node_id, &msg);
+			expect_channel_ready_event(&service_node, &client_node_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	client_node.node.handle_channel_ready(*service_node_id, &as_channel_ready);
+	expect_channel_ready_event(&client_node, &service_node_id);
+
+	let as_channel_update =
+		get_event_msg!(service_node, MessageSendEvent::SendChannelUpdate, *client_node_id);
+	let bs_channel_update =
+		get_event_msg!(client_node, MessageSendEvent::SendChannelUpdate, *service_node_id);
+
+	service_node.node.handle_channel_update(*client_node_id, &bs_channel_update);
+	client_node.node.handle_channel_update(*service_node_id, &as_channel_update);
+
+	as_channel_ready.channel_id
 }
