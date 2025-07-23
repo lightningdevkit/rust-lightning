@@ -46,13 +46,9 @@ jobs:
         if: "matrix.platform == 'self-hosted'"
         run: |
           rustup target add thumbv7m-none-eabi
-          sudo apt-get -y install gcc-arm-none-eabi
-          sudo apt-get clean
       - name: shellcheck the CI and `contrib` scripts
         if: "matrix.platform == 'self-hosted'"
         run: |
-          sudo apt-get -y install shellcheck
-          sudo apt-get clean
           shellcheck ci/*.sh -aP ci
           shellcheck contrib/*.sh -aP contrib
       - name: Set RUSTFLAGS to deny warnings
@@ -261,11 +257,6 @@ jobs:
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-      - name: Install dependencies for honggfuzz
-        run: |
-          sudo apt-get update
-          sudo apt-get -y install build-essential binutils-dev libunwind-dev
-          sudo apt-get clean
       - name: Pin the regex dependency
         run: |
           cd fuzz && cargo update -p regex --precise "1.9.6" --verbose
