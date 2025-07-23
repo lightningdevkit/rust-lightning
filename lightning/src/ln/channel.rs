@@ -5831,21 +5831,21 @@ impl FundingNegotiationContext {
 
 		// Optionally add change output
 		if self.our_funding_contribution_satoshis > 0 {
-			let change_script = if let Some(script) = change_destination_opt {
-				script
-			} else {
-				signer_provider.get_destination_script(context.channel_keys_id).map_err(|_err| {
-					AbortReason::InternalError("Error getting destination script")
-				})?
-			};
 			let change_value_opt = calculate_change_output_value(
 				&self,
 				funding.channel_transaction_parameters.splice_parent_funding_txid.is_some(),
 				&shared_funding_output.script_pubkey,
 				&funding_outputs,
-				change_script.minimal_non_dust().to_sat(),
+				context.holder_dust_limit_satoshis,
 			)?;
 			if let Some(change_value) = change_value_opt {
+				let change_script = if let Some(script) = change_destination_opt {
+					script
+				} else {
+					signer_provider.get_destination_script(context.channel_keys_id).map_err(
+						|_err| AbortReason::InternalError("Error getting destination script"),
+					)?
+				};
 				let mut change_output =
 					TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
 				let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
