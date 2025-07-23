@@ -1172,8 +1172,8 @@ where
 		}
 	}
 
-	#[cfg(test)]
-	pub(crate) fn set_offers_handler(&mut self, offers_handler: OMH) {
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn set_offers_handler(&mut self, offers_handler: OMH) {
 		self.offers_handler = offers_handler;
 	}
 
