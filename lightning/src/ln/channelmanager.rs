@@ -4907,8 +4907,6 @@ where
 			invoice_request, bolt12_invoice, session_priv_bytes
 		} = args;
 
-
-
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
 		let prng_seed = self.entropy_source.get_secure_random_bytes();
@@ -4922,6 +4920,52 @@ where
 			log_error!(logger, "Failed to build an onion for path for payment hash {}", payment_hash);
 			e
 		})?;
+
+		// Check if this is a self-payment (indicated by short_channel_id == 0)
+		if path.hops.len() == 1 && path.hops.first().unwrap().short_channel_id == 0 {
+			// This is a self-payment, handle it directly
+			let logger = WithContext::from(&self.logger, Some(self.get_our_node_id()), None, Some(*payment_hash));
+			log_trace!(logger, "Processing self-payment with payment hash {}", payment_hash);
+			// For self-payments, we immediately generate the PaymentClaimable event
+			// since we are both the sender and receiver
+			let mut pending_events = self.pending_events.lock().unwrap();
+			// Generate PaymentClaimable event
+			let purpose = if let Some(preimage) = keysend_preimage {
+				events::PaymentPurpose::SpontaneousPayment(*preimage)
+			} else if let Some(payment_secret) = recipient_onion.payment_secret {
+				events::PaymentPurpose::Bolt11InvoicePayment {
+					payment_preimage: None,
+					payment_secret,
+				}
+			} else {
+				return Err(APIError::APIMisuseError{
+					err: "Self-payment requires either keysend preimage or payment secret".to_owned()
+				});
+			};
+			pending_events.push_back((events::Event::PaymentClaimable {
+				receiver_node_id: Some(self.get_our_node_id()),
+				payment_hash: *payment_hash,
+				onion_fields: Some(recipient_onion.clone()),
+				amount_msat: htlc_msat,
+				counterparty_skimmed_fee_msat: 0,
+				purpose,
+				via_channel_ids: Vec::new(),
+				claim_deadline: None,
+				payment_id: Some(payment_id),
+			}, None));
+			// For spontaneous payments, also generate PaymentSent event immediately
+			if keysend_preimage.is_some() {
+				pending_events.push_back((events::Event::PaymentSent {
+					payment_id: Some(payment_id),
+					payment_preimage: keysend_preimage.unwrap(),
+					payment_hash: *payment_hash,
+					amount_msat: Some(htlc_msat),
+					fee_paid_msat: Some(0), // No fees for self-payments
+					bolt12_invoice: None,
+				}, None));
+			}
+			return Ok(());
+		}
 
 		let err: Result<(), _> = loop {
 			let (counterparty_node_id, id) = match self.short_to_chan_info.read().unwrap().get(&path.hops.first().unwrap().short_channel_id) {
@@ -7707,7 +7751,8 @@ where
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, completion_action: ComplFunc,
