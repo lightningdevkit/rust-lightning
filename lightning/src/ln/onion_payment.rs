@@ -753,6 +753,7 @@ mod tests {
 			onion_routing_packet,
 			skimmed_fee_msat: None,
 			blinding_point: None,
+			hold_htlc: None,
 		}
 	}
 

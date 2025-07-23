@@ -6736,6 +6736,7 @@ where
 						htlc_source.clone(),
 						onion_packet.clone(),
 						skimmed_fee_msat,
+						false, // Never signal hold on forwarded HTLCs.
 						next_blinding_point,
 						&self.fee_estimator,
 						&&logger,
