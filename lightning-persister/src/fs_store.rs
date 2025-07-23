@@ -2,7 +2,7 @@
 use crate::utils::{check_namespace_key_validity, is_valid_kvstore_str};
 
 use lightning::types::string::PrintableString;
-use lightning::util::persist::{KVStore, MigratableKVStore};
+use lightning::util::persist::{KVStoreSync, MigratableKVStore};
 
 use std::collections::HashMap;
 use std::fs;
@@ -33,7 +33,7 @@ fn path_to_windows_str<T: AsRef<OsStr>>(path: &T) -> Vec<u16> {
 // The number of read/write/remove/list operations after which we clean up our `locks` HashMap.
 const GC_LOCK_INTERVAL: usize = 25;
 
-/// A [`KVStore`] implementation that writes to and reads from the file system.
+/// A [`KVStoreSync`] implementation that writes to and reads from the file system.
 pub struct FilesystemStore {
 	data_dir: PathBuf,
 	tmp_file_counter: AtomicUsize,
@@ -92,7 +92,7 @@ impl FilesystemStore {
 	}
 }
 
-impl KVStore for FilesystemStore {
+impl KVStoreSync for FilesystemStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 	) -> lightning::io::Result<Vec<u8>> {
