@@ -1142,7 +1142,7 @@ impl PaymentParameters {
 }
 
 /// A struct for configuring parameters for routing the payment.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct RouteParametersConfig {
 	/// The maximum total fees, in millisatoshi, that may accrue during route finding.
 	///

@@ -987,6 +987,11 @@ enum FundingType {
 	///
 	/// This is the normal flow.
 	Checked(Transaction),
+	/// This variant is useful when we want LDK to validate the funding transaction and
+	/// broadcast it manually.
+	///
+	/// Used in LSPS2 on a client_trusts_lsp model
+	CheckedManualBroadcast(Transaction),
 	/// This variant is useful when we want to loosen the validation checks and allow to
 	/// manually broadcast the funding transaction, leaving the responsibility to the caller.
 	///
@@ -995,40 +1000,35 @@ enum FundingType {
 	/// scenario could be when constructing the funding transaction as part of a Payjoin
 	/// transaction.
 	Unchecked(OutPoint),
-	/// This variant is useful when we want LDK to validate the funding transaction and
-	/// broadcast it manually.
-	///
-	/// Used in LSPS2 on a client_trusts_lsp model
-	CheckedManualBroadcast(Transaction),
 }
 
 impl FundingType {
 	fn txid(&self) -> Txid {
 		match self {
 			FundingType::Checked(tx) => tx.compute_txid(),
-			FundingType::Unchecked(outp) => outp.txid,
 			FundingType::CheckedManualBroadcast(tx) => tx.compute_txid(),
+			FundingType::Unchecked(outp) => outp.txid,
 		}
 	}
 
 	fn transaction_or_dummy(&self) -> Transaction {
 		match self {
 			FundingType::Checked(tx) => tx.clone(),
+			FundingType::CheckedManualBroadcast(tx) => tx.clone(),
 			FundingType::Unchecked(_) => Transaction {
 				version: bitcoin::transaction::Version::TWO,
 				lock_time: bitcoin::absolute::LockTime::ZERO,
 				input: Vec::new(),
 				output: Vec::new(),
 			},
-			FundingType::CheckedManualBroadcast(tx) => tx.clone(),
 		}
 	}
 
 	fn is_manual_broadcast(&self) -> bool {
 		match self {
 			FundingType::Checked(_) => false,
-			FundingType::Unchecked(_) => true,
 			FundingType::CheckedManualBroadcast(_) => true,
+			FundingType::Unchecked(_) => true,
 		}
 	}
 }
@@ -8319,8 +8319,7 @@ where
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		)
-			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -11568,11 +11567,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	///
 	/// This method should only be used in specific scenarios where manual control
 	/// over transaction broadcast timing is required (e.g., LSPS2 workflows).
-	///
-	/// # Warning
-	/// Improper use of this method could lead to channel state inconsistencies.
-	/// Ensure the transaction being broadcast is valid and expected by LDK.
-	pub fn unsafe_broadcast_transaction(&self, tx: &Transaction) {
+	pub fn broadcast_transaction(&self, tx: &Transaction) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		log_info!(self.logger, "Broadcasting transaction {}", log_tx!(tx));
 		self.tx_broadcaster.broadcast_transactions(&[tx]);

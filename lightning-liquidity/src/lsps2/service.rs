@@ -11,7 +11,6 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use bitcoin::Transaction;
 
 use core::cmp::Ordering as CmpOrdering;
 use core::ops::Deref;
@@ -24,6 +23,14 @@ use crate::lsps0::ser::{
 	LSPS0_CLIENT_REJECTED_ERROR_CODE,
 };
 use crate::lsps2::event::LSPS2ServiceEvent;
+use crate::lsps2::msgs::{
+	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,
+	LSPS2OpeningFeeParams, LSPS2RawOpeningFeeParams, LSPS2Request, LSPS2Response,
+	LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
+	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE,
+	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE,
+	LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
+};
 use crate::lsps2::payment_queue::{InterceptedHTLC, PaymentQueue};
 use crate::lsps2::utils::{
 	compute_opening_fee, is_expired_opening_fee_params, is_valid_opening_fee_params,
@@ -43,15 +50,7 @@ use lightning::util::logger::Level;
 use lightning_types::payment::PaymentHash;
 
 use bitcoin::secp256k1::PublicKey;
-
-use crate::lsps2::msgs::{
-	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,
-	LSPS2OpeningFeeParams, LSPS2RawOpeningFeeParams, LSPS2Request, LSPS2Response,
-	LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
-	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE,
-	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE,
-	LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
-};
+use bitcoin::Transaction;
 
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
@@ -112,7 +111,7 @@ struct ForwardHTLCsAction(ChannelId, Vec<InterceptedHTLC>);
 enum TrustModel {
 	ClientTrustsLsp {
 		funding_tx_broadcast_safe: bool,
-		htlc_claimed: bool,
+		payment_claimed: bool,
 		funding_tx: Option<Transaction>,
 	},
 	LspTrustsClient,
@@ -121,23 +120,25 @@ enum TrustModel {
 impl TrustModel {
 	fn should_broadcast(&self) -> bool {
 		match self {
-			TrustModel::ClientTrustsLsp { funding_tx_broadcast_safe, htlc_claimed, funding_tx } => {
-				*funding_tx_broadcast_safe && *htlc_claimed && funding_tx.is_some()
-			},
-			TrustModel::LspTrustsClient => false,
+			TrustModel::ClientTrustsLsp {
+				funding_tx_broadcast_safe,
+				payment_claimed,
+				funding_tx,
+			} => *funding_tx_broadcast_safe && *payment_claimed && funding_tx.is_some(),
+			TrustModel::LspTrustsClient => true,
 		}
 	}
 
 	fn new(client_trusts_lsp: bool) -> Self {
 		if client_trusts_lsp {
-			return TrustModel::ClientTrustsLsp {
+			TrustModel::ClientTrustsLsp {
 				funding_tx_broadcast_safe: false,
-				htlc_claimed: false,
+				payment_claimed: false,
 				funding_tx: None,
-			};
+			}
 		} else {
-			return TrustModel::LspTrustsClient;
-		};
+			TrustModel::LspTrustsClient
+		}
 	}
 
 	fn set_funding_tx(&mut self, funding_tx: Transaction) {
@@ -162,10 +163,10 @@ impl TrustModel {
 		}
 	}
 
-	fn set_htlc_claimed(&mut self, htlc_claimed: bool) {
+	fn set_payment_claimed(&mut self, payment_claimed: bool) {
 		match self {
-			TrustModel::ClientTrustsLsp { htlc_claimed: claimed, .. } => {
-				*claimed = htlc_claimed;
+			TrustModel::ClientTrustsLsp { payment_claimed: claimed, .. } => {
+				*claimed = payment_claimed;
 			},
 			TrustModel::LspTrustsClient => {
 				// No-op
@@ -189,11 +190,7 @@ enum OutboundJITChannelState {
 	PendingInitialPayment { payment_queue: PaymentQueue },
 	/// An initial payment of sufficient size was intercepted to the JIT channel SCID, triggering the
 	/// opening of the channel. We are awaiting the completion of the channel establishment.
-	PendingChannelOpen {
-		payment_queue: PaymentQueue,
-		opening_fee_msat: u64,
-		trust_model: TrustModel,
-	},
+	PendingChannelOpen { payment_queue: PaymentQueue, opening_fee_msat: u64 },
 	/// The channel is open and a payment was forwarded while skimming the JIT channel fee.
 	/// No further payments can be forwarded until the pending payment succeeds or fails, as we need
 	/// to know whether the JIT channel fee needs to be skimmed from a next payment or not.
@@ -201,21 +198,15 @@ enum OutboundJITChannelState {
 		payment_queue: PaymentQueue,
 		opening_fee_msat: u64,
 		channel_id: ChannelId,
-		trust_model: TrustModel,
 	},
 	/// The channel is open, no payment is currently being forwarded, and the JIT channel fee still
 	/// needs to be paid. This state can occur when the initial payment fails, e.g. due to a
 	/// prepayment probe. We are awaiting a next payment of sufficient size to forward and skim the
 	/// JIT channel fee.
-	PendingPayment {
-		payment_queue: PaymentQueue,
-		opening_fee_msat: u64,
-		channel_id: ChannelId,
-		trust_model: TrustModel,
-	},
+	PendingPayment { payment_queue: PaymentQueue, opening_fee_msat: u64, channel_id: ChannelId },
 	/// The channel is open and a payment was successfully forwarded while skimming the JIT channel
 	/// fee. Any subsequent HTLCs can be forwarded without additional logic.
-	PaymentForwarded { channel_id: ChannelId, trust_model: TrustModel },
+	PaymentForwarded { channel_id: ChannelId },
 }
 
 impl OutboundJITChannelState {
@@ -225,7 +216,7 @@ impl OutboundJITChannelState {
 
 	fn htlc_intercepted(
 		&mut self, opening_fee_params: &LSPS2OpeningFeeParams, payment_size_msat: &Option<u64>,
-		htlc: InterceptedHTLC, client_trusts_lsp: bool,
+		htlc: InterceptedHTLC,
 	) -> Result<Option<HTLCInterceptedAction>, ChannelStateError> {
 		match self {
 			OutboundJITChannelState::PendingInitialPayment { payment_queue } => {
@@ -277,7 +268,6 @@ impl OutboundJITChannelState {
 					*self = OutboundJITChannelState::PendingChannelOpen {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat,
-						trust_model: TrustModel::new(client_trusts_lsp),
 					};
 					let open_channel = HTLCInterceptedAction::OpenChannel(OpenChannelParams {
 						opening_fee_msat,
@@ -297,17 +287,12 @@ impl OutboundJITChannelState {
 					}
 				}
 			},
-			OutboundJITChannelState::PendingChannelOpen {
-				payment_queue,
-				opening_fee_msat,
-				trust_model,
-			} => {
+			OutboundJITChannelState::PendingChannelOpen { payment_queue, opening_fee_msat } => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				payment_queue.add_htlc(htlc);
 				*self = OutboundJITChannelState::PendingChannelOpen {
 					payment_queue,
 					opening_fee_msat: *opening_fee_msat,
-					trust_model: trust_model.clone(),
 				};
 				Ok(None)
 			},
@@ -315,7 +300,6 @@ impl OutboundJITChannelState {
 				payment_queue,
 				opening_fee_msat,
 				channel_id,
-				trust_model,
 			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				payment_queue.add_htlc(htlc);
@@ -323,7 +307,6 @@ impl OutboundJITChannelState {
 					payment_queue,
 					opening_fee_msat: *opening_fee_msat,
 					channel_id: *channel_id,
-					trust_model: trust_model.clone(),
 				};
 				Ok(None)
 			},
@@ -331,7 +314,6 @@ impl OutboundJITChannelState {
 				payment_queue,
 				opening_fee_msat,
 				channel_id,
-				trust_model,
 			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				payment_queue.add_htlc(htlc);
@@ -346,7 +328,6 @@ impl OutboundJITChannelState {
 						payment_queue,
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
-						trust_model: trust_model.clone(),
 					};
 					Ok(Some(forward_payment))
 				} else {
@@ -354,17 +335,13 @@ impl OutboundJITChannelState {
 						payment_queue,
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
-						trust_model: trust_model.clone(),
 					};
 					Ok(None)
 				}
 			},
-			OutboundJITChannelState::PaymentForwarded { channel_id, trust_model } => {
+			OutboundJITChannelState::PaymentForwarded { channel_id } => {
 				let forward = HTLCInterceptedAction::ForwardHTLC(*channel_id);
-				*self = OutboundJITChannelState::PaymentForwarded {
-					channel_id: *channel_id,
-					trust_model: trust_model.clone(),
-				};
+				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
 				Ok(Some(forward))
 			},
 		}
@@ -374,11 +351,7 @@ impl OutboundJITChannelState {
 		&mut self, channel_id: ChannelId,
 	) -> Result<ForwardPaymentAction, ChannelStateError> {
 		match self {
-			OutboundJITChannelState::PendingChannelOpen {
-				payment_queue,
-				opening_fee_msat,
-				trust_model,
-			} => {
+			OutboundJITChannelState::PendingChannelOpen { payment_queue, opening_fee_msat } => {
 				if let Some((_payment_hash, htlcs)) =
 					payment_queue.pop_greater_than_msat(*opening_fee_msat)
 				{
@@ -391,7 +364,6 @@ impl OutboundJITChannelState {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id,
-						trust_model: trust_model.clone(),
 					};
 					Ok(forward_payment)
 				} else {
@@ -414,7 +386,6 @@ impl OutboundJITChannelState {
 				payment_queue,
 				opening_fee_msat,
 				channel_id,
-				trust_model,
 			} => {
 				if let Some((_payment_hash, htlcs)) =
 					payment_queue.pop_greater_than_msat(*opening_fee_msat)
@@ -427,7 +398,6 @@ impl OutboundJITChannelState {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
-						trust_model: trust_model.clone(),
 					};
 					Ok(Some(forward_payment))
 				} else {
@@ -435,7 +405,6 @@ impl OutboundJITChannelState {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
-						trust_model: trust_model.clone(),
 					};
 					Ok(None)
 				}
@@ -444,21 +413,16 @@ impl OutboundJITChannelState {
 				payment_queue,
 				opening_fee_msat,
 				channel_id,
-				trust_model,
 			} => {
 				*self = OutboundJITChannelState::PendingPayment {
 					payment_queue: core::mem::take(payment_queue),
 					opening_fee_msat: *opening_fee_msat,
 					channel_id: *channel_id,
-					trust_model: trust_model.clone(),
 				};
 				Ok(None)
 			},
-			OutboundJITChannelState::PaymentForwarded { channel_id, trust_model } => {
-				*self = OutboundJITChannelState::PaymentForwarded {
-					channel_id: *channel_id,
-					trust_model: trust_model.clone(),
-				};
+			OutboundJITChannelState::PaymentForwarded { channel_id } => {
+				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
 				Ok(None)
 			},
 			state => Err(ChannelStateError(format!(
@@ -471,92 +435,21 @@ impl OutboundJITChannelState {
 	fn payment_forwarded(&mut self) -> Result<Option<ForwardHTLCsAction>, ChannelStateError> {
 		match self {
 			OutboundJITChannelState::PendingPaymentForward {
-				payment_queue,
-				channel_id,
-				trust_model,
-				..
+				payment_queue, channel_id, ..
 			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				let forward_htlcs = ForwardHTLCsAction(*channel_id, payment_queue.clear());
-				trust_model.set_htlc_claimed(true);
-				*self = OutboundJITChannelState::PaymentForwarded {
-					channel_id: *channel_id,
-					trust_model: trust_model.clone(),
-				};
+				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
 				Ok(Some(forward_htlcs))
 			},
-			OutboundJITChannelState::PaymentForwarded { channel_id, trust_model } => {
-				trust_model.set_htlc_claimed(true);
-				*self = OutboundJITChannelState::PaymentForwarded {
-					channel_id: *channel_id,
-					trust_model: trust_model.clone(),
-				};
+			OutboundJITChannelState::PaymentForwarded { channel_id } => {
+				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
 				Ok(None)
 			},
 			state => Err(ChannelStateError(format!(
 				"Payment forwarded when JIT Channel was in state: {:?}",
 				state
 			))),
-		}
-	}
-
-	fn store_funding_transaction(
-		&mut self, funding_tx: Transaction,
-	) -> Result<(), ChannelStateError> {
-		match self {
-			OutboundJITChannelState::PendingChannelOpen { trust_model, .. }
-			| OutboundJITChannelState::PaymentForwarded { trust_model, .. }
-			| OutboundJITChannelState::PendingPaymentForward { trust_model, .. }
-			| OutboundJITChannelState::PendingPayment { trust_model, .. } => {
-				trust_model.set_funding_tx(funding_tx);
-
-				Ok(())
-			},
-			state => Err(ChannelStateError(format!(
-				"Store funding transaction when JIT Channel was in state: {:?}",
-				state
-			))),
-		}
-	}
-
-	fn store_funding_transaction_broadcast_safe(
-		&mut self, funding_tx_broadcast_safe: bool,
-	) -> Result<(), ChannelStateError> {
-		match self {
-			OutboundJITChannelState::PendingChannelOpen { trust_model, .. }
-			| OutboundJITChannelState::PaymentForwarded { trust_model, .. }
-			| OutboundJITChannelState::PendingPaymentForward { trust_model, .. }
-			| OutboundJITChannelState::PendingPayment { trust_model, .. } => {
-				trust_model.set_funding_tx_broadcast_safe(funding_tx_broadcast_safe);
-
-				Ok(())
-			},
-			state => Err(ChannelStateError(format!(
-				"Store funding transaction broadcast safe when JIT Channel was in state: {:?}",
-				state
-			))),
-		}
-	}
-
-	fn should_broadcast_funding_transaction(&self) -> bool {
-		match self {
-			OutboundJITChannelState::PendingChannelOpen { trust_model, .. }
-			| OutboundJITChannelState::PaymentForwarded { trust_model, .. }
-			| OutboundJITChannelState::PendingPaymentForward { trust_model, .. }
-			| OutboundJITChannelState::PendingPayment { trust_model, .. } => trust_model.should_broadcast(),
-			OutboundJITChannelState::PendingInitialPayment { .. } => false,
-		}
-	}
-
-	fn client_trusts_lsp(&self) -> bool {
-		match self {
-			OutboundJITChannelState::PendingChannelOpen { trust_model, .. }
-			| OutboundJITChannelState::PaymentForwarded { trust_model, .. }
-			| OutboundJITChannelState::PendingPaymentForward { trust_model, .. }
-			| OutboundJITChannelState::PendingPayment { trust_model, .. } => {
-				matches!(trust_model, TrustModel::ClientTrustsLsp { .. })
-			},
-			OutboundJITChannelState::PendingInitialPayment { .. } => false,
 		}
 	}
 }
@@ -567,6 +460,7 @@ struct OutboundJITChannel {
 	opening_fee_params: LSPS2OpeningFeeParams,
 	payment_size_msat: Option<u64>,
 	client_trusts_lsp: bool,
+	trust_model: Option<TrustModel>,
 }
 
 impl OutboundJITChannel {
@@ -580,18 +474,22 @@ impl OutboundJITChannel {
 			opening_fee_params,
 			payment_size_msat,
 			client_trusts_lsp,
+			trust_model: None,
 		}
 	}
 
 	fn htlc_intercepted(
 		&mut self, htlc: InterceptedHTLC,
 	) -> Result<Option<HTLCInterceptedAction>, LightningError> {
-		let action = self.state.htlc_intercepted(
-			&self.opening_fee_params,
-			&self.payment_size_msat,
-			htlc,
-			self.client_trusts_lsp,
-		)?;
+		let was_initial =
+			matches!(self.state, OutboundJITChannelState::PendingInitialPayment { .. });
+		let action =
+			self.state.htlc_intercepted(&self.opening_fee_params, &self.payment_size_msat, htlc)?;
+		if was_initial && self.trust_model.is_none() {
+			if !matches!(self.state, OutboundJITChannelState::PendingInitialPayment { .. }) {
+				self.trust_model = Some(TrustModel::new(self.client_trusts_lsp));
+			}
+		}
 		Ok(action)
 	}
 
@@ -609,6 +507,11 @@ impl OutboundJITChannel {
 
 	fn payment_forwarded(&mut self) -> Result<Option<ForwardHTLCsAction>, LightningError> {
 		let action = self.state.payment_forwarded()?;
+		if action.is_some() {
+			if let Some(tm) = &mut self.trust_model {
+				tm.set_payment_claimed(true);
+			}
+		}
 		Ok(action)
 	}
 
@@ -624,35 +527,42 @@ impl OutboundJITChannel {
 	}
 
 	fn set_funding_tx(&mut self, funding_tx: Transaction) -> Result<(), LightningError> {
-		self.state
-			.store_funding_transaction(funding_tx)
-			.map_err(|e| LightningError::from(ChannelStateError(e.0)))
+		if let Some(tm) = &mut self.trust_model {
+			tm.set_funding_tx(funding_tx);
+			Ok(())
+		} else {
+			Err(LightningError::from(ChannelStateError(
+				"Store funding transaction when JIT Channel was in invalid state".to_string(),
+			)))
+		}
 	}
 
 	fn set_funding_tx_broadcast_safe(
 		&mut self, funding_tx_broadcast_safe: bool,
 	) -> Result<(), LightningError> {
-		self.state
-			.store_funding_transaction_broadcast_safe(funding_tx_broadcast_safe)
-			.map_err(|e| LightningError::from(ChannelStateError(e.0)))
-	}
-
-	fn should_broadcast_funding_transaction(&self) -> bool {
-		self.state.should_broadcast_funding_transaction()
-	}
-
-	fn get_funding_tx(&self) -> Option<Transaction> {
-		match &self.state {
-			OutboundJITChannelState::PendingChannelOpen { trust_model, .. }
-			| OutboundJITChannelState::PaymentForwarded { trust_model, .. }
-			| OutboundJITChannelState::PendingPaymentForward { trust_model, .. }
-			| OutboundJITChannelState::PendingPayment { trust_model, .. } => trust_model.get_funding_tx(),
-			_ => None,
+		if let Some(tm) = &mut self.trust_model {
+			tm.set_funding_tx_broadcast_safe(funding_tx_broadcast_safe);
+			Ok(())
+		} else {
+			Err(LightningError::from(ChannelStateError(
+				"Store funding transaction broadcast safe when JIT Channel was in invalid state"
+					.to_string(),
+			)))
 		}
 	}
 
+	fn should_broadcast_funding_transaction(&self) -> bool {
+		self.trust_model.as_ref().map_or(false, |tm| tm.should_broadcast())
+	}
+
+	fn get_funding_tx(&self) -> Option<Transaction> {
+		self.trust_model.as_ref().and_then(|tm| tm.get_funding_tx())
+	}
+
 	fn client_trusts_lsp(&self) -> bool {
-		self.state.client_trusts_lsp()
+		self.trust_model
+			.as_ref()
+			.map_or(false, |tm| matches!(tm, TrustModel::ClientTrustsLsp { .. }))
 	}
 }
 
@@ -1714,7 +1624,7 @@ where
 		Ok(())
 	}
 
-	/// Called by ldk-node when the funding transaction is safe to broadcast.
+	/// Called when the funding transaction is safe to broadcast.
 	/// This marks the funding_tx_broadcast_safe flag as true for the given user_channel_id.
 	pub fn funding_tx_broadcast_safe(
 		&self, user_channel_id: u128, counterparty_node_id: &PublicKey,
@@ -1757,7 +1667,7 @@ where
 			let funding_tx = jit_channel.get_funding_tx();
 
 			if let Some(funding_tx) = funding_tx {
-				self.channel_manager.get_cm().unsafe_broadcast_transaction(&funding_tx);
+				self.channel_manager.get_cm().broadcast_transaction(&funding_tx);
 			}
 		}
 	}
@@ -1955,7 +1865,6 @@ mod tests {
 						expected_outbound_amount_msat: 200_000_000,
 						payment_hash: PaymentHash([100; 32]),
 					},
-					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingInitialPayment { .. }));
@@ -1972,7 +1881,6 @@ mod tests {
 						expected_outbound_amount_msat: 1_000_000,
 						payment_hash: PaymentHash([101; 32]),
 					},
-					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingInitialPayment { .. }));
@@ -1990,7 +1898,6 @@ mod tests {
 						expected_outbound_amount_msat: 300_000_000,
 						payment_hash: PaymentHash([100; 32]),
 					},
-					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingChannelOpen { .. }));
@@ -2029,7 +1936,6 @@ mod tests {
 						expected_outbound_amount_msat: 2_000_000,
 						payment_hash: PaymentHash([102; 32]),
 					},
-					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingPaymentForward { .. }));
@@ -2053,7 +1959,6 @@ mod tests {
 						expected_outbound_amount_msat: 500_000_000,
 						payment_hash: PaymentHash([101; 32]),
 					},
-					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingPaymentForward { .. }));
@@ -2110,7 +2015,6 @@ mod tests {
 						expected_outbound_amount_msat: 200_000_000,
 						payment_hash: PaymentHash([103; 32]),
 					},
-					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PaymentForwarded { .. }));
@@ -2145,7 +2049,6 @@ mod tests {
 						expected_outbound_amount_msat: 500_000_000,
 						payment_hash: PaymentHash([100; 32]),
 					},
-					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingChannelOpen { .. }));
@@ -2162,7 +2065,6 @@ mod tests {
 						expected_outbound_amount_msat: 600_000_000,
 						payment_hash: PaymentHash([101; 32]),
 					},
-					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingChannelOpen { .. }));
@@ -2194,7 +2096,6 @@ mod tests {
 						expected_outbound_amount_msat: 500_000_000,
 						payment_hash: PaymentHash([102; 32]),
 					},
-					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingPaymentForward { .. }));
@@ -2249,7 +2150,6 @@ mod tests {
 						expected_outbound_amount_msat: 200_000_000,
 						payment_hash: PaymentHash([103; 32]),
 					},
-					false,
 				)
 				.unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PaymentForwarded { .. }));
