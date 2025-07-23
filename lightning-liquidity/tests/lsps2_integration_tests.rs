@@ -1183,19 +1183,31 @@ fn full_lsps2_flow() {
 		other => panic!("Expected PaymentClaimable event on client, got: {:?}", other),
 	};
 
+	// Check that before the client claims, the service node has not broadcasted anything
 	let events = service_node.liquidity_manager.get_and_clear_pending_events();
 	assert!(events.is_empty(), "Expected no events from service node, got: {:?}", events);
 
 	client_node.inner.node.claim_funds(preimage.unwrap());
-
-	// TODO: Call service_manager payment_forwarded when service gets the payment forwarded event
-	// TODO: in here check that the service node got a BroadcastFundingTransaction event
 
 	let expected_paths: &[&[&lightning::ln::functional_test_utils::Node<'_, '_, '_>]] =
 		&[&[&service_node.inner, &client_node.inner]];
 
 	let args = ClaimAlongRouteArgs::new(&payer_node, expected_paths, preimage.unwrap());
 	let total_fee_msat = pass_claimed_payment_along_route(args);
+
+	service_handler.payment_forwarded(channel_id).unwrap();
+
+	match service_node.liquidity_manager.next_event().unwrap() {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::BroadcastFundingTransaction {
+			counterparty_node_id,
+			user_channel_id: uid,
+			..
+		}) => {
+			assert_eq!(counterparty_node_id, client_node_id);
+			assert_eq!(uid, user_channel_id);
+		},
+		other => panic!("Unexpected event: {:?}", other),
+	}
 
 	expect_payment_sent(&payer_node, preimage.unwrap(), Some(Some(total_fee_msat)), true, true);
 }
