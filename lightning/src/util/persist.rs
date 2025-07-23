@@ -215,10 +215,21 @@ pub trait KVStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>>;
-	/// Persists the given data under the given `key`. Note that the order of multiple writes calls needs to be retained
-	/// when persisting asynchronously. One possible way to accomplish this is by assigning a version number to each
-	/// write before returning the future, and then during asynchronous execution, ensuring that the writes are executed in
-	/// the correct order.
+	/// Persists the given data under the given `key`.
+	///
+	/// The order of multiple writes to the same key needs to be retained while persisting
+	/// asynchronously. In other words, if two writes to the same key occur, the state (as seen by
+	/// [`Self::read`]) must either see the first write then the second, or only ever the second,
+	/// no matter when the futures complete (and must always contain the second write once the
+	/// second future completes). The state should never contain the first write after the second
+	/// write's future completes, nor should it contain the second write, then contain the first
+	/// write at any point thereafter (even if the second write's future hasn't yet completed).
+	///
+	/// One way to ensure this requirement is met is by assigning a version number to each write
+	/// before returning the future, and then during asynchronous execution, ensuring that the
+	/// writes are executed in the correct order.
+	///
+	/// Note that no ordering requirements exist for writes to different keys.
 	///
 	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present in the store.
 	fn write(
