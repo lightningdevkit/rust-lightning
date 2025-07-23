@@ -5259,3 +5259,55 @@ fn max_out_mpp_path() {
 	check_added_monitors(&nodes[0], 2); // one monitor update per MPP part
 	nodes[0].node.get_and_clear_pending_msg_events();
 }
+
+#[test]
+fn test_self_payment() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let self_node = nodes[0].node.get_our_node_id();
+	let _other_node = nodes[1].node.get_our_node_id();
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let amt_msat = 10_000;
+	let payment_params = PaymentParameters::from_node_id(self_node, TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[0].node.bolt11_invoice_features())
+		.unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+
+	let preimage = Some(PaymentPreimage([42; 32]));
+	let onion = RecipientOnionFields::spontaneous_empty();
+	let retry = Retry::Attempts(0); // payment to self should not be retried , it should succeed in one go ideally
+	let id = PaymentId([42; 32]);
+	nodes[0].node.send_spontaneous_payment(preimage, onion, id, route_params, retry).unwrap();
+
+	check_added_monitors!(nodes[0], 0); // Self-payments don't add monitors since no actual channel update occurs
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+
+	let mut claimable_found = false;
+	let mut sent_found = false;
+
+	for event in &events {
+		match event {
+			Event::PaymentClaimable { purpose, .. } => {
+				if let PaymentPurpose::SpontaneousPayment(_preimage) = purpose {
+					// For self-payments, we don't need to manually claim since the payment
+					// is automatically processed. The PaymentSent event is already generated.
+					claimable_found = true;
+				}
+			},
+			Event::PaymentSent { .. } => {
+				sent_found = true;
+			},
+			_ => panic!("Unexpected event: {:?}", event),
+		}
+	}
+
+	assert!(claimable_found, "Expected PaymentClaimable event");
+	assert!(sent_found, "Expected PaymentSent event");
+}
