@@ -15,6 +15,7 @@ use std::sync::Arc;
 pub(crate) struct LSPSNodes<'a, 'b, 'c> {
 	pub service_node: LiquidityNode<'a, 'b, 'c>,
 	pub client_node: LiquidityNode<'a, 'b, 'c>,
+	pub payer_node_optional: Option<Node<'a, 'b, 'c>>,
 }
 
 pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
@@ -47,7 +48,7 @@ pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
 	let service_node = LiquidityNode::new(iter.next().unwrap(), service_lm);
 	let client_node = LiquidityNode::new(iter.next().unwrap(), client_lm);
 
-	LSPSNodes { service_node, client_node }
+	LSPSNodes { service_node, client_node, payer_node_optional: iter.next() }
 }
 
 pub(crate) struct LiquidityNode<'a, 'b, 'c> {

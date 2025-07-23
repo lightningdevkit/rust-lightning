@@ -975,6 +975,11 @@ enum FundingType {
 	///
 	/// This is the normal flow.
 	Checked(Transaction),
+	/// This variant is useful when we want LDK to validate the funding transaction and
+	/// broadcast it manually.
+	///
+	/// Used in LSPS2 on a client_trusts_lsp model
+	CheckedManualBroadcast(Transaction),
 	/// This variant is useful when we want to loosen the validation checks and allow to
 	/// manually broadcast the funding transaction, leaving the responsibility to the caller.
 	///
@@ -989,6 +994,7 @@ impl FundingType {
 	fn txid(&self) -> Txid {
 		match self {
 			FundingType::Checked(tx) => tx.compute_txid(),
+			FundingType::CheckedManualBroadcast(tx) => tx.compute_txid(),
 			FundingType::Unchecked(outp) => outp.txid,
 		}
 	}
@@ -996,6 +1002,7 @@ impl FundingType {
 	fn transaction_or_dummy(&self) -> Transaction {
 		match self {
 			FundingType::Checked(tx) => tx.clone(),
+			FundingType::CheckedManualBroadcast(tx) => tx.clone(),
 			FundingType::Unchecked(_) => Transaction {
 				version: bitcoin::transaction::Version::TWO,
 				lock_time: bitcoin::absolute::LockTime::ZERO,
@@ -1008,6 +1015,7 @@ impl FundingType {
 	fn is_manual_broadcast(&self) -> bool {
 		match self {
 			FundingType::Checked(_) => false,
+			FundingType::CheckedManualBroadcast(_) => true,
 			FundingType::Unchecked(_) => true,
 		}
 	}
@@ -5707,6 +5715,18 @@ where
 		self.batch_funding_transaction_generated_intern(temporary_chans, funding_type)
 	}
 
+	/// Same as batch_funding_transaction_generated but it does not automatically broadcast the funding transaction
+	pub fn funding_transaction_generated_manual_broadcast(
+		&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey,
+		funding_transaction: Transaction,
+	) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.batch_funding_transaction_generated_intern(
+			&[(&temporary_channel_id, &counterparty_node_id)],
+			FundingType::CheckedManualBroadcast(funding_transaction),
+		)
+	}
+
 	/// Call this upon creation of a batch funding transaction for the given channels.
 	///
 	/// Return values are identical to [`Self::funding_transaction_generated`], respective to
@@ -5788,7 +5808,7 @@ where
 					let mut output_index = None;
 					let expected_spk = chan.funding.get_funding_redeemscript().to_p2wsh();
 					let outpoint = match &funding {
-						FundingType::Checked(tx) => {
+						FundingType::Checked(tx) | FundingType::CheckedManualBroadcast(tx) => {
 							for (idx, outp) in tx.output.iter().enumerate() {
 								if outp.script_pubkey == expected_spk && outp.value.to_sat() == chan.funding.get_value_satoshis() {
 									if output_index.is_some() {
@@ -11134,6 +11154,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		for (err, counterparty_node_id) in shutdown_results {
 			let _ = handle_error!(self, err, counterparty_node_id);
 		}
+	}
+
+	/// Manually broadcast a transaction using the internal transaction broadcaster.
+	///
+	/// This method should only be used in specific scenarios where manual control
+	/// over transaction broadcast timing is required (e.g., LSPS2 workflows).
+	pub fn broadcast_transaction(&self, tx: &Transaction) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		log_info!(self.logger, "Broadcasting transaction {}", log_tx!(tx));
+		self.tx_broadcaster.broadcast_transactions(&[tx]);
 	}
 
 	/// Check whether any channels have finished removing all pending updates after a shutdown
