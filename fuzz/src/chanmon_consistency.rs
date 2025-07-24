@@ -365,6 +365,10 @@ impl NodeSigner for KeyProvider {
 		let secp_ctx = Secp256k1::signing_only();
 		Ok(secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
 	}
+
+	fn sign_message(&self, msg: &[u8]) -> Result<String, ()> {
+		Ok(lightning::util::message_signing::sign(msg, &self.node_secret))
+	}
 }
 
 impl SignerProvider for KeyProvider {

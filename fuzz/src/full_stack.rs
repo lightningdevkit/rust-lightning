@@ -436,6 +436,10 @@ impl NodeSigner for KeyProvider {
 		Ok(secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
 	}
 
+	fn sign_message(&self, msg: &[u8]) -> Result<String, ()> {
+		Ok(lightning::util::message_signing::sign(msg, &self.node_secret))
+	}
+
 	fn get_peer_storage_key(&self) -> PeerStorageKey {
 		PeerStorageKey { inner: [42; 32] }
 	}

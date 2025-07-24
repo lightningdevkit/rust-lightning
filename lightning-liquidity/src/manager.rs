@@ -10,6 +10,11 @@ use crate::lsps0::ser::{
 	LSPS_MESSAGE_TYPE_ID,
 };
 use crate::lsps0::service::LSPS0ServiceHandler;
+use crate::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
+use crate::lsps5::msgs::LSPS5Message;
+#[cfg(feature = "time")]
+use crate::lsps5::service::DefaultTimeProvider;
+use crate::lsps5::service::{LSPS5ServiceConfig, LSPS5ServiceHandler, TimeProvider};
 use crate::message_queue::MessageQueue;
 
 use crate::lsps1::client::{LSPS1ClientConfig, LSPS1ClientHandler};
@@ -28,7 +33,7 @@ use lightning::ln::channelmanager::{AChannelManager, ChainParameters};
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::ln::wire::CustomMessageReader;
-use lightning::sign::EntropySource;
+use lightning::sign::{EntropySource, NodeSigner};
 use lightning::util::logger::Level;
 use lightning::util::ser::{LengthLimitedRead, LengthReadable};
 use lightning::util::wakers::Future;
@@ -52,6 +57,8 @@ pub struct LiquidityServiceConfig {
 	/// Optional server-side configuration for JIT channels
 	/// should you want to support them.
 	pub lsps2_service_config: Option<LSPS2ServiceConfig>,
+	/// Optional server-side configuration for LSPS5 webhook service.
+	pub lsps5_service_config: Option<LSPS5ServiceConfig>,
 	/// Controls whether the liquidity service should be advertised via setting the feature bit in
 	/// node announcment and the init message.
 	pub advertise_service: bool,
@@ -66,6 +73,8 @@ pub struct LiquidityClientConfig {
 	pub lsps1_client_config: Option<LSPS1ClientConfig>,
 	/// Optional client-side configuration for JIT channels.
 	pub lsps2_client_config: Option<LSPS2ClientConfig>,
+	/// Optional client-side configuration for LSPS5 webhook service.
+	pub lsps5_client_config: Option<LSPS5ClientConfig>,
 }
 
 /// A trivial trait which describes any [`LiquidityManager`].
@@ -77,6 +86,10 @@ pub trait ALiquidityManager {
 	type EntropySource: EntropySource + ?Sized;
 	/// A type that may be dereferenced to [`Self::EntropySource`].
 	type ES: Deref<Target = Self::EntropySource> + Clone;
+	/// A type implementing [`NodeSigner`]
+	type NodeSigner: NodeSigner + ?Sized;
+	/// A type that may be dereferenced to [`Self::NodeSigner`].
+	type NS: Deref<Target = Self::NodeSigner> + Clone;
 	/// A type implementing [`AChannelManager`]
 	type AChannelManager: AChannelManager + ?Sized;
 	/// A type that may be dereferenced to [`Self::AChannelManager`].
@@ -85,24 +98,39 @@ pub trait ALiquidityManager {
 	type Filter: Filter + ?Sized;
 	/// A type that may be dereferenced to [`Self::Filter`].
 	type C: Deref<Target = Self::Filter> + Clone;
+	/// A type implementing [`TimeProvider`].
+	type TimeProvider: TimeProvider + ?Sized;
+	/// A type that may be dereferenced to [`Self::TimeProvider`].
+	type TP: Deref<Target = Self::TimeProvider> + Clone;
 	/// Returns a reference to the actual [`LiquidityManager`] object.
-	fn get_lm(&self) -> &LiquidityManager<Self::ES, Self::CM, Self::C>;
+	fn get_lm(&self) -> &LiquidityManager<Self::ES, Self::NS, Self::CM, Self::C, Self::TP>;
 }
 
-impl<ES: Deref + Clone, CM: Deref + Clone, C: Deref + Clone> ALiquidityManager
-	for LiquidityManager<ES, CM, C>
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		TP: Deref + Clone,
+	> ALiquidityManager for LiquidityManager<ES, NS, CM, C, TP>
 where
 	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	TP::Target: TimeProvider,
 {
 	type EntropySource = ES::Target;
 	type ES = ES;
+	type NodeSigner = NS::Target;
+	type NS = NS;
 	type AChannelManager = CM::Target;
 	type CM = CM;
 	type Filter = C::Target;
 	type C = C;
-	fn get_lm(&self) -> &LiquidityManager<ES, CM, C> {
+	type TimeProvider = TP::Target;
+	type TP = TP;
+	fn get_lm(&self) -> &LiquidityManager<ES, NS, CM, C, TP> {
 		self
 	}
 }
@@ -126,11 +154,18 @@ where
 /// [`Event::ChannelReady`]: lightning::events::Event::ChannelReady
 /// [`Event::HTLCHandlingFailed`]: lightning::events::Event::HTLCHandlingFailed
 /// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
-pub struct LiquidityManager<ES: Deref + Clone, CM: Deref + Clone, C: Deref + Clone>
-where
+pub struct LiquidityManager<
+	ES: Deref + Clone,
+	NS: Deref + Clone,
+	CM: Deref + Clone,
+	C: Deref + Clone,
+	TP: Deref + Clone,
+> where
 	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	TP::Target: TimeProvider,
 {
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue>,
@@ -144,28 +179,68 @@ where
 	lsps1_client_handler: Option<LSPS1ClientHandler<ES>>,
 	lsps2_service_handler: Option<LSPS2ServiceHandler<CM>>,
 	lsps2_client_handler: Option<LSPS2ClientHandler<ES>>,
+	lsps5_service_handler: Option<LSPS5ServiceHandler<CM, NS, TP>>,
+	lsps5_client_handler: Option<LSPS5ClientHandler<ES, TP>>,
 	service_config: Option<LiquidityServiceConfig>,
 	_client_config: Option<LiquidityClientConfig>,
 	best_block: RwLock<Option<BestBlock>>,
 	_chain_source: Option<C>,
 }
 
-impl<ES: Deref + Clone, CM: Deref + Clone, C: Deref + Clone> LiquidityManager<ES, CM, C>
+#[cfg(feature = "time")]
+impl<ES: Deref + Clone, NS: Deref + Clone, CM: Deref + Clone, C: Deref + Clone>
+	LiquidityManager<ES, NS, CM, C, Arc<DefaultTimeProvider>>
 where
 	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
 {
-	/// Constructor for the [`LiquidityManager`].
-	///
-	/// Sets up the required protocol message handlers based on the given
-	/// [`LiquidityClientConfig`] and [`LiquidityServiceConfig`].
+	/// Constructor for the [`LiquidityManager`] using the default system clock
 	pub fn new(
-		entropy_source: ES, channel_manager: CM, chain_source: Option<C>,
+		entropy_source: ES, node_signer: NS, channel_manager: CM, chain_source: Option<C>,
 		chain_params: Option<ChainParameters>, service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>,
-	) -> Self
-where {
+	) -> Self {
+		let time_provider = Arc::new(DefaultTimeProvider);
+		Self::new_with_custom_time_provider(
+			entropy_source,
+			node_signer,
+			channel_manager,
+			chain_source,
+			chain_params,
+			service_config,
+			client_config,
+			time_provider,
+		)
+	}
+}
+
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		TP: Deref + Clone,
+	> LiquidityManager<ES, NS, CM, C, TP>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	CM::Target: AChannelManager,
+	C::Target: Filter,
+	TP::Target: TimeProvider,
+{
+	/// Constructor for the [`LiquidityManager`] with a custom time provider.
+	///
+	/// This should be used on non-std platforms where access to the system time is not
+	/// available.
+	/// Sets up the required protocol message handlers based on the given
+	/// [`LiquidityClientConfig`] and [`LiquidityServiceConfig`].
+	pub fn new_with_custom_time_provider(
+		entropy_source: ES, node_signer: NS, channel_manager: CM, chain_source: Option<C>,
+		chain_params: Option<ChainParameters>, service_config: Option<LiquidityServiceConfig>,
+		client_config: Option<LiquidityClientConfig>, time_provider: TP,
+	) -> Self {
 		let pending_messages = Arc::new(MessageQueue::new());
 		let pending_events = Arc::new(EventQueue::new());
 		let ignored_peers = RwLock::new(new_hash_set());
@@ -194,6 +269,37 @@ where {
 					Arc::clone(&pending_events),
 					channel_manager.clone(),
 					config.clone(),
+				)
+			})
+		});
+
+		let lsps5_client_handler = client_config.as_ref().and_then(|config| {
+			config.lsps5_client_config.as_ref().map(|config| {
+				LSPS5ClientHandler::new_with_time_provider(
+					entropy_source.clone(),
+					Arc::clone(&pending_messages),
+					Arc::clone(&pending_events),
+					config.clone(),
+					time_provider.clone(),
+				)
+			})
+		});
+
+		let lsps5_service_handler = service_config.as_ref().and_then(|config| {
+			config.lsps5_service_config.as_ref().map(|config| {
+				if let Some(number) =
+					<LSPS5ServiceHandler<CM, NS, TP> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
+				{
+					supported_protocols.push(number);
+				}
+
+				LSPS5ServiceHandler::new_with_time_provider(
+					Arc::clone(&pending_events),
+					Arc::clone(&pending_messages),
+					channel_manager.clone(),
+					node_signer,
+					config.clone(),
+					time_provider.clone(),
 				)
 			})
 		});
@@ -252,6 +358,8 @@ where {
 			lsps1_service_handler,
 			lsps2_client_handler,
 			lsps2_service_handler,
+			lsps5_client_handler,
+			lsps5_service_handler,
 			service_config,
 			_client_config: client_config,
 			best_block: RwLock::new(chain_params.map(|chain_params| chain_params.best_block)),
@@ -297,6 +405,20 @@ where {
 	/// The returned hendler allows to initiate the LSPS2 service-side flow.
 	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM>> {
 		self.lsps2_service_handler.as_ref()
+	}
+
+	/// Returns a reference to the LSPS5 client-side handler.
+	///
+	/// The returned hendler allows to initiate the LSPS5 client-side flow. That is, it allows to
+	pub fn lsps5_client_handler(&self) -> Option<&LSPS5ClientHandler<ES, TP>> {
+		self.lsps5_client_handler.as_ref()
+	}
+
+	/// Returns a reference to the LSPS5 server-side handler.
+	///
+	/// The returned hendler allows to initiate the LSPS5 service-side flow.
+	pub fn lsps5_service_handler(&self) -> Option<&LSPS5ServiceHandler<CM, NS, TP>> {
+		self.lsps5_service_handler.as_ref()
 	}
 
 	/// Returns a [`Future`] that will complete when the next batch of pending messages is ready to
@@ -424,17 +546,44 @@ where {
 					},
 				}
 			},
+			LSPSMessage::LSPS5(msg @ LSPS5Message::Response(..)) => {
+				match &self.lsps5_client_handler {
+					Some(lsps5_client_handler) => {
+						lsps5_client_handler.handle_message(msg, sender_node_id)?;
+					},
+					None => {
+						return Err(LightningError { err: format!("Received LSPS5 response message without LSPS5 client handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)});
+					},
+				}
+			},
+			LSPSMessage::LSPS5(msg @ LSPS5Message::Request(..)) => {
+				match &self.lsps5_service_handler {
+					Some(lsps5_service_handler) => {
+						lsps5_service_handler.handle_message(msg, sender_node_id)?;
+					},
+					None => {
+						return Err(LightningError { err: format!("Received LSPS5 request message without LSPS5 service handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)});
+					},
+				}
+			},
 		}
 		Ok(())
 	}
 }
 
-impl<ES: Deref + Clone + Clone, CM: Deref + Clone, C: Deref + Clone> CustomMessageReader
-	for LiquidityManager<ES, CM, C>
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		TP: Deref + Clone,
+	> CustomMessageReader for LiquidityManager<ES, NS, CM, C, TP>
 where
 	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	TP::Target: TimeProvider,
 {
 	type CustomMessage = RawLSPSMessage;
 
@@ -450,12 +599,19 @@ where
 	}
 }
 
-impl<ES: Deref + Clone, CM: Deref + Clone, C: Deref + Clone> CustomMessageHandler
-	for LiquidityManager<ES, CM, C>
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		TP: Deref + Clone,
+	> CustomMessageHandler for LiquidityManager<ES, NS, CM, C, TP>
 where
 	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	TP::Target: TimeProvider,
 {
 	fn handle_custom_message(
 		&self, msg: Self::CustomMessage, sender_node_id: PublicKey,
@@ -562,11 +718,19 @@ where
 	}
 }
 
-impl<ES: Deref + Clone, CM: Deref + Clone, C: Deref + Clone> Listen for LiquidityManager<ES, CM, C>
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		TP: Deref + Clone,
+	> Listen for LiquidityManager<ES, NS, CM, C, TP>
 where
 	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	TP::Target: TimeProvider,
 {
 	fn filtered_block_connected(
 		&self, header: &bitcoin::block::Header, txdata: &chain::transaction::TransactionData,
@@ -599,11 +763,19 @@ where
 	}
 }
 
-impl<ES: Deref + Clone, CM: Deref + Clone, C: Deref + Clone> Confirm for LiquidityManager<ES, CM, C>
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		TP: Deref + Clone,
+	> Confirm for LiquidityManager<ES, NS, CM, C, TP>
 where
 	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	TP::Target: TimeProvider,
 {
 	fn transactions_confirmed(
 		&self, _header: &bitcoin::block::Header, _txdata: &chain::transaction::TransactionData,

@@ -1569,6 +1569,10 @@ impl NodeSigner for TestNodeSigner {
 	fn sign_gossip_message(&self, _msg: msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
 		unreachable!()
 	}
+
+	fn sign_message(&self, msg: &[u8]) -> Result<String, ()> {
+		Ok(crate::util::message_signing::sign(msg, &self.node_secret))
+	}
 }
 
 pub struct TestKeysInterface {
@@ -1630,6 +1634,10 @@ impl NodeSigner for TestKeysInterface {
 
 	fn sign_gossip_message(&self, msg: msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
 		self.backing.sign_gossip_message(msg)
+	}
+
+	fn sign_message(&self, msg: &[u8]) -> Result<String, ()> {
+		self.backing.sign_message(msg)
 	}
 }
 
