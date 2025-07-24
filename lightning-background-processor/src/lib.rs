@@ -387,20 +387,13 @@ macro_rules! define_run_body {
 			// persistence.
 			$peer_manager.as_ref().process_events();
 
-			// Exit the loop if the background processor was requested to stop.
-			if $loop_exit_check {
-				log_trace!($logger, "Terminating background processor.");
-				break;
-			}
-
 			if $timer_elapsed(&mut last_forwards_processing_call, cur_batch_delay) {
 				$channel_manager.get_cm().process_pending_htlc_forwards();
 				cur_batch_delay = $batch_delay.next();
 				last_forwards_processing_call = $get_timer(cur_batch_delay);
 			}
 
-			// Checke whether to exit the loop again, as some time might have passed since we
-			// checked above.
+			// Exit the loop if the background processor was requested to stop.
 			if $loop_exit_check {
 				log_trace!($logger, "Terminating background processor.");
 				break;
