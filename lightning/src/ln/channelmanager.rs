@@ -2964,19 +2964,6 @@ const MAX_PEER_STORAGE_SIZE: usize = 1024;
 /// many peers we reject new (inbound) connections.
 const MAX_NO_CHANNEL_PEERS: usize = 250;
 
-/// The maximum expiration from the current time where an [`Offer`] or [`Refund`] is considered
-/// short-lived, while anything with a greater expiration is considered long-lived.
-///
-/// Using [`ChannelManager::create_offer_builder`] or [`ChannelManager::create_refund_builder`],
-/// will include a [`BlindedMessagePath`] created using [`MessageRouter::create_blinded_paths`].
-///
-/// Using compact [`BlindedMessagePath`]s may provide better privacy as the [`MessageRouter`] could select
-/// more hops. However, since they use short channel ids instead of pubkeys, they are more likely to
-/// become invalid over time as channels are closed. Thus, they are only suitable for short-term use.
-///
-/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
-pub const MAX_SHORT_LIVED_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 24);
-
 /// Used by [`ChannelManager::list_recent_payments`] to express the status of recent payments.
 /// These include payments that have yet to find a successful path, or have unresolved HTLCs.
 #[derive(Debug, PartialEq)]
@@ -11640,8 +11627,8 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the refund based on the given
-	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
+	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`].
+	/// See those docs for
 	/// privacy implications.
 	///
 	/// Also, uses a derived payer id in the refund for payer privacy.
