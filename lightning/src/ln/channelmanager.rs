@@ -6419,15 +6419,15 @@ where
 						},
 				}) => {
 					let cltv_expiry = routing.incoming_cltv_expiry();
-					macro_rules! failure_handler {
-						($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
-							let logger = WithContext::from(
-								&self.logger,
-								forwarding_counterparty,
-								Some(prev_channel_id),
-								Some(payment_hash),
-							);
-							log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+					let logger = WithContext::from(
+						&self.logger,
+						forwarding_counterparty,
+						Some(prev_channel_id),
+						Some(payment_hash),
+					);
+					let mut failure_handler =
+						|msg, reason, err_data, phantom_ss, next_hop_unknown| {
+							log_info!(logger, "Failed to accept/forward incoming HTLC: {}", msg);
 
 							let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 								short_channel_id: prev_short_channel_id,
@@ -6437,12 +6437,12 @@ where
 								counterparty_node_id: prev_counterparty_node_id,
 								htlc_id: prev_htlc_id,
 								incoming_packet_shared_secret: incoming_shared_secret,
-								phantom_shared_secret: $phantom_ss,
+								phantom_shared_secret: phantom_ss,
 								blinded_failure: routing.blinded_failure(),
 								cltv_expiry,
 							});
 
-							let reason = if $next_hop_unknown {
+							let failure_type = if next_hop_unknown {
 								HTLCHandlingFailureType::InvalidForward {
 									requested_forward_scid: short_chan_id,
 								}
@@ -6453,22 +6453,11 @@ where
 							failed_forwards.push((
 								htlc_source,
 								payment_hash,
-								HTLCFailReason::reason($reason, $err_data),
-								reason,
+								HTLCFailReason::reason(reason, err_data),
+								failure_type,
 							));
-							continue;
 						};
-					}
-					macro_rules! fail_forward {
-						($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {{
-							failure_handler!($msg, $reason, $err_data, $phantom_ss, true);
-						}};
-					}
-					macro_rules! failed_payment {
-						($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {{
-							failure_handler!($msg, $reason, $err_data, $phantom_ss, false);
-						}};
-					}
+
 					if let PendingHTLCRouting::Forward { ref onion_packet, .. } = routing {
 						let phantom_pubkey_res =
 							self.node_signer.get_node_id(Recipient::PhantomNode);
@@ -6496,12 +6485,14 @@ where
 									// `update_fail_malformed_htlc`, meaning here we encrypt the error as
 									// if it came from us (the second-to-last hop) but contains the sha256
 									// of the onion.
-									failed_payment!(
+									failure_handler(
 										err_msg,
 										reason,
 										sha256_of_onion.to_vec(),
-										None
+										None,
+										false,
 									);
+									continue;
 								},
 								Err(onion_utils::OnionDecodeErr::Relay {
 									err_msg,
@@ -6510,12 +6501,14 @@ where
 									..
 								}) => {
 									let phantom_shared_secret = shared_secret.secret_bytes();
-									failed_payment!(
+									failure_handler(
 										err_msg,
 										reason,
 										Vec::new(),
-										Some(phantom_shared_secret)
+										Some(phantom_shared_secret),
+										false,
 									);
+									continue;
 								},
 							};
 							let phantom_shared_secret = next_hop.shared_secret().secret_bytes();
@@ -6540,31 +6533,42 @@ where
 									prev_user_channel_id,
 									vec![(info, prev_htlc_id)],
 								)),
-								Err(InboundHTLCErr { reason, err_data, msg }) => failed_payment!(
-									msg,
-									reason,
-									err_data,
-									Some(phantom_shared_secret)
-								),
+								Err(InboundHTLCErr { reason, err_data, msg }) => {
+									failure_handler(
+										msg,
+										reason,
+										err_data,
+										Some(phantom_shared_secret),
+										false,
+									);
+									continue;
+								},
 							}
 						} else {
-							fail_forward!(
-								format!(
-									"Unknown short channel id {} for forward HTLC",
-									short_chan_id
-								),
+							let msg = format!(
+								"Unknown short channel id {} for forward HTLC",
+								short_chan_id
+							);
+							failure_handler(
+								&msg,
 								LocalHTLCFailureReason::UnknownNextPeer,
 								Vec::new(),
-								None
+								None,
+								true,
 							);
+							continue;
 						}
 					} else {
-						fail_forward!(
-							format!("Unknown short channel id {} for forward HTLC", short_chan_id),
+						let msg =
+							format!("Unknown short channel id {} for forward HTLC", short_chan_id);
+						failure_handler(
+							&msg,
 							LocalHTLCFailureReason::UnknownNextPeer,
 							Vec::new(),
-							None
+							None,
+							true,
 						);
+						continue;
 					}
 				},
 				HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
