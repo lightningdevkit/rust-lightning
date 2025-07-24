@@ -40,6 +40,8 @@ for TARGET in src/bin/*.rs; do
 		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N10000"
 	elif [ "$FILE" = "indexedmap_target" ]; then
 		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N100000"
+	elif [ "$FILE" = "fs_store_target" ]; then
+		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -F 64 -N10000"
 	else
 		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N1000000"
 	fi
