@@ -6394,7 +6394,6 @@ where
 	}
 
 	/// Fail the list of provided HTLC forwards because the channel they were to be forwarded over does no longer exist.
-	#[rustfmt::skip]
 	fn forwarding_channel_not_found(
 		&self, forward_infos: impl Iterator<Item = HTLCForwardInfo>, short_chan_id: u64,
 		forwarding_counterparty: Option<PublicKey>, failed_forwards: &mut Vec<FailedHTLCForward>,
@@ -6403,16 +6402,31 @@ where
 		for forward_info in forward_infos {
 			match forward_info {
 				HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-					prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
-					prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
-						routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
-						outgoing_cltv_value, ..
-					}
+					prev_short_channel_id,
+					prev_htlc_id,
+					prev_channel_id,
+					prev_funding_outpoint,
+					prev_user_channel_id,
+					prev_counterparty_node_id,
+					forward_info:
+						PendingHTLCInfo {
+							routing,
+							incoming_shared_secret,
+							payment_hash,
+							outgoing_amt_msat,
+							outgoing_cltv_value,
+							..
+						},
 				}) => {
 					let cltv_expiry = routing.incoming_cltv_expiry();
 					macro_rules! failure_handler {
 						($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
-							let logger = WithContext::from(&self.logger, forwarding_counterparty, Some(prev_channel_id), Some(payment_hash));
+							let logger = WithContext::from(
+								&self.logger,
+								forwarding_counterparty,
+								Some(prev_channel_id),
+								Some(payment_hash),
+							);
 							log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 
 							let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
@@ -6429,75 +6443,128 @@ where
 							});
 
 							let reason = if $next_hop_unknown {
-								HTLCHandlingFailureType::InvalidForward { requested_forward_scid: short_chan_id }
+								HTLCHandlingFailureType::InvalidForward {
+									requested_forward_scid: short_chan_id,
+								}
 							} else {
-								HTLCHandlingFailureType::Receive{ payment_hash }
+								HTLCHandlingFailureType::Receive { payment_hash }
 							};
 
-							failed_forwards.push((htlc_source, payment_hash,
+							failed_forwards.push((
+								htlc_source,
+								payment_hash,
 								HTLCFailReason::reason($reason, $err_data),
-								reason
+								reason,
 							));
 							continue;
-						}
+						};
 					}
 					macro_rules! fail_forward {
-						($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {
-							{
-								failure_handler!($msg, $reason, $err_data, $phantom_ss, true);
-							}
-						}
+						($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {{
+							failure_handler!($msg, $reason, $err_data, $phantom_ss, true);
+						}};
 					}
 					macro_rules! failed_payment {
-						($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {
-							{
-								failure_handler!($msg, $reason, $err_data, $phantom_ss, false);
-							}
-						}
+						($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {{
+							failure_handler!($msg, $reason, $err_data, $phantom_ss, false);
+						}};
 					}
 					if let PendingHTLCRouting::Forward { ref onion_packet, .. } = routing {
-						let phantom_pubkey_res = self.node_signer.get_node_id(Recipient::PhantomNode);
-						if phantom_pubkey_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.chain_hash) {
+						let phantom_pubkey_res =
+							self.node_signer.get_node_id(Recipient::PhantomNode);
+						if phantom_pubkey_res.is_ok()
+							&& fake_scid::is_valid_phantom(
+								&self.fake_scid_rand_bytes,
+								short_chan_id,
+								&self.chain_hash,
+							) {
 							let decode_res = onion_utils::decode_next_payment_hop(
-								Recipient::PhantomNode, &onion_packet.public_key.unwrap(), &onion_packet.hop_data,
-								onion_packet.hmac, payment_hash, None, &*self.node_signer
+								Recipient::PhantomNode,
+								&onion_packet.public_key.unwrap(),
+								&onion_packet.hop_data,
+								onion_packet.hmac,
+								payment_hash,
+								None,
+								&*self.node_signer,
 							);
 							let next_hop = match decode_res {
 								Ok(res) => res,
 								Err(onion_utils::OnionDecodeErr::Malformed { err_msg, reason }) => {
-									let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).to_byte_array();
+									let sha256_of_onion =
+										Sha256::hash(&onion_packet.hop_data).to_byte_array();
 									// In this scenario, the phantom would have sent us an
 									// `update_fail_malformed_htlc`, meaning here we encrypt the error as
 									// if it came from us (the second-to-last hop) but contains the sha256
 									// of the onion.
-									failed_payment!(err_msg, reason, sha256_of_onion.to_vec(), None);
+									failed_payment!(
+										err_msg,
+										reason,
+										sha256_of_onion.to_vec(),
+										None
+									);
 								},
-								Err(onion_utils::OnionDecodeErr::Relay { err_msg, reason, shared_secret, .. }) => {
+								Err(onion_utils::OnionDecodeErr::Relay {
+									err_msg,
+									reason,
+									shared_secret,
+									..
+								}) => {
 									let phantom_shared_secret = shared_secret.secret_bytes();
-									failed_payment!(err_msg, reason, Vec::new(), Some(phantom_shared_secret));
+									failed_payment!(
+										err_msg,
+										reason,
+										Vec::new(),
+										Some(phantom_shared_secret)
+									);
 								},
 							};
 							let phantom_shared_secret = next_hop.shared_secret().secret_bytes();
 							let current_height: u32 = self.best_block.read().unwrap().height;
-							let create_res = create_recv_pending_htlc_info(next_hop,
-								incoming_shared_secret, payment_hash, outgoing_amt_msat,
-								outgoing_cltv_value, Some(phantom_shared_secret), false, None,
-								current_height);
-							match create_res
-							{
+							let create_res = create_recv_pending_htlc_info(
+								next_hop,
+								incoming_shared_secret,
+								payment_hash,
+								outgoing_amt_msat,
+								outgoing_cltv_value,
+								Some(phantom_shared_secret),
+								false,
+								None,
+								current_height,
+							);
+							match create_res {
 								Ok(info) => phantom_receives.push((
-									prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
-									prev_channel_id, prev_user_channel_id, vec![(info, prev_htlc_id)]
+									prev_short_channel_id,
+									prev_counterparty_node_id,
+									prev_funding_outpoint,
+									prev_channel_id,
+									prev_user_channel_id,
+									vec![(info, prev_htlc_id)],
 								)),
-								Err(InboundHTLCErr { reason, err_data, msg }) => failed_payment!(msg, reason, err_data, Some(phantom_shared_secret))
+								Err(InboundHTLCErr { reason, err_data, msg }) => failed_payment!(
+									msg,
+									reason,
+									err_data,
+									Some(phantom_shared_secret)
+								),
 							}
 						} else {
-							fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id),
-							LocalHTLCFailureReason::UnknownNextPeer, Vec::new(), None);
+							fail_forward!(
+								format!(
+									"Unknown short channel id {} for forward HTLC",
+									short_chan_id
+								),
+								LocalHTLCFailureReason::UnknownNextPeer,
+								Vec::new(),
+								None
+							);
 						}
 					} else {
-						fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id),
-						LocalHTLCFailureReason::UnknownNextPeer, Vec::new(), None);
+						fail_forward!(
+							format!("Unknown short channel id {} for forward HTLC", short_chan_id),
+							LocalHTLCFailureReason::UnknownNextPeer,
+							Vec::new(),
+							None
+						);
 					}
 				},
 				HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
@@ -6505,7 +6572,7 @@ where
 					// the channel is now on chain and our counterparty is
 					// trying to broadcast the HTLC-Timeout, but that's their
 					// problem, not ours.
-				}
+				},
 			}
 		}
 	}
