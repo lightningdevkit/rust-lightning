@@ -1,3 +1,60 @@
+# 0.1.5 - Jul XXX, 2025 - "Async Path Reduction"
+
+## Performance Improvements
+ * `NetworkGraph`'s expensive internal consistency checks have now been
+   disabled in debug builds in addition to release builds (#3687).
+
+## Bug Fixes
+ * Pathfinding which results in a multi-path payment is now substantially
+   smarter, using fewer paths and better optimizing fees and successes (#3890).
+ * A counterparty delaying claiming multiple HTLCs with different expiries can
+   no longer cause our `ChannelMonitor` to continuously rebroadcast invalid
+   transactions or RBF bump attempts (#3923).
+ * Reorgs can no longer cause us to fail to claim HTLCs after a counterparty
+   delayed claiming multiple HTLCs with different expiries (#3923).
+ * Force-closing a channel while it is blocked on another channel's async
+   `ChannelMonitorUpdate` can no longer lead to a panic (#3858).
+ * `ChannelMonitorUpdate`s can no longer be released to storage too early when
+   doing async updates or on restart. This only impacts async
+   `ChannelMonitorUpdate` persistence and can lead to loss of funds only in rare
+   cases with `ChannelMonitorUpdate` persistence order inversions (#3907).
+
+## Security
+0.1.5 fixes a vulnerability which could allow a peer to overdraw their reserve
+value, potentially cutting into commitment transaction fees on channels with a
+low reserve.
+ * Due to a bug in checking whether an HTLC is dust during acceptance, near-dust
+   HTLCs were not counted towards the commitment transaction fee, but did
+   eventually contribute to it when we built a commitment transaction. This can
+   be used by a counterparty to overdraw their reserve value, or, for channels
+   with a low reserve value, cut into the commitment transaction fee (#3933).
+
+
+# 0.1.4 - May 23, 2025 - "Careful Validation of Bogus States"
+
+## Bug Fixes
+ * In cases where using synchronous persistence with higher latency than the
+   latency to communicate with peers caused issues fixed in 0.1.2,
+   `ChannelManager`s may have been left in a state which LDK 0.1.2 and later
+   would refuse to deserialize. This has been fixed and nodes which experienced
+   this issue prior to 0.1.2 should now deserialize fine (#3790).
+ * In some cases, when using synchronous persistence with higher latency than
+   the latency to communicate with peers, when receiving an MPP payment with
+   multiple parts received over the same channel, a channel could hang and not
+   make progress, eventually leading to a force-closure due to timed-out HTLCs.
+   This has now been fixed (#3680).
+
+## Security
+0.1.4 fixes a funds-theft vulnerability in exceedingly rare cases.
+ * If an LDK-based node funds an anchor channel to a malicious peer, and that
+   peer sets the channel reserve on the LDK-based node to zero, the LDK-node
+   could overdraw its total balance upon increasing the feerate of the
+   commitment transaction. If the malicious peer forwards HTLCs through the
+   LDK-based node, this could leave the LDK-based node with no valid commitment
+   transaction to broadcast to claim its part of the forwarded HTLC. The
+   counterparty would have to forfeit their reserve value (#3796).
+
+
 # 0.1.3 - Apr 30, 2025 - "Routing Unicode in 2025"
 
 ## Bug Fixes

@@ -6350,7 +6350,9 @@ where
 						let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 						let peer_state = &mut *peer_state_lock;
 						if let Some(ChannelPhase::Funded(chan)) = peer_state.channel_by_id.get_mut(&channel_id) {
-							handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+							if chan.blocked_monitor_updates_pending() == 0 {
+								handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+							}
 						} else {
 							let update_actions = peer_state.monitor_update_blocked_actions
 								.remove(&channel_id).unwrap_or(Vec::new());
@@ -7628,8 +7630,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		if let Some(ChannelPhase::Funded(chan)) = peer_state.channel_by_id.get_mut(channel_id) {
 			if chan.is_awaiting_monitor_update() {
-				log_trace!(logger, "Channel is open and awaiting update, resuming it");
-				handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+				if chan.blocked_monitor_updates_pending() == 0 {
+					log_trace!(logger, "Channel is open and awaiting update, resuming it");
+					handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+				} else {
+					log_trace!(logger, "Channel is open and awaiting update, leaving it blocked due to a blocked monitor update");
+				}
 			} else {
 				log_trace!(logger, "Channel is open but not awaiting update");
 			}
@@ -13585,9 +13591,17 @@ where
 			 $monitor: expr, $peer_state: expr, $logger: expr, $channel_info_log: expr
 			) => { {
 				let mut max_in_flight_update_id = 0;
+				let starting_len =  $chan_in_flight_upds.len();
 				$chan_in_flight_upds.retain(|upd| upd.update_id > $monitor.get_latest_update_id());
+				if $chan_in_flight_upds.len() < starting_len {
+					log_debug!(
+						$logger,
+						"{} ChannelMonitorUpdates completed after ChannelManager was last serialized",
+						starting_len - $chan_in_flight_upds.len()
+					);
+				}
 				for update in $chan_in_flight_upds.iter() {
-					log_trace!($logger, "Replaying ChannelMonitorUpdate {} for {}channel {}",
+					log_debug!($logger, "Replaying ChannelMonitorUpdate {} for {}channel {}",
 						update.update_id, $channel_info_log, &$monitor.channel_id());
 					max_in_flight_update_id = cmp::max(max_in_flight_update_id, update.update_id);
 					pending_background_events.push(
@@ -14151,11 +14165,31 @@ where
 							debug_assert!(false, "Non-event-generating channel freeing should not appear in our queue");
 						}
 					}
+					// Note that we may have a post-update action for a channel that has no pending
+					// `ChannelMonitorUpdate`s, but unlike the no-peer-state case, it may simply be
+					// because we had a `ChannelMonitorUpdate` complete after the last time this
+					// `ChannelManager` was serialized. In that case, we'll run the post-update
+					// actions as soon as we get going.
 				}
 				peer_state.lock().unwrap().monitor_update_blocked_actions = monitor_update_blocked_actions;
 			} else {
-				log_error!(WithContext::from(&args.logger, Some(node_id), None, None), "Got blocked actions without a per-peer-state for {}", node_id);
-				return Err(DecodeError::InvalidValue);
+				for actions in monitor_update_blocked_actions.values() {
+					for action in actions.iter() {
+						if matches!(action, MonitorUpdateCompletionAction::PaymentClaimed { .. }) {
+							// If there are no state for this channel but we have pending
+							// post-update actions, its possible that one was left over from pre-0.1
+							// payment claims where MPP claims led to a channel blocked on itself
+							// and later `ChannelMonitorUpdate`s didn't get their post-update
+							// actions run.
+							// This should only have happened for `PaymentClaimed` post-update actions,
+							// which we ignore here.
+						} else {
+							let logger = WithContext::from(&args.logger, Some(node_id), None, None);
+							log_error!(logger, "Got blocked actions {:?} without a per-peer-state for {}", monitor_update_blocked_actions, node_id);
+							return Err(DecodeError::InvalidValue);
+						}
+					}
+				}
 			}
 		}
 
@@ -14240,6 +14274,22 @@ where
 						if payment_claim.mpp_parts.is_empty() {
 							return Err(DecodeError::InvalidValue);
 						}
+						{
+							let payments = channel_manager.claimable_payments.lock().unwrap();
+							if !payments.claimable_payments.contains_key(&payment_hash) {
+								if let Some(payment) = payments.pending_claiming_payments.get(&payment_hash) {
+									if payment.payment_id == payment_claim.claiming_payment.payment_id {
+										// If this payment already exists and was marked as
+										// being-claimed then the serialized state must contain all
+										// of the pending `ChannelMonitorUpdate`s required to get
+										// the preimage on disk in all MPP parts. Thus we can skip
+										// the replay below.
+										continue;
+									}
+								}
+							}
+						}
+
 						let mut channels_without_preimage = payment_claim.mpp_parts.iter()
 							.map(|htlc_info| (htlc_info.counterparty_node_id, htlc_info.funding_txo, htlc_info.channel_id))
 							.collect::<Vec<_>>();

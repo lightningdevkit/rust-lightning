@@ -13,7 +13,7 @@ use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SpendableOutputDescr
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATENCY_GRACE_PERIOD_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, Balance, BalanceSource, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
-use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
+use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
@@ -462,25 +462,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let coinbase_tx = Transaction {
-		version: Version::TWO,
-		lock_time: LockTime::ZERO,
-		input: vec![TxIn { ..Default::default() }],
-		output: vec![
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-			},
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
-			},
-		],
-	};
-	if anchors {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
-		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 1 }, coinbase_tx.output[1].value);
-	}
+	let coinbase_tx = provide_anchor_reserves(&nodes);
 
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000);
@@ -729,8 +711,9 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	test_spendable_output(&nodes[0], &remote_txn[0], false);
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 
-	// After broadcasting the HTLC claim transaction, node A will still consider the HTLC
-	// possibly-claimable up to ANTI_REORG_DELAY, at which point it will drop it.
+	// After confirming the HTLC claim transaction, node A will no longer attempt to claim said
+	// HTLC, unless the transaction is reorged. However, we'll still report a
+	// `MaybeTimeoutClaimableHTLC` balance for it until we reach `ANTI_REORG_DELAY` confirmations.
 	mine_transaction(&nodes[0], &b_broadcast_txn[0]);
 	if prev_commitment_tx {
 		expect_payment_path_successful!(nodes[0]);
@@ -746,18 +729,10 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// When the HTLC timeout output is spendable in the next block, A should broadcast it
 	connect_blocks(&nodes[0], htlc_cltv_timeout - nodes[0].best_block_info().1);
 	let a_broadcast_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	// Aggregated claim transaction.
 	assert_eq!(a_broadcast_txn.len(), 1);
 	check_spends!(a_broadcast_txn[0], remote_txn[0]);
-	assert_eq!(a_broadcast_txn[0].input.len(), 2);
-	assert_ne!(a_broadcast_txn[0].input[0].previous_output.vout, a_broadcast_txn[0].input[1].previous_output.vout);
-	// a_broadcast_txn [0] and [1] should spend the HTLC outputs of the commitment tx
-	assert!(a_broadcast_txn[0].input.iter().any(|input| remote_txn[0].output[input.previous_output.vout as usize].value.to_sat() == 3_000));
+	assert_eq!(a_broadcast_txn[0].input.len(), 1);
 	assert!(a_broadcast_txn[0].input.iter().any(|input| remote_txn[0].output[input.previous_output.vout as usize].value.to_sat() == 4_000));
-
-	// Confirm node B's claim for node A to remove that claim from the aggregated claim transaction.
-	mine_transaction(&nodes[0], &b_broadcast_txn[0]);
-	let a_broadcast_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	let a_htlc_timeout_tx = a_broadcast_txn.into_iter().last().unwrap();
 
 	// Once the HTLC-Timeout transaction confirms, A will no longer consider the HTLC
@@ -865,25 +840,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let coinbase_tx = Transaction {
-		version: Version::TWO,
-		lock_time: LockTime::ZERO,
-		input: vec![TxIn { ..Default::default() }],
-		output: vec![
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-			},
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
-			},
-		],
-	};
-	if anchors {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
-		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 1 }, coinbase_tx.output[1].value);
-	}
+	let coinbase_tx = provide_anchor_reserves(&nodes);
 
 	// Create a single channel with two pending HTLCs from nodes[0] to nodes[1], one which nodes[1]
 	// knows the preimage for, one which it does not.
@@ -1650,25 +1607,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let coinbase_tx = Transaction {
-		version: Version::TWO,
-		lock_time: LockTime::ZERO,
-		input: vec![TxIn { ..Default::default() }],
-		output: vec![
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-			},
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
-			},
-		],
-	};
-	if anchors {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
-		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 1 }, coinbase_tx.output[1].value);
-	}
+	let coinbase_tx = provide_anchor_reserves(&nodes);
 
 	// Create some initial channels
 	let (_, _, chan_id, funding_tx) =
@@ -1951,16 +1890,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let coinbase_tx = Transaction {
-		version: Version::TWO,
-		lock_time: LockTime::ZERO,
-		input: vec![TxIn { ..Default::default() }],
-		output: vec![TxOut {
-			value: Amount::ONE_BTC,
-			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-		}],
-	};
-	nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
+	let coinbase_tx = provide_anchor_reserves(&nodes);
 
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000);
@@ -2241,25 +2171,7 @@ fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: boo
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(user_config), Some(user_config), Some(user_config)]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let coinbase_tx = Transaction {
-		version: Version::TWO,
-		lock_time: LockTime::ZERO,
-		input: vec![TxIn { ..Default::default() }],
-		output: vec![
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-			},
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
-			},
-		],
-	};
-	if anchors {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
-		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 1 }, coinbase_tx.output[1].value);
-	}
+	provide_anchor_reserves(&nodes);
 
 	// Create a channel from A -> B
 	let (_, _, chan_ab_id, funding_tx_ab) =
@@ -2406,6 +2318,8 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+
 	let (_, _, _, chan_id, funding_tx) = create_chan_between_nodes_with_value(
 		&nodes[0], &nodes[1], 1_000_000, 500_000_000
 	);
@@ -2423,17 +2337,6 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	check_closed_event!(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed,
 		 false, [nodes[1].node.get_our_node_id()], 1000000);
 	check_added_monitors(&nodes[0], 1);
-
-	let coinbase_tx = Transaction {
-		version: Version::TWO,
-		lock_time: LockTime::ZERO,
-		input: vec![TxIn { ..Default::default() }],
-		output: vec![TxOut { // UTXO to attach fees to `htlc_tx` on anchors
-			value: Amount::ONE_BTC,
-			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-		}],
-	};
-	nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
 
 	// Set up a helper closure we'll use throughout our test. We should only expect retries without
 	// bumps if fees have not increased after a block has been connected (assuming the height timer
@@ -2538,6 +2441,8 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config), Some(anchors_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(
 		&nodes, 0, 1, 1_000_000, 500_000_000
 	);
@@ -2613,16 +2518,6 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 	assert_eq!(holder_events.len(), 1);
 	let (commitment_tx, anchor_tx) = match holder_events.pop().unwrap() {
 		Event::BumpTransaction(event) => {
-			let coinbase_tx = Transaction {
-				version: Version::TWO,
-				lock_time: LockTime::ZERO,
-				input: vec![TxIn { ..Default::default() }],
-				output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
-					value: Amount::ONE_BTC,
-					script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-				}],
-			};
-			nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
 			nodes[0].bump_tx_handler.handle_event(&event);
 			let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 			assert_eq!(txn.len(), 2);
@@ -2738,6 +2633,8 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+
 	let chan_a = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 20_000_000);
 	let chan_b = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 20_000_000);
 
@@ -2796,18 +2693,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	assert_eq!(events.len(), 2);
 	let mut revoked_commitment_txs = Vec::with_capacity(events.len());
 	let mut anchor_txs = Vec::with_capacity(events.len());
-	for (idx, event) in events.into_iter().enumerate() {
-		let utxo_value = Amount::ONE_BTC * (idx + 1) as u64;
-		let coinbase_tx = Transaction {
-			version: Version::TWO,
-			lock_time: LockTime::ZERO,
-			input: vec![TxIn { ..Default::default() }],
-			output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
-				value: utxo_value,
-				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
-			}],
-		};
-		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, utxo_value);
+	for event in events {
 		match event {
 			Event::BumpTransaction(event) => nodes[1].bump_tx_handler.handle_event(&event),
 			_ => panic!("Unexpected event"),
@@ -3125,20 +3011,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let coinbase_tx = Transaction {
-		version: Version::TWO,
-		lock_time: LockTime::ZERO,
-		input: vec![TxIn { ..Default::default() }],
-		output: vec![
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-			},
-		],
-	};
-	if anchors {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
-	}
+	let coinbase_tx = provide_anchor_reserves(&nodes);
 
 	// Open a channel and route a payment. We'll let it timeout to claim it.
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);

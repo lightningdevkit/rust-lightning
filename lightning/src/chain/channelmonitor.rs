@@ -3008,23 +3008,26 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				(payment_preimage.clone(), payment_info.clone().into_iter().collect())
 			});
 
-		let confirmed_spend_txid = self.funding_spend_confirmed.or_else(|| {
-			self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| match event.event {
-				OnchainEvent::FundingSpendConfirmation { .. } => Some(event.txid),
-				_ => None,
-			})
-		});
-		let confirmed_spend_txid = if let Some(txid) = confirmed_spend_txid {
-			txid
-		} else {
-			return;
-		};
+		let confirmed_spend_info = self.funding_spend_confirmed
+			.map(|txid| (txid, None))
+			.or_else(|| {
+				self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| match event.event {
+					OnchainEvent::FundingSpendConfirmation { .. } => Some((event.txid, Some(event.height))),
+					_ => None,
+				})
+			});
+		let (confirmed_spend_txid, confirmed_spend_height) =
+			if let Some((txid, height)) = confirmed_spend_info {
+				(txid, height)
+			} else {
+				return;
+			};
 
 		// If the channel is force closed, try to claim the output from this preimage.
 		// First check if a counterparty commitment transaction has been broadcasted:
 		macro_rules! claim_htlcs {
 			($commitment_number: expr, $txid: expr, $htlcs: expr) => {
-				let (htlc_claim_reqs, _) = self.get_counterparty_output_claim_info($commitment_number, $txid, None, $htlcs);
+				let (htlc_claim_reqs, _) = self.get_counterparty_output_claim_info($commitment_number, $txid, None, $htlcs, confirmed_spend_height);
 				let conf_target = self.closure_conf_target();
 				self.onchain_tx_handler.update_claims_view_from_requests(htlc_claim_reqs, self.best_block.height, self.best_block.height, broadcaster, conf_target, fee_estimator, logger);
 			}
@@ -3542,7 +3545,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// First, process non-htlc outputs (to_holder & to_counterparty)
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
-					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_commitment_params.on_counterparty_tx_csv, self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx());
+					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_commitment_params.on_counterparty_tx_csv, self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx(), height);
 					let justice_package = PackageTemplate::build_package(
 						commitment_txid, idx as u32,
 						PackageSolvingData::RevokedOutput(revk_outp),
@@ -3563,7 +3566,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							// per_commitment_data is corrupt or our commitment signing key leaked!
 							return (claimable_outpoints, to_counterparty_output_info);
 						}
-						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone(), &self.onchain_tx_handler.channel_transaction_parameters.channel_type_features);
+						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone(), &self.onchain_tx_handler.channel_transaction_parameters.channel_type_features, height);
 						let counterparty_spendable_height = if htlc.offered {
 							htlc.cltv_expiry
 						} else {
@@ -3617,7 +3620,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 				), logger);
 			let (htlc_claim_reqs, counterparty_output_info) =
-				self.get_counterparty_output_claim_info(commitment_number, commitment_txid, Some(tx), per_commitment_option);
+				self.get_counterparty_output_claim_info(commitment_number, commitment_txid, Some(tx), per_commitment_option, Some(height));
 			to_counterparty_output_info = counterparty_output_info;
 			for req in htlc_claim_reqs {
 				claimable_outpoints.push(req);
@@ -3628,7 +3631,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	/// Returns the HTLC claim package templates and the counterparty output info
-	fn get_counterparty_output_claim_info(&self, commitment_number: u64, commitment_txid: Txid, tx: Option<&Transaction>, per_commitment_option: Option<&Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>)
+	fn get_counterparty_output_claim_info(&self, commitment_number: u64, commitment_txid: Txid, tx: Option<&Transaction>, per_commitment_option: Option<&Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>, confirmation_height: Option<u32>)
 	-> (Vec<PackageTemplate>, CommitmentTxCounterpartyOutputInfo) {
 		let mut claimable_outpoints = Vec::new();
 		let mut to_counterparty_output_info: CommitmentTxCounterpartyOutputInfo = None;
@@ -3688,13 +3691,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							CounterpartyOfferedHTLCOutput::build(*per_commitment_point,
 								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
 								self.counterparty_commitment_params.counterparty_htlc_base_key,
-								preimage.unwrap(), htlc.clone(), self.onchain_tx_handler.channel_type_features().clone()))
+								preimage.unwrap(), htlc.clone(), self.onchain_tx_handler.channel_type_features().clone(),
+								confirmation_height))
 					} else {
 						PackageSolvingData::CounterpartyReceivedHTLCOutput(
 							CounterpartyReceivedHTLCOutput::build(*per_commitment_point,
 								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
 								self.counterparty_commitment_params.counterparty_htlc_base_key,
-								htlc.clone(), self.onchain_tx_handler.channel_type_features().clone()))
+								htlc.clone(), self.onchain_tx_handler.channel_type_features().clone(),
+								confirmation_height))
 					};
 					let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry);
 					claimable_outpoints.push(counterparty_package);
@@ -3736,7 +3741,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
 					self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key,
 					tx.output[idx].value, self.counterparty_commitment_params.on_counterparty_tx_csv,
-					false
+					false, height,
 				);
 				let justice_package = PackageTemplate::build_package(
 					htlc_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp),
@@ -3765,7 +3770,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				let (htlc_output, counterparty_spendable_height) = if htlc.offered {
 					let htlc_output = HolderHTLCOutput::build_offered(
-						htlc.amount_msat, htlc.cltv_expiry, self.onchain_tx_handler.channel_type_features().clone()
+						htlc.amount_msat, htlc.cltv_expiry, self.onchain_tx_handler.channel_type_features().clone(), conf_height
 					);
 					(htlc_output, conf_height)
 				} else {
@@ -3776,7 +3781,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						continue;
 					};
 					let htlc_output = HolderHTLCOutput::build_accepted(
-						payment_preimage, htlc.amount_msat, self.onchain_tx_handler.channel_type_features().clone()
+						payment_preimage, htlc.amount_msat, self.onchain_tx_handler.channel_type_features().clone(), conf_height
 					);
 					(htlc_output, htlc.cltv_expiry)
 				};

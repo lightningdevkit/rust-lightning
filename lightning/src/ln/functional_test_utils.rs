@@ -335,6 +335,28 @@ fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Node<'b
 	}
 }
 
+pub fn provide_anchor_reserves<'a, 'b, 'c>(nodes: &[Node<'a, 'b, 'c>]) -> Transaction {
+	let mut output = Vec::with_capacity(nodes.len());
+	for node in nodes {
+		output.push(TxOut {
+			value: Amount::ONE_BTC,
+			script_pubkey: node.wallet_source.get_change_script().unwrap(),
+		});
+	}
+	let tx = Transaction {
+		version: TxVersion::TWO,
+		lock_time: LockTime::ZERO,
+		input: vec![TxIn { ..Default::default() }],
+		output,
+	};
+	let height = nodes[0].best_block_info().1 + 1;
+	let block = create_dummy_block(nodes[0].best_block_hash(), height, vec![tx.clone()]);
+	for node in nodes {
+		do_connect_block_with_consistency_checks(node, block.clone(), false);
+	}
+	tx
+}
+
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
 	call_claimable_balances(node);
 	eprintln!("Disconnecting {} blocks using Block Connection Style: {:?}", count, *node.connect_style.borrow());
@@ -1196,7 +1218,7 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 	node_deserialized
 }
 
-#[cfg(test)]
+#[macro_export]
 macro_rules! reload_node {
 	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		let chanman_encoded = $chanman_encoded;
