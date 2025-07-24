@@ -13635,9 +13635,10 @@ mod tests {
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 	use crate::chain::transaction::OutPoint;
 	use crate::chain::BestBlock;
+	#[cfg(splicing)]
+	use crate::ln::chan_utils::ChannelTransactionParameters;
 	use crate::ln::chan_utils::{
 		self, commit_tx_fee_sat, htlc_success_tx_weight, htlc_timeout_tx_weight,
-		ChannelTransactionParameters,
 	};
 	use crate::ln::channel::{
 		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate, HTLCInitiator,
@@ -13657,6 +13658,7 @@ mod tests {
 	use crate::prelude::*;
 	use crate::routing::router::{Path, RouteHop};
 	use crate::sign::{ChannelSigner, EntropySource, InMemorySigner, SignerProvider};
+	#[cfg(splicing)]
 	use crate::sync::Mutex;
 	#[cfg(ldk_test_vectors)]
 	use crate::types::features::ChannelTypeFeatures;
