@@ -2352,17 +2352,19 @@ impl FundingScope {
 }
 
 // TODO: Remove once MSRV is at least 1.66
+#[cfg(splicing)]
 trait AddSigned {
 	fn checked_add_signed(self, rhs: i64) -> Option<u64>;
 	fn saturating_add_signed(self, rhs: i64) -> u64;
 }
 
+#[cfg(splicing)]
 impl AddSigned for u64 {
 	fn checked_add_signed(self, rhs: i64) -> Option<u64> {
 		if rhs >= 0 {
 			self.checked_add(rhs as u64)
 		} else {
-			self.checked_sub(rhs.abs() as u64)
+			self.checked_sub(rhs.unsigned_abs())
 		}
 	}
 
@@ -2370,7 +2372,7 @@ impl AddSigned for u64 {
 		if rhs >= 0 {
 			self.saturating_add(rhs as u64)
 		} else {
-			self.saturating_sub(rhs.abs() as u64)
+			self.saturating_sub(rhs.unsigned_abs())
 		}
 	}
 }
