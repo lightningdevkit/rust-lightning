@@ -21,6 +21,7 @@ void base32_run(const unsigned char* data, size_t data_len);
 void fromstr_to_netaddress_run(const unsigned char* data, size_t data_len);
 void feature_flags_run(const unsigned char* data, size_t data_len);
 void lsps_message_run(const unsigned char* data, size_t data_len);
+void fs_store_run(const unsigned char* data, size_t data_len);
 void msg_accept_channel_run(const unsigned char* data, size_t data_len);
 void msg_announcement_signatures_run(const unsigned char* data, size_t data_len);
 void msg_channel_reestablish_run(const unsigned char* data, size_t data_len);
