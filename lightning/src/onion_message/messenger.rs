@@ -219,7 +219,7 @@ where
 /// #     }
 /// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 /// #         &self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
-/// #         _context: MessageContext, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
+/// #         _context: MessageContext, _peers: Vec<MessageForwardNode>, _secp_ctx: &Secp256k1<T>
 /// #     ) -> Result<Vec<BlindedMessagePath>, ()> {
 /// #         unreachable!()
 /// #     }
@@ -508,40 +508,32 @@ pub trait MessageRouter {
 	/// be direct peers with the `recipient`.
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()>;
-
-	/// Creates compact [`BlindedMessagePath`]s to the `recipient` node. The nodes in `peers` are
-	/// assumed to be direct peers with the `recipient`.
-	///
-	/// Compact blinded paths use short channel ids instead of pubkeys for a smaller serialization,
-	/// which is beneficial when a QR code is used to transport the data. The SCID is passed using
-	/// a [`MessageForwardNode`] but may be `None` for graceful degradation.
-	///
-	/// Implementations using additional intermediate nodes are responsible for using a
-	/// [`MessageForwardNode`] with `Some` short channel id, if possible. Similarly, implementations
-	/// should call [`BlindedMessagePath::use_compact_introduction_node`].
-	///
-	/// The provided implementation simply delegates to [`MessageRouter::create_blinded_paths`],
-	/// ignoring the short channel ids.
-	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let peers = peers
-			.into_iter()
-			.map(|MessageForwardNode { node_id, short_channel_id: _ }| node_id)
-			.collect();
-		self.create_blinded_paths(recipient, local_node_receive_key, context, peers, secp_ctx)
-	}
+	) -> Result<Vec<BlindedMessagePath>, ()>;
 }
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
 ///
+/// [`DefaultMessageRouter`] constructs compact [`BlindedMessagePath`]s on a best-effort basis.
+/// That is, if appropriate SCID information is available for the intermediate peers, it will
+/// default to creating compact paths.
+///
+/// # Compact Blinded Paths
+///
+/// Compact blinded paths use short channel IDs (SCIDs) instead of pubkeys, resulting in smaller
+/// serialization. This is particularly useful when encoding data into space-constrained formats
+/// such as QR codes. The SCID is communicated via a [`MessageForwardNode`], but may be `None`
+/// to allow for graceful degradation.
+///
+/// **Note:**
+/// If any SCID in the blinded path becomes invalid, the entire compact blinded path may fail to route.
+/// For the immediate hop, this can happen if the corresponding channel is closed.
+/// For other intermediate hops, it can happen if the channel is closed or modified (e.g., due to splicing).
+///
 /// # Privacy
 ///
 /// Creating [`BlindedMessagePath`]s may affect privacy since, if a suitable path cannot be found,
-/// it will create a one-hop path using the recipient as the introduction node if it is a announced
+/// it will create a one-hop path using the recipient as the introduction node if it is an announced
 /// node. Otherwise, there is no way to find a path to the introduction node in order to send a
 /// message, and thus an `Err` is returned.
 pub struct DefaultMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref>
@@ -563,7 +555,7 @@ where
 		Self { network_graph, entropy_source }
 	}
 
-	fn create_blinded_paths_from_iter<
+	pub(crate) fn create_blinded_paths_from_iter<
 		I: ExactSizeIterator<Item = MessageForwardNode>,
 		T: secp256k1::Signing + secp256k1::Verification,
 	>(
@@ -584,6 +576,10 @@ where
 
 		let has_one_peer = peers.len() == 1;
 		let mut peer_info = peers
+			.map(|peer| MessageForwardNode {
+				short_channel_id: if compact_paths { peer.short_channel_id } else { None },
+				..peer
+			})
 			// Limit to peers with announced channels unless the recipient is unannounced.
 			.filter_map(|peer| {
 				network_graph
@@ -688,42 +684,6 @@ where
 			}
 		}
 	}
-
-	pub(crate) fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		network_graph: &G, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, peers: Vec<PublicKey>, entropy_source: &ES,
-		secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let peers =
-			peers.into_iter().map(|node_id| MessageForwardNode { node_id, short_channel_id: None });
-		Self::create_blinded_paths_from_iter(
-			network_graph,
-			recipient,
-			local_node_receive_key,
-			context,
-			peers.into_iter(),
-			entropy_source,
-			secp_ctx,
-			false,
-		)
-	}
-
-	pub(crate) fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		network_graph: &G, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, peers: Vec<MessageForwardNode>, entropy_source: &ES,
-		secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Self::create_blinded_paths_from_iter(
-			network_graph,
-			recipient,
-			local_node_receive_key,
-			context,
-			peers.into_iter(),
-			entropy_source,
-			secp_ctx,
-			true,
-		)
-	}
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter
@@ -740,32 +700,111 @@ where
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Self::create_blinded_paths(
+		Self::create_blinded_paths_from_iter(
 			&self.network_graph,
 			recipient,
 			local_node_receive_key,
 			context,
-			peers,
+			peers.into_iter(),
 			&self.entropy_source,
 			secp_ctx,
+			true,
 		)
 	}
+}
 
-	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
+/// This message router is similar to [`DefaultMessageRouter`], but it always creates
+/// full-length blinded paths, using the peer's [`NodeId`].
+///
+/// This message router can only route to a directly connected [`Destination`].
+///
+/// # Privacy
+///
+/// Creating [`BlindedMessagePath`]s may affect privacy since, if a suitable path cannot be found,
+/// it will create a one-hop path using the recipient as the introduction node if it is an announced
+/// node. Otherwise, there is no way to find a path to the introduction node in order to send a
+/// message, and thus an `Err` is returned.
+pub struct NodeIdMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref>
+where
+	L::Target: Logger,
+	ES::Target: EntropySource,
+{
+	network_graph: G,
+	entropy_source: ES,
+}
+
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> NodeIdMessageRouter<G, L, ES>
+where
+	L::Target: Logger,
+	ES::Target: EntropySource,
+{
+	/// Creates a [`NodeIdMessageRouter`] using the given [`NetworkGraph`].
+	pub fn new(network_graph: G, entropy_source: ES) -> Self {
+		Self { network_graph, entropy_source }
+	}
+}
+
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter
+	for NodeIdMessageRouter<G, L, ES>
+where
+	L::Target: Logger,
+	ES::Target: EntropySource,
+{
+	fn find_path(
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination,
+	) -> Result<OnionMessagePath, ()> {
+		DefaultMessageRouter::<G, L, ES>::find_path(&self.network_graph, sender, peers, destination)
+	}
+
+	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Self::create_compact_blinded_paths(
+		DefaultMessageRouter::create_blinded_paths_from_iter(
 			&self.network_graph,
 			recipient,
 			local_node_receive_key,
 			context,
-			peers,
+			peers.into_iter(),
 			&self.entropy_source,
 			secp_ctx,
+			false,
 		)
+	}
+}
+
+/// A special [`MessageRouter`] that performs no routing and does not create blinded paths.
+/// Its purpose is to enable the creation of [`Offer`]s and [`Refund`]s without blinded paths,
+/// where the user's `node_id` is used directly as the [`Destination`].
+///
+/// # Note
+/// [`NullMessageRouter`] **must not** be used as the type parameter for [`ChannelManager`],
+/// since [`ChannelManager`] requires a functioning [`MessageRouter`] to create blinded paths,
+/// which are necessary for constructing reply paths in onion message communication.
+/// However, [`NullMessageRouter`] *can* still be passed as an argument to [`ChannelManager`]
+/// methods that accepts a [`MessageRouter`], such as [`ChannelManager::create_offer_builder_using_router`],
+/// when blinded paths are not needed.
+///
+/// [`Offer`]: crate::offers::offer::Offer
+/// [`Refund`]: crate::offers::refund::Refund
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+/// [`ChannelManager::create_offer_builder_using_router`]: crate::ln::channelmanager::ChannelManager::create_offer_builder_using_router
+pub struct NullMessageRouter {}
+
+impl MessageRouter for NullMessageRouter {
+	fn find_path(
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination,
+	) -> Result<OnionMessagePath, ()> {
+		Err(())
+	}
+
+	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
+		_context: MessageContext, _peers: Vec<MessageForwardNode>, _secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		Ok(vec![])
 	}
 }
 
@@ -1494,7 +1533,10 @@ where
 			message_recipients
 				.iter()
 				.filter(|(_, peer)| matches!(peer, OnionMessageRecipient::ConnectedPeer(_)))
-				.map(|(node_id, _)| *node_id)
+				.map(|(node_id, _)| MessageForwardNode {
+					node_id: *node_id,
+					short_channel_id: None,
+				})
 				.collect::<Vec<_>>()
 		};
 

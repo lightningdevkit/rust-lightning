@@ -159,7 +159,9 @@ mod test {
 	use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 	use bitcoin::Block;
 
-	use lightning::blinded_path::message::{BlindedMessagePath, MessageContext};
+	use lightning::blinded_path::message::{
+		BlindedMessagePath, MessageContext, MessageForwardNode,
+	};
 	use lightning::blinded_path::NodeIdLookUp;
 	use lightning::events::{Event, PaymentPurpose};
 	use lightning::ln::channelmanager::{PaymentId, Retry};
@@ -228,7 +230,7 @@ mod test {
 
 		fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 			&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-			context: MessageContext, _peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+			context: MessageContext, _peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 		) -> Result<Vec<BlindedMessagePath>, ()> {
 			let keys = KeysManager::new(&[0; 32], 42, 43);
 			Ok(vec![BlindedMessagePath::one_hop(
@@ -465,7 +467,7 @@ mod test {
 	#[tokio::test]
 	async fn end_to_end_test() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_cfgs = create_node_cfgs_with_node_id_message_router(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -491,7 +493,7 @@ mod test {
 
 		let name = HumanReadableName::from_encoded("matt@mattcorallo.com").unwrap();
 
-		let bs_offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
+		let bs_offer = nodes[1].node.create_offer_builder().unwrap().build().unwrap();
 		let resolvers = vec![Destination::Node(resolver_id)];
 		let retry = Retry::Attempts(0);
 		let amt = 42_000;

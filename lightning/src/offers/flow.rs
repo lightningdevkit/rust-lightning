@@ -32,7 +32,7 @@ use crate::prelude::*;
 
 use crate::chain::BestBlock;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{PaymentId, CLTV_FAR_FAR_AWAY, MAX_SHORT_LIVED_RELATIVE_EXPIRY};
+use crate::ln::channelmanager::{PaymentId, CLTV_FAR_FAR_AWAY};
 use crate::ln::inbound_payment;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::invoice::{
@@ -193,6 +193,7 @@ where
 		self.receive_auth_key
 	}
 
+	#[cfg(async_payments)]
 	fn duration_since_epoch(&self) -> Duration {
 		#[cfg(not(feature = "std"))]
 		let now = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
@@ -303,26 +304,6 @@ where
 		self.create_blinded_paths(peers, context)
 	}
 
-	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
-	/// the path's intended lifetime.
-	///
-	/// Whether or not the path is compact depends on whether the path is short-lived or long-lived,
-	/// respectively, based on the given `absolute_expiry` as seconds since the Unix epoch. See
-	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`].
-	fn create_blinded_paths_using_absolute_expiry(
-		&self, context: OffersContext, absolute_expiry: Option<Duration>,
-		peers: Vec<MessageForwardNode>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let now = self.duration_since_epoch();
-		let max_short_lived_absolute_expiry = now.saturating_add(MAX_SHORT_LIVED_RELATIVE_EXPIRY);
-
-		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
-			self.create_compact_blinded_paths(peers, context)
-		} else {
-			self.create_blinded_paths(peers, MessageContext::Offers(context))
-		}
-	}
-
 	/// Creates a collection of blinded paths by delegating to
 	/// [`MessageRouter::create_blinded_paths`].
 	///
@@ -334,31 +315,8 @@ where
 		let receive_key = self.get_receive_auth_key();
 		let secp_ctx = &self.secp_ctx;
 
-		let peers = peers.into_iter().map(|node| node.node_id).collect();
 		self.message_router
 			.create_blinded_paths(recipient, receive_key, context, peers, secp_ctx)
-			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
-	}
-
-	/// Creates a collection of blinded paths by delegating to
-	/// [`MessageRouter::create_compact_blinded_paths`].
-	///
-	/// Errors if the `MessageRouter` errors.
-	fn create_compact_blinded_paths(
-		&self, peers: Vec<MessageForwardNode>, context: OffersContext,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let recipient = self.get_our_node_id();
-		let receive_key = self.get_receive_auth_key();
-		let secp_ctx = &self.secp_ctx;
-
-		self.message_router
-			.create_compact_blinded_paths(
-				recipient,
-				receive_key,
-				MessageContext::Offers(context),
-				peers,
-				secp_ctx,
-			)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 
@@ -566,6 +524,37 @@ where
 		}
 	}
 
+	fn create_offer_builder_intern<ES: Deref, PF, I>(
+		&self, entropy_source: ES, make_paths: PF,
+	) -> Result<(OfferBuilder<DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError>
+	where
+		ES::Target: EntropySource,
+		PF: FnOnce(
+			PublicKey,
+			MessageContext,
+			&secp256k1::Secp256k1<secp256k1::All>,
+		) -> Result<I, Bolt12SemanticError>,
+		I: IntoIterator<Item = BlindedMessagePath>,
+	{
+		let node_id = self.get_our_node_id();
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = entropy_source;
+		let secp_ctx = &self.secp_ctx;
+
+		let nonce = Nonce::from_entropy_source(entropy);
+		let context = MessageContext::Offers(OffersContext::InvoiceRequest { nonce });
+
+		let mut builder =
+			OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
+				.chain_hash(self.chain_hash);
+
+		for path in make_paths(node_id, context, secp_ctx)? {
+			builder = builder.path(path)
+		}
+
+		Ok((builder.into(), nonce))
+	}
+
 	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by the
 	/// [`OffersMessageFlow`], and any corresponding [`InvoiceRequest`] can be verified using
 	/// [`Self::verify_invoice_request`]. The offer will expire at `absolute_expiry` if `Some`,
@@ -573,18 +562,16 @@ where
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the offer based on the given
-	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications, as well as those of the parameterized [`Router`], which implements
-	/// [`MessageRouter`].
+	/// Uses the [`OffersMessageFlow`]'s [`MessageRouter`] to construct a [`BlindedMessagePath`]
+	/// for the offer. See those docs for privacy implications.
 	///
 	/// Also uses a derived signing pubkey in the offer for recipient privacy.
 	///
 	/// # Limitations
 	///
 	/// If [`DefaultMessageRouter`] is used to parameterize the [`OffersMessageFlow`], a direct
-	/// connection to the introduction node in the responding [`InvoiceRequest`]'s reply path is required.
-	/// See the [`DefaultMessageRouter`] documentation for more details.
+	/// connection to the introduction node in the responding [`InvoiceRequest`]'s reply path is
+	/// required. See the [`DefaultMessageRouter`] documentation for more details.
 	///
 	/// # Errors
 	///
@@ -592,35 +579,41 @@ where
 	///
 	/// [`DefaultMessageRouter`]: crate::onion_message::messenger::DefaultMessageRouter
 	pub fn create_offer_builder<ES: Deref>(
-		&self, entropy_source: ES, absolute_expiry: Option<Duration>,
-		peers: Vec<MessageForwardNode>,
+		&self, entropy_source: ES, peers: Vec<MessageForwardNode>,
 	) -> Result<OfferBuilder<DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
-		let node_id = self.get_our_node_id();
-		let expanded_key = &self.inbound_payment_key;
-		let entropy = &*entropy_source;
-		let secp_ctx = &self.secp_ctx;
+		self.create_offer_builder_intern(&*entropy_source, |_, context, _| {
+			self.create_blinded_paths(peers, context)
+				.map(|paths| paths.into_iter().take(1))
+				.map_err(|_| Bolt12SemanticError::MissingPaths)
+		})
+		.map(|(builder, _)| builder)
+	}
 
-		let nonce = Nonce::from_entropy_source(entropy);
-		let context = OffersContext::InvoiceRequest { nonce };
-
-		let path = self
-			.create_blinded_paths_using_absolute_expiry(context, absolute_expiry, peers)
-			.and_then(|paths| paths.into_iter().next().ok_or(()))
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
-
-		let builder = OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
-			.chain_hash(self.chain_hash)
-			.path(path);
-
-		let builder = match absolute_expiry {
-			None => builder,
-			Some(absolute_expiry) => builder.absolute_expiry(absolute_expiry),
-		};
-
-		Ok(builder)
+	/// Same as [`Self::create_offer_builder`], but allows specifying a custom [`MessageRouter`]
+	/// instead of using the one provided via the [`OffersMessageFlow`] parameterization.
+	///
+	/// This gives users full control over how the [`BlindedMessagePath`] is constructed,
+	/// including the option to omit it entirely.
+	///
+	/// See [`Self::create_offer_builder`] for details on offer construction, privacy, and limitations.
+	pub fn create_offer_builder_using_router<ME: Deref, ES: Deref>(
+		&self, router: ME, entropy_source: ES, peers: Vec<MessageForwardNode>,
+	) -> Result<OfferBuilder<DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
+	where
+		ME::Target: MessageRouter,
+		ES::Target: EntropySource,
+	{
+		let receive_key = self.get_receive_auth_key();
+		self.create_offer_builder_intern(&*entropy_source, |node_id, context, secp_ctx| {
+			router
+				.create_blinded_paths(node_id, receive_key, context, peers, secp_ctx)
+				.map(|paths| paths.into_iter().take(1))
+				.map_err(|_| Bolt12SemanticError::MissingPaths)
+		})
+		.map(|(builder, _)| builder)
 	}
 
 	/// Create an offer for receiving async payments as an often-offline recipient.
@@ -638,48 +631,71 @@ where
 	where
 		ES::Target: EntropySource,
 	{
-		if message_paths_to_always_online_node.is_empty() {
-			return Err(Bolt12SemanticError::MissingPaths);
-		}
+		self.create_offer_builder_intern(&*entropy_source, |_, _, _| {
+			Ok(message_paths_to_always_online_node)
+		})
+	}
 
+	fn create_refund_builder_intern<ES: Deref, PF, I>(
+		&self, entropy_source: ES, make_paths: PF, amount_msats: u64, absolute_expiry: Duration,
+		payment_id: PaymentId,
+	) -> Result<RefundBuilder<secp256k1::All>, Bolt12SemanticError>
+	where
+		ES::Target: EntropySource,
+		PF: FnOnce(
+			PublicKey,
+			MessageContext,
+			&secp256k1::Secp256k1<secp256k1::All>,
+		) -> Result<I, Bolt12SemanticError>,
+		I: IntoIterator<Item = BlindedMessagePath>,
+	{
 		let node_id = self.get_our_node_id();
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*entropy_source;
 		let secp_ctx = &self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let mut builder =
-			OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
-				.chain_hash(self.chain_hash);
+		let context = MessageContext::Offers(OffersContext::OutboundPayment { payment_id, nonce });
 
-		for path in message_paths_to_always_online_node {
+		// Create the base builder with common properties
+		let mut builder = RefundBuilder::deriving_signing_pubkey(
+			node_id,
+			expanded_key,
+			nonce,
+			secp_ctx,
+			amount_msats,
+			payment_id,
+		)?
+		.chain_hash(self.chain_hash)
+		.absolute_expiry(absolute_expiry);
+
+		for path in make_paths(node_id, context, secp_ctx)? {
 			builder = builder.path(path);
 		}
 
-		Ok((builder.into(), nonce))
+		Ok(builder.into())
 	}
 
 	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
 	/// [`OffersMessageFlow`], and any corresponding [`Bolt12Invoice`] received for the refund
 	/// can be verified using [`Self::verify_bolt12_invoice`].
 	///
+	/// # Privacy
+	///
+	/// Uses the [`OffersMessageFlow`]'s [`MessageRouter`] to construct a [`BlindedMessagePath`]
+	/// for the offer. See those docs for privacy implications.
+	///
 	/// The builder will have the provided expiration set. Any changes to the expiration on the
 	/// returned builder will not be honored by [`OffersMessageFlow`]. For non-`std`, the highest seen
 	/// block time minus two hours is used for the current time when determining if the refund has
 	/// expired.
 	///
-	/// To refund can be revoked by the user prior to receiving the invoice.
+	/// The refund can be revoked by the user prior to receiving the invoice.
 	/// If abandoned, or if an invoice is not received before expiration, the payment will fail
 	/// with an [`Event::PaymentFailed`].
 	///
 	/// If `max_total_routing_fee_msat` is not specified, the default from
 	/// [`RouteParameters::from_payment_params_and_value`] is applied.
-	///
-	/// # Privacy
-	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the refund based on the given
-	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications.
 	///
 	/// Also uses a derived payer id in the refund for payer privacy.
 	///
@@ -699,32 +715,63 @@ where
 	where
 		ES::Target: EntropySource,
 	{
-		let node_id = self.get_our_node_id();
-		let expanded_key = &self.inbound_payment_key;
-		let entropy = &*entropy_source;
-		let secp_ctx = &self.secp_ctx;
-
-		let nonce = Nonce::from_entropy_source(entropy);
-		let context = OffersContext::OutboundPayment { payment_id, nonce };
-
-		let path = self
-			.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry), peers)
-			.and_then(|paths| paths.into_iter().next().ok_or(()))
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
-
-		let builder = RefundBuilder::deriving_signing_pubkey(
-			node_id,
-			expanded_key,
-			nonce,
-			secp_ctx,
+		self.create_refund_builder_intern(
+			&*entropy_source,
+			|_, context, _| {
+				self.create_blinded_paths(peers, context)
+					.map(|paths| paths.into_iter().take(1))
+					.map_err(|_| Bolt12SemanticError::MissingPaths)
+			},
 			amount_msats,
+			absolute_expiry,
 			payment_id,
-		)?
-		.chain_hash(self.chain_hash)
-		.absolute_expiry(absolute_expiry)
-		.path(path);
+		)
+	}
 
-		Ok(builder)
+	/// Same as [`Self::create_refund_builder`] but allows specifying a custom [`MessageRouter`]
+	/// instead of using the one provided via the [`OffersMessageFlow`] parameterization.
+	///
+	/// This gives users full control over how the [`BlindedMessagePath`] is constructed,
+	/// including the option to omit it entirely.
+	///
+	/// See [`Self::create_refund_builder`] for:
+	/// - how the resulting [`Refund`] is recognized by [`OffersMessageFlow`] and verified via [`Self::verify_bolt12_invoice`],
+	/// - refund expiration handling,
+	/// - rules around revocation and [`Event::PaymentFailed`] behavior,
+	/// - and defaulting logic for `max_total_routing_fee_msat`.
+	///
+	/// # Errors
+	///
+	/// In addition to the errors documented in [`Self::create_refund_builder`], this method will
+	/// return an error if the provided [`MessageRouter`] fails to construct a valid
+	/// [`BlindedMessagePath`] for the refund.
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
+	/// [`RouteParameters::from_payment_params_and_value`]: crate::routing::router::RouteParameters::from_payment_params_and_value
+	pub fn create_refund_builder_using_router<ES: Deref, ME: Deref>(
+		&self, router: ME, entropy_source: ES, amount_msats: u64, absolute_expiry: Duration,
+		payment_id: PaymentId, peers: Vec<MessageForwardNode>,
+	) -> Result<RefundBuilder<secp256k1::All>, Bolt12SemanticError>
+	where
+		ME::Target: MessageRouter,
+		ES::Target: EntropySource,
+	{
+		let receive_key = self.get_receive_auth_key();
+		self.create_refund_builder_intern(
+			&*entropy_source,
+			|node_id, context, secp_ctx| {
+				router
+					.create_blinded_paths(node_id, receive_key, context, peers, secp_ctx)
+					.map(|paths| paths.into_iter().take(1))
+					.map_err(|_| Bolt12SemanticError::MissingPaths)
+			},
+			amount_msats,
+			absolute_expiry,
+			payment_id,
+		)
 	}
 
 	/// Creates an [`InvoiceRequestBuilder`] such that the [`InvoiceRequest`] it builds is recognized
@@ -1367,16 +1414,13 @@ where
 		let (offer_paths, paths_expiry) = {
 			let path_absolute_expiry =
 				duration_since_epoch.saturating_add(DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY);
-			let context = OffersContext::StaticInvoiceRequested {
+			let context = MessageContext::Offers(OffersContext::StaticInvoiceRequested {
 				recipient_id: recipient_id.clone(),
 				path_absolute_expiry,
 				invoice_id,
-			};
-			match self.create_blinded_paths_using_absolute_expiry(
-				context,
-				Some(path_absolute_expiry),
-				peers,
-			) {
+			});
+
+			match self.create_blinded_paths(peers, context) {
 				Ok(paths) => (paths, path_absolute_expiry),
 				Err(()) => return None,
 			}

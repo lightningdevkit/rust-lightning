@@ -60,7 +60,7 @@ use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
-use crate::onion_message::messenger::{Destination, PeeledOnion, MessageSendInstructions};
+use crate::onion_message::messenger::{Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion};
 use crate::onion_message::offers::OffersMessage;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{PaymentParameters, RouteParameters, RouteParametersConfig};
@@ -147,6 +147,16 @@ fn resolve_introduction_node<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, path: &Blinded
 	path.public_introduction_node_id(&node.network_graph.read_only())
 		.and_then(|node_id| node_id.as_pubkey().ok())
 		.unwrap()
+}
+
+fn check_compact_path_introduction_node<'a, 'b, 'c>(
+	path: &BlindedMessagePath,
+	lookup_node: &Node<'a, 'b, 'c>,
+	expected_introduction_node: PublicKey,
+) -> bool {
+	let introduction_node_id = resolve_introduction_node(lookup_node, path);
+	introduction_node_id == expected_introduction_node
+		&& matches!(path.introduction_node(), IntroductionNode::DirectedShortChannelId(..))
 }
 
 fn route_bolt12_payment<'a, 'b, 'c>(
@@ -255,6 +265,55 @@ fn extract_invoice_error<'a, 'b, 'c>(
 	}
 }
 
+/// Checks that an offer can be created with no blinded paths.
+#[test]
+fn create_offer_with_no_blinded_path() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+
+	let router = NullMessageRouter {};
+	let offer = alice.node
+		.create_offer_builder_using_router(&router).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+	assert_eq!(offer.issuer_signing_pubkey(), Some(alice_id));
+	assert!(offer.paths().is_empty());
+}
+
+/// Checks that a refund can be created with no blinded paths.
+#[test]
+fn create_refund_with_no_blinded_path() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+
+	let absolute_expiry = Duration::from_secs(u64::MAX);
+	let payment_id = PaymentId([1; 32]);
+
+	let router = NullMessageRouter {};
+	let refund = alice.node
+		.create_refund_builder_using_router(&router, 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), RouteParametersConfig::default())
+		.unwrap()
+		.build().unwrap();
+	assert_eq!(refund.amount_msats(), 10_000_000);
+	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
+	assert_eq!(refund.payer_signing_pubkey(), alice_id);
+	assert!(refund.paths().is_empty());
+}
+
 /// Checks that blinded paths without Tor-only nodes are preferred when constructing an offer.
 #[test]
 fn prefers_non_tor_nodes_in_blinded_paths() {
@@ -297,7 +356,7 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 	announce_node_address(charlie, &[alice, bob, david, &nodes[4], &nodes[5]], tor.clone());
 
 	let offer = bob.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
@@ -313,7 +372,7 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 	announce_node_address(&nodes[5], &[alice, bob, charlie, david, &nodes[4]], tor.clone());
 
 	let offer = bob.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
@@ -364,7 +423,7 @@ fn prefers_more_connected_nodes_in_blinded_paths() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = bob.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
@@ -389,11 +448,9 @@ fn creates_short_lived_offer() {
 	let alice_id = alice.node.get_our_node_id();
 	let bob = &nodes[1];
 
-	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
 	let offer = alice.node
-		.create_offer_builder(Some(absolute_expiry)).unwrap()
+		.create_offer_builder().unwrap()
 		.build().unwrap();
-	assert_eq!(offer.absolute_expiry(), Some(absolute_expiry));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		let introduction_node_id = resolve_introduction_node(bob, &path);
@@ -415,22 +472,11 @@ fn creates_long_lived_offer() {
 	let alice = &nodes[0];
 	let alice_id = alice.node.get_our_node_id();
 
-	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY
-		+ Duration::from_secs(1);
+	let router = NodeIdMessageRouter::new(alice.network_graph, alice.keys_manager);
 	let offer = alice.node
-		.create_offer_builder(Some(absolute_expiry))
+		.create_offer_builder_using_router(&router)
 		.unwrap()
 		.build().unwrap();
-	assert_eq!(offer.absolute_expiry(), Some(absolute_expiry));
-	assert!(!offer.paths().is_empty());
-	for path in offer.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
-	}
-
-	let offer = alice.node
-		.create_offer_builder(None).unwrap()
-		.build().unwrap();
-	assert_eq!(offer.absolute_expiry(), None);
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
@@ -482,8 +528,10 @@ fn creates_long_lived_refund() {
 	let absolute_expiry = bob.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY
 		+ Duration::from_secs(1);
 	let payment_id = PaymentId([1; 32]);
+
+	let router = NodeIdMessageRouter::new(bob.network_graph, bob.keys_manager);
 	let refund = bob.node
-		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), RouteParametersConfig::default())
+		.create_refund_builder_using_router(&router, 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), RouteParametersConfig::default())
 		.unwrap()
 		.build().unwrap();
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
@@ -532,14 +580,14 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder(None)
+		.create_offer_builder()
 		.unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+		assert!(check_compact_path_introduction_node(&path, alice, bob_id));
 	}
 
 	let payment_id = PaymentId([1; 32]);
@@ -569,7 +617,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
+	assert!(check_compact_path_introduction_node(&reply_path, bob, charlie_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
 	charlie.onion_messenger.handle_onion_message(alice_id, &onion_message);
@@ -588,10 +636,8 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	// to Alice when she's handling the message. Therefore, either Bob or Charlie could
 	// serve as the introduction node for the reply path back to Alice.
 	assert!(
-		matches!(
-			reply_path.introduction_node(),
-			&IntroductionNode::NodeId(node_id) if node_id == bob_id || node_id == charlie_id,
-		)
+		check_compact_path_introduction_node(&reply_path, david, bob_id) ||
+		check_compact_path_introduction_node(&reply_path, david, charlie_id)
 	);
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
@@ -650,7 +696,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	assert_ne!(refund.payer_signing_pubkey(), david_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
+		assert!(check_compact_path_introduction_node(&path, david, charlie_id));
 	}
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -674,8 +720,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	for path in invoice.payment_paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(bob_id));
-
+	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
 	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
@@ -702,13 +747,13 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	let bob_id = bob.node.get_our_node_id();
 
 	let offer = alice.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
+		assert!(check_compact_path_introduction_node(&path, bob, alice_id));
 	}
 
 	let payment_id = PaymentId([1; 32]);
@@ -730,7 +775,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
@@ -742,7 +787,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	for path in invoice.payment_paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(alice_id));
+	assert!(check_compact_path_introduction_node(&reply_path, bob, alice_id));
 
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
@@ -779,7 +824,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	assert_ne!(refund.payer_signing_pubkey(), bob_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+		assert!(check_compact_path_introduction_node(&path, alice, bob_id));
 	}
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -798,7 +843,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	for path in invoice.payment_paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(alice_id));
+	assert!(check_compact_path_introduction_node(&reply_path, bob, alice_id));
 
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
@@ -825,7 +870,7 @@ fn pays_for_offer_without_blinded_paths() {
 	let bob_id = bob.node.get_our_node_id();
 
 	let offer = alice.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.clear_paths()
 		.amount_msats(10_000_000)
 		.build().unwrap();
@@ -949,14 +994,14 @@ fn send_invoice_requests_with_distinct_reply_path() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder(None)
+		.create_offer_builder()
 		.unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+		assert!(check_compact_path_introduction_node(&path, alice, bob_id));
 	}
 
 	let payment_id = PaymentId([1; 32]);
@@ -975,7 +1020,7 @@ fn send_invoice_requests_with_distinct_reply_path() {
 	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
 
 	let (_, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
+	assert!(check_compact_path_introduction_node(&reply_path, alice, charlie_id));
 
 	// Send, extract and verify the second Invoice Request message
 	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -985,7 +1030,7 @@ fn send_invoice_requests_with_distinct_reply_path() {
 	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
 
 	let (_, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(nodes[6].node.get_our_node_id()));
+	assert!(check_compact_path_introduction_node(&reply_path, alice, nodes[6].node.get_our_node_id()));
 }
 
 /// This test checks that when multiple potential introduction nodes are available for the payee,
@@ -1040,7 +1085,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 		.build().unwrap();
 	assert_ne!(refund.payer_signing_pubkey(), alice_id);
 	for path in refund.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+		assert!(check_compact_path_introduction_node(&path, alice, bob_id));
 	}
 	expect_recent_payment!(alice, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -1056,7 +1101,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 
 	let (_, reply_path) = extract_invoice(alice, &onion_message);
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
+	assert!(check_compact_path_introduction_node(&reply_path, alice, charlie_id));
 
 	// Send, extract and verify the second Invoice Request message
 	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1065,7 +1110,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 
 	let (_, reply_path) = extract_invoice(alice, &onion_message);
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(nodes[6].node.get_our_node_id()));
+	assert!(check_compact_path_introduction_node(&reply_path, alice, nodes[6].node.get_our_node_id()));
 }
 
 /// Verifies that the invoice request message can be retried if it fails to reach the
@@ -1085,13 +1130,13 @@ fn creates_and_pays_for_offer_with_retry() {
 	let bob_id = bob.node.get_our_node_id();
 
 	let offer = alice.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
+		assert!(check_compact_path_introduction_node(&path, bob, alice_id));
 	}
 	let payment_id = PaymentId([1; 32]);
 	bob.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), RouteParametersConfig::default()).unwrap();
@@ -1119,7 +1164,7 @@ fn creates_and_pays_for_offer_with_retry() {
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
 
@@ -1161,7 +1206,7 @@ fn pays_bolt12_invoice_asynchronously() {
 	let bob_id = bob.node.get_our_node_id();
 
 	let offer = alice.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 
@@ -1253,7 +1298,7 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	let bob_id = bob.node.get_our_node_id();
 
 	let offer = alice.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
@@ -1383,7 +1428,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder(None)
+		.create_offer_builder()
 		.unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
@@ -1391,16 +1436,16 @@ fn fails_authentication_when_handling_invoice_request() {
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+		assert!(check_compact_path_introduction_node(&path, alice, bob_id));
 	}
 
 	let invalid_path = alice.node
-		.create_offer_builder(None)
+		.create_offer_builder()
 		.unwrap()
 		.build().unwrap()
 		.paths().first().unwrap()
 		.clone();
-	assert_eq!(invalid_path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+	assert!(check_compact_path_introduction_node(&invalid_path, alice, bob_id));
 
 	// Send the invoice request directly to Alice instead of using a blinded path.
 	let payment_id = PaymentId([1; 32]);
@@ -1421,7 +1466,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
+	assert!(check_compact_path_introduction_node(&reply_path, david, charlie_id));
 
 	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
 
@@ -1451,7 +1496,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
+	assert!(check_compact_path_introduction_node(&reply_path, david, charlie_id));
 
 	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
 }
@@ -1495,14 +1540,14 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder(None)
+		.create_offer_builder()
 		.unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+		assert!(check_compact_path_introduction_node(&path, alice, bob_id));
 	}
 
 	// Initiate an invoice request, but abandon tracking it.
@@ -1553,7 +1598,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
-	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
+	assert!(check_compact_path_introduction_node(&reply_path, david, charlie_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
 	charlie.onion_messenger.handle_onion_message(alice_id, &onion_message);
@@ -1610,7 +1655,7 @@ fn fails_authentication_when_handling_invoice_for_refund() {
 	assert_ne!(refund.payer_signing_pubkey(), david_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
+		assert!(check_compact_path_introduction_node(&path, david, charlie_id));
 	}
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -1644,7 +1689,7 @@ fn fails_authentication_when_handling_invoice_for_refund() {
 	assert_ne!(refund.payer_signing_pubkey(), david_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
+		assert!(check_compact_path_introduction_node(&path, david, charlie_id));
 	}
 
 	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
@@ -1691,8 +1736,7 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 	disconnect_peers(alice, &[bob, charlie, david, &nodes[4], &nodes[5]]);
 	disconnect_peers(david, &[bob, charlie, &nodes[4], &nodes[5]]);
 
-	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
-	match alice.node.create_offer_builder(Some(absolute_expiry)) {
+	match alice.node.create_offer_builder() {
 		Ok(_) => panic!("Expected error"),
 		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
 	}
@@ -1701,9 +1745,11 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 	args.send_channel_ready = (true, true);
 	reconnect_nodes(args);
 
+	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
 	let offer = alice.node
-		.create_offer_builder(Some(absolute_expiry)).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
+		.absolute_expiry(absolute_expiry)
 		.build().unwrap();
 
 	let payment_id = PaymentId([1; 32]);
@@ -1806,7 +1852,7 @@ fn fails_creating_invoice_request_for_unsupported_chain() {
 	let bob = &nodes[1];
 
 	let offer = alice.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.clear_chains()
 		.chain(Network::Signet)
 		.build().unwrap();
@@ -1865,7 +1911,7 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 	disconnect_peers(david, &[bob, charlie, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 
@@ -1899,7 +1945,7 @@ fn fails_creating_invoice_request_with_duplicate_payment_id() {
 	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 
@@ -1985,7 +2031,7 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 
@@ -2194,7 +2240,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 
@@ -2273,7 +2319,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 
 	// First pay the offer and save the payment preimage and invoice.
-	let offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
+	let offer = nodes[1].node.create_offer_builder().unwrap().build().unwrap();
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	nodes[0].node.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(1), RouteParametersConfig::default()).unwrap();
@@ -2353,7 +2399,7 @@ fn no_double_pay_with_stale_channelmanager() {
 
 	let amt_msat = nodes[0].node.list_usable_channels()[0].next_outbound_htlc_limit_msat + 1; // Force MPP
 	let offer = nodes[1].node
-		.create_offer_builder(None).unwrap()
+		.create_offer_builder().unwrap()
 		.clear_paths()
 		.amount_msats(amt_msat)
 		.build().unwrap();

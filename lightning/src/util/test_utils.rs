@@ -34,7 +34,7 @@ use crate::ln::types::ChannelId;
 use crate::ln::{msgs, wire};
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::onion_message::messenger::{
-	DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath,
+	DefaultMessageRouter, Destination, MessageRouter, NodeIdMessageRouter, OnionMessagePath,
 };
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::router::{
@@ -311,21 +311,49 @@ impl<'a> Drop for TestRouter<'a> {
 	}
 }
 
+pub enum TestMessageRouterInternal<'a> {
+	Default(
+		DefaultMessageRouter<
+			Arc<NetworkGraph<&'a TestLogger>>,
+			&'a TestLogger,
+			&'a TestKeysInterface,
+		>,
+	),
+	NodeId(
+		NodeIdMessageRouter<
+			Arc<NetworkGraph<&'a TestLogger>>,
+			&'a TestLogger,
+			&'a TestKeysInterface,
+		>,
+	),
+}
+
 pub struct TestMessageRouter<'a> {
-	inner: DefaultMessageRouter<
-		Arc<NetworkGraph<&'a TestLogger>>,
-		&'a TestLogger,
-		&'a TestKeysInterface,
-	>,
+	pub inner: TestMessageRouterInternal<'a>,
 	pub peers_override: Mutex<Vec<PublicKey>>,
 }
 
 impl<'a> TestMessageRouter<'a> {
-	pub fn new(
+	pub fn new_default(
 		network_graph: Arc<NetworkGraph<&'a TestLogger>>, entropy_source: &'a TestKeysInterface,
 	) -> Self {
 		Self {
-			inner: DefaultMessageRouter::new(network_graph, entropy_source),
+			inner: TestMessageRouterInternal::Default(DefaultMessageRouter::new(
+				network_graph,
+				entropy_source,
+			)),
+			peers_override: Mutex::new(Vec::new()),
+		}
+	}
+
+	pub fn new_node_id_router(
+		network_graph: Arc<NetworkGraph<&'a TestLogger>>, entropy_source: &'a TestKeysInterface,
+	) -> Self {
+		Self {
+			inner: TestMessageRouterInternal::NodeId(NodeIdMessageRouter::new(
+				network_graph,
+				entropy_source,
+			)),
 			peers_override: Mutex::new(Vec::new()),
 		}
 	}
@@ -342,24 +370,15 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 				peers = peers_override.clone();
 			}
 		}
-		self.inner.find_path(sender, peers, destination)
+		match &self.inner {
+			TestMessageRouterInternal::Default(inner) => {
+				inner.find_path(sender, peers, destination)
+			},
+			TestMessageRouterInternal::NodeId(inner) => inner.find_path(sender, peers, destination),
+		}
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let mut peers = peers;
-		{
-			let peers_override = self.peers_override.lock().unwrap();
-			if !peers_override.is_empty() {
-				peers = peers_override.clone();
-			}
-		}
-		self.inner.create_blinded_paths(recipient, local_node_receive_key, context, peers, secp_ctx)
-	}
-
-	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
@@ -367,20 +386,29 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 		{
 			let peers_override = self.peers_override.lock().unwrap();
 			if !peers_override.is_empty() {
-				peers = peers_override
-					.clone()
+				let peer_override_nodes: Vec<_> = peers_override
 					.iter()
 					.map(|pk| MessageForwardNode { node_id: *pk, short_channel_id: None })
 					.collect();
+				peers = peer_override_nodes;
 			}
 		}
-		self.inner.create_compact_blinded_paths(
-			recipient,
-			local_node_receive_key,
-			context,
-			peers,
-			secp_ctx,
-		)
+		match &self.inner {
+			TestMessageRouterInternal::Default(inner) => inner.create_blinded_paths(
+				recipient,
+				local_node_receive_key,
+				context,
+				peers,
+				secp_ctx,
+			),
+			TestMessageRouterInternal::NodeId(inner) => inner.create_blinded_paths(
+				recipient,
+				local_node_receive_key,
+				context,
+				peers,
+				secp_ctx,
+			),
+		}
 	}
 }
 
