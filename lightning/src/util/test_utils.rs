@@ -410,39 +410,6 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 			),
 		}
 	}
-
-	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let mut peers = peers;
-		{
-			let peers_override = self.peers_override.lock().unwrap();
-			if !peers_override.is_empty() {
-				peers = peers_override
-					.clone()
-					.iter()
-					.map(|pk| MessageForwardNode { node_id: *pk, short_channel_id: None })
-					.collect();
-			}
-		}
-		match &self.inner {
-			TestMessageRouterInternal::Default(inner) => inner.create_compact_blinded_paths(
-				recipient,
-				local_node_receive_key,
-				context,
-				peers,
-				secp_ctx,
-			),
-			TestMessageRouterInternal::NodeId(inner) => inner.create_compact_blinded_paths(
-				recipient,
-				local_node_receive_key,
-				context,
-				peers,
-				secp_ctx,
-			),
-		}
-	}
 }
 
 pub struct OnlyReadsKeysInterface {}

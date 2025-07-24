@@ -32,7 +32,7 @@ use crate::prelude::*;
 
 use crate::chain::BestBlock;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{PaymentId, CLTV_FAR_FAR_AWAY, MAX_SHORT_LIVED_RELATIVE_EXPIRY};
+use crate::ln::channelmanager::{PaymentId, CLTV_FAR_FAR_AWAY};
 use crate::ln::inbound_payment;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::invoice::{
@@ -193,6 +193,7 @@ where
 		self.receive_auth_key
 	}
 
+	#[cfg(async_payments)]
 	fn duration_since_epoch(&self) -> Duration {
 		#[cfg(not(feature = "std"))]
 		let now = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
@@ -303,26 +304,6 @@ where
 		self.create_blinded_paths(peers, context)
 	}
 
-	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
-	/// the path's intended lifetime.
-	///
-	/// Whether or not the path is compact depends on whether the path is short-lived or long-lived,
-	/// respectively, based on the given `absolute_expiry` as seconds since the Unix epoch. See
-	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`].
-	fn create_blinded_paths_using_absolute_expiry(
-		&self, context: OffersContext, absolute_expiry: Option<Duration>,
-		peers: Vec<MessageForwardNode>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let now = self.duration_since_epoch();
-		let max_short_lived_absolute_expiry = now.saturating_add(MAX_SHORT_LIVED_RELATIVE_EXPIRY);
-
-		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
-			self.create_compact_blinded_paths(peers, context)
-		} else {
-			self.create_blinded_paths(peers, MessageContext::Offers(context))
-		}
-	}
-
 	/// Creates a collection of blinded paths by delegating to
 	/// [`MessageRouter::create_blinded_paths`].
 	///
@@ -336,28 +317,6 @@ where
 
 		self.message_router
 			.create_blinded_paths(recipient, receive_key, context, peers, secp_ctx)
-			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
-	}
-
-	/// Creates a collection of blinded paths by delegating to
-	/// [`MessageRouter::create_compact_blinded_paths`].
-	///
-	/// Errors if the `MessageRouter` errors.
-	fn create_compact_blinded_paths(
-		&self, peers: Vec<MessageForwardNode>, context: OffersContext,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let recipient = self.get_our_node_id();
-		let receive_key = self.get_receive_auth_key();
-		let secp_ctx = &self.secp_ctx;
-
-		self.message_router
-			.create_compact_blinded_paths(
-				recipient,
-				receive_key,
-				MessageContext::Offers(context),
-				peers,
-				secp_ctx,
-			)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 

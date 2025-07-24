@@ -510,26 +510,6 @@ pub trait MessageRouter {
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()>;
-
-	/// Creates compact [`BlindedMessagePath`]s to the `recipient` node. The nodes in `peers` are
-	/// assumed to be direct peers with the `recipient`.
-	///
-	/// Compact blinded paths use short channel ids instead of pubkeys for a smaller serialization,
-	/// which is beneficial when a QR code is used to transport the data. The SCID is passed using
-	/// a [`MessageForwardNode`] but may be `None` for graceful degradation.
-	///
-	/// Implementations using additional intermediate nodes are responsible for using a
-	/// [`MessageForwardNode`] with `Some` short channel id, if possible. Similarly, implementations
-	/// should call [`BlindedMessagePath::use_compact_introduction_node`].
-	///
-	/// The provided implementation simply delegates to [`MessageRouter::create_blinded_paths`],
-	/// ignoring the short channel ids.
-	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		self.create_blinded_paths(recipient, local_node_receive_key, context, peers, secp_ctx)
-	}
 }
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
@@ -733,22 +713,6 @@ where
 			true,
 		)
 	}
-
-	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Self::create_blinded_paths_from_iter(
-			&self.network_graph,
-			recipient,
-			local_node_receive_key,
-			context,
-			peers.into_iter(),
-			&self.entropy_source,
-			secp_ctx,
-			true,
-		)
-	}
 }
 
 /// This message router is similar to [`DefaultMessageRouter`], but it always creates
@@ -809,22 +773,6 @@ where
 			false,
 		)
 	}
-
-	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		DefaultMessageRouter::create_blinded_paths_from_iter(
-			&self.network_graph,
-			recipient,
-			local_node_receive_key,
-			context,
-			peers.into_iter(),
-			&self.entropy_source,
-			secp_ctx,
-			false,
-		)
-	}
 }
 
 /// A special [`MessageRouter`] that performs no routing and does not create blinded paths.
@@ -853,13 +801,6 @@ impl MessageRouter for NullMessageRouter {
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
-		_context: MessageContext, _peers: Vec<MessageForwardNode>, _secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Ok(vec![])
-	}
-
-	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
 		_context: MessageContext, _peers: Vec<MessageForwardNode>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
