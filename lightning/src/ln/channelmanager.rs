@@ -235,6 +235,7 @@ pub enum PendingHTLCRouting {
 		blinded: Option<BlindedForward>,
 		/// The absolute CLTV of the inbound HTLC
 		incoming_cltv_expiry: Option<u32>,
+		hold_htlc: bool,
 	},
 	/// An HTLC which should be forwarded on to another Trampoline node.
 	TrampolineForward {
@@ -4876,6 +4877,7 @@ where
 						}
 						let funding_txo = chan.funding.get_funding_txo().unwrap();
 						let logger = WithChannelContext::from(&self.logger, &chan.context, Some(*payment_hash));
+						let hold_htlc = true; // TODO: Take from invoice?
 						let send_res = chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(),
 							htlc_cltv, HTLCSource::OutboundRoute {
 								path: path.clone(),
@@ -4883,7 +4885,7 @@ where
 								first_hop_htlc_msat: htlc_msat,
 								payment_id,
 								bolt12_invoice: bolt12_invoice.cloned(),
-							}, onion_packet, None, &self.fee_estimator, &&logger);
+							}, onion_packet, None, hold_htlc, &self.fee_estimator, &&logger);
 						match break_channel_entry!(self, peer_state, send_res, chan_entry) {
 							Some(monitor_update) => {
 								match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
@@ -6024,6 +6026,7 @@ where
 			PendingHTLCRouting::Forward { onion_packet, blinded, incoming_cltv_expiry, .. } => {
 				PendingHTLCRouting::Forward {
 					onion_packet, blinded, incoming_cltv_expiry, short_channel_id: next_hop_scid,
+					hold_htlc: false, // Do not hold intercepted HTLCs.
 				}
 			},
 			_ => unreachable!() // Only `PendingHTLCRouting::Forward`s are intercepted
@@ -6222,6 +6225,9 @@ where
 					incoming_accept_underpaying_htlcs,
 					next_packet_details_opt.map(|d| d.next_packet_pubkey),
 				) {
+					// if let PendingHTLCRouting::Forward { hold_htlc, .. } = info.routing {
+					// 	debug_assert!(hold_htlc, "Expected HTLC to be held");
+					// }
 					Ok(info) => htlc_forwards.push((info, update_add_htlc.htlc_id)),
 					Err(inbound_err) => {
 						let failure_type =
@@ -14558,6 +14564,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(1, blinded, option),
 		(2, short_channel_id, required),
 		(3, incoming_cltv_expiry, option),
+		(4, hold_htlc, (default_value, false))
 	},
 	(1, Receive) => {
 		(0, payment_data, required),
