@@ -11554,8 +11554,9 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses the [`MessageRouter`] provided to the [`ChannelManager`] at construction to build a
-	/// [`BlindedMessagePath`] for the offer. See those docs for privacy implications.
+	/// Uses [`MessageRouter`] provided at construction to construct a [`BlindedMessagePath`] for
+	/// the offer. See the documentation of the selected [`MessageRouter`] for details on how it
+	/// selects blinded paths including privacy implications and reliability tradeoffs.
 	///
 	/// Also, uses a derived signing pubkey in the offer for recipient privacy.
 	///
@@ -11584,7 +11585,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	/// This gives users full control over how the [`BlindedMessagePath`] is constructed,
 	/// including the option to omit it entirely.
 	///
-	/// See [`Self::create_offer_builder`] for details on offer construction, privacy, and limitations.
+	/// See [`Self::create_offer_builder`] for more details on usage.
 	///
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	/// [`Offer`]: crate::offers::offer::Offer
@@ -11627,9 +11628,9 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`].
-	/// See those docs for
-	/// privacy implications.
+	/// Uses [`MessageRouter`] provided at construction to construct a [`BlindedMessagePath`] for
+	/// the refund. See the documentation of the selected [`MessageRouter`] for details on how it
+	/// selects blinded paths including privacy implications and reliability tradeoffs.
 	///
 	/// Also, uses a derived payer id in the refund for payer privacy.
 	///
@@ -11676,12 +11677,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// refund, including the option to omit it entirely. This is useful for testing or when
 	/// alternative privacy strategies are needed.
 	///
-	/// See [`Self::create_refund_builder`] for:
-	/// - refund recognition by [`ChannelManager`] via [`Bolt12Invoice`] handling,
-	/// - `payment_id` rules and expiration behavior,
-	/// - invoice revocation and refund failure handling,
-	/// - defaulting behavior for `max_total_routing_fee_msat`,
-	/// - and detailed payment and privacy semantics.
+	/// See [`Self::create_refund_builder`] for more details on usage.
 	///
 	/// # Errors
 	///

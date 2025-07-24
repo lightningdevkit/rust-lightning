@@ -562,8 +562,9 @@ where
 	///
 	/// # Privacy
 	///
-	/// Uses the [`OffersMessageFlow`]'s [`MessageRouter`] to construct a [`BlindedMessagePath`]
-	/// for the offer. See those docs for privacy implications.
+	/// Uses [`MessageRouter`] provided at construction to construct a [`BlindedMessagePath`] for
+	/// the offer. See the documentation of the selected [`MessageRouter`] for details on how it
+	/// selects blinded paths including privacy implications and reliability tradeoffs.
 	///
 	/// Also uses a derived signing pubkey in the offer for recipient privacy.
 	///
@@ -598,7 +599,7 @@ where
 	/// This gives users full control over how the [`BlindedMessagePath`] is constructed,
 	/// including the option to omit it entirely.
 	///
-	/// See [`Self::create_offer_builder`] for details on offer construction, privacy, and limitations.
+	/// See [`Self::create_offer_builder`] for more details on usage.
 	pub fn create_offer_builder_using_router<ME: Deref, ES: Deref>(
 		&self, router: ME, entropy_source: ES, peers: Vec<MessageForwardNode>,
 	) -> Result<OfferBuilder<DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
@@ -682,8 +683,9 @@ where
 	///
 	/// # Privacy
 	///
-	/// Uses the [`OffersMessageFlow`]'s [`MessageRouter`] to construct a [`BlindedMessagePath`]
-	/// for the offer. See those docs for privacy implications.
+	/// Uses [`MessageRouter`] provided at construction to construct a [`BlindedMessagePath`] for
+	/// the refund. See the documentation of the selected [`MessageRouter`] for details on how it
+	/// selects blinded paths including privacy implications and reliability tradeoffs.
 	///
 	/// The builder will have the provided expiration set. Any changes to the expiration on the
 	/// returned builder will not be honored by [`OffersMessageFlow`]. For non-`std`, the highest seen
@@ -734,11 +736,7 @@ where
 	/// This gives users full control over how the [`BlindedMessagePath`] is constructed,
 	/// including the option to omit it entirely.
 	///
-	/// See [`Self::create_refund_builder`] for:
-	/// - how the resulting [`Refund`] is recognized by [`OffersMessageFlow`] and verified via [`Self::verify_bolt12_invoice`],
-	/// - refund expiration handling,
-	/// - rules around revocation and [`Event::PaymentFailed`] behavior,
-	/// - and defaulting logic for `max_total_routing_fee_msat`.
+	/// See [`Self::create_refund_builder`] for more details on usage.
 	///
 	/// # Errors
 	///
