@@ -1455,16 +1455,13 @@ where
 		let (offer_paths, paths_expiry) = {
 			let path_absolute_expiry =
 				duration_since_epoch.saturating_add(DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY);
-			let context = OffersContext::StaticInvoiceRequested {
+			let context = MessageContext::Offers(OffersContext::StaticInvoiceRequested {
 				recipient_id: recipient_id.clone(),
 				path_absolute_expiry,
 				invoice_id,
-			};
-			match self.create_blinded_paths_using_absolute_expiry(
-				context,
-				Some(path_absolute_expiry),
-				peers,
-			) {
+			});
+
+			match self.create_blinded_paths(peers, context) {
 				Ok(paths) => (paths, path_absolute_expiry),
 				Err(()) => return None,
 			}
