@@ -161,11 +161,6 @@ pub enum LSPS5ClientError {
 	/// The cryptographic signature from the LSP node doesn't validate.
 	InvalidSignature,
 
-	/// Notification timestamp is too old or too far in the future.
-	///
-	/// LSPS5 requires timestamps to be within ±10 minutes of current time.
-	InvalidTimestamp,
-
 	/// Detected a reused notification signature.
 	///
 	/// Indicates a potential replay attack where a previously seen
@@ -183,8 +178,7 @@ impl LSPS5ClientError {
 		use LSPS5ClientError::*;
 		match self {
 			InvalidSignature => Self::BASE + 1,
-			InvalidTimestamp => Self::BASE + 2,
-			ReplayAttack => Self::BASE + 3,
+			ReplayAttack => Self::BASE + 2,
 			SerializationError => LSPS5_SERIALIZATION_ERROR_CODE,
 		}
 	}
@@ -193,7 +187,6 @@ impl LSPS5ClientError {
 		use LSPS5ClientError::*;
 		match self {
 			InvalidSignature => "Invalid signature",
-			InvalidTimestamp => "Timestamp out of range",
 			ReplayAttack => "Replay attack detected",
 			SerializationError => "Error serializing LSPS5 webhook notification",
 		}

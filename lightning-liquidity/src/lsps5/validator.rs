@@ -15,7 +15,6 @@ use crate::alloc::string::ToString;
 use crate::lsps0::ser::LSPSDateTime;
 use crate::lsps5::msgs::WebhookNotification;
 use crate::sync::Mutex;
-use crate::utils::time::TimeProvider;
 
 use lightning::util::message_signing;
 
@@ -24,32 +23,8 @@ use bitcoin::secp256k1::PublicKey;
 use alloc::collections::VecDeque;
 use alloc::string::String;
 
-use core::ops::Deref;
-use core::time::Duration;
-
-/// Configuration for signature storage.
-#[derive(Clone, Copy, Debug)]
-pub struct SignatureStorageConfig {
-	/// Maximum number of signatures to store.
-	pub max_signatures: usize,
-	/// Retention time for signatures in minutes.
-	pub retention_minutes: Duration,
-}
-
-/// Default retention time for signatures in minutes (LSPS5 spec requires min 20 minutes).
-pub const DEFAULT_SIGNATURE_RETENTION_MINUTES: u64 = 20;
-
-/// Default maximum number of stored signatures.
-pub const DEFAULT_MAX_SIGNATURES: usize = 1000;
-
-impl Default for SignatureStorageConfig {
-	fn default() -> Self {
-		Self {
-			max_signatures: DEFAULT_MAX_SIGNATURES,
-			retention_minutes: Duration::from_secs(DEFAULT_SIGNATURE_RETENTION_MINUTES * 60),
-		}
-	}
-}
+/// Maximum number of recent signatures to track for replay attack prevention.
+pub const MAX_RECENT_SIGNATURES: usize = 5;
 
 /// A utility for validating webhook notifications from an LSP.
 ///
@@ -60,66 +35,26 @@ impl Default for SignatureStorageConfig {
 ///
 /// # Core Capabilities
 ///
-///  - `validate(...)` -> Verifies signature, timestamp, and protects against replay attacks.
+///  - `validate(...)` -> Verifies signature, and protects against replay attacks.
 ///
-/// # Usage
+/// The validator stores a [`small number`] of the most recently seen signatures
+/// to protect against replays of the same notification.
 ///
-/// The validator requires a `SignatureStore` to track recently seen signatures
-/// to prevent replay attacks. You should create a single `LSPS5Validator` instance
-/// and share it across all requests.
-///
+/// [`small number`]: MAX_RECENT_SIGNATURES
 /// [`bLIP-55 / LSPS5 specification`]: https://github.com/lightning/blips/pull/55/files
-pub struct LSPS5Validator<TP: Deref, SS: Deref>
-where
-	TP::Target: TimeProvider,
-	SS::Target: SignatureStore,
-{
-	time_provider: TP,
-	signature_store: SS,
+pub struct LSPS5Validator {
+	recent_signatures: Mutex<VecDeque<String>>,
 }
 
-impl<TP: Deref, SS: Deref> LSPS5Validator<TP, SS>
-where
-	TP::Target: TimeProvider,
-	SS::Target: SignatureStore,
-{
-	/// Creates a new `LSPS5Validator`.
-	pub fn new(time_provider: TP, signature_store: SS) -> Self {
-		Self { time_provider, signature_store }
-	}
-
-	fn verify_notification_signature(
-		&self, counterparty_node_id: PublicKey, signature_timestamp: &LSPSDateTime,
-		signature: &str, notification: &WebhookNotification,
-	) -> Result<(), LSPS5ClientError> {
-		let now =
-			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
-		let diff = signature_timestamp.abs_diff(&now);
-		const MAX_TIMESTAMP_DRIFT_SECS: u64 = 600;
-		if diff > MAX_TIMESTAMP_DRIFT_SECS {
-			return Err(LSPS5ClientError::InvalidTimestamp);
-		}
-
-		let notification_json = serde_json::to_string(notification)
-			.map_err(|_| LSPS5ClientError::SerializationError)?;
-		let message = format!(
-			"LSPS5: DO NOT SIGN THIS MESSAGE MANUALLY: LSP: At {} I notify {}",
-			signature_timestamp.to_rfc3339(),
-			notification_json
-		);
-
-		if message_signing::verify(message.as_bytes(), signature, &counterparty_node_id) {
-			Ok(())
-		} else {
-			Err(LSPS5ClientError::InvalidSignature)
-		}
+impl LSPS5Validator {
+	/// Create a new LSPS5Validator instance.
+	pub fn new() -> Self {
+		Self { recent_signatures: Mutex::new(VecDeque::with_capacity(MAX_RECENT_SIGNATURES)) }
 	}
 
 	/// Parse and validate a webhook notification received from an LSP.
 	///
-	/// Verifies the webhook delivery by checking the timestamp is within ±10 minutes,
-	/// ensuring no signature replay within the retention window, and verifying the
-	/// zbase32 LN-style signature against the LSP's node ID.
+	/// Verifies the webhook delivery by verifying the zbase32 LN-style signature against the LSP's node ID and ensuring that the signature is not a replay of a previously seen notification (within the last [`MAX_RECENT_SIGNATURES`] notifications).
 	///
 	/// Call this method on your proxy/server before processing any webhook notification
 	/// to ensure its authenticity.
@@ -130,91 +65,40 @@ where
 	/// - `signature`: The zbase32-encoded LN signature over timestamp+body.
 	/// - `notification`: The [`WebhookNotification`] received from the LSP.
 	///
-	/// Returns the validated [`WebhookNotification`] or an error for invalid timestamp,
-	/// replay attack, or signature verification failure.
+	/// Returns the validated [`WebhookNotification`] or an error for signature verification failure or replay attack.
 	///
 	/// [`WebhookNotification`]: super::msgs::WebhookNotification
+	/// [`MAX_RECENT_SIGNATURES`]: MAX_RECENT_SIGNATURES
 	pub fn validate(
 		&self, counterparty_node_id: PublicKey, timestamp: &LSPSDateTime, signature: &str,
 		notification: &WebhookNotification,
 	) -> Result<WebhookNotification, LSPS5ClientError> {
-		self.verify_notification_signature(
-			counterparty_node_id,
-			timestamp,
-			signature,
-			notification,
-		)?;
+		let notification_json = serde_json::to_string(notification)
+			.map_err(|_| LSPS5ClientError::SerializationError)?;
+		let message = format!(
+			"LSPS5: DO NOT SIGN THIS MESSAGE MANUALLY: LSP: At {} I notify {}",
+			timestamp.to_rfc3339(),
+			notification_json
+		);
 
-		if self.signature_store.exists(signature)? {
-			return Err(LSPS5ClientError::ReplayAttack);
+		if !message_signing::verify(message.as_bytes(), signature, &counterparty_node_id) {
+			return Err(LSPS5ClientError::InvalidSignature);
 		}
 
-		self.signature_store.store(signature)?;
+		self.check_for_replay_attack(signature)?;
 
 		Ok(notification.clone())
 	}
-}
 
-/// Trait for storing and checking webhook notification signatures to prevent replay attacks.
-pub trait SignatureStore {
-	/// Checks if a signature already exists in the store.
-	fn exists(&self, signature: &str) -> Result<bool, LSPS5ClientError>;
-	/// Stores a new signature.
-	fn store(&self, signature: &str) -> Result<(), LSPS5ClientError>;
-}
-
-/// An in-memory store for webhook notification signatures.
-pub struct InMemorySignatureStore<TP: Deref>
-where
-	TP::Target: TimeProvider,
-{
-	recent_signatures: Mutex<VecDeque<(String, LSPSDateTime)>>,
-	config: SignatureStorageConfig,
-	time_provider: TP,
-}
-
-impl<TP: Deref> InMemorySignatureStore<TP>
-where
-	TP::Target: TimeProvider,
-{
-	/// Creates a new `InMemorySignatureStore`.
-	pub fn new(config: SignatureStorageConfig, time_provider: TP) -> Self {
-		Self {
-			recent_signatures: Mutex::new(VecDeque::with_capacity(config.max_signatures)),
-			config,
-			time_provider,
+	fn check_for_replay_attack(&self, signature: &str) -> Result<(), LSPS5ClientError> {
+		let mut signatures = self.recent_signatures.lock().unwrap();
+		if signatures.contains(&signature.to_string()) {
+			return Err(LSPS5ClientError::ReplayAttack);
 		}
-	}
-}
-
-impl<TP: Deref> SignatureStore for InMemorySignatureStore<TP>
-where
-	TP::Target: TimeProvider,
-{
-	fn exists(&self, signature: &str) -> Result<bool, LSPS5ClientError> {
-		let recent_signatures = self.recent_signatures.lock().unwrap();
-		for (stored_sig, _) in recent_signatures.iter() {
-			if stored_sig == signature {
-				return Ok(true);
-			}
+		if signatures.len() == MAX_RECENT_SIGNATURES {
+			signatures.pop_back();
 		}
-		Ok(false)
-	}
-
-	fn store(&self, signature: &str) -> Result<(), LSPS5ClientError> {
-		let now =
-			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
-		let mut recent_signatures = self.recent_signatures.lock().unwrap();
-
-		recent_signatures.push_back((signature.to_string(), now.clone()));
-
-		let retention_secs = self.config.retention_minutes.as_secs();
-		recent_signatures.retain(|(_, ts)| now.abs_diff(ts) <= retention_secs);
-
-		if recent_signatures.len() > self.config.max_signatures {
-			let excess = recent_signatures.len() - self.config.max_signatures;
-			recent_signatures.drain(0..excess);
-		}
+		signatures.push_front(signature.to_string());
 		Ok(())
 	}
 }
