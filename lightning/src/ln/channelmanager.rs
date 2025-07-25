@@ -4815,11 +4815,18 @@ where
 		})
 	}
 
-	#[rustfmt::skip]
 	fn send_payment_along_path(&self, args: SendAlongPathArgs) -> Result<(), APIError> {
 		let SendAlongPathArgs {
-			path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage,
-			invoice_request, bolt12_invoice, session_priv_bytes
+			path,
+			payment_hash,
+			recipient_onion,
+			total_value,
+			cur_height,
+			payment_id,
+			keysend_preimage,
+			invoice_request,
+			bolt12_invoice,
+			session_priv_bytes,
 		} = args;
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
@@ -4827,84 +4834,148 @@ where
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
 		let (onion_packet, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion(
-			&self.secp_ctx, &path, &session_priv, total_value, recipient_onion, cur_height,
-			payment_hash, keysend_preimage, invoice_request, prng_seed
-		).map_err(|e| {
-			let logger = WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None, Some(*payment_hash));
-			log_error!(logger, "Failed to build an onion for path for payment hash {}", payment_hash);
+			&self.secp_ctx,
+			&path,
+			&session_priv,
+			total_value,
+			recipient_onion,
+			cur_height,
+			payment_hash,
+			keysend_preimage,
+			invoice_request,
+			prng_seed,
+		)
+		.map_err(|e| {
+			let first_hop_key = Some(path.hops.first().unwrap().pubkey);
+			let logger = WithContext::from(&self.logger, first_hop_key, None, Some(*payment_hash));
+			log_error!(
+				logger,
+				"Failed to build an onion for path for payment hash {}",
+				payment_hash
+			);
 			e
 		})?;
 
 		let err: Result<(), _> = loop {
-			let (counterparty_node_id, id) = match self.short_to_chan_info.read().unwrap().get(&path.hops.first().unwrap().short_channel_id) {
+			let first_chan_id = &path.hops.first().unwrap().short_channel_id;
+			let (counterparty_node_id, id) = match self
+				.short_to_chan_info
+				.read()
+				.unwrap()
+				.get(first_chan_id)
+			{
 				None => {
-					let logger = WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None, Some(*payment_hash));
-					log_error!(logger, "Failed to find first-hop for payment hash {}", payment_hash);
-					return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()})
+					let first_hop_key = Some(path.hops.first().unwrap().pubkey);
+					let logger =
+						WithContext::from(&self.logger, first_hop_key, None, Some(*payment_hash));
+					log_error!(
+						logger,
+						"Failed to find first-hop for payment hash {}",
+						payment_hash
+					);
+					return Err(APIError::ChannelUnavailable {
+						err: "No channel available with first hop!".to_owned(),
+					});
 				},
 				Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 			};
 
-			let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(id), Some(*payment_hash));
-			log_trace!(logger,
+			let logger = WithContext::from(
+				&self.logger,
+				Some(counterparty_node_id),
+				Some(id),
+				Some(*payment_hash),
+			);
+			log_trace!(
+				logger,
 				"Attempting to send payment with payment hash {} along path with next hop {}",
-				payment_hash, path.hops.first().unwrap().short_channel_id);
+				payment_hash,
+				first_chan_id,
+			);
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
-			let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
-				.ok_or_else(|| APIError::ChannelUnavailable{err: "No peer matching the path's first hop found!".to_owned() })?;
+			let peer_state_mutex = per_peer_state.get(&counterparty_node_id).ok_or_else(|| {
+				APIError::ChannelUnavailable {
+					err: "No peer matching the path's first hop found!".to_owned(),
+				}
+			})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(id) {
 				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
 						if !chan.context.is_live() {
-							return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected".to_owned()});
+							return Err(APIError::ChannelUnavailable {
+								err: "Peer for first hop currently disconnected".to_owned(),
+							});
 						}
 						let funding_txo = chan.funding.get_funding_txo().unwrap();
-						let logger = WithChannelContext::from(&self.logger, &chan.context, Some(*payment_hash));
-						let send_res = chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(),
-							htlc_cltv, HTLCSource::OutboundRoute {
-								path: path.clone(),
-								session_priv: session_priv.clone(),
-								first_hop_htlc_msat: htlc_msat,
-								payment_id,
-								bolt12_invoice: bolt12_invoice.cloned(),
-							}, onion_packet, None, &self.fee_estimator, &&logger);
+						let logger = WithChannelContext::from(
+							&self.logger,
+							&chan.context,
+							Some(*payment_hash),
+						);
+						let htlc_source = HTLCSource::OutboundRoute {
+							path: path.clone(),
+							session_priv: session_priv.clone(),
+							first_hop_htlc_msat: htlc_msat,
+							payment_id,
+							bolt12_invoice: bolt12_invoice.cloned(),
+						};
+						let send_res = chan.send_htlc_and_commit(
+							htlc_msat,
+							payment_hash.clone(),
+							htlc_cltv,
+							htlc_source,
+							onion_packet,
+							None,
+							&self.fee_estimator,
+							&&logger,
+						);
 						match break_channel_entry!(self, peer_state, send_res, chan_entry) {
 							Some(monitor_update) => {
-								match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
-									false => {
-										// Note that MonitorUpdateInProgress here indicates (per function
-										// docs) that we will resend the commitment update once monitor
-										// updating completes. Therefore, we must return an error
-										// indicating that it is unsafe to retry the payment wholesale,
-										// which we do in the send_payment check for
-										// MonitorUpdateInProgress, below.
-										return Err(APIError::MonitorUpdateInProgress);
-									},
-									true => {},
+								let ok = handle_new_monitor_update!(
+									self,
+									funding_txo,
+									monitor_update,
+									peer_state_lock,
+									peer_state,
+									per_peer_state,
+									chan
+								);
+								if !ok {
+									// Note that MonitorUpdateInProgress here indicates (per function
+									// docs) that we will resend the commitment update once monitor
+									// updating completes. Therefore, we must return an error
+									// indicating that it is unsafe to retry the payment wholesale,
+									// which we do in the send_payment check for
+									// MonitorUpdateInProgress, below.
+									return Err(APIError::MonitorUpdateInProgress);
 								}
 							},
 							None => {},
 						}
 					},
-					None => return Err(APIError::ChannelUnavailable{err: "Channel to first hop is unfunded".to_owned()}),
+					None => {
+						return Err(APIError::ChannelUnavailable {
+							err: "Channel to first hop is unfunded".to_owned(),
+						})
+					},
 				};
 			} else {
 				// The channel was likely removed after we fetched the id from the
 				// `short_to_chan_info` map, but before we successfully locked the
 				// `channel_by_id` map.
 				// This can occur as no consistency guarantees exists between the two maps.
-				return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()});
+				return Err(APIError::ChannelUnavailable {
+					err: "No channel available with first hop!".to_owned(),
+				});
 			}
 			return Ok(());
 		};
 		match handle_error!(self, err, path.hops.first().unwrap().pubkey) {
 			Ok(_) => unreachable!(),
-			Err(e) => {
-				Err(APIError::ChannelUnavailable { err: e.err })
-			},
+			Err(e) => Err(APIError::ChannelUnavailable { err: e.err }),
 		}
 	}
 
@@ -5966,60 +6037,89 @@ where
 	/// [`HTLCIntercepted::expected_outbound_amount_msat`]: events::Event::HTLCIntercepted::expected_outbound_amount_msat
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
 	// `next_node_id` and not `next_hop_channel_id`
-	#[rustfmt::skip]
-	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop_channel_id: &ChannelId, next_node_id: PublicKey, amt_to_forward_msat: u64) -> Result<(), APIError> {
+	pub fn forward_intercepted_htlc(
+		&self, intercept_id: InterceptId, next_hop_channel_id: &ChannelId, next_node_id: PublicKey,
+		amt_to_forward_msat: u64,
+	) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let next_hop_scid = {
 			let peer_state_lock = self.per_peer_state.read().unwrap();
-			let peer_state_mutex = peer_state_lock.get(&next_node_id)
-				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", next_node_id) })?;
+			let peer_state_mutex =
+				peer_state_lock.get(&next_node_id).ok_or_else(|| APIError::ChannelUnavailable {
+					err: format!(
+						"Can't find a peer matching the passed counterparty node_id {}",
+						next_node_id
+					),
+				})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.get(next_hop_channel_id) {
-				Some(chan) => if let Some(funded_chan) = chan.as_funded() {
-					if !funded_chan.context.is_usable() {
+				Some(chan) => {
+					if let Some(funded_chan) = chan.as_funded() {
+						if !funded_chan.context.is_usable() {
+							return Err(APIError::ChannelUnavailable {
+								err: format!(
+									"Channel with id {} not fully established",
+									next_hop_channel_id
+								),
+							});
+						}
+						funded_chan
+							.funding
+							.get_short_channel_id()
+							.unwrap_or(funded_chan.context.outbound_scid_alias())
+					} else {
 						return Err(APIError::ChannelUnavailable {
-							err: format!("Channel with id {} not fully established", next_hop_channel_id)
-						})
-					}
-					funded_chan.funding.get_short_channel_id().unwrap_or(funded_chan.context.outbound_scid_alias())
-				} else {
-					return Err(APIError::ChannelUnavailable {
 						err: format!("Channel with id {} for the passed counterparty node_id {} is still opening.",
 							next_hop_channel_id, next_node_id)
-					})
+					});
+					}
 				},
 				None => {
-					let error = format!("Channel with id {} not found for the passed counterparty node_id {}",
-						next_hop_channel_id, next_node_id);
-					let logger = WithContext::from(&self.logger, Some(next_node_id), Some(*next_hop_channel_id), None);
+					let error = format!(
+						"Channel with id {} not found for the passed counterparty node_id {}",
+						next_hop_channel_id, next_node_id
+					);
+					let logger = WithContext::from(
+						&self.logger,
+						Some(next_node_id),
+						Some(*next_hop_channel_id),
+						None,
+					);
 					log_error!(logger, "{} when attempting to forward intercepted HTLC", error);
-					return Err(APIError::ChannelUnavailable {
-						err: error
-					})
+					return Err(APIError::ChannelUnavailable { err: error });
 				},
 			}
 		};
 
-		let payment = self.pending_intercepted_htlcs.lock().unwrap().remove(&intercept_id)
+		let payment = self
+			.pending_intercepted_htlcs
+			.lock()
+			.unwrap()
+			.remove(&intercept_id)
 			.ok_or_else(|| APIError::APIMisuseError {
-				err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.0))
+				err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.0)),
 			})?;
 
 		let routing = match payment.forward_info.routing {
 			PendingHTLCRouting::Forward { onion_packet, blinded, incoming_cltv_expiry, .. } => {
 				PendingHTLCRouting::Forward {
-					onion_packet, blinded, incoming_cltv_expiry, short_channel_id: next_hop_scid,
+					onion_packet,
+					blinded,
+					incoming_cltv_expiry,
+					short_channel_id: next_hop_scid,
 				}
 			},
-			_ => unreachable!() // Only `PendingHTLCRouting::Forward`s are intercepted
+			_ => unreachable!(), // Only `PendingHTLCRouting::Forward`s are intercepted
 		};
 		let skimmed_fee_msat =
 			payment.forward_info.outgoing_amt_msat.saturating_sub(amt_to_forward_msat);
 		let pending_htlc_info = PendingHTLCInfo {
 			skimmed_fee_msat: if skimmed_fee_msat == 0 { None } else { Some(skimmed_fee_msat) },
-			outgoing_amt_msat: amt_to_forward_msat, routing, ..payment.forward_info
+			outgoing_amt_msat: amt_to_forward_msat,
+			routing,
+			..payment.forward_info
 		};
 
 		let mut per_source_pending_forward = [(
@@ -6028,7 +6128,7 @@ where
 			payment.prev_funding_outpoint,
 			payment.prev_channel_id,
 			payment.prev_user_channel_id,
-			vec![(pending_htlc_info, payment.prev_htlc_id)]
+			vec![(pending_htlc_info, payment.prev_htlc_id)],
 		)];
 		self.forward_htlcs(&mut per_source_pending_forward);
 		Ok(())
