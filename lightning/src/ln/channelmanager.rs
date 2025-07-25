@@ -235,6 +235,7 @@ pub enum PendingHTLCRouting {
 		blinded: Option<BlindedForward>,
 		/// The absolute CLTV of the inbound HTLC
 		incoming_cltv_expiry: Option<u32>,
+		/// Signals that the HTLC should be held for release by an offline recipient.
 		hold_htlc: bool,
 	},
 	/// An HTLC which should be forwarded on to another Trampoline node.
@@ -2558,6 +2559,7 @@ pub struct ChannelManager<
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
 
+	#[cfg(async_payments)]
 	pending_held_htlcs: Mutex<HashMap<(u64, u64), PendingAddHTLCInfo>>,
 
 	/// SCID/SCID Alias -> pending `update_add_htlc`s to decode.
@@ -3757,6 +3759,8 @@ where
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
 			pending_intercepted_htlcs: Mutex::new(new_hash_map()),
+			#[cfg(async_payments)]
+			pending_held_htlcs: Mutex::new(new_hash_map()),
 			short_to_chan_info: FairRwLock::new(new_hash_map()),
 
 			our_network_pubkey,
@@ -6052,6 +6056,7 @@ where
 		Ok(())
 	}
 
+	#[cfg(async_payments)]
 	fn forward_held_htlc(&self, short_channel_id: u64, htlc_id: u64) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -10314,11 +10319,44 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let mut failed_intercept_forwards = Vec::new();
 			if !pending_forwards.is_empty() {
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
+					// If this HTLC needs to be held for release by an offline recipient, we'll move it to a dedicated
+					// hash map for held HTLCs.
+					#[cfg(async_payments)]
 					if let PendingHTLCRouting::Forward { hold_htlc: true, .. } =
 						forward_info.routing
 					{
 						let mut held_htlcs = self.pending_held_htlcs.lock().unwrap();
-						held_htlcs.entry((prev_short_channel_id, prev_htlc_id));
+						held_htlcs.insert(
+							(prev_short_channel_id, prev_htlc_id),
+							PendingAddHTLCInfo {
+								prev_short_channel_id,
+								prev_counterparty_node_id,
+								prev_funding_outpoint,
+								prev_channel_id,
+								prev_htlc_id,
+								prev_user_channel_id,
+								forward_info,
+							},
+						);
+
+						// TODO: Where to get message paths from?!?
+						let message_paths = [];
+
+						self.flow.enqueue_held_forward_htlc_available(
+							prev_short_channel_id,
+							prev_htlc_id,
+							self.get_peers_for_blinded_path(),
+							&message_paths,
+						);
+
+						log_debug!(
+							self.logger,
+							"Holding HTLC {}:{} for release by an offline recipient",
+							prev_short_channel_id,
+							prev_htlc_id
+						);
+
+						continue;
 					}
 
 					let scid = match forward_info.routing {
@@ -14387,19 +14425,30 @@ where
 	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
 		#[cfg(async_payments)]
 		{
-			let payment_id = match _context {
-				AsyncPaymentsContext::OutboundPayment { payment_id } => payment_id,
+			match _context {
+				AsyncPaymentsContext::OutboundPayment { payment_id } => {
+					if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
+						log_trace!(
+							self.logger,
+							"Failed to release held HTLC with payment id {}: {:?}",
+							payment_id,
+							e
+						);
+					}
+				},
+				AsyncPaymentsContext::OutboundHTLC { chan_id, htlc_id } => {
+					if let Err(e) = self.forward_held_htlc(chan_id, htlc_id) {
+						log_trace!(
+							self.logger,
+							"Failed to release held forward HTLC {}:{} {:?}",
+							chan_id,
+							htlc_id,
+							e
+						);
+					}
+				},
 				_ => return,
 			};
-
-			if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
-				log_trace!(
-					self.logger,
-					"Failed to release held HTLC with payment id {}: {:?}",
-					payment_id,
-					e
-				);
-			}
 		}
 	}
 
@@ -16772,6 +16821,8 @@ where
 			inbound_payment_key: expanded_inbound_key,
 			pending_outbound_payments: pending_outbounds,
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
+			#[cfg(async_payments)]
+			pending_held_htlcs: Mutex::new(new_hash_map()), // TODO: Persistence.
 
 			forward_htlcs: Mutex::new(forward_htlcs),
 			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs),
