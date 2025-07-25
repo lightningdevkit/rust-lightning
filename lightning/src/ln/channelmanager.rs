@@ -7735,7 +7735,7 @@ where
 								};
 								let payment_purpose_context =
 									PaymentContext::Bolt12Offer(Bolt12OfferContext {
-										offer_id: verified_invreq.offer_id,
+										offer_id: verified_invreq.offer_id(),
 										invoice_request: verified_invreq.fields(),
 									});
 								let from_parts_res = events::PaymentPurpose::from_parts(
@@ -14876,7 +14876,7 @@ where
 				};
 
 				let amount_msats = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
-					&invoice_request.inner
+					&invoice_request.inner()
 				) {
 					Ok(amount_msats) => amount_msats,
 					Err(error) => return Some((OffersMessage::InvoiceError(error.into()), responder.respond())),

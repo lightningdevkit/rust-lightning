@@ -57,7 +57,7 @@ use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnou
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
+use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, PADDED_PATH_LENGTH};
@@ -2326,11 +2326,19 @@ fn fails_paying_invoice_with_unknown_required_features() {
 	let secp_ctx = Secp256k1::new();
 
 	let created_at = alice.node.duration_since_epoch();
-	let invoice = invoice_request
-		.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).unwrap()
-		.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at).unwrap()
-		.features_unchecked(Bolt12InvoiceFeatures::unknown())
-		.build_and_sign(&secp_ctx).unwrap();
+	let verified_invoice_request = invoice_request
+		.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).unwrap();
+
+	let invoice = match verified_invoice_request {
+		InvoiceRequestVerifiedFromOffer::DerivedKeys(request) => {
+			request.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at).unwrap()
+				.features_unchecked(Bolt12InvoiceFeatures::unknown())
+				.build_and_sign(&secp_ctx).unwrap()
+		},
+		InvoiceRequestVerifiedFromOffer::ExplicitKeys(_) => {
+			panic!("Expected invoice request with keys");
+		},
+	};
 
 	// Enqueue an onion message containing the new invoice.
 	let instructions = MessageSendInstructions::WithoutReplyPath {
