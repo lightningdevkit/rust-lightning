@@ -2964,19 +2964,6 @@ const MAX_PEER_STORAGE_SIZE: usize = 1024;
 /// many peers we reject new (inbound) connections.
 const MAX_NO_CHANNEL_PEERS: usize = 250;
 
-/// The maximum expiration from the current time where an [`Offer`] or [`Refund`] is considered
-/// short-lived, while anything with a greater expiration is considered long-lived.
-///
-/// Using [`ChannelManager::create_offer_builder`] or [`ChannelManager::create_refund_builder`],
-/// will include a [`BlindedMessagePath`] created using [`MessageRouter::create_blinded_paths`].
-///
-/// Using compact [`BlindedMessagePath`]s may provide better privacy as the [`MessageRouter`] could select
-/// more hops. However, since they use short channel ids instead of pubkeys, they are more likely to
-/// become invalid over time as channels are closed. Thus, they are only suitable for short-term use.
-///
-/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
-pub const MAX_SHORT_LIVED_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 24);
-
 /// Used by [`ChannelManager::list_recent_payments`] to express the status of recent payments.
 /// These include payments that have yet to find a successful path, or have unresolved HTLCs.
 #[derive(Debug, PartialEq)]
@@ -11567,8 +11554,9 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses the [`MessageRouter`] provided to the [`ChannelManager`] at construction to build a
-	/// [`BlindedMessagePath`] for the offer. See those docs for privacy implications.
+	/// Uses [`MessageRouter`] provided at construction to construct a [`BlindedMessagePath`] for
+	/// the offer. See the documentation of the selected [`MessageRouter`] for details on how it
+	/// selects blinded paths including privacy implications and reliability tradeoffs.
 	///
 	/// Also, uses a derived signing pubkey in the offer for recipient privacy.
 	///
@@ -11597,7 +11585,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	/// This gives users full control over how the [`BlindedMessagePath`] is constructed,
 	/// including the option to omit it entirely.
 	///
-	/// See [`Self::create_offer_builder`] for details on offer construction, privacy, and limitations.
+	/// See [`Self::create_offer_builder`] for more details on usage.
 	///
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	/// [`Offer`]: crate::offers::offer::Offer
@@ -11640,9 +11628,9 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the refund based on the given
-	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications.
+	/// Uses [`MessageRouter`] provided at construction to construct a [`BlindedMessagePath`] for
+	/// the refund. See the documentation of the selected [`MessageRouter`] for details on how it
+	/// selects blinded paths including privacy implications and reliability tradeoffs.
 	///
 	/// Also, uses a derived payer id in the refund for payer privacy.
 	///
@@ -11689,12 +11677,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// refund, including the option to omit it entirely. This is useful for testing or when
 	/// alternative privacy strategies are needed.
 	///
-	/// See [`Self::create_refund_builder`] for:
-	/// - refund recognition by [`ChannelManager`] via [`Bolt12Invoice`] handling,
-	/// - `payment_id` rules and expiration behavior,
-	/// - invoice revocation and refund failure handling,
-	/// - defaulting behavior for `max_total_routing_fee_msat`,
-	/// - and detailed payment and privacy semantics.
+	/// See [`Self::create_refund_builder`] for more details on usage.
 	///
 	/// # Errors
 	///
