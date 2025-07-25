@@ -42,7 +42,7 @@ const WITH_ENCRYPTED_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[4; 16];
 // `OffersContext`, but were removed in LDK v0.2 with the introduction of `ReceiveAuthKey`-based
 // authentication.
 // Their corresponding values (`[5; 16]` and `[7; 16]`) are now reserved and must not
-// be reused to preserve backward compatibility.
+// be reused to ensure type confusion attacks are impossible.
 //
 // Reserved HMAC_INPUT values — do not reuse:
 //
