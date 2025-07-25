@@ -4859,12 +4859,8 @@ where
 			prng_seed,
 		)
 		.map_err(|e| {
-			let logger = WithContext::from(
-				&self.logger,
-				Some(path.hops.first().unwrap().pubkey),
-				None,
-				Some(*payment_hash),
-			);
+			let first_hop_key = Some(path.hops.first().unwrap().pubkey);
+			let logger = WithContext::from(&self.logger, first_hop_key, None, Some(*payment_hash));
 			log_error!(
 				logger,
 				"Failed to build an onion for path for payment hash {}",
@@ -4874,19 +4870,17 @@ where
 		})?;
 
 		let err: Result<(), _> = loop {
+			let first_chan_id = &path.hops.first().unwrap().short_channel_id;
 			let (counterparty_node_id, id) = match self
 				.short_to_chan_info
 				.read()
 				.unwrap()
-				.get(&path.hops.first().unwrap().short_channel_id)
+				.get(first_chan_id)
 			{
 				None => {
-					let logger = WithContext::from(
-						&self.logger,
-						Some(path.hops.first().unwrap().pubkey),
-						None,
-						Some(*payment_hash),
-					);
+					let first_hop_key = Some(path.hops.first().unwrap().pubkey);
+					let logger =
+						WithContext::from(&self.logger, first_hop_key, None, Some(*payment_hash));
 					log_error!(
 						logger,
 						"Failed to find first-hop for payment hash {}",
@@ -4909,7 +4903,7 @@ where
 				logger,
 				"Attempting to send payment with payment hash {} along path with next hop {}",
 				payment_hash,
-				path.hops.first().unwrap().short_channel_id
+				first_chan_id,
 			);
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -4934,17 +4928,18 @@ where
 							&chan.context,
 							Some(*payment_hash),
 						);
+						let htlc_source = HTLCSource::OutboundRoute {
+							path: path.clone(),
+							session_priv: session_priv.clone(),
+							first_hop_htlc_msat: htlc_msat,
+							payment_id,
+							bolt12_invoice: bolt12_invoice.cloned(),
+						};
 						let send_res = chan.send_htlc_and_commit(
 							htlc_msat,
 							payment_hash.clone(),
 							htlc_cltv,
-							HTLCSource::OutboundRoute {
-								path: path.clone(),
-								session_priv: session_priv.clone(),
-								first_hop_htlc_msat: htlc_msat,
-								payment_id,
-								bolt12_invoice: bolt12_invoice.cloned(),
-							},
+							htlc_source,
 							onion_packet,
 							None,
 							&self.fee_estimator,
@@ -4952,7 +4947,7 @@ where
 						);
 						match break_channel_entry!(self, peer_state, send_res, chan_entry) {
 							Some(monitor_update) => {
-								match handle_new_monitor_update!(
+								let ok = handle_new_monitor_update!(
 									self,
 									funding_txo,
 									monitor_update,
@@ -4960,17 +4955,15 @@ where
 									peer_state,
 									per_peer_state,
 									chan
-								) {
-									false => {
-										// Note that MonitorUpdateInProgress here indicates (per function
-										// docs) that we will resend the commitment update once monitor
-										// updating completes. Therefore, we must return an error
-										// indicating that it is unsafe to retry the payment wholesale,
-										// which we do in the send_payment check for
-										// MonitorUpdateInProgress, below.
-										return Err(APIError::MonitorUpdateInProgress);
-									},
-									true => {},
+								);
+								if !ok {
+									// Note that MonitorUpdateInProgress here indicates (per function
+									// docs) that we will resend the commitment update once monitor
+									// updating completes. Therefore, we must return an error
+									// indicating that it is unsafe to retry the payment wholesale,
+									// which we do in the send_payment check for
+									// MonitorUpdateInProgress, below.
+									return Err(APIError::MonitorUpdateInProgress);
 								}
 							},
 							None => {},
