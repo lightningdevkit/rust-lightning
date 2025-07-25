@@ -2558,6 +2558,8 @@ pub struct ChannelManager<
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
 
+	pending_held_htlcs: Mutex<HashMap<(u64, u64), PendingAddHTLCInfo>>,
+
 	/// SCID/SCID Alias -> pending `update_add_htlc`s to decode.
 	///
 	/// Note that because we may have an SCID Alias as the key we can have two entries per channel,
@@ -6046,6 +6048,40 @@ where
 			payment.prev_user_channel_id,
 			vec![(pending_htlc_info, payment.prev_htlc_id)]
 		)];
+		self.forward_htlcs(&mut per_source_pending_forward);
+		Ok(())
+	}
+
+	fn forward_held_htlc(&self, short_channel_id: u64, htlc_id: u64) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		let held_htlc_id = (short_channel_id, htlc_id);
+		let mut htlc =
+			self.pending_held_htlcs.lock().unwrap().remove(&held_htlc_id).ok_or_else(|| {
+				APIError::APIMisuseError {
+					err: format!("Held htlc {}:{} not found", short_channel_id, htlc_id),
+				}
+			})?;
+
+		if let PendingHTLCRouting::Forward { ref mut hold_htlc, .. } = htlc.forward_info.routing {
+			// Clear hold flag.
+			*hold_htlc = false;
+		} else {
+			return Err(APIError::APIMisuseError {
+				err: "Only PendingHTLCRouting::Forward HTLCs can be held".to_owned(),
+			});
+		}
+
+		let mut per_source_pending_forward = [(
+			htlc.prev_short_channel_id,
+			htlc.prev_counterparty_node_id,
+			htlc.prev_funding_outpoint,
+			htlc.prev_channel_id,
+			htlc.prev_user_channel_id,
+			vec![(htlc.forward_info, htlc.prev_htlc_id)],
+		)];
+
+		// Re-forward this time without the hold flag.
 		self.forward_htlcs(&mut per_source_pending_forward);
 		Ok(())
 	}
@@ -10278,6 +10314,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let mut failed_intercept_forwards = Vec::new();
 			if !pending_forwards.is_empty() {
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
+					if let PendingHTLCRouting::Forward { hold_htlc: true, .. } =
+						forward_info.routing
+					{
+						let mut held_htlcs = self.pending_held_htlcs.lock().unwrap();
+						held_htlcs.entry((prev_short_channel_id, prev_htlc_id));
+					}
+
 					let scid = match forward_info.routing {
 						PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
 						PendingHTLCRouting::TrampolineForward { .. } => 0,
