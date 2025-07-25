@@ -28,6 +28,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+#[allow(unused_imports)]
 use crate::chain::channelmonitor::{
 	write_chanmon_internal, Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent,
 	TransactionOutputs, WithChannelMonitor,
@@ -47,6 +48,7 @@ use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::persist::MonitorName;
+#[allow(unused_imports)]
 use crate::util::ser::{VecWriter, Writeable};
 use crate::util::wakers::{Future, Notifier};
 use bitcoin::secp256k1::PublicKey;
@@ -811,6 +813,7 @@ where
 	}
 
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
+		#[allow(unused_mut)]
 		let mut monitors_list: Vec<PeerStorageMonitorHolder> = Vec::new();
 		let random_bytes = self.entropy_source.get_secure_random_bytes();
 
