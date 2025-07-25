@@ -339,7 +339,7 @@ where
 	/// [`WebhookNotificationMethod::LSPS5PaymentIncoming`]: super::msgs::WebhookNotificationMethod::LSPS5PaymentIncoming
 	pub fn notify_payment_incoming(&self, client_id: PublicKey) -> Result<(), LSPS5ProtocolError> {
 		let notification = WebhookNotification::payment_incoming();
-		self.broadcast_notification(client_id, notification)
+		self.send_notifications_to_client_webhooks(client_id, notification)
 	}
 
 	/// Notify that an HTLC or other time-bound contract is expiring soon.
@@ -359,7 +359,7 @@ where
 		&self, client_id: PublicKey, timeout: u32,
 	) -> Result<(), LSPS5ProtocolError> {
 		let notification = WebhookNotification::expiry_soon(timeout);
-		self.broadcast_notification(client_id, notification)
+		self.send_notifications_to_client_webhooks(client_id, notification)
 	}
 
 	/// Notify that the LSP intends to manage liquidity (e.g. close or splice) on client channels.
@@ -376,7 +376,7 @@ where
 		&self, client_id: PublicKey,
 	) -> Result<(), LSPS5ProtocolError> {
 		let notification = WebhookNotification::liquidity_management_request();
-		self.broadcast_notification(client_id, notification)
+		self.send_notifications_to_client_webhooks(client_id, notification)
 	}
 
 	/// Notify that the client has one or more pending BOLT Onion Messages.
@@ -393,10 +393,10 @@ where
 		&self, client_id: PublicKey,
 	) -> Result<(), LSPS5ProtocolError> {
 		let notification = WebhookNotification::onion_message_incoming();
-		self.broadcast_notification(client_id, notification)
+		self.send_notifications_to_client_webhooks(client_id, notification)
 	}
 
-	fn broadcast_notification(
+	fn send_notifications_to_client_webhooks(
 		&self, client_id: PublicKey, notification: WebhookNotification,
 	) -> Result<(), LSPS5ProtocolError> {
 		let mut webhooks = self.webhooks.lock().unwrap();
