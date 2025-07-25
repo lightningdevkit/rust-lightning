@@ -336,14 +336,51 @@ impl InboundHTLCOutput {
 	where
 		L::Target: Logger,
 	{
+		mem::drop(self.state_wrapper.waiting_on_peer_span.take());
+		mem::drop(self.state_wrapper.waiting_on_monitor_persist_span.take());
 		mem::drop(self.state_wrapper.span.take());
 		self.state_wrapper =
 			InboundHTLCStateWrapper::new(state, self.span.as_user_span_ref::<L>(), logger);
+	}
+
+	fn waiting_on_peer<L: Deref>(&mut self, logger: &L)
+	where
+		L::Target: Logger,
+	{
+		self.state_wrapper.waiting_on_peer_span = Some(BoxedSpan::new(logger.start(
+			Span::WaitingOnPeer,
+			self.state_wrapper.span.as_ref().map(|s| s.as_user_span_ref::<L>()).flatten(),
+		)));
+	}
+
+	fn peer_responded(&mut self) {
+		if self.state_wrapper.waiting_on_peer_span.is_some() {
+			mem::drop(self.state_wrapper.waiting_on_peer_span.take());
+		}
+	}
+
+	fn waiting_on_monitor_persist<L: Deref>(&mut self, logger: &L)
+	where
+		L::Target: Logger,
+	{
+		self.state_wrapper.waiting_on_monitor_persist_span = Some(BoxedSpan::new(logger.start(
+			Span::WaitingOnMonitorPersist,
+			self.state_wrapper.span.as_ref().map(|s| s.as_user_span_ref::<L>()).flatten(),
+		)));
+	}
+
+	fn monitor_persisted(&mut self) {
+		if self.state_wrapper.waiting_on_monitor_persist_span.is_some() {
+			mem::drop(self.state_wrapper.waiting_on_monitor_persist_span.take());
+		}
 	}
 }
 
 struct InboundHTLCStateWrapper {
 	state: InboundHTLCState,
+	waiting_on_peer_span: Option<BoxedSpan>,
+	waiting_on_monitor_persist_span: Option<BoxedSpan>,
+	// Drop full span last.
 	span: Option<BoxedSpan>,
 }
 
@@ -357,7 +394,12 @@ impl InboundHTLCStateWrapper {
 	{
 		let state_span =
 			logger.start(Span::InboundHTLCState { state: (&state).into() }, parent_span);
-		InboundHTLCStateWrapper { state, span: Some(BoxedSpan::new(state_span)) }
+		InboundHTLCStateWrapper {
+			state,
+			span: Some(BoxedSpan::new(state_span)),
+			waiting_on_peer_span: None,
+			waiting_on_monitor_persist_span: None,
+		}
 	}
 }
 
@@ -6474,6 +6516,7 @@ where
 				)),
 				logger,
 			);
+			htlc.waiting_on_monitor_persist(logger);
 		}
 
 		UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, update_blocked: false }
@@ -6785,7 +6828,7 @@ where
 
 		// Now update local state:
 		self.context.next_counterparty_htlc_id += 1;
-		self.context.pending_inbound_htlcs.push(InboundHTLCOutput::new(
+		let mut output = InboundHTLCOutput::new(
 			self.context.channel_id(),
 			InboundHTLCOutputParams {
 				htlc_id: msg.htlc_id,
@@ -6797,7 +6840,9 @@ where
 				}),
 			},
 			logger,
-		));
+		);
+		output.waiting_on_peer(logger);
+		self.context.pending_inbound_htlcs.push(output);
 
 		Ok(())
 	}
@@ -7213,6 +7258,9 @@ where
 					InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution.clone()),
 					logger,
 				);
+				if self.context.channel_state.is_awaiting_remote_revoke() {
+					htlc.waiting_on_peer(logger);
+				}
 				need_commitment = true;
 			}
 		}
@@ -7727,6 +7775,7 @@ where
 							InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution),
 							logger,
 						);
+						htlc.waiting_on_monitor_persist(logger);
 						require_commitment = true;
 					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution) =
 						state
@@ -8228,6 +8277,17 @@ where
 		assert!(self.context.channel_state.is_monitor_update_in_progress());
 		self.context.channel_state.clear_monitor_update_in_progress();
 		assert_eq!(self.blocked_monitor_updates_pending(), 0);
+
+		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
+			match htlc.state() {
+				InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) |
+				InboundHTLCState::LocalRemoved(_) => {
+					htlc.monitor_persisted();
+					htlc.waiting_on_peer(logger);
+				},
+				_ => {},
+			}
+		}
 
 		// If we're past (or at) the AwaitingChannelReady stage on an outbound (or V2-established) channel,
 		// try to (re-)broadcast the funding transaction as we may have declined to broadcast it when we
@@ -10959,6 +11019,7 @@ where
 			if let Some(state) = new_state {
 				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
 				htlc.set_state(state, logger);
+				htlc.waiting_on_monitor_persist(logger);
 			}
 		}
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
