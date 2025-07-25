@@ -4848,36 +4848,25 @@ where
 		.map_err(|e| {
 			let first_hop_key = Some(path.hops.first().unwrap().pubkey);
 			let logger = WithContext::from(&self.logger, first_hop_key, None, Some(*payment_hash));
-			log_error!(
-				logger,
-				"Failed to build an onion for path for payment hash {}",
-				payment_hash
-			);
+			log_error!(logger, "Failed to build an onion for path for payment hash {payment_hash}");
 			e
 		})?;
 
 		let err: Result<(), _> = loop {
-			let first_chan_id = &path.hops.first().unwrap().short_channel_id;
-			let (counterparty_node_id, id) = match self
-				.short_to_chan_info
-				.read()
-				.unwrap()
-				.get(first_chan_id)
-			{
+			let first_chan_scid = &path.hops.first().unwrap().short_channel_id;
+			let first_chan = self.short_to_chan_info.read().unwrap().get(first_chan_scid).cloned();
+
+			let (counterparty_node_id, id) = match first_chan {
 				None => {
 					let first_hop_key = Some(path.hops.first().unwrap().pubkey);
 					let logger =
 						WithContext::from(&self.logger, first_hop_key, None, Some(*payment_hash));
-					log_error!(
-						logger,
-						"Failed to find first-hop for payment hash {}",
-						payment_hash
-					);
+					log_error!(logger, "Failed to find first-hop for payment hash {payment_hash}");
 					return Err(APIError::ChannelUnavailable {
 						err: "No channel available with first hop!".to_owned(),
 					});
 				},
-				Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
+				Some((cp_id, chan_id)) => (cp_id, chan_id),
 			};
 
 			let logger = WithContext::from(
@@ -4888,9 +4877,7 @@ where
 			);
 			log_trace!(
 				logger,
-				"Attempting to send payment with payment hash {} along path with next hop {}",
-				payment_hash,
-				first_chan_id,
+				"Attempting to send payment with payment hash {payment_hash} along path with next hop {first_chan_scid}"
 			);
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -4924,7 +4911,7 @@ where
 						};
 						let send_res = chan.send_htlc_and_commit(
 							htlc_msat,
-							payment_hash.clone(),
+							*payment_hash,
 							htlc_cltv,
 							htlc_source,
 							onion_packet,
