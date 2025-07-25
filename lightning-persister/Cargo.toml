@@ -13,9 +13,13 @@ edition = "2021"
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+tokio = ["dep:tokio"]
+
 [dependencies]
 bitcoin = "0.32.2"
 lightning = { version = "0.2.0", path = "../lightning" }
+tokio = { version = "1.35", optional = true, features = [ "macros", "rt-multi-thread" ] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.48.0", default-features = false, features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
