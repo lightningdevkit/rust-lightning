@@ -1169,6 +1169,33 @@ where
 		Ok(())
 	}
 
+	/// Enqueues `held_htlc_available` onion messages to be sent to the payee for a held forward HTLC.
+	#[cfg(async_payments)]
+	pub fn enqueue_held_forward_htlc_available(
+		&self, chan_id: u64, htlc_id: u64, peers: Vec<MessageForwardNode>,
+		message_paths: &[BlindedMessagePath],
+	) -> Result<(), Bolt12SemanticError> {
+		let context =
+			MessageContext::AsyncPayments(AsyncPaymentsContext::OutboundHTLC { chan_id, htlc_id });
+
+		let reply_paths = self
+			.create_blinded_paths(peers, context)
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+
+		let mut pending_async_payments_messages =
+			self.pending_async_payments_messages.lock().unwrap();
+
+		let message = AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable {});
+		enqueue_onion_message_with_reply_paths(
+			message,
+			message_paths,
+			reply_paths,
+			&mut pending_async_payments_messages,
+		);
+
+		Ok(())
+	}
+
 	/// Enqueues the created [`DNSSECQuery`] to be sent to the counterparty.
 	///
 	/// # Peers
