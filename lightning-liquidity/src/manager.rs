@@ -299,7 +299,7 @@ where
 					channel_manager.clone(),
 					node_signer,
 					config.clone(),
-					time_provider.clone(),
+					time_provider,
 				)
 			})
 		});
