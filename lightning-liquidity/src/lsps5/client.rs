@@ -43,7 +43,7 @@ pub const DEFAULT_RESPONSE_MAX_AGE_SECS: u64 = 3600;
 #[derive(Debug, Clone)]
 /// Configuration for the LSPS5 client
 pub struct LSPS5ClientConfig {
-	/// Maximum age in seconds for cached responses (default: 3600 - 1 hour).
+	/// Maximum age in seconds for cached responses (default: [`DEFAULT_RESPONSE_MAX_AGE_SECS`]).
 	pub response_max_age_secs: Duration,
 }
 
