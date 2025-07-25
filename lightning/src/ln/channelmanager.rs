@@ -6035,8 +6035,7 @@ where
 			let peer_state_mutex =
 				peer_state_lock.get(&next_node_id).ok_or_else(|| APIError::ChannelUnavailable {
 					err: format!(
-						"Can't find a peer matching the passed counterparty node_id {}",
-						next_node_id
+						"Can't find a peer matching the passed counterparty node_id {next_node_id}"
 					),
 				})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -6047,8 +6046,7 @@ where
 						if !funded_chan.context.is_usable() {
 							return Err(APIError::ChannelUnavailable {
 								err: format!(
-									"Channel with id {} not fully established",
-									next_hop_channel_id
+									"Channel with id {next_hop_channel_id} not fully established"
 								),
 							});
 						}
@@ -6058,15 +6056,15 @@ where
 							.unwrap_or(funded_chan.context.outbound_scid_alias())
 					} else {
 						return Err(APIError::ChannelUnavailable {
-						err: format!("Channel with id {} for the passed counterparty node_id {} is still opening.",
-							next_hop_channel_id, next_node_id)
+						err: format!(
+							"Channel with id {next_hop_channel_id} for the passed counterparty node_id {next_node_id} is still opening."
+						)
 					});
 					}
 				},
 				None => {
 					let error = format!(
-						"Channel with id {} not found for the passed counterparty node_id {}",
-						next_hop_channel_id, next_node_id
+						"Channel with id {next_hop_channel_id} not found for the passed counterparty node_id {next_node_id}"
 					);
 					let logger = WithContext::from(
 						&self.logger,
@@ -6074,7 +6072,7 @@ where
 						Some(*next_hop_channel_id),
 						None,
 					);
-					log_error!(logger, "{} when attempting to forward intercepted HTLC", error);
+					log_error!(logger, "{error} when attempting to forward intercepted HTLC");
 					return Err(APIError::ChannelUnavailable { err: error });
 				},
 			}
