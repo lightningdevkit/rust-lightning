@@ -1,3 +1,5 @@
+//! Utilities for LSPS5 service.
+
 use alloc::string::String;
 use core::{fmt::Write, ops::Deref};
 
@@ -5,6 +7,7 @@ use lightning::sign::EntropySource;
 
 use crate::lsps0::ser::LSPSRequestId;
 
+/// Converts a human-readable string representation of a short channel ID (SCID)
 pub fn scid_from_human_readable_string(human_readable_scid: &str) -> Result<u64, ()> {
 	let mut parts = human_readable_scid.split('x');
 
@@ -24,6 +27,7 @@ where
 }
 
 #[inline]
+/// Converts a byte slice to a hexadecimal string representation.
 pub fn hex_str(value: &[u8]) -> String {
 	let mut res = String::with_capacity(2 * value.len());
 	for v in value {
@@ -52,3 +56,5 @@ mod tests {
 		assert_eq!(vout_from_scid(scid), vout);
 	}
 }
+
+pub mod time;

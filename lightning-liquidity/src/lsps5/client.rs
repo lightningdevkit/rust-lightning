@@ -22,9 +22,9 @@ use crate::message_queue::MessageQueue;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils::generate_request_id;
+use crate::utils::time::TimeProvider;
 
 use super::msgs::{LSPS5AppName, LSPS5Error, LSPS5WebhookUrl};
-use super::service::TimeProvider;
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -439,9 +439,8 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		lsps0::ser::LSPSRequestId,
-		lsps5::{msgs::SetWebhookResponse, service::DefaultTimeProvider},
-		tests::utils::TestEntropy,
+		lsps0::ser::LSPSRequestId, lsps5::msgs::SetWebhookResponse, tests::utils::TestEntropy,
+		utils::time::DefaultTimeProvider,
 	};
 	use bitcoin::{key::Secp256k1, secp256k1::SecretKey};
 

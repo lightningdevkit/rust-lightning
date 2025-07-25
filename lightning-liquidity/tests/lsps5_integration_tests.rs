@@ -17,13 +17,14 @@ use lightning_liquidity::lsps5::msgs::{
 	LSPS5AppName, LSPS5ClientError, LSPS5ProtocolError, LSPS5WebhookUrl, WebhookNotification,
 	WebhookNotificationMethod,
 };
-use lightning_liquidity::lsps5::service::{DefaultTimeProvider, LSPS5ServiceConfig, TimeProvider};
+use lightning_liquidity::lsps5::service::LSPS5ServiceConfig;
 use lightning_liquidity::lsps5::service::{
 	MIN_WEBHOOK_RETENTION_DAYS, PRUNE_STALE_WEBHOOKS_INTERVAL_DAYS,
 };
 use lightning_liquidity::lsps5::validator::{
 	InMemorySignatureStore, LSPS5Validator, SignatureStorageConfig,
 };
+use lightning_liquidity::utils::time::{DefaultTimeProvider, TimeProvider};
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

@@ -70,7 +70,7 @@ pub mod message_queue;
 mod sync;
 #[cfg(test)]
 mod tests;
-mod utils;
+pub mod utils;
 
 pub use manager::{
 	ALiquidityManager, LiquidityClientConfig, LiquidityManager, LiquidityServiceConfig,

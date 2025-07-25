@@ -12,9 +12,7 @@ use crate::lsps0::ser::{
 use crate::lsps0::service::LSPS0ServiceHandler;
 use crate::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
 use crate::lsps5::msgs::LSPS5Message;
-#[cfg(feature = "time")]
-use crate::lsps5::service::DefaultTimeProvider;
-use crate::lsps5::service::{LSPS5ServiceConfig, LSPS5ServiceHandler, TimeProvider};
+use crate::lsps5::service::{LSPS5ServiceConfig, LSPS5ServiceHandler};
 use crate::message_queue::MessageQueue;
 
 use crate::lsps1::client::{LSPS1ClientConfig, LSPS1ClientHandler};
@@ -27,6 +25,9 @@ use crate::lsps2::msgs::LSPS2Message;
 use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler};
 use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
+#[cfg(feature = "time")]
+use crate::utils::time::DefaultTimeProvider;
+use crate::utils::time::TimeProvider;
 
 use lightning::chain::{self, BestBlock, Confirm, Filter, Listen};
 use lightning::ln::channelmanager::{AChannelManager, ChainParameters};

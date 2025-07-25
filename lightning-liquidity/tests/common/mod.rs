@@ -1,13 +1,14 @@
 #![cfg(test)]
 
-use bitcoin::Network;
-use lightning::ln::channelmanager::ChainParameters;
-use lightning_liquidity::lsps5::service::TimeProvider;
+use lightning_liquidity::utils::time::TimeProvider;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManager, LiquidityServiceConfig};
 
 use lightning::chain::{BestBlock, Filter};
+use lightning::ln::channelmanager::ChainParameters;
 use lightning::ln::functional_test_utils::{Node, TestChannelManager};
 use lightning::util::test_utils::TestKeysInterface;
+
+use bitcoin::Network;
 
 use core::ops::Deref;
 

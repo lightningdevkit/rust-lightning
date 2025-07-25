@@ -735,7 +735,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # use lightning_background_processor::{process_events_async, GossipSync};
 /// # use core::future::Future;
 /// # use core::pin::Pin;
-/// # use lightning_liquidity::lsps5::service::TimeProvider;
+/// # use lightning_liquidity::utils::time::TimeProvider;
 /// # struct Logger {}
 /// # impl lightning::util::logger::Logger for Logger {
 /// #     fn log(&self, _record: lightning::util::logger::Record) {}
@@ -1401,7 +1401,7 @@ mod tests {
 	use lightning::util::sweep::{OutputSpendStatus, OutputSweeperSync, PRUNE_DELAY_BLOCKS};
 	use lightning::util::test_utils;
 	use lightning::{get_event, get_event_msg};
-	use lightning_liquidity::lsps5::service::DefaultTimeProvider;
+	use lightning_liquidity::utils::time::DefaultTimeProvider;
 	use lightning_liquidity::LiquidityManager;
 	use lightning_persister::fs_store::FilesystemStore;
 	use lightning_rapid_gossip_sync::RapidGossipSync;

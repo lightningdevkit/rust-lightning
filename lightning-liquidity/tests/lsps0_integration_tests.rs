@@ -13,7 +13,8 @@ use lightning_liquidity::lsps1::service::LSPS1ServiceConfig;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
 use lightning_liquidity::lsps5::client::LSPS5ClientConfig;
-use lightning_liquidity::lsps5::service::{DefaultTimeProvider, LSPS5ServiceConfig};
+use lightning_liquidity::lsps5::service::LSPS5ServiceConfig;
+use lightning_liquidity::utils::time::DefaultTimeProvider;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use lightning::ln::functional_test_utils::{
