@@ -2583,7 +2583,7 @@ pub struct ChannelManager<
 	/// `short_channel_id` here, nor the `channel_id` in `UpdateAddHTLC`!
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	decode_update_add_htlcs: Mutex<HashMap<u64, Vec<(msgs::UpdateAddHTLC, BoxedSpan)>>>,
+	decode_update_add_htlcs: Mutex<HashMap<u64, Vec<(msgs::UpdateAddHTLC, BoxedSpan, BoxedSpan)>>>,
 
 	/// The sets of payments which are claimable or currently being claimed. See
 	/// [`ClaimablePayments`]' individual field docs for more info.
@@ -6245,7 +6245,7 @@ where
 
 			let mut htlc_forwards = Vec::new();
 			let mut htlc_fails = Vec::new();
-			for (update_add_htlc, forward_span) in update_add_htlcs {
+			for (update_add_htlc, _waiting_on_forward_span, forward_span) in update_add_htlcs {
 				let (next_hop, next_packet_details_opt) =
 					match decode_incoming_update_add_htlc_onion(
 						&update_add_htlc,
@@ -8787,11 +8787,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn handle_channel_resumption(&self, pending_msg_events: &mut Vec<MessageSendEvent>,
 		channel: &mut FundedChannel<SP>, raa: Option<msgs::RevokeAndACK>,
 		commitment_update: Option<msgs::CommitmentUpdate>, order: RAACommitmentOrder,
-		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<(msgs::UpdateAddHTLC, BoxedSpan)>,
+		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<(msgs::UpdateAddHTLC, BoxedSpan, BoxedSpan)>,
 		funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>,
 		tx_signatures: Option<msgs::TxSignatures>, tx_abort: Option<msgs::TxAbort>,
-	) -> (Option<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<(msgs::UpdateAddHTLC, BoxedSpan)>)>) {
+	) -> (Option<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<(msgs::UpdateAddHTLC, BoxedSpan, BoxedSpan)>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
 		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort",
 			&channel.context.channel_id(),
@@ -10360,7 +10360,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	fn push_decode_update_add_htlcs(
-		&self, mut update_add_htlcs: (u64, Vec<(msgs::UpdateAddHTLC, BoxedSpan)>),
+		&self, mut update_add_htlcs: (u64, Vec<(msgs::UpdateAddHTLC, BoxedSpan, BoxedSpan)>),
 	) {
 		let mut decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
 		let scid = update_add_htlcs.0;
@@ -15143,7 +15143,7 @@ where
 		if !decode_update_add_htlcs.is_empty() {
 			let mut without_spans = new_hash_map();
 			for (scid, htlcs) in decode_update_add_htlcs.iter() {
-				without_spans.insert(scid, htlcs.iter().map(|(msg, _span)| msg).collect::<Vec<_>>());
+				without_spans.insert(scid, htlcs.iter().map(|(msg, _span1, _span2)| msg).collect::<Vec<_>>());
 			}
 			decode_update_add_htlcs_opt = Some(without_spans);
 		}
@@ -16835,8 +16835,13 @@ where
 					htlcs
 						.into_iter()
 						.map(|htlc| {
-							let span = BoxedSpan::new(args.logger.start(Span::Forward, None));
-							(htlc, span)
+							let forward_span =
+								BoxedSpan::new(args.logger.start(Span::Forward, None));
+							let waiting_on_forward_span = BoxedSpan::new(args.logger.start(
+								Span::WaitingOnForward,
+								forward_span.as_user_span_ref::<L>(),
+							));
+							(htlc, waiting_on_forward_span, forward_span)
 						})
 						.collect::<Vec<_>>(),
 				)

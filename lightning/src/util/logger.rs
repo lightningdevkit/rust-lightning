@@ -204,6 +204,14 @@ pub enum Span {
 		/// The state.
 		state: OutboundHTLCStateDetails,
 	},
+	/// Span representing the wait time until a peer responds.
+	WaitingOnPeer,
+	/// Span representing the wait time until a channel monitor persists.
+	WaitingOnMonitorPersist,
+	/// Span representing the wait time until async signing completes.
+	WaitingOnAsyncSigning,
+	/// Span representing the wait time until an HTLC gets forwarded.
+	WaitingOnForward,
 	/// Span representing sending an outbound Ping and receiving an inbound Pong.
 	PingPong {
 		/// The node id of the counterparty.

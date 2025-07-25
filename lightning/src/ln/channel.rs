@@ -336,14 +336,70 @@ impl InboundHTLCOutput {
 	where
 		L::Target: Logger,
 	{
+		mem::drop(self.state_wrapper.waiting_on_peer_span.take());
+		mem::drop(self.state_wrapper.waiting_on_monitor_persist_span.take());
 		mem::drop(self.state_wrapper.span.take());
 		self.state_wrapper =
 			InboundHTLCStateWrapper::new(state, self.span.as_user_span_ref::<L>(), logger);
+	}
+
+	fn waiting_on_peer<L: Deref>(&mut self, logger: &L)
+	where
+		L::Target: Logger,
+	{
+		self.state_wrapper.waiting_on_peer_span = Some(BoxedSpan::new(logger.start(
+			Span::WaitingOnPeer,
+			self.state_wrapper.span.as_ref().map(|s| s.as_user_span_ref::<L>()).flatten(),
+		)));
+	}
+
+	fn waiting_on_monitor_persist<L: Deref>(&mut self, logger: &L)
+	where
+		L::Target: Logger,
+	{
+		self.state_wrapper.waiting_on_monitor_persist_span = Some(BoxedSpan::new(logger.start(
+			Span::WaitingOnMonitorPersist,
+			self.state_wrapper.span.as_ref().map(|s| s.as_user_span_ref::<L>()).flatten(),
+		)));
+	}
+
+	fn monitor_persisted(&mut self) {
+		if self.state_wrapper.waiting_on_monitor_persist_span.is_some() {
+			mem::drop(self.state_wrapper.waiting_on_monitor_persist_span.take());
+		}
+	}
+
+	fn is_waiting_on_monitor_persist(&self) -> bool {
+		self.state_wrapper.waiting_on_monitor_persist_span.is_some()
+	}
+
+	fn waiting_on_async_signing<L: Deref>(&mut self, logger: &L)
+	where
+		L::Target: Logger,
+	{
+		self.state_wrapper.waiting_on_async_signing_span = Some(BoxedSpan::new(logger.start(
+			Span::WaitingOnAsyncSigning,
+			self.state_wrapper.span.as_ref().map(|s| s.as_user_span_ref::<L>()).flatten(),
+		)));
+	}
+
+	fn async_signing_completed(&mut self) {
+		if self.state_wrapper.waiting_on_async_signing_span.is_some() {
+			mem::drop(self.state_wrapper.waiting_on_async_signing_span.take());
+		}
+	}
+
+	fn is_waiting_on_async_signing(&self) -> bool {
+		self.state_wrapper.waiting_on_async_signing_span.is_some()
 	}
 }
 
 struct InboundHTLCStateWrapper {
 	state: InboundHTLCState,
+	waiting_on_peer_span: Option<BoxedSpan>,
+	waiting_on_monitor_persist_span: Option<BoxedSpan>,
+	waiting_on_async_signing_span: Option<BoxedSpan>,
+	// Drop full span last.
 	span: Option<BoxedSpan>,
 }
 
@@ -357,7 +413,13 @@ impl InboundHTLCStateWrapper {
 	{
 		let state_span =
 			logger.start(Span::InboundHTLCState { state: (&state).into() }, parent_span);
-		InboundHTLCStateWrapper { state, span: Some(BoxedSpan::new(state_span)) }
+		InboundHTLCStateWrapper {
+			state,
+			span: Some(BoxedSpan::new(state_span)),
+			waiting_on_peer_span: None,
+			waiting_on_monitor_persist_span: None,
+			waiting_on_async_signing_span: None,
+		}
 	}
 }
 
@@ -1318,7 +1380,7 @@ pub(super) struct MonitorRestoreUpdates {
 	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	pub finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
-	pub pending_update_adds: Vec<(msgs::UpdateAddHTLC, BoxedSpan)>,
+	pub pending_update_adds: Vec<(msgs::UpdateAddHTLC, BoxedSpan, BoxedSpan)>,
 	pub funding_broadcastable: Option<Transaction>,
 	pub channel_ready: Option<msgs::ChannelReady>,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
@@ -2448,7 +2510,7 @@ where
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	monitor_pending_finalized_fulfills: Vec<(HTLCSource, Option<AttributionData>)>,
-	monitor_pending_update_adds: Vec<(msgs::UpdateAddHTLC, BoxedSpan)>,
+	monitor_pending_update_adds: Vec<(msgs::UpdateAddHTLC, BoxedSpan, BoxedSpan)>,
 	monitor_pending_tx_signatures: Option<msgs::TxSignatures>,
 
 	/// If we went to send a revoke_and_ack but our signer was unable to give us a signature,
@@ -6474,6 +6536,7 @@ where
 				)),
 				logger,
 			);
+			htlc.waiting_on_monitor_persist(logger);
 		}
 
 		UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, update_blocked: false }
@@ -6785,7 +6848,7 @@ where
 
 		// Now update local state:
 		self.context.next_counterparty_htlc_id += 1;
-		self.context.pending_inbound_htlcs.push(InboundHTLCOutput::new(
+		let mut output = InboundHTLCOutput::new(
 			self.context.channel_id(),
 			InboundHTLCOutputParams {
 				htlc_id: msg.htlc_id,
@@ -6797,7 +6860,9 @@ where
 				}),
 			},
 			logger,
-		));
+		);
+		output.waiting_on_peer(logger);
+		self.context.pending_inbound_htlcs.push(output);
 
 		Ok(())
 	}
@@ -7213,6 +7278,9 @@ where
 					InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution.clone()),
 					logger,
 				);
+				if self.context.channel_state.is_awaiting_remote_revoke() {
+					htlc.waiting_on_peer(logger);
+				}
 				need_commitment = true;
 			}
 		}
@@ -7650,7 +7718,7 @@ where
 			&self.context.channel_id()
 		);
 		let mut to_forward_infos = Vec::new();
-		let mut pending_update_adds = Vec::<(msgs::UpdateAddHTLC, BoxedSpan)>::new();
+		let mut pending_update_adds = Vec::<(msgs::UpdateAddHTLC, BoxedSpan, BoxedSpan)>::new();
 		let mut revoked_htlcs = Vec::new();
 		let mut finalized_claimed_htlcs = Vec::new();
 		let mut update_fail_htlcs = Vec::new();
@@ -7727,6 +7795,7 @@ where
 							InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution),
 							logger,
 						);
+						htlc.waiting_on_monitor_persist(logger);
 						require_commitment = true;
 					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution) =
 						state
@@ -7762,6 +7831,7 @@ where
 												update_fail_malformed_htlcs.push(msg)
 											},
 										}
+										htlc.waiting_on_monitor_persist(logger);
 									},
 									PendingHTLCStatus::Forward(forward_info) => {
 										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed, attempting to forward", &htlc.payment_hash);
@@ -7773,10 +7843,18 @@ where
 							InboundHTLCResolution::Pending { update_add_htlc } => {
 								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
 								htlc.set_state(InboundHTLCState::Committed, logger);
-								let forward_span =
-									logger.start(Span::Forward, htlc.span.as_user_span_ref::<L>());
-								pending_update_adds
-									.push((update_add_htlc, BoxedSpan::new(forward_span)));
+								let forward_span = BoxedSpan::new(
+									logger.start(Span::Forward, htlc.span.as_user_span_ref::<L>()),
+								);
+								let waiting_on_persist_span = BoxedSpan::new(logger.start(
+									Span::WaitingOnMonitorPersist,
+									forward_span.as_user_span_ref::<L>(),
+								));
+								pending_update_adds.push((
+									update_add_htlc,
+									waiting_on_persist_span,
+									forward_span,
+								));
 							},
 						}
 					}
@@ -8267,7 +8345,11 @@ where
 		let mut finalized_claimed_htlcs = Vec::new();
 		mem::swap(&mut finalized_claimed_htlcs, &mut self.context.monitor_pending_finalized_fulfills);
 		let mut pending_update_adds = Vec::new();
-		mem::swap(&mut pending_update_adds, &mut self.context.monitor_pending_update_adds);
+		for (msg, waiting_on_persist_span, forward_span) in self.context.monitor_pending_update_adds.drain(..) {
+			mem::drop(waiting_on_persist_span);
+			let waiting_on_forward_span = BoxedSpan::new(logger.start(Span::WaitingOnForward, forward_span.as_user_span_ref::<L>()));
+			pending_update_adds.push((msg, waiting_on_forward_span, forward_span));
+		}
 		// For channels established with V2 establishment we won't send a `tx_signatures` when we're in
 		// MonitorUpdateInProgress (and we assume the user will never directly broadcast the funding
 		// transaction and waits for us to do it).
@@ -8305,6 +8387,23 @@ where
 			&& self.context.signer_pending_revoke_and_ack && commitment_update.is_some() {
 			self.context.signer_pending_commitment_update = true;
 			commitment_update = None;
+		}
+
+		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
+			match htlc.state() {
+				InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) |
+				InboundHTLCState::LocalRemoved(_) => {
+					if htlc.is_waiting_on_monitor_persist() {
+						htlc.monitor_persisted();
+						if commitment_update.is_some() {
+							htlc.waiting_on_peer(logger);
+						} else if self.context.signer_pending_commitment_update {
+							htlc.waiting_on_async_signing(logger);
+						}
+					}
+				},
+				_ => {},
+			}
 		}
 
 		self.context.monitor_pending_revoke_and_ack = false;
@@ -8449,6 +8548,19 @@ where
 				}
 			} else { (None, None, None) }
 		} else { (None, None, None) };
+
+		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
+			match htlc.state() {
+				InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) |
+				InboundHTLCState::LocalRemoved(_) => {
+					if htlc.is_waiting_on_async_signing() && commitment_update.is_some() {
+						htlc.async_signing_completed();
+						htlc.waiting_on_peer(logger);
+					}
+				}
+				_ => {},
+			}
+		}
 
 		log_trace!(logger, "Signer unblocked with {} commitment_update, {} revoke_and_ack, with resend order {:?}, {} funding_signed, {} channel_ready,
 				{} closing_signed, {} signed_closing_tx, and {} shutdown result",
@@ -10959,6 +11071,7 @@ where
 			if let Some(state) = new_state {
 				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
 				htlc.set_state(state, logger);
+				htlc.waiting_on_monitor_persist(logger);
 			}
 		}
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
@@ -13704,8 +13817,11 @@ where
 			.unwrap_or_default()
 			.into_iter()
 			.map(|msg| {
-				let span = BoxedSpan::new(logger.start(Span::Forward, None));
-				(msg, span)
+				let forward_span = BoxedSpan::new(logger.start(Span::Forward, None));
+				let waiting_span = BoxedSpan::new(
+					logger.start(Span::WaitingOnForward, forward_span.as_user_span_ref::<L>()),
+				);
+				(msg, waiting_span, forward_span)
 			})
 			.collect::<Vec<_>>();
 

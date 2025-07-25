@@ -11741,6 +11741,11 @@ pub fn test_payment_traces() {
 				Span::InboundHTLCState { state: None },
 				Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
 			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::InboundHTLCState { state: None }),
+			),
+			TestSpanBoundary::End(Span::WaitingOnPeer),
 			TestSpanBoundary::End(Span::InboundHTLCState { state: None }),
 			TestSpanBoundary::Start(
 				Span::InboundHTLCState {
@@ -11757,6 +11762,20 @@ pub fn test_payment_traces() {
 				},
 				Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
 			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnMonitorPersist,
+				Some(Span::InboundHTLCState {
+					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnMonitorPersist),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::InboundHTLCState {
+					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnPeer),
 			TestSpanBoundary::End(Span::InboundHTLCState {
 				state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
 			}),
@@ -11768,6 +11787,10 @@ pub fn test_payment_traces() {
 				Span::Forward,
 				Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 })
 			),
+			TestSpanBoundary::Start(Span::WaitingOnMonitorPersist, Some(Span::Forward),),
+			TestSpanBoundary::End(Span::WaitingOnMonitorPersist,),
+			TestSpanBoundary::Start(Span::WaitingOnForward, Some(Span::Forward),),
+			TestSpanBoundary::End(Span::WaitingOnForward,),
 			TestSpanBoundary::Start(
 				Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 },
 				Some(Span::Forward)
@@ -11801,6 +11824,19 @@ pub fn test_payment_traces() {
 				},
 				Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
 			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnMonitorPersist,
+				Some(Span::InboundHTLCState {
+					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill)
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnMonitorPersist),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::InboundHTLCState {
+					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill)
+				}),
+			),
 			TestSpanBoundary::End(Span::OutboundHTLCState {
 				state: OutboundHTLCStateDetails::Committed
 			}),
@@ -11824,6 +11860,7 @@ pub fn test_payment_traces() {
 			}),
 			TestSpanBoundary::End(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
 			TestSpanBoundary::End(Span::Forward),
+			TestSpanBoundary::End(Span::WaitingOnPeer),
 			TestSpanBoundary::End(Span::InboundHTLCState {
 				state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill)
 			}),
