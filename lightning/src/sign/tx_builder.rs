@@ -5,8 +5,8 @@ use core::ops::Deref;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 
 use crate::ln::chan_utils::{
-	commit_tx_fee_sat, htlc_success_tx_weight, htlc_timeout_tx_weight,
-	ChannelTransactionParameters, CommitmentTransaction, HTLCOutputInCommitment,
+	commit_tx_fee_sat, htlc_tx_fees_sat, second_stage_tx_fees_sat, ChannelTransactionParameters,
+	CommitmentTransaction, HTLCOutputInCommitment,
 };
 use crate::ln::channel::{CommitmentStats, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use crate::prelude::*;
@@ -14,8 +14,16 @@ use crate::types::features::ChannelTypeFeatures;
 use crate::util::logger::Logger;
 
 pub(crate) trait TxBuilder {
+	fn htlc_success_timeout_dust_limits(
+		&self, feerate_per_kw: u32, broadcaster_dust_limit_sat: u64,
+		channel_type: &ChannelTypeFeatures,
+	) -> (u64, u64);
 	fn commit_tx_fee_sat(
 		&self, feerate_per_kw: u32, nondust_htlc_count: usize, channel_type: &ChannelTypeFeatures,
+	) -> u64;
+	fn htlc_txs_endogenous_fees_sat(
+		&self, feerate_per_kw: u32, num_accepted_htlcs: usize, num_offered_htlcs: usize,
+		channel_type_features: &ChannelTypeFeatures,
 	) -> u64;
 	fn subtract_non_htlc_outputs(
 		&self, is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
@@ -34,10 +42,27 @@ pub(crate) trait TxBuilder {
 pub(crate) struct SpecTxBuilder {}
 
 impl TxBuilder for SpecTxBuilder {
+	fn htlc_success_timeout_dust_limits(
+		&self, feerate_per_kw: u32, broadcaster_dust_limit_sat: u64,
+		channel_type: &ChannelTypeFeatures,
+	) -> (u64, u64) {
+		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
+			second_stage_tx_fees_sat(channel_type, feerate_per_kw);
+		(
+			broadcaster_dust_limit_sat + htlc_success_tx_fee_sat,
+			broadcaster_dust_limit_sat + htlc_timeout_tx_fee_sat,
+		)
+	}
 	fn commit_tx_fee_sat(
 		&self, feerate_per_kw: u32, nondust_htlc_count: usize, channel_type: &ChannelTypeFeatures,
 	) -> u64 {
 		commit_tx_fee_sat(feerate_per_kw, nondust_htlc_count, channel_type)
+	}
+	fn htlc_txs_endogenous_fees_sat(
+		&self, feerate_per_kw: u32, num_accepted_htlcs: usize, num_offered_htlcs: usize,
+		channel_type: &ChannelTypeFeatures,
+	) -> u64 {
+		htlc_tx_fees_sat(feerate_per_kw, num_accepted_htlcs, num_offered_htlcs, channel_type)
 	}
 	fn subtract_non_htlc_outputs(
 		&self, is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
@@ -81,21 +106,10 @@ impl TxBuilder for SpecTxBuilder {
 	{
 		let mut local_htlc_total_msat = 0;
 		let mut remote_htlc_total_msat = 0;
-		let channel_type = &channel_parameters.channel_type_features;
 
-		let is_dust = |offered: bool, amount_msat: u64| -> bool {
-			let htlc_tx_fee_sat = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-				0
-			} else {
-				let htlc_tx_weight = if offered {
-					htlc_timeout_tx_weight(channel_type)
-				} else {
-					htlc_success_tx_weight(channel_type)
-				};
-				// As required by the spec, round down
-				feerate_per_kw as u64 * htlc_tx_weight / 1000
-			};
-			amount_msat / 1000 < broadcaster_dust_limit_sat + htlc_tx_fee_sat
+		let (dust_limit_success_sat, dust_limit_timeout_sat) = self.htlc_success_timeout_dust_limits(feerate_per_kw, broadcaster_dust_limit_sat, &channel_parameters.channel_type_features);
+		let is_dust = |htlc: &HTLCOutputInCommitment| -> bool {
+			htlc.amount_msat / 1000 < if htlc.offered { dust_limit_timeout_sat } else { dust_limit_success_sat }
 		};
 
 		// Trim dust htlcs
@@ -106,7 +120,7 @@ impl TxBuilder for SpecTxBuilder {
 			} else {
 				remote_htlc_total_msat += htlc.amount_msat;
 			}
-			if is_dust(htlc.offered, htlc.amount_msat) {
+			if is_dust(htlc) {
 				log_trace!(logger, "   ...trimming {} HTLC with value {}sat, hash {}, due to dust limit {}", if htlc.offered == local { "outbound" } else { "inbound" }, htlc.amount_msat / 1000, htlc.payment_hash, broadcaster_dust_limit_sat);
 				false
 			} else {
