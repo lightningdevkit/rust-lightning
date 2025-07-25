@@ -970,9 +970,43 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	}
 } }
 
+macro_rules! fields_accessor {
+	($self:ident, $inner:expr) => {
+		/// Fetch the [`InvoiceRequestFields`] for this verified invoice.
+		///
+		/// These are fields which we expect to be useful when receiving a payment for this invoice
+		/// request, and include the returned [`InvoiceRequestFields`] in the
+		/// [`PaymentContext::Bolt12Offer`].
+		///
+		/// [`PaymentContext::Bolt12Offer`]: crate::blinded_path::payment::PaymentContext::Bolt12Offer
+		pub fn fields(&$self) -> InvoiceRequestFields {
+			let InvoiceRequestContents {
+				payer_signing_pubkey,
+				inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
+					quantity,
+					payer_note,
+					..
+				},
+			} = &$inner;
+
+			InvoiceRequestFields {
+				payer_signing_pubkey: *payer_signing_pubkey,
+				quantity: *quantity,
+				payer_note_truncated: payer_note
+					.clone()
+					// Truncate the payer note to `PAYER_NOTE_LIMIT` bytes, rounding
+					// down to the nearest valid UTF-8 code point boundary.
+					.map(|s| UntrustedString(string_truncate_safe(s, PAYER_NOTE_LIMIT))),
+				human_readable_name: $self.offer_from_hrn().clone(),
+			}
+		}
+	};
+}
+
 impl VerifiedInvoiceRequest {
 	offer_accessors!(self, self.inner.contents.inner.offer);
 	invoice_request_accessors!(self, self.inner.contents);
+	fields_accessor!(self, self.inner.contents);
 	#[cfg(not(c_bindings))]
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
@@ -997,31 +1031,6 @@ impl VerifiedInvoiceRequest {
 		self.inner,
 		InvoiceWithDerivedSigningPubkeyBuilder
 	);
-
-	/// Fetch the [`InvoiceRequestFields`] for this verified invoice.
-	///
-	/// These are fields which we expect to be useful when receiving a payment for this invoice
-	/// request, and include the returned [`InvoiceRequestFields`] in the
-	/// [`PaymentContext::Bolt12Offer`].
-	///
-	/// [`PaymentContext::Bolt12Offer`]: crate::blinded_path::payment::PaymentContext::Bolt12Offer
-	pub fn fields(&self) -> InvoiceRequestFields {
-		let InvoiceRequestContents {
-			payer_signing_pubkey,
-			inner: InvoiceRequestContentsWithoutPayerSigningPubkey { quantity, payer_note, .. },
-		} = &self.inner.contents;
-
-		InvoiceRequestFields {
-			payer_signing_pubkey: *payer_signing_pubkey,
-			quantity: *quantity,
-			payer_note_truncated: payer_note
-				.clone()
-				// Truncate the payer note to `PAYER_NOTE_LIMIT` bytes, rounding
-				// down to the nearest valid UTF-8 code point boundary.
-				.map(|s| UntrustedString(string_truncate_safe(s, PAYER_NOTE_LIMIT))),
-			human_readable_name: self.offer_from_hrn().clone(),
-		}
-	}
 }
 
 /// `String::truncate(new_len)` panics if you split inside a UTF-8 code point,
