@@ -28,16 +28,17 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+#[allow(unused_imports)]
 use crate::chain::channelmonitor::{
-	Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
-	WithChannelMonitor,
+	write_chanmon_internal, Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent,
+	TransactionOutputs, WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::msgs::{self, BaseMessageHandler, Init, MessageSendEvent, SendOnlyMessageHandler};
-use crate::ln::our_peer_storage::DecryptedOurPeerStorage;
+use crate::ln::our_peer_storage::{DecryptedOurPeerStorage, PeerStorageMonitorHolder};
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -47,6 +48,8 @@ use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::persist::MonitorName;
+#[allow(unused_imports)]
+use crate::util::ser::{VecWriter, Writeable};
 use crate::util::wakers::{Future, Notifier};
 use bitcoin::secp256k1::PublicKey;
 use core::ops::Deref;
@@ -810,10 +813,52 @@ where
 	}
 
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
-		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage`.
-
+		#[allow(unused_mut)]
+		let mut monitors_list: Vec<PeerStorageMonitorHolder> = Vec::new();
 		let random_bytes = self.entropy_source.get_secure_random_bytes();
-		let serialised_channels = Vec::new();
+
+		#[cfg(peer_storage)]
+		{
+			const MAX_PEER_STORAGE_SIZE: usize = 65531;
+			const USIZE_LEN: usize = core::mem::size_of::<usize>();
+			let random_usize = usize::from_le_bytes(random_bytes[0..USIZE_LEN].try_into().unwrap());
+			let mut curr_size = 0;
+			let monitors = self.monitors.read().unwrap();
+			// Randomising Keys in the HashMap to fetch monitors without repetition.
+			let mut keys: Vec<&ChannelId> = monitors.keys().collect();
+			for i in (1..keys.len()).rev() {
+				let j = random_usize % (i + 1);
+				keys.swap(i, j);
+			}
+
+			for chan_id in keys {
+				let mon = &monitors[chan_id];
+				let mut ser_chan = VecWriter(Vec::new());
+				let min_seen_secret = mon.monitor.get_min_seen_secret();
+				let counterparty_node_id = mon.monitor.get_counterparty_node_id();
+				let chan_mon = mon.monitor.inner.lock().unwrap();
+
+				write_chanmon_internal(&chan_mon, true, &mut ser_chan)
+					.expect("can not write Channel Monitor for peer storage message");
+
+				let peer_storage_monitor = PeerStorageMonitorHolder {
+					channel_id: *chan_id,
+					min_seen_secret,
+					counterparty_node_id,
+					monitor_bytes: ser_chan.0,
+				};
+
+				// Adding size of peer_storage_monitor.
+				curr_size += peer_storage_monitor.serialized_length();
+
+				if curr_size > MAX_PEER_STORAGE_SIZE {
+					break;
+				}
+				monitors_list.push(peer_storage_monitor);
+			}
+		}
+
+		let serialised_channels = monitors_list.encode();
 		let our_peer_storage = DecryptedOurPeerStorage::new(serialised_channels);
 		let cipher = our_peer_storage.encrypt(&self.our_peerstorage_encryption_key, &random_bytes);
 
