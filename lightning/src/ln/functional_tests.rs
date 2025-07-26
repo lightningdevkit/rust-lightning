@@ -11797,6 +11797,20 @@ pub fn test_payment_traces() {
 				},
 				Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
 			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnMonitorPersist,
+				Some(Span::OutboundHTLCState {
+					state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnMonitorPersist,),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::OutboundHTLCState {
+					state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnPeer,),
 			TestSpanBoundary::End(Span::OutboundHTLCState {
 				state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd
 			}),
@@ -11810,6 +11824,10 @@ pub fn test_payment_traces() {
 			TestSpanBoundary::Start(
 				Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed },
 				Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed }),
 			),
 			TestSpanBoundary::End(Span::InboundHTLCState {
 				state: Some(InboundHTLCStateDetails::Committed)
@@ -11833,6 +11851,7 @@ pub fn test_payment_traces() {
 					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill)
 				}),
 			),
+			TestSpanBoundary::End(Span::WaitingOnPeer),
 			TestSpanBoundary::End(Span::OutboundHTLCState {
 				state: OutboundHTLCStateDetails::Committed
 			}),
@@ -11851,6 +11870,20 @@ pub fn test_payment_traces() {
 				},
 				Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
 			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnMonitorPersist,
+				Some(Span::OutboundHTLCState {
+					state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnMonitorPersist),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::OutboundHTLCState {
+					state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnPeer),
 			TestSpanBoundary::End(Span::OutboundHTLCState {
 				state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess
 			}),
