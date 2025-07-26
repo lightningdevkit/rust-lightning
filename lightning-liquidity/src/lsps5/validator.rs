@@ -10,12 +10,12 @@
 //! LSPS5 Validator
 
 use super::msgs::LSPS5ClientError;
-use super::service::TimeProvider;
 
 use crate::alloc::string::ToString;
 use crate::lsps0::ser::LSPSDateTime;
 use crate::lsps5::msgs::WebhookNotification;
 use crate::sync::Mutex;
+use crate::utils::time::TimeProvider;
 
 use lightning::util::message_signing;
 
