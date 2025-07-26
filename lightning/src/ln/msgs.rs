@@ -224,6 +224,8 @@ pub struct CommonOpenChannelFields {
 	pub to_self_delay: u16,
 	/// The maximum number of inbound HTLCs towards channel initiator
 	pub max_accepted_htlcs: u16,
+	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
+	pub channel_reserve_satoshis: u64,
 	/// The channel initiator's key controlling the funding transaction
 	pub funding_pubkey: PublicKey,
 	/// Used to derive a revocation key for transactions broadcast by counterparty
@@ -257,6 +259,7 @@ impl CommonOpenChannelFields {
 			commitment_feerate_sat_per_1000_weight: self.commitment_feerate_sat_per_1000_weight,
 			to_self_delay: self.to_self_delay,
 			max_accepted_htlcs: self.max_accepted_htlcs,
+			channel_reserve_satoshis: self.channel_reserve_satoshis,
 		}
 	}
 }
@@ -280,6 +283,8 @@ pub struct ChannelParameters {
 	pub to_self_delay: u16,
 	/// The maximum number of pending HTLCs towards the channel initiator.
 	pub max_accepted_htlcs: u16,
+	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
+	pub channel_reserve_satoshis: u64,
 }
 
 /// An [`open_channel`] message to be sent to or received from a peer.
@@ -3022,6 +3027,7 @@ impl LengthReadable for OpenChannel {
 				commitment_feerate_sat_per_1000_weight,
 				to_self_delay,
 				max_accepted_htlcs,
+				channel_reserve_satoshis,
 				funding_pubkey,
 				revocation_basepoint,
 				payment_basepoint,
@@ -3078,6 +3084,7 @@ impl LengthReadable for OpenChannelV2 {
 		let dust_limit_satoshis: u64 = Readable::read(r)?;
 		let max_htlc_value_in_flight_msat: u64 = Readable::read(r)?;
 		let htlc_minimum_msat: u64 = Readable::read(r)?;
+		let channel_reserve_satoshis: u64 = Readable::read(r)?;
 		let to_self_delay: u16 = Readable::read(r)?;
 		let max_accepted_htlcs: u16 = Readable::read(r)?;
 		let locktime: u32 = Readable::read(r)?;
@@ -3109,6 +3116,7 @@ impl LengthReadable for OpenChannelV2 {
 				commitment_feerate_sat_per_1000_weight,
 				to_self_delay,
 				max_accepted_htlcs,
+				channel_reserve_satoshis,
 				funding_pubkey,
 				revocation_basepoint,
 				payment_basepoint,
@@ -4716,6 +4724,7 @@ mod tests {
 				commitment_feerate_sat_per_1000_weight: 821716,
 				to_self_delay: 49340,
 				max_accepted_htlcs: 49340,
+				channel_reserve_satoshis: 8665828695742877976,
 				funding_pubkey: pubkey_1,
 				revocation_basepoint: pubkey_2,
 				payment_basepoint: pubkey_3,
@@ -4824,6 +4833,7 @@ mod tests {
 				htlc_minimum_msat: 2316138423780173,
 				to_self_delay: 49340,
 				max_accepted_htlcs: 49340,
+				channel_reserve_satoshis: 8665828695742877976,
 				funding_pubkey: pubkey_1,
 				revocation_basepoint: pubkey_2,
 				payment_basepoint: pubkey_3,
