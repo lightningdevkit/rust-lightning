@@ -884,13 +884,14 @@ where
 	///
 	/// Returns an error if the refund targets a different chain or if no valid
 	/// blinded path can be constructed.
-	pub fn create_invoice_builder_from_refund<'a, ES: Deref, R: Deref>(
-		&'a self, router: &R, entropy_source: ES, refund: &'a Refund, payment_hash: PaymentHash,
-		payment_secret: PaymentSecret, usable_channels: Vec<ChannelDetails>,
+	pub fn create_invoice_builder_from_refund<'a, ES: Deref, R: Deref, F>(
+		&'a self, router: &R, entropy_source: ES, refund: &'a Refund,
+		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 	) -> Result<InvoiceBuilder<'a, DerivedSigningPubkey>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 		R::Target: Router,
+		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
 	{
 		if refund.chain() != self.chain_hash {
 			return Err(Bolt12SemanticError::UnsupportedChain);
@@ -901,6 +902,8 @@ where
 
 		let amount_msats = refund.amount_msats();
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
+
+		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
 		let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
 		let payment_paths = self
@@ -951,19 +954,24 @@ where
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, ES: Deref, R: Deref>(
+	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, ES: Deref, R: Deref, F>(
 		&self, router: &R, entropy_source: ES,
-		invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>, amount_msats: u64,
-		payment_hash: PaymentHash, payment_secret: PaymentSecret,
-		usable_channels: Vec<ChannelDetails>,
+		invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>,
+		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 	) -> Result<(InvoiceBuilder<'a, DerivedSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 
 		R::Target: Router,
+		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
 	{
 		let entropy = &*entropy_source;
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
+
+		let amount_msats =
+			InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(&invoice_request.inner)?;
+
+		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
 		let context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 			offer_id: invoice_request.offer_id,
@@ -1011,18 +1019,23 @@ where
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, ES: Deref, R: Deref>(
+	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, ES: Deref, R: Deref, F>(
 		&self, router: &R, entropy_source: ES,
-		invoice_request: &'a VerifiedInvoiceRequest<ExplicitSigningPubkey>, amount_msats: u64,
-		payment_hash: PaymentHash, payment_secret: PaymentSecret,
-		usable_channels: Vec<ChannelDetails>,
+		invoice_request: &'a VerifiedInvoiceRequest<ExplicitSigningPubkey>,
+		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 	) -> Result<(InvoiceBuilder<'a, ExplicitSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 		R::Target: Router,
+		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
 	{
 		let entropy = &*entropy_source;
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
+
+		let amount_msats =
+			InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(&invoice_request.inner)?;
+
+		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
 		let context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 			offer_id: invoice_request.offer_id,
