@@ -613,15 +613,97 @@ impl OutboundHTLCOutput {
 	where
 		L::Target: Logger,
 	{
+		mem::drop(self.state_wrapper.waiting_on_peer_span.take());
+		mem::drop(self.state_wrapper.waiting_on_monitor_persist_span.take());
 		mem::drop(self.state_wrapper.span.take());
 		self.state_wrapper =
 			OutboundHTLCStateWrapper::new(state, self.span.as_user_span_ref::<L>(), logger);
 	}
+
+	fn is_waiting_on_peer(&self, reason: Option<WaitingOnPeerReason>) -> bool {
+		match (&self.state_wrapper.waiting_on_peer_span, reason) {
+			(Some((_, _)), None) => true,
+			(Some((_, span_reason)), Some(given_reason)) => *span_reason == given_reason,
+			_ => false,
+		}
+	}
+
+	fn waiting_on_peer<L: Deref>(&mut self, logger: &L, reason: WaitingOnPeerReason)
+	where
+		L::Target: Logger,
+	{
+		self.state_wrapper.waiting_on_peer_span = Some((
+			BoxedSpan::new(logger.start(
+				Span::WaitingOnPeer,
+				self.state_wrapper.span.as_ref().map(|s| s.as_user_span_ref::<L>()).flatten(),
+			)),
+			reason,
+		));
+	}
+
+	fn peer_responded(&mut self) {
+		if self.state_wrapper.waiting_on_peer_span.is_some() {
+			mem::drop(self.state_wrapper.waiting_on_peer_span.take());
+		}
+	}
+
+	fn is_waiting_on_monitor_persist(&self) -> bool {
+		self.state_wrapper.waiting_on_monitor_persist_span.is_some()
+	}
+
+	fn waiting_on_monitor_persist<L: Deref>(&mut self, logger: &L)
+	where
+		L::Target: Logger,
+	{
+		self.state_wrapper.waiting_on_monitor_persist_span = Some(BoxedSpan::new(logger.start(
+			Span::WaitingOnMonitorPersist,
+			self.state_wrapper.span.as_ref().map(|s| s.as_user_span_ref::<L>()).flatten(),
+		)));
+	}
+
+	fn monitor_persisted(&mut self) {
+		if self.state_wrapper.waiting_on_monitor_persist_span.is_some() {
+			mem::drop(self.state_wrapper.waiting_on_monitor_persist_span.take());
+		}
+	}
+
+	fn waiting_on_async_signing<L: Deref>(&mut self, logger: &L)
+	where
+		L::Target: Logger,
+	{
+		self.state_wrapper.waiting_on_async_signing_span = Some(BoxedSpan::new(logger.start(
+			Span::WaitingOnAsyncSigning,
+			self.state_wrapper.span.as_ref().map(|s| s.as_user_span_ref::<L>()).flatten(),
+		)));
+	}
+
+	fn async_signing_completed(&mut self) {
+		if self.state_wrapper.waiting_on_async_signing_span.is_some() {
+			mem::drop(self.state_wrapper.waiting_on_async_signing_span.take());
+		}
+	}
+
+	fn is_waiting_on_async_signing(&self) -> bool {
+		self.state_wrapper.waiting_on_async_signing_span.is_some()
+	}
+}
+
+// This additional reason allows us to recognize the different stages in the
+// OutboundHTLCState::Committed state. For other states, this can easily be derived.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WaitingOnPeerReason {
+	Commitment,
+	Revocation,
+	HTLCResolution,
 }
 
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 struct OutboundHTLCStateWrapper {
 	state: OutboundHTLCState,
+	waiting_on_peer_span: Option<(BoxedSpan, WaitingOnPeerReason)>,
+	waiting_on_monitor_persist_span: Option<BoxedSpan>,
+	waiting_on_async_signing_span: Option<BoxedSpan>,
+	// Drop full span last.
 	span: Option<BoxedSpan>,
 }
 
@@ -635,7 +717,13 @@ impl OutboundHTLCStateWrapper {
 	{
 		let state_span =
 			logger.start(Span::OutboundHTLCState { state: (&state).into() }, parent_span);
-		OutboundHTLCStateWrapper { state, span: Some(BoxedSpan::new(state_span)) }
+		OutboundHTLCStateWrapper {
+			state,
+			span: Some(BoxedSpan::new(state_span)),
+			waiting_on_peer_span: None,
+			waiting_on_monitor_persist_span: None,
+			waiting_on_async_signing_span: None,
+		}
 	}
 }
 
@@ -6886,6 +6974,7 @@ where
 						return Err(ChannelError::close(format!("Remote tried to fulfill/fail HTLC ({}) before it had been committed", htlc_id))),
 					OutboundHTLCState::Committed => {
 						htlc.set_state(OutboundHTLCState::RemoteRemoved(outcome), logger);
+						htlc.waiting_on_peer(logger, WaitingOnPeerReason::Commitment);
 					},
 					OutboundHTLCState::AwaitingRemoteRevokeToRemove(_) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(_) | OutboundHTLCState::RemoteRemoved(_) =>
 						return Err(ChannelError::close(format!("Remote tried to fulfill/fail HTLC ({}) that they'd already fulfilled/failed", htlc_id))),
@@ -7286,25 +7375,35 @@ where
 		}
 		let mut claimed_htlcs = Vec::new();
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
-			if let &mut OutboundHTLCState::RemoteRemoved(ref mut outcome) =
-				&mut htlc.state_wrapper.state
-			{
-				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
-					&htlc.payment_hash, &self.context.channel_id);
-				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
-				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None);
-				mem::swap(outcome, &mut reason);
-				if let OutboundHTLCOutcome::Success(preimage, _) = reason {
-					// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
-					// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
-					// have a `Success(None)` reason. In this case we could forget some HTLC
-					// claims, but such an upgrade is unlikely and including claimed HTLCs here
-					// fixes a bug which the user was exposed to on 0.0.104 when they started the
-					// claim anyway.
-					claimed_htlcs.push((SentHTLCId::from_source(&htlc.source), preimage));
-				}
-				htlc.set_state(OutboundHTLCState::AwaitingRemoteRevokeToRemove(reason), logger);
-				need_commitment = true;
+			match &mut htlc.state_wrapper.state {
+				&mut OutboundHTLCState::RemoteRemoved(ref mut outcome) => {
+					log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
+						&htlc.payment_hash, &self.context.channel_id);
+					// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
+					let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None);
+					mem::swap(outcome, &mut reason);
+					if let OutboundHTLCOutcome::Success(preimage, _) = reason {
+						// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
+						// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
+						// have a `Success(None)` reason. In this case we could forget some HTLC
+						// claims, but such an upgrade is unlikely and including claimed HTLCs here
+						// fixes a bug which the user was exposed to on 0.0.104 when they started the
+						// claim anyway.
+						claimed_htlcs.push((SentHTLCId::from_source(&htlc.source), preimage));
+					}
+					htlc.set_state(OutboundHTLCState::AwaitingRemoteRevokeToRemove(reason), logger);
+					if self.context.channel_state.is_awaiting_remote_revoke() {
+						htlc.waiting_on_peer(logger, WaitingOnPeerReason::Revocation);
+					}
+					need_commitment = true;
+				},
+				OutboundHTLCState::Committed => {
+					if htlc.is_waiting_on_peer(Some(WaitingOnPeerReason::Commitment)) {
+						htlc.peer_responded();
+						htlc.waiting_on_monitor_persist(logger);
+					}
+				},
+				_ => {},
 			}
 		}
 
@@ -7868,6 +7967,7 @@ where
 						&htlc.payment_hash
 					);
 					htlc.set_state(OutboundHTLCState::Committed, logger);
+					htlc.waiting_on_peer(logger, WaitingOnPeerReason::Commitment);
 					*expecting_peer_commitment_signed = true;
 				}
 				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) =
@@ -7878,6 +7978,7 @@ where
 					let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None);
 					mem::swap(outcome, &mut reason);
 					htlc.set_state(OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason), logger);
+					htlc.waiting_on_monitor_persist(logger);
 					require_commitment = true;
 				}
 			}
@@ -8246,6 +8347,7 @@ where
 				// commitment_signed, we need to move it back to Committed and they can re-send
 				// the update upon reconnection.
 				htlc.set_state(OutboundHTLCState::Committed, logger);
+				htlc.waiting_on_peer(logger, WaitingOnPeerReason::HTLCResolution);
 			}
 		}
 
@@ -8398,6 +8500,32 @@ where
 						if commitment_update.is_some() {
 							htlc.waiting_on_peer(logger);
 						} else if self.context.signer_pending_commitment_update {
+							htlc.waiting_on_async_signing(logger);
+						}
+					}
+				},
+				_ => {},
+			}
+		}
+		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
+			match htlc.state() {
+				OutboundHTLCState::LocalAnnounced(_) |
+				OutboundHTLCState::AwaitingRemovedRemoteRevoke(_) => {
+					if htlc.is_waiting_on_monitor_persist() {
+						htlc.monitor_persisted();
+						if commitment_update.is_some() {
+							htlc.waiting_on_peer(logger, WaitingOnPeerReason::Revocation);
+						} else if self.context.signer_pending_commitment_update {
+							htlc.waiting_on_async_signing(logger);
+						}
+					}
+				},
+				OutboundHTLCState::Committed => {
+					if htlc.is_waiting_on_monitor_persist() {
+						htlc.monitor_persisted();
+						if raa.is_some() {
+							htlc.waiting_on_peer(logger, WaitingOnPeerReason::HTLCResolution);
+						} else if self.context.signer_pending_revoke_and_ack {
 							htlc.waiting_on_async_signing(logger);
 						}
 					}
@@ -8558,6 +8686,24 @@ where
 						htlc.waiting_on_peer(logger);
 					}
 				}
+				_ => {},
+			}
+		}
+		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
+			match htlc.state() {
+				OutboundHTLCState::LocalAnnounced(_) |
+				OutboundHTLCState::AwaitingRemovedRemoteRevoke(_) => {
+					if htlc.is_waiting_on_async_signing() && commitment_update.is_some() {
+						htlc.async_signing_completed();
+						htlc.waiting_on_peer(logger, WaitingOnPeerReason::Revocation);
+					}
+				},
+				OutboundHTLCState::Committed => {
+					if htlc.is_waiting_on_async_signing() && revoke_and_ack.is_some() {
+						htlc.async_signing_completed();
+						htlc.waiting_on_peer(logger, WaitingOnPeerReason::HTLCResolution);
+					}
+				},
 				_ => {},
 			}
 		}
@@ -11016,7 +11162,7 @@ where
 		// that are simple to implement, and we do it on the outgoing side because then the failure message that encodes
 		// the hold time still needs to be built in channel manager.
 		let send_timestamp = duration_since_epoch();
-		self.context.pending_outbound_htlcs.push(OutboundHTLCOutput::new(
+		let mut htlc = OutboundHTLCOutput::new(
 			self.context.channel_id(),
 			OutboundHTLCOutputParams {
 				htlc_id: self.context.next_holder_htlc_id,
@@ -11031,7 +11177,9 @@ where
 			},
 			forward_span,
 			logger,
-		));
+		);
+		htlc.waiting_on_monitor_persist(logger);
+		self.context.pending_outbound_htlcs.push(htlc);
 		self.context.next_holder_htlc_id += 1;
 
 		Ok(true)
@@ -11081,6 +11229,7 @@ where
 				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]), None);
 				mem::swap(outcome, &mut reason);
 				htlc.set_state(OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason), logger);
+				htlc.waiting_on_monitor_persist(logger);
 			}
 		}
 		if let Some((feerate, update_state)) = self.context.pending_update_fee {
