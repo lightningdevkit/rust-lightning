@@ -2977,6 +2977,7 @@ mod tests {
 			their_funding_contribution_satoshis: None,
 			funding_tx_locktime: AbsoluteLockTime::ZERO,
 			funding_feerate_sat_per_1000_weight,
+			shared_funding_input: None,
 			our_funding_inputs: inputs,
 		};
 		assert_eq!(

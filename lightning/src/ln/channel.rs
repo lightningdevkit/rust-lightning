@@ -55,10 +55,12 @@ use crate::ln::channelmanager::{
 	PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus, RAACommitmentOrder, SentHTLCId,
 	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
+#[cfg(splicing)]
+use crate::ln::interactivetxs::{calculate_change_output_value, AbortReason};
 use crate::ln::interactivetxs::{
-	calculate_change_output_value, get_output_weight, AbortReason, HandleTxCompleteResult,
-	InteractiveTxConstructor, InteractiveTxConstructorArgs, InteractiveTxMessageSendResult,
-	InteractiveTxSigningSession, SharedOwnedInput, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
+	get_output_weight, HandleTxCompleteResult, InteractiveTxConstructor,
+	InteractiveTxConstructorArgs, InteractiveTxMessageSendResult, InteractiveTxSigningSession,
+	SharedOwnedInput, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
@@ -5807,6 +5809,9 @@ pub(super) struct FundingNegotiationContext {
 	/// The feerate set by the initiator to be used for the funding transaction.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	pub funding_feerate_sat_per_1000_weight: u32,
+	/// The input spending the previous funding output, if this is a splice.
+	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
+	pub shared_funding_input: Option<SharedOwnedInput>,
 	/// The funding inputs we will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
@@ -5821,13 +5826,17 @@ impl FundingNegotiationContext {
 	fn into_interactive_tx_constructor<SP: Deref, ES: Deref>(
 		self, context: &ChannelContext<SP>, funding: &FundingScope, signer_provider: &SP,
 		entropy_source: &ES, holder_node_id: PublicKey, change_destination_opt: Option<ScriptBuf>,
-		shared_funding_input: Option<SharedOwnedInput>,
 	) -> Result<InteractiveTxConstructor, AbortReason>
 	where
 		SP::Target: SignerProvider,
 		ES::Target: EntropySource,
 	{
-		if shared_funding_input.is_some() {
+		debug_assert_eq!(
+			self.shared_funding_input.is_some(),
+			funding.channel_transaction_parameters.splice_parent_funding_txid.is_some(),
+		);
+
+		if self.shared_funding_input.is_some() {
 			debug_assert!(matches!(context.channel_state, ChannelState::ChannelReady(_)));
 		} else {
 			debug_assert!(matches!(context.channel_state, ChannelState::NegotiatingFunding(_)));
@@ -5847,7 +5856,7 @@ impl FundingNegotiationContext {
 		if self.our_funding_contribution_satoshis > 0 {
 			let change_value_opt = calculate_change_output_value(
 				&self,
-				funding.channel_transaction_parameters.splice_parent_funding_txid.is_some(),
+				self.shared_funding_input.is_some(),
 				&shared_funding_output.script_pubkey,
 				&funding_outputs,
 				context.holder_dust_limit_satoshis,
@@ -5884,7 +5893,7 @@ impl FundingNegotiationContext {
 			is_initiator: self.is_initiator,
 			funding_tx_locktime: self.funding_tx_locktime,
 			inputs_to_contribute: self.our_funding_inputs,
-			shared_funding_input,
+			shared_funding_input: self.shared_funding_input,
 			shared_funding_output: SharedOwnedOutput::new(
 				shared_funding_output,
 				funding.value_to_self_msat / 1000,
@@ -12115,6 +12124,7 @@ where
 			their_funding_contribution_satoshis: None,
 			funding_tx_locktime,
 			funding_feerate_sat_per_1000_weight,
+			shared_funding_input: None,
 			our_funding_inputs: funding_inputs,
 		};
 		let chan = Self {
@@ -12269,6 +12279,7 @@ where
 			their_funding_contribution_satoshis: Some(msg.common_fields.funding_satoshis as i64),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
+			shared_funding_input: None,
 			our_funding_inputs: our_funding_inputs.clone(),
 		};
 		let shared_funding_output = TxOut {
