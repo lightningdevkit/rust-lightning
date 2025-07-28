@@ -7,6 +7,8 @@ use lightning::sign::EntropySource;
 
 use crate::lsps0::ser::LSPSRequestId;
 
+pub mod time;
+
 /// Converts a human-readable string representation of a short channel ID (SCID)
 pub fn scid_from_human_readable_string(human_readable_scid: &str) -> Result<u64, ()> {
 	let mut parts = human_readable_scid.split('x');
@@ -56,5 +58,3 @@ mod tests {
 		assert_eq!(vout_from_scid(scid), vout);
 	}
 }
-
-pub mod time;

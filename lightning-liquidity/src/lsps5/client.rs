@@ -31,26 +31,68 @@ use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::sign::EntropySource;
 use lightning::util::logger::Level;
 
+use alloc::collections::VecDeque;
 use alloc::string::String;
 
 use core::ops::Deref;
+
+impl PartialEq<LSPSRequestId> for (LSPSRequestId, (LSPS5AppName, LSPS5WebhookUrl)) {
+	fn eq(&self, other: &LSPSRequestId) -> bool {
+		&self.0 == other
+	}
+}
+
+impl PartialEq<LSPSRequestId> for (LSPSRequestId, LSPS5AppName) {
+	fn eq(&self, other: &LSPSRequestId) -> bool {
+		&self.0 == other
+	}
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 /// Configuration for the LSPS5 client
 pub struct LSPS5ClientConfig {}
 
 struct PeerState {
-	pending_set_webhook_requests: HashMap<LSPSRequestId, (LSPS5AppName, LSPS5WebhookUrl)>,
-	pending_list_webhooks_requests: HashMap<LSPSRequestId, ()>,
-	pending_remove_webhook_requests: HashMap<LSPSRequestId, LSPS5AppName>,
+	pending_set_webhook_requests: VecDeque<(LSPSRequestId, (LSPS5AppName, LSPS5WebhookUrl))>,
+	pending_list_webhooks_requests: VecDeque<LSPSRequestId>,
+	pending_remove_webhook_requests: VecDeque<(LSPSRequestId, LSPS5AppName)>,
 }
+
+const MAX_PENDING_REQUESTS: usize = 5;
 
 impl PeerState {
 	fn new() -> Self {
 		Self {
-			pending_set_webhook_requests: new_hash_map(),
-			pending_list_webhooks_requests: new_hash_map(),
-			pending_remove_webhook_requests: new_hash_map(),
+			pending_set_webhook_requests: VecDeque::with_capacity(MAX_PENDING_REQUESTS),
+			pending_list_webhooks_requests: VecDeque::with_capacity(MAX_PENDING_REQUESTS),
+			pending_remove_webhook_requests: VecDeque::with_capacity(MAX_PENDING_REQUESTS),
+		}
+	}
+
+	fn add_request<T, F>(&mut self, item: T, queue_selector: F)
+	where
+		F: FnOnce(&mut Self) -> &mut VecDeque<T>,
+	{
+		let queue = queue_selector(self);
+		if queue.len() == MAX_PENDING_REQUESTS {
+			queue.pop_front();
+		}
+		queue.push_back(item);
+	}
+
+	fn find_and_remove_request<T, F>(
+		&mut self, queue_selector: F, request_id: &LSPSRequestId,
+	) -> Option<T>
+	where
+		F: FnOnce(&mut Self) -> &mut VecDeque<T>,
+		T: Clone,
+		for<'a> &'a T: PartialEq<&'a LSPSRequestId>,
+	{
+		let queue = queue_selector(self);
+		if let Some(pos) = queue.iter().position(|item| item == request_id) {
+			queue.remove(pos)
+		} else {
+			None
 		}
 	}
 }
@@ -153,9 +195,10 @@ where
 		let request_id = generate_request_id(&self.entropy_source);
 
 		self.with_peer_state(counterparty_node_id, |peer_state| {
-			peer_state
-				.pending_set_webhook_requests
-				.insert(request_id.clone(), (app_name.clone(), lsps_webhook_url.clone()));
+			peer_state.add_request(
+				(request_id.clone(), (app_name.clone(), lsps_webhook_url.clone())),
+				|s| &mut s.pending_set_webhook_requests,
+			);
 		});
 
 		let request =
@@ -187,7 +230,7 @@ where
 		let request_id = generate_request_id(&self.entropy_source);
 
 		self.with_peer_state(counterparty_node_id, |peer_state| {
-			peer_state.pending_list_webhooks_requests.insert(request_id.clone(), ());
+			peer_state.add_request(request_id.clone(), |s| &mut s.pending_list_webhooks_requests);
 		});
 
 		let request = LSPS5Request::ListWebhooks(ListWebhooksRequest {});
@@ -224,7 +267,9 @@ where
 		let request_id = generate_request_id(&self.entropy_source);
 
 		self.with_peer_state(counterparty_node_id, |peer_state| {
-			peer_state.pending_remove_webhook_requests.insert(request_id.clone(), app_name.clone());
+			peer_state.add_request((request_id.clone(), app_name.clone()), |s| {
+				&mut s.pending_remove_webhook_requests
+			});
 		});
 
 		let request = LSPS5Request::RemoveWebhook(RemoveWebhookRequest { app_name });
@@ -255,8 +300,8 @@ where
 		});
 		let event_queue_notifier = self.pending_events.notifier();
 		let handle_response = |peer_state: &mut PeerState| {
-			if let Some((app_name, webhook_url)) =
-				peer_state.pending_set_webhook_requests.remove(&request_id)
+			if let Some((_, (app_name, webhook_url))) = peer_state
+				.find_and_remove_request(|s| &mut s.pending_set_webhook_requests, &request_id)
 			{
 				match &response {
 					LSPS5Response::SetWebhook(r) => {
@@ -288,7 +333,9 @@ where
 						});
 					},
 				}
-			} else if peer_state.pending_list_webhooks_requests.remove(&request_id).is_some() {
+			} else if let Some(_) = peer_state
+				.find_and_remove_request(|s| &mut s.pending_list_webhooks_requests, &request_id)
+			{
 				match &response {
 					LSPS5Response::ListWebhooks(r) => {
 						event_queue_notifier.enqueue(LSPS5ClientEvent::WebhooksListed {
@@ -306,8 +353,8 @@ where
 						});
 					},
 				}
-			} else if let Some(app_name) =
-				peer_state.pending_remove_webhook_requests.remove(&request_id)
+			} else if let Some((_, app_name)) = peer_state
+				.find_and_remove_request(|s| &mut s.pending_remove_webhook_requests, &request_id)
 			{
 				match &response {
 					LSPS5Response::RemoveWebhook(_) => {
@@ -364,19 +411,31 @@ where
 mod tests {
 
 	use super::*;
-	use crate::{
-		lsps0::ser::LSPSRequestId, lsps5::msgs::SetWebhookResponse, tests::utils::TestEntropy,
-	};
+	use crate::{lsps0::ser::LSPSRequestId, lsps5::msgs::SetWebhookResponse};
 	use bitcoin::{key::Secp256k1, secp256k1::SecretKey};
+	use core::sync::atomic::{AtomicU64, Ordering};
+
+	struct UniqueTestEntropy {
+		counter: AtomicU64,
+	}
+
+	impl EntropySource for UniqueTestEntropy {
+		fn get_secure_random_bytes(&self) -> [u8; 32] {
+			let counter = self.counter.fetch_add(1, Ordering::SeqCst);
+			let mut bytes = [0u8; 32];
+			bytes[0..8].copy_from_slice(&counter.to_be_bytes());
+			bytes
+		}
+	}
 
 	fn setup_test_client() -> (
-		LSPS5ClientHandler<Arc<TestEntropy>>,
+		LSPS5ClientHandler<Arc<UniqueTestEntropy>>,
 		Arc<MessageQueue>,
 		Arc<EventQueue>,
 		PublicKey,
 		PublicKey,
 	) {
-		let test_entropy_source = Arc::new(TestEntropy {});
+		let test_entropy_source = Arc::new(UniqueTestEntropy { counter: AtomicU64::new(2) });
 		let message_queue = Arc::new(MessageQueue::new());
 		let event_queue = Arc::new(EventQueue::new());
 		let client = LSPS5ClientHandler::new(
@@ -410,10 +469,16 @@ mod tests {
 			let outer_state_lock = client.per_peer_state.read().unwrap();
 
 			let peer_1_state = outer_state_lock.get(&peer_1).unwrap().lock().unwrap();
-			assert!(peer_1_state.pending_set_webhook_requests.contains_key(&req_id_1));
+			assert!(peer_1_state
+				.pending_set_webhook_requests
+				.iter()
+				.any(|(id, _)| id == &req_id_1));
 
 			let peer_2_state = outer_state_lock.get(&peer_2).unwrap().lock().unwrap();
-			assert!(peer_2_state.pending_set_webhook_requests.contains_key(&req_id_2));
+			assert!(peer_2_state
+				.pending_set_webhook_requests
+				.iter()
+				.any(|(id, _)| id == &req_id_2));
 		}
 	}
 
@@ -432,17 +497,21 @@ mod tests {
 		{
 			let outer_state_lock = client.per_peer_state.read().unwrap();
 			let peer_state = outer_state_lock.get(&peer).unwrap().lock().unwrap();
-			assert_eq!(
-				peer_state.pending_set_webhook_requests.get(&set_req_id).unwrap(),
-				&(lsps5_app_name.clone(), lsps5_webhook_url)
-			);
+			let set_request = peer_state
+				.pending_set_webhook_requests
+				.iter()
+				.find(|(id, _)| id == &set_req_id)
+				.unwrap();
+			assert_eq!(&set_request.1, &(lsps5_app_name.clone(), lsps5_webhook_url));
 
-			assert!(peer_state.pending_list_webhooks_requests.contains_key(&list_req_id));
+			assert!(peer_state.pending_list_webhooks_requests.contains(&list_req_id));
 
-			assert_eq!(
-				peer_state.pending_remove_webhook_requests.get(&remove_req_id).unwrap(),
-				&lsps5_app_name
-			);
+			let remove_request = peer_state
+				.pending_remove_webhook_requests
+				.iter()
+				.find(|(id, _)| id == &remove_req_id)
+				.unwrap();
+			assert_eq!(&remove_request.1, &lsps5_app_name);
 		}
 	}
 
@@ -496,5 +565,51 @@ mod tests {
 		assert!(result.is_err());
 		let error = result.unwrap_err();
 		assert!(error.err.to_lowercase().contains("unknown request id"));
+	}
+
+	#[test]
+	fn test_pending_request_eviction() {
+		let (client, _, _, peer, _) = setup_test_client();
+
+		let mut request_ids = Vec::new();
+		for i in 0..MAX_PENDING_REQUESTS {
+			let req_id = client
+				.set_webhook(peer, format!("app-{}", i), format!("https://example.com/hook{}", i))
+				.unwrap();
+			request_ids.push(req_id);
+		}
+
+		{
+			let outer_state_lock = client.per_peer_state.read().unwrap();
+			let peer_state = outer_state_lock.get(&peer).unwrap().lock().unwrap();
+			for req_id in &request_ids {
+				assert!(peer_state.pending_set_webhook_requests.iter().any(|(id, _)| id == req_id));
+			}
+			assert_eq!(peer_state.pending_set_webhook_requests.len(), MAX_PENDING_REQUESTS);
+		}
+
+		let new_req_id = client
+			.set_webhook(peer, "app-new".to_string(), "https://example.com/hook-new".to_string())
+			.unwrap();
+
+		{
+			let outer_state_lock = client.per_peer_state.read().unwrap();
+			let peer_state = outer_state_lock.get(&peer).unwrap().lock().unwrap();
+			assert_eq!(peer_state.pending_set_webhook_requests.len(), MAX_PENDING_REQUESTS);
+
+			assert!(!peer_state
+				.pending_set_webhook_requests
+				.iter()
+				.any(|(id, _)| id == &request_ids[0]));
+
+			for req_id in &request_ids[1..] {
+				assert!(peer_state.pending_set_webhook_requests.iter().any(|(id, _)| id == req_id));
+			}
+
+			assert!(peer_state
+				.pending_set_webhook_requests
+				.iter()
+				.any(|(id, _)| id == &new_req_id));
+		}
 	}
 }
