@@ -198,6 +198,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 							.map(|_| BlindedFailure::FromIntroductionNode)
 							.unwrap_or(BlindedFailure::FromBlindedNode),
 					}),
+				hold_htlc: msg.hold_htlc.is_some(),
 			}
 		}
 		RoutingInfo::Trampoline { next_trampoline, new_packet_bytes, next_hop_hmac, shared_secret, current_path_key } => {
@@ -753,6 +754,7 @@ mod tests {
 			onion_routing_packet,
 			skimmed_fee_msat: None,
 			blinding_point: None,
+			hold_htlc: None,
 		}
 	}
 

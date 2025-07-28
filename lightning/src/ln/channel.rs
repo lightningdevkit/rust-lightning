@@ -425,6 +425,7 @@ struct OutboundHTLCOutput {
 	blinding_point: Option<PublicKey>,
 	skimmed_fee_msat: Option<u64>,
 	send_timestamp: Option<Duration>,
+	hold_htlc: bool,
 }
 
 impl OutboundHTLCOutput {
@@ -459,6 +460,7 @@ enum HTLCUpdateAwaitingACK {
 		// The extra fee we're skimming off the top of this HTLC.
 		skimmed_fee_msat: Option<u64>,
 		blinding_point: Option<PublicKey>,
+		hold_htlc: bool,
 	},
 	ClaimHTLC {
 		payment_preimage: PaymentPreimage,
@@ -7231,6 +7233,7 @@ where
 						ref onion_routing_packet,
 						skimmed_fee_msat,
 						blinding_point,
+						hold_htlc,
 						..
 					} => {
 						match self.send_htlc(
@@ -7242,6 +7245,7 @@ where
 							false,
 							skimmed_fee_msat,
 							blinding_point,
+							hold_htlc,
 							fee_estimator,
 							logger,
 						) {
@@ -8362,6 +8366,7 @@ where
 					onion_routing_packet: (**onion_packet).clone(),
 					skimmed_fee_msat: htlc.skimmed_fee_msat,
 					blinding_point: htlc.blinding_point,
+					hold_htlc: htlc.hold_htlc.then(|| ()),
 				});
 			}
 		}
@@ -10586,7 +10591,8 @@ where
 	pub fn queue_add_htlc<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
-		blinding_point: Option<PublicKey>, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		hold_htlc: bool, blinding_point: Option<PublicKey>,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<(), (LocalHTLCFailureReason, String)>
 	where
 		F::Target: FeeEstimator,
@@ -10601,6 +10607,7 @@ where
 			true,
 			skimmed_fee_msat,
 			blinding_point,
+			hold_htlc,
 			fee_estimator,
 			logger,
 		)
@@ -10631,7 +10638,7 @@ where
 	fn send_htlc<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
-		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>,
+		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>, hold_htlc: bool,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<bool, (LocalHTLCFailureReason, String)>
 	where
@@ -10713,6 +10720,7 @@ where
 				onion_routing_packet,
 				skimmed_fee_msat,
 				blinding_point,
+				hold_htlc,
 			});
 			return Ok(false);
 		}
@@ -10734,6 +10742,7 @@ where
 			blinding_point,
 			skimmed_fee_msat,
 			send_timestamp,
+			hold_htlc,
 		});
 		self.context.next_holder_htlc_id += 1;
 
@@ -10977,7 +10986,7 @@ where
 	pub fn send_htlc_and_commit<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		hold_htlc: bool, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
 	where
 		F::Target: FeeEstimator,
@@ -10992,6 +11001,7 @@ where
 			false,
 			skimmed_fee_msat,
 			None,
+			hold_htlc,
 			fee_estimator,
 			logger,
 		);
@@ -12629,6 +12639,7 @@ where
 					ref onion_routing_packet,
 					blinding_point,
 					skimmed_fee_msat,
+					..
 				} => {
 					0u8.write(writer)?;
 					amount_msat.write(writer)?;
@@ -13032,6 +13043,7 @@ where
 				skimmed_fee_msat: None,
 				blinding_point: None,
 				send_timestamp: None,
+				hold_htlc: false, // TODO: Persistence
 			});
 		}
 
@@ -13050,6 +13062,7 @@ where
 					onion_routing_packet: Readable::read(reader)?,
 					skimmed_fee_msat: None,
 					blinding_point: None,
+					hold_htlc: false, // TODO: Persistence
 				},
 				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
 					payment_preimage: Readable::read(reader)?,
@@ -13944,6 +13957,7 @@ mod tests {
 			skimmed_fee_msat: None,
 			blinding_point: None,
 			send_timestamp: None,
+			hold_htlc: false,
 		});
 
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
@@ -14398,6 +14412,7 @@ mod tests {
 			skimmed_fee_msat: None,
 			blinding_point: None,
 			send_timestamp: None,
+			hold_htlc: false,
 		};
 		let mut pending_outbound_htlcs = vec![dummy_outbound_output.clone(); 10];
 		for (idx, htlc) in pending_outbound_htlcs.iter_mut().enumerate() {
@@ -14423,6 +14438,7 @@ mod tests {
 			},
 			skimmed_fee_msat: None,
 			blinding_point: None,
+			hold_htlc: false,
 		};
 		let dummy_holding_cell_claim_htlc = |attribution_data| HTLCUpdateAwaitingACK::ClaimHTLC {
 			payment_preimage: PaymentPreimage([42; 32]),

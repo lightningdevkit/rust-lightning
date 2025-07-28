@@ -524,6 +524,15 @@ pub enum AsyncPaymentsContext {
 		/// [`Offer`]: crate::offers::offer::Offer
 		payment_id: PaymentId,
 	},
+	/// Context contained within the reply [`BlindedMessagePath`] we put in outbound
+	/// [`HeldHtlcAvailable`] messages, provided back to us in corresponding [`ReleaseHeldHtlc`]
+	/// messages.
+	OutboundHTLC {
+		/// Incoming channel id of the HTLC that is being held.
+		chan_id: u64,
+		/// The HTLC id of the held HTLC on the incoming channel.
+		htlc_id: u64,
+	},
 	/// Context contained within the [`BlindedMessagePath`]s we put in static invoices, provided back
 	/// to us in corresponding [`HeldHtlcAvailable`] messages.
 	///
@@ -598,6 +607,10 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 		(0, recipient_id, required),
 		(2, invoice_id, required),
 		(4, path_absolute_expiry, required),
+	},
+	(6, OutboundHTLC) => {
+		(0, chan_id, required),
+		(2, htlc_id, required),
 	},
 );
 

@@ -1522,6 +1522,7 @@ fn update_add_msg(
 		onion_routing_packet,
 		skimmed_fee_msat: None,
 		blinding_point,
+		hold_htlc: None,
 	}
 }
 
