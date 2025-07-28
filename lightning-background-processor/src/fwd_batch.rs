@@ -10,33 +10,48 @@
 use core::time::Duration;
 
 pub(crate) struct BatchDelay {
-	next_batch_delay_millis: u16,
+	next_batch_delay: Duration,
 }
 
 impl BatchDelay {
 	pub(crate) fn new() -> Self {
-		let next_batch_delay_millis = rand_batch_delay_millis();
-		Self { next_batch_delay_millis }
+		let next_batch_delay = rand_batch_delay();
+		Self { next_batch_delay }
 	}
 
 	pub(crate) fn get(&self) -> Duration {
-		Duration::from_millis(self.next_batch_delay_millis as u64)
+		self.next_batch_delay
 	}
 
 	pub(crate) fn next(&mut self) -> Duration {
-		let next = rand_batch_delay_millis();
-		self.next_batch_delay_millis = next;
-		Duration::from_millis(next as u64)
+		let next = rand_batch_delay();
+		self.next_batch_delay = next;
+		next
 	}
 }
 
-fn rand_batch_delay_millis() -> u16 {
+fn rand_batch_delay() -> Duration {
+	let delay_millis = rand_delay_millis();
+	let delay_micros = rand_delay_micros();
+	Duration::from_millis(delay_millis) + Duration::from_micros(delay_micros)
+}
+
+fn rand_delay_millis() -> u64 {
+	// We draw milliseconds from the log-normal FWD_DELAYS_MILLIS below.
 	const USIZE_LEN: usize = core::mem::size_of::<usize>();
 	let mut random_bytes = [0u8; USIZE_LEN];
 	possiblyrandom::getpossiblyrandom(&mut random_bytes);
 
 	let index = usize::from_be_bytes(random_bytes) % FWD_DELAYS_MILLIS.len();
-	FWD_DELAYS_MILLIS[index]
+	FWD_DELAYS_MILLIS[index] as u64
+}
+
+fn rand_delay_micros() -> u64 {
+	// We draw microseconds uniformly in [0; 1000).
+	let mut random_bytes = [0u8; 2];
+	possiblyrandom::getpossiblyrandom(&mut random_bytes);
+	let micros = u16::from_be_bytes(random_bytes) % 1000;
+	micros as u64
 }
 
 // An array of potential forwarding delays (log-normal distribution, 10000 samples, mean = 50, sd = 0.5), generated via the following R-script:
