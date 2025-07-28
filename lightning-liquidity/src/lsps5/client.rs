@@ -95,6 +95,12 @@ impl PeerState {
 			None
 		}
 	}
+
+	fn is_empty(&self) -> bool {
+		self.pending_set_webhook_requests.is_empty()
+			&& self.pending_list_webhooks_requests.is_empty()
+			&& self.pending_remove_webhook_requests.is_empty()
+	}
 }
 
 /// Client-side handler for the LSPS5 (bLIP-55) webhook registration protocol.
@@ -389,7 +395,25 @@ where
 			}
 		};
 		self.with_peer_state(*counterparty_node_id, handle_response);
+
+		self.check_and_remove_empty_peer_state(counterparty_node_id);
+
 		result
+	}
+
+	fn check_and_remove_empty_peer_state(&self, counterparty_node_id: &PublicKey) {
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		let should_remove =
+			if let Some(peer_state_mutex) = outer_state_lock.get(counterparty_node_id) {
+				let peer_state = peer_state_mutex.lock().unwrap();
+				peer_state.is_empty()
+			} else {
+				false
+			};
+
+		if should_remove {
+			outer_state_lock.remove(counterparty_node_id);
+		}
 	}
 }
 
@@ -516,36 +540,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_handle_response_clears_pending_state() {
-		let (client, _, _, peer, _) = setup_test_client();
-
-		let req_id = client
-			.set_webhook(peer, "test-app".to_string(), "https://example.com/hook".to_string())
-			.unwrap();
-
-		let response = LSPS5Response::SetWebhook(SetWebhookResponse {
-			num_webhooks: 1,
-			max_webhooks: 5,
-			no_change: false,
-		});
-		let response_msg = LSPS5Message::Response(req_id.clone(), response);
-
-		{
-			let outer_state_lock = client.per_peer_state.read().unwrap();
-			let peer_state = outer_state_lock.get(&peer).unwrap().lock().unwrap();
-			assert!(peer_state.pending_set_webhook_requests.contains_key(&req_id));
-		}
-
-		client.handle_message(response_msg, &peer).unwrap();
-
-		{
-			let outer_state_lock = client.per_peer_state.read().unwrap();
-			let peer_state = outer_state_lock.get(&peer).unwrap().lock().unwrap();
-			assert!(!peer_state.pending_set_webhook_requests.contains_key(&req_id));
-		}
-	}
-
-	#[test]
 	fn test_unknown_request_id_handling() {
 		let (client, _message_queue, _, peer, _) = setup_test_client();
 
@@ -606,6 +600,79 @@ mod tests {
 				assert!(peer_state.pending_set_webhook_requests.iter().any(|(id, _)| id == req_id));
 			}
 
+			assert!(peer_state
+				.pending_set_webhook_requests
+				.iter()
+				.any(|(id, _)| id == &new_req_id));
+		}
+	}
+
+	#[test]
+	fn test_peer_state_cleanup_and_recreation() {
+		let (client, _, _, peer, _) = setup_test_client();
+
+		let set_webhook_req_id = client
+			.set_webhook(peer, "test-app".to_string(), "https://example.com/hook".to_string())
+			.unwrap();
+
+		let list_webhooks_req_id = client.list_webhooks(peer);
+
+		{
+			let state = client.per_peer_state.read().unwrap();
+			assert!(state.contains_key(&peer));
+			let peer_state = state.get(&peer).unwrap().lock().unwrap();
+			assert!(peer_state
+				.pending_set_webhook_requests
+				.iter()
+				.any(|(id, _)| id == &set_webhook_req_id));
+			assert!(peer_state.pending_list_webhooks_requests.contains(&list_webhooks_req_id));
+		}
+
+		let set_webhook_response = LSPS5Response::SetWebhook(SetWebhookResponse {
+			num_webhooks: 1,
+			max_webhooks: 5,
+			no_change: false,
+		});
+		let response_msg = LSPS5Message::Response(set_webhook_req_id.clone(), set_webhook_response);
+		// trigger cleanup but there is still a pending request
+		// so the peer state should not be removed
+		client.handle_message(response_msg, &peer).unwrap();
+
+		{
+			let state = client.per_peer_state.read().unwrap();
+			assert!(state.contains_key(&peer));
+			let peer_state = state.get(&peer).unwrap().lock().unwrap();
+			assert!(!peer_state
+				.pending_set_webhook_requests
+				.iter()
+				.any(|(id, _)| id == &set_webhook_req_id));
+			assert!(peer_state.pending_list_webhooks_requests.contains(&list_webhooks_req_id));
+		}
+
+		let list_webhooks_response =
+			LSPS5Response::ListWebhooks(crate::lsps5::msgs::ListWebhooksResponse {
+				app_names: vec![],
+				max_webhooks: 5,
+			});
+		let response_msg = LSPS5Message::Response(list_webhooks_req_id, list_webhooks_response);
+
+		// now the pending request is handled, so the peer state should be removed
+		client.handle_message(response_msg, &peer).unwrap();
+
+		{
+			let state = client.per_peer_state.read().unwrap();
+			assert!(!state.contains_key(&peer));
+		}
+
+		// check that it's possible to recreate the peer state by sending a new request
+		let new_req_id = client
+			.set_webhook(peer, "test-app-2".to_string(), "https://example.com/hook2".to_string())
+			.unwrap();
+
+		{
+			let state = client.per_peer_state.read().unwrap();
+			assert!(state.contains_key(&peer));
+			let peer_state = state.get(&peer).unwrap().lock().unwrap();
 			assert!(peer_state
 				.pending_set_webhook_requests
 				.iter()
