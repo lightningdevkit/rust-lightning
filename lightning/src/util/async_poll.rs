@@ -15,27 +15,22 @@ use core::marker::Unpin;
 use core::pin::Pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-pub(crate) enum ResultFuture<F: Future<Output = Result<(), E>>, E: Copy + Unpin> {
+pub(crate) enum ResultFuture<F: Future<Output = Result<(), E>>, E: Unpin> {
 	Pending(F),
 	Ready(Result<(), E>),
 }
 
-pub(crate) struct MultiResultFuturePoller<
-	F: Future<Output = Result<(), E>> + Unpin,
-	E: Copy + Unpin,
-> {
+pub(crate) struct MultiResultFuturePoller<F: Future<Output = Result<(), E>> + Unpin, E: Unpin> {
 	futures_state: Vec<ResultFuture<F, E>>,
 }
 
-impl<F: Future<Output = Result<(), E>> + Unpin, E: Copy + Unpin> MultiResultFuturePoller<F, E> {
+impl<F: Future<Output = Result<(), E>> + Unpin, E: Unpin> MultiResultFuturePoller<F, E> {
 	pub fn new(futures_state: Vec<ResultFuture<F, E>>) -> Self {
 		Self { futures_state }
 	}
 }
 
-impl<F: Future<Output = Result<(), E>> + Unpin, E: Copy + Unpin> Future
-	for MultiResultFuturePoller<F, E>
-{
+impl<F: Future<Output = Result<(), E>> + Unpin, E: Unpin> Future for MultiResultFuturePoller<F, E> {
 	type Output = Vec<Result<(), E>>;
 	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<Result<(), E>>> {
 		let mut have_pending_futures = false;
