@@ -33,6 +33,10 @@ fn path_to_windows_str<T: AsRef<OsStr>>(path: &T) -> Vec<u16> {
 // The number of read/write/remove/list operations after which we clean up our `locks` HashMap.
 const GC_LOCK_INTERVAL: usize = 25;
 
+// The number of times we retry listing keys in `FilesystemStore::list` before we give up reaching
+// a consistent view and error out.
+const LIST_DIR_CONSISTENCY_RETRIES: usize = 10;
+
 /// A [`KVStoreSync`] implementation that writes to and reads from the file system.
 pub struct FilesystemStore {
 	data_dir: PathBuf,
@@ -306,23 +310,45 @@ impl KVStoreSync for FilesystemStore {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, None, "list")?;
 
 		let prefixed_dest = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
-		let mut keys = Vec::new();
 
 		if !Path::new(&prefixed_dest).exists() {
 			return Ok(Vec::new());
 		}
 
-		for entry in fs::read_dir(&prefixed_dest)? {
-			let entry = entry?;
-			let p = entry.path();
+		let mut keys;
+		let mut retries = LIST_DIR_CONSISTENCY_RETRIES;
 
-			if !dir_entry_is_key(&entry)? {
-				continue;
+		'retry_list: loop {
+			keys = Vec::new();
+			'skip_entry: for entry in fs::read_dir(&prefixed_dest)? {
+				let entry = entry?;
+				let p = entry.path();
+
+				let res = dir_entry_is_key(&entry);
+				match res {
+					Ok(true) => {
+						let key = get_key_from_dir_entry_path(&p, &prefixed_dest)?;
+						keys.push(key);
+					},
+					Ok(false) => {
+						// We didn't error, but the entry is not a valid key (e.g., a directory,
+						// or a temp file).
+						continue 'skip_entry;
+					},
+					Err(e) => {
+						if e.kind() == lightning::io::ErrorKind::NotFound && retries > 0 {
+							// We had found the entry in `read_dir` above, so some race happend.
+							// Retry the `read_dir` to get a consistent view.
+							retries -= 1;
+							continue 'retry_list;
+						} else {
+							// For all errors or if we exhausted retries, bubble up.
+							return Err(e.into());
+						}
+					},
+				}
 			}
-
-			let key = get_key_from_dir_entry_path(&p, &prefixed_dest)?;
-
-			keys.push(key);
+			break 'retry_list;
 		}
 
 		self.garbage_collect_locks();
