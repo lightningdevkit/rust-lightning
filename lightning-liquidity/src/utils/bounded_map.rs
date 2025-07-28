@@ -74,6 +74,11 @@ where
 	pub(crate) fn contains_key(&self, key: &K) -> bool {
 		self.map.contains_key(key)
 	}
+
+	/// Check whether the map is empty.
+	pub(crate) fn is_empty(&self) -> bool {
+		self.map.is_empty()
+	}
 }
 
 #[cfg(test)]
@@ -87,19 +92,34 @@ mod tests {
 	fn new_empty() {
 		let m: BoundedMap<&str, i32> = BoundedMap::new(3);
 		assert_eq!(m.len(), 0);
+		assert!(m.is_empty());
 		assert!(m.get(&"key").is_none());
 	}
 
 	#[test]
 	fn insert_within_capacity() {
 		let mut m = BoundedMap::new(2);
+		assert!(m.is_empty());
 		m.insert("a", 1);
 		m.insert("b", 2);
 
+		assert!(!m.is_empty());
 		assert_eq!(m.len(), 2);
 		assert!(m.contains_key(&"a"));
 		assert_eq!(m.get(&"a"), Some(&1));
 		assert_eq!(m.get(&"b"), Some(&2));
+	}
+
+	#[test]
+	fn is_empty() {
+		let mut m: BoundedMap<&str, i32> = BoundedMap::new(3);
+		assert!(m.is_empty());
+
+		m.insert("a", 1);
+		assert!(!m.is_empty());
+
+		m.remove(&"a");
+		assert!(m.is_empty());
 	}
 
 	#[test]
@@ -110,6 +130,7 @@ mod tests {
 		m.insert("third", 3); // evicts "first"
 
 		assert_eq!(m.len(), 2);
+		assert!(!m.is_empty());
 		assert!(m.get(&"first").is_none());
 		assert_eq!(m.get(&"second"), Some(&2));
 		assert_eq!(m.get(&"third"), Some(&3));
@@ -123,6 +144,7 @@ mod tests {
 		m.insert("old", 10); // update moves "old" to back
 		m.insert("newer", 3); // should evict "new", not "old"
 
+		assert!(!m.is_empty());
 		assert_eq!(m.get(&"old"), Some(&10));
 		assert!(m.get(&"new").is_none());
 		assert_eq!(m.get(&"newer"), Some(&3));
@@ -133,38 +155,50 @@ mod tests {
 		let mut m = BoundedMap::new(2);
 		m.insert("keep", 1);
 		m.insert("remove", 2);
+		assert!(!m.is_empty());
 
 		assert_eq!(m.remove(&"remove"), Some(2));
 		assert_eq!(m.len(), 1);
+		assert!(!m.is_empty());
 		assert!(m.get(&"remove").is_none());
 		assert_eq!(m.get(&"keep"), Some(&1));
+
+		m.remove(&"keep");
+		assert!(m.is_empty());
 	}
 
 	#[test]
 	fn remove_nonexistent() {
 		let mut m = BoundedMap::new(2);
 		m.insert("exists", 1);
+		assert!(!m.is_empty());
 
 		assert_eq!(m.remove(&"missing"), None);
 		assert_eq!(m.len(), 1);
+		assert!(!m.is_empty());
 	}
 
 	#[test]
 	fn zero_capacity() {
 		let mut m = BoundedMap::new(0);
+		assert!(m.is_empty());
 		m.insert("any", 42);
 
 		assert_eq!(m.len(), 0);
+		assert!(m.is_empty());
 		assert!(m.get(&"any").is_none());
 	}
 
 	#[test]
 	fn capacity_one() {
 		let mut m = BoundedMap::new(1);
+		assert!(m.is_empty());
 		m.insert("first", 1);
+		assert!(!m.is_empty());
 		assert_eq!(m.get(&"first"), Some(&1));
 
 		m.insert("second", 2);
+		assert!(!m.is_empty());
 		assert!(m.get(&"first").is_none());
 		assert_eq!(m.get(&"second"), Some(&2));
 	}
