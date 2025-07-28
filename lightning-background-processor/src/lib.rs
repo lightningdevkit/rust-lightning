@@ -706,47 +706,45 @@ where
 		})
 	};
 	let mut batch_delay = BatchDelay::new();
-	logger.log(lightning::util::logger::Record::new(
-		(lightning::util::logger::Level::Trace),
-		None,
-		None,
-		format_args!("Calling ChannelManager's timer_tick_occurred on startup"),
-		module_path!(),
-		file!(),
-		0u32,
-		None,
-	));
+
+	log_trace!(logger, "Calling ChannelManager's timer_tick_occurred on startup");
 	channel_manager.get_cm().timer_tick_occurred();
-	logger.log(lightning::util::logger::Record::new(
-		(lightning::util::logger::Level::Trace),
-		None,
-		None,
-		format_args!("Rebroadcasting monitor's pending claims on startup"),
-		module_path!(),
-		file!(),
-		0u32,
-		None,
-	));
+	log_trace!(logger, "Rebroadcasting monitor's pending claims on startup");
 	chain_monitor.rebroadcast_pending_claims();
-	let mut last_freshness_call = (|t| sleeper(t))(FRESHNESS_TIMER);
-	let mut last_onion_message_handler_call = (|t| sleeper(t))(ONION_MESSAGE_HANDLER_TIMER);
-	let mut last_ping_call = (|t| sleeper(t))(PING_TIMER);
-	let mut last_prune_call = (|t| sleeper(t))(FIRST_NETWORK_PRUNE_TIMER);
-	let mut last_scorer_persist_call = (|t| sleeper(t))(SCORER_PERSIST_TIMER);
-	let mut last_rebroadcast_call = (|t| sleeper(t))(REBROADCAST_TIMER);
-	let mut last_sweeper_call = (|t| sleeper(t))(SWEEPER_TIMER);
+
+	let mut last_freshness_call = sleeper(FRESHNESS_TIMER);
+	let mut last_onion_message_handler_call = sleeper(ONION_MESSAGE_HANDLER_TIMER);
+	let mut last_ping_call = sleeper(PING_TIMER);
+	let mut last_prune_call = sleeper(FIRST_NETWORK_PRUNE_TIMER);
+	let mut last_scorer_persist_call = sleeper(SCORER_PERSIST_TIMER);
+	let mut last_rebroadcast_call = sleeper(REBROADCAST_TIMER);
+	let mut last_sweeper_call = sleeper(SWEEPER_TIMER);
 	let mut have_pruned = false;
 	let mut have_decayed_scorer = false;
+
 	let mut cur_batch_delay = batch_delay.get();
-	let mut last_forwards_processing_call = (|t| sleeper(t))(cur_batch_delay);
+	let mut last_forwards_processing_call = sleeper(cur_batch_delay);
+
 	loop {
-		(channel_manager.get_cm().process_pending_events_async(async_event_handler).await);
-		(chain_monitor.process_pending_events_async(async_event_handler).await);
-		(if let Some(om) = &onion_messenger {
+		channel_manager.get_cm().process_pending_events_async(async_event_handler).await;
+		chain_monitor.process_pending_events_async(async_event_handler).await;
+		if let Some(om) = &onion_messenger {
 			om.get_om().process_pending_events_async(async_event_handler).await
-		});
+		}
+
+		// Note that the PeerManager::process_events may block on ChannelManager's locks,
+		// hence it comes last here. When the ChannelManager finishes whatever it's doing,
+		// we want to ensure we get into `persist_manager` as quickly as we can, especially
+		// without running the normal event processing above and handing events to users.
+		//
+		// Specifically, on an *extremely* slow machine, we may see ChannelManager start
+		// processing a message effectively at any point during this loop. In order to
+		// minimize the time between such processing completing and persisting the updated
+		// ChannelManager, we want to minimize methods blocking on a ChannelManager
+		// generally, and as a fallback place such blocking only immediately before
+		// persistence.
 		peer_manager.as_ref().process_events();
-		if (|fut: &mut SleepFuture, _| {
+		if (|fut: &mut SleepFuture| {
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
 			match core::pin::Pin::new(fut).poll(&mut ctx) {
@@ -756,65 +754,57 @@ where
 				},
 				task::Poll::Pending => false,
 			}
-		})(&mut last_forwards_processing_call, cur_batch_delay)
+		})(&mut last_forwards_processing_call)
 		{
 			channel_manager.get_cm().process_pending_htlc_forwards();
 			cur_batch_delay = batch_delay.next();
-			last_forwards_processing_call = (|t| sleeper(t))(cur_batch_delay);
+			last_forwards_processing_call = sleeper(cur_batch_delay);
 		}
 		if should_break {
-			logger.log(lightning::util::logger::Record::new(
-				(lightning::util::logger::Level::Trace),
-				None,
-				None,
-				format_args!("Terminating background processor."),
-				module_path!(),
-				file!(),
-				0u32,
-				None,
-			));
+			log_trace!(logger, "Terminating background processor.");
 			break;
 		}
+
+		// We wait up to 100ms, but track how long it takes to detect being put to sleep,
+		// see `await_start`'s use below.
 		let mut await_start = None;
 		if mobile_interruptable_platform {
-			await_start = Some((|t| sleeper(t))(Duration::from_secs(1)));
+			await_start = Some(sleeper(Duration::from_secs(1)));
 		}
-		{
-			let om_fut = if let Some(om) = onion_messenger.as_ref() {
-				let fut = om.get_om().get_update_future();
-				OptionalSelector { optional_future: Some(fut) }
-			} else {
-				OptionalSelector { optional_future: None }
-			};
-			let lm_fut = if let Some(lm) = liquidity_manager.as_ref() {
-				let fut = lm.get_lm().get_pending_msgs_future();
-				OptionalSelector { optional_future: Some(fut) }
-			} else {
-				OptionalSelector { optional_future: None }
-			};
-			let needs_processing = channel_manager.get_cm().needs_pending_htlc_processing();
-			let sleep_delay = match (needs_processing, mobile_interruptable_platform) {
-				(true, true) => batch_delay.get().min(Duration::from_millis(100)),
-				(true, false) => batch_delay.get().min(FASTEST_TIMER),
-				(false, true) => Duration::from_millis(100),
-				(false, false) => FASTEST_TIMER,
-			};
-			let fut = Selector {
-				a: channel_manager.get_cm().get_event_or_persistence_needed_future(),
-				b: chain_monitor.get_update_future(),
-				c: om_fut,
-				d: lm_fut,
-				e: sleeper(sleep_delay),
-			};
-			match fut.await {
-				SelectorOutput::A | SelectorOutput::B | SelectorOutput::C | SelectorOutput::D => {},
-				SelectorOutput::E(exit) => {
-					should_break = exit;
-				},
-			}
+		let om_fut = if let Some(om) = onion_messenger.as_ref() {
+			let fut = om.get_om().get_update_future();
+			OptionalSelector { optional_future: Some(fut) }
+		} else {
+			OptionalSelector { optional_future: None }
 		};
+		let lm_fut = if let Some(lm) = liquidity_manager.as_ref() {
+			let fut = lm.get_lm().get_pending_msgs_future();
+			OptionalSelector { optional_future: Some(fut) }
+		} else {
+			OptionalSelector { optional_future: None }
+		};
+		let needs_processing = channel_manager.get_cm().needs_pending_htlc_processing();
+		let sleep_delay = match (needs_processing, mobile_interruptable_platform) {
+			(true, true) => batch_delay.get().min(Duration::from_millis(100)),
+			(true, false) => batch_delay.get().min(FASTEST_TIMER),
+			(false, true) => Duration::from_millis(100),
+			(false, false) => FASTEST_TIMER,
+		};
+		let fut = Selector {
+			a: channel_manager.get_cm().get_event_or_persistence_needed_future(),
+			b: chain_monitor.get_update_future(),
+			c: om_fut,
+			d: lm_fut,
+			e: sleeper(sleep_delay),
+		};
+		match fut.await {
+			SelectorOutput::A | SelectorOutput::B | SelectorOutput::C | SelectorOutput::D => {},
+			SelectorOutput::E(exit) => {
+				should_break = exit;
+			},
+		}
 		let await_slow = if mobile_interruptable_platform {
-			(|fut: &mut SleepFuture, _| {
+			(|fut: &mut SleepFuture| {
 				let mut waker = dummy_waker();
 				let mut ctx = task::Context::from_waker(&mut waker);
 				match core::pin::Pin::new(fut).poll(&mut ctx) {
@@ -824,53 +814,27 @@ where
 					},
 					task::Poll::Pending => false,
 				}
-			})(&mut await_start.unwrap(), Duration::from_secs(1))
+			})(&mut await_start.unwrap())
 		} else {
 			false
 		};
 		if should_break {
-			logger.log(lightning::util::logger::Record::new(
-				(lightning::util::logger::Level::Trace),
-				None,
-				None,
-				format_args!("Terminating background processor."),
-				module_path!(),
-				file!(),
-				0u32,
-				None,
-			));
+			log_trace!(logger, "Terminating background processor.");
 			break;
 		}
 		if channel_manager.get_cm().get_and_clear_needs_persistence() {
-			logger.log(lightning::util::logger::Record::new(
-				(lightning::util::logger::Level::Trace),
-				None,
-				None,
-				format_args!("Persisting ChannelManager..."),
-				module_path!(),
-				file!(),
-				0u32,
-				None,
-			));
-			(kv_store.write(
-				CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-				CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-				CHANNEL_MANAGER_PERSISTENCE_KEY,
-				&channel_manager.get_cm().encode(),
-			))
-			.await?;
-			logger.log(lightning::util::logger::Record::new(
-				(lightning::util::logger::Level::Trace),
-				None,
-				None,
-				format_args!("Done persisting ChannelManager."),
-				module_path!(),
-				file!(),
-				0u32,
-				None,
-			));
+			log_trace!(logger, "Persisting ChannelManager...");
+			kv_store
+				.write(
+					CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+					CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+					CHANNEL_MANAGER_PERSISTENCE_KEY,
+					&channel_manager.get_cm().encode(),
+				)
+				.await?;
+			log_trace!(logger, "Done persisting ChannelManager.");
 		}
-		if (|fut: &mut SleepFuture, _| {
+		if (|fut: &mut SleepFuture| {
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
 			match core::pin::Pin::new(fut).poll(&mut ctx) {
@@ -880,22 +844,13 @@ where
 				},
 				task::Poll::Pending => false,
 			}
-		})(&mut last_freshness_call, FRESHNESS_TIMER)
+		})(&mut last_freshness_call)
 		{
-			logger.log(lightning::util::logger::Record::new(
-				(lightning::util::logger::Level::Trace),
-				None,
-				None,
-				format_args!("Calling ChannelManager's timer_tick_occurred"),
-				module_path!(),
-				file!(),
-				0u32,
-				None,
-			));
+			log_trace!(logger, "Calling ChannelManager's timer_tick_occurred");
 			channel_manager.get_cm().timer_tick_occurred();
-			last_freshness_call = (|t| sleeper(t))(FRESHNESS_TIMER);
+			last_freshness_call = sleeper(FRESHNESS_TIMER);
 		}
-		if (|fut: &mut SleepFuture, _| {
+		if (|fut: &mut SleepFuture| {
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
 			match core::pin::Pin::new(fut).poll(&mut ctx) {
@@ -905,37 +860,31 @@ where
 				},
 				task::Poll::Pending => false,
 			}
-		})(&mut last_onion_message_handler_call, ONION_MESSAGE_HANDLER_TIMER)
+		})(&mut last_onion_message_handler_call)
 		{
 			if let Some(om) = &onion_messenger {
-				logger.log(lightning::util::logger::Record::new(
-					(lightning::util::logger::Level::Trace),
-					None,
-					None,
-					format_args!("Calling OnionMessageHandler's timer_tick_occurred"),
-					module_path!(),
-					file!(),
-					0u32,
-					None,
-				));
+				log_trace!(logger, "Calling OnionMessageHandler's timer_tick_occurred");
 				om.get_om().timer_tick_occurred();
 			}
-			last_onion_message_handler_call = (|t| sleeper(t))(ONION_MESSAGE_HANDLER_TIMER);
+			last_onion_message_handler_call = sleeper(ONION_MESSAGE_HANDLER_TIMER);
 		}
 		if await_slow {
-			logger.log(lightning::util::logger::Record::new(
-				(lightning::util::logger::Level::Trace),
-				None,
-				None,
-				format_args!("100ms sleep took more than a second, disconnecting peers."),
-				module_path!(),
-				file!(),
-				0u32,
-				None,
-			));
+			// On various platforms, we may be starved of CPU cycles for several reasons.
+			// E.g. on iOS, if we've been in the background, we will be entirely paused.
+			// Similarly, if we're on a desktop platform and the device has been asleep, we
+			// may not get any cycles.
+			// We detect this by checking if our max-100ms-sleep, above, ran longer than a
+			// full second, at which point we assume sockets may have been killed (they
+			// appear to be at least on some platforms, even if it has only been a second).
+			// Note that we have to take care to not get here just because user event
+			// processing was slow at the top of the loop. For example, the sample client
+			// may call Bitcoin Core RPCs during event handling, which very often takes
+			// more than a handful of seconds to complete, and shouldn't disconnect all our
+			// peers.
+			log_trace!(logger, "100ms sleep took more than a second, disconnecting peers.");
 			peer_manager.as_ref().disconnect_all_peers();
-			last_ping_call = (|t| sleeper(t))(PING_TIMER);
-		} else if (|fut: &mut SleepFuture, _| {
+			last_ping_call = sleeper(PING_TIMER);
+		} else if (|fut: &mut SleepFuture| {
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
 			match core::pin::Pin::new(fut).poll(&mut ctx) {
@@ -945,23 +894,19 @@ where
 				},
 				task::Poll::Pending => false,
 			}
-		})(&mut last_ping_call, PING_TIMER)
+		})(&mut last_ping_call)
 		{
-			logger.log(lightning::util::logger::Record::new(
-				(lightning::util::logger::Level::Trace),
-				None,
-				None,
-				format_args!("Calling PeerManager's timer_tick_occurred"),
-				module_path!(),
-				file!(),
-				0u32,
-				None,
-			));
+			log_trace!(logger, "Calling PeerManager's timer_tick_occurred");
 			peer_manager.as_ref().timer_tick_occurred();
-			last_ping_call = (|t| sleeper(t))(PING_TIMER);
+			last_ping_call = sleeper(PING_TIMER);
 		}
-		let prune_timer = if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER };
-		let prune_timer_elapsed = (|fut: &mut SleepFuture, _| {
+
+		// Note that we want to run a graph prune once not long after startup before
+		// falling back to our usual hourly prunes. This avoids short-lived clients never
+		// pruning their network graph. We run once 60 seconds after startup before
+		// continuing our normal cadence. For RGS, since 60 seconds is likely too long,
+		// we prune after an initial sync completes.
+		let prune_timer_elapsed = (|fut: &mut SleepFuture| {
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
 			match core::pin::Pin::new(fut).poll(&mut ctx) {
@@ -971,75 +916,50 @@ where
 				},
 				task::Poll::Pending => false,
 			}
-		})(&mut last_prune_call, prune_timer);
+		})(&mut last_prune_call);
 		let should_prune = match gossip_sync {
 			GossipSync::Rapid(_) => !have_pruned || prune_timer_elapsed,
 			_ => prune_timer_elapsed,
 		};
 		if should_prune {
+			// The network graph must not be pruned while rapid sync completion is pending
 			if let Some(network_graph) = gossip_sync.prunable_network_graph() {
 				if let Some(duration_since_epoch) = fetch_time() {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Pruning and persisting network graph."),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+					log_trace!(logger, "Pruning and persisting network graph.");
 					network_graph.remove_stale_channels_and_tracking_with_time(
 						duration_since_epoch.as_secs(),
 					);
 				} else {
-					logger.log(lightning::util::logger::Record::new((lightning::util::logger::Level::Warn),None,None,format_args!("Not pruning network graph, consider implementing the fetch_time argument or calling remove_stale_channels_and_tracking_with_time manually."),module_path!(),file!(),0u32,None));
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Persisting network graph."),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+					log_warn!(logger, "Not pruning network graph, consider implementing the fetch_time argument or calling remove_stale_channels_and_tracking_with_time manually.");
+					log_trace!(logger, "Persisting network graph.");
 				}
-				if let Err(e) = (kv_store.write(
-					NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-					NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-					NETWORK_GRAPH_PERSISTENCE_KEY,
-					&network_graph.encode(),
-				))
-				.await
+				if let Err(e) = kv_store
+					.write(
+						NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
+						NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+						NETWORK_GRAPH_PERSISTENCE_KEY,
+						&network_graph.encode(),
+					)
+					.await
 				{
-					logger.log(lightning::util::logger::Record::new((lightning::util::logger::Level::Error),None,None,format_args!("Error: Failed to persist network graph, check your disk and permissions {}",e),module_path!(),file!(),0u32,None));
+					log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}",e);
 				}
 				have_pruned = true;
 			}
 			let prune_timer =
 				if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER };
-			last_prune_call = (|t| sleeper(t))(prune_timer);
+			last_prune_call = sleeper(prune_timer);
 		}
 		if !have_decayed_scorer {
 			if let Some(ref scorer) = scorer {
 				if let Some(duration_since_epoch) = fetch_time() {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Calling time_passed on scorer at startup"),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+					log_trace!(logger, "Calling time_passed on scorer at startup");
 					scorer.write_lock().time_passed(duration_since_epoch);
 				}
 			}
 			have_decayed_scorer = true;
 		}
-		if (|fut: &mut SleepFuture, _| {
+		if (|fut: &mut SleepFuture| {
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
 			match core::pin::Pin::new(fut).poll(&mut ctx) {
@@ -1049,59 +969,34 @@ where
 				},
 				task::Poll::Pending => false,
 			}
-		})(&mut last_scorer_persist_call, SCORER_PERSIST_TIMER)
+		})(&mut last_scorer_persist_call)
 		{
 			if let Some(ref scorer) = scorer {
 				if let Some(duration_since_epoch) = fetch_time() {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Calling time_passed and persisting scorer"),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+					log_trace!(logger, "Calling time_passed and persisting scorer");
 					scorer.write_lock().time_passed(duration_since_epoch);
 				} else {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Persisting scorer"),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+					log_trace!(logger, "Persisting scorer");
 				}
-				if let Err(e) = (kv_store.write(
-					SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-					SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-					SCORER_PERSISTENCE_KEY,
-					&scorer.encode(),
-				))
-				.await
+				if let Err(e) = kv_store
+					.write(
+						SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+						SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+						SCORER_PERSISTENCE_KEY,
+						&scorer.encode(),
+					)
+					.await
 				{
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Error),
-						None,
-						None,
-						format_args!(
-							"Error: Failed to persist scorer, check your disk and permissions {}",
-							e
-						),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+					log_error!(
+						logger,
+						"Error: Failed to persist scorer, check your disk and permissions {}",
+						e
+					);
 				}
 			}
-			last_scorer_persist_call = (|t| sleeper(t))(SCORER_PERSIST_TIMER);
+			last_scorer_persist_call = sleeper(SCORER_PERSIST_TIMER);
 		}
-		if (|fut: &mut SleepFuture, _| {
+		if (|fut: &mut SleepFuture| {
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
 			match core::pin::Pin::new(fut).poll(&mut ctx) {
@@ -1111,22 +1006,13 @@ where
 				},
 				task::Poll::Pending => false,
 			}
-		})(&mut last_rebroadcast_call, REBROADCAST_TIMER)
+		})(&mut last_rebroadcast_call)
 		{
-			logger.log(lightning::util::logger::Record::new(
-				(lightning::util::logger::Level::Trace),
-				None,
-				None,
-				format_args!("Rebroadcasting monitor's pending claims"),
-				module_path!(),
-				file!(),
-				0u32,
-				None,
-			));
+			log_trace!(logger, "Rebroadcasting monitor's pending claims");
 			chain_monitor.rebroadcast_pending_claims();
-			last_rebroadcast_call = (|t| sleeper(t))(REBROADCAST_TIMER);
+			last_rebroadcast_call = sleeper(REBROADCAST_TIMER);
 		}
-		if (|fut: &mut SleepFuture, _| {
+		if (|fut: &mut SleepFuture| {
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
 			match core::pin::Pin::new(fut).poll(&mut ctx) {
@@ -1136,50 +1022,46 @@ where
 				},
 				task::Poll::Pending => false,
 			}
-		})(&mut last_sweeper_call, SWEEPER_TIMER)
+		})(&mut last_sweeper_call)
 		{
-			logger.log(lightning::util::logger::Record::new(
-				(lightning::util::logger::Level::Trace),
-				None,
-				None,
-				format_args!("Regenerating sweeper spends if necessary"),
-				module_path!(),
-				file!(),
-				0u32,
-				None,
-			));
-			{
-				if let Some(ref sweeper) = sweeper {
-					let _ = sweeper.regenerate_and_broadcast_spend_if_necessary().await;
-				}
-			};
-			last_sweeper_call = (|t| sleeper(t))(SWEEPER_TIMER);
+			log_trace!(logger, "Regenerating sweeper spends if necessary");
+			if let Some(ref sweeper) = sweeper {
+				let _ = sweeper.regenerate_and_broadcast_spend_if_necessary().await;
+			}
+			last_sweeper_call = sleeper(SWEEPER_TIMER);
 		}
 	}
-	(kv_store.write(
-		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-		CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-		CHANNEL_MANAGER_PERSISTENCE_KEY,
-		&channel_manager.get_cm().encode(),
-	))
-	.await?;
-	if let Some(ref scorer) = scorer {
-		(kv_store.write(
-			SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-			SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-			SCORER_PERSISTENCE_KEY,
-			&scorer.encode(),
-		))
+
+	// After we exit, ensure we persist the ChannelManager one final time - this avoids
+	// some races where users quit while channel updates were in-flight, with
+	// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
+	kv_store
+		.write(
+			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_KEY,
+			&channel_manager.get_cm().encode(),
+		)
 		.await?;
+	if let Some(ref scorer) = scorer {
+		kv_store
+			.write(
+				SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+				SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+				SCORER_PERSISTENCE_KEY,
+				&scorer.encode(),
+			)
+			.await?;
 	}
 	if let Some(network_graph) = gossip_sync.network_graph() {
-		(kv_store.write(
-			NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-			NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-			NETWORK_GRAPH_PERSISTENCE_KEY,
-			&network_graph.encode(),
-		))
-		.await?;
+		kv_store
+			.write(
+				NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
+				NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+				NETWORK_GRAPH_PERSISTENCE_KEY,
+				&network_graph.encode(),
+			)
+			.await?;
 	}
 	Ok(())
 }
@@ -1380,409 +1262,218 @@ impl BackgroundProcessor {
 				event_handler.handle_event(event)
 			};
 			let mut batch_delay = BatchDelay::new();
-			logger.log(lightning::util::logger::Record::new(
-				(lightning::util::logger::Level::Trace),
-				None,
-				None,
-				format_args!("Calling ChannelManager's timer_tick_occurred on startup"),
-				module_path!(),
-				file!(),
-				0u32,
-				None,
-			));
+
+			log_trace!(logger, "Calling ChannelManager's timer_tick_occurred on startup");
 			channel_manager.get_cm().timer_tick_occurred();
-			logger.log(lightning::util::logger::Record::new(
-				(lightning::util::logger::Level::Trace),
-				None,
-				None,
-				format_args!("Rebroadcasting monitor's pending claims on startup"),
-				module_path!(),
-				file!(),
-				0u32,
-				None,
-			));
+			log_trace!(logger, "Rebroadcasting monitor's pending claims on startup");
 			chain_monitor.rebroadcast_pending_claims();
-			let mut last_freshness_call = (|_| Instant::now())(FRESHNESS_TIMER);
-			let mut last_onion_message_handler_call =
-				(|_| Instant::now())(ONION_MESSAGE_HANDLER_TIMER);
-			let mut last_ping_call = (|_| Instant::now())(PING_TIMER);
-			let mut last_prune_call = (|_| Instant::now())(FIRST_NETWORK_PRUNE_TIMER);
-			let mut last_scorer_persist_call = (|_| Instant::now())(SCORER_PERSIST_TIMER);
-			let mut last_rebroadcast_call = (|_| Instant::now())(REBROADCAST_TIMER);
-			let mut last_sweeper_call = (|_| Instant::now())(SWEEPER_TIMER);
+
+			let mut last_freshness_call = Instant::now();
+			let mut last_onion_message_handler_call = Instant::now();
+			let mut last_ping_call = Instant::now();
+			let mut last_prune_call = Instant::now();
+			let mut last_scorer_persist_call = Instant::now();
+			let mut last_rebroadcast_call = Instant::now();
+			let mut last_sweeper_call = Instant::now();
 			let mut have_pruned = false;
 			let mut have_decayed_scorer = false;
+
 			let mut cur_batch_delay = batch_delay.get();
-			let mut last_forwards_processing_call = (|_| Instant::now())(cur_batch_delay);
+			let mut last_forwards_processing_call = Instant::now();
+
 			loop {
-				(channel_manager.get_cm().process_pending_events(&event_handler));
-				(chain_monitor.process_pending_events(&event_handler));
-				(if let Some(om) = &onion_messenger {
+				channel_manager.get_cm().process_pending_events(&event_handler);
+				chain_monitor.process_pending_events(&event_handler);
+				if let Some(om) = &onion_messenger {
 					om.get_om().process_pending_events(&event_handler)
-				});
+				};
+
+				// Note that the PeerManager::process_events may block on ChannelManager's locks,
+				// hence it comes last here. When the ChannelManager finishes whatever it's doing,
+				// we want to ensure we get into `persist_manager` as quickly as we can, especially
+				// without running the normal event processing above and handing events to users.
+				//
+				// Specifically, on an *extremely* slow machine, we may see ChannelManager start
+				// processing a message effectively at any point during this loop. In order to
+				// minimize the time between such processing completing and persisting the updated
+				// ChannelManager, we want to minimize methods blocking on a ChannelManager
+				// generally, and as a fallback place such blocking only immediately before
+				// persistence.
 				peer_manager.as_ref().process_events();
-				if (|time: &Instant, dur| time.elapsed() > dur)(
-					&mut last_forwards_processing_call,
-					cur_batch_delay,
-				) {
+				if last_forwards_processing_call.elapsed() > cur_batch_delay {
 					channel_manager.get_cm().process_pending_htlc_forwards();
 					cur_batch_delay = batch_delay.next();
-					last_forwards_processing_call = (|_| Instant::now())(cur_batch_delay);
+					last_forwards_processing_call = Instant::now();
 				}
-				if (stop_thread.load(Ordering::Acquire)) {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Terminating background processor."),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+				if stop_thread.load(Ordering::Acquire) {
+					log_trace!(logger, "Terminating background processor.");
 					break;
 				}
-				let mut await_start = None;
-				if false {
-					await_start = Some((|_| Instant::now())(Duration::from_secs(1)));
-				}
-				{
-					let sleeper = match (onion_messenger.as_ref(), liquidity_manager.as_ref()) {
-						(Some(om), Some(lm)) => Sleeper::from_four_futures(
-							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-							&chain_monitor.get_update_future(),
-							&om.get_om().get_update_future(),
-							&lm.get_lm().get_pending_msgs_future(),
-						),
-						(Some(om), None) => Sleeper::from_three_futures(
-							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-							&chain_monitor.get_update_future(),
-							&om.get_om().get_update_future(),
-						),
-						(None, Some(lm)) => Sleeper::from_three_futures(
-							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-							&chain_monitor.get_update_future(),
-							&lm.get_lm().get_pending_msgs_future(),
-						),
-						(None, None) => Sleeper::from_two_futures(
-							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-							&chain_monitor.get_update_future(),
-						),
-					};
-					let batch_delay = if channel_manager.get_cm().needs_pending_htlc_processing() {
-						batch_delay.get()
-					} else {
-						Duration::MAX
-					};
-					let fastest_timeout = batch_delay.min(Duration::from_millis(100));
-					sleeper.wait_timeout(fastest_timeout);
+				let sleeper = match (onion_messenger.as_ref(), liquidity_manager.as_ref()) {
+					(Some(om), Some(lm)) => Sleeper::from_four_futures(
+						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+						&chain_monitor.get_update_future(),
+						&om.get_om().get_update_future(),
+						&lm.get_lm().get_pending_msgs_future(),
+					),
+					(Some(om), None) => Sleeper::from_three_futures(
+						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+						&chain_monitor.get_update_future(),
+						&om.get_om().get_update_future(),
+					),
+					(None, Some(lm)) => Sleeper::from_three_futures(
+						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+						&chain_monitor.get_update_future(),
+						&lm.get_lm().get_pending_msgs_future(),
+					),
+					(None, None) => Sleeper::from_two_futures(
+						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+						&chain_monitor.get_update_future(),
+					),
 				};
-				let await_slow = if false {
-					(|time: &Instant, dur| time.elapsed() > dur)(
-						&mut await_start.unwrap(),
-						Duration::from_secs(1),
-					)
+				let batch_delay = if channel_manager.get_cm().needs_pending_htlc_processing() {
+					batch_delay.get()
 				} else {
-					false
+					Duration::MAX
 				};
-				if (stop_thread.load(Ordering::Acquire)) {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Terminating background processor."),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+				let fastest_timeout = batch_delay.min(Duration::from_millis(100));
+				sleeper.wait_timeout(fastest_timeout);
+				if stop_thread.load(Ordering::Acquire) {
+					log_trace!(logger, "Terminating background processor.");
 					break;
 				}
 				if channel_manager.get_cm().get_and_clear_needs_persistence() {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Persisting ChannelManager..."),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+					log_trace!(logger, "Persisting ChannelManager...");
 					(kv_store.write(
 						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 						CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 						CHANNEL_MANAGER_PERSISTENCE_KEY,
 						&channel_manager.get_cm().encode(),
 					))?;
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Done persisting ChannelManager."),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+					log_trace!(logger, "Done persisting ChannelManager.");
 				}
-				if (|time: &Instant, dur| time.elapsed() > dur)(
-					&mut last_freshness_call,
-					FRESHNESS_TIMER,
-				) {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Calling ChannelManager's timer_tick_occurred"),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+				if last_freshness_call.elapsed() > FRESHNESS_TIMER {
+					log_trace!(logger, "Calling ChannelManager's timer_tick_occurred");
 					channel_manager.get_cm().timer_tick_occurred();
-					last_freshness_call = (|_| Instant::now())(FRESHNESS_TIMER);
+					last_freshness_call = Instant::now();
 				}
-				if (|time: &Instant, dur| time.elapsed() > dur)(
-					&mut last_onion_message_handler_call,
-					ONION_MESSAGE_HANDLER_TIMER,
-				) {
+				if last_onion_message_handler_call.elapsed() > ONION_MESSAGE_HANDLER_TIMER {
 					if let Some(om) = &onion_messenger {
-						logger.log(lightning::util::logger::Record::new(
-							(lightning::util::logger::Level::Trace),
-							None,
-							None,
-							format_args!("Calling OnionMessageHandler's timer_tick_occurred"),
-							module_path!(),
-							file!(),
-							0u32,
-							None,
-						));
+						log_trace!(logger, "Calling OnionMessageHandler's timer_tick_occurred");
 						om.get_om().timer_tick_occurred();
 					}
-					last_onion_message_handler_call =
-						(|_| Instant::now())(ONION_MESSAGE_HANDLER_TIMER);
+					last_onion_message_handler_call = Instant::now();
 				}
-				if await_slow {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("100ms sleep took more than a second, disconnecting peers."),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
-					peer_manager.as_ref().disconnect_all_peers();
-					last_ping_call = (|_| Instant::now())(PING_TIMER);
-				} else if (|time: &Instant, dur| time.elapsed() > dur)(
-					&mut last_ping_call,
-					PING_TIMER,
-				) {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Calling PeerManager's timer_tick_occurred"),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+				if last_ping_call.elapsed() > PING_TIMER {
+					log_trace!(logger, "Calling PeerManager's timer_tick_occurred");
 					peer_manager.as_ref().timer_tick_occurred();
-					last_ping_call = (|_| Instant::now())(PING_TIMER);
+					last_ping_call = Instant::now();
 				}
+
+				// Note that we want to run a graph prune once not long after startup before
+				// falling back to our usual hourly prunes. This avoids short-lived clients never
+				// pruning their network graph. We run once 60 seconds after startup before
+				// continuing our normal cadence. For RGS, since 60 seconds is likely too long,
+				// we prune after an initial sync completes.
 				let prune_timer =
 					if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER };
-				let prune_timer_elapsed =
-					(|time: &Instant, dur| time.elapsed() > dur)(&mut last_prune_call, prune_timer);
+				let prune_timer_elapsed = last_prune_call.elapsed() > prune_timer;
 				let should_prune = match gossip_sync {
 					GossipSync::Rapid(_) => !have_pruned || prune_timer_elapsed,
 					_ => prune_timer_elapsed,
 				};
 				if should_prune {
+					// The network graph must not be pruned while rapid sync completion is pending
 					if let Some(network_graph) = gossip_sync.prunable_network_graph() {
-						if let Some(duration_since_epoch) = (|| {
-							use std::time::SystemTime;
-							Some(
-								SystemTime::now()
-									.duration_since(SystemTime::UNIX_EPOCH)
-									.expect("Time should be sometime after 1970"),
-							)
-						})() {
-							logger.log(lightning::util::logger::Record::new(
-								(lightning::util::logger::Level::Trace),
-								None,
-								None,
-								format_args!("Pruning and persisting network graph."),
-								module_path!(),
-								file!(),
-								0u32,
-								None,
-							));
-							network_graph.remove_stale_channels_and_tracking_with_time(
-								duration_since_epoch.as_secs(),
-							);
-						} else {
-							logger.log(lightning::util::logger::Record::new((lightning::util::logger::Level::Warn),None,None,format_args!("Not pruning network graph, consider implementing the fetch_time argument or calling remove_stale_channels_and_tracking_with_time manually."),module_path!(),file!(),0u32,None));
-							logger.log(lightning::util::logger::Record::new(
-								(lightning::util::logger::Level::Trace),
-								None,
-								None,
-								format_args!("Persisting network graph."),
-								module_path!(),
-								file!(),
-								0u32,
-								None,
-							));
-						}
-						if let Err(e) = (kv_store.write(
+						let duration_since_epoch = std::time::SystemTime::now()
+							.duration_since(std::time::SystemTime::UNIX_EPOCH)
+							.expect("Time should be sometime after 1970");
+
+						log_trace!(logger, "Pruning and persisting network graph.");
+						network_graph.remove_stale_channels_and_tracking_with_time(
+							duration_since_epoch.as_secs(),
+						);
+						if let Err(e) = kv_store.write(
 							NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 							NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 							NETWORK_GRAPH_PERSISTENCE_KEY,
 							&network_graph.encode(),
-						)) {
-							logger.log(lightning::util::logger::Record::new((lightning::util::logger::Level::Error),None,None,format_args!("Error: Failed to persist network graph, check your disk and permissions {}",e),module_path!(),file!(),0u32,None));
+						) {
+							log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}",e);
 						}
 						have_pruned = true;
 					}
-					let prune_timer =
-						if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER };
-					last_prune_call = (|_| Instant::now())(prune_timer);
+					last_prune_call = Instant::now();
 				}
 				if !have_decayed_scorer {
 					if let Some(ref scorer) = scorer {
-						if let Some(duration_since_epoch) = (|| {
-							use std::time::SystemTime;
-							Some(
-								SystemTime::now()
-									.duration_since(SystemTime::UNIX_EPOCH)
-									.expect("Time should be sometime after 1970"),
-							)
-						})() {
-							logger.log(lightning::util::logger::Record::new(
-								(lightning::util::logger::Level::Trace),
-								None,
-								None,
-								format_args!("Calling time_passed on scorer at startup"),
-								module_path!(),
-								file!(),
-								0u32,
-								None,
-							));
-							scorer.write_lock().time_passed(duration_since_epoch);
-						}
+						let duration_since_epoch = std::time::SystemTime::now()
+							.duration_since(std::time::SystemTime::UNIX_EPOCH)
+							.expect("Time should be sometime after 1970");
+						log_trace!(logger, "Calling time_passed on scorer at startup");
+						scorer.write_lock().time_passed(duration_since_epoch);
 					}
 					have_decayed_scorer = true;
 				}
-				if (|time: &Instant, dur| time.elapsed() > dur)(
-					&mut last_scorer_persist_call,
-					SCORER_PERSIST_TIMER,
-				) {
+				if last_scorer_persist_call.elapsed() > SCORER_PERSIST_TIMER {
 					if let Some(ref scorer) = scorer {
-						if let Some(duration_since_epoch) = (|| {
-							use std::time::SystemTime;
-							Some(
-								SystemTime::now()
-									.duration_since(SystemTime::UNIX_EPOCH)
-									.expect("Time should be sometime after 1970"),
-							)
-						})() {
-							logger.log(lightning::util::logger::Record::new(
-								(lightning::util::logger::Level::Trace),
-								None,
-								None,
-								format_args!("Calling time_passed and persisting scorer"),
-								module_path!(),
-								file!(),
-								0u32,
-								None,
-							));
-							scorer.write_lock().time_passed(duration_since_epoch);
-						} else {
-							logger.log(lightning::util::logger::Record::new(
-								(lightning::util::logger::Level::Trace),
-								None,
-								None,
-								format_args!("Persisting scorer"),
-								module_path!(),
-								file!(),
-								0u32,
-								None,
-							));
-						}
-						if let Err(e) = (kv_store.write(
+						let duration_since_epoch = std::time::SystemTime::now()
+							.duration_since(std::time::SystemTime::UNIX_EPOCH)
+							.expect("Time should be sometime after 1970");
+						log_trace!(logger, "Calling time_passed and persisting scorer");
+						scorer.write_lock().time_passed(duration_since_epoch);
+						if let Err(e) = kv_store.write(
 							SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
 							SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 							SCORER_PERSISTENCE_KEY,
 							&scorer.encode(),
-						)) {
-							logger.log(lightning::util::logger::Record::new((lightning::util::logger::Level::Error),None,None,format_args!("Error: Failed to persist scorer, check your disk and permissions {}",e),module_path!(),file!(),0u32,None));
+						) {
+							log_error!(logger,
+						"Error: Failed to persist scorer, check your disk and permissions {}",
+						e,
+					);
 						}
 					}
-					last_scorer_persist_call = (|_| Instant::now())(SCORER_PERSIST_TIMER);
+					last_scorer_persist_call = Instant::now();
 				}
-				if (|time: &Instant, dur| time.elapsed() > dur)(
-					&mut last_rebroadcast_call,
-					REBROADCAST_TIMER,
-				) {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Rebroadcasting monitor's pending claims"),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
+				if last_rebroadcast_call.elapsed() > REBROADCAST_TIMER {
+					log_trace!(logger, "Rebroadcasting monitor's pending claims");
 					chain_monitor.rebroadcast_pending_claims();
-					last_rebroadcast_call = (|_| Instant::now())(REBROADCAST_TIMER);
+					last_rebroadcast_call = Instant::now();
 				}
-				if (|time: &Instant, dur| time.elapsed() > dur)(
-					&mut last_sweeper_call,
-					SWEEPER_TIMER,
-				) {
-					logger.log(lightning::util::logger::Record::new(
-						(lightning::util::logger::Level::Trace),
-						None,
-						None,
-						format_args!("Regenerating sweeper spends if necessary"),
-						module_path!(),
-						file!(),
-						0u32,
-						None,
-					));
-					{
-						if let Some(ref sweeper) = sweeper {
-							let _ = sweeper.regenerate_and_broadcast_spend_if_necessary();
-						}
-					};
-					last_sweeper_call = (|_| Instant::now())(SWEEPER_TIMER);
+				if last_sweeper_call.elapsed() > SWEEPER_TIMER {
+					log_trace!(logger, "Regenerating sweeper spends if necessary");
+					if let Some(ref sweeper) = sweeper {
+						let _ = sweeper.regenerate_and_broadcast_spend_if_necessary();
+					}
+					last_sweeper_call = Instant::now();
 				}
 			}
-			(kv_store.write(
+
+			// After we exit, ensure we persist the ChannelManager one final time - this avoids
+			// some races where users quit while channel updates were in-flight, with
+			// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
+			kv_store.write(
 				CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 				CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 				CHANNEL_MANAGER_PERSISTENCE_KEY,
 				&channel_manager.get_cm().encode(),
-			))?;
+			)?;
 			if let Some(ref scorer) = scorer {
-				(kv_store.write(
+				kv_store.write(
 					SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
 					SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 					SCORER_PERSISTENCE_KEY,
 					&scorer.encode(),
-				))?;
+				)?;
 			}
 			if let Some(network_graph) = gossip_sync.network_graph() {
-				(kv_store.write(
+				kv_store.write(
 					NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 					NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 					NETWORK_GRAPH_PERSISTENCE_KEY,
 					&network_graph.encode(),
-				))?;
+				)?;
 			}
 			Ok(())
 		});
