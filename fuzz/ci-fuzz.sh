@@ -29,7 +29,7 @@ sed -i 's/lto = true//' Cargo.toml
 
 export HFUZZ_BUILD_ARGS="--features honggfuzz_fuzz"
 
-cargo --color always hfuzz build
+cargo --color always hfuzz build -j8
 for TARGET in src/bin/*.rs; do
 	FILENAME=$(basename $TARGET)
 	FILE="${FILENAME%.*}"
