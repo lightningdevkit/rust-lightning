@@ -691,13 +691,13 @@ where
 		self.best_block_updated_internal(&mut state_lock, header, height);
 	}
 
-	fn blocks_disconnected(&self, new_best_block: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
 
-		state_lock.best_block = new_best_block;
+		state_lock.best_block = fork_point;
 
 		for output_info in state_lock.outputs.iter_mut() {
-			if output_info.status.confirmation_height() > Some(new_best_block.height) {
+			if output_info.status.confirmation_height() > Some(fork_point.height) {
 				output_info.status.unconfirmed();
 			}
 		}

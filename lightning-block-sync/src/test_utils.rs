@@ -204,7 +204,7 @@ impl chain::Listen for NullChainListener {
 		&self, _header: &Header, _txdata: &chain::transaction::TransactionData, _height: u32,
 	) {
 	}
-	fn blocks_disconnected(&self, _new_best_block: BestBlock) {}
+	fn blocks_disconnected(&self, _fork_point: BestBlock) {}
 }
 
 pub struct MockChainListener {
@@ -265,17 +265,17 @@ impl chain::Listen for MockChainListener {
 		}
 	}
 
-	fn blocks_disconnected(&self, new_best_block: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
 		match self.expected_blocks_disconnected.borrow_mut().pop_front() {
 			None => {
 				panic!(
 					"Unexpected block(s) disconnected {} at height {}",
-					new_best_block.block_hash, new_best_block.height,
+					fork_point.block_hash, fork_point.height,
 				);
 			},
 			Some(disconnected_block) => {
-				assert_eq!(new_best_block.block_hash, disconnected_block.header.prev_blockhash);
-				assert_eq!(new_best_block.height, disconnected_block.height - 1);
+				assert_eq!(fork_point.block_hash, disconnected_block.header.prev_blockhash);
+				assert_eq!(fork_point.height, disconnected_block.height - 1);
 			},
 		}
 	}

@@ -929,17 +929,17 @@ where
 		self.event_notifier.notify();
 	}
 
-	fn blocks_disconnected(&self, new_best_block: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
 		let monitor_states = self.monitors.read().unwrap();
 		log_debug!(
 			self.logger,
 			"Block(s) removed to height {} via blocks_disconnected. New best block is {}",
-			new_best_block.height,
-			new_best_block.block_hash,
+			fork_point.height,
+			fork_point.block_hash,
 		);
 		for monitor_state in monitor_states.values() {
 			monitor_state.monitor.blocks_disconnected(
-				new_best_block,
+				fork_point,
 				&*self.broadcaster,
 				&*self.fee_estimator,
 				&self.logger,

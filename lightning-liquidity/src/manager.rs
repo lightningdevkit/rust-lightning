@@ -583,9 +583,9 @@ where
 		self.best_block_updated(header, height);
 	}
 
-	fn blocks_disconnected(&self, new_best_block: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
 		if let Some(best_block) = self.best_block.write().unwrap().as_mut() {
-			*best_block = new_best_block;
+			*best_block = fork_point;
 		}
 
 		// TODO: Call block_disconnected on all sub-modules that require it, e.g., LSPS1MessageHandler.

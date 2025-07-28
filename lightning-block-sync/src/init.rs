@@ -231,8 +231,8 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L
 		unreachable!()
 	}
 
-	fn blocks_disconnected(&self, new_best_block: BestBlock) {
-		self.0.blocks_disconnected(new_best_block)
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		self.0.blocks_disconnected(fork_point)
 	}
 }
 
@@ -258,7 +258,7 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for ChainListenerSet<'a, L> {
 		}
 	}
 
-	fn blocks_disconnected(&self, _new_best_block: BestBlock) {
+	fn blocks_disconnected(&self, _fork_point: BestBlock) {
 		unreachable!()
 	}
 }

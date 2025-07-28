@@ -398,8 +398,8 @@ impl<T: Listen> Listen for dyn core::ops::Deref<Target = T> {
 		(**self).filtered_block_connected(header, txdata, height);
 	}
 
-	fn blocks_disconnected(&self, new_best_block: BestBlock) {
-		(**self).blocks_disconnected(new_best_block);
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		(**self).blocks_disconnected(fork_point);
 	}
 }
 
@@ -413,9 +413,9 @@ where
 		self.1.filtered_block_connected(header, txdata, height);
 	}
 
-	fn blocks_disconnected(&self, new_best_block: BestBlock) {
-		self.0.blocks_disconnected(new_best_block);
-		self.1.blocks_disconnected(new_best_block);
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		self.0.blocks_disconnected(fork_point);
+		self.1.blocks_disconnected(fork_point);
 	}
 }
 

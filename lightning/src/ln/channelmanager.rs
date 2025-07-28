@@ -12543,7 +12543,7 @@ where
 		self.best_block_updated(header, height);
 	}
 
-	fn blocks_disconnected(&self, new_best_block: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self,
@@ -12551,12 +12551,12 @@ where
 			);
 		{
 			let mut best_block = self.best_block.write().unwrap();
-			*best_block = new_best_block;
+			*best_block = fork_point;
 		}
 
-		self.do_chain_event(Some(new_best_block.height), |channel| {
+		self.do_chain_event(Some(fork_point.height), |channel| {
 			channel.best_block_updated(
-				new_best_block.height,
+				fork_point.height,
 				0,
 				self.chain_hash,
 				&self.node_signer,

@@ -405,8 +405,8 @@ where
 			}
 		}
 		if let Some(block) = disconnected_blocks.last() {
-			let best_block = BestBlock::new(block.header.prev_blockhash, block.height - 1);
-			self.chain_listener.blocks_disconnected(best_block);
+			let fork_point = BestBlock::new(block.header.prev_blockhash, block.height - 1);
+			self.chain_listener.blocks_disconnected(fork_point);
 		}
 	}
 

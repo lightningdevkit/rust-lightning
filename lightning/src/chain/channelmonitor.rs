@@ -2176,7 +2176,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Determines if the disconnected block contained any transactions of interest and updates
 	/// appropriately.
 	pub fn blocks_disconnected<B: Deref, F: Deref, L: Deref>(
-		&self, new_best_block: BestBlock, broadcaster: B, fee_estimator: F, logger: &L,
+		&self, fork_point: BestBlock, broadcaster: B, fee_estimator: F, logger: &L,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -2184,7 +2184,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
-		inner.blocks_disconnected(new_best_block, broadcaster, fee_estimator, &logger)
+		inner.blocks_disconnected(fork_point, broadcaster, fee_estimator, &logger)
 	}
 
 	/// Processes transactions confirmed in a block with the given header and height, returning new
@@ -5112,12 +5112,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	#[rustfmt::skip]
 	fn blocks_disconnected<B: Deref, F: Deref, L: Deref>(
-		&mut self, new_best_block: BestBlock, broadcaster: B, fee_estimator: F, logger: &WithChannelMonitor<L>
+		&mut self, fork_point: BestBlock, broadcaster: B, fee_estimator: F, logger: &WithChannelMonitor<L>
 	) where B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		let new_height = new_best_block.height;
+		let new_height = fork_point.height;
 		log_trace!(logger, "Block(s) disconnected to height {}", new_height);
 
 		//We may discard:
@@ -5131,7 +5131,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			new_height + 1, broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator, logger
 		);
 
-		self.best_block = new_best_block;
+		self.best_block = fork_point;
 	}
 
 	#[rustfmt::skip]
@@ -5576,8 +5576,8 @@ where
 		self.0.block_connected(header, txdata, height, &*self.1, &*self.2, &self.3);
 	}
 
-	fn blocks_disconnected(&self, new_best_block: BestBlock) {
-		self.0.blocks_disconnected(new_best_block, &*self.1, &*self.2, &self.3);
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		self.0.blocks_disconnected(fork_point, &*self.1, &*self.2, &self.3);
 	}
 }
 
