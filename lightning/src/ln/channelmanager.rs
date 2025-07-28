@@ -30,7 +30,7 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, Sequence};
+use bitcoin::{secp256k1, Sequence, SignedAmount};
 #[cfg(splicing)]
 use bitcoin::{ScriptBuf, TxIn, Weight};
 
@@ -9401,7 +9401,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 					// Inbound V2 channels with contributed inputs are not considered unfunded.
 					if let Some(unfunded_chan) = chan.as_unfunded_v2() {
-						if unfunded_chan.funding_negotiation_context.our_funding_contribution_satoshis > 0 {
+						if unfunded_chan.funding_negotiation_context.our_funding_contribution > SignedAmount::ZERO {
 							continue;
 						}
 					}

@@ -11,7 +11,7 @@ use crate::io_extras::sink;
 use crate::prelude::*;
 
 use bitcoin::absolute::LockTime as AbsoluteLockTime;
-use bitcoin::amount::Amount;
+use bitcoin::amount::{Amount, SignedAmount};
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::key::Secp256k1;
@@ -2077,8 +2077,8 @@ pub(super) fn calculate_change_output_value(
 	context: &FundingNegotiationContext, is_splice: bool, shared_output_funding_script: &ScriptBuf,
 	funding_outputs: &Vec<TxOut>, change_output_dust_limit: u64,
 ) -> Result<Option<u64>, AbortReason> {
-	assert!(context.our_funding_contribution_satoshis > 0);
-	let our_funding_contribution_satoshis = context.our_funding_contribution_satoshis as u64;
+	assert!(context.our_funding_contribution > SignedAmount::ZERO);
+	let our_funding_contribution_satoshis = context.our_funding_contribution.to_sat() as u64;
 
 	let mut total_input_satoshis = 0u64;
 	let mut our_funding_inputs_weight = 0u64;
@@ -2156,7 +2156,8 @@ mod tests {
 	use bitcoin::transaction::Version;
 	use bitcoin::{opcodes, WScriptHash, Weight, XOnlyPublicKey};
 	use bitcoin::{
-		OutPoint, PubkeyHash, ScriptBuf, Sequence, Transaction, TxIn, TxOut, WPubkeyHash, Witness,
+		OutPoint, PubkeyHash, ScriptBuf, Sequence, SignedAmount, Transaction, TxIn, TxOut,
+		WPubkeyHash, Witness,
 	};
 	use core::ops::Deref;
 
@@ -3186,7 +3187,7 @@ mod tests {
 		// There is leftover for change
 		let context = FundingNegotiationContext {
 			is_initiator: true,
-			our_funding_contribution_satoshis: our_contributed as i64,
+			our_funding_contribution: SignedAmount::from_sat(our_contributed as i64),
 			their_funding_contribution_satoshis: None,
 			funding_tx_locktime: AbsoluteLockTime::ZERO,
 			funding_feerate_sat_per_1000_weight,
@@ -3209,7 +3210,7 @@ mod tests {
 		// Insufficient inputs, no leftover
 		let context = FundingNegotiationContext {
 			is_initiator: false,
-			our_funding_contribution_satoshis: 130_000,
+			our_funding_contribution: SignedAmount::from_sat(130_000),
 			..context
 		};
 		assert_eq!(
@@ -3220,7 +3221,7 @@ mod tests {
 		// Very small leftover
 		let context = FundingNegotiationContext {
 			is_initiator: false,
-			our_funding_contribution_satoshis: 118_000,
+			our_funding_contribution: SignedAmount::from_sat(118_000),
 			..context
 		};
 		assert_eq!(
@@ -3231,7 +3232,7 @@ mod tests {
 		// Small leftover, but not dust
 		let context = FundingNegotiationContext {
 			is_initiator: false,
-			our_funding_contribution_satoshis: 117_992,
+			our_funding_contribution: SignedAmount::from_sat(117_992),
 			..context
 		};
 		assert_eq!(
@@ -3242,7 +3243,7 @@ mod tests {
 		// Larger fee, smaller change
 		let context = FundingNegotiationContext {
 			is_initiator: true,
-			our_funding_contribution_satoshis: our_contributed as i64,
+			our_funding_contribution: SignedAmount::from_sat(our_contributed as i64),
 			funding_feerate_sat_per_1000_weight: funding_feerate_sat_per_1000_weight * 3,
 			..context
 		};
