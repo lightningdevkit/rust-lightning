@@ -373,14 +373,7 @@ fn dir_entry_is_key(dir_entry: &fs::DirEntry) -> Result<bool, lightning::io::Err
 		}
 	}
 
-	let metadata = dir_entry.metadata().map_err(|e| {
-		let msg = format!(
-			"Failed to list keys at path {}: {}",
-			PrintableString(p.to_str().unwrap_or_default()),
-			e
-		);
-		lightning::io::Error::new(lightning::io::ErrorKind::Other, msg)
-	})?;
+	let metadata = dir_entry.metadata()?;
 
 	// We allow the presence of directories in the empty primary namespace and just skip them.
 	if metadata.is_dir() {
