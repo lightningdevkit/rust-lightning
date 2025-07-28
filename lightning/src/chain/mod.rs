@@ -74,6 +74,8 @@ impl_writeable_tlv_based!(BestBlock, {
 /// entire header chain and only blocks with matching transaction data using BIP 157 filters or
 /// other similar filtering.
 ///
+/// # Requirements
+///
 /// Each block must be connected in chain order with one call to either
 /// [`Listen::block_connected`] or [`Listen::filtered_block_connected`]. If a call to the
 /// [`Filter`] interface was made during block processing and further transaction(s) from the same
@@ -86,6 +88,8 @@ impl_writeable_tlv_based!(BestBlock, {
 /// disconnected in a reorg, each time passing the new-best-block (i.e. information about the block
 /// prior to the one being disconnected) such that you ultimately pass information about the fork
 /// point to `blocks_disconnected`.
+///
+/// # Object Birthday
 ///
 /// Note that most implementations take a [`BestBlock`] on construction and blocks only need to be
 /// applied starting from that point.
