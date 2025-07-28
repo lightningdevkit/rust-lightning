@@ -9,13 +9,17 @@
 
 use core::time::Duration;
 
+// On startup, we wait a bit before attempting the initial forward, which gives the user some time
+// to re-connect peers.
+const INIT_FWD_DELAY: Duration = Duration::from_secs(2);
+
 pub(crate) struct BatchDelay {
 	next_batch_delay: Duration,
 }
 
 impl BatchDelay {
 	pub(crate) fn new() -> Self {
-		let next_batch_delay = rand_batch_delay();
+		let next_batch_delay = INIT_FWD_DELAY;
 		Self { next_batch_delay }
 	}
 
