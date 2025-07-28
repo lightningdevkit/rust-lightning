@@ -62,7 +62,7 @@ if [ "$OUTPUT_CODECOV_JSON" = "0" ]; then
     cargo llvm-cov --html --ignore-filename-regex "fuzz/" --output-dir "$OUTPUT_DIR"
     echo "Coverage report generated in $OUTPUT_DIR/html/index.html"
 else
-    cargo llvm-cov --codecov --ignore-filename-regex "fuzz/" --output-path "$OUTPUT_DIR/fuzz-codecov.json"
+    cargo llvm-cov -j8 --codecov --ignore-filename-regex "fuzz/" --output-path "$OUTPUT_DIR/fuzz-codecov.json"
     echo "Fuzz codecov report available at $OUTPUT_DIR/fuzz-codecov.json"
 fi
 
