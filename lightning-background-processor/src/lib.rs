@@ -443,9 +443,117 @@ pub(crate) mod futures_util {
 	pub(crate) fn dummy_waker() -> Waker {
 		unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) }
 	}
+
+	enum JoinerResult<E, F: Future<Output = Result<(), E>> + Unpin> {
+		Pending(Option<F>),
+		Ready(Result<(), E>),
+	}
+
+	pub(crate) struct Joiner<
+		E,
+		A: Future<Output = Result<(), E>> + Unpin,
+		B: Future<Output = Result<(), E>> + Unpin,
+		C: Future<Output = Result<(), E>> + Unpin,
+		D: Future<Output = Result<(), E>> + Unpin,
+	> {
+		a: JoinerResult<E, A>,
+		b: JoinerResult<E, B>,
+		c: JoinerResult<E, C>,
+		d: JoinerResult<E, D>,
+	}
+
+	impl<
+			E,
+			A: Future<Output = Result<(), E>> + Unpin,
+			B: Future<Output = Result<(), E>> + Unpin,
+			C: Future<Output = Result<(), E>> + Unpin,
+			D: Future<Output = Result<(), E>> + Unpin,
+		> Joiner<E, A, B, C, D>
+	{
+		pub(crate) fn new() -> Self {
+			Self {
+				a: JoinerResult::Pending(None),
+				b: JoinerResult::Pending(None),
+				c: JoinerResult::Pending(None),
+				d: JoinerResult::Pending(None),
+			}
+		}
+
+		pub(crate) fn set_a(&mut self, fut: A) {
+			self.a = JoinerResult::Pending(Some(fut));
+		}
+		pub(crate) fn set_b(&mut self, fut: B) {
+			self.b = JoinerResult::Pending(Some(fut));
+		}
+		pub(crate) fn set_c(&mut self, fut: C) {
+			self.c = JoinerResult::Pending(Some(fut));
+		}
+		pub(crate) fn set_d(&mut self, fut: D) {
+			self.d = JoinerResult::Pending(Some(fut));
+		}
+	}
+
+	impl<
+			E,
+			A: Future<Output = Result<(), E>> + Unpin,
+			B: Future<Output = Result<(), E>> + Unpin,
+			C: Future<Output = Result<(), E>> + Unpin,
+			D: Future<Output = Result<(), E>> + Unpin,
+		> Future for Joiner<E, A, B, C, D>
+	where
+		Joiner<E, A, B, C, D>: Unpin,
+	{
+		type Output = [Result<(), E>; 4];
+		fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+			let mut all_complete = true;
+			macro_rules! handle {
+				($val: ident) => {
+					match &mut (self.$val) {
+						JoinerResult::Pending(None) => {
+							self.$val = JoinerResult::Ready(Ok(()));
+						},
+						JoinerResult::<E, _>::Pending(Some(ref mut val)) => {
+							match Pin::new(val).poll(ctx) {
+								Poll::Ready(res) => {
+									self.$val = JoinerResult::Ready(res);
+								},
+								Poll::Pending => {
+									all_complete = false;
+								},
+							}
+						},
+						JoinerResult::Ready(_) => {},
+					}
+				};
+			}
+			handle!(a);
+			handle!(b);
+			handle!(c);
+			handle!(d);
+
+			if all_complete {
+				let mut res = [Ok(()), Ok(()), Ok(()), Ok(())];
+				if let JoinerResult::Ready(ref mut val) = &mut self.a {
+					core::mem::swap(&mut res[0], val);
+				}
+				if let JoinerResult::Ready(ref mut val) = &mut self.b {
+					core::mem::swap(&mut res[1], val);
+				}
+				if let JoinerResult::Ready(ref mut val) = &mut self.c {
+					core::mem::swap(&mut res[2], val);
+				}
+				if let JoinerResult::Ready(ref mut val) = &mut self.d {
+					core::mem::swap(&mut res[3], val);
+				}
+				Poll::Ready(res)
+			} else {
+				Poll::Pending
+			}
+		}
+	}
 }
 use core::task;
-use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
+use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutput};
 
 /// Processes background events in a future.
 ///
@@ -812,16 +920,25 @@ where
 			Some(true) => break,
 			None => {},
 		}
+
+		let mut futures = Joiner::new();
+
 		if channel_manager.get_cm().get_and_clear_needs_persistence() {
 			log_trace!(logger, "Persisting ChannelManager...");
-			kv_store
-				.write(
-					CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-					CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-					CHANNEL_MANAGER_PERSISTENCE_KEY,
-					&channel_manager.get_cm().encode(),
-				)
-				.await?;
+
+			let fut = async {
+				kv_store
+					.write(
+						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+						CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+						CHANNEL_MANAGER_PERSISTENCE_KEY,
+						&channel_manager.get_cm().encode(),
+					)
+					.await
+			};
+			// TODO: Once our MSRV is 1.68 we should be able to drop the Box
+			futures.set_a(Box::pin(fut));
+
 			log_trace!(logger, "Done persisting ChannelManager.");
 		}
 
@@ -854,17 +971,25 @@ where
 					log_warn!(logger, "Not pruning network graph, consider implementing the fetch_time argument or calling remove_stale_channels_and_tracking_with_time manually.");
 					log_trace!(logger, "Persisting network graph.");
 				}
-				if let Err(e) = kv_store
-					.write(
-						NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-						NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-						NETWORK_GRAPH_PERSISTENCE_KEY,
-						&network_graph.encode(),
-					)
-					.await
-				{
-					log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}",e);
-				}
+				let fut = async {
+					if let Err(e) = kv_store
+						.write(
+							NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
+							NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+							NETWORK_GRAPH_PERSISTENCE_KEY,
+							&network_graph.encode(),
+						)
+						.await
+					{
+						log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}",e);
+					}
+
+					Ok(())
+				};
+
+				// TODO: Once our MSRV is 1.68 we should be able to drop the Box
+				futures.set_b(Box::pin(fut));
+
 				have_pruned = true;
 			}
 			let prune_timer =
@@ -889,21 +1014,28 @@ where
 					} else {
 						log_trace!(logger, "Persisting scorer");
 					}
-					if let Err(e) = kv_store
-						.write(
-							SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-							SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-							SCORER_PERSISTENCE_KEY,
-							&scorer.encode(),
-						)
-						.await
-					{
-						log_error!(
+					let fut = async {
+						if let Err(e) = kv_store
+							.write(
+								SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+								SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+								SCORER_PERSISTENCE_KEY,
+								&scorer.encode(),
+							)
+							.await
+						{
+							log_error!(
 							logger,
 							"Error: Failed to persist scorer, check your disk and permissions {}",
 							e
 						);
-					}
+						}
+
+						Ok(())
+					};
+
+					// TODO: Once our MSRV is 1.68 we should be able to drop the Box
+					futures.set_c(Box::pin(fut));
 				}
 				last_scorer_persist_call = sleeper(SCORER_PERSIST_TIMER);
 			},
@@ -914,13 +1046,26 @@ where
 			Some(false) => {
 				log_trace!(logger, "Regenerating sweeper spends if necessary");
 				if let Some(ref sweeper) = sweeper {
-					let _ = sweeper.regenerate_and_broadcast_spend_if_necessary().await;
+					let fut = async {
+						let _ = sweeper.regenerate_and_broadcast_spend_if_necessary().await;
+
+						Ok(())
+					};
+
+					// TODO: Once our MSRV is 1.68 we should be able to drop the Box
+					futures.set_d(Box::pin(fut));
 				}
 				last_sweeper_call = sleeper(SWEEPER_TIMER);
 			},
 			Some(true) => break,
 			None => {},
 		}
+
+		// Run persistence tasks in parallel and exit if any of them returns an error.
+		for res in futures.await {
+			res?;
+		}
+
 		match check_sleeper(&mut last_onion_message_handler_call) {
 			Some(false) => {
 				if let Some(om) = &onion_messenger {
