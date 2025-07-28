@@ -83,7 +83,9 @@ impl_writeable_tlv_based!(BestBlock, {
 /// In case of a reorg, you must call [`Listen::blocks_disconnected`] once with information on the
 /// "fork point" block, i.e. the highest block that is in both forks. For backwards compatibility,
 /// you may instead walk the chain backwards, calling `blocks_disconnected` for each block which is
-/// disconnected in a reorg.
+/// disconnected in a reorg, each time passing the new-best-block (i.e. information about the block
+/// prior to the one being disconnected) such that you ultimately pass information about the fork
+/// point to `blocks_disconnected`.
 ///
 /// Note that most implementations take a [`BestBlock`] on construction and blocks only need to be
 /// applied starting from that point.
