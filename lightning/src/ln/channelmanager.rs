@@ -4066,7 +4066,7 @@ where
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
+				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}") })?;
 
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -4464,7 +4464,7 @@ where
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
 		let peer_state_mutex = match per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) }) {
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}") }) {
 			Ok(p) => p,
 			Err(e) => return Err(e),
 		};
@@ -4848,36 +4848,25 @@ where
 		.map_err(|e| {
 			let first_hop_key = Some(path.hops.first().unwrap().pubkey);
 			let logger = WithContext::from(&self.logger, first_hop_key, None, Some(*payment_hash));
-			log_error!(
-				logger,
-				"Failed to build an onion for path for payment hash {}",
-				payment_hash
-			);
+			log_error!(logger, "Failed to build an onion for path for payment hash {payment_hash}");
 			e
 		})?;
 
 		let err: Result<(), _> = loop {
-			let first_chan_id = &path.hops.first().unwrap().short_channel_id;
-			let (counterparty_node_id, id) = match self
-				.short_to_chan_info
-				.read()
-				.unwrap()
-				.get(first_chan_id)
-			{
+			let first_chan_scid = &path.hops.first().unwrap().short_channel_id;
+			let first_chan = self.short_to_chan_info.read().unwrap().get(first_chan_scid).cloned();
+
+			let (counterparty_node_id, id) = match first_chan {
 				None => {
 					let first_hop_key = Some(path.hops.first().unwrap().pubkey);
 					let logger =
 						WithContext::from(&self.logger, first_hop_key, None, Some(*payment_hash));
-					log_error!(
-						logger,
-						"Failed to find first-hop for payment hash {}",
-						payment_hash
-					);
+					log_error!(logger, "Failed to find first-hop for payment hash {payment_hash}");
 					return Err(APIError::ChannelUnavailable {
 						err: "No channel available with first hop!".to_owned(),
 					});
 				},
-				Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
+				Some((cp_id, chan_id)) => (cp_id, chan_id),
 			};
 
 			let logger = WithContext::from(
@@ -4888,9 +4877,7 @@ where
 			);
 			log_trace!(
 				logger,
-				"Attempting to send payment with payment hash {} along path with next hop {}",
-				payment_hash,
-				first_chan_id,
+				"Attempting to send payment with payment hash {payment_hash} along path with next hop {first_chan_scid}"
 			);
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -4924,7 +4911,7 @@ where
 						};
 						let send_res = chan.send_htlc_and_commit(
 							htlc_msat,
-							payment_hash.clone(),
+							*payment_hash,
 							htlc_cltv,
 							htlc_source,
 							onion_packet,
@@ -5583,7 +5570,7 @@ where
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}") })?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -5941,7 +5928,7 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}") })?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
@@ -6048,8 +6035,7 @@ where
 			let peer_state_mutex =
 				peer_state_lock.get(&next_node_id).ok_or_else(|| APIError::ChannelUnavailable {
 					err: format!(
-						"Can't find a peer matching the passed counterparty node_id {}",
-						next_node_id
+						"Can't find a peer matching the passed counterparty node_id {next_node_id}"
 					),
 				})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -6060,8 +6046,7 @@ where
 						if !funded_chan.context.is_usable() {
 							return Err(APIError::ChannelUnavailable {
 								err: format!(
-									"Channel with id {} not fully established",
-									next_hop_channel_id
+									"Channel with id {next_hop_channel_id} not fully established"
 								),
 							});
 						}
@@ -6071,15 +6056,15 @@ where
 							.unwrap_or(funded_chan.context.outbound_scid_alias())
 					} else {
 						return Err(APIError::ChannelUnavailable {
-						err: format!("Channel with id {} for the passed counterparty node_id {} is still opening.",
-							next_hop_channel_id, next_node_id)
+						err: format!(
+							"Channel with id {next_hop_channel_id} for the passed counterparty node_id {next_node_id} is still opening."
+						)
 					});
 					}
 				},
 				None => {
 					let error = format!(
-						"Channel with id {} not found for the passed counterparty node_id {}",
-						next_hop_channel_id, next_node_id
+						"Channel with id {next_hop_channel_id} not found for the passed counterparty node_id {next_node_id}"
 					);
 					let logger = WithContext::from(
 						&self.logger,
@@ -6087,7 +6072,7 @@ where
 						Some(*next_hop_channel_id),
 						None,
 					);
-					log_error!(logger, "{} when attempting to forward intercepted HTLC", error);
+					log_error!(logger, "{error} when attempting to forward intercepted HTLC");
 					return Err(APIError::ChannelUnavailable { err: error });
 				},
 			}
@@ -9023,7 +9008,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 		.ok_or_else(|| {
-			let err_str = format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id);
+			let err_str = format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}");
 			log_error!(logger, "{}", err_str);
 
 			APIError::ChannelUnavailable { err: err_str }
@@ -9249,7 +9234,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		    .ok_or_else(|| {
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
 					common_fields.temporary_channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -9377,7 +9362,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
 					debug_assert!(false);
-					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.common_fields.temporary_channel_id)
+					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.common_fields.temporary_channel_id)
 				})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -9415,7 +9400,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.temporary_channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.temporary_channel_id)
 			})?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -9533,7 +9518,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), ChannelId([0; 32]))
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), ChannelId([0; 32]))
 			})?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -9570,7 +9555,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
 			})?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -9614,7 +9599,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.ok_or_else(|| {
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
 					channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -9708,7 +9693,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.ok_or_else(|| {
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
 					msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -9766,7 +9751,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.ok_or_else(|| {
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
 					msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -9814,7 +9799,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.ok_or_else(|| {
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
 					msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -9877,7 +9862,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -10111,7 +10096,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -10204,7 +10189,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -10230,7 +10215,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -10259,7 +10244,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -10303,7 +10288,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -10548,7 +10533,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let mut peer_state_lock = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
 					debug_assert!(false);
-					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
 				}).map(|mtx| mtx.lock().unwrap())?;
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
@@ -10588,7 +10573,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -10613,7 +10598,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 			debug_assert!(false);
 			MsgHandleErrInternal::send_err_msg_no_close(
-				format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+				format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
 				msg.channel_id
 			)
 		})?;
@@ -10666,7 +10651,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -10758,7 +10743,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				.ok_or_else(|| {
 					debug_assert!(false);
 					MsgHandleErrInternal::send_err_msg_no_close(
-						format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+						format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
 						msg.channel_id
 					)
 				})?;
@@ -10858,7 +10843,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -10898,7 +10883,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11426,7 +11411,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
 			if peer_state_mutex_opt.is_none() {
 				result = Err(APIError::ChannelUnavailable {
-					err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id)
+					err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}")
 				});
 				return notify;
 			}
@@ -11480,7 +11465,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable {
-				err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id)
+				err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}")
 			})?;
 		let mut peer_state = peer_state_mutex.lock().unwrap();
 		let initiator = match peer_state.channel_by_id.entry(*channel_id) {
