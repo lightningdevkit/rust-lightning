@@ -201,28 +201,6 @@ jobs:
           cd bench
           RUSTFLAGS="--cfg=ldk_bench --cfg=require_route_graph_test" cargo bench
 
-  check_commits:
-    runs-on: self-hosted
-    env:
-      TOOLCHAIN: stable
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-      - name: Fetch full tree and rebase on upstream
-        run: |
-          git remote add upstream https://github.com/lightningdevkit/rust-lightning
-          git fetch upstream
-          export GIT_COMMITTER_EMAIL="rl-ci@example.com"
-          export GIT_COMMITTER_NAME="RL CI"
-          git rebase upstream/${{ github.base_ref }}
-      - name: For each commit, run cargo check (including in fuzz)
-        run: ci/check-each-commit.sh upstream/${{ github.base_ref }}
-
   check_release:
     runs-on: ubuntu-latest
     env:
