@@ -2272,7 +2272,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 	let payment_paths = invoice.payment_paths().to_vec();
 	let payment_hash = invoice.payment_hash();
 
-	let expanded_key = alice.keys_manager.get_inbound_payment_key();
+	let expanded_key = alice.keys_manager.get_expanded_key();
 	let secp_ctx = Secp256k1::new();
 
 	let created_at = alice.node.duration_since_epoch();

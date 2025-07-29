@@ -80,9 +80,9 @@ use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey}
 
 use lightning::util::dyn_signer::DynSigner;
 
-use std::collections::VecDeque;
 use std::cell::RefCell;
 use std::cmp;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -406,7 +406,7 @@ impl NodeSigner for KeyProvider {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn get_inbound_payment_key(&self) -> ExpandedKey {
+	fn get_expanded_key(&self) -> ExpandedKey {
 		self.inbound_payment_key
 	}
 

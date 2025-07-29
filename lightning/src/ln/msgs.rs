@@ -3589,7 +3589,7 @@ where
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(receive_tlvs) } => {
 					let ReceiveTlvs { tlvs, authentication: (hmac, nonce) } = receive_tlvs;
-					let expanded_key = node_signer.get_inbound_payment_key();
+					let expanded_key = node_signer.get_expanded_key();
 					if tlvs.verify_for_offer_payment(hmac, nonce, &expanded_key).is_err() {
 						return Err(DecodeError::InvalidValue);
 					}
@@ -3741,7 +3741,7 @@ where
 					readable: BlindedTrampolineTlvs::Receive(receive_tlvs),
 				} => {
 					let ReceiveTlvs { tlvs, authentication: (hmac, nonce) } = receive_tlvs;
-					let expanded_key = node_signer.get_inbound_payment_key();
+					let expanded_key = node_signer.get_expanded_key();
 					if tlvs.verify_for_offer_payment(hmac, nonce, &expanded_key).is_err() {
 						return Err(DecodeError::InvalidValue);
 					}

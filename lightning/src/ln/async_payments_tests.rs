@@ -255,7 +255,7 @@ fn create_static_invoice_builder<'a>(
 
 	let created_at = recipient.node.duration_since_epoch();
 	let payment_secret = inbound_payment::create_for_spontaneous_payment(
-		&recipient.keys_manager.get_inbound_payment_key(),
+		&recipient.keys_manager.get_expanded_key(),
 		amount_msat,
 		relative_expiry_secs,
 		created_at.as_secs(),
@@ -982,7 +982,7 @@ fn amount_doesnt_match_invreq() {
 			valid_invreq = Some(invoice_request.clone());
 			*invoice_request = offer
 				.request_invoice(
-					&nodes[0].keys_manager.get_inbound_payment_key(),
+					&nodes[0].keys_manager.get_expanded_key(),
 					Nonce::from_entropy_source(nodes[0].keys_manager),
 					&secp_ctx,
 					payment_id,
