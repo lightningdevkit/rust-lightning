@@ -2999,6 +2999,7 @@ mod tests {
 			funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
 			our_funding_inputs: inputs,
+			change_script: None,
 		};
 		assert_eq!(
 			calculate_change_output_value(&context, false, &ScriptBuf::new(), &outputs, 300),

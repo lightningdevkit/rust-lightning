@@ -32,7 +32,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::{secp256k1, Sequence};
 #[cfg(splicing)]
-use bitcoin::{TxIn, Weight};
+use bitcoin::{ScriptBuf, TxIn, Weight};
 
 use crate::blinded_path::message::MessageForwardNode;
 use crate::blinded_path::message::{AsyncPaymentsContext, OffersContext};
@@ -4437,13 +4437,13 @@ where
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
+		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
 		funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let result = self.internal_splice_channel(
-				channel_id, counterparty_node_id, our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_per_kw, locktime
+				channel_id, counterparty_node_id, our_funding_contribution_satoshis, our_funding_inputs, change_script, funding_feerate_per_kw, locktime
 			);
 			res = result;
 			match res {
@@ -4459,8 +4459,8 @@ where
 	fn internal_splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 		our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, funding_feerate_per_kw: u32,
-		locktime: Option<u32>,
+		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
+		funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -4484,6 +4484,7 @@ where
 					let msg = chan.splice_channel(
 						our_funding_contribution_satoshis,
 						our_funding_inputs,
+						change_script,
 						funding_feerate_per_kw,
 						locktime,
 					)?;

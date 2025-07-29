@@ -74,6 +74,7 @@ fn test_v1_splice_in() {
 			&acceptor_node.node.get_our_node_id(),
 			splice_in_sats as i64,
 			funding_inputs,
+			None, // change_script
 			funding_feerate_per_kw,
 			None, // locktime
 		)
@@ -322,6 +323,7 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 		&nodes[1].node.get_our_node_id(),
 		splice_in_sats as i64,
 		funding_inputs,
+		None, // change_script
 		1024, // funding_feerate_per_kw,
 		None, // locktime
 	);
