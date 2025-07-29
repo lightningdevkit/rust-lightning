@@ -17218,7 +17218,7 @@ mod tests {
 		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
 		// Reload Node!
-		// nodes[0].chain_source.clear_watched_txn_and_outputs();
+		// TODO: Handle the case where we've completely forgotten about an active channel.
 		reload_node!(nodes[0], test_default_channel_config(), &nodes_0_serialized, &[&old_state_monitor[..]], persister, chain_monitor, nodes_0_deserialized);
 
 		nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
