@@ -1144,6 +1144,44 @@ where
 		msg.onion_routing_packet.hmac,
 		(control_tlvs_ss, custom_handler.deref(), receiving_context_auth_key, logger.deref()),
 	);
+
+	// Constructs the next onion message using packet data and blinding logic.
+	let build_outbound_onion_message = |packet_pubkey: PublicKey,
+	                                    next_hop_hmac: [u8; 32],
+	                                    new_packet_bytes: Vec<u8>,
+	                                    blinding_point_opt: Option<PublicKey>|
+	 -> Result<OnionMessage, ()> {
+		let new_pubkey =
+			match onion_utils::next_hop_pubkey(&secp_ctx, packet_pubkey, &onion_decode_ss) {
+				Ok(pk) => pk,
+				Err(e) => {
+					log_trace!(logger, "Failed to compute next hop packet pubkey: {}", e);
+					return Err(());
+				},
+			};
+		let outgoing_packet = Packet {
+			version: 0,
+			public_key: new_pubkey,
+			hop_data: new_packet_bytes,
+			hmac: next_hop_hmac,
+		};
+		let blinding_point = match blinding_point_opt {
+			Some(bp) => bp,
+			None => match onion_utils::next_hop_pubkey(
+				&secp_ctx,
+				msg.blinding_point,
+				control_tlvs_ss.as_ref(),
+			) {
+				Ok(bp) => bp,
+				Err(e) => {
+					log_trace!(logger, "Failed to compute next blinding point: {}", e);
+					return Err(());
+				},
+			},
+		};
+		Ok(OnionMessage { blinding_point, onion_routing_packet: outgoing_packet })
+	};
+
 	match next_hop {
 		Ok((
 			Payload::Receive {
@@ -1217,52 +1255,35 @@ where
 			},
 		},
 		Ok((
+			Payload::Dummy { control_tlvs_authenticated },
+			Some((next_hop_hmac, new_packet_bytes)),
+		)) => {
+			if !control_tlvs_authenticated {
+				log_trace!(logger, "Received an unauthenticated dummy onion message");
+				return Err(());
+			}
+
+			let onion_message = build_outbound_onion_message(
+				msg.onion_routing_packet.public_key,
+				next_hop_hmac,
+				new_packet_bytes,
+				None,
+			)?;
+			peel_onion_message(&onion_message, secp_ctx, node_signer, logger, custom_handler)
+		},
+		Ok((
 			Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
 				next_hop,
 				next_blinding_override,
 			})),
 			Some((next_hop_hmac, new_packet_bytes)),
 		)) => {
-			// TODO: we need to check whether `next_hop` is our node, in which case this is a dummy
-			// blinded hop and this onion message is destined for us. In this situation, we should keep
-			// unwrapping the onion layers to get to the final payload. Since we don't have the option
-			// of creating blinded paths with dummy hops currently, we should be ok to not handle this
-			// for now.
-			let packet_pubkey = msg.onion_routing_packet.public_key;
-			let new_pubkey_opt =
-				onion_utils::next_hop_pubkey(&secp_ctx, packet_pubkey, &onion_decode_ss);
-			let new_pubkey = match new_pubkey_opt {
-				Ok(pk) => pk,
-				Err(e) => {
-					log_trace!(logger, "Failed to compute next hop packet pubkey: {}", e);
-					return Err(());
-				},
-			};
-			let outgoing_packet = Packet {
-				version: 0,
-				public_key: new_pubkey,
-				hop_data: new_packet_bytes,
-				hmac: next_hop_hmac,
-			};
-			let onion_message = OnionMessage {
-				blinding_point: match next_blinding_override {
-					Some(blinding_point) => blinding_point,
-					None => {
-						match onion_utils::next_hop_pubkey(
-							&secp_ctx,
-							msg.blinding_point,
-							control_tlvs_ss.as_ref(),
-						) {
-							Ok(bp) => bp,
-							Err(e) => {
-								log_trace!(logger, "Failed to compute next blinding point: {}", e);
-								return Err(());
-							},
-						}
-					},
-				},
-				onion_routing_packet: outgoing_packet,
-			};
+			let onion_message = build_outbound_onion_message(
+				msg.onion_routing_packet.public_key,
+				next_hop_hmac,
+				new_packet_bytes,
+				next_blinding_override,
+			)?;
 
 			Ok(PeeledOnion::Forward(next_hop, onion_message))
 		},
