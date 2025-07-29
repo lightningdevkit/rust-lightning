@@ -28,10 +28,11 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-#[allow(unused_imports)]
+#[cfg(peer_storage)]
+use crate::chain::channelmonitor::write_chanmon_internal;
 use crate::chain::channelmonitor::{
-	write_chanmon_internal, Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent,
-	TransactionOutputs, WithChannelMonitor,
+	Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
+	WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
@@ -48,7 +49,7 @@ use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::persist::MonitorName;
-#[allow(unused_imports)]
+#[cfg(peer_storage)]
 use crate::util::ser::{VecWriter, Writeable};
 use crate::util::wakers::{Future, Notifier};
 use bitcoin::secp256k1::PublicKey;
@@ -812,50 +813,54 @@ where
 		mon.values().map(|monitor| monitor.monitor.get_counterparty_node_id()).collect()
 	}
 
+	#[cfg(peer_storage)]
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
 		#[allow(unused_mut)]
 		let mut monitors_list: Vec<PeerStorageMonitorHolder> = Vec::new();
 		let random_bytes = self.entropy_source.get_secure_random_bytes();
 
-		#[cfg(peer_storage)]
-		{
-			const MAX_PEER_STORAGE_SIZE: usize = 65531;
-			const USIZE_LEN: usize = core::mem::size_of::<usize>();
-			let random_usize = usize::from_le_bytes(random_bytes[0..USIZE_LEN].try_into().unwrap());
-			let mut curr_size = 0;
-			let monitors = self.monitors.read().unwrap();
-			// Randomising Keys in the HashMap to fetch monitors without repetition.
-			let mut keys: Vec<&ChannelId> = monitors.keys().collect();
-			for i in (1..keys.len()).rev() {
-				let j = random_usize % (i + 1);
-				keys.swap(i, j);
-			}
+		const MAX_PEER_STORAGE_SIZE: usize = 65531;
+		const USIZE_LEN: usize = core::mem::size_of::<usize>();
+		let mut usize_bytes = [0u8; USIZE_LEN];
+		usize_bytes.copy_from_slice(&random_bytes[0..USIZE_LEN]);
+		let random_usize = usize::from_le_bytes(usize_bytes);
 
-			for chan_id in keys {
-				let mon = &monitors[chan_id];
-				let mut ser_chan = VecWriter(Vec::new());
-				let min_seen_secret = mon.monitor.get_min_seen_secret();
-				let counterparty_node_id = mon.monitor.get_counterparty_node_id();
+		let mut curr_size = 0;
+		let monitors = self.monitors.read().unwrap();
+		let mut stored_chanmon_idx = alloc::collections::BTreeSet::<usize>::new();
+		// Used as a fallback reference if the set is empty
+		let zero = 0;
+
+		while curr_size < MAX_PEER_STORAGE_SIZE
+			&& *stored_chanmon_idx.last().unwrap_or(&zero) < monitors.len()
+		{
+			let idx = random_usize % monitors.len();
+			stored_chanmon_idx.insert(idx + 1);
+			let (cid, mon) = monitors.iter().skip(idx).next().unwrap();
+
+			let mut ser_chan = VecWriter(Vec::new());
+			let min_seen_secret = mon.monitor.get_min_seen_secret();
+			let counterparty_node_id = mon.monitor.get_counterparty_node_id();
+			{
 				let chan_mon = mon.monitor.inner.lock().unwrap();
 
 				write_chanmon_internal(&chan_mon, true, &mut ser_chan)
 					.expect("can not write Channel Monitor for peer storage message");
-
-				let peer_storage_monitor = PeerStorageMonitorHolder {
-					channel_id: *chan_id,
-					min_seen_secret,
-					counterparty_node_id,
-					monitor_bytes: ser_chan.0,
-				};
-
-				// Adding size of peer_storage_monitor.
-				curr_size += peer_storage_monitor.serialized_length();
-
-				if curr_size > MAX_PEER_STORAGE_SIZE {
-					break;
-				}
-				monitors_list.push(peer_storage_monitor);
 			}
+			let peer_storage_monitor = PeerStorageMonitorHolder {
+				channel_id: *cid,
+				min_seen_secret,
+				counterparty_node_id,
+				monitor_bytes: ser_chan.0,
+			};
+
+			// Adding size of peer_storage_monitor.
+			curr_size += peer_storage_monitor.serialized_length();
+
+			if curr_size > MAX_PEER_STORAGE_SIZE {
+				break;
+			}
+			monitors_list.push(peer_storage_monitor);
 		}
 
 		let serialised_channels = monitors_list.encode();
@@ -965,6 +970,7 @@ where
 			)
 		});
 
+		#[cfg(peer_storage)]
 		// Send peer storage everytime a new block arrives.
 		for node_id in self.all_counterparty_node_ids() {
 			self.send_peer_storage(node_id);
@@ -1066,6 +1072,7 @@ where
 			)
 		});
 
+		#[cfg(peer_storage)]
 		// Send peer storage everytime a new block arrives.
 		for node_id in self.all_counterparty_node_ids() {
 			self.send_peer_storage(node_id);
