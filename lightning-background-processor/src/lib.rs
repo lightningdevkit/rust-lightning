@@ -803,6 +803,15 @@ where
 		} else {
 			false
 		};
+		match check_sleeper(&mut last_freshness_call) {
+			Some(false) => {
+				log_trace!(logger, "Calling ChannelManager's timer_tick_occurred");
+				channel_manager.get_cm().timer_tick_occurred();
+				last_freshness_call = sleeper(FRESHNESS_TIMER);
+			},
+			Some(true) => break,
+			None => {},
+		}
 		if channel_manager.get_cm().get_and_clear_needs_persistence() {
 			log_trace!(logger, "Persisting ChannelManager...");
 			kv_store
@@ -814,53 +823,6 @@ where
 				)
 				.await?;
 			log_trace!(logger, "Done persisting ChannelManager.");
-		}
-		match check_sleeper(&mut last_freshness_call) {
-			Some(false) => {
-				log_trace!(logger, "Calling ChannelManager's timer_tick_occurred");
-				channel_manager.get_cm().timer_tick_occurred();
-				last_freshness_call = sleeper(FRESHNESS_TIMER);
-			},
-			Some(true) => break,
-			None => {},
-		}
-		match check_sleeper(&mut last_onion_message_handler_call) {
-			Some(false) => {
-				if let Some(om) = &onion_messenger {
-					log_trace!(logger, "Calling OnionMessageHandler's timer_tick_occurred");
-					om.get_om().timer_tick_occurred();
-				}
-				last_onion_message_handler_call = sleeper(ONION_MESSAGE_HANDLER_TIMER);
-			},
-			Some(true) => break,
-			None => {},
-		}
-		if await_slow {
-			// On various platforms, we may be starved of CPU cycles for several reasons.
-			// E.g. on iOS, if we've been in the background, we will be entirely paused.
-			// Similarly, if we're on a desktop platform and the device has been asleep, we
-			// may not get any cycles.
-			// We detect this by checking if our max-100ms-sleep, above, ran longer than a
-			// full second, at which point we assume sockets may have been killed (they
-			// appear to be at least on some platforms, even if it has only been a second).
-			// Note that we have to take care to not get here just because user event
-			// processing was slow at the top of the loop. For example, the sample client
-			// may call Bitcoin Core RPCs during event handling, which very often takes
-			// more than a handful of seconds to complete, and shouldn't disconnect all our
-			// peers.
-			log_trace!(logger, "100ms sleep took more than a second, disconnecting peers.");
-			peer_manager.as_ref().disconnect_all_peers();
-			last_ping_call = sleeper(PING_TIMER);
-		} else {
-			match check_sleeper(&mut last_ping_call) {
-				Some(false) => {
-					log_trace!(logger, "Calling PeerManager's timer_tick_occurred");
-					peer_manager.as_ref().timer_tick_occurred();
-					last_ping_call = sleeper(PING_TIMER);
-				},
-				Some(true) => break,
-				_ => {},
-			}
 		}
 
 		// Note that we want to run a graph prune once not long after startup before
@@ -948,15 +910,6 @@ where
 			Some(true) => break,
 			None => {},
 		}
-		match check_sleeper(&mut last_rebroadcast_call) {
-			Some(false) => {
-				log_trace!(logger, "Rebroadcasting monitor's pending claims");
-				chain_monitor.rebroadcast_pending_claims();
-				last_rebroadcast_call = sleeper(REBROADCAST_TIMER);
-			},
-			Some(true) => break,
-			None => {},
-		}
 		match check_sleeper(&mut last_sweeper_call) {
 			Some(false) => {
 				log_trace!(logger, "Regenerating sweeper spends if necessary");
@@ -964,6 +917,57 @@ where
 					let _ = sweeper.regenerate_and_broadcast_spend_if_necessary().await;
 				}
 				last_sweeper_call = sleeper(SWEEPER_TIMER);
+			},
+			Some(true) => break,
+			None => {},
+		}
+		match check_sleeper(&mut last_onion_message_handler_call) {
+			Some(false) => {
+				if let Some(om) = &onion_messenger {
+					log_trace!(logger, "Calling OnionMessageHandler's timer_tick_occurred");
+					om.get_om().timer_tick_occurred();
+				}
+				last_onion_message_handler_call = sleeper(ONION_MESSAGE_HANDLER_TIMER);
+			},
+			Some(true) => break,
+			None => {},
+		}
+
+		// Peer manager timer tick. If we were interrupted on a mobile platform, we disconnect all peers.
+		if await_slow {
+			// On various platforms, we may be starved of CPU cycles for several reasons.
+			// E.g. on iOS, if we've been in the background, we will be entirely paused.
+			// Similarly, if we're on a desktop platform and the device has been asleep, we
+			// may not get any cycles.
+			// We detect this by checking if our max-100ms-sleep, above, ran longer than a
+			// full second, at which point we assume sockets may have been killed (they
+			// appear to be at least on some platforms, even if it has only been a second).
+			// Note that we have to take care to not get here just because user event
+			// processing was slow at the top of the loop. For example, the sample client
+			// may call Bitcoin Core RPCs during event handling, which very often takes
+			// more than a handful of seconds to complete, and shouldn't disconnect all our
+			// peers.
+			log_trace!(logger, "100ms sleep took more than a second, disconnecting peers.");
+			peer_manager.as_ref().disconnect_all_peers();
+			last_ping_call = sleeper(PING_TIMER);
+		} else {
+			match check_sleeper(&mut last_ping_call) {
+				Some(false) => {
+					log_trace!(logger, "Calling PeerManager's timer_tick_occurred");
+					peer_manager.as_ref().timer_tick_occurred();
+					last_ping_call = sleeper(PING_TIMER);
+				},
+				Some(true) => break,
+				_ => {},
+			}
+		}
+
+		// Rebroadcast pending claims.
+		match check_sleeper(&mut last_rebroadcast_call) {
+			Some(false) => {
+				log_trace!(logger, "Rebroadcasting monitor's pending claims");
+				chain_monitor.rebroadcast_pending_claims();
+				last_rebroadcast_call = sleeper(REBROADCAST_TIMER);
 			},
 			Some(true) => break,
 			None => {},
@@ -1292,6 +1296,11 @@ impl BackgroundProcessor {
 					log_trace!(logger, "Terminating background processor.");
 					break;
 				}
+				if last_freshness_call.elapsed() > FRESHNESS_TIMER {
+					log_trace!(logger, "Calling ChannelManager's timer_tick_occurred");
+					channel_manager.get_cm().timer_tick_occurred();
+					last_freshness_call = Instant::now();
+				}
 				if channel_manager.get_cm().get_and_clear_needs_persistence() {
 					log_trace!(logger, "Persisting ChannelManager...");
 					(kv_store.write(
@@ -1301,23 +1310,6 @@ impl BackgroundProcessor {
 						&channel_manager.get_cm().encode(),
 					))?;
 					log_trace!(logger, "Done persisting ChannelManager.");
-				}
-				if last_freshness_call.elapsed() > FRESHNESS_TIMER {
-					log_trace!(logger, "Calling ChannelManager's timer_tick_occurred");
-					channel_manager.get_cm().timer_tick_occurred();
-					last_freshness_call = Instant::now();
-				}
-				if last_onion_message_handler_call.elapsed() > ONION_MESSAGE_HANDLER_TIMER {
-					if let Some(om) = &onion_messenger {
-						log_trace!(logger, "Calling OnionMessageHandler's timer_tick_occurred");
-						om.get_om().timer_tick_occurred();
-					}
-					last_onion_message_handler_call = Instant::now();
-				}
-				if last_ping_call.elapsed() > PING_TIMER {
-					log_trace!(logger, "Calling PeerManager's timer_tick_occurred");
-					peer_manager.as_ref().timer_tick_occurred();
-					last_ping_call = Instant::now();
 				}
 
 				// Note that we want to run a graph prune once not long after startup before
@@ -1386,17 +1378,29 @@ impl BackgroundProcessor {
 					}
 					last_scorer_persist_call = Instant::now();
 				}
-				if last_rebroadcast_call.elapsed() > REBROADCAST_TIMER {
-					log_trace!(logger, "Rebroadcasting monitor's pending claims");
-					chain_monitor.rebroadcast_pending_claims();
-					last_rebroadcast_call = Instant::now();
-				}
 				if last_sweeper_call.elapsed() > SWEEPER_TIMER {
 					log_trace!(logger, "Regenerating sweeper spends if necessary");
 					if let Some(ref sweeper) = sweeper {
 						let _ = sweeper.regenerate_and_broadcast_spend_if_necessary();
 					}
 					last_sweeper_call = Instant::now();
+				}
+				if last_onion_message_handler_call.elapsed() > ONION_MESSAGE_HANDLER_TIMER {
+					if let Some(om) = &onion_messenger {
+						log_trace!(logger, "Calling OnionMessageHandler's timer_tick_occurred");
+						om.get_om().timer_tick_occurred();
+					}
+					last_onion_message_handler_call = Instant::now();
+				}
+				if last_ping_call.elapsed() > PING_TIMER {
+					log_trace!(logger, "Calling PeerManager's timer_tick_occurred");
+					peer_manager.as_ref().timer_tick_occurred();
+					last_ping_call = Instant::now();
+				}
+				if last_rebroadcast_call.elapsed() > REBROADCAST_TIMER {
+					log_trace!(logger, "Rebroadcasting monitor's pending claims");
+					chain_monitor.rebroadcast_pending_claims();
+					last_rebroadcast_call = Instant::now();
 				}
 			}
 
