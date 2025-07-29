@@ -316,14 +316,14 @@ where
 						"Received unexpected request message from {}",
 						counterparty_node_id
 					),
-					action: ErrorAction::IgnoreAndLog(Level::Info),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
 				});
 			},
 			LSPS5Message::Response(rid, resp) => (rid, resp),
 		};
 		let mut result: Result<(), LightningError> = Err(LightningError {
 			err: format!("Received LSPS5 response from unknown peer: {}", counterparty_node_id),
-			action: ErrorAction::IgnoreAndLog(Level::Error),
+			action: ErrorAction::IgnoreAndLog(Level::Debug),
 		});
 		let event_queue_notifier = self.pending_events.notifier();
 		let handle_response = |peer_state: &mut PeerState<TP>| {
@@ -409,7 +409,7 @@ where
 			} else {
 				result = Err(LightningError {
 					err: format!("Received response for unknown request ID: {}", request_id.0),
-					action: ErrorAction::IgnoreAndLog(Level::Info),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
 				});
 			}
 		};

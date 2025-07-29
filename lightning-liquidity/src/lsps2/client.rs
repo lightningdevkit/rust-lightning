@@ -206,7 +206,7 @@ where
 							"Received get_info response for an unknown request: {:?}",
 							request_id
 						),
-						action: ErrorAction::IgnoreAndLog(Level::Info),
+						action: ErrorAction::IgnoreAndLog(Level::Debug),
 					});
 				}
 
@@ -222,7 +222,7 @@ where
 						"Received get_info response from unknown peer: {:?}",
 						counterparty_node_id
 					),
-					action: ErrorAction::IgnoreAndLog(Level::Info),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
 				})
 			},
 		}
@@ -246,7 +246,7 @@ where
 							"Received get_info error for an unknown request: {:?}",
 							request_id
 						),
-						action: ErrorAction::IgnoreAndLog(Level::Info),
+						action: ErrorAction::IgnoreAndLog(Level::Debug),
 					});
 				}
 
@@ -267,7 +267,7 @@ where
 				Err(lightning_error)
 			},
 			None => {
-				return Err(LightningError { err: format!("Received error response for a get_info request from an unknown counterparty ({:?})",counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)});
+				return Err(LightningError { err: format!("Received error response for a get_info request from an unknown counterparty ({:?})",counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 			},
 		}
 	}
@@ -289,7 +289,7 @@ where
 							"Received buy response for an unknown request: {:?}",
 							request_id
 						),
-						action: ErrorAction::IgnoreAndLog(Level::Info),
+						action: ErrorAction::IgnoreAndLog(Level::Debug),
 					})?;
 
 				if let Ok(intercept_scid) = result.jit_channel_scid.to_scid() {
@@ -316,7 +316,7 @@ where
 						"Received buy response from unknown peer: {:?}",
 						counterparty_node_id
 					),
-					action: ErrorAction::IgnoreAndLog(Level::Info),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
 				});
 			},
 		}
@@ -335,7 +335,7 @@ where
 
 				peer_state.pending_buy_requests.remove(&request_id).ok_or(LightningError {
 					err: format!("Received buy error for an unknown request: {:?}", request_id),
-					action: ErrorAction::IgnoreAndLog(Level::Info),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
 				})?;
 
 				let lightning_error = LightningError {
@@ -355,7 +355,7 @@ where
 				Err(lightning_error)
 			},
 			None => {
-				return Err(LightningError { err: format!("Received error response for a buy request from an unknown counterparty ({:?})", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)});
+				return Err(LightningError { err: format!("Received error response for a buy request from an unknown counterparty ({:?})", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 			},
 		}
 	}
