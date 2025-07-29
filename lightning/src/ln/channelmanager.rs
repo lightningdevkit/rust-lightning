@@ -9730,10 +9730,27 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
 				if negotiation_complete {
-					let (commitment_signed, funding_ready_for_sig_event_opt) = chan_entry
+					let (commitment_signed, funding_ready_for_sig_event_opt) = match chan_entry
 						.get_mut()
 						.funding_tx_constructed(&self.logger)
-						.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
+					{
+						Ok((commitment_signed, event)) => (commitment_signed, event),
+						Err(tx_abort) => {
+							if chan_entry.get().is_funded() {
+								peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
+									node_id: counterparty_node_id,
+									msg: tx_abort,
+								});
+								return Ok(());
+							} else {
+								let msg = String::from_utf8(tx_abort.data)
+									.expect("tx_abort data should contain valid UTF-8");
+								let reason = ClosureReason::ProcessingError { err: msg.clone() };
+								let err = ChannelError::Close((msg, reason));
+								try_channel_entry!(self, peer_state, Err(err), chan_entry)
+							}
+						},
+					};
 					if let Some(funding_ready_for_sig_event) = funding_ready_for_sig_event_opt {
 						let mut pending_events = self.pending_events.lock().unwrap();
 						pending_events.push_back((funding_ready_for_sig_event, None));

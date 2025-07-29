@@ -1009,6 +1009,16 @@ impl ChannelError {
 	pub(super) fn close(err: String) -> Self {
 		ChannelError::Close((err.clone(), ClosureReason::ProcessingError { err }))
 	}
+
+	pub(super) fn message(&self) -> &str {
+		match self {
+			&ChannelError::Ignore(ref e) => &e,
+			&ChannelError::Warn(ref e) => &e,
+			&ChannelError::WarnAndDisconnect(ref e) => &e,
+			&ChannelError::Close((ref e, _)) => &e,
+			&ChannelError::SendError(ref e) => &e,
+		}
+	}
 }
 
 pub(super) struct WithChannelContext<'a, L: Deref>
@@ -1774,7 +1784,7 @@ where
 
 	pub fn funding_tx_constructed<L: Deref>(
 		&mut self, logger: &L,
-	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
+	) -> Result<(msgs::CommitmentSigned, Option<Event>), msgs::TxAbort>
 	where
 		L::Target: Logger,
 	{
@@ -1829,14 +1839,17 @@ where
 					}
 				}
 
-				return Err(ChannelError::Warn(
-					"Got a tx_complete message in an invalid state".to_owned(),
-				));
+				return Err(msgs::TxAbort {
+					channel_id: chan.context.channel_id(),
+					data: "Got a tx_complete message in an invalid state".to_owned().into_bytes(),
+				});
 			},
 			_ => {
-				return Err(ChannelError::Warn(
-					"Got a tx_complete message in an invalid phase".to_owned(),
-				))
+				debug_assert!(false);
+				return Err(msgs::TxAbort {
+					channel_id: self.context().channel_id(),
+					data: "Got a tx_complete message in an invalid phase".to_owned().into_bytes(),
+				});
 			},
 		}
 	}
@@ -5476,7 +5489,7 @@ where
 	fn funding_tx_constructed<L: Deref>(
 		&mut self, funding: &mut FundingScope, signing_session: &mut InteractiveTxSigningSession,
 		is_splice: bool, holder_commitment_transaction_number: u64, logger: &L
-	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
+	) -> Result<(msgs::CommitmentSigned, Option<Event>), msgs::TxAbort>
 	where
 		L::Target: Logger
 	{
@@ -5485,9 +5498,10 @@ where
 		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
 			if outp.script_pubkey() == &expected_spk && outp.value() == funding.get_value_satoshis() {
 				if output_index.is_some() {
-					let msg = "Multiple outputs matched the expected script and value";
-					let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-					return Err(ChannelError::Close((msg.to_owned(), reason)));
+					return Err(msgs::TxAbort {
+						channel_id: self.channel_id(),
+						data: "Multiple outputs matched the expected script and value".to_owned().into_bytes(),
+					});
 				}
 				output_index = Some(idx as u16);
 			}
@@ -5495,9 +5509,10 @@ where
 		let outpoint = if let Some(output_index) = output_index {
 			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
 		} else {
-			let msg = "No output matched the funding script_pubkey";
-			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-			return Err(ChannelError::Close((msg.to_owned(), reason)));
+			return Err(msgs::TxAbort {
+				channel_id: self.channel_id(),
+				data: "No output matched the funding script_pubkey".to_owned().into_bytes(),
+			});
 		};
 		funding
 			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
@@ -5507,12 +5522,11 @@ where
 				holder_commitment_transaction_number,
 				self.cur_counterparty_commitment_transaction_number,
 			);
-			let message = "TODO Forced error, incomplete implementation".to_owned();
 			// TODO(splicing) Forced error, as the use case is not complete
-			return Err(ChannelError::Close((
-				message.clone(),
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false), message }
-			)));
+			return Err(msgs::TxAbort {
+				channel_id: self.channel_id(),
+				data: "Splicing not yet supported".to_owned().into_bytes(),
+			});
 		} else {
 			self.assert_no_commitment_advancement(holder_commitment_transaction_number, "initial commitment_signed");
 		}
@@ -5522,7 +5536,10 @@ where
 			Ok(commitment_signed) => commitment_signed,
 			Err(e) => {
 				funding.channel_transaction_parameters.funding_outpoint = None;
-				return Err(e)
+				return Err(msgs::TxAbort {
+					channel_id: self.channel_id(),
+					data: e.message().to_owned().into_bytes(),
+				});
 			},
 		};
 
@@ -5532,9 +5549,10 @@ where
 					false,
 					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
 				);
-				let msg = "V2 channel rejected due to sender error";
-				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-				return Err(ChannelError::Close((msg.to_owned(), reason)));
+				return Err(msgs::TxAbort {
+					channel_id: self.channel_id(),
+					data: "V2 channel rejected due to sender error".to_owned().into_bytes(),
+				});
 			}
 			None
 		} else {
@@ -5556,9 +5574,10 @@ where
 				false,
 				"We don't support users providing inputs but somehow we had more than zero inputs",
 			);
-			let msg = "V2 channel rejected due to sender error";
-			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-			return Err(ChannelError::Close((msg.to_owned(), reason)));
+			return Err(msgs::TxAbort {
+				channel_id: self.channel_id(),
+				data: "V2 channel rejected due to sender error".to_owned().into_bytes(),
+			});
 		};
 
 		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());

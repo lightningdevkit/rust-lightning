@@ -270,7 +270,7 @@ fn test_v1_splice_in() {
 		_ => panic!("Unexpected event {:?}", events[0]),
 	}
 	match events[1] {
-		MessageSendEvent::HandleError { .. } => {},
+		MessageSendEvent::SendTxAbort { .. } => {},
 		_ => panic!("Unexpected event {:?}", events[1]),
 	}
 
