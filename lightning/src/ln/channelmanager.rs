@@ -17500,7 +17500,6 @@ mod tests {
 		let events = nodes[1].node.get_and_clear_pending_events();
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
-		nodes[1].node.get_and_clear_pending_events();
 		check_added_monitors!(nodes[1], 1);
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());

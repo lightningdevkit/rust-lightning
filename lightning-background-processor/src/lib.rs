@@ -387,20 +387,13 @@ macro_rules! define_run_body {
 			// persistence.
 			$peer_manager.as_ref().process_events();
 
-			// Exit the loop if the background processor was requested to stop.
-			if $loop_exit_check {
-				log_trace!($logger, "Terminating background processor.");
-				break;
-			}
-
 			if $timer_elapsed(&mut last_forwards_processing_call, cur_batch_delay) {
 				$channel_manager.get_cm().process_pending_htlc_forwards();
 				cur_batch_delay = $batch_delay.next();
 				last_forwards_processing_call = $get_timer(cur_batch_delay);
 			}
 
-			// Checke whether to exit the loop again, as some time might have passed since we
-			// checked above.
+			// Exit the loop if the background processor was requested to stop.
 			if $loop_exit_check {
 				log_trace!($logger, "Terminating background processor.");
 				break;
@@ -590,14 +583,12 @@ pub(crate) mod futures_util {
 		C: Future<Output = ()> + Unpin,
 		D: Future<Output = ()> + Unpin,
 		E: Future<Output = bool> + Unpin,
-		F: Future<Output = bool> + Unpin,
 	> {
 		pub a: A,
 		pub b: B,
 		pub c: C,
 		pub d: D,
 		pub e: E,
-		pub f: F,
 	}
 
 	pub(crate) enum SelectorOutput {
@@ -606,7 +597,6 @@ pub(crate) mod futures_util {
 		C,
 		D,
 		E(bool),
-		F(bool),
 	}
 
 	impl<
@@ -615,8 +605,7 @@ pub(crate) mod futures_util {
 			C: Future<Output = ()> + Unpin,
 			D: Future<Output = ()> + Unpin,
 			E: Future<Output = bool> + Unpin,
-			F: Future<Output = bool> + Unpin,
-		> Future for Selector<A, B, C, D, E, F>
+		> Future for Selector<A, B, C, D, E>
 	{
 		type Output = SelectorOutput;
 		fn poll(
@@ -649,12 +638,6 @@ pub(crate) mod futures_util {
 			match Pin::new(&mut self.e).poll(ctx) {
 				Poll::Ready(res) => {
 					return Poll::Ready(SelectorOutput::E(res));
-				},
-				Poll::Pending => {},
-			}
-			match Pin::new(&mut self.f).poll(ctx) {
-				Poll::Ready(res) => {
-					return Poll::Ready(SelectorOutput::F(res));
 				},
 				Poll::Pending => {},
 			}
@@ -997,28 +980,25 @@ where
 			} else {
 				OptionalSelector { optional_future: None }
 			};
+
+			let needs_processing = channel_manager.get_cm().needs_pending_htlc_processing();
+			let sleep_delay = match (needs_processing, mobile_interruptable_platform) {
+				(true, true) => batch_delay.get().min(Duration::from_millis(100)),
+				(true, false) => batch_delay.get().min(FASTEST_TIMER),
+				(false, true) => Duration::from_millis(100),
+				(false, false) => FASTEST_TIMER,
+			};
+
 			let fut = Selector {
 				a: channel_manager.get_cm().get_event_or_persistence_needed_future(),
 				b: chain_monitor.get_update_future(),
 				c: om_fut,
 				d: lm_fut,
-				e: sleeper(if channel_manager.get_cm().needs_pending_htlc_processing() {
-					batch_delay.get()
-				} else {
-					Duration::MAX
-				}),
-				f: sleeper(if mobile_interruptable_platform {
-					Duration::from_millis(100)
-				} else {
-					FASTEST_TIMER
-				}),
+				e: sleeper(sleep_delay),
 			};
 			match fut.await {
 				SelectorOutput::A | SelectorOutput::B | SelectorOutput::C | SelectorOutput::D => {},
 				SelectorOutput::E(exit) => {
-					should_break = exit;
-				},
-				SelectorOutput::F(exit) => {
 					should_break = exit;
 				},
 			}
