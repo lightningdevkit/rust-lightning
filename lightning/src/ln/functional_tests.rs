@@ -3174,13 +3174,13 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 			ref purpose,
 			amount_msat,
 			receiver_node_id,
-			ref via_channel_ids,
+			ref receiving_channel_ids,
 			..
 		} => {
 			assert_eq!(payment_hash_1, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), node_b_id);
-			assert_eq!(*via_channel_ids, vec![(channel_id, Some(user_channel_id))]);
+			assert_eq!(*receiving_channel_ids, vec![(channel_id, Some(user_channel_id))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..

@@ -218,13 +218,13 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 			ref purpose,
 			amount_msat,
 			receiver_node_id,
-			ref via_channel_ids,
+			ref receiving_channel_ids,
 			..
 		} => {
 			assert_eq!(payment_hash_1, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), node_b_id);
-			assert_eq!(*via_channel_ids, &[(channel_id, Some(user_channel_id))]);
+			assert_eq!(*receiving_channel_ids, &[(channel_id, Some(user_channel_id))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
@@ -660,13 +660,13 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			ref purpose,
 			amount_msat,
 			receiver_node_id,
-			ref via_channel_ids,
+			ref receiving_channel_ids,
 			..
 		} => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), node_b_id);
-			assert_eq!(*via_channel_ids, [(channel_id, Some(user_channel_id))]);
+			assert_eq!(*receiving_channel_ids, [(channel_id, Some(user_channel_id))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
@@ -795,13 +795,13 @@ fn test_monitor_update_fail_cs() {
 			ref purpose,
 			amount_msat,
 			receiver_node_id,
-			ref via_channel_ids,
+			ref receiving_channel_ids,
 			..
 		} => {
 			assert_eq!(payment_hash, our_payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), node_b_id);
-			assert_eq!(*via_channel_ids, [(channel_id, Some(user_channel_id))]);
+			assert_eq!(*receiving_channel_ids, [(channel_id, Some(user_channel_id))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
@@ -1906,13 +1906,13 @@ fn test_monitor_update_fail_claim() {
 			ref purpose,
 			amount_msat,
 			receiver_node_id,
-			ref via_channel_ids,
+			ref receiving_channel_ids,
 			..
 		} => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			assert_eq!(1_000_000, amount_msat);
 			assert_eq!(receiver_node_id.unwrap(), node_a_id);
-			assert_eq!(*via_channel_ids.last().unwrap(), (channel_id, Some(42)));
+			assert_eq!(*receiving_channel_ids.last().unwrap(), (channel_id, Some(42)));
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
@@ -1931,13 +1931,13 @@ fn test_monitor_update_fail_claim() {
 			ref purpose,
 			amount_msat,
 			receiver_node_id,
-			ref via_channel_ids,
+			ref receiving_channel_ids,
 			..
 		} => {
 			assert_eq!(payment_hash_3, *payment_hash);
 			assert_eq!(1_000_000, amount_msat);
 			assert_eq!(receiver_node_id.unwrap(), node_a_id);
-			assert_eq!(*via_channel_ids, [(channel_id, Some(42))]);
+			assert_eq!(*receiving_channel_ids, [(channel_id, Some(42))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..

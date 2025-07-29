@@ -375,13 +375,13 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 			ref purpose,
 			amount_msat,
 			receiver_node_id,
-			ref via_channel_ids,
+			ref receiving_channel_ids,
 			..
 		} => {
 			assert_eq!(our_payment_hash_21, *payment_hash);
 			assert_eq!(recv_value_21, amount_msat);
 			assert_eq!(node_c_id, receiver_node_id.unwrap());
-			assert_eq!(*via_channel_ids, vec![(chan_2.2, Some(chan_2_user_id))]);
+			assert_eq!(*receiving_channel_ids, vec![(chan_2.2, Some(chan_2_user_id))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
@@ -400,13 +400,13 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 			ref purpose,
 			amount_msat,
 			receiver_node_id,
-			ref via_channel_ids,
+			ref receiving_channel_ids,
 			..
 		} => {
 			assert_eq!(our_payment_hash_22, *payment_hash);
 			assert_eq!(recv_value_22, amount_msat);
 			assert_eq!(node_c_id, receiver_node_id.unwrap());
-			assert_eq!(*via_channel_ids, vec![(chan_2.2, Some(chan_2_user_id))]);
+			assert_eq!(*receiving_channel_ids, vec![(chan_2.2, Some(chan_2_user_id))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..

@@ -255,18 +255,18 @@ fn mpp_to_one_hop_blinded_path() {
 		Some(payment_secret), ev.clone(), true, None);
 
 	match event.unwrap() {
-		Event::PaymentClaimable { mut via_channel_ids, .. } => {
-			let mut expected_via_channel_ids = nodes[3].node.list_channels()
+		Event::PaymentClaimable { mut receiving_channel_ids, .. } => {
+			let mut expected_receiving_channel_ids = nodes[3].node.list_channels()
 				.iter()
 				.map(|d| (d.channel_id, Some(d.user_channel_id)))
 				.collect::<Vec<(_, _)>>();
 
 			// `list_channels` returns channels in arbitrary order, so we sort both vectors
 			// to ensure the comparison is order-agnostic.
-			via_channel_ids.sort();
-			expected_via_channel_ids.sort();
+			receiving_channel_ids.sort();
+			expected_receiving_channel_ids.sort();
 
-			assert_eq!(via_channel_ids, expected_via_channel_ids);
+			assert_eq!(receiving_channel_ids, expected_receiving_channel_ids);
 		}
 		_ => panic!("Unexpected event"),
 	}

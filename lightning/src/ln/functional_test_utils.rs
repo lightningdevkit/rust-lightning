@@ -3357,7 +3357,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 						ref purpose,
 						amount_msat,
 						receiver_node_id,
-						ref via_channel_ids,
+						ref receiving_channel_ids,
 						claim_deadline,
 						onion_fields,
 						..
@@ -3421,7 +3421,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 						}
 						assert_eq!(*amount_msat, recv_value);
 						let channels = node.node.list_channels();
-						for (chan_id, user_chan_id) in via_channel_ids {
+						for (chan_id, user_chan_id) in receiving_channel_ids {
 							let chan = channels
 								.iter()
 								.find(|details| &details.channel_id == chan_id)
