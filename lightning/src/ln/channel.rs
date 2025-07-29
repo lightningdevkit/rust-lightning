@@ -6102,6 +6102,7 @@ macro_rules! promote_splice_funding {
 			$self.context.historical_scids.push(scid);
 		}
 		core::mem::swap(&mut $self.funding, $funding);
+		$self.interactive_tx_signing_session = None;
 		$self.pending_splice = None;
 		$self.pending_funding.clear();
 		$self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
