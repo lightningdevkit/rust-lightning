@@ -23,7 +23,6 @@ use lightning::ln::functional_test_utils::{
 use lightning::ln::peer_handler::CustomMessageHandler;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 #[test]
 fn list_protocols_integration_test() {
@@ -36,10 +35,7 @@ fn list_protocols_integration_test() {
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
 	#[cfg(lsps1_service)]
 	let lsps1_service_config = LSPS1ServiceConfig { supported_options: None, token: None };
-	let lsps5_service_config = LSPS5ServiceConfig {
-		max_webhooks_per_client: 10,
-		notification_cooldown_hours: Duration::from_secs(3600),
-	};
+	let lsps5_service_config = LSPS5ServiceConfig::default();
 	let service_config = LiquidityServiceConfig {
 		#[cfg(lsps1_service)]
 		lsps1_service_config: Some(lsps1_service_config),

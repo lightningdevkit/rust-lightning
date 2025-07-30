@@ -51,7 +51,11 @@ struct StoredWebhook {
 	_app_name: LSPS5AppName,
 	url: LSPS5WebhookUrl,
 	_counterparty_node_id: PublicKey,
+	// Timestamp used for tracking when the webhook was created / updated, or when the last notification was sent.
+	// This is used to determine if the webhook is stale and should be pruned.
 	last_used: LSPSDateTime,
+	// Map of last notification sent timestamps for each notification method.
+	// This is used to enforce notification cooldowns.
 	last_notification_sent: HashMap<WebhookNotificationMethod, LSPSDateTime>,
 }
 
@@ -60,8 +64,18 @@ struct StoredWebhook {
 pub struct LSPS5ServiceConfig {
 	/// Maximum number of webhooks allowed per client.
 	pub max_webhooks_per_client: u32,
-	/// Minimum time between sending the same notification type in hours (default: 24)
-	pub notification_cooldown_hours: Duration,
+}
+
+/// Default maximum number of webhooks allowed per client.
+pub const DEFAULT_MAX_WEBHOOKS_PER_CLIENT: u32 = 10;
+/// Default notification cooldown time in hours.
+pub const DEFAULT_NOTIFICATION_COOLDOWN_HOURS: Duration = Duration::from_secs(60 * 60); // 1 hour
+
+// Default configuration for LSPS5 service.
+impl Default for LSPS5ServiceConfig {
+	fn default() -> Self {
+		Self { max_webhooks_per_client: DEFAULT_MAX_WEBHOOKS_PER_CLIENT }
+	}
 }
 
 /// Service-side handler for the [`bLIP-55 / LSPS5`] webhook registration protocol.
@@ -78,8 +92,6 @@ pub struct LSPS5ServiceConfig {
 ///   - `lsps5.remove_webhook` -> delete a named webhook or return [`app_name_not_found`] error.
 /// - Prune stale webhooks after a client has no open channels and no activity for at least
 /// [`MIN_WEBHOOK_RETENTION_DAYS`].
-/// - Rate-limit repeat notifications of the same method to a client by
-///   [`notification_cooldown_hours`].
 /// - Sign and enqueue outgoing webhook notifications:
 ///   - Construct JSON-RPC 2.0 Notification objects [`WebhookNotification`],
 ///   - Timestamp and LN-style zbase32-sign each payload,
@@ -94,7 +106,6 @@ pub struct LSPS5ServiceConfig {
 /// [`bLIP-55 / LSPS5`]: https://github.com/lightning/blips/pull/55/files
 /// [`max_webhooks_per_client`]: super::service::LSPS5ServiceConfig::max_webhooks_per_client
 /// [`app_name_not_found`]: super::msgs::LSPS5ProtocolError::AppNameNotFound
-/// [`notification_cooldown_hours`]: super::service::LSPS5ServiceConfig::notification_cooldown_hours
 /// [`WebhookNotification`]: super::msgs::WebhookNotification
 /// [`LSPS5ServiceEvent::SendWebhookNotification`]: super::event::LSPS5ServiceEvent::SendWebhookNotification
 /// [`app_name`]: super::msgs::LSPS5AppName
@@ -399,9 +410,8 @@ where
 				.last_notification_sent
 				.get(&notification.method)
 				.map(|last_sent| now.clone().abs_diff(&last_sent))
-				.map_or(true, |duration| {
-					duration >= self.config.notification_cooldown_hours.as_secs()
-				}) {
+				.map_or(true, |duration| duration >= DEFAULT_NOTIFICATION_COOLDOWN_HOURS.as_secs())
+			{
 				webhook.last_notification_sent.insert(notification.method.clone(), now.clone());
 				webhook.last_used = now.clone();
 				self.send_notification(
@@ -486,6 +496,15 @@ where
 			.list_channels()
 			.iter()
 			.any(|c| c.is_usable && c.counterparty.node_id == *client_id)
+	}
+
+	pub(crate) fn peer_connected(&self, counterparty_node_id: &PublicKey) {
+		let mut webhooks = self.webhooks.lock().unwrap();
+		if let Some(client_webhooks) = webhooks.get_mut(counterparty_node_id) {
+			for webhook in client_webhooks.values_mut() {
+				webhook.last_notification_sent.clear();
+			}
+		}
 	}
 }
 
