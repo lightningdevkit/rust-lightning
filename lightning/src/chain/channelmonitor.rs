@@ -693,6 +693,20 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	RenegotiatedFundingLocked {
 		funding_txid: Txid,
 	},
+	/// When a payment is finally resolved by the user handling an [`Event::PaymentSent`] or
+	/// [`Event::PaymentFailed`] event, the `ChannelManager` no longer needs to hear about it on
+	/// startup (which would cause it to re-hydrate the payment information even though the user
+	/// already learned about the payment's result).
+	///
+	/// This will remove the HTLC from [`ChannelMonitor::get_all_current_outbound_htlcs`] and
+	/// [`ChannelMonitor::get_onchain_failed_outbound_htlcs`].
+	///
+	/// Note that this is only generated for closed channels as this is implicit in the
+	/// [`Self::CommitmentSecret`] update which clears the payment information from all un-revoked
+	/// counterparty commitment transactions.
+	ReleasePaymentComplete {
+		htlc: SentHTLCId,
+	},
 }
 
 impl ChannelMonitorUpdateStep {
@@ -709,6 +723,7 @@ impl ChannelMonitorUpdateStep {
 			ChannelMonitorUpdateStep::ShutdownScript { .. } => "ShutdownScript",
 			ChannelMonitorUpdateStep::RenegotiatedFunding { .. } => "RenegotiatedFunding",
 			ChannelMonitorUpdateStep::RenegotiatedFundingLocked { .. } => "RenegotiatedFundingLocked",
+			ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => "ReleasePaymentComplete",
 		}
 	}
 }
@@ -746,6 +761,9 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	(6, LatestCounterpartyCommitment) => {
 		(1, commitment_txs, required_vec),
 		(3, htlc_data, required),
+	},
+	(7, ReleasePaymentComplete) => {
+		(1, htlc, required),
 	},
 	(8, LatestHolderCommitment) => {
 		(1, commitment_txs, required_vec),
@@ -1250,6 +1268,12 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// spending CSV for revocable outputs).
 	htlcs_resolved_on_chain: Vec<IrrevocablyResolvedHTLC>,
 
+	/// When a payment is fully resolved by the user processing a PaymentSent or PaymentFailed
+	/// event, we are informed by the ChannelManager (if the payment was resolved by an on-chain
+	/// transaction) of this so that we can stop telling the ChannelManager about the payment in
+	/// the future. We store the set of fully resolved payments here.
+	htlcs_resolved_to_user: HashSet<SentHTLCId>,
+
 	/// The set of `SpendableOutput` events which we have already passed upstream to be claimed.
 	/// These are tracked explicitly to ensure that we don't generate the same events redundantly
 	/// if users duplicatively confirm old transactions. Specifically for transactions claiming a
@@ -1654,6 +1678,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(29, channel_monitor.initial_counterparty_commitment_tx, option),
 		(31, channel_monitor.funding.channel_parameters, required),
 		(32, channel_monitor.pending_funding, optional_vec),
+		(33, channel_monitor.htlcs_resolved_to_user, required),
 		(34, channel_monitor.alternative_funding_confirmed, option),
 	});
 
@@ -1872,6 +1897,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			funding_spend_confirmed: None,
 			confirmed_commitment_tx_counterparty_output: None,
 			htlcs_resolved_on_chain: Vec::new(),
+			htlcs_resolved_to_user: new_hash_set(),
 			spendable_txids_confirmed: Vec::new(),
 
 			best_block,
@@ -4218,6 +4244,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						panic!("Attempted to replace shutdown script {} with {}", shutdown_script, scriptpubkey);
 					}
 				},
+				ChannelMonitorUpdateStep::ReleasePaymentComplete { htlc } => {
+					log_trace!(logger, "HTLC {htlc:?} permanently and fully resolved");
+					self.htlcs_resolved_to_user.insert(*htlc);
+				},
 			}
 		}
 
@@ -4248,6 +4278,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// talking to our peer.
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
+				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
 			}
 		}
 
@@ -6324,6 +6355,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 		let mut funding_spend_confirmed = None;
 		let mut htlcs_resolved_on_chain = Some(Vec::new());
+		let mut htlcs_resolved_to_user = Some(new_hash_set());
 		let mut funding_spend_seen = Some(false);
 		let mut counterparty_node_id = None;
 		let mut confirmed_commitment_tx_counterparty_output = None;
@@ -6357,6 +6389,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(29, initial_counterparty_commitment_tx, option),
 			(31, channel_parameters, (option: ReadableArgs, None)),
 			(32, pending_funding, optional_vec),
+			(33, htlcs_resolved_to_user, option),
 			(34, alternative_funding_confirmed, option),
 		});
 		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
@@ -6516,6 +6549,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			funding_spend_confirmed,
 			confirmed_commitment_tx_counterparty_output,
 			htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
+			htlcs_resolved_to_user: htlcs_resolved_to_user.unwrap(),
 			spendable_txids_confirmed: spendable_txids_confirmed.unwrap(),
 
 			best_block,
