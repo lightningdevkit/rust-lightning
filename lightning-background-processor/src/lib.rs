@@ -593,14 +593,14 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 /// # struct StoreSync {}
 /// # impl lightning::util::persist::KVStoreSync for StoreSync {
 /// #     fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> io::Result<Vec<u8>> { Ok(Vec::new()) }
-/// #     fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> { Ok(()) }
+/// #     fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>) -> io::Result<()> { Ok(()) }
 /// #     fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> io::Result<()> { Ok(()) }
 /// #     fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> io::Result<Vec<String>> { Ok(Vec::new()) }
 /// # }
 /// # struct Store {}
 /// # impl lightning::util::persist::KVStore for Store {
 /// #     fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>> { todo!() }
-/// #     fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> { todo!() }
+/// #     fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> { todo!() }
 /// #     fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> { todo!() }
 /// #     fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>> { todo!() }
 /// # }
@@ -796,7 +796,7 @@ where
 								SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
 								SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 								SCORER_PERSISTENCE_KEY,
-								&scorer.encode(),
+								scorer.encode(),
 							)
 							.await
 						{
@@ -932,7 +932,7 @@ where
 						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 						CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 						CHANNEL_MANAGER_PERSISTENCE_KEY,
-						&channel_manager.get_cm().encode(),
+						channel_manager.get_cm().encode(),
 					)
 					.await
 			};
@@ -977,7 +977,7 @@ where
 							NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 							NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 							NETWORK_GRAPH_PERSISTENCE_KEY,
-							&network_graph.encode(),
+							network_graph.encode(),
 						)
 						.await
 					{
@@ -1020,7 +1020,7 @@ where
 								SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
 								SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 								SCORER_PERSISTENCE_KEY,
-								&scorer.encode(),
+								scorer.encode(),
 							)
 							.await
 						{
@@ -1128,7 +1128,7 @@ where
 			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_KEY,
-			&channel_manager.get_cm().encode(),
+			channel_manager.get_cm().encode(),
 		)
 		.await?;
 	if let Some(ref scorer) = scorer {
@@ -1137,7 +1137,7 @@ where
 				SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
 				SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 				SCORER_PERSISTENCE_KEY,
-				&scorer.encode(),
+				scorer.encode(),
 			)
 			.await?;
 	}
@@ -1147,7 +1147,7 @@ where
 				NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 				NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 				NETWORK_GRAPH_PERSISTENCE_KEY,
-				&network_graph.encode(),
+				network_graph.encode(),
 			)
 			.await?;
 	}
@@ -1352,7 +1352,7 @@ impl BackgroundProcessor {
 							SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
 							SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 							SCORER_PERSISTENCE_KEY,
-							&scorer.encode(),
+							scorer.encode(),
 						) {
 							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
 						}
@@ -1452,7 +1452,7 @@ impl BackgroundProcessor {
 						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 						CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 						CHANNEL_MANAGER_PERSISTENCE_KEY,
-						&channel_manager.get_cm().encode(),
+						channel_manager.get_cm().encode(),
 					))?;
 					log_trace!(logger, "Done persisting ChannelManager.");
 				}
@@ -1484,7 +1484,7 @@ impl BackgroundProcessor {
 							NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 							NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 							NETWORK_GRAPH_PERSISTENCE_KEY,
-							&network_graph.encode(),
+							network_graph.encode(),
 						) {
 							log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}",e);
 						}
@@ -1513,7 +1513,7 @@ impl BackgroundProcessor {
 							SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
 							SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 							SCORER_PERSISTENCE_KEY,
-							&scorer.encode(),
+							scorer.encode(),
 						) {
 							log_error!(logger,
 						"Error: Failed to persist scorer, check your disk and permissions {}",
@@ -1556,14 +1556,14 @@ impl BackgroundProcessor {
 				CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 				CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 				CHANNEL_MANAGER_PERSISTENCE_KEY,
-				&channel_manager.get_cm().encode(),
+				channel_manager.get_cm().encode(),
 			)?;
 			if let Some(ref scorer) = scorer {
 				kv_store.write(
 					SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
 					SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 					SCORER_PERSISTENCE_KEY,
-					&scorer.encode(),
+					scorer.encode(),
 				)?;
 			}
 			if let Some(network_graph) = gossip_sync.network_graph() {
@@ -1571,7 +1571,7 @@ impl BackgroundProcessor {
 					NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 					NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 					NETWORK_GRAPH_PERSISTENCE_KEY,
-					&network_graph.encode(),
+					network_graph.encode(),
 				)?;
 			}
 			Ok(())
@@ -1916,7 +1916,7 @@ mod tests {
 		}
 
 		fn write(
-			&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+			&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
 		) -> lightning::io::Result<()> {
 			if primary_namespace == CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE
 				&& secondary_namespace == CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE

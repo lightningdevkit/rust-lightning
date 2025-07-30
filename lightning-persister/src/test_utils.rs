@@ -13,22 +13,23 @@ use lightning::{check_added_monitors, check_closed_broadcast, check_closed_event
 use std::panic::RefUnwindSafe;
 
 pub(crate) fn do_read_write_remove_list_persist<K: KVStoreSync + RefUnwindSafe>(kv_store: &K) {
-	let data = [42u8; 32];
+	let data = vec![42u8; 32];
 
 	let primary_namespace = "testspace";
 	let secondary_namespace = "testsubspace";
 	let key = "testkey";
 
 	// Test the basic KVStore operations.
-	kv_store.write(primary_namespace, secondary_namespace, key, &data).unwrap();
+	kv_store.write(primary_namespace, secondary_namespace, key, data.clone()).unwrap();
 
 	// Test empty primary_namespace/secondary_namespace is allowed, but not empty primary_namespace
 	// and non-empty secondary_namespace, and not empty key.
-	kv_store.write("", "", key, &data).unwrap();
-	let res = std::panic::catch_unwind(|| kv_store.write("", secondary_namespace, key, &data));
+	kv_store.write("", "", key, data.clone()).unwrap();
+	let res =
+		std::panic::catch_unwind(|| kv_store.write("", secondary_namespace, key, data.clone()));
 	assert!(res.is_err());
 	let res = std::panic::catch_unwind(|| {
-		kv_store.write(primary_namespace, secondary_namespace, "", &data)
+		kv_store.write(primary_namespace, secondary_namespace, "", data.clone())
 	});
 	assert!(res.is_err());
 
@@ -47,7 +48,7 @@ pub(crate) fn do_read_write_remove_list_persist<K: KVStoreSync + RefUnwindSafe>(
 	// Ensure we have no issue operating with primary_namespace/secondary_namespace/key being
 	// KVSTORE_NAMESPACE_KEY_MAX_LEN
 	let max_chars = "A".repeat(KVSTORE_NAMESPACE_KEY_MAX_LEN);
-	kv_store.write(&max_chars, &max_chars, &max_chars, &data).unwrap();
+	kv_store.write(&max_chars, &max_chars, &max_chars, data.clone()).unwrap();
 
 	let listed_keys = kv_store.list(&max_chars, &max_chars).unwrap();
 	assert_eq!(listed_keys.len(), 1);
@@ -66,7 +67,7 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>
 	source_store: &mut S, target_store: &mut T,
 ) {
 	// We fill the source with some bogus keys.
-	let dummy_data = [42u8; 32];
+	let dummy_data = vec![42u8; 32];
 	let num_primary_namespaces = 3;
 	let num_secondary_namespaces = 3;
 	let num_keys = 3;
@@ -87,7 +88,7 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>
 				let key =
 					format!("testkey{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(k).unwrap());
 				source_store
-					.write(&primary_namespace, &secondary_namespace, &key, &dummy_data)
+					.write(&primary_namespace, &secondary_namespace, &key, dummy_data.clone())
 					.unwrap();
 				expected_keys.push((primary_namespace.clone(), secondary_namespace.clone(), key));
 			}
@@ -107,7 +108,7 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>
 	assert_eq!(target_list, expected_keys);
 
 	for (p, s, k) in expected_keys.iter() {
-		assert_eq!(target_store.read(p, s, k).unwrap(), dummy_data);
+		assert_eq!(target_store.read(p, s, k).unwrap(), dummy_data.clone());
 	}
 }
 

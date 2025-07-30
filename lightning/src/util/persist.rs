@@ -118,7 +118,7 @@ pub trait KVStoreSync {
 	) -> Result<Vec<u8>, io::Error>;
 	/// A synchronous version of the [`KVStore::write`] method.
 	fn write(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
 	) -> Result<(), io::Error>;
 	/// A synchronous version of the [`KVStore::remove`] method.
 	fn remove(
@@ -159,7 +159,7 @@ where
 	}
 
 	fn write(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
 	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
 		let res = self.0.write(primary_namespace, secondary_namespace, key, buf);
 
@@ -233,7 +233,7 @@ pub trait KVStore {
 	///
 	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present in the store.
 	fn write(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
 	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>>;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
@@ -291,7 +291,7 @@ pub fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
 
 	for (primary_namespace, secondary_namespace, key) in &keys_to_migrate {
 		let data = source_store.read(primary_namespace, secondary_namespace, key)?;
-		target_store.write(primary_namespace, secondary_namespace, key, &data)?;
+		target_store.write(primary_namespace, secondary_namespace, key, data)?;
 	}
 
 	Ok(())
@@ -310,7 +310,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			&monitor_name.to_string(),
-			&monitor.encode(),
+			monitor.encode(),
 		) {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError,
@@ -325,7 +325,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			&monitor_name.to_string(),
-			&monitor.encode(),
+			monitor.encode(),
 		) {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError,
@@ -346,7 +346,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			monitor_key.as_str(),
-			&monitor,
+			monitor,
 		) {
 			Ok(()) => {},
 			Err(_e) => return,
@@ -763,7 +763,7 @@ where
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			monitor_key.as_str(),
-			&monitor_bytes,
+			monitor_bytes,
 		) {
 			Ok(_) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(e) => {
@@ -804,7 +804,7 @@ where
 					CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 					monitor_key.as_str(),
 					update_name.as_str(),
-					&update.encode(),
+					update.encode(),
 				) {
 					Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 					Err(e) => {
@@ -876,7 +876,7 @@ where
 			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			monitor_key.as_str(),
-			&monitor.encode(),
+			monitor.encode(),
 		) {
 			Ok(()) => {},
 			Err(_e) => return,
@@ -1487,7 +1487,7 @@ mod tests {
 				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 				&monitor_name.to_string(),
 				UpdateName::from(1).as_str(),
-				&[0u8; 1],
+				vec![0u8; 1],
 			)
 			.unwrap();
 
