@@ -543,14 +543,10 @@ impl_writeable_tlv_based_enum!(MessageContext,
 	{3, DNSResolver} => (),
 );
 
-// NOTE:
-// Several TLV fields (`nonce`, `hmac`, etc.) were removed in LDK v0.2
-// following the introduction of `ReceiveAuthKey`-based authentication for
-// inbound `BlindedMessagePath`s. These fields are now commented out and
-// their `type` values must not be reused unless support for LDK v0.2
-// and earlier is fully dropped.
-//
-// For context-specific removals, see the commented-out fields within each enum variant.
+// Note: Several TLV fields (`nonce`, `hmac`, etc.) were removed in LDK v0.2 following the
+// introduction of `ReceiveAuthKey`-based authentication for inbound `BlindedMessagePath`s. Because
+// we do not support receiving to those contexts anymore (they will fail the `ReceiveAuthKey`-based
+// authentication checks), we can reuse those fields here.
 impl_writeable_tlv_based_enum!(OffersContext,
 	(0, InvoiceRequest) => {
 		(0, nonce, required),
@@ -558,12 +554,9 @@ impl_writeable_tlv_based_enum!(OffersContext,
 	(1, OutboundPayment) => {
 		(0, payment_id, required),
 		(1, nonce, required),
-		// Removed: (2, hmac, option)
 	},
 	(2, InboundPayment) => {
 		(0, payment_hash, required),
-		// Removed: (1, nonce, required),
-		// Removed: (2, hmac, required)
 	},
 	(3, StaticInvoiceRequested) => {
 		(0, recipient_id, required),
@@ -575,12 +568,8 @@ impl_writeable_tlv_based_enum!(OffersContext,
 impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	(0, OutboundPayment) => {
 		(0, payment_id, required),
-		// Removed: (2, nonce, required),
-		// Removed: (4, hmac, required),
 	},
 	(1, InboundPayment) => {
-		// Removed: (0, nonce, required),
-		// Removed: (2, hmac, required),
 		(4, path_absolute_expiry, required),
 	},
 	(2, OfferPaths) => {

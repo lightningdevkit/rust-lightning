@@ -501,13 +501,12 @@ where
 
 	/// Verifies the provided [`AsyncPaymentsContext`] for an inbound [`HeldHtlcAvailable`] message.
 	///
-	/// The context is verified using the `nonce` and `hmac` values, and ensures that the context
-	/// has not expired based on `path_absolute_expiry`.
+	/// Because blinded path contexts are verified as a part of onion message processing, this only
+	/// validates that the context is not yet expired based on `path_absolute_expiry`.
 	///
 	/// # Errors
 	///
 	/// Returns `Err(())` if:
-	/// - The HMAC verification fails for inbound context.
 	/// - The inbound payment context has expired.
 	#[cfg(async_payments)]
 	pub fn verify_inbound_async_payment_context(
