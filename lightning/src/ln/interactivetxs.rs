@@ -3188,7 +3188,6 @@ mod tests {
 		let context = FundingNegotiationContext {
 			is_initiator: true,
 			our_funding_contribution: SignedAmount::from_sat(our_contributed as i64),
-			their_funding_contribution_satoshis: None,
 			funding_tx_locktime: AbsoluteLockTime::ZERO,
 			funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,

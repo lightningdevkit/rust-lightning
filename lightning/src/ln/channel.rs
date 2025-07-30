@@ -5968,9 +5968,6 @@ pub(super) struct FundingNegotiationContext {
 	pub is_initiator: bool,
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_contribution: SignedAmount,
-	/// The amount in satoshis our counterparty will be contributing to the channel.
-	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-	pub their_funding_contribution_satoshis: Option<i64>,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
 	pub funding_tx_locktime: LockTime,
@@ -10684,7 +10681,6 @@ where
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: true,
 			our_funding_contribution,
-			their_funding_contribution_satoshis: None,
 			funding_tx_locktime: LockTime::from_consensus(locktime),
 			funding_feerate_sat_per_1000_weight: funding_feerate_per_kw,
 			shared_funding_input: Some(prev_funding_input),
@@ -10805,12 +10801,10 @@ where
 			self.funding.get_value_satoshis(),
 		);
 
-		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
 		let prev_funding_input = self.funding.to_splice_funding_input();
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: false,
 			our_funding_contribution,
-			their_funding_contribution_satoshis: Some(their_funding_contribution_satoshis),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_per_kw,
 			shared_funding_input: Some(prev_funding_input),
@@ -12509,8 +12503,6 @@ where
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: true,
 			our_funding_contribution: SignedAmount::from_sat(funding_satoshis as i64),
-			// TODO(dual_funding) TODO(splicing) Include counterparty contribution, once that's enabled
-			their_funding_contribution_satoshis: None,
 			funding_tx_locktime,
 			funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
@@ -12665,7 +12657,6 @@ where
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: false,
 			our_funding_contribution,
-			their_funding_contribution_satoshis: Some(msg.common_fields.funding_satoshis as i64),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
