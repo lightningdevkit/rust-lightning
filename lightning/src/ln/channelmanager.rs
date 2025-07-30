@@ -13179,7 +13179,20 @@ where
 
 		let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
 
-		self.flow.enqueue_invoice(invoice.clone(), refund, self.get_peers_for_blinded_path())?;
+		if refund.paths().is_empty() {
+			self.flow.enqueue_invoice_using_node_id(
+				invoice.clone(),
+				refund.payer_signing_pubkey(),
+				self.get_peers_for_blinded_path(),
+			)?;
+		} else {
+			self.flow.enqueue_invoice_using_reply_paths(
+				invoice.clone(),
+				refund.paths(),
+				self.get_peers_for_blinded_path(),
+			)?;
+		}
+
 		Ok(invoice)
 	}
 

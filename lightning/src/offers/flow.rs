@@ -1142,22 +1142,23 @@ where
 		Ok(())
 	}
 
-	/// Enqueues the created [`Bolt12Invoice`] corresponding to a [`Refund`] to be sent
-	/// to the counterparty.
+	/// Enqueues the provided [`Bolt12Invoice`] to be sent directly to the specified
+	/// [`PublicKey`] `destination`.
 	///
-	/// # Peers
+	/// This method should be used when there are no available [`BlindedMessagePath`]s
+	/// for routing the [`Bolt12Invoice`] and the counterparty’s node ID is known.
 	///
-	/// The user must provide a list of [`MessageForwardNode`] that will be used to generate valid
-	/// reply paths for the counterparty to send back the corresponding [`InvoiceError`] if we fail
-	/// to create blinded reply paths
+	/// # Reply Path Requirement
+	///
+	/// Reply paths are generated from the given `peers` to allow the counterparty to return
+	/// an [`InvoiceError`] in case they fail to process the invoice. If valid reply paths
+	/// cannot be constructed, this method returns a [`Bolt12SemanticError::MissingPaths`].
 	///
 	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
-	pub fn enqueue_invoice(
-		&self, invoice: Bolt12Invoice, refund: &Refund, peers: Vec<MessageForwardNode>,
+	pub fn enqueue_invoice_using_node_id(
+		&self, invoice: Bolt12Invoice, destination: PublicKey, peers: Vec<MessageForwardNode>,
 	) -> Result<(), Bolt12SemanticError> {
 		let payment_hash = invoice.payment_hash();
-
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
 		let reply_paths = self
@@ -1166,24 +1167,44 @@ where
 
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 
-		if refund.paths().is_empty() {
-			for reply_path in reply_paths {
-				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-					destination: Destination::Node(refund.payer_signing_pubkey()),
-					reply_path,
-				};
-				let message = OffersMessage::Invoice(invoice.clone());
-				pending_offers_messages.push((message, instructions));
-			}
-		} else {
-			let message = OffersMessage::Invoice(invoice);
-			enqueue_onion_message_with_reply_paths(
-				message,
-				refund.paths(),
-				reply_paths,
-				&mut pending_offers_messages,
-			);
+		for reply_path in reply_paths {
+			let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+				destination: Destination::Node(destination),
+				reply_path,
+			};
+			let message = OffersMessage::Invoice(invoice.clone());
+			pending_offers_messages.push((message, instructions));
 		}
+
+		Ok(())
+	}
+
+	/// Similar to [`Self::enqueue_invoice_using_node_id`], but uses [`BlindedMessagePath`]s
+	/// for routing the [`Bolt12Invoice`] instead of a direct node ID.
+	///
+	/// Useful when the counterparty expects to receive invoices through onion-routed paths
+	/// for privacy or anonymity.
+	///
+	/// For reply path requirements see [`Self::enqueue_invoice_using_node_id`].
+	pub fn enqueue_invoice_using_reply_paths(
+		&self, invoice: Bolt12Invoice, paths: &[BlindedMessagePath], peers: Vec<MessageForwardNode>,
+	) -> Result<(), Bolt12SemanticError> {
+		let payment_hash = invoice.payment_hash();
+		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
+
+		let reply_paths = self
+			.create_blinded_paths(peers, context)
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+
+		let message = OffersMessage::Invoice(invoice);
+		enqueue_onion_message_with_reply_paths(
+			message,
+			paths,
+			reply_paths,
+			&mut pending_offers_messages,
+		);
 
 		Ok(())
 	}
