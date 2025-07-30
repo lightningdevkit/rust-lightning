@@ -636,8 +636,8 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	nodes[3].node.process_pending_update_add_htlcs();
 
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
-	assert_eq!(nodes[3].node.forward_htlcs.lock().unwrap().len(), 1);
-	match nodes[3].node.forward_htlcs.lock().unwrap().get_mut(&0).unwrap().get_mut(0).unwrap() {
+	assert_eq!(nodes[3].node.receive_htlcs.lock().unwrap().len(), 1);
+	match nodes[3].node.receive_htlcs.lock().unwrap().get_mut(0).unwrap() {
 		&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) => {
 			match forward_info.routing {
 				PendingHTLCRouting::ReceiveKeysend { ref mut payment_data, .. } => {
@@ -683,8 +683,8 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[3].node.process_pending_update_add_htlcs();
-	assert_eq!(nodes[3].node.forward_htlcs.lock().unwrap().len(), 1);
-	match nodes[3].node.forward_htlcs.lock().unwrap().get_mut(&0).unwrap().get_mut(0).unwrap() {
+	assert_eq!(nodes[3].node.receive_htlcs.lock().unwrap().len(), 1);
+	match nodes[3].node.receive_htlcs.lock().unwrap().get_mut(0).unwrap() {
 		&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) => {
 			match forward_info.routing {
 				PendingHTLCRouting::ReceiveKeysend { ref mut payment_data, .. } => {

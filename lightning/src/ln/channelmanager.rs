@@ -2478,6 +2478,8 @@ where
 //  |   |
 //  |   |__`pending_intercepted_htlcs`
 //  |
+//  |__`receive_htlcs`
+//  |
 //  |__`decode_update_add_htlcs`
 //  |
 //  |__`per_peer_state`
@@ -2553,7 +2555,7 @@ pub struct ChannelManager<
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_outbound_payments: OutboundPayments,
 
-	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
+	/// SCID/SCID Alias -> forward infos.
 	///
 	/// Note that because we may have an SCID Alias as the key we can have two entries per channel,
 	/// though in practice we probably won't be receiving HTLCs for a channel both via the alias
@@ -2561,6 +2563,9 @@ pub struct ChannelManager<
 	///
 	/// Note that no consistency guarantees are made about the existence of a channel with the
 	/// `short_channel_id` here, nor the `short_channel_id` in the `PendingHTLCInfo`!
+	///
+	/// This will also hold any [`FailHTLC`]s arising from handling [`Self::pending_intercepted_htlcs`] or
+	/// [`Self::receive_htlcs`].
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(test)]
@@ -2570,9 +2575,21 @@ pub struct ChannelManager<
 	/// Storage for HTLCs that have been intercepted and bubbled up to the user. We hold them here
 	/// until the user tells us what we should do with them.
 	///
+	/// Note that any failures that may arise from handling these will be pushed to
+	/// [`Self::forward_htlcs`] with the previous hop's SCID.
+	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
-
+	/// Storage for HTLCs that are meant for us.
+	///
+	/// Note that any failures that may arise from handling these will be pushed to
+	/// [`Self::forward_htlcs`] with the previous hop's SCID.
+	///
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
+	#[cfg(test)]
+	pub(super) receive_htlcs: Mutex<Vec<HTLCForwardInfo>>,
+	#[cfg(not(test))]
+	receive_htlcs: Mutex<Vec<HTLCForwardInfo>>,
 	/// SCID/SCID Alias -> pending `update_add_htlc`s to decode.
 	///
 	/// Note that because we may have an SCID Alias as the key we can have two entries per channel,
@@ -3755,6 +3772,7 @@ where
 			outbound_scid_aliases: Mutex::new(new_hash_set()),
 			pending_outbound_payments: OutboundPayments::new(new_hash_map()),
 			forward_htlcs: Mutex::new(new_hash_map()),
+			receive_htlcs: Mutex::new(Vec::new()),
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
 			pending_intercepted_htlcs: Mutex::new(new_hash_map()),
@@ -6494,6 +6512,9 @@ where
 		if !self.forward_htlcs.lock().unwrap().is_empty() {
 			return true;
 		}
+		if !self.receive_htlcs.lock().unwrap().is_empty() {
+			return true;
+		}
 		if !self.decode_update_add_htlcs.lock().unwrap().is_empty() {
 			return true;
 		}
@@ -6541,20 +6562,19 @@ where
 
 		for (short_chan_id, mut pending_forwards) in forward_htlcs {
 			should_persist = NotifyOption::DoPersist;
-			if short_chan_id != 0 {
-				self.process_forward_htlcs(
-					short_chan_id,
-					&mut pending_forwards,
-					&mut failed_forwards,
-					&mut phantom_receives,
-				);
-			} else {
-				self.process_receive_htlcs(
-					&mut pending_forwards,
-					&mut new_events,
-					&mut failed_forwards,
-				);
-			}
+			self.process_forward_htlcs(
+				short_chan_id,
+				&mut pending_forwards,
+				&mut failed_forwards,
+				&mut phantom_receives,
+			);
+		}
+
+		let mut receive_htlcs = Vec::new();
+		mem::swap(&mut receive_htlcs, &mut self.receive_htlcs.lock().unwrap());
+		if !receive_htlcs.is_empty() {
+			self.process_receive_htlcs(receive_htlcs, &mut new_events, &mut failed_forwards);
+			should_persist = NotifyOption::DoPersist;
 		}
 
 		let best_block_height = self.best_block.read().unwrap().height;
@@ -7068,11 +7088,11 @@ where
 	}
 
 	fn process_receive_htlcs(
-		&self, pending_forwards: &mut Vec<HTLCForwardInfo>,
+		&self, receive_htlcs: Vec<HTLCForwardInfo>,
 		new_events: &mut VecDeque<(Event, Option<EventCompletionAction>)>,
 		failed_forwards: &mut Vec<FailedHTLCForward>,
 	) {
-		'next_forwardable_htlc: for forward_info in pending_forwards.drain(..) {
+		'next_forwardable_htlc: for forward_info in receive_htlcs.into_iter() {
 			match forward_info {
 				HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 					prev_short_channel_id,
@@ -10613,8 +10633,21 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					let scid = match forward_info.routing {
 						PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
 						PendingHTLCRouting::TrampolineForward { .. } => 0,
-						PendingHTLCRouting::Receive { .. } => 0,
-						PendingHTLCRouting::ReceiveKeysend { .. } => 0,
+						PendingHTLCRouting::Receive { .. }
+						| PendingHTLCRouting::ReceiveKeysend { .. } => {
+							self.receive_htlcs.lock().unwrap().push(HTLCForwardInfo::AddHTLC(
+								PendingAddHTLCInfo {
+									prev_short_channel_id,
+									prev_counterparty_node_id,
+									prev_funding_outpoint,
+									prev_channel_id,
+									prev_htlc_id,
+									prev_user_channel_id,
+									forward_info,
+								},
+							));
+							continue;
+						},
 					};
 					// Pull this now to avoid introducing a lock order with `forward_htlcs`.
 					let is_our_scid = self.short_to_chan_info.read().unwrap().contains_key(&scid);
@@ -15279,6 +15312,8 @@ where
 			}
 		}
 
+		let receive_htlcs = self.receive_htlcs.lock().unwrap();
+
 		let mut decode_update_add_htlcs_opt = None;
 		let decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
 		if !decode_update_add_htlcs.is_empty() {
@@ -15446,6 +15481,7 @@ where
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
+			(23, *receive_htlcs, required_vec),
 		});
 
 		Ok(())
@@ -16006,6 +16042,7 @@ where
 		const MAX_ALLOC_SIZE: usize = 1024 * 64;
 		let forward_htlcs_count: u64 = Readable::read(reader)?;
 		let mut forward_htlcs = hash_map_with_capacity(cmp::min(forward_htlcs_count as usize, 128));
+		let mut legacy_receive_htlcs: Vec<HTLCForwardInfo> = Vec::new();
 		for _ in 0..forward_htlcs_count {
 			let short_channel_id = Readable::read(reader)?;
 			let pending_forwards_count: u64 = Readable::read(reader)?;
@@ -16014,7 +16051,26 @@ where
 				MAX_ALLOC_SIZE / mem::size_of::<HTLCForwardInfo>(),
 			));
 			for _ in 0..pending_forwards_count {
-				pending_forwards.push(Readable::read(reader)?);
+				let pending_htlc = Readable::read(reader)?;
+				// Prior to LDK 0.2, Receive HTLCs used to be stored in `forward_htlcs` under SCID == 0. Here we migrate
+				// the old data if necessary.
+				if short_channel_id == 0 {
+					match pending_htlc {
+						HTLCForwardInfo::AddHTLC(ref htlc_info) => {
+							if matches!(
+								htlc_info.forward_info.routing,
+								PendingHTLCRouting::Receive { .. }
+									| PendingHTLCRouting::ReceiveKeysend { .. }
+							) {
+								legacy_receive_htlcs.push(pending_htlc);
+								continue;
+							}
+						},
+						_ => {},
+					}
+				}
+
+				pending_forwards.push(pending_htlc);
 			}
 			forward_htlcs.insert(short_channel_id, pending_forwards);
 		}
@@ -16131,6 +16187,7 @@ where
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
+		let mut receive_htlcs = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs, option),
@@ -16149,8 +16206,14 @@ where
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
+			(23, receive_htlcs, optional_vec),
 		});
 		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
+		debug_assert!(
+			receive_htlcs.as_ref().map_or(true, |r| r.is_empty())
+				|| legacy_receive_htlcs.is_empty()
+		);
+		let receive_htlcs = receive_htlcs.unwrap_or_else(|| legacy_receive_htlcs);
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.entropy_source.get_secure_random_bytes());
@@ -16981,6 +17044,7 @@ where
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
+			receive_htlcs: Mutex::new(receive_htlcs),
 			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs),
 			claimable_payments: Mutex::new(ClaimablePayments {
 				claimable_payments,
