@@ -5977,13 +5977,8 @@ pub(super) struct FundingNegotiationContext {
 	/// The input spending the previous funding output, if this is a splice.
 	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
 	pub shared_funding_input: Option<SharedOwnedInput>,
-	/// The funding inputs we will be contributing to the channel.
-	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
-	/// The change output script. This will be used if needed or -- if not set -- generated using
-	/// `SignerProvider::get_destination_script`.
-	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
-	pub change_script: Option<ScriptBuf>,
+	/// The components of the funding transaction that we will contribute.
+	pub funding_tx_contributions: FundingTxContributions,
 }
 
 impl FundingNegotiationContext {
@@ -6019,35 +6014,43 @@ impl FundingNegotiationContext {
 			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
-		// Optionally add change output
-		if self.our_funding_contribution > SignedAmount::ZERO {
-			let change_value_opt = calculate_change_output_value(
+		let change_value_opt = if self.our_funding_contribution > SignedAmount::ZERO {
+			calculate_change_output_value(
 				&self,
 				self.shared_funding_input.is_some(),
 				&shared_funding_output.script_pubkey,
 				&funding_outputs,
 				context.holder_dust_limit_satoshis,
-			)?;
-			if let Some(change_value) = change_value_opt {
-				let change_script = if let Some(script) = self.change_script {
-					script
-				} else {
-					signer_provider
-						.get_destination_script(context.channel_keys_id)
-						.map_err(|_err| AbortReason::InternalError("Error getting change script"))?
-				};
-				let mut change_output =
-					TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
-				let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
-				let change_output_fee =
-					fee_for_weight(self.funding_feerate_sat_per_1000_weight, change_output_weight);
-				let change_value_decreased_with_fee =
-					change_value.saturating_sub(change_output_fee);
-				// Check dust limit again
-				if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
-					change_output.value = Amount::from_sat(change_value_decreased_with_fee);
-					funding_outputs.push(change_output);
-				}
+			)?
+		} else {
+			None
+		};
+
+		let (inputs_to_contribute, change_script) = match self.funding_tx_contributions {
+			FundingTxContributions::InputsOnly { inputs, change_script } => (inputs, change_script),
+		};
+
+		// Add change output if necessary
+		if let Some(change_value) = change_value_opt {
+			let change_script = if let Some(script) = change_script {
+				script
+			} else {
+				signer_provider
+					.get_destination_script(context.channel_keys_id)
+					.map_err(|_err| AbortReason::InternalError("Error getting change script"))?
+			};
+
+			let mut change_output =
+				TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
+			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
+			let change_output_fee =
+				fee_for_weight(self.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
+
+			// Check dust limit again
+			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
+				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
+				funding_outputs.push(change_output);
 			}
 		}
 
@@ -6059,7 +6062,7 @@ impl FundingNegotiationContext {
 			feerate_sat_per_kw: self.funding_feerate_sat_per_1000_weight,
 			is_initiator: self.is_initiator,
 			funding_tx_locktime: self.funding_tx_locktime,
-			inputs_to_contribute: self.our_funding_inputs,
+			inputs_to_contribute,
 			shared_funding_input: self.shared_funding_input,
 			shared_funding_output: SharedOwnedOutput::new(
 				shared_funding_output,
@@ -6068,6 +6071,30 @@ impl FundingNegotiationContext {
 			outputs_to_contribute: funding_outputs,
 		};
 		InteractiveTxConstructor::new(constructor_args)
+	}
+}
+
+/// The components of a funding transaction that are contributed by one party.
+pub enum FundingTxContributions {
+	/// When only inputs -- except for a possible change output -- are contributed to the funding
+	/// transaction. This must correspond to a positive contribution amount.
+	InputsOnly {
+		/// The inputs used to meet the contributed amount. Any excess amount will be sent to a
+		/// change output.
+		inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+
+		/// An optional change output script. This will be used if needed or, if not set, generated
+		/// using `SignerProvider::get_destination_script`.
+		change_script: Option<ScriptBuf>,
+	},
+}
+
+impl FundingTxContributions {
+	/// Returns an inputs to be contributed to the funding transaction.
+	pub fn inputs(&self) -> &[(TxIn, TransactionU16LenLimited)] {
+		match self {
+			FundingTxContributions::InputsOnly { inputs, .. } => &inputs[..],
+		}
 	}
 }
 
@@ -10684,6 +10711,9 @@ where
 			funding_inputs.push((tx_in, tx16));
 		}
 
+		let funding_tx_contributions =
+			FundingTxContributions::InputsOnly { inputs: funding_inputs, change_script };
+
 		let prev_funding_input = self.funding.to_splice_funding_input();
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: true,
@@ -10691,8 +10721,7 @@ where
 			funding_tx_locktime: LockTime::from_consensus(locktime),
 			funding_feerate_sat_per_1000_weight: funding_feerate_per_kw,
 			shared_funding_input: Some(prev_funding_input),
-			our_funding_inputs: funding_inputs,
-			change_script,
+			funding_tx_contributions,
 		};
 
 		self.pending_splice = Some(PendingSplice {
@@ -10806,6 +10835,9 @@ where
 			self.funding.get_value_satoshis(),
 		);
 
+		let funding_tx_contributions =
+			FundingTxContributions::InputsOnly { inputs: vec![], change_script: None };
+
 		let prev_funding_input = self.funding.to_splice_funding_input();
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: false,
@@ -10813,8 +10845,7 @@ where
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_per_kw,
 			shared_funding_input: Some(prev_funding_input),
-			our_funding_inputs: Vec::new(),
-			change_script: None,
+			funding_tx_contributions,
 		};
 
 		let mut interactive_tx_constructor = funding_negotiation_context
@@ -12505,14 +12536,17 @@ where
 			unfunded_channel_age_ticks: 0,
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
+		let funding_tx_contributions = FundingTxContributions::InputsOnly {
+			inputs: funding_inputs,
+			change_script: None,
+		};
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: true,
 			our_funding_contribution: SignedAmount::from_sat(funding_satoshis as i64),
 			funding_tx_locktime,
 			funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
-			our_funding_inputs: funding_inputs,
-			change_script: None,
+			funding_tx_contributions,
 		};
 		let chan = Self {
 			funding,
@@ -12659,14 +12693,17 @@ where
 			&funding.get_counterparty_pubkeys().revocation_basepoint);
 		context.channel_id = channel_id;
 
+		let funding_tx_contributions = FundingTxContributions::InputsOnly {
+			inputs: our_funding_inputs.clone(),
+			change_script: None,
+		};
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: false,
 			our_funding_contribution,
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
-			our_funding_inputs: our_funding_inputs.clone(),
-			change_script: None,
+			funding_tx_contributions,
 		};
 		let shared_funding_output = TxOut {
 			value: Amount::from_sat(funding.get_value_satoshis()),

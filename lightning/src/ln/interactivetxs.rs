@@ -1891,7 +1891,7 @@ pub(super) fn calculate_change_output_value(
 
 	let mut total_input_satoshis = 0u64;
 	let mut our_funding_inputs_weight = 0u64;
-	for (txin, tx) in context.our_funding_inputs.iter() {
+	for (txin, tx) in context.funding_tx_contributions.inputs().iter() {
 		let txid = tx.as_transaction().compute_txid();
 		if txin.previous_output.txid != txid {
 			return Err(AbortReason::PrevTxOutInvalid);
@@ -1944,7 +1944,9 @@ pub(super) fn calculate_change_output_value(
 #[cfg(test)]
 mod tests {
 	use crate::chain::chaininterface::{fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
-	use crate::ln::channel::{FundingNegotiationContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
+	use crate::ln::channel::{
+		FundingNegotiationContext, FundingTxContributions, TOTAL_BITCOIN_SUPPLY_SATOSHIS,
+	};
 	use crate::ln::interactivetxs::{
 		calculate_change_output_value, generate_holder_serial_id, AbortReason,
 		HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
@@ -2980,6 +2982,8 @@ mod tests {
 				(txin, TransactionU16LenLimited::new(tx).unwrap())
 			})
 			.collect::<Vec<(TxIn, TransactionU16LenLimited)>>();
+		let funding_tx_contributions =
+			FundingTxContributions::InputsOnly { inputs, change_script: None };
 		let our_contributed = 110_000;
 		let txout = TxOut { value: Amount::from_sat(10_000), script_pubkey: ScriptBuf::new() };
 		let outputs = vec![txout];
@@ -2998,8 +3002,7 @@ mod tests {
 			funding_tx_locktime: AbsoluteLockTime::ZERO,
 			funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
-			our_funding_inputs: inputs,
-			change_script: None,
+			funding_tx_contributions,
 		};
 		assert_eq!(
 			calculate_change_output_value(&context, false, &ScriptBuf::new(), &outputs, 300),
