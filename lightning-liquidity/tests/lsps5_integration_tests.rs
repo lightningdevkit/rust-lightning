@@ -7,6 +7,7 @@ use common::{create_service_and_client_nodes, get_lsps_message, LSPSNodes};
 use lightning::ln::functional_test_utils::{
 	create_chanmon_cfgs, create_network, create_node_cfgs, create_node_chanmgrs, Node,
 };
+use lightning::ln::msgs::Init;
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::util::hash_tables::{HashMap, HashSet};
 use lightning_liquidity::events::LiquidityEvent;
@@ -17,7 +18,9 @@ use lightning_liquidity::lsps5::msgs::{
 	LSPS5AppName, LSPS5ClientError, LSPS5ProtocolError, LSPS5WebhookUrl, WebhookNotification,
 	WebhookNotificationMethod,
 };
-use lightning_liquidity::lsps5::service::LSPS5ServiceConfig;
+use lightning_liquidity::lsps5::service::{
+	LSPS5ServiceConfig, DEFAULT_MAX_WEBHOOKS_PER_CLIENT, DEFAULT_NOTIFICATION_COOLDOWN_HOURS,
+};
 use lightning_liquidity::lsps5::service::{
 	MIN_WEBHOOK_RETENTION_DAYS, PRUNE_STALE_WEBHOOKS_INTERVAL_DAYS,
 };
@@ -27,18 +30,10 @@ use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-/// Default maximum number of webhooks allowed per client.
-pub(crate) const DEFAULT_MAX_WEBHOOKS_PER_CLIENT: u32 = 10;
-/// Default notification cooldown time in hours.
-pub(crate) const DEFAULT_NOTIFICATION_COOLDOWN_HOURS: Duration = Duration::from_secs(24 * 60 * 60);
-
 pub(crate) fn lsps5_test_setup<'a, 'b, 'c>(
 	nodes: Vec<Node<'a, 'b, 'c>>, time_provider: Arc<dyn TimeProvider + Send + Sync>,
 ) -> (LSPSNodes<'a, 'b, 'c>, LSPS5Validator) {
-	let lsps5_service_config = LSPS5ServiceConfig {
-		max_webhooks_per_client: DEFAULT_MAX_WEBHOOKS_PER_CLIENT,
-		notification_cooldown_hours: DEFAULT_NOTIFICATION_COOLDOWN_HOURS,
-	};
+	let lsps5_service_config = LSPS5ServiceConfig::default();
 	let service_config = LiquidityServiceConfig {
 		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
@@ -1052,4 +1047,113 @@ fn test_notify_without_webhooks_does_nothing() {
 
 	let _ = service_handler.notify_onion_message_incoming(client_node_id);
 	assert!(service_node.liquidity_manager.next_event().is_none());
+}
+
+#[test]
+fn test_send_notifications_and_peer_connected_resets_cooldown() {
+	let mock_time_provider = Arc::new(MockTimeProvider::new(1000));
+	let time_provider = Arc::<MockTimeProvider>::clone(&mock_time_provider);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, time_provider);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+
+	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
+	let service_handler = service_node.liquidity_manager.lsps5_service_handler().unwrap();
+
+	let app_name = "CooldownTestApp";
+	let webhook_url = "https://www.example.org/cooldown";
+	let _ = client_handler
+		.set_webhook(service_node_id, app_name.to_string(), webhook_url.to_string())
+		.expect("Register webhook request should succeed");
+	let set_req = get_lsps_message!(client_node, service_node_id);
+	service_node.liquidity_manager.handle_custom_message(set_req, client_node_id).unwrap();
+
+	let _ = service_node.liquidity_manager.next_event().unwrap();
+
+	let resp = get_lsps_message!(service_node, client_node_id);
+	client_node.liquidity_manager.handle_custom_message(resp, service_node_id).unwrap();
+	let _ = client_node.liquidity_manager.next_event().unwrap();
+
+	// 1. First notification should be sent
+	let _ = service_handler.notify_payment_incoming(client_node_id);
+	let event = service_node.liquidity_manager.next_event().unwrap();
+	match event {
+		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
+			notification,
+			..
+		}) => {
+			assert_eq!(notification.method, WebhookNotificationMethod::LSPS5PaymentIncoming);
+		},
+		_ => panic!("Expected SendWebhookNotification event"),
+	}
+
+	// 2. Second notification before cooldown should NOT be sent
+	let _ = service_handler.notify_payment_incoming(client_node_id);
+	assert!(
+		service_node.liquidity_manager.next_event().is_none(),
+		"Should not emit event due to cooldown"
+	);
+
+	// 3. Notification of a different method CAN be sent
+	let timeout_block = 424242;
+	let _ = service_handler.notify_expiry_soon(client_node_id, timeout_block);
+	let event = service_node.liquidity_manager.next_event().unwrap();
+	match event {
+		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
+			notification,
+			..
+		}) => {
+			assert!(matches!(
+				notification.method,
+				WebhookNotificationMethod::LSPS5ExpirySoon { timeout } if timeout == timeout_block
+			));
+		},
+		_ => panic!("Expected SendWebhookNotification event for expiry_soon"),
+	}
+
+	// 4. Advance time past cooldown and ensure payment_incoming can be sent again
+	mock_time_provider.advance_time(DEFAULT_NOTIFICATION_COOLDOWN_HOURS.as_secs() + 1);
+
+	let _ = service_handler.notify_payment_incoming(client_node_id);
+	let event = service_node.liquidity_manager.next_event().unwrap();
+	match event {
+		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
+			notification,
+			..
+		}) => {
+			assert_eq!(notification.method, WebhookNotificationMethod::LSPS5PaymentIncoming);
+		},
+		_ => panic!("Expected SendWebhookNotification event after cooldown"),
+	}
+
+	// 5. Can't send payment_incoming notification again immediately after cooldown
+	let _ = service_handler.notify_payment_incoming(client_node_id);
+	assert!(
+		service_node.liquidity_manager.next_event().is_none(),
+		"Should not emit event due to cooldown"
+	);
+
+	// 6. After peer_connected, notification should be sent again immediately
+	let init_msg = Init {
+		features: lightning_types::features::InitFeatures::empty(),
+		remote_network_address: None,
+		networks: None,
+	};
+	service_node.liquidity_manager.peer_connected(client_node_id, &init_msg, false).unwrap();
+	let _ = service_handler.notify_payment_incoming(client_node_id);
+	let event = service_node.liquidity_manager.next_event().unwrap();
+	match event {
+		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
+			notification,
+			..
+		}) => {
+			assert_eq!(notification.method, WebhookNotificationMethod::LSPS5PaymentIncoming);
+		},
+		_ => panic!("Expected SendWebhookNotification event after peer_connected"),
+	}
 }

@@ -64,6 +64,21 @@ pub struct LSPS5ServiceConfig {
 	pub notification_cooldown_hours: Duration,
 }
 
+/// Default maximum number of webhooks allowed per client.
+pub const DEFAULT_MAX_WEBHOOKS_PER_CLIENT: u32 = 10;
+/// Default notification cooldown time in hours.
+pub const DEFAULT_NOTIFICATION_COOLDOWN_HOURS: Duration = Duration::from_secs(60 * 60); // 1 hour
+
+// Default configuration for LSPS5 service.
+impl Default for LSPS5ServiceConfig {
+	fn default() -> Self {
+		Self {
+			max_webhooks_per_client: DEFAULT_MAX_WEBHOOKS_PER_CLIENT,
+			notification_cooldown_hours: DEFAULT_NOTIFICATION_COOLDOWN_HOURS,
+		}
+	}
+}
+
 /// Service-side handler for the [`bLIP-55 / LSPS5`] webhook registration protocol.
 ///
 /// Runs on the LSP (server) side. Stores and manages client-registered webhooks,
@@ -393,8 +408,8 @@ where
 				.last_notification_sent
 				.get(&notification.method)
 				.map(|last_sent| now.clone().abs_diff(&last_sent))
-				.map_or(true, |duration| {
-					duration >= self.config.notification_cooldown_hours.as_secs()
+				.map_or(true, |last_sent| {
+					last_sent >= self.config.notification_cooldown_hours.as_secs()
 				}) {
 				webhook.last_notification_sent.insert(notification.method.clone(), now.clone());
 				webhook.last_used = now.clone();
@@ -480,6 +495,15 @@ where
 			.list_channels()
 			.iter()
 			.any(|c| c.is_usable && c.counterparty.node_id == *client_id)
+	}
+
+	pub(crate) fn peer_connected(&self, counterparty_node_id: &PublicKey) {
+		let mut webhooks = self.webhooks.lock().unwrap();
+		if let Some(client_webhooks) = webhooks.get_mut(counterparty_node_id) {
+			for webhook in client_webhooks.values_mut() {
+				webhook.last_notification_sent.clear();
+			}
+		}
 	}
 }
 
