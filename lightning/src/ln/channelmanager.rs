@@ -6424,7 +6424,10 @@ where
 
 		let mut receive_htlcs = Vec::new();
 		mem::swap(&mut receive_htlcs, &mut self.receive_htlcs.lock().unwrap());
-		self.process_receive_htlcs(receive_htlcs, &mut new_events, &mut failed_forwards);
+		if !receive_htlcs.is_empty() {
+			self.process_receive_htlcs(receive_htlcs, &mut new_events, &mut failed_forwards);
+			should_persist = NotifyOption::DoPersist;
+		}
 
 		let best_block_height = self.best_block.read().unwrap().height;
 		let needs_persist = self.pending_outbound_payments.check_retry_payments(
