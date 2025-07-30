@@ -636,12 +636,14 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	nodes[3].node.process_pending_update_add_htlcs();
 
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
-	for (_, pending_forwards) in nodes[3].node.forward_htlcs.lock().unwrap().iter_mut() {
-		for f in pending_forwards.iter_mut() {
-			match f {
-				&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-					ref mut forward_info, ..
-				}) => match forward_info.routing {
+	assert_eq!(nodes[3].node.forward_htlcs.lock().unwrap().len(), 1);
+	if let Some((_, pending_forwards)) =
+		nodes[3].node.forward_htlcs.lock().unwrap().iter_mut().next()
+	{
+		assert_eq!(pending_forwards.len(), 1);
+		match pending_forwards.get_mut(0).unwrap() {
+			&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) => {
+				match forward_info.routing {
 					PendingHTLCRouting::ReceiveKeysend { ref mut payment_data, .. } => {
 						*payment_data = Some(msgs::FinalOnionHopData {
 							payment_secret: PaymentSecret([42; 32]),
@@ -649,11 +651,15 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 						});
 					},
 					_ => panic!("Expected PendingHTLCRouting::ReceiveKeysend"),
-				},
-				_ => {},
-			}
+				}
+			},
+			_ => {
+				panic!("Unexpected HTLCForwardInfo");
+			},
 		}
-	}
+	} else {
+		panic!("Expected pending receive");
+	};
 	nodes[3].node.process_pending_htlc_forwards();
 
 	// Pay along nodes[2]
@@ -685,26 +691,30 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	nodes[3].node.process_pending_update_add_htlcs();
 
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
-	for (_, pending_forwards) in nodes[3].node.forward_htlcs.lock().unwrap().iter_mut() {
-		for f in pending_forwards.iter_mut() {
-			match f {
-				&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-					ref mut forward_info, ..
-				}) => {
-					match forward_info.routing {
-						PendingHTLCRouting::ReceiveKeysend { ref mut payment_data, .. } => {
-							*payment_data = Some(msgs::FinalOnionHopData {
-								payment_secret: PaymentSecret([43; 32]), // Doesn't match the secret used above
-								total_msat: amount * 2,
-							});
-						},
-						_ => panic!("Expected PendingHTLCRouting::ReceiveKeysend"),
-					}
-				},
-				_ => {},
-			}
+	assert_eq!(nodes[3].node.forward_htlcs.lock().unwrap().len(), 1);
+	if let Some((_, pending_forwards)) =
+		nodes[3].node.forward_htlcs.lock().unwrap().iter_mut().next()
+	{
+		assert_eq!(pending_forwards.len(), 1);
+		match pending_forwards.get_mut(0).unwrap() {
+			&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) => {
+				match forward_info.routing {
+					PendingHTLCRouting::ReceiveKeysend { ref mut payment_data, .. } => {
+						*payment_data = Some(msgs::FinalOnionHopData {
+							payment_secret: PaymentSecret([43; 32]), // Doesn't match the secret used above
+							total_msat: amount * 2,
+						});
+					},
+					_ => panic!("Expected PendingHTLCRouting::ReceiveKeysend"),
+				}
+			},
+			_ => {
+				panic!("Unexpected HTLCForwardInfo");
+			},
 		}
-	}
+	} else {
+		panic!("Expected pending receive");
+	};
 	nodes[3].node.process_pending_htlc_forwards();
 	let fail_type = HTLCHandlingFailureType::Receive { payment_hash };
 	expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[3], &[fail_type]);

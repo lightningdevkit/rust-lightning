@@ -1173,17 +1173,21 @@ fn test_onion_failure() {
 		|_| {},
 		|| {
 			nodes[1].node.process_pending_update_add_htlcs();
-			for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
-				for f in pending_forwards.iter_mut() {
-					match f {
-						&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-							ref mut forward_info,
-							..
-						}) => forward_info.outgoing_cltv_value -= 1,
-						_ => {},
-					}
+			assert_eq!(nodes[1].node.forward_htlcs.lock().unwrap().len(), 1);
+			if let Some((_, pending_forwards)) =
+				nodes[1].node.forward_htlcs.lock().unwrap().iter_mut().next()
+			{
+				assert_eq!(pending_forwards.len(), 1);
+				match pending_forwards.get_mut(0).unwrap() {
+					&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+						ref mut forward_info,
+						..
+					}) => forward_info.outgoing_cltv_value -= 1,
+					_ => panic!("Unexpected HTLCForwardInfo"),
 				}
-			}
+			} else {
+				panic!("Expected pending forwards!");
+			};
 		},
 		true,
 		Some(LocalHTLCFailureReason::FinalIncorrectCLTVExpiry),
@@ -1203,17 +1207,21 @@ fn test_onion_failure() {
 		|| {
 			nodes[1].node.process_pending_update_add_htlcs();
 			// violate amt_to_forward > msg.amount_msat
-			for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
-				for f in pending_forwards.iter_mut() {
-					match f {
-						&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-							ref mut forward_info,
-							..
-						}) => forward_info.outgoing_amt_msat -= 1,
-						_ => {},
-					}
+			assert_eq!(nodes[1].node.forward_htlcs.lock().unwrap().len(), 1);
+			if let Some((_, pending_forwards)) =
+				nodes[1].node.forward_htlcs.lock().unwrap().iter_mut().next()
+			{
+				assert_eq!(pending_forwards.len(), 1);
+				match pending_forwards.get_mut(0).unwrap() {
+					&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+						ref mut forward_info,
+						..
+					}) => forward_info.outgoing_amt_msat -= 1,
+					_ => panic!("Unexpected HTLCForwardInfo"),
 				}
-			}
+			} else {
+				panic!("Expected pending forwards!");
+			};
 		},
 		true,
 		Some(LocalHTLCFailureReason::FinalIncorrectHTLCAmount),
@@ -1554,16 +1562,20 @@ fn test_overshoot_final_cltv() {
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].node.process_pending_update_add_htlcs();
-	for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
-		for f in pending_forwards.iter_mut() {
-			match f {
-				&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-					ref mut forward_info, ..
-				}) => forward_info.outgoing_cltv_value += 1,
-				_ => {},
-			}
+	assert_eq!(nodes[1].node.forward_htlcs.lock().unwrap().len(), 1);
+	if let Some((_, pending_forwards)) =
+		nodes[1].node.forward_htlcs.lock().unwrap().iter_mut().next()
+	{
+		assert_eq!(pending_forwards.len(), 1);
+		match pending_forwards.get_mut(0).unwrap() {
+			&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) => {
+				forward_info.outgoing_cltv_value += 1
+			},
+			_ => panic!("Unexpected HTLCForwardInfo"),
 		}
-	}
+	} else {
+		panic!("Expected pending forwards!");
+	};
 	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	check_added_monitors!(&nodes[1], 1);
@@ -2615,19 +2627,23 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	nodes[1].node.process_pending_update_add_htlcs();
 
 	// Modify the payload so the phantom hop's HMAC is bogus.
-	for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
-		for f in pending_forwards.iter_mut() {
-			match f {
-				&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-					forward_info: PendingHTLCInfo { ref mut outgoing_cltv_value, .. },
-					..
-				}) => {
-					*outgoing_cltv_value -= 1;
-				},
-				_ => panic!("Unexpected forward"),
-			}
+	assert_eq!(nodes[1].node.forward_htlcs.lock().unwrap().len(), 1);
+	if let Some((_, pending_forwards)) =
+		nodes[1].node.forward_htlcs.lock().unwrap().iter_mut().next()
+	{
+		assert_eq!(pending_forwards.len(), 1);
+		match pending_forwards.get_mut(0).unwrap() {
+			&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+				forward_info: PendingHTLCInfo { ref mut outgoing_cltv_value, .. },
+				..
+			}) => {
+				*outgoing_cltv_value -= 1;
+			},
+			_ => panic!("Unexpected HTLCForwardInfo"),
 		}
-	}
+	} else {
+		panic!("Expected pending forwards!");
+	};
 	nodes[1].node.process_pending_htlc_forwards();
 	expect_htlc_failure_conditions(
 		nodes[1].node.get_and_clear_pending_events(),
