@@ -14,7 +14,7 @@
 use crate::chain::channelmonitor::{
 	ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS,
 };
-use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen};
+use crate::chain::{Confirm, Listen};
 use crate::events::{
 	ClosureReason, Event, HTLCHandlingFailureType, PathFailure, PaymentFailureReason,
 	PaymentPurpose,
@@ -1310,16 +1310,15 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 2);
 	}
 
-	// Now connect the HTLC claim transaction with the ChainMonitor-generated ChannelMonitor update
-	// returning InProgress. This should cause the claim event to never make its way to the
-	// ChannelManager.
-	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-
+	// Now connect the HTLC claim transaction. Note that ChannelMonitors aren't re-persisted on
+	// each block connection (as the block being reconnected on startup should get us the same
+	// result).
 	if payment_timeout {
 		connect_blocks(&nodes[0], 1);
 	} else {
 		connect_block(&nodes[0], &claim_block);
 	}
+	check_added_monitors(&nodes[0], 0);
 
 	// Note that we skip persisting ChannelMonitors. We should still be generating the payment sent
 	// event without ChannelMonitor persistence. If we reset to a previous state on reload, the block
