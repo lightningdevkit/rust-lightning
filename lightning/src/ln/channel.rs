@@ -6025,7 +6025,9 @@ impl FundingNegotiationContext {
 		};
 
 		let (inputs_to_contribute, change_script) = match self.funding_tx_contributions {
-			FundingTxContributions::InputsOnly { inputs, change_script } => (inputs, change_script),
+			FundingTxContributions::InputsOnly { inputs, change_script } => {
+				(inputs.into_iter().map(|(txin, tx, _)| (txin, tx)).collect(), change_script)
+			},
 		};
 
 		// Add change output if necessary
@@ -6079,7 +6081,7 @@ pub enum FundingTxContributions {
 	InputsOnly {
 		/// The inputs used to meet the contributed amount. Any excess amount will be sent to a
 		/// change output.
-		inputs: Vec<(TxIn, Transaction)>,
+		inputs: Vec<(TxIn, Transaction, Weight)>,
 
 		/// An optional change output script. This will be used if needed or, if not set, generated
 		/// using `SignerProvider::get_destination_script`.
@@ -6089,7 +6091,7 @@ pub enum FundingTxContributions {
 
 impl FundingTxContributions {
 	/// Returns an inputs to be contributed to the funding transaction.
-	pub fn inputs(&self) -> &[(TxIn, Transaction)] {
+	pub fn inputs(&self) -> &[(TxIn, Transaction, Weight)] {
 		match self {
 			FundingTxContributions::InputsOnly { inputs, .. } => &inputs[..],
 		}
@@ -10701,9 +10703,8 @@ where
 				err,
 			),
 		})?;
-		// Convert inputs
-		let mut funding_inputs = Vec::new();
-		for (txin, tx, _) in our_funding_inputs.into_iter() {
+
+		for (_, tx, _) in our_funding_inputs.iter() {
 			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
 				channel_id: ChannelId([0; 32]),
 				serial_id: 0,
@@ -10718,12 +10719,10 @@ where
 					err: format!("Funding input's prevtx is too large for tx_add_input"),
 				});
 			}
-
-			funding_inputs.push((txin, tx));
 		}
 
 		let funding_tx_contributions =
-			FundingTxContributions::InputsOnly { inputs: funding_inputs, change_script };
+			FundingTxContributions::InputsOnly { inputs: our_funding_inputs, change_script };
 
 		let prev_funding_input = self.funding.to_splice_funding_input();
 		let funding_negotiation_context = FundingNegotiationContext {
@@ -12500,7 +12499,7 @@ where
 	pub fn new_outbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
-		funding_inputs: Vec<(TxIn, Transaction)>, user_id: u128, config: &UserConfig,
+		funding_inputs: Vec<(TxIn, Transaction, Weight)>, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
 		logger: L,
 	) -> Result<Self, APIError>
@@ -12661,7 +12660,7 @@ where
 	{
 		// TODO(dual_funding): Take these as input once supported
 		let (our_funding_contribution, our_funding_contribution_sats) = (SignedAmount::ZERO, 0u64);
-		let our_funding_inputs = Vec::new();
+		let our_funding_inputs: Vec<(TxIn, Transaction, Weight)> = Vec::new();
 
 		let channel_value_satoshis =
 			our_funding_contribution_sats.saturating_add(msg.common_fields.funding_satoshis);
@@ -12730,7 +12729,7 @@ where
 				feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 				funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
 				is_initiator: false,
-				inputs_to_contribute: our_funding_inputs,
+				inputs_to_contribute: our_funding_inputs.into_iter().map(|(txin, tx, _)| (txin, tx)).collect(),
 				shared_funding_input: None,
 				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_contribution_sats),
 				outputs_to_contribute: Vec::new(),

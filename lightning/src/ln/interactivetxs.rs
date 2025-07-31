@@ -1884,7 +1884,7 @@ pub(super) fn calculate_change_output_value(
 
 	let mut total_input_satoshis = 0u64;
 	let mut our_funding_inputs_weight = 0u64;
-	for (txin, tx) in context.funding_tx_contributions.inputs().iter() {
+	for (txin, tx, _) in context.funding_tx_contributions.inputs().iter() {
 		let txid = tx.compute_txid();
 		if txin.previous_output.txid != txid {
 			return Err(AbortReason::PrevTxOutInvalid);
@@ -1894,6 +1894,7 @@ pub(super) fn calculate_change_output_value(
 			.get(txin.previous_output.vout as usize)
 			.ok_or(AbortReason::PrevTxOutInvalid)?;
 		total_input_satoshis = total_input_satoshis.saturating_add(output.value.to_sat());
+		// FIXME: Can we use the Weight from context.funding_tx_contributions.inputs()?
 		let weight = estimate_input_weight(output).to_wu();
 		our_funding_inputs_weight = our_funding_inputs_weight.saturating_add(weight);
 	}
@@ -1958,7 +1959,7 @@ mod tests {
 	use bitcoin::transaction::Version;
 	use bitcoin::{
 		OutPoint, PubkeyHash, ScriptBuf, Sequence, SignedAmount, Transaction, TxIn, TxOut,
-		WPubkeyHash, Witness,
+		WPubkeyHash, Weight, Witness,
 	};
 	use core::ops::Deref;
 
@@ -2969,9 +2970,10 @@ mod tests {
 					sequence: Sequence::ZERO,
 					witness: Witness::new(),
 				};
-				(txin, tx)
+				let weight = Weight::ZERO;
+				(txin, tx, weight)
 			})
-			.collect::<Vec<(TxIn, Transaction)>>();
+			.collect::<Vec<(TxIn, Transaction, Weight)>>();
 		let funding_tx_contributions =
 			FundingTxContributions::InputsOnly { inputs, change_script: None };
 		let our_contributed = 110_000;
