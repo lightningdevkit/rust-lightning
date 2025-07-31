@@ -23,7 +23,6 @@ use {
 	crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete, TxSignatures},
 	crate::ln::types::ChannelId,
 	crate::prelude::*,
-	crate::util::ser::TransactionU16LenLimited,
 	crate::util::test_utils,
 	bitcoin::Witness,
 };
@@ -51,7 +50,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		&[session.initiator_input_value_satoshis],
 	)
 	.into_iter()
-	.map(|(txin, tx, _)| (txin, TransactionU16LenLimited::new(tx).unwrap()))
+	.map(|(txin, tx, _)| (txin, tx))
 	.collect();
 
 	// Alice creates a dual-funded channel as initiator.
@@ -94,7 +93,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		sequence: initiator_funding_inputs[0].0.sequence.0,
 		shared_input_txid: None,
 	};
-	let input_value = tx_add_input_msg.prevtx.as_ref().unwrap().as_transaction().output
+	let input_value = tx_add_input_msg.prevtx.as_ref().unwrap().output
 		[tx_add_input_msg.prevtx_out as usize]
 		.value;
 	assert_eq!(input_value.to_sat(), session.initiator_input_value_satoshis);
