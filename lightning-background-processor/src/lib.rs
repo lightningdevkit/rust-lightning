@@ -482,6 +482,9 @@ pub(crate) mod futures_util {
 		pub(crate) fn set_a(&mut self, fut: A) {
 			self.a = JoinerResult::Pending(Some(fut));
 		}
+		pub(crate) fn set_a_res(&mut self, res: Result<(), E>) {
+			self.a = JoinerResult::Ready(res);
+		}
 		pub(crate) fn set_b(&mut self, fut: B) {
 			self.b = JoinerResult::Pending(Some(fut));
 		}
@@ -937,7 +940,20 @@ where
 					.await
 			};
 			// TODO: Once our MSRV is 1.68 we should be able to drop the Box
-			futures.set_a(Box::pin(fut));
+			let mut fut = Box::pin(fut);
+
+			// Because persisting the ChannelManager is important to avoid accidental
+			// force-closures, go ahead and poll the future once before we do slightly more
+			// CPU-intensive tasks in the form of NetworkGraph pruning or scorer time-stepping
+			// below. This will get it moving but won't block us for too long if the underlying
+			// future is actually async.
+			use core::future::Future;
+			let mut waker = dummy_waker();
+			let mut ctx = task::Context::from_waker(&mut waker);
+			match core::pin::Pin::new(&mut fut).poll(&mut ctx) {
+				task::Poll::Ready(res) => futures.set_a_res(res),
+				task::Poll::Pending => futures.set_a(fut),
+			}
 
 			log_trace!(logger, "Done persisting ChannelManager.");
 		}
