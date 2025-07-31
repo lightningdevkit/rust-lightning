@@ -319,7 +319,7 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 	);
 	match res {
 		Err(APIError::APIMisuseError { err }) => {
-			assert!(err.contains("Insufficient inputs for splicing"))
+			assert!(err.contains("Need more inputs"))
 		},
 		_ => panic!("Wrong error {:?}", res.err().unwrap()),
 	}

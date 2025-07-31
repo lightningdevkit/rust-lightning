@@ -24,9 +24,9 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-#[cfg(splicing)]
-use bitcoin::Sequence;
 use bitcoin::{secp256k1, sighash, TxIn};
+#[cfg(splicing)]
+use bitcoin::{FeeRate, Sequence};
 
 use crate::chain::chaininterface::{
 	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
@@ -5879,20 +5879,53 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 	cmp::min(channel_value_satoshis, cmp::max(q, dust_limit_satoshis))
 }
 
+#[cfg(splicing)]
+fn check_splice_contribution_sufficient(
+	channel_balance: Amount, contribution: &SpliceContribution, is_initiator: bool,
+	funding_feerate: FeeRate,
+) -> Result<Amount, ChannelError> {
+	let contribution_amount = contribution.value();
+	if contribution_amount < SignedAmount::ZERO {
+		let estimated_fee = Amount::from_sat(estimate_v2_funding_transaction_fee(
+			is_initiator,
+			1, // spends the previous funding output
+			Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT),
+			contribution.outputs(),
+			funding_feerate.to_sat_per_kwu() as u32,
+		));
+
+		if channel_balance > contribution_amount.unsigned_abs() + estimated_fee {
+			Ok(estimated_fee)
+		} else {
+			Err(ChannelError::Warn(format!(
+				"Available channel balance {} is lower than needed for splicing out {}, considering fees of {}",
+				channel_balance, contribution_amount.unsigned_abs(), estimated_fee,
+			)))
+		}
+	} else {
+		check_v2_funding_inputs_sufficient(
+			contribution_amount.to_sat(),
+			contribution.inputs(),
+			is_initiator,
+			true,
+			funding_feerate.to_sat_per_kwu() as u32,
+		)
+		.map(Amount::from_sat)
+	}
+}
+
 /// Estimate our part of the fee of the new funding transaction.
 /// input_count: Number of contributed inputs.
 /// witness_weight: The witness weight for contributed inputs.
 #[allow(dead_code)] // TODO(dual_funding): TODO(splicing): Remove allow once used.
 #[rustfmt::skip]
 fn estimate_v2_funding_transaction_fee(
-	is_initiator: bool, input_count: usize, witness_weight: Weight,
+	is_initiator: bool, input_count: usize, witness_weight: Weight, outputs: &[TxOut],
 	funding_feerate_sat_per_1000_weight: u32,
 ) -> u64 {
-	// Inputs
 	let mut weight = (input_count as u64) * BASE_INPUT_WEIGHT;
-
-	// Witnesses
 	weight = weight.saturating_add(witness_weight.to_wu());
+	weight = weight.saturating_add(outputs.iter().map(|txout| txout.weight().to_wu()).sum());
 
 	// If we are the initiator, we must pay for weight of all common fields in the funding transaction.
 	if is_initiator {
@@ -5930,7 +5963,7 @@ fn check_v2_funding_inputs_sufficient(
 		funding_inputs_len += 1;
 		total_input_satisfaction_weight += Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT);
 	}
-	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs_len, total_input_satisfaction_weight, funding_feerate_sat_per_1000_weight);
+	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs_len, total_input_satisfaction_weight, &[], funding_feerate_sat_per_1000_weight);
 
 	let mut total_input_sats = 0u64;
 	for FundingTxInput { utxo, .. } in funding_inputs.iter() {
@@ -5977,6 +6010,9 @@ pub(super) struct FundingNegotiationContext {
 	/// The funding inputs we will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub our_funding_inputs: Vec<FundingTxInput>,
+	/// The funding outputs we will be contributing to the channel.
+	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
+	pub our_funding_outputs: Vec<TxOut>,
 	/// The change output script. This will be used if needed or -- if not set -- generated using
 	/// `SignerProvider::get_destination_script`.
 	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
@@ -6006,10 +6042,8 @@ impl FundingNegotiationContext {
 			debug_assert!(matches!(context.channel_state, ChannelState::NegotiatingFunding(_)));
 		}
 
-		// Add output for funding tx
 		// Note: For the error case when the inputs are insufficient, it will be handled after
 		// the `calculate_change_output_value` call below
-		let mut funding_outputs = Vec::new();
 
 		let shared_funding_output = TxOut {
 			value: Amount::from_sat(funding.get_value_satoshis()),
@@ -6017,34 +6051,37 @@ impl FundingNegotiationContext {
 		};
 
 		// Optionally add change output
-		if self.our_funding_contribution > SignedAmount::ZERO {
-			let change_value_opt = calculate_change_output_value(
+		let change_value_opt = if self.our_funding_contribution > SignedAmount::ZERO {
+			calculate_change_output_value(
 				&self,
 				self.shared_funding_input.is_some(),
 				&shared_funding_output.script_pubkey,
-				&funding_outputs,
 				context.holder_dust_limit_satoshis,
-			)?;
-			if let Some(change_value) = change_value_opt {
-				let change_script = if let Some(script) = self.change_script {
-					script
-				} else {
-					signer_provider
-						.get_destination_script(context.channel_keys_id)
-						.map_err(|_err| AbortReason::InternalError("Error getting change script"))?
-				};
-				let mut change_output =
-					TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
-				let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
-				let change_output_fee =
-					fee_for_weight(self.funding_feerate_sat_per_1000_weight, change_output_weight);
-				let change_value_decreased_with_fee =
-					change_value.saturating_sub(change_output_fee);
-				// Check dust limit again
-				if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
-					change_output.value = Amount::from_sat(change_value_decreased_with_fee);
-					funding_outputs.push(change_output);
-				}
+			)?
+		} else {
+			None
+		};
+
+		let mut funding_outputs = self.our_funding_outputs;
+
+		if let Some(change_value) = change_value_opt {
+			let change_script = if let Some(script) = self.change_script {
+				script
+			} else {
+				signer_provider
+					.get_destination_script(context.channel_keys_id)
+					.map_err(|_err| AbortReason::InternalError("Error getting change script"))?
+			};
+			let mut change_output =
+				TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
+			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
+			let change_output_fee =
+				fee_for_weight(self.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
+			// Check dust limit again
+			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
+				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
+				funding_outputs.push(change_output);
 			}
 		}
 
@@ -10635,43 +10672,65 @@ where
 		if our_funding_contribution > SignedAmount::MAX_MONEY {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Channel {} cannot be spliced; contribution exceeds total bitcoin supply: {}",
+					"Channel {} cannot be spliced in; contribution exceeds total bitcoin supply: {}",
 					self.context.channel_id(),
 					our_funding_contribution,
 				),
 			});
 		}
 
-		if our_funding_contribution < SignedAmount::ZERO {
+		if our_funding_contribution < -SignedAmount::MAX_MONEY {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-				"TODO(splicing): Splice-out not supported, only splice in; channel ID {}, contribution {}",
-				self.context.channel_id(), our_funding_contribution,
-			),
+					"Channel {} cannot be spliced out; contribution exhausts total bitcoin supply: {}",
+					self.context.channel_id(),
+					our_funding_contribution,
+				),
 			});
 		}
-
-		// TODO(splicing): Once splice-out is supported, check that channel balance does not go below 0
-		// (or below channel reserve)
 
 		// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
 		// (Cannot test for miminum required post-splice channel value)
 
-		// Check that inputs are sufficient to cover our contribution.
-		let _fee = check_v2_funding_inputs_sufficient(
-			our_funding_contribution.to_sat(),
-			contribution.inputs(),
-			true,
-			true,
-			funding_feerate_per_kw,
+		let channel_balance = Amount::from_sat(self.funding.get_value_to_self_msat() / 1000);
+		let fees = check_splice_contribution_sufficient(
+			channel_balance,
+			&contribution,
+			true, // is_initiator
+			FeeRate::from_sat_per_kwu(funding_feerate_per_kw as u64),
 		)
-		.map_err(|err| APIError::APIMisuseError {
-			err: format!(
-				"Insufficient inputs for splicing; channel ID {}, err {}",
-				self.context.channel_id(),
-				err,
-			),
+		.map_err(|e| {
+			let splice_type = if our_funding_contribution < SignedAmount::ZERO {
+				"spliced out"
+			} else {
+				"spliced in"
+			};
+			APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot be {}; {}",
+					self.context.channel_id(),
+					splice_type,
+					e,
+				),
+			}
 		})?;
+
+		// Fees for splice-out are paid from the channel balance whereas fees for splice-in are paid
+		// by the funding inputs.
+		let adjusted_funding_contribution = if our_funding_contribution < SignedAmount::ZERO {
+			let adjusted_funding_contribution = our_funding_contribution
+				- fees.to_signed().expect("fees should never exceed splice-out value");
+
+			// TODO(splicing): Check that channel balance does not go below the channel reserve
+			let _post_channel_balance = AddSigned::checked_add_signed(
+				channel_balance.to_sat(),
+				adjusted_funding_contribution.to_sat(),
+			);
+
+			adjusted_funding_contribution
+		} else {
+			our_funding_contribution
+		};
 
 		for FundingTxInput { utxo, prevtx, .. } in contribution.inputs().iter() {
 			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
@@ -10694,14 +10753,15 @@ where
 		}
 
 		let prev_funding_input = self.funding.to_splice_funding_input();
-		let (our_funding_inputs, change_script) = contribution.into_tx_parts();
+		let (our_funding_inputs, our_funding_outputs, change_script) = contribution.into_tx_parts();
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: true,
-			our_funding_contribution,
+			our_funding_contribution: adjusted_funding_contribution,
 			funding_tx_locktime: LockTime::from_consensus(locktime),
 			funding_feerate_sat_per_1000_weight: funding_feerate_per_kw,
 			shared_funding_input: Some(prev_funding_input),
 			our_funding_inputs,
+			our_funding_outputs,
 			change_script,
 		};
 
@@ -10717,7 +10777,7 @@ where
 
 		Ok(msgs::SpliceInit {
 			channel_id: self.context.channel_id,
-			funding_contribution_satoshis: our_funding_contribution.to_sat(),
+			funding_contribution_satoshis: adjusted_funding_contribution.to_sat(),
 			funding_feerate_per_kw,
 			locktime,
 			funding_pubkey,
@@ -10826,6 +10886,7 @@ where
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_per_kw,
 			shared_funding_input: Some(prev_funding_input),
 			our_funding_inputs: Vec::new(),
+			our_funding_outputs: Vec::new(),
 			change_script: None,
 		};
 
@@ -12524,6 +12585,7 @@ where
 			funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
 			our_funding_inputs: funding_inputs,
+			our_funding_outputs: Vec::new(),
 			change_script: None,
 		};
 		let chan = Self {
@@ -12678,6 +12740,7 @@ where
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
 			our_funding_inputs: our_funding_inputs.clone(),
+			our_funding_outputs: Vec::new(),
 			change_script: None,
 		};
 		let shared_funding_output = TxOut {
@@ -12703,7 +12766,7 @@ where
 				inputs_to_contribute,
 				shared_funding_input: None,
 				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_contribution_sats),
-				outputs_to_contribute: Vec::new(),
+				outputs_to_contribute: funding_negotiation_context.our_funding_outputs.clone(),
 			}
 		).map_err(|err| {
 			let reason = ClosureReason::ProcessingError { err: err.to_string() };
@@ -15872,31 +15935,31 @@ mod tests {
 
 		// 2 inputs with weight 300, initiator, 2000 sat/kw feerate
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 2, Weight::from_wu(300), 2000),
+			estimate_v2_funding_transaction_fee(true, 2, Weight::from_wu(300), &[], 2000),
 			1668
 		);
 
 		// higher feerate
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 2, Weight::from_wu(300), 3000),
+			estimate_v2_funding_transaction_fee(true, 2, Weight::from_wu(300), &[], 3000),
 			2502
 		);
 
 		// only 1 input
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 1, Weight::from_wu(300), 2000),
+			estimate_v2_funding_transaction_fee(true, 1, Weight::from_wu(300), &[], 2000),
 			1348
 		);
 
 		// 0 input weight
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 1, Weight::from_wu(0), 2000),
+			estimate_v2_funding_transaction_fee(true, 1, Weight::from_wu(0), &[], 2000),
 			748
 		);
 
 		// not initiator
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(false, 1, Weight::from_wu(0), 2000),
+			estimate_v2_funding_transaction_fee(false, 1, Weight::from_wu(0), &[], 2000),
 			320
 		);
 	}

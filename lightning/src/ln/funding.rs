@@ -10,7 +10,7 @@
 //! Types pertaining to funding channels.
 
 #[cfg(splicing)]
-use bitcoin::{Amount, ScriptBuf, SignedAmount};
+use bitcoin::{Amount, ScriptBuf, SignedAmount, TxOut};
 use bitcoin::{Script, Sequence, Transaction, Weight};
 
 use crate::events::bump_transaction::{Utxo, EMPTY_SCRIPT_SIG_WEIGHT};
@@ -32,6 +32,12 @@ pub enum SpliceContribution {
 		/// generated using [`SignerProvider::get_destination_script`].
 		change_script: Option<ScriptBuf>,
 	},
+	/// When funds are removed from a channel.
+	SpliceOut {
+		/// The outputs to include in the splice's funding transaction. The total value of all
+		/// outputs will be the amount that is removed.
+		outputs: Vec<TxOut>,
+	},
 }
 
 #[cfg(splicing)]
@@ -41,18 +47,38 @@ impl SpliceContribution {
 			SpliceContribution::SpliceIn { value, .. } => {
 				value.to_signed().unwrap_or(SignedAmount::MAX)
 			},
+			SpliceContribution::SpliceOut { outputs } => {
+				let value_removed = outputs
+					.iter()
+					.map(|txout| txout.value)
+					.sum::<Amount>()
+					.to_signed()
+					.unwrap_or(SignedAmount::MAX);
+				-value_removed
+			},
 		}
 	}
 
 	pub(super) fn inputs(&self) -> &[FundingTxInput] {
 		match self {
 			SpliceContribution::SpliceIn { inputs, .. } => &inputs[..],
+			SpliceContribution::SpliceOut { .. } => &[],
 		}
 	}
 
-	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Option<ScriptBuf>) {
+	pub(super) fn outputs(&self) -> &[TxOut] {
 		match self {
-			SpliceContribution::SpliceIn { inputs, change_script, .. } => (inputs, change_script),
+			SpliceContribution::SpliceIn { .. } => &[],
+			SpliceContribution::SpliceOut { outputs } => &outputs[..],
+		}
+	}
+
+	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>, Option<ScriptBuf>) {
+		match self {
+			SpliceContribution::SpliceIn { inputs, change_script, .. } => {
+				(inputs, vec![], change_script)
+			},
+			SpliceContribution::SpliceOut { outputs } => (vec![], outputs, None),
 		}
 	}
 }
