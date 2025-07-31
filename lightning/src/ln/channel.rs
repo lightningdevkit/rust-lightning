@@ -1101,12 +1101,12 @@ pub enum AnnouncementSigsState {
 /// An enum indicating whether the local or remote side offered a given HTLC.
 enum HTLCInitiator {
 	LocalOffered,
+	#[allow(dead_code)]
 	RemoteOffered,
 }
 
 /// Current counts of various HTLCs, useful for calculating current balances available exactly.
 struct HTLCStats {
-	pending_inbound_htlcs: usize,
 	pending_outbound_htlcs: usize,
 	pending_inbound_htlcs_value_msat: u64,
 	pending_outbound_htlcs_value_msat: u64,
@@ -4107,7 +4107,6 @@ where
 	///
 	/// We take the conservative approach and only assume that a HTLC will
 	/// not be in the next commitment when it is guaranteed that it won't be.
-	#[allow(dead_code)]
 	#[rustfmt::skip]
 	fn get_next_commitment_htlcs(
 		&self, local: bool, htlc_candidate: Option<HTLCAmountDirection>, include_counterparty_unknown_htlcs: bool,
@@ -4177,7 +4176,6 @@ where
 	/// will *not* be present on the next commitment from `next_commitment_htlcs`, and
 	/// check if their outcome is successful. If it is, we add the value of this claimed
 	/// HTLC to the balance of the claimer.
-	#[allow(dead_code)]
 	#[rustfmt::skip]
 	fn get_next_commitment_value_to_self_msat(&self, local: bool, funding: &FundingScope) -> u64 {
 		let inbound_claimed_htlc_msat: u64 =
@@ -4209,7 +4207,6 @@ where
 			.saturating_add(inbound_claimed_htlc_msat)
 	}
 
-	#[allow(dead_code)]
 	fn get_next_local_commitment_stats(
 		&self, funding: &FundingScope, htlc_candidate: Option<HTLCAmountDirection>,
 		include_counterparty_unknown_htlcs: bool, addl_nondust_htlc_count: usize,
@@ -4235,7 +4232,6 @@ where
 		)
 	}
 
-	#[allow(dead_code)]
 	fn get_next_remote_commitment_stats(
 		&self, funding: &FundingScope, htlc_candidate: Option<HTLCAmountDirection>,
 		include_counterparty_unknown_htlcs: bool, addl_nondust_htlc_count: usize,
@@ -4276,15 +4272,25 @@ where
 		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
 			&fee_estimator, funding.get_channel_type(),
 		);
-		let htlc_stats = self.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
-		if htlc_stats.pending_inbound_htlcs + 1 > self.holder_max_accepted_htlcs as usize {
+		// Don't include outbound update_add_htlc's in the holding cell, or those which haven't yet been ACK'ed by the counterparty (ie. LocalAnnounced HTLCs)
+		let include_counterparty_unknown_htlcs = false;
+		// Don't include the extra fee spike buffer HTLC in calculations
+		let fee_spike_buffer_htlc = 0;
+		let next_remote_commitment_stats = self.get_next_remote_commitment_stats(funding, Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }), include_counterparty_unknown_htlcs, fee_spike_buffer_htlc, self.feerate_per_kw, dust_exposure_limiting_feerate);
+
+		if next_remote_commitment_stats.inbound_htlcs_count > self.holder_max_accepted_htlcs as usize {
 			return Err(ChannelError::close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.holder_max_accepted_htlcs)));
 		}
-		if htlc_stats.pending_inbound_htlcs_value_msat + msg.amount_msat > self.holder_max_htlc_value_in_flight_msat {
+		if next_remote_commitment_stats.inbound_htlcs_value_msat > self.holder_max_htlc_value_in_flight_msat {
 			return Err(ChannelError::close(format!("Remote HTLC add would put them over our max HTLC value ({})", self.holder_max_htlc_value_in_flight_msat)));
 		}
 
-		// Check holder_selected_channel_reserve_satoshis (we're getting paid, so they have to at least meet
+		let remote_balance_before_fee_msat = next_remote_commitment_stats.counterparty_balance_before_fee_msat.ok_or(ChannelError::close("Remote HTLC add would overdraw remaining funds".to_owned()))?;
+
+		// Check that the remote can afford to pay for this HTLC on-chain at the current
+		// feerate_per_kw, while maintaining their channel reserve (as required by the spec).
+		//
+		// We check holder_selected_channel_reserve_satoshis (we're getting paid, so they have to at least meet
 		// the reserve_satoshis we told them to always have as direct payment so that they lose
 		// something if we punish them for broadcasting an old state).
 		// Note that we don't really care about having a small/no to_remote output in our local
@@ -4296,50 +4302,23 @@ where
 		// violate the reserve value if we do not do this (as we forget inbound HTLCs from the
 		// Channel state once they will not be present in the next received commitment
 		// transaction).
-		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = {
-			let removed_outbound_total_msat: u64 = self.pending_outbound_htlcs
-				.iter()
-				.filter_map(|htlc| {
-					matches!(
-						htlc.state,
-						OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _))
-						| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _))
-					)
-					.then_some(htlc.amount_msat)
-				})
-				.sum();
-			let pending_value_to_self_msat =
-				funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
-			let pending_remote_value_msat =
-				funding.get_value_satoshis() * 1000 - pending_value_to_self_msat;
-
-			// Subtract any non-HTLC outputs from the local and remote balances
-			SpecTxBuilder {}.subtract_non_htlc_outputs(funding.is_outbound(), funding.value_to_self_msat, pending_remote_value_msat, funding.get_channel_type())
-		};
-		if remote_balance_before_fee_msat < msg.amount_msat {
-			return Err(ChannelError::close("Remote HTLC add would overdraw remaining funds".to_owned()));
-		}
-
-		// Check that the remote can afford to pay for this HTLC on-chain at the current
-		// feerate_per_kw, while maintaining their channel reserve (as required by the spec).
 		{
 			let remote_commit_tx_fee_msat = if funding.is_outbound() { 0 } else {
-				let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-				self.next_remote_commit_tx_fee_msat(funding, Some(htlc_candidate), None) // Don't include the extra fee spike buffer HTLC in calculations
+				next_remote_commitment_stats.commit_tx_fee_sat * 1000
 			};
-			if remote_balance_before_fee_msat.saturating_sub(msg.amount_msat) < remote_commit_tx_fee_msat {
+			if remote_balance_before_fee_msat < remote_commit_tx_fee_msat {
 				return Err(ChannelError::close("Remote HTLC add would not leave enough to pay for fees".to_owned()));
 			};
-			if remote_balance_before_fee_msat.saturating_sub(msg.amount_msat).saturating_sub(remote_commit_tx_fee_msat) < funding.holder_selected_channel_reserve_satoshis * 1000 {
+			if remote_balance_before_fee_msat.saturating_sub(remote_commit_tx_fee_msat) < funding.holder_selected_channel_reserve_satoshis * 1000 {
 				return Err(ChannelError::close("Remote HTLC add would put them under remote reserve value".to_owned()));
 			}
 		}
 
 		if funding.is_outbound() {
+			let next_local_commitment_stats = self.get_next_local_commitment_stats(funding, Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }), include_counterparty_unknown_htlcs, fee_spike_buffer_htlc, self.feerate_per_kw, dust_exposure_limiting_feerate);
+			let holder_balance_msat = next_local_commitment_stats.holder_balance_before_fee_msat.expect("Adding an inbound HTLC should never exhaust the holder's balance before fees");
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
-			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-			let local_commit_tx_fee_msat = self.next_local_commit_tx_fee_msat(funding, htlc_candidate, None);
-			if local_balance_before_fee_msat < funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat {
+			if holder_balance_msat < funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + next_local_commitment_stats.commit_tx_fee_sat * 1000 {
 				return Err(ChannelError::close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
 			}
 		}
@@ -4952,7 +4931,6 @@ where
 		});
 
 		HTLCStats {
-			pending_inbound_htlcs: self.pending_inbound_htlcs.len(),
 			pending_outbound_htlcs,
 			pending_inbound_htlcs_value_msat,
 			pending_outbound_htlcs_value_msat,
