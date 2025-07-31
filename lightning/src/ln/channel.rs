@@ -10637,8 +10637,8 @@ where
 	#[cfg(splicing)]
 	pub fn splice_channel(
 		&mut self, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
-		funding_feerate_per_kw: u32, locktime: u32,
+		funding_tx_contributions: FundingTxContributions, funding_feerate_per_kw: u32,
+		locktime: u32,
 	) -> Result<msgs::SpliceInit, APIError> {
 		// Check if a splice has been initiated already.
 		// Note: only a single outstanding splice is supported (per spec)
@@ -10691,7 +10691,7 @@ where
 		// Check that inputs are sufficient to cover our contribution.
 		let _fee = check_v2_funding_inputs_sufficient(
 			our_funding_contribution.to_sat(),
-			&our_funding_inputs,
+			funding_tx_contributions.inputs(),
 			true,
 			true,
 			funding_feerate_per_kw,
@@ -10704,7 +10704,7 @@ where
 			),
 		})?;
 
-		for (_, tx, _) in our_funding_inputs.iter() {
+		for (_, tx, _) in funding_tx_contributions.inputs().iter() {
 			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
 				channel_id: ChannelId([0; 32]),
 				serial_id: 0,
@@ -10720,9 +10720,6 @@ where
 				});
 			}
 		}
-
-		let funding_tx_contributions =
-			FundingTxContributions::InputsOnly { inputs: our_funding_inputs, change_script };
 
 		let prev_funding_input = self.funding.to_splice_funding_input();
 		let funding_negotiation_context = FundingNegotiationContext {
