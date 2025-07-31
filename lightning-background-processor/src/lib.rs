@@ -1492,7 +1492,7 @@ impl BackgroundProcessor {
 							NETWORK_GRAPH_PERSISTENCE_KEY,
 							&network_graph.encode(),
 						) {
-							log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}",e);
+							log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}", e);
 						}
 						have_pruned = true;
 					}
@@ -1521,10 +1521,7 @@ impl BackgroundProcessor {
 							SCORER_PERSISTENCE_KEY,
 							&scorer.encode(),
 						) {
-							log_error!(logger,
-						"Error: Failed to persist scorer, check your disk and permissions {}",
-						e,
-					);
+							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
 						}
 					}
 					last_scorer_persist_call = Instant::now();
