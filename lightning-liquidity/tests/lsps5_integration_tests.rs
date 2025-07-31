@@ -1093,7 +1093,9 @@ fn test_send_notifications_and_peer_connected_resets_cooldown() {
 	}
 
 	// 2. Second notification before cooldown should NOT be sent
-	let _ = service_handler.notify_payment_incoming(client_node_id);
+	let result = service_handler.notify_payment_incoming(client_node_id);
+	let error = result.unwrap_err();
+	assert_eq!(error, LSPS5ProtocolError::SlowDownError);
 	assert!(
 		service_node.liquidity_manager.next_event().is_none(),
 		"Should not emit event due to cooldown"
@@ -1132,7 +1134,11 @@ fn test_send_notifications_and_peer_connected_resets_cooldown() {
 	}
 
 	// 5. Can't send payment_incoming notification again immediately after cooldown
-	let _ = service_handler.notify_payment_incoming(client_node_id);
+	let result = service_handler.notify_payment_incoming(client_node_id);
+
+	let error = result.unwrap_err();
+	assert_eq!(error, LSPS5ProtocolError::SlowDownError);
+
 	assert!(
 		service_node.liquidity_manager.next_event().is_none(),
 		"Should not emit event due to cooldown"
