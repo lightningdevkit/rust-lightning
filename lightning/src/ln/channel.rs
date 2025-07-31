@@ -1984,6 +1984,10 @@ pub(super) struct FundingScope {
 	next_local_commitment_tx_fee_info_cached: Mutex<Option<CommitmentTxInfoCached>>,
 	#[cfg(any(test, fuzzing))]
 	next_remote_commitment_tx_fee_info_cached: Mutex<Option<CommitmentTxInfoCached>>,
+	#[cfg(any(test, fuzzing))]
+	next_local_fee: Mutex<PredictedNextFee>,
+	#[cfg(any(test, fuzzing))]
+	next_remote_fee: Mutex<PredictedNextFee>,
 
 	pub(super) channel_transaction_parameters: ChannelTransactionParameters,
 
@@ -2060,6 +2064,10 @@ impl Readable for FundingScope {
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, fuzzing))]
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+			#[cfg(any(test, fuzzing))]
+			next_local_fee: Mutex::new(PredictedNextFee::default()),
+			#[cfg(any(test, fuzzing))]
+			next_remote_fee: Mutex::new(PredictedNextFee::default()),
 		})
 	}
 }
@@ -3206,6 +3214,10 @@ where
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, fuzzing))]
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+			#[cfg(any(test, fuzzing))]
+			next_local_fee: Mutex::new(PredictedNextFee::default()),
+			#[cfg(any(test, fuzzing))]
+			next_remote_fee: Mutex::new(PredictedNextFee::default()),
 
 			channel_transaction_parameters: ChannelTransactionParameters {
 				holder_pubkeys: pubkeys,
@@ -3449,6 +3461,10 @@ where
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, fuzzing))]
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+			#[cfg(any(test, fuzzing))]
+			next_local_fee: Mutex::new(PredictedNextFee::default()),
+			#[cfg(any(test, fuzzing))]
+			next_remote_fee: Mutex::new(PredictedNextFee::default()),
 
 			channel_transaction_parameters: ChannelTransactionParameters {
 				holder_pubkeys: pubkeys,
@@ -4322,6 +4338,25 @@ where
 			}
 		}
 
+		#[cfg(any(test, fuzzing))]
+		{
+			let mut local_predicted_htlcs = next_local_commitment_stats.next_commitment_htlcs;
+			local_predicted_htlcs.sort_unstable();
+			*funding.next_local_fee.lock().unwrap() = PredictedNextFee {
+				predicted_feerate: self.feerate_per_kw,
+				predicted_htlcs: local_predicted_htlcs,
+				predicted_fee_sat: next_local_commitment_stats.commit_tx_fee_sat,
+			};
+
+			let mut remote_predicted_htlcs = next_remote_commitment_stats.next_commitment_htlcs;
+			remote_predicted_htlcs.sort_unstable();
+			*funding.next_remote_fee.lock().unwrap() = PredictedNextFee {
+				predicted_feerate: self.feerate_per_kw,
+				predicted_htlcs: remote_predicted_htlcs,
+				predicted_fee_sat: next_remote_commitment_stats.commit_tx_fee_sat,
+			};
+		}
+
 		Ok(())
 	}
 
@@ -4350,6 +4385,25 @@ where
 		if next_remote_commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
 			return Err(ChannelError::close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
 				msg.feerate_per_kw, next_remote_commitment_stats.dust_exposure_msat)));
+		}
+
+		#[cfg(any(test, fuzzing))]
+		{
+			let mut local_predicted_htlcs = next_local_commitment_stats.next_commitment_htlcs;
+			local_predicted_htlcs.sort_unstable();
+			*funding.next_local_fee.lock().unwrap() = PredictedNextFee {
+				predicted_feerate: msg.feerate_per_kw,
+				predicted_htlcs: local_predicted_htlcs,
+				predicted_fee_sat: next_local_commitment_stats.commit_tx_fee_sat,
+			};
+
+			let mut remote_predicted_htlcs = next_remote_commitment_stats.next_commitment_htlcs;
+			remote_predicted_htlcs.sort_unstable();
+			*funding.next_remote_fee.lock().unwrap() = PredictedNextFee {
+				predicted_feerate: msg.feerate_per_kw,
+				predicted_htlcs: remote_predicted_htlcs,
+				predicted_fee_sat: next_remote_commitment_stats.commit_tx_fee_sat,
+			};
 		}
 
 		Ok(())
@@ -4410,6 +4464,12 @@ where
 							assert_eq!(commitment_data.stats.commit_tx_fee_sat, info.fee / 1000);
 						}
 				}
+			}
+			let PredictedNextFee { predicted_feerate, predicted_htlcs, predicted_fee_sat } = funding.next_local_fee.lock().unwrap().clone();
+			let mut actual_nondust_htlcs: Vec<_> = commitment_data.tx.nondust_htlcs().iter().map(|&HTLCOutputInCommitment { offered, amount_msat, .. } | HTLCAmountDirection { outbound: offered, amount_msat }).collect();
+			actual_nondust_htlcs.sort_unstable();
+			if predicted_feerate == commitment_data.tx.feerate_per_kw() && predicted_htlcs == actual_nondust_htlcs {
+				assert_eq!(predicted_fee_sat, commitment_data.stats.commit_tx_fee_sat);
 			}
 		}
 
@@ -4483,6 +4543,18 @@ where
 			return false;
 		}
 
+		#[cfg(any(test, fuzzing))]
+		{
+			let next_remote_commitment_stats = self.get_next_remote_commitment_stats(funding, None, include_counterparty_unknown_htlcs, 0, feerate_per_kw, dust_exposure_limiting_feerate);
+			let mut remote_predicted_htlcs = next_remote_commitment_stats.next_commitment_htlcs;
+			remote_predicted_htlcs.sort_unstable();
+			*funding.next_remote_fee.lock().unwrap() = PredictedNextFee {
+				predicted_feerate: feerate_per_kw,
+				predicted_htlcs: remote_predicted_htlcs,
+				predicted_fee_sat: next_remote_commitment_stats.commit_tx_fee_sat,
+			};
+		}
+
 		return true;
 	}
 
@@ -4535,6 +4607,35 @@ where
 				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.channel_id());
 				return Err(LocalHTLCFailureReason::FeeSpikeBuffer);
 			}
+		}
+
+		#[cfg(any(test, fuzzing))]
+		{
+			let next_local_commitment_stats = if fee_spike_buffer_htlc == 1 {
+				self.get_next_local_commitment_stats(funding, None, do_not_include_counterparty_unknown_htlcs, 0, self.feerate_per_kw, dust_exposure_limiting_feerate)
+			} else {
+				next_local_commitment_stats
+			};
+			let mut local_predicted_htlcs = next_local_commitment_stats.next_commitment_htlcs;
+			local_predicted_htlcs.sort_unstable();
+			*funding.next_local_fee.lock().unwrap() = PredictedNextFee {
+				predicted_feerate: self.feerate_per_kw,
+				predicted_htlcs: local_predicted_htlcs,
+				predicted_fee_sat: next_local_commitment_stats.commit_tx_fee_sat,
+			};
+
+			let next_remote_commitment_stats = if fee_spike_buffer_htlc == 1 {
+				self.get_next_remote_commitment_stats(funding, None, do_not_include_counterparty_unknown_htlcs, 0, self.feerate_per_kw, dust_exposure_limiting_feerate)
+			} else {
+				next_remote_commitment_stats
+			};
+			let mut remote_predicted_htlcs = next_remote_commitment_stats.next_commitment_htlcs;
+			remote_predicted_htlcs.sort_unstable();
+			*funding.next_remote_fee.lock().unwrap() = PredictedNextFee {
+				predicted_feerate: self.feerate_per_kw,
+				predicted_htlcs: remote_predicted_htlcs,
+				predicted_fee_sat: next_remote_commitment_stats.commit_tx_fee_sat,
+			};
 		}
 
 		Ok(())
@@ -6024,6 +6125,14 @@ struct CommitmentTxInfoCached {
 	next_holder_htlc_id: u64,
 	next_counterparty_htlc_id: u64,
 	feerate: u32,
+}
+
+#[cfg(any(test, fuzzing))]
+#[derive(Clone, Default)]
+struct PredictedNextFee {
+	predicted_feerate: u32,
+	predicted_htlcs: Vec<HTLCAmountDirection>,
+	predicted_fee_sat: u64,
 }
 
 /// Contents of a wire message that fails an HTLC backwards. Useful for [`FundedChannel::fail_htlc`] to
@@ -10990,6 +11099,12 @@ where
 						}
 				}
 			}
+			let PredictedNextFee { predicted_feerate, predicted_htlcs, predicted_fee_sat } = funding.next_remote_fee.lock().unwrap().clone();
+			let mut actual_nondust_htlcs: Vec<_> = counterparty_commitment_tx.nondust_htlcs().iter().map(|&HTLCOutputInCommitment { offered, amount_msat, .. }| HTLCAmountDirection { outbound: !offered, amount_msat }).collect();
+			actual_nondust_htlcs.sort_unstable();
+			if predicted_feerate == counterparty_commitment_tx.feerate_per_kw() && predicted_htlcs == actual_nondust_htlcs {
+				assert_eq!(predicted_fee_sat, commitment_data.stats.commit_tx_fee_sat);
+			}
 		}
 
 		(commitment_data.htlcs_included, counterparty_commitment_tx)
@@ -13615,6 +13730,10 @@ where
 				next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 				#[cfg(any(test, fuzzing))]
 				next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+				#[cfg(any(test, fuzzing))]
+				next_local_fee: Mutex::new(PredictedNextFee::default()),
+				#[cfg(any(test, fuzzing))]
+				next_remote_fee: Mutex::new(PredictedNextFee::default()),
 
 				channel_transaction_parameters: channel_parameters,
 				funding_transaction,
