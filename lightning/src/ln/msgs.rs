@@ -29,7 +29,7 @@ use bitcoin::hash_types::Txid;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{secp256k1, Witness};
+use bitcoin::{secp256k1, Transaction, Witness};
 
 use crate::blinded_path::payment::{
 	BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, UnauthenticatedReceiveTlvs,
@@ -63,8 +63,7 @@ use crate::util::base32;
 use crate::util::logger;
 use crate::util::ser::{
 	BigSize, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, LengthLimitedRead,
-	LengthReadable, LengthReadableArgs, Readable, ReadableArgs, TransactionU16LenLimited,
-	WithoutLength, Writeable, Writer,
+	LengthReadable, LengthReadableArgs, Readable, ReadableArgs, WithoutLength, Writeable, Writer,
 };
 
 use crate::routing::gossip::{NodeAlias, NodeId};
@@ -524,7 +523,7 @@ pub struct TxAddInput {
 	pub serial_id: SerialId,
 	/// Serialized transaction that contains the output this input spends to verify that it is
 	/// non-malleable. Omitted for shared input.
-	pub prevtx: Option<TransactionU16LenLimited>,
+	pub prevtx: Option<Transaction>,
 	/// The index of the output being spent
 	pub prevtx_out: u32,
 	/// The sequence number of this input
@@ -2738,16 +2737,58 @@ impl_writeable_msg!(SpliceLocked, {
 	splice_txid,
 }, {});
 
-impl_writeable_msg!(TxAddInput, {
-	channel_id,
-	serial_id,
-	prevtx,
-	prevtx_out,
-	sequence,
-}, {
-	(0, shared_input_txid, option), // `funding_txid`
-});
+impl Writeable for TxAddInput {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.channel_id.write(w)?;
+		self.serial_id.write(w)?;
 
+		match &self.prevtx {
+			Some(tx) => {
+				(tx.serialized_length() as u16).write(w)?;
+				tx.write(w)?;
+			},
+			None => 0u16.write(w)?,
+		}
+
+		self.prevtx_out.write(w)?;
+		self.sequence.write(w)?;
+
+		encode_tlv_stream!(w, {
+			(0, self.shared_input_txid, option),
+		});
+		Ok(())
+	}
+}
+
+impl LengthReadable for TxAddInput {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let channel_id: ChannelId = Readable::read(r)?;
+		let serial_id: SerialId = Readable::read(r)?;
+
+		let prevtx_len: u16 = Readable::read(r)?;
+		let prevtx = if prevtx_len > 0 {
+			let mut tx_reader = FixedLengthReader::new(r, prevtx_len as u64);
+			let tx: Transaction = Readable::read(&mut tx_reader)?;
+			if tx_reader.bytes_remain() {
+				return Err(DecodeError::BadLengthDescriptor);
+			}
+
+			Some(tx)
+		} else {
+			None
+		};
+
+		let prevtx_out: u32 = Readable::read(r)?;
+		let sequence: u32 = Readable::read(r)?;
+
+		let mut shared_input_txid: Option<Txid> = None;
+		decode_tlv_stream!(r, {
+			(0, shared_input_txid, option),
+		});
+
+		Ok(TxAddInput { channel_id, serial_id, prevtx, prevtx_out, sequence, shared_input_txid })
+	}
+}
 impl_writeable_msg!(TxAddOutput, {
 	channel_id,
 	serial_id,
@@ -4224,10 +4265,7 @@ mod tests {
 		ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures,
 	};
 	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-	use crate::util::ser::{
-		BigSize, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited,
-		Writeable,
-	};
+	use crate::util::ser::{BigSize, Hostname, LengthReadable, Readable, ReadableArgs, Writeable};
 	use crate::util::test_utils;
 	use bitcoin::hex::DisplayHex;
 	use bitcoin::{Amount, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
@@ -5299,7 +5337,7 @@ mod tests {
 		let tx_add_input = msgs::TxAddInput {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
-			prevtx: Some(TransactionU16LenLimited::new(Transaction {
+			prevtx: Some(Transaction {
 				version: Version::TWO,
 				lock_time: LockTime::ZERO,
 				input: vec![TxIn {
@@ -5320,7 +5358,7 @@ mod tests {
 						script_pubkey: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().assume_checked().script_pubkey(),
 					},
 				],
-			}).unwrap()),
+			}),
 			prevtx_out: 305419896,
 			sequence: 305419896,
 			shared_input_txid: None,
