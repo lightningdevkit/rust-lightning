@@ -154,7 +154,7 @@ fn test_v1_splice_in() {
 		);
 	} else {
 		// Input is the extra input
-		let prevtx_value = tx_add_input_msg.prevtx.as_ref().unwrap().as_transaction().output
+		let prevtx_value = tx_add_input_msg.prevtx.as_ref().unwrap().output
 			[tx_add_input_msg.prevtx_out as usize]
 			.value
 			.to_sat();
@@ -182,7 +182,7 @@ fn test_v1_splice_in() {
 	);
 	if !inputs_seen_in_reverse {
 		// Input is the extra input
-		let prevtx_value = tx_add_input2_msg.prevtx.as_ref().unwrap().as_transaction().output
+		let prevtx_value = tx_add_input2_msg.prevtx.as_ref().unwrap().output
 			[tx_add_input2_msg.prevtx_out as usize]
 			.value
 			.to_sat();
