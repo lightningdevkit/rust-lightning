@@ -5983,6 +5983,9 @@ pub(super) struct FundingNegotiationContext {
 	/// The funding inputs we will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub our_funding_inputs: Vec<FundingTxInput>,
+	/// The funding outputs we will be contributing to the channel.
+	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
+	pub our_funding_outputs: Vec<TxOut>,
 	/// The change output script. This will be used if needed or -- if not set -- generated using
 	/// `SignerProvider::get_destination_script`.
 	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
@@ -6012,10 +6015,8 @@ impl FundingNegotiationContext {
 			debug_assert!(matches!(context.channel_state, ChannelState::NegotiatingFunding(_)));
 		}
 
-		// Add output for funding tx
 		// Note: For the error case when the inputs are insufficient, it will be handled after
 		// the `calculate_change_output_value` call below
-		let mut funding_outputs = Vec::new();
 
 		let shared_funding_output = TxOut {
 			value: Amount::from_sat(funding.get_value_satoshis()),
@@ -6023,34 +6024,38 @@ impl FundingNegotiationContext {
 		};
 
 		// Optionally add change output
-		if self.our_funding_contribution > SignedAmount::ZERO {
-			let change_value_opt = calculate_change_output_value(
+		let change_value_opt = if self.our_funding_contribution > SignedAmount::ZERO {
+			calculate_change_output_value(
 				&self,
 				self.shared_funding_input.is_some(),
 				&shared_funding_output.script_pubkey,
-				&funding_outputs,
 				context.holder_dust_limit_satoshis,
-			)?;
-			if let Some(change_value) = change_value_opt {
-				let change_script = if let Some(script) = self.change_script {
-					script
-				} else {
-					signer_provider
-						.get_destination_script(context.channel_keys_id)
-						.map_err(|_err| AbortReason::InternalError("Error getting change script"))?
-				};
-				let mut change_output =
-					TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
-				let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
-				let change_output_fee =
-					fee_for_weight(self.funding_feerate_sat_per_1000_weight, change_output_weight);
-				let change_value_decreased_with_fee =
-					change_value.saturating_sub(change_output_fee);
-				// Check dust limit again
-				if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
-					change_output.value = Amount::from_sat(change_value_decreased_with_fee);
-					funding_outputs.push(change_output);
-				}
+			)?
+		} else {
+			None
+		};
+
+		let mut funding_outputs = self.our_funding_outputs;
+
+		if let Some(change_value) = change_value_opt {
+			let change_script = if let Some(script) = self.change_script {
+				script
+			} else {
+				signer_provider
+					.get_destination_script(context.channel_keys_id)
+					.map_err(|_err| AbortReason::InternalError("Error getting change script"))?
+			};
+			let mut change_output =
+				TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
+			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
+			let change_output_fee =
+				fee_for_weight(self.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_value_decreased_with_fee =
+				change_value.saturating_sub(change_output_fee);
+			// Check dust limit again
+			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
+				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
+				funding_outputs.push(change_output);
 			}
 		}
 
@@ -10646,43 +10651,84 @@ where
 		if our_funding_contribution > SignedAmount::MAX_MONEY {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Channel {} cannot be spliced; contribution exceeds total bitcoin supply: {}",
+					"Channel {} cannot be spliced in; contribution exceeds total bitcoin supply: {}",
 					self.context.channel_id(),
 					our_funding_contribution,
 				),
 			});
 		}
 
-		if our_funding_contribution < SignedAmount::ZERO {
+		if our_funding_contribution < -SignedAmount::MAX_MONEY {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-				"TODO(splicing): Splice-out not supported, only splice in; channel ID {}, contribution {}",
-				self.context.channel_id(), our_funding_contribution,
-			),
+					"Channel {} cannot be spliced out; contribution exceeds total bitcoin supply: {}",
+					self.context.channel_id(),
+					our_funding_contribution,
+				),
 			});
 		}
 
-		// TODO(splicing): Once splice-out is supported, check that channel balance does not go below 0
-		// (or below channel reserve)
+		let funding_inputs = contribution.inputs();
+		let funding_outputs = contribution.outputs();
+		if !funding_inputs.is_empty() && !funding_outputs.is_empty() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot be both spliced in and out; operation not supported",
+					self.context.channel_id(),
+				),
+			});
+		}
 
-		// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
-		// (Cannot test for miminum required post-splice channel value)
+		if our_funding_contribution < SignedAmount::ZERO {
+			// TODO(splicing): Check that channel balance does not go below the channel reserve
+			let post_channel_value = AddSigned::checked_add_signed(
+				self.funding.get_value_satoshis(),
+				our_funding_contribution.to_sat(),
+			);
+			// FIXME: Should we check value_to_self instead? Do HTLCs need to be accounted for?
+			// FIXME: Check that we can pay for the outputs from the channel value?
+			if post_channel_value.is_none() {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel {} cannot be spliced out; contribution exceeds the channel value: {}",
+						self.context.channel_id(),
+						our_funding_contribution,
+					),
+				});
+			}
 
-		// Check that inputs are sufficient to cover our contribution.
-		let _fee = check_v2_funding_inputs_sufficient(
-			our_funding_contribution.to_sat(),
-			contribution.inputs(),
-			true,
-			true,
-			funding_feerate_per_kw,
-		)
-		.map_err(|err| APIError::APIMisuseError {
-			err: format!(
-				"Insufficient inputs for splicing; channel ID {}, err {}",
-				self.context.channel_id(),
-				err,
-			),
-		})?;
+			let value_removed: Amount =
+				contribution.outputs().iter().map(|txout| txout.value).sum();
+			let negated_value_removed = -value_removed.to_signed().unwrap_or(SignedAmount::MAX);
+			if negated_value_removed != our_funding_contribution {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel {} cannot be spliced out; unexpected txout amounts: {}",
+						self.context.channel_id(),
+						value_removed,
+					),
+				});
+			}
+		} else {
+			// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
+			// (Cannot test for miminum required post-splice channel value)
+
+			// Check that inputs are sufficient to cover our contribution.
+			let _fee = check_v2_funding_inputs_sufficient(
+				our_funding_contribution.to_sat(),
+				contribution.inputs(),
+				true,
+				true,
+				funding_feerate_per_kw,
+			)
+			.map_err(|err| APIError::APIMisuseError {
+				err: format!(
+					"Insufficient inputs for splicing; channel ID {}, err {}",
+					self.context.channel_id(),
+					err,
+				),
+			})?;
+		}
 
 		for FundingTxInput { txin, prevtx, .. } in contribution.inputs().iter() {
 			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
@@ -10705,7 +10751,7 @@ where
 		}
 
 		let prev_funding_input = self.funding.to_splice_funding_input();
-		let (our_funding_inputs, change_script) = contribution.into_tx_parts();
+		let (our_funding_inputs, our_funding_outputs, change_script) = contribution.into_tx_parts();
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: true,
 			our_funding_contribution,
@@ -10713,6 +10759,7 @@ where
 			funding_feerate_sat_per_1000_weight: funding_feerate_per_kw,
 			shared_funding_input: Some(prev_funding_input),
 			our_funding_inputs,
+			our_funding_outputs,
 			change_script,
 		};
 
@@ -10835,6 +10882,7 @@ where
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_per_kw,
 			shared_funding_input: Some(prev_funding_input),
 			our_funding_inputs: Vec::new(),
+			our_funding_outputs: Vec::new(),
 			change_script: None,
 		};
 
@@ -12533,6 +12581,7 @@ where
 			funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
 			our_funding_inputs: funding_inputs,
+			our_funding_outputs: Vec::new(),
 			change_script: None,
 		};
 		let chan = Self {
@@ -12687,6 +12736,7 @@ where
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
 			our_funding_inputs: our_funding_inputs.clone(),
+			our_funding_outputs: Vec::new(),
 			change_script: None,
 		};
 		let shared_funding_output = TxOut {
@@ -12710,7 +12760,7 @@ where
 				inputs_to_contribute,
 				shared_funding_input: None,
 				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_contribution_sats),
-				outputs_to_contribute: Vec::new(),
+				outputs_to_contribute: funding_negotiation_context.our_funding_outputs.clone(),
 			}
 		).map_err(|err| {
 			let reason = ClosureReason::ProcessingError { err: err.to_string() };

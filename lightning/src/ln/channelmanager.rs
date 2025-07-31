@@ -32,7 +32,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::{secp256k1, Sequence, SignedAmount, TxIn, Weight};
 #[cfg(splicing)]
-use bitcoin::{Amount, ScriptBuf};
+use bitcoin::{Amount, ScriptBuf, TxOut};
 
 use crate::blinded_path::message::MessageForwardNode;
 use crate::blinded_path::message::{AsyncPaymentsContext, OffersContext};
@@ -216,6 +216,14 @@ pub enum SpliceContribution {
 		/// generated using `SignerProvider::get_destination_script`.
 		change_script: Option<ScriptBuf>,
 	},
+	/// When only outputs are contributed to then funding transaction.
+	SpliceOut {
+		/// The amount to remove from the channel.
+		value: Amount,
+		/// The outputs used for removing the amount. The total value of all outputs must equal
+		/// [`SpliceOut::value`].
+		outputs: Vec<TxOut>,
+	},
 }
 
 #[cfg(splicing)]
@@ -225,18 +233,32 @@ impl SpliceContribution {
 			SpliceContribution::SpliceIn { value, .. } => {
 				value.to_signed().unwrap_or(SignedAmount::MAX)
 			},
+			SpliceContribution::SpliceOut { value, .. } => {
+				value.to_signed().map(|value| -value).unwrap_or(SignedAmount::MIN)
+			},
 		}
 	}
 
 	pub(super) fn inputs(&self) -> &[FundingTxInput] {
 		match self {
 			SpliceContribution::SpliceIn { inputs, .. } => &inputs[..],
+			SpliceContribution::SpliceOut { .. } => &[],
 		}
 	}
 
-	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Option<ScriptBuf>) {
+	pub(super) fn outputs(&self) -> &[TxOut] {
 		match self {
-			SpliceContribution::SpliceIn { inputs, change_script, .. } => (inputs, change_script),
+			SpliceContribution::SpliceIn { .. } => &[],
+			SpliceContribution::SpliceOut { outputs, .. } => &outputs[..],
+		}
+	}
+
+	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>, Option<ScriptBuf>) {
+		match self {
+			SpliceContribution::SpliceIn { inputs, change_script, .. } => {
+				(inputs, vec![], change_script)
+			},
+			SpliceContribution::SpliceOut { outputs, .. } => (vec![], outputs, None),
 		}
 	}
 }
