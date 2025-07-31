@@ -6002,10 +6002,8 @@ impl FundingNegotiationContext {
 			debug_assert!(matches!(context.channel_state, ChannelState::NegotiatingFunding(_)));
 		}
 
-		// Add output for funding tx
 		// Note: For the error case when the inputs are insufficient, it will be handled after
 		// the `calculate_change_output_value` call below
-		let mut funding_outputs = Vec::new();
 
 		let shared_funding_output = TxOut {
 			value: Amount::from_sat(funding.get_value_satoshis()),
@@ -6017,18 +6015,27 @@ impl FundingNegotiationContext {
 				&self,
 				self.shared_funding_input.is_some(),
 				&shared_funding_output.script_pubkey,
-				&funding_outputs,
 				context.holder_dust_limit_satoshis,
 			)?
 		} else {
 			None
 		};
 
-		let (inputs_to_contribute, change_script) = match self.funding_tx_contributions {
-			FundingTxContributions::InputsOnly { inputs, change_script } => {
-				(inputs.into_iter().map(|(txin, tx, _)| (txin, tx)).collect(), change_script)
-			},
-		};
+		let (funding_inputs, mut funding_outputs, change_script) =
+			match self.funding_tx_contributions {
+				FundingTxContributions::InputsOnly { inputs, change_script } => (
+					inputs.into_iter().map(|(txin, tx, _)| (txin, tx)).collect(),
+					vec![],
+					change_script,
+				),
+				FundingTxContributions::OutputsOnly { outputs } => (vec![], outputs, None),
+				#[cfg(test)]
+				FundingTxContributions::InputsAndOutputs { inputs, outputs, change_script } => (
+					inputs.into_iter().map(|(txin, tx, _)| (txin, tx)).collect(),
+					outputs,
+					change_script,
+				),
+			};
 
 		// Add change output if necessary
 		if let Some(change_value) = change_value_opt {
@@ -6062,7 +6069,7 @@ impl FundingNegotiationContext {
 			feerate_sat_per_kw: self.funding_feerate_sat_per_1000_weight,
 			is_initiator: self.is_initiator,
 			funding_tx_locktime: self.funding_tx_locktime,
-			inputs_to_contribute,
+			inputs_to_contribute: funding_inputs,
 			shared_funding_input: self.shared_funding_input,
 			shared_funding_output: SharedOwnedOutput::new(
 				shared_funding_output,
@@ -6087,6 +6094,26 @@ pub enum FundingTxContributions {
 		/// using `SignerProvider::get_destination_script`.
 		change_script: Option<ScriptBuf>,
 	},
+	/// When only outputs are contributed to then funding transaction. This must correspond to a
+	/// negative contribution amount.
+	OutputsOnly {
+		/// The outputs used for removing an amount.
+		outputs: Vec<TxOut>,
+	},
+	/// When both inputs and outputs are contributed to the funding transaction.
+	#[cfg(test)]
+	InputsAndOutputs {
+		/// The inputs used to meet the contributed amount. Any excess amount will be sent to a
+		/// change output.
+		inputs: Vec<(TxIn, Transaction, Weight)>,
+
+		/// The outputs used for removing an amount.
+		outputs: Vec<TxOut>,
+
+		/// An optional change output script. This will be used if needed or, if not set, generated
+		/// using `SignerProvider::get_destination_script`.
+		change_script: Option<ScriptBuf>,
+	},
 }
 
 impl FundingTxContributions {
@@ -6094,7 +6121,25 @@ impl FundingTxContributions {
 	pub fn inputs(&self) -> &[(TxIn, Transaction, Weight)] {
 		match self {
 			FundingTxContributions::InputsOnly { inputs, .. } => &inputs[..],
+			FundingTxContributions::OutputsOnly { .. } => &[],
+			#[cfg(test)]
+			FundingTxContributions::InputsAndOutputs { inputs, .. } => &inputs[..],
 		}
+	}
+
+	/// Returns an inputs to be contributed to the funding transaction.
+	pub fn outputs(&self) -> &[TxOut] {
+		match self {
+			FundingTxContributions::InputsOnly { .. } => &[],
+			FundingTxContributions::OutputsOnly { outputs } => &outputs[..],
+			#[cfg(test)]
+			FundingTxContributions::InputsAndOutputs { outputs, .. } => &outputs[..],
+		}
+	}
+
+	/// Returns the sum of the output amounts.
+	pub fn amount_removed(&self) -> Amount {
+		self.outputs().iter().map(|txout| txout.value).sum()
 	}
 }
 
@@ -10666,43 +10711,90 @@ where
 		if our_funding_contribution > SignedAmount::MAX_MONEY {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Channel {} cannot be spliced; contribution exceeds total bitcoin supply: {}",
+					"Channel {} cannot be spliced in; contribution exceeds total bitcoin supply: {}",
 					self.context.channel_id(),
 					our_funding_contribution,
 				),
 			});
 		}
 
-		if our_funding_contribution < SignedAmount::ZERO {
+		if our_funding_contribution < -SignedAmount::MAX_MONEY {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-				"TODO(splicing): Splice-out not supported, only splice in; channel ID {}, contribution {}",
-				self.context.channel_id(), our_funding_contribution,
-			),
+					"Channel {} cannot be spliced out; contribution exceeds total bitcoin supply: {}",
+					self.context.channel_id(),
+					our_funding_contribution,
+				),
 			});
 		}
 
-		// TODO(splicing): Once splice-out is supported, check that channel balance does not go below 0
-		// (or below channel reserve)
+		let funding_inputs = funding_tx_contributions.inputs();
+		let funding_outputs = funding_tx_contributions.outputs();
+		if !funding_inputs.is_empty() && !funding_outputs.is_empty() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot be both spliced in and out; operation not supported",
+					self.context.channel_id(),
+				),
+			});
+		}
 
-		// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
-		// (Cannot test for miminum required post-splice channel value)
+		if our_funding_contribution < SignedAmount::ZERO {
+			// TODO(splicing): Check that channel balance does not go below the channel reserve
+			let post_channel_value = AddSigned::checked_add_signed(
+				self.funding.get_value_satoshis(),
+				our_funding_contribution_satoshis,
+			);
+			// FIXME: Should we check value_to_self instead? Do HTLCs need to be accounted for?
+			// FIXME: Check that we can pay for the outputs from the channel value?
+			if post_channel_value.is_none() {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel {} cannot be spliced out; contribution exceeds the channel value: {}",
+						self.context.channel_id(),
+						our_funding_contribution,
+					),
+				});
+			}
 
-		// Check that inputs are sufficient to cover our contribution.
-		let _fee = check_v2_funding_inputs_sufficient(
-			our_funding_contribution.to_sat(),
-			funding_tx_contributions.inputs(),
-			true,
-			true,
-			funding_feerate_per_kw,
-		)
-		.map_err(|err| APIError::APIMisuseError {
-			err: format!(
-				"Insufficient inputs for splicing; channel ID {}, err {}",
-				self.context.channel_id(),
-				err,
-			),
-		})?;
+			let amount_removed =
+				funding_tx_contributions.amount_removed().to_signed().map_err(|_| {
+					APIError::APIMisuseError {
+						err: format!(
+							"Channel {} cannot be spliced out; txout amounts invalid",
+							self.context.channel_id(),
+						),
+					}
+				})?;
+			if -amount_removed != our_funding_contribution {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel {} cannot be spliced out; unexpected txout amounts: {}",
+						self.context.channel_id(),
+						amount_removed,
+					),
+				});
+			}
+		} else {
+			// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
+			// (Cannot test for miminum required post-splice channel value)
+
+			// Check that inputs are sufficient to cover our contribution.
+			let _fee = check_v2_funding_inputs_sufficient(
+				our_funding_contribution.to_sat(),
+				funding_tx_contributions.inputs(),
+				true,
+				true,
+				funding_feerate_per_kw,
+			)
+			.map_err(|err| APIError::APIMisuseError {
+				err: format!(
+					"Insufficient inputs for splicing; channel ID {}, err {}",
+					self.context.channel_id(),
+					err,
+				),
+			})?;
+		}
 
 		for (_, tx, _) in funding_tx_contributions.inputs().iter() {
 			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
