@@ -25,6 +25,8 @@ use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::{secp256k1, sighash};
+#[cfg(splicing)]
+use bitcoin::{Sequence, Witness};
 
 use crate::chain::chaininterface::{
 	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
@@ -55,11 +57,13 @@ use crate::ln::channelmanager::{
 	PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus, RAACommitmentOrder, SentHTLCId,
 	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
+#[cfg(splicing)]
 use crate::ln::interactivetxs::{
-	calculate_change_output_value, get_output_weight, AbortReason, HandleTxCompleteResult,
-	InteractiveTxConstructor, InteractiveTxConstructorArgs, InteractiveTxMessageSend,
-	InteractiveTxMessageSendResult, InteractiveTxSigningSession, SharedOwnedOutput,
-	TX_COMMON_FIELDS_WEIGHT,
+	calculate_change_output_value, AbortReason, InteractiveTxMessageSend,
+};
+use crate::ln::interactivetxs::{
+	get_output_weight, InteractiveTxConstructor, InteractiveTxConstructorArgs,
+	InteractiveTxSigningSession, SharedOwnedInput, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
@@ -1005,6 +1009,16 @@ impl ChannelError {
 	pub(super) fn close(err: String) -> Self {
 		ChannelError::Close((err.clone(), ClosureReason::ProcessingError { err }))
 	}
+
+	pub(super) fn message(&self) -> &str {
+		match self {
+			&ChannelError::Ignore(ref e) => &e,
+			&ChannelError::Warn(ref e) => &e,
+			&ChannelError::WarnAndDisconnect(ref e) => &e,
+			&ChannelError::Close((ref e, _)) => &e,
+			&ChannelError::SendError(ref e) => &e,
+		}
+	}
 }
 
 pub(super) struct WithChannelContext<'a, L: Deref>
@@ -1727,6 +1741,15 @@ where
 		}
 	}
 
+	pub fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
+		match &mut self.phase {
+			ChannelPhase::UnfundedV2(chan) => chan.interactive_tx_constructor.as_mut(),
+			#[cfg(splicing)]
+			ChannelPhase::Funded(chan) => chan.interactive_tx_constructor_mut(),
+			_ => None,
+		}
+	}
+
 	#[rustfmt::skip]
 	pub fn funding_signed<L: Deref>(
 		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
@@ -1760,16 +1783,74 @@ where
 	}
 
 	pub fn funding_tx_constructed<L: Deref>(
-		&mut self, signing_session: InteractiveTxSigningSession, logger: &L,
-	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
+		&mut self, logger: &L,
+	) -> Result<(msgs::CommitmentSigned, Option<Event>), msgs::TxAbort>
 	where
 		L::Target: Logger,
 	{
-		if let ChannelPhase::UnfundedV2(chan) = &mut self.phase {
-			let logger = WithChannelContext::from(logger, &chan.context, None);
-			chan.funding_tx_constructed(signing_session, &&logger)
-		} else {
-			Err(ChannelError::Warn("Got a tx_complete message with no interactive transaction construction expected or in-progress".to_owned()))
+		let logger = WithChannelContext::from(logger, self.context(), None);
+		match &mut self.phase {
+			ChannelPhase::UnfundedV2(chan) => {
+				let mut signing_session = chan
+					.interactive_tx_constructor
+					.take()
+					.expect("PendingV2Channel::interactive_tx_constructor should be set")
+					.into_signing_session();
+				let (commitment_signed, event) = chan.context.funding_tx_constructed(
+					&mut chan.funding,
+					&mut signing_session,
+					false,
+					chan.unfunded_context.transaction_number(),
+					&&logger,
+				)?;
+
+				chan.interactive_tx_signing_session = Some(signing_session);
+
+				return Ok((commitment_signed, event));
+			},
+			#[cfg(splicing)]
+			ChannelPhase::Funded(chan) => {
+				if let Some(pending_splice) = chan.pending_splice.as_mut() {
+					if let Some(funding_negotiation) = pending_splice.funding_negotiation.take() {
+						if let FundingNegotiation::ConstructingTransaction(
+							mut funding,
+							interactive_tx_constructor,
+						) = funding_negotiation
+						{
+							let mut signing_session =
+								interactive_tx_constructor.into_signing_session();
+							let (commitment_signed, event) = chan.context.funding_tx_constructed(
+								&mut funding,
+								&mut signing_session,
+								true,
+								chan.holder_commitment_point.transaction_number(),
+								&&logger,
+							)?;
+
+							chan.interactive_tx_signing_session = Some(signing_session);
+							pending_splice.funding_negotiation =
+								Some(FundingNegotiation::AwaitingSignatures(funding));
+
+							return Ok((commitment_signed, event));
+						} else {
+							// Replace the taken state
+							pending_splice.funding_negotiation = Some(funding_negotiation);
+						}
+					}
+				}
+
+				return Err(msgs::TxAbort {
+					channel_id: chan.context.channel_id(),
+					data: "Got a tx_complete message in an invalid state".to_owned().into_bytes(),
+				});
+			},
+			_ => {
+				debug_assert!(false);
+				return Err(msgs::TxAbort {
+					channel_id: self.context().channel_id(),
+					data: "Got a tx_complete message in an invalid phase".to_owned().into_bytes(),
+				});
+			},
 		}
 	}
 
@@ -1821,7 +1902,11 @@ where
 			ChannelPhase::Funded(mut funded_channel) => {
 				#[cfg(splicing)]
 				let has_negotiated_pending_splice = funded_channel.pending_splice.as_ref()
-					.map(|pending_splice| pending_splice.funding.is_some())
+					.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+					.filter(|funding_negotiation| {
+						matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures(_))
+					})
+					.map(|funding_negotiation| funding_negotiation.as_funding().is_some())
 					.unwrap_or(false);
 				#[cfg(splicing)]
 				let session_received_commitment_signed = funded_channel
@@ -2165,19 +2250,173 @@ impl FundingScope {
 	pub fn get_short_channel_id(&self) -> Option<u64> {
 		self.short_channel_id
 	}
+
+	/// Constructs a `FundingScope` for splicing a channel.
+	#[cfg(splicing)]
+	fn for_splice<SP: Deref>(
+		prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution_sats: i64,
+		their_funding_contribution_sats: i64, counterparty_funding_pubkey: PublicKey,
+	) -> Result<Self, ChannelError>
+	where
+		SP::Target: SignerProvider,
+	{
+		let post_channel_value = prev_funding.compute_post_splice_value(
+			our_funding_contribution_sats,
+			their_funding_contribution_sats,
+		);
+
+		let post_value_to_self_msat = AddSigned::checked_add_signed(
+			prev_funding.value_to_self_msat,
+			our_funding_contribution_sats * 1000,
+		);
+		debug_assert!(post_value_to_self_msat.is_some());
+		let post_value_to_self_msat = post_value_to_self_msat.unwrap();
+
+		// Rotate the pubkeys using the prev_funding_txid as a tweak
+		let prev_funding_txid = prev_funding.get_funding_txid();
+		let holder_pubkeys = context.holder_pubkeys(prev_funding_txid);
+
+		let channel_parameters = &prev_funding.channel_transaction_parameters;
+		let mut post_channel_transaction_parameters = ChannelTransactionParameters {
+			holder_pubkeys,
+			holder_selected_contest_delay: channel_parameters.holder_selected_contest_delay,
+			// The 'outbound' attribute doesn't change, even if the splice initiator is the other node
+			is_outbound_from_holder: channel_parameters.is_outbound_from_holder,
+			counterparty_parameters: channel_parameters.counterparty_parameters.clone(),
+			funding_outpoint: None, // filled later
+			splice_parent_funding_txid: prev_funding_txid,
+			channel_type_features: channel_parameters.channel_type_features.clone(),
+			channel_value_satoshis: post_channel_value,
+		};
+		post_channel_transaction_parameters
+			.counterparty_parameters
+			.as_mut()
+			.expect("counterparty_parameters should be set")
+			.pubkeys
+			.funding_pubkey = counterparty_funding_pubkey;
+
+		// New reserve values are based on the new channel value and are v2-specific
+		let counterparty_selected_channel_reserve_satoshis = Some(get_v2_channel_reserve_satoshis(
+			post_channel_value,
+			context.counterparty_dust_limit_satoshis,
+		));
+		let holder_selected_channel_reserve_satoshis =
+			get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+
+		Ok(Self {
+			channel_transaction_parameters: post_channel_transaction_parameters,
+			value_to_self_msat: post_value_to_self_msat,
+			funding_transaction: None,
+			counterparty_selected_channel_reserve_satoshis,
+			holder_selected_channel_reserve_satoshis,
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new((
+				post_value_to_self_msat,
+				(post_channel_value * 1000).saturating_sub(post_value_to_self_msat),
+			)),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new((
+				post_value_to_self_msat,
+				(post_channel_value * 1000).saturating_sub(post_value_to_self_msat),
+			)),
+			#[cfg(any(test, fuzzing))]
+			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
+			#[cfg(any(test, fuzzing))]
+			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+			funding_tx_confirmation_height: 0,
+			funding_tx_confirmed_in: None,
+			minimum_depth_override: None,
+			short_channel_id: None,
+		})
+	}
+
+	/// Compute the post-splice channel value from each counterparty's contributions.
+	#[cfg(splicing)]
+	pub(super) fn compute_post_splice_value(
+		&self, our_funding_contribution: i64, their_funding_contribution: i64,
+	) -> u64 {
+		AddSigned::saturating_add_signed(
+			self.get_value_satoshis(),
+			our_funding_contribution.saturating_add(their_funding_contribution),
+		)
+	}
+
+	/// Returns a `SharedOwnedInput` for using this `FundingScope` as the input to a new splice.
+	#[cfg(splicing)]
+	fn to_splice_funding_input(&self) -> SharedOwnedInput {
+		let funding_txo = self.get_funding_txo().expect("funding_txo should be set");
+		let input = TxIn {
+			previous_output: funding_txo.into_bitcoin_outpoint(),
+			script_sig: ScriptBuf::new(),
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+			witness: Witness::new(),
+		};
+
+		let prev_output = TxOut {
+			value: Amount::from_sat(self.get_value_satoshis()),
+			script_pubkey: self.get_funding_redeemscript().to_p2wsh(),
+		};
+
+		let local_owned = self.value_to_self_msat / 1000;
+
+		SharedOwnedInput::new(input, prev_output, local_owned)
+	}
 }
 
-/// Info about a pending splice, used in the pre-splice channel
+// TODO: Remove once MSRV is at least 1.66
+#[cfg(splicing)]
+trait AddSigned {
+	fn checked_add_signed(self, rhs: i64) -> Option<u64>;
+	fn saturating_add_signed(self, rhs: i64) -> u64;
+}
+
+#[cfg(splicing)]
+impl AddSigned for u64 {
+	fn checked_add_signed(self, rhs: i64) -> Option<u64> {
+		if rhs >= 0 {
+			self.checked_add(rhs as u64)
+		} else {
+			self.checked_sub(rhs.unsigned_abs())
+		}
+	}
+
+	fn saturating_add_signed(self, rhs: i64) -> u64 {
+		if rhs >= 0 {
+			self.saturating_add(rhs as u64)
+		} else {
+			self.saturating_sub(rhs.unsigned_abs())
+		}
+	}
+}
+
+/// Info about a pending splice
 #[cfg(splicing)]
 struct PendingSplice {
-	pub our_funding_contribution: i64,
-	funding: Option<FundingScope>,
+	funding_negotiation: Option<FundingNegotiation>,
 
 	/// The funding txid used in the `splice_locked` sent to the counterparty.
 	sent_funding_txid: Option<Txid>,
 
 	/// The funding txid used in the `splice_locked` received from the counterparty.
 	received_funding_txid: Option<Txid>,
+}
+
+#[cfg(splicing)]
+enum FundingNegotiation {
+	AwaitingAck(FundingNegotiationContext),
+	ConstructingTransaction(FundingScope, InteractiveTxConstructor),
+	AwaitingSignatures(FundingScope),
+}
+
+#[cfg(splicing)]
+impl FundingNegotiation {
+	fn as_funding(&self) -> Option<&FundingScope> {
+		match self {
+			FundingNegotiation::AwaitingAck(_) => None,
+			FundingNegotiation::ConstructingTransaction(funding, _) => Some(funding),
+			FundingNegotiation::AwaitingSignatures(funding) => Some(funding),
+		}
+	}
 }
 
 #[cfg(splicing)]
@@ -2749,251 +2988,6 @@ where
 				)
 			},
 		)
-	}
-}
-
-impl<SP: Deref> PendingV2Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
-	/// Prepare and start interactive transaction negotiation.
-	/// `change_destination_opt` - Optional destination for optional change; if None,
-	///   default destination address is used.
-	/// If error occurs, it is caused by our side, not the counterparty.
-	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
-	#[rustfmt::skip]
-	fn begin_interactive_funding_tx_construction<ES: Deref>(
-		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
-		change_destination_opt: Option<ScriptBuf>,
-	) -> Result<Option<InteractiveTxMessageSend>, AbortReason>
-	where ES::Target: EntropySource
-	{
-		debug_assert!(matches!(self.context.channel_state, ChannelState::NegotiatingFunding(_)));
-		debug_assert!(self.interactive_tx_constructor.is_none());
-
-		let mut funding_inputs = Vec::new();
-		mem::swap(&mut self.dual_funding_context.our_funding_inputs, &mut funding_inputs);
-
-		// TODO(splicing): Add prev funding tx as input, must be provided as a parameter
-
-		// Add output for funding tx
-		// Note: For the error case when the inputs are insufficient, it will be handled after
-		// the `calculate_change_output_value` call below
-		let mut funding_outputs = Vec::new();
-
-		let shared_funding_output = TxOut {
-			value: Amount::from_sat(self.funding.get_value_satoshis()),
-			script_pubkey: self.funding.get_funding_redeemscript().to_p2wsh(),
-		};
-
-		// Optionally add change output
-		let change_script = if let Some(script) = change_destination_opt {
-			script
-		} else {
-			signer_provider.get_destination_script(self.context.channel_keys_id)
-				.map_err(|_err| AbortReason::InternalError("Error getting destination script"))?
-		};
-		let change_value_opt = calculate_change_output_value(
-			self.funding.is_outbound(), self.dual_funding_context.our_funding_satoshis,
-			&funding_inputs, None,
-			&shared_funding_output.script_pubkey, &funding_outputs,
-			self.dual_funding_context.funding_feerate_sat_per_1000_weight,
-			change_script.minimal_non_dust().to_sat(),
-		)?;
-		if let Some(change_value) = change_value_opt {
-			let mut change_output = TxOut {
-				value: Amount::from_sat(change_value),
-				script_pubkey: change_script,
-			};
-			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
-			let change_output_fee = fee_for_weight(self.dual_funding_context.funding_feerate_sat_per_1000_weight, change_output_weight);
-			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
-			// Check dust limit again
-			if change_value_decreased_with_fee > self.context.holder_dust_limit_satoshis {
-				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
-				funding_outputs.push(change_output);
-			}
-		}
-
-		let constructor_args = InteractiveTxConstructorArgs {
-			entropy_source,
-			holder_node_id,
-			counterparty_node_id: self.context.counterparty_node_id,
-			channel_id: self.context.channel_id(),
-			feerate_sat_per_kw: self.dual_funding_context.funding_feerate_sat_per_1000_weight,
-			is_initiator: self.funding.is_outbound(),
-			funding_tx_locktime: self.dual_funding_context.funding_tx_locktime,
-			inputs_to_contribute: funding_inputs,
-			shared_funding_input: None,
-			shared_funding_output: SharedOwnedOutput::new(shared_funding_output, self.dual_funding_context.our_funding_satoshis),
-			outputs_to_contribute: funding_outputs,
-		};
-		let mut tx_constructor = InteractiveTxConstructor::new(constructor_args)?;
-		let msg = tx_constructor.take_initiator_first_message();
-
-		self.interactive_tx_constructor = Some(tx_constructor);
-
-		Ok(msg)
-	}
-
-	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor
-				.handle_tx_add_input(msg)
-				.map_err(|reason| reason.into_tx_abort_msg(self.context.channel_id())),
-			None => Err(msgs::TxAbort {
-				channel_id: self.context.channel_id(),
-				data: b"No interactive transaction negotiation in progress".to_vec(),
-			}),
-		})
-	}
-
-	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput) -> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor
-				.handle_tx_add_output(msg)
-				.map_err(|reason| reason.into_tx_abort_msg(self.context.channel_id())),
-			None => Err(msgs::TxAbort {
-				channel_id: self.context.channel_id(),
-				data: b"No interactive transaction negotiation in progress".to_vec(),
-			}),
-		})
-	}
-
-	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor
-				.handle_tx_remove_input(msg)
-				.map_err(|reason| reason.into_tx_abort_msg(self.context.channel_id())),
-			None => Err(msgs::TxAbort {
-				channel_id: self.context.channel_id(),
-				data: b"No interactive transaction negotiation in progress".to_vec(),
-			}),
-		})
-	}
-
-	pub fn tx_remove_output(
-		&mut self, msg: &msgs::TxRemoveOutput,
-	) -> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor
-				.handle_tx_remove_output(msg)
-				.map_err(|reason| reason.into_tx_abort_msg(self.context.channel_id())),
-			None => Err(msgs::TxAbort {
-				channel_id: self.context.channel_id(),
-				data: b"No interactive transaction negotiation in progress".to_vec(),
-			}),
-		})
-	}
-
-	pub fn tx_complete(&mut self, msg: &msgs::TxComplete) -> HandleTxCompleteResult {
-		let tx_constructor = match &mut self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor,
-			None => {
-				let tx_abort = msgs::TxAbort {
-					channel_id: msg.channel_id,
-					data: b"No interactive transaction negotiation in progress".to_vec(),
-				};
-				return HandleTxCompleteResult(Err(tx_abort));
-			},
-		};
-
-		let tx_complete = match tx_constructor.handle_tx_complete(msg) {
-			Ok(tx_complete) => tx_complete,
-			Err(reason) => {
-				return HandleTxCompleteResult(Err(reason.into_tx_abort_msg(msg.channel_id)))
-			},
-		};
-
-		HandleTxCompleteResult(Ok(tx_complete))
-	}
-
-	#[rustfmt::skip]
-	pub fn funding_tx_constructed<L: Deref>(
-		&mut self, mut signing_session: InteractiveTxSigningSession, logger: &L
-	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
-	where
-		L::Target: Logger
-	{
-		let our_funding_satoshis = self.dual_funding_context.our_funding_satoshis;
-		let transaction_number = self.unfunded_context.transaction_number();
-
-		let mut output_index = None;
-		let expected_spk = self.funding.get_funding_redeemscript().to_p2wsh();
-		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
-			if outp.script_pubkey() == &expected_spk && outp.value() == self.funding.get_value_satoshis() {
-				if output_index.is_some() {
-					let msg = "Multiple outputs matched the expected script and value";
-					let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-					return Err(ChannelError::Close((msg.to_owned(), reason)));
-				}
-				output_index = Some(idx as u16);
-			}
-		}
-		let outpoint = if let Some(output_index) = output_index {
-			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
-		} else {
-			let msg = "No output matched the funding script_pubkey";
-			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-			return Err(ChannelError::Close((msg.to_owned(), reason)));
-		};
-		self.funding.channel_transaction_parameters.funding_outpoint = Some(outpoint);
-
-		self.context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
-		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
-		let commitment_signed = match commitment_signed {
-			Ok(commitment_signed) => commitment_signed,
-			Err(e) => {
-				self.funding.channel_transaction_parameters.funding_outpoint = None;
-				return Err(e)
-			},
-		};
-
-		let funding_ready_for_sig_event = if signing_session.local_inputs_count() == 0 {
-			debug_assert_eq!(our_funding_satoshis, 0);
-			if signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new()).is_err() {
-				debug_assert!(
-					false,
-					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
-				);
-				let msg = "V2 channel rejected due to sender error";
-				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-				return Err(ChannelError::Close((msg.to_owned(), reason)));
-			}
-			None
-		} else {
-			// TODO(dual_funding): Send event for signing if we've contributed funds.
-			// Inform the user that SIGHASH_ALL must be used for all signatures when contributing
-			// inputs/signatures.
-			// Also warn the user that we don't do anything to prevent the counterparty from
-			// providing non-standard witnesses which will prevent the funding transaction from
-			// confirming. This warning must appear in doc comments wherever the user is contributing
-			// funds, whether they are initiator or acceptor.
-			//
-			// The following warning can be used when the APIs allowing contributing inputs become available:
-			// <div class="warning">
-			// WARNING: LDK makes no attempt to prevent the counterparty from using non-standard inputs which
-			// will prevent the funding transaction from being relayed on the bitcoin network and hence being
-			// confirmed.
-			// </div>
-			debug_assert!(
-				false,
-				"We don't support users providing inputs but somehow we had more than zero inputs",
-			);
-			let msg = "V2 channel rejected due to sender error";
-			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-			return Err(ChannelError::Close((msg.to_owned(), reason)));
-		};
-
-		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
-		channel_state.set_interactive_signing();
-		self.context.channel_state = channel_state;
-
-		// Clear the interactive transaction constructor
-		self.interactive_tx_constructor.take();
-		self.interactive_tx_signing_session = Some(signing_session);
-
-		Ok((commitment_signed, funding_ready_for_sig_event))
 	}
 }
 
@@ -3787,6 +3781,17 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_mut_signer(&mut self) -> &mut ChannelSignerType<SP> {
 		return &mut self.holder_signer;
+	}
+
+	/// Returns holder pubkeys to use for the channel.
+	#[cfg(splicing)]
+	fn holder_pubkeys(&self, prev_funding_txid: Option<Txid>) -> ChannelPublicKeys {
+		match &self.holder_signer {
+			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.pubkeys(prev_funding_txid, &self.secp_ctx),
+			// TODO (taproot|arik)
+			#[cfg(taproot)]
+			_ => todo!(),
+		}
 	}
 
 	/// Only allowed immediately after deserialization if get_outbound_scid_alias returns 0,
@@ -5480,6 +5485,108 @@ where
 		Ok(())
 	}
 
+	#[rustfmt::skip]
+	fn funding_tx_constructed<L: Deref>(
+		&mut self, funding: &mut FundingScope, signing_session: &mut InteractiveTxSigningSession,
+		is_splice: bool, holder_commitment_transaction_number: u64, logger: &L
+	) -> Result<(msgs::CommitmentSigned, Option<Event>), msgs::TxAbort>
+	where
+		L::Target: Logger
+	{
+		let mut output_index = None;
+		let expected_spk = funding.get_funding_redeemscript().to_p2wsh();
+		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
+			if outp.script_pubkey() == &expected_spk && outp.value() == funding.get_value_satoshis() {
+				if output_index.is_some() {
+					return Err(msgs::TxAbort {
+						channel_id: self.channel_id(),
+						data: "Multiple outputs matched the expected script and value".to_owned().into_bytes(),
+					});
+				}
+				output_index = Some(idx as u16);
+			}
+		}
+		let outpoint = if let Some(output_index) = output_index {
+			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
+		} else {
+			return Err(msgs::TxAbort {
+				channel_id: self.channel_id(),
+				data: "No output matched the funding script_pubkey".to_owned().into_bytes(),
+			});
+		};
+		funding
+			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
+
+		if is_splice {
+			debug_assert_eq!(
+				holder_commitment_transaction_number,
+				self.cur_counterparty_commitment_transaction_number,
+			);
+			// TODO(splicing) Forced error, as the use case is not complete
+			return Err(msgs::TxAbort {
+				channel_id: self.channel_id(),
+				data: "Splicing not yet supported".to_owned().into_bytes(),
+			});
+		} else {
+			self.assert_no_commitment_advancement(holder_commitment_transaction_number, "initial commitment_signed");
+		}
+
+		let commitment_signed = self.get_initial_commitment_signed(&funding, logger);
+		let commitment_signed = match commitment_signed {
+			Ok(commitment_signed) => commitment_signed,
+			Err(e) => {
+				funding.channel_transaction_parameters.funding_outpoint = None;
+				return Err(msgs::TxAbort {
+					channel_id: self.channel_id(),
+					data: e.message().to_owned().into_bytes(),
+				});
+			},
+		};
+
+		let funding_ready_for_sig_event = if signing_session.local_inputs_count() == 0 {
+			if signing_session.provide_holder_witnesses(self.channel_id, Vec::new()).is_err() {
+				debug_assert!(
+					false,
+					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
+				);
+				return Err(msgs::TxAbort {
+					channel_id: self.channel_id(),
+					data: "V2 channel rejected due to sender error".to_owned().into_bytes(),
+				});
+			}
+			None
+		} else {
+			// TODO(dual_funding): Send event for signing if we've contributed funds.
+			// Inform the user that SIGHASH_ALL must be used for all signatures when contributing
+			// inputs/signatures.
+			// Also warn the user that we don't do anything to prevent the counterparty from
+			// providing non-standard witnesses which will prevent the funding transaction from
+			// confirming. This warning must appear in doc comments wherever the user is contributing
+			// funds, whether they are initiator or acceptor.
+			//
+			// The following warning can be used when the APIs allowing contributing inputs become available:
+			// <div class="warning">
+			// WARNING: LDK makes no attempt to prevent the counterparty from using non-standard inputs which
+			// will prevent the funding transaction from being relayed on the bitcoin network and hence being
+			// confirmed.
+			// </div>
+			debug_assert!(
+				false,
+				"We don't support users providing inputs but somehow we had more than zero inputs",
+			);
+			return Err(msgs::TxAbort {
+				channel_id: self.channel_id(),
+				data: "V2 channel rejected due to sender error".to_owned().into_bytes(),
+			});
+		};
+
+		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
+		channel_state.set_interactive_signing();
+		self.channel_state = channel_state;
+
+		Ok((commitment_signed, funding_ready_for_sig_event))
+	}
+
 	/// Asserts that the commitment tx numbers have not advanced from their initial number.
 	#[rustfmt::skip]
 	fn assert_no_commitment_advancement(&self, holder_commitment_transaction_number: u64, msg_name: &str) {
@@ -5853,28 +5960,116 @@ fn check_v2_funding_inputs_sufficient(
 	}
 }
 
-/// Context for dual-funded channels.
-pub(super) struct DualFundingChannelContext {
+/// Context for negotiating channels (dual-funded V2 open, splicing)
+pub(super) struct FundingNegotiationContext {
+	/// Whether we initiated the funding negotiation.
+	pub is_initiator: bool,
 	/// The amount in satoshis we will be contributing to the channel.
-	pub our_funding_satoshis: u64,
+	pub our_funding_contribution_satoshis: i64,
 	/// The amount in satoshis our counterparty will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-	pub their_funding_satoshis: Option<u64>,
+	pub their_funding_contribution_satoshis: Option<i64>,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
 	pub funding_tx_locktime: LockTime,
 	/// The feerate set by the initiator to be used for the funding transaction.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	pub funding_feerate_sat_per_1000_weight: u32,
+	/// The input spending the previous funding output, if this is a splice.
+	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
+	pub shared_funding_input: Option<SharedOwnedInput>,
 	/// The funding inputs we will be contributing to the channel.
-	///
-	/// Note that the `our_funding_satoshis` field is equal to the total value of `our_funding_inputs`
-	/// minus any fees paid for our contributed weight. This means that change will never be generated
-	/// and the maximum value possible will go towards funding the channel.
-	///
-	/// Note that this field may be emptied once the interactive negotiation has been started.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+	/// The change output script. This will be used if needed or -- if not set -- generated using
+	/// `SignerProvider::get_destination_script`.
+	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
+	pub change_script: Option<ScriptBuf>,
+}
+
+impl FundingNegotiationContext {
+	/// Prepare and start interactive transaction negotiation.
+	/// If error occurs, it is caused by our side, not the counterparty.
+	#[cfg(splicing)]
+	fn into_interactive_tx_constructor<SP: Deref, ES: Deref>(
+		self, context: &ChannelContext<SP>, funding: &FundingScope, signer_provider: &SP,
+		entropy_source: &ES, holder_node_id: PublicKey,
+	) -> Result<InteractiveTxConstructor, AbortReason>
+	where
+		SP::Target: SignerProvider,
+		ES::Target: EntropySource,
+	{
+		debug_assert_eq!(
+			self.shared_funding_input.is_some(),
+			funding.channel_transaction_parameters.splice_parent_funding_txid.is_some(),
+		);
+
+		if self.shared_funding_input.is_some() {
+			debug_assert!(matches!(context.channel_state, ChannelState::ChannelReady(_)));
+		} else {
+			debug_assert!(matches!(context.channel_state, ChannelState::NegotiatingFunding(_)));
+		}
+
+		// Add output for funding tx
+		// Note: For the error case when the inputs are insufficient, it will be handled after
+		// the `calculate_change_output_value` call below
+		let mut funding_outputs = Vec::new();
+
+		let shared_funding_output = TxOut {
+			value: Amount::from_sat(funding.get_value_satoshis()),
+			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
+		};
+
+		// Optionally add change output
+		if self.our_funding_contribution_satoshis > 0 {
+			let change_value_opt = calculate_change_output_value(
+				&self,
+				self.shared_funding_input.is_some(),
+				&shared_funding_output.script_pubkey,
+				&funding_outputs,
+				context.holder_dust_limit_satoshis,
+			)?;
+			if let Some(change_value) = change_value_opt {
+				let change_script = if let Some(script) = self.change_script {
+					script
+				} else {
+					signer_provider
+						.get_destination_script(context.channel_keys_id)
+						.map_err(|_err| AbortReason::InternalError("Error getting change script"))?
+				};
+				let mut change_output =
+					TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
+				let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
+				let change_output_fee =
+					fee_for_weight(self.funding_feerate_sat_per_1000_weight, change_output_weight);
+				let change_value_decreased_with_fee =
+					change_value.saturating_sub(change_output_fee);
+				// Check dust limit again
+				if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
+					change_output.value = Amount::from_sat(change_value_decreased_with_fee);
+					funding_outputs.push(change_output);
+				}
+			}
+		}
+
+		let constructor_args = InteractiveTxConstructorArgs {
+			entropy_source,
+			holder_node_id,
+			counterparty_node_id: context.counterparty_node_id,
+			channel_id: context.channel_id(),
+			feerate_sat_per_kw: self.funding_feerate_sat_per_1000_weight,
+			is_initiator: self.is_initiator,
+			funding_tx_locktime: self.funding_tx_locktime,
+			inputs_to_contribute: self.our_funding_inputs,
+			shared_funding_input: self.shared_funding_input,
+			shared_funding_output: SharedOwnedOutput::new(
+				shared_funding_output,
+				funding.value_to_self_msat / 1000,
+			),
+			outputs_to_contribute: funding_outputs,
+		};
+		InteractiveTxConstructor::new(constructor_args)
+	}
 }
 
 // Holder designates channel data owned for the benefit of the user client.
@@ -5907,6 +6102,7 @@ macro_rules! promote_splice_funding {
 			$self.context.historical_scids.push(scid);
 		}
 		core::mem::swap(&mut $self.funding, $funding);
+		$self.interactive_tx_signing_session = None;
 		$self.pending_splice = None;
 		$self.pending_funding.clear();
 		$self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
@@ -6007,6 +6203,22 @@ where
 
 	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
 		self.context.force_shutdown(&self.funding, closure_reason)
+	}
+
+	#[cfg(splicing)]
+	fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
+		self.pending_splice
+			.as_mut()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_mut())
+			.and_then(|funding_negotiation| {
+				if let FundingNegotiation::ConstructingTransaction(_, interactive_tx_constructor) =
+					funding_negotiation
+				{
+					Some(interactive_tx_constructor)
+				} else {
+					None
+				}
+			})
 	}
 
 	#[rustfmt::skip]
@@ -6808,7 +7020,11 @@ where
 		let pending_splice_funding = self
 			.pending_splice
 			.as_ref()
-			.and_then(|pending_splice| pending_splice.funding.as_ref())
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+			.filter(|funding_negotiation| {
+				matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures(_))
+			})
+			.and_then(|funding_negotiation| funding_negotiation.as_funding())
 			.expect("Funding must exist for negotiated pending splice");
 		let (holder_commitment_tx, _) = self.context.validate_commitment_signed(
 			pending_splice_funding,
@@ -10390,35 +10606,43 @@ where
 	/// Initiate splicing.
 	/// - `our_funding_inputs`: the inputs we contribute to the new funding transaction.
 	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
+	/// - `change_script`: an option change output script. If `None` and needed, one will be
+	///   generated by `SignerProvider::get_destination_script`.
 	#[cfg(splicing)]
-	#[rustfmt::skip]
-	pub fn splice_channel(&mut self, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: &Vec<(TxIn, Transaction, Weight)>,
+	pub fn splice_channel(
+		&mut self, our_funding_contribution_satoshis: i64,
+		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
 		funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<msgs::SpliceInit, APIError> {
 		// Check if a splice has been initiated already.
 		// Note: only a single outstanding splice is supported (per spec)
-		if let Some(splice_info) = &self.pending_splice {
-			return Err(APIError::APIMisuseError { err: format!(
-				"Channel {} cannot be spliced, as it has already a splice pending (contribution {})",
-				self.context.channel_id(), splice_info.our_funding_contribution
-			)});
+		if self.pending_splice.is_some() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot be spliced, as it has already a splice pending",
+					self.context.channel_id(),
+				),
+			});
 		}
 
 		if !self.context.is_live() {
-			return Err(APIError::APIMisuseError { err: format!(
-				"Channel {} cannot be spliced, as channel is not live",
-				self.context.channel_id()
-			)});
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot be spliced, as channel is not live",
+					self.context.channel_id()
+				),
+			});
 		}
 
 		// TODO(splicing): check for quiescence
 
 		if our_funding_contribution_satoshis < 0 {
-			return Err(APIError::APIMisuseError { err: format!(
+			return Err(APIError::APIMisuseError {
+				err: format!(
 				"TODO(splicing): Splice-out not supported, only splice in; channel ID {}, contribution {}",
 				self.context.channel_id(), our_funding_contribution_satoshis,
-			)});
+			),
+			});
 		}
 
 		// TODO(splicing): Once splice-out is supported, check that channel balance does not go below 0
@@ -10428,53 +10652,74 @@ where
 		// (Cannot test for miminum required post-splice channel value)
 
 		// Check that inputs are sufficient to cover our contribution.
-		let _fee = check_v2_funding_inputs_sufficient(our_funding_contribution_satoshis, &our_funding_inputs, true, true, funding_feerate_per_kw)
-			.map_err(|err| APIError::APIMisuseError { err: format!(
+		let _fee = check_v2_funding_inputs_sufficient(
+			our_funding_contribution_satoshis,
+			&our_funding_inputs,
+			true,
+			true,
+			funding_feerate_per_kw,
+		)
+		.map_err(|err| APIError::APIMisuseError {
+			err: format!(
 				"Insufficient inputs for splicing; channel ID {}, err {}",
-				self.context.channel_id(), err,
-			)})?;
+				self.context.channel_id(),
+				err,
+			),
+		})?;
+		// Convert inputs
+		let mut funding_inputs = Vec::new();
+		for (tx_in, tx, _w) in our_funding_inputs.into_iter() {
+			let tx16 = TransactionU16LenLimited::new(tx)
+				.map_err(|_e| APIError::APIMisuseError { err: format!("Too large transaction") })?;
+			funding_inputs.push((tx_in, tx16));
+		}
+
+		let prev_funding_input = self.funding.to_splice_funding_input();
+		let funding_negotiation_context = FundingNegotiationContext {
+			is_initiator: true,
+			our_funding_contribution_satoshis,
+			their_funding_contribution_satoshis: None,
+			funding_tx_locktime: LockTime::from_consensus(locktime),
+			funding_feerate_sat_per_1000_weight: funding_feerate_per_kw,
+			shared_funding_input: Some(prev_funding_input),
+			our_funding_inputs: funding_inputs,
+			change_script,
+		};
 
 		self.pending_splice = Some(PendingSplice {
-			our_funding_contribution: our_funding_contribution_satoshis,
-			funding: None,
+			funding_negotiation: Some(FundingNegotiation::AwaitingAck(funding_negotiation_context)),
 			sent_funding_txid: None,
 			received_funding_txid: None,
 		});
 
-		let msg = self.get_splice_init(our_funding_contribution_satoshis, funding_feerate_per_kw, locktime);
-		Ok(msg)
-	}
+		// Rotate the pubkeys using the prev_funding_txid as a tweak
+		let prev_funding_txid = self.funding.get_funding_txid();
+		let funding_pubkey = self.context.holder_pubkeys(prev_funding_txid).funding_pubkey;
 
-	/// Get the splice message that can be sent during splice initiation.
-	#[cfg(splicing)]
-	fn get_splice_init(
-		&self, our_funding_contribution_satoshis: i64, funding_feerate_per_kw: u32, locktime: u32,
-	) -> msgs::SpliceInit {
-		// TODO(splicing): The exisiting pubkey is reused, but a new one should be generated. See #3542.
-		// Note that channel_keys_id is supposed NOT to change
-		let funding_pubkey = self.funding.get_holder_pubkeys().funding_pubkey.clone();
-		msgs::SpliceInit {
+		Ok(msgs::SpliceInit {
 			channel_id: self.context.channel_id,
 			funding_contribution_satoshis: our_funding_contribution_satoshis,
 			funding_feerate_per_kw,
 			locktime,
 			funding_pubkey,
 			require_confirmed_inputs: None,
-		}
+		})
 	}
 
-	/// Handle splice_init
+	/// Checks during handling splice_init
 	#[cfg(splicing)]
-	#[rustfmt::skip]
-	pub fn splice_init(&mut self, msg: &msgs::SpliceInit) -> Result<msgs::SpliceAck, ChannelError> {
+	pub fn validate_splice_init(
+		&self, msg: &msgs::SpliceInit, our_funding_contribution_satoshis: i64,
+	) -> Result<FundingScope, ChannelError> {
 		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
-		// TODO(splicing): Currently not possible to contribute on the splicing-acceptor side
-		let our_funding_contribution_satoshis = 0i64;
+
+		// TODO(splicing): Add check that we are the quiescence acceptor
 
 		// Check if a splice has been initiated already.
-		if let Some(splice_info) = &self.pending_splice {
-			return Err(ChannelError::Warn(format!(
-				"Channel has already a splice pending, contribution {}", splice_info.our_funding_contribution,
+		if self.pending_splice.is_some() {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} already has a splice pending",
+				self.context.channel_id(),
 			)));
 		}
 
@@ -10482,50 +10727,195 @@ where
 		//   MUST send a warning and close the connection or send an error
 		//   and fail the channel.
 		if !self.context.is_live() {
-			return Err(ChannelError::Warn(format!("Splicing requested on a channel that is not live")));
-		}
-
-		if their_funding_contribution_satoshis.saturating_add(our_funding_contribution_satoshis) < 0 {
-			return Err(ChannelError::Warn(format!(
-				"Splice-out not supported, only splice in, contribution is {} ({} + {})",
-				their_funding_contribution_satoshis + our_funding_contribution_satoshis,
-				their_funding_contribution_satoshis, our_funding_contribution_satoshis,
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Splicing requested on a channel that is not live"
 			)));
 		}
+
+		if their_funding_contribution_satoshis.saturating_add(our_funding_contribution_satoshis) < 0
+		{
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Splice-out not supported, only splice in, contribution is {} ({} + {})",
+				their_funding_contribution_satoshis + our_funding_contribution_satoshis,
+				their_funding_contribution_satoshis,
+				our_funding_contribution_satoshis,
+			)));
+		}
+
+		let splice_funding = FundingScope::for_splice(
+			&self.funding,
+			&self.context,
+			our_funding_contribution_satoshis,
+			their_funding_contribution_satoshis,
+			msg.funding_pubkey,
+		)?;
 
 		// TODO(splicing): Once splice acceptor can contribute, check that inputs are sufficient,
 		// similarly to the check in `splice_channel`.
 
 		// Note on channel reserve requirement pre-check: as the splice acceptor does not contribute,
 		// it can't go below reserve, therefore no pre-check is done here.
-		// TODO(splicing): Once splice acceptor can contribute, add reserve pre-check, similar to the one in `splice_ack`.
 
-		// TODO(splicing): Store msg.funding_pubkey
-		// TODO(splicing): Apply start of splice (splice_start)
+		// TODO(splicing): Early check for reserve requirement
 
-		// TODO(splicing): The exisiting pubkey is reused, but a new one should be generated. See #3542.
-		// Note that channel_keys_id is supposed NOT to change
-		let splice_ack_msg = msgs::SpliceAck {
+		Ok(splice_funding)
+	}
+
+	/// See also [`validate_splice_init`]
+	#[cfg(splicing)]
+	pub(crate) fn splice_init<ES: Deref, L: Deref>(
+		&mut self, msg: &msgs::SpliceInit, our_funding_contribution_satoshis: i64,
+		signer_provider: &SP, entropy_source: &ES, holder_node_id: &PublicKey, logger: &L,
+	) -> Result<msgs::SpliceAck, ChannelError>
+	where
+		ES::Target: EntropySource,
+		L::Target: Logger,
+	{
+		let splice_funding = self.validate_splice_init(msg, our_funding_contribution_satoshis)?;
+
+		log_info!(
+			logger,
+			"Starting splice funding negotiation for channel {} after receiving splice_init; new channel value: {} sats (old: {} sats)",
+			self.context.channel_id,
+			splice_funding.get_value_satoshis(),
+			self.funding.get_value_satoshis(),
+		);
+
+		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
+		let prev_funding_input = self.funding.to_splice_funding_input();
+		let funding_negotiation_context = FundingNegotiationContext {
+			is_initiator: false,
+			our_funding_contribution_satoshis,
+			their_funding_contribution_satoshis: Some(their_funding_contribution_satoshis),
+			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
+			funding_feerate_sat_per_1000_weight: msg.funding_feerate_per_kw,
+			shared_funding_input: Some(prev_funding_input),
+			our_funding_inputs: Vec::new(),
+			change_script: None,
+		};
+
+		let mut interactive_tx_constructor = funding_negotiation_context
+			.into_interactive_tx_constructor(
+				&self.context,
+				&splice_funding,
+				signer_provider,
+				entropy_source,
+				holder_node_id.clone(),
+			)
+			.map_err(|err| {
+				ChannelError::WarnAndDisconnect(format!(
+					"Failed to start interactive transaction construction, {:?}",
+					err
+				))
+			})?;
+		debug_assert!(interactive_tx_constructor.take_initiator_first_message().is_none());
+
+		let funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
+
+		self.pending_splice = Some(PendingSplice {
+			funding_negotiation: Some(FundingNegotiation::ConstructingTransaction(
+				splice_funding,
+				interactive_tx_constructor,
+			)),
+			received_funding_txid: None,
+			sent_funding_txid: None,
+		});
+
+		Ok(msgs::SpliceAck {
 			channel_id: self.context.channel_id,
 			funding_contribution_satoshis: our_funding_contribution_satoshis,
-			funding_pubkey: self.funding.get_holder_pubkeys().funding_pubkey,
+			funding_pubkey,
 			require_confirmed_inputs: None,
-		};
-		// TODO(splicing): start interactive funding negotiation
-		Ok(splice_ack_msg)
+		})
 	}
 
 	/// Handle splice_ack
 	#[cfg(splicing)]
-	pub fn splice_ack(&mut self, _msg: &msgs::SpliceAck) -> Result<(), ChannelError> {
-		// check if splice is pending
-		if self.pending_splice.is_none() {
-			return Err(ChannelError::Warn(format!("Channel is not in pending splice")));
+	pub(crate) fn splice_ack<ES: Deref, L: Deref>(
+		&mut self, msg: &msgs::SpliceAck, signer_provider: &SP, entropy_source: &ES,
+		holder_node_id: &PublicKey, logger: &L,
+	) -> Result<Option<InteractiveTxMessageSend>, ChannelError>
+	where
+		ES::Target: EntropySource,
+		L::Target: Logger,
+	{
+		let pending_splice = if let Some(ref mut pending_splice) = &mut self.pending_splice {
+			pending_splice
+		} else {
+			return Err(ChannelError::Ignore(format!("Channel is not in pending splice")));
 		};
+
+		// TODO(splicing): Add check that we are the splice (quiescence) initiator
+
+		let funding_negotiation_context = match pending_splice.funding_negotiation.take() {
+			Some(FundingNegotiation::AwaitingAck(context)) => context,
+			Some(FundingNegotiation::ConstructingTransaction(funding, constructor)) => {
+				pending_splice.funding_negotiation =
+					Some(FundingNegotiation::ConstructingTransaction(funding, constructor));
+				return Err(ChannelError::WarnAndDisconnect(format!(
+					"Got unexpected splice_ack; splice negotiation already in progress"
+				)));
+			},
+			Some(FundingNegotiation::AwaitingSignatures(funding)) => {
+				pending_splice.funding_negotiation =
+					Some(FundingNegotiation::AwaitingSignatures(funding));
+				return Err(ChannelError::WarnAndDisconnect(format!(
+					"Got unexpected splice_ack; splice negotiation already in progress"
+				)));
+			},
+			None => {
+				return Err(ChannelError::Ignore(format!(
+					"Got unexpected splice_ack; no splice negotiation in progress"
+				)));
+			},
+		};
+
+		let our_funding_contribution_satoshis =
+			funding_negotiation_context.our_funding_contribution_satoshis;
+		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
+
+		let splice_funding = FundingScope::for_splice(
+			&self.funding,
+			&self.context,
+			our_funding_contribution_satoshis,
+			their_funding_contribution_satoshis,
+			msg.funding_pubkey,
+		)?;
 
 		// TODO(splicing): Pre-check for reserve requirement
 		// (Note: It should also be checked later at tx_complete)
-		Ok(())
+
+		log_info!(
+			logger,
+			"Starting splice funding negotiation for channel {} after receiving splice_ack; new channel value: {} sats (old: {} sats)",
+			self.context.channel_id,
+			splice_funding.get_value_satoshis(),
+			self.funding.get_value_satoshis(),
+		);
+
+		let mut interactive_tx_constructor = funding_negotiation_context
+			.into_interactive_tx_constructor(
+				&self.context,
+				&splice_funding,
+				signer_provider,
+				entropy_source,
+				holder_node_id.clone(),
+			)
+			.map_err(|err| {
+				ChannelError::WarnAndDisconnect(format!(
+					"Failed to start interactive transaction construction, {:?}",
+					err
+				))
+			})?;
+		let tx_msg_opt = interactive_tx_constructor.take_initiator_first_message();
+
+		debug_assert!(self.interactive_tx_signing_session.is_none());
+		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction(
+			splice_funding,
+			interactive_tx_constructor,
+		));
+
+		Ok(tx_msg_opt)
 	}
 
 	#[cfg(splicing)]
@@ -12021,7 +12411,7 @@ where
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
-	pub dual_funding_context: DualFundingChannelContext,
+	pub funding_negotiation_context: FundingNegotiationContext,
 	/// The current interactive transaction construction session under negotiation.
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
 	/// The signing session created after `tx_complete` handling
@@ -12084,19 +12474,22 @@ where
 			unfunded_channel_age_ticks: 0,
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
-		let dual_funding_context = DualFundingChannelContext {
-			our_funding_satoshis: funding_satoshis,
+		let funding_negotiation_context = FundingNegotiationContext {
+			is_initiator: true,
+			our_funding_contribution_satoshis: funding_satoshis as i64,
 			// TODO(dual_funding) TODO(splicing) Include counterparty contribution, once that's enabled
-			their_funding_satoshis: None,
+			their_funding_contribution_satoshis: None,
 			funding_tx_locktime,
 			funding_feerate_sat_per_1000_weight,
+			shared_funding_input: None,
 			our_funding_inputs: funding_inputs,
+			change_script: None,
 		};
 		let chan = Self {
 			funding,
 			context,
 			unfunded_context,
-			dual_funding_context,
+			funding_negotiation_context,
 			interactive_tx_constructor: None,
 			interactive_tx_signing_session: None,
 		};
@@ -12172,7 +12565,7 @@ where
 			},
 			funding_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
 			second_per_commitment_point,
-			locktime: self.dual_funding_context.funding_tx_locktime.to_consensus_u32(),
+			locktime: self.funding_negotiation_context.funding_tx_locktime.to_consensus_u32(),
 			require_confirmed_inputs: None,
 		}
 	}
@@ -12238,12 +12631,15 @@ where
 			&funding.get_counterparty_pubkeys().revocation_basepoint);
 		context.channel_id = channel_id;
 
-		let dual_funding_context = DualFundingChannelContext {
-			our_funding_satoshis: our_funding_satoshis,
-			their_funding_satoshis: Some(msg.common_fields.funding_satoshis),
+		let funding_negotiation_context = FundingNegotiationContext {
+			is_initiator: false,
+			our_funding_contribution_satoshis: our_funding_satoshis as i64,
+			their_funding_contribution_satoshis: Some(msg.common_fields.funding_satoshis as i64),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
+			shared_funding_input: None,
 			our_funding_inputs: our_funding_inputs.clone(),
+			change_script: None,
 		};
 		let shared_funding_output = TxOut {
 			value: Amount::from_sat(funding.get_value_satoshis()),
@@ -12256,8 +12652,8 @@ where
 				holder_node_id,
 				counterparty_node_id,
 				channel_id: context.channel_id,
-				feerate_sat_per_kw: dual_funding_context.funding_feerate_sat_per_1000_weight,
-				funding_tx_locktime: dual_funding_context.funding_tx_locktime,
+				feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
+				funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
 				is_initiator: false,
 				inputs_to_contribute: our_funding_inputs,
 				shared_funding_input: None,
@@ -12276,7 +12672,7 @@ where
 		Ok(Self {
 			funding,
 			context,
-			dual_funding_context,
+			funding_negotiation_context,
 			interactive_tx_constructor,
 			interactive_tx_signing_session: None,
 			unfunded_context,
@@ -12342,7 +12738,8 @@ where
 				}),
 				channel_type: Some(self.funding.get_channel_type().clone()),
 			},
-			funding_satoshis: self.dual_funding_context.our_funding_satoshis,
+			funding_satoshis: self.funding_negotiation_context.our_funding_contribution_satoshis
+				as u64,
 			second_per_commitment_point,
 			require_confirmed_inputs: None,
 		}
@@ -13670,6 +14067,8 @@ mod tests {
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 	use crate::chain::transaction::OutPoint;
 	use crate::chain::BestBlock;
+	#[cfg(splicing)]
+	use crate::ln::chan_utils::ChannelTransactionParameters;
 	use crate::ln::chan_utils::{self, commit_tx_fee_sat};
 	use crate::ln::channel::{
 		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate, HTLCInitiator,
@@ -13689,6 +14088,8 @@ mod tests {
 	use crate::prelude::*;
 	use crate::routing::router::{Path, RouteHop};
 	use crate::sign::{ChannelSigner, EntropySource, InMemorySigner, SignerProvider};
+	#[cfg(splicing)]
+	use crate::sync::Mutex;
 	#[cfg(ldk_test_vectors)]
 	use crate::types::features::ChannelTypeFeatures;
 	use crate::types::features::{ChannelFeatures, NodeFeatures};
@@ -15557,6 +15958,99 @@ mod tests {
 				).unwrap(),
 				expected_fee,
 			);
+		}
+	}
+
+	#[cfg(splicing)]
+	fn get_pre_and_post(
+		pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64,
+	) -> (u64, u64) {
+		use crate::ln::channel::FundingScope;
+
+		let funding = FundingScope {
+			value_to_self_msat: 0,
+			counterparty_selected_channel_reserve_satoshis: None,
+			holder_selected_channel_reserve_satoshis: 0,
+
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new((0, 0)),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
+
+			#[cfg(any(test, fuzzing))]
+			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
+			#[cfg(any(test, fuzzing))]
+			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+
+			channel_transaction_parameters: ChannelTransactionParameters::test_dummy(
+				pre_channel_value,
+			),
+			funding_transaction: None,
+			funding_tx_confirmed_in: None,
+			funding_tx_confirmation_height: 0,
+			short_channel_id: None,
+			minimum_depth_override: None,
+		};
+		let post_channel_value =
+			funding.compute_post_splice_value(our_funding_contribution, their_funding_contribution);
+		(pre_channel_value, post_channel_value)
+	}
+
+	#[cfg(splicing)]
+	#[test]
+	fn test_compute_post_splice_value() {
+		{
+			// increase, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, 6_000, 0);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 15_000);
+		}
+		{
+			// increase, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, 4_000, 2_000);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 15_000);
+		}
+		{
+			// increase, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, 0, 6_000);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 15_000);
+		}
+		{
+			// decrease, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(15_000, -6_000, 0);
+			assert_eq!(pre_channel_value, 15_000);
+			assert_eq!(post_channel_value, 9_000);
+		}
+		{
+			// decrease, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(15_000, -4_000, -2_000);
+			assert_eq!(pre_channel_value, 15_000);
+			assert_eq!(post_channel_value, 9_000);
+		}
+		{
+			// increase and decrease
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(15_000, 4_000, -2_000);
+			assert_eq!(pre_channel_value, 15_000);
+			assert_eq!(post_channel_value, 17_000);
+		}
+		let base2: u64 = 2;
+		let huge63i3 = (base2.pow(63) - 3) as i64;
+		assert_eq!(huge63i3, 9223372036854775805);
+		assert_eq!(-huge63i3, -9223372036854775805);
+		{
+			// increase, large amount
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, huge63i3, 3);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 9223372036854784807);
+		}
+		{
+			// increase, large amounts
+			let (pre_channel_value, post_channel_value) =
+				get_pre_and_post(9_000, huge63i3, huge63i3);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 9223372036854784807);
 		}
 	}
 }
