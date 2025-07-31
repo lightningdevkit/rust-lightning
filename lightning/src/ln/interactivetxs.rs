@@ -27,7 +27,6 @@ use crate::ln::msgs;
 use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
 use crate::ln::types::ChannelId;
 use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
-use crate::util::ser::TransactionU16LenLimited;
 
 use core::fmt::Display;
 use core::ops::Deref;
@@ -676,10 +675,9 @@ impl NegotiationContext {
 				return Err(AbortReason::UnexpectedFundingInput);
 			}
 		} else if let Some(prevtx) = &msg.prevtx {
-			let transaction = prevtx.as_transaction();
-			let txid = transaction.compute_txid();
+			let txid = prevtx.compute_txid();
 
-			if let Some(tx_out) = transaction.output.get(msg.prevtx_out as usize) {
+			if let Some(tx_out) = prevtx.output.get(msg.prevtx_out as usize) {
 				if !tx_out.script_pubkey.is_witness_program() {
 					// The receiving node:
 					//  - MUST fail the negotiation if:
@@ -860,14 +858,9 @@ impl NegotiationContext {
 				return Err(AbortReason::UnexpectedFundingInput);
 			}
 		} else if let Some(prevtx) = &msg.prevtx {
-			let prev_txid = prevtx.as_transaction().compute_txid();
+			let prev_txid = prevtx.compute_txid();
 			let prev_outpoint = OutPoint { txid: prev_txid, vout: msg.prevtx_out };
-			let prev_output = prevtx
-				.as_transaction()
-				.output
-				.get(vout)
-				.ok_or(AbortReason::PrevTxOutInvalid)?
-				.clone();
+			let prev_output = prevtx.output.get(vout).ok_or(AbortReason::PrevTxOutInvalid)?.clone();
 			let txin = TxIn {
 				previous_output: prev_outpoint,
 				sequence: Sequence(msg.sequence),
@@ -1247,7 +1240,7 @@ impl_writeable_tlv_based_enum!(AddingRole,
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SingleOwnedInput {
 	input: TxIn,
-	prev_tx: TransactionU16LenLimited,
+	prev_tx: Transaction,
 	prev_output: TxOut,
 }
 
@@ -1652,7 +1645,7 @@ where
 	pub feerate_sat_per_kw: u32,
 	pub is_initiator: bool,
 	pub funding_tx_locktime: AbsoluteLockTime,
-	pub inputs_to_contribute: Vec<(TxIn, TransactionU16LenLimited)>,
+	pub inputs_to_contribute: Vec<(TxIn, Transaction)>,
 	pub shared_funding_input: Option<SharedOwnedInput>,
 	pub shared_funding_output: SharedOwnedOutput,
 	pub outputs_to_contribute: Vec<TxOut>,
@@ -1694,7 +1687,7 @@ impl InteractiveTxConstructor {
 		// Check for the existence of prevouts'
 		for (txin, tx) in inputs_to_contribute.iter() {
 			let vout = txin.previous_output.vout as usize;
-			if tx.as_transaction().output.get(vout).is_none() {
+			if tx.output.get(vout).is_none() {
 				return Err(AbortReason::PrevTxOutInvalid);
 			}
 		}
@@ -1703,7 +1696,7 @@ impl InteractiveTxConstructor {
 			.map(|(txin, tx)| {
 				let serial_id = generate_holder_serial_id(entropy_source, is_initiator);
 				let vout = txin.previous_output.vout as usize;
-				let prev_output = tx.as_transaction().output.get(vout).unwrap().clone(); // checked above
+				let prev_output = tx.output.get(vout).unwrap().clone(); // checked above
 				let input =
 					InputOwned::Single(SingleOwnedInput { input: txin, prev_tx: tx, prev_output });
 				(serial_id, input)
@@ -1892,12 +1885,11 @@ pub(super) fn calculate_change_output_value(
 	let mut total_input_satoshis = 0u64;
 	let mut our_funding_inputs_weight = 0u64;
 	for (txin, tx) in context.funding_tx_contributions.inputs().iter() {
-		let txid = tx.as_transaction().compute_txid();
+		let txid = tx.compute_txid();
 		if txin.previous_output.txid != txid {
 			return Err(AbortReason::PrevTxOutInvalid);
 		}
 		let output = tx
-			.as_transaction()
 			.output
 			.get(txin.previous_output.vout as usize)
 			.ok_or(AbortReason::PrevTxOutInvalid)?;
@@ -1956,7 +1948,6 @@ mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::sign::EntropySource;
 	use crate::util::atomic_counter::AtomicCounter;
-	use crate::util::ser::TransactionU16LenLimited;
 	use bitcoin::absolute::LockTime as AbsoluteLockTime;
 	use bitcoin::amount::Amount;
 	use bitcoin::hashes::Hash;
@@ -2020,12 +2011,12 @@ mod tests {
 
 	struct TestSession {
 		description: &'static str,
-		inputs_a: Vec<(TxIn, TransactionU16LenLimited)>,
+		inputs_a: Vec<(TxIn, Transaction)>,
 		a_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_a: (TxOut, u64),
 		outputs_a: Vec<TxOut>,
-		inputs_b: Vec<(TxIn, TransactionU16LenLimited)>,
+		inputs_b: Vec<(TxIn, Transaction)>,
 		b_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_b: (TxOut, u64),
@@ -2291,7 +2282,7 @@ mod tests {
 		}
 	}
 
-	fn generate_inputs(outputs: &[TestOutput]) -> Vec<(TxIn, TransactionU16LenLimited)> {
+	fn generate_inputs(outputs: &[TestOutput]) -> Vec<(TxIn, Transaction)> {
 		let tx = generate_tx(outputs);
 		let txid = tx.compute_txid();
 		tx.output
@@ -2304,7 +2295,7 @@ mod tests {
 					sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 					witness: Default::default(),
 				};
-				(txin, TransactionU16LenLimited::new(tx.clone()).unwrap())
+				(txin, tx.clone())
 			})
 			.collect()
 	}
@@ -2352,12 +2343,12 @@ mod tests {
 		(generate_txout(&TestOutput::P2WSH(value)), local_value)
 	}
 
-	fn generate_fixed_number_of_inputs(count: u16) -> Vec<(TxIn, TransactionU16LenLimited)> {
+	fn generate_fixed_number_of_inputs(count: u16) -> Vec<(TxIn, Transaction)> {
 		// Generate transactions with a total `count` number of outputs such that no transaction has a
 		// serialized length greater than u16::MAX.
 		let max_outputs_per_prevtx = 1_500;
 		let mut remaining = count;
-		let mut inputs: Vec<(TxIn, TransactionU16LenLimited)> = Vec::with_capacity(count as usize);
+		let mut inputs: Vec<(TxIn, Transaction)> = Vec::with_capacity(count as usize);
 
 		while remaining > 0 {
 			let tx_output_count = remaining.min(max_outputs_per_prevtx);
@@ -2370,7 +2361,7 @@ mod tests {
 			);
 			let txid = tx.compute_txid();
 
-			let mut temp: Vec<(TxIn, TransactionU16LenLimited)> = tx
+			let mut temp: Vec<(TxIn, Transaction)> = tx
 				.output
 				.iter()
 				.enumerate()
@@ -2381,7 +2372,7 @@ mod tests {
 						sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 						witness: Default::default(),
 					};
-					(input, TransactionU16LenLimited::new(tx.clone()).unwrap())
+					(input, tx.clone())
 				})
 				.collect();
 
@@ -2592,10 +2583,9 @@ mod tests {
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 		});
 
-		let tx =
-			TransactionU16LenLimited::new(generate_tx(&[TestOutput::P2WPKH(1_000_000)])).unwrap();
+		let tx = generate_tx(&[TestOutput::P2WPKH(1_000_000)]);
 		let invalid_sequence_input = TxIn {
-			previous_output: OutPoint { txid: tx.as_transaction().compute_txid(), vout: 0 },
+			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
 			..Default::default()
 		};
 		do_test_interactive_tx_constructor(TestSession {
@@ -2611,7 +2601,7 @@ mod tests {
 			expect_error: Some((AbortReason::IncorrectInputSequenceValue, ErrorCulprit::NodeA)),
 		});
 		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.as_transaction().compute_txid(), vout: 0 },
+			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
@@ -2629,7 +2619,7 @@ mod tests {
 		});
 		// Non-initiator uses same prevout as initiator.
 		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.as_transaction().compute_txid(), vout: 0 },
+			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
@@ -2646,7 +2636,7 @@ mod tests {
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 		});
 		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.as_transaction().compute_txid(), vout: 0 },
+			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
@@ -2979,9 +2969,9 @@ mod tests {
 					sequence: Sequence::ZERO,
 					witness: Witness::new(),
 				};
-				(txin, TransactionU16LenLimited::new(tx).unwrap())
+				(txin, tx)
 			})
-			.collect::<Vec<(TxIn, TransactionU16LenLimited)>>();
+			.collect::<Vec<(TxIn, Transaction)>>();
 		let funding_tx_contributions =
 			FundingTxContributions::InputsOnly { inputs, change_script: None };
 		let our_contributed = 110_000;

@@ -85,9 +85,7 @@ use crate::util::config::{
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, Record, WithContext};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts};
-use crate::util::ser::{
-	Readable, ReadableArgs, RequiredWrapper, TransactionU16LenLimited, Writeable, Writer,
-};
+use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 
 use alloc::collections::{btree_map, BTreeMap};
 
@@ -6081,7 +6079,7 @@ pub enum FundingTxContributions {
 	InputsOnly {
 		/// The inputs used to meet the contributed amount. Any excess amount will be sent to a
 		/// change output.
-		inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+		inputs: Vec<(TxIn, Transaction)>,
 
 		/// An optional change output script. This will be used if needed or, if not set, generated
 		/// using `SignerProvider::get_destination_script`.
@@ -6091,7 +6089,7 @@ pub enum FundingTxContributions {
 
 impl FundingTxContributions {
 	/// Returns an inputs to be contributed to the funding transaction.
-	pub fn inputs(&self) -> &[(TxIn, TransactionU16LenLimited)] {
+	pub fn inputs(&self) -> &[(TxIn, Transaction)] {
 		match self {
 			FundingTxContributions::InputsOnly { inputs, .. } => &inputs[..],
 		}
@@ -10705,10 +10703,23 @@ where
 		})?;
 		// Convert inputs
 		let mut funding_inputs = Vec::new();
-		for (tx_in, tx, _w) in our_funding_inputs.into_iter() {
-			let tx16 = TransactionU16LenLimited::new(tx)
-				.map_err(|_e| APIError::APIMisuseError { err: format!("Too large transaction") })?;
-			funding_inputs.push((tx_in, tx16));
+		for (txin, tx, _) in our_funding_inputs.into_iter() {
+			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
+				channel_id: ChannelId([0; 32]),
+				serial_id: 0,
+				prevtx: None,
+				prevtx_out: 0,
+				sequence: 0,
+				shared_input_txid: None,
+			};
+			let message_len = MESSAGE_TEMPLATE.serialized_length() + tx.serialized_length();
+			if message_len > u16::MAX as usize {
+				return Err(APIError::APIMisuseError {
+					err: format!("Funding input's prevtx is too large for tx_add_input"),
+				});
+			}
+
+			funding_inputs.push((txin, tx));
 		}
 
 		let funding_tx_contributions =
@@ -12489,7 +12500,7 @@ where
 	pub fn new_outbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
-		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>, user_id: u128, config: &UserConfig,
+		funding_inputs: Vec<(TxIn, Transaction)>, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
 		logger: L,
 	) -> Result<Self, APIError>
