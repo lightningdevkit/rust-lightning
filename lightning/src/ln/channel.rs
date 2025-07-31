@@ -74,7 +74,7 @@ use crate::ln::script::{self, ShutdownScript};
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::NodeId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::sign::tx_builder::{SpecTxBuilder, TxBuilder};
+use crate::sign::tx_builder::{HTLCAmountDirection, NextCommitmentStats, SpecTxBuilder, TxBuilder};
 use crate::sign::{ChannelSigner, EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage};
@@ -4098,6 +4098,167 @@ where
 			"temporary_channel_id should be set since unset_funding_info is only called on funded \
 			 channels that were unfunded immediately beforehand"
 		);
+	}
+
+	/// Returns a best-effort guess of the set of HTLCs that will be present
+	/// on the next local or remote commitment. We cannot be certain as the
+	/// actual set of HTLCs present on the next commitment depends on the
+	/// ordering of commitment_signed and revoke_and_ack messages.
+	///
+	/// We take the conservative approach and only assume that a HTLC will
+	/// not be in the next commitment when it is guaranteed that it won't be.
+	#[allow(dead_code)]
+	#[rustfmt::skip]
+	fn get_next_commitment_htlcs(
+		&self, local: bool, htlc_candidate: Option<HTLCAmountDirection>, include_counterparty_unknown_htlcs: bool,
+	) -> Vec<HTLCAmountDirection> {
+		let mut commitment_htlcs = Vec::with_capacity(
+			1 + self.pending_inbound_htlcs.len()
+				+ self.pending_outbound_htlcs.len()
+				+ self.holding_cell_htlc_updates.len(),
+		);
+		// `LocalRemoved` HTLCs will certainly not be present on any future remote
+		// commitments, but they could be in a future local commitment as the remote has
+		// not yet acknowledged the removal.
+		let pending_inbound_htlcs = self
+			.pending_inbound_htlcs
+			.iter()
+			.filter(|InboundHTLCOutput { state, .. }| match (state, local) {
+				(InboundHTLCState::RemoteAnnounced(..), _) => true,
+				(InboundHTLCState::AwaitingRemoteRevokeToAnnounce(..), _) => true,
+				(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(..), _) => true,
+				(InboundHTLCState::Committed, _) => true,
+				(InboundHTLCState::LocalRemoved(..), true) => true,
+				(InboundHTLCState::LocalRemoved(..), false) => false,
+			})
+			.map(|&InboundHTLCOutput { amount_msat, .. }| HTLCAmountDirection { outbound: false, amount_msat });
+		// `RemoteRemoved` HTLCs can still be present on the next remote commitment if
+		// local produces a commitment before acknowledging the update. These HTLCs
+		// will for sure not be present on the next local commitment.
+		let pending_outbound_htlcs = self
+			.pending_outbound_htlcs
+			.iter()
+			.filter(|OutboundHTLCOutput { state, .. }| match (state, local) {
+				(OutboundHTLCState::LocalAnnounced(..), _) => include_counterparty_unknown_htlcs,
+				(OutboundHTLCState::Committed, _) => true,
+				(OutboundHTLCState::RemoteRemoved(..), true) => false,
+				(OutboundHTLCState::RemoteRemoved(..), false) => true,
+				(OutboundHTLCState::AwaitingRemoteRevokeToRemove(..), _) => false,
+				(OutboundHTLCState::AwaitingRemovedRemoteRevoke(..), _) => false,
+			})
+			.map(|&OutboundHTLCOutput { amount_msat, .. }| HTLCAmountDirection { outbound: true, amount_msat });
+
+		let holding_cell_htlcs = self.holding_cell_htlc_updates.iter().filter_map(|htlc| {
+			if let &HTLCUpdateAwaitingACK::AddHTLC { amount_msat, .. } = htlc {
+				Some(HTLCAmountDirection { outbound: true, amount_msat })
+			} else {
+				None
+			}
+		});
+
+		if include_counterparty_unknown_htlcs {
+			commitment_htlcs.extend(
+				htlc_candidate.into_iter().chain(pending_inbound_htlcs).chain(pending_outbound_htlcs).chain(holding_cell_htlcs)
+			);
+		} else {
+			commitment_htlcs.extend(
+				htlc_candidate.into_iter().chain(pending_inbound_htlcs).chain(pending_outbound_htlcs)
+			);
+		}
+
+		commitment_htlcs
+	}
+
+	/// This returns the value of `value_to_self_msat` after accounting for all the
+	/// successful inbound and outbound HTLCs that won't be present on the next
+	/// commitment.
+	///
+	/// To determine which HTLC claims to account for, we take the cases where a HTLC
+	/// will *not* be present on the next commitment from `next_commitment_htlcs`, and
+	/// check if their outcome is successful. If it is, we add the value of this claimed
+	/// HTLC to the balance of the claimer.
+	#[allow(dead_code)]
+	#[rustfmt::skip]
+	fn get_next_commitment_value_to_self_msat(&self, local: bool, funding: &FundingScope) -> u64 {
+		let inbound_claimed_htlc_msat: u64 =
+			self.pending_inbound_htlcs
+				.iter()
+				.filter(|InboundHTLCOutput { state, .. }| match (state, local) {
+					(InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_, _)), true) => false,
+					(InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_, _)), false) => true,
+					_ => false,
+				})
+				.map(|InboundHTLCOutput { amount_msat, .. }| amount_msat)
+				.sum();
+		let outbound_claimed_htlc_msat: u64 =
+			self.pending_outbound_htlcs
+				.iter()
+				.filter(|OutboundHTLCOutput { state, .. }| match (state, local) {
+					(OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(_, _)), true) => true,
+					(OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(_, _)), false) => false,
+					(OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _)), _) => true,
+					(OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _)), _) => true,
+					_ => false,
+				})
+				.map(|OutboundHTLCOutput { amount_msat, .. }| amount_msat)
+				.sum();
+
+		funding
+			.value_to_self_msat
+			.saturating_sub(outbound_claimed_htlc_msat)
+			.saturating_add(inbound_claimed_htlc_msat)
+	}
+
+	#[allow(dead_code)]
+	fn get_next_local_commitment_stats(
+		&self, funding: &FundingScope, htlc_candidate: Option<HTLCAmountDirection>,
+		include_counterparty_unknown_htlcs: bool, addl_nondust_htlc_count: usize,
+		feerate_per_kw: u32, dust_exposure_limiting_feerate: Option<u32>,
+	) -> NextCommitmentStats {
+		let next_commitment_htlcs = self.get_next_commitment_htlcs(
+			true,
+			htlc_candidate,
+			include_counterparty_unknown_htlcs,
+		);
+		let next_value_to_self_msat = self.get_next_commitment_value_to_self_msat(true, funding);
+		SpecTxBuilder {}.get_next_commitment_stats(
+			true,
+			funding.is_outbound(),
+			funding.get_value_satoshis(),
+			next_value_to_self_msat,
+			&next_commitment_htlcs,
+			addl_nondust_htlc_count,
+			feerate_per_kw,
+			dust_exposure_limiting_feerate,
+			self.holder_dust_limit_satoshis,
+			funding.get_channel_type(),
+		)
+	}
+
+	#[allow(dead_code)]
+	fn get_next_remote_commitment_stats(
+		&self, funding: &FundingScope, htlc_candidate: Option<HTLCAmountDirection>,
+		include_counterparty_unknown_htlcs: bool, addl_nondust_htlc_count: usize,
+		feerate_per_kw: u32, dust_exposure_limiting_feerate: Option<u32>,
+	) -> NextCommitmentStats {
+		let next_commitment_htlcs = self.get_next_commitment_htlcs(
+			false,
+			htlc_candidate,
+			include_counterparty_unknown_htlcs,
+		);
+		let next_value_to_self_msat = self.get_next_commitment_value_to_self_msat(false, funding);
+		SpecTxBuilder {}.get_next_commitment_stats(
+			false,
+			funding.is_outbound(),
+			funding.get_value_satoshis(),
+			next_value_to_self_msat,
+			&next_commitment_htlcs,
+			addl_nondust_htlc_count,
+			feerate_per_kw,
+			dust_exposure_limiting_feerate,
+			self.counterparty_dust_limit_satoshis,
+			funding.get_channel_type(),
+		)
 	}
 
 	#[rustfmt::skip]
