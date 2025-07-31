@@ -2069,7 +2069,7 @@ impl InteractiveTxConstructor {
 /// - `change_output_dust_limit` - The dust limit (in sats) to consider.
 pub(super) fn calculate_change_output_value(
 	context: &FundingNegotiationContext, is_splice: bool, shared_output_funding_script: &ScriptBuf,
-	funding_outputs: &Vec<TxOut>, change_output_dust_limit: u64,
+	change_output_dust_limit: u64,
 ) -> Result<Option<u64>, AbortReason> {
 	assert!(context.our_funding_contribution > SignedAmount::ZERO);
 	let our_funding_contribution_satoshis = context.our_funding_contribution.to_sat() as u64;
@@ -2083,6 +2083,7 @@ pub(super) fn calculate_change_output_value(
 		our_funding_inputs_weight = our_funding_inputs_weight.saturating_add(weight);
 	}
 
+	let funding_outputs = &context.our_funding_outputs;
 	let total_output_satoshis =
 		funding_outputs.iter().fold(0u64, |total, out| total.saturating_add(out.value.to_sat()));
 	let our_funding_outputs_weight = funding_outputs.iter().fold(0u64, |weight, out| {
@@ -3177,17 +3178,18 @@ mod tests {
 			funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
 			our_funding_inputs: inputs,
+			our_funding_outputs: outputs,
 			change_script: None,
 		};
 		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), &outputs, 300),
+			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
 			Ok(Some(gross_change - fees - common_fees)),
 		);
 
 		// There is leftover for change, without common fees
 		let context = FundingNegotiationContext { is_initiator: false, ..context };
 		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), &outputs, 300),
+			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
 			Ok(Some(gross_change - fees)),
 		);
 
@@ -3198,7 +3200,7 @@ mod tests {
 			..context
 		};
 		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), &outputs, 300),
+			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
 			Err(AbortReason::InsufficientFees),
 		);
 
@@ -3209,7 +3211,7 @@ mod tests {
 			..context
 		};
 		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), &outputs, 300),
+			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
 			Ok(None),
 		);
 
@@ -3220,7 +3222,7 @@ mod tests {
 			..context
 		};
 		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), &outputs, 100),
+			calculate_change_output_value(&context, false, &ScriptBuf::new(), 100),
 			Ok(Some(262)),
 		);
 
@@ -3232,7 +3234,7 @@ mod tests {
 			..context
 		};
 		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), &outputs, 300),
+			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
 			Ok(Some(4060)),
 		);
 	}
