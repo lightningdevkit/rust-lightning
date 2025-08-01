@@ -244,6 +244,8 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 	always_online_counterparty: &Node, recipient: &Node, relative_expiry: Option<Duration>,
 	secp_ctx: &Secp256k1<T>,
 ) -> (Offer, StaticInvoice) {
+	let entropy_source = recipient.keys_manager;
+
 	let blinded_paths_to_always_online_node = always_online_counterparty
 		.message_router
 		.create_blinded_paths(
@@ -256,12 +258,13 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 		.unwrap();
 	let (offer_builder, offer_nonce) = recipient
 		.node
-		.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
+		.flow
+		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
 	let static_invoice = recipient
 		.node
-		.create_static_invoice_builder(&offer, offer_nonce, relative_expiry)
+		.test_create_static_invoice_builder(&offer, offer_nonce, relative_expiry)
 		.unwrap()
 		.build_and_sign(&secp_ctx)
 		.unwrap();
@@ -377,6 +380,7 @@ fn static_invoice_unknown_required_features() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let entropy_source = nodes[2].keys_manager;
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
@@ -393,12 +397,13 @@ fn static_invoice_unknown_required_features() {
 		.unwrap();
 	let (offer_builder, nonce) = nodes[2]
 		.node
-		.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
+		.flow
+		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
 	let static_invoice_unknown_req_features = nodes[2]
 		.node
-		.create_static_invoice_builder(&offer, nonce, None)
+		.test_create_static_invoice_builder(&offer, nonce, None)
 		.unwrap()
 		.features_unchecked(Bolt12InvoiceFeatures::unknown())
 		.build_and_sign(&secp_ctx)
@@ -1073,6 +1078,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 		create_node_chanmgrs(3, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), None]);
 
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let entropy_source = nodes[2].keys_manager;
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
@@ -1102,7 +1108,8 @@ fn invalid_async_receive_with_retry<F1, F2>(
 		.unwrap();
 	let (offer_builder, offer_nonce) = nodes[2]
 		.node
-		.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
+		.flow
+		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
 	let amt_msat = 5000;
@@ -1114,7 +1121,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	for _ in 0..3 {
 		let static_inv_for_path = nodes[2]
 			.node
-			.create_static_invoice_builder(&offer, offer_nonce, None)
+			.test_create_static_invoice_builder(&offer, offer_nonce, None)
 			.unwrap()
 			.build_and_sign(&secp_ctx)
 			.unwrap();
