@@ -153,7 +153,7 @@ impl AsyncReceiveOfferCache {
 	///
 	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 	#[cfg(async_payments)]
-	pub fn set_paths_to_static_invoice_server(
+	pub(crate) fn set_paths_to_static_invoice_server(
 		&mut self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
 	) -> Result<(), ()> {
 		if paths_to_static_invoice_server.is_empty() {
@@ -211,7 +211,7 @@ impl AsyncReceiveOfferCache {
 	///
 	// We need to re-persist the cache if a fresh offer was just marked as used to ensure we continue
 	// to keep this offer's invoice updated and don't replace it with the server.
-	pub fn get_async_receive_offer(
+	pub(crate) fn get_async_receive_offer(
 		&mut self, duration_since_epoch: Duration,
 	) -> Result<(Offer, bool), ()> {
 		self.prune_expired_offers(duration_since_epoch, false);
