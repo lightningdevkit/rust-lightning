@@ -3007,29 +3007,29 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// This is similar to [`Self::get_pending_or_resolved_outbound_htlcs`] except it includes
 	/// HTLCs which were resolved on-chain (i.e. where the final HTLC resolution was done by an
 	/// event from this `ChannelMonitor`).
-	#[rustfmt::skip]
-	pub(crate) fn get_all_current_outbound_htlcs(&self) -> HashMap<HTLCSource, (HTLCOutputInCommitment, Option<PaymentPreimage>)> {
+	pub(crate) fn get_all_current_outbound_htlcs(
+		&self,
+	) -> HashMap<HTLCSource, (HTLCOutputInCommitment, Option<PaymentPreimage>)> {
 		let mut res = new_hash_map();
 		// Just examine the available counterparty commitment transactions. See docs on
 		// `fail_unbroadcast_htlcs`, below, for justification.
 		let us = self.inner.lock().unwrap();
-		macro_rules! walk_counterparty_commitment {
-			($txid: expr) => {
-				if let Some(ref latest_outpoints) = us.funding.counterparty_claimable_outpoints.get($txid) {
-					for &(ref htlc, ref source_option) in latest_outpoints.iter() {
-						if let &Some(ref source) = source_option {
-							res.insert((**source).clone(), (htlc.clone(),
-								us.counterparty_fulfilled_htlcs.get(&SentHTLCId::from_source(source)).cloned()));
-						}
+		let mut walk_counterparty_commitment = |txid| {
+			if let Some(latest_outpoints) = us.funding.counterparty_claimable_outpoints.get(txid) {
+				for &(ref htlc, ref source_option) in latest_outpoints.iter() {
+					if let &Some(ref source) = source_option {
+						let htlc_id = SentHTLCId::from_source(source);
+						let preimage_opt = us.counterparty_fulfilled_htlcs.get(&htlc_id).cloned();
+						res.insert((**source).clone(), (htlc.clone(), preimage_opt));
 					}
 				}
 			}
-		}
+		};
 		if let Some(ref txid) = us.funding.current_counterparty_commitment_txid {
-			walk_counterparty_commitment!(txid);
+			walk_counterparty_commitment(txid);
 		}
 		if let Some(ref txid) = us.funding.prev_counterparty_commitment_txid {
-			walk_counterparty_commitment!(txid);
+			walk_counterparty_commitment(txid);
 		}
 		res
 	}
