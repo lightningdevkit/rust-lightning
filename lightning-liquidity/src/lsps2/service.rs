@@ -27,7 +27,7 @@ use crate::lsps2::payment_queue::{InterceptedHTLC, PaymentQueue};
 use crate::lsps2::utils::{
 	compute_opening_fee, is_expired_opening_fee_params, is_valid_opening_fee_params,
 };
-use crate::message_queue::MessageQueue;
+use crate::message_queue::{MessageQueue, MessageQueueNotifierGuard};
 use crate::prelude::hash_map::Entry;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -511,7 +511,6 @@ macro_rules! get_or_insert_peer_state_entry {
 					};
 
 					let msg = LSPSMessage::Invalid(error_response);
-					drop($outer_state_lock);
 					$message_queue_notifier.enqueue($counterparty_node_id, msg);
 
 					let err = format!(
@@ -582,51 +581,36 @@ where
 		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId,
 	) -> Result<(), APIError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
-		let (result, response) = {
-			let outer_state_lock = self.per_peer_state.read().unwrap();
 
-			match outer_state_lock.get(counterparty_node_id) {
-				Some(inner_state_lock) => {
-					let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		let outer_state_lock = self.per_peer_state.read().unwrap();
 
-					match self.remove_pending_request(&mut peer_state_lock, &request_id) {
-						Some(LSPS2Request::GetInfo(_)) => {
-							let response = LSPS2Response::GetInfoError(LSPSResponseError {
-								code: LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
-								message: "an unrecognized or stale token was provided".to_string(),
-								data: None,
-							});
-							(Ok(()), Some(response))
-						},
-						_ => (
-							Err(APIError::APIMisuseError {
-								err: format!(
-									"No pending get_info request for request_id: {:?}",
-									request_id
-								),
-							}),
-							None,
-						),
-					}
-				},
-				None => (
-					Err(APIError::APIMisuseError {
+		match outer_state_lock.get(counterparty_node_id) {
+			Some(inner_state_lock) => {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+
+				match self.remove_pending_request(&mut peer_state_lock, &request_id) {
+					Some(LSPS2Request::GetInfo(_)) => {
+						let response = LSPS2Response::GetInfoError(LSPSResponseError {
+							code: LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
+							message: "an unrecognized or stale token was provided".to_string(),
+							data: None,
+						});
+						let msg = LSPS2Message::Response(request_id, response).into();
+						message_queue_notifier.enqueue(counterparty_node_id, msg);
+						Ok(())
+					},
+					_ => Err(APIError::APIMisuseError {
 						err: format!(
-							"No state for the counterparty exists: {:?}",
-							counterparty_node_id
+							"No pending get_info request for request_id: {:?}",
+							request_id
 						),
 					}),
-					None,
-				),
-			}
-		};
-
-		if let Some(response) = response {
-			let msg = LSPS2Message::Response(request_id, response).into();
-			message_queue_notifier.enqueue(counterparty_node_id, msg);
+				}
+			},
+			None => Err(APIError::APIMisuseError {
+				err: format!("No state for the counterparty exists: {:?}", counterparty_node_id),
+			}),
 		}
-
-		result
 	}
 
 	/// Used by LSP to provide fee parameters to a client requesting a JIT Channel.
@@ -639,62 +623,47 @@ where
 		opening_fee_params_menu: Vec<LSPS2RawOpeningFeeParams>,
 	) -> Result<(), APIError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
-		let (result, response) = {
-			let outer_state_lock = self.per_peer_state.read().unwrap();
 
-			match outer_state_lock.get(counterparty_node_id) {
-				Some(inner_state_lock) => {
-					let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		let outer_state_lock = self.per_peer_state.read().unwrap();
 
-					match self.remove_pending_request(&mut peer_state_lock, &request_id) {
-						Some(LSPS2Request::GetInfo(_)) => {
-							let mut opening_fee_params_menu: Vec<LSPS2OpeningFeeParams> =
-								opening_fee_params_menu
-									.into_iter()
-									.map(|param| {
-										param.into_opening_fee_params(&self.config.promise_secret)
-									})
-									.collect();
-							opening_fee_params_menu.sort_by(|a, b| {
-								match a.min_fee_msat.cmp(&b.min_fee_msat) {
-									CmpOrdering::Equal => a.proportional.cmp(&b.proportional),
-									other => other,
-								}
-							});
-							let response = LSPS2Response::GetInfo(LSPS2GetInfoResponse {
-								opening_fee_params_menu,
-							});
-							(Ok(()), Some(response))
-						},
-						_ => (
-							Err(APIError::APIMisuseError {
-								err: format!(
-									"No pending get_info request for request_id: {:?}",
-									request_id
-								),
-							}),
-							None,
-						),
-					}
-				},
-				None => (
-					Err(APIError::APIMisuseError {
+		match outer_state_lock.get(counterparty_node_id) {
+			Some(inner_state_lock) => {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+
+				match self.remove_pending_request(&mut peer_state_lock, &request_id) {
+					Some(LSPS2Request::GetInfo(_)) => {
+						let mut opening_fee_params_menu: Vec<LSPS2OpeningFeeParams> =
+							opening_fee_params_menu
+								.into_iter()
+								.map(|param| {
+									param.into_opening_fee_params(&self.config.promise_secret)
+								})
+								.collect();
+						opening_fee_params_menu.sort_by(|a, b| {
+							match a.min_fee_msat.cmp(&b.min_fee_msat) {
+								CmpOrdering::Equal => a.proportional.cmp(&b.proportional),
+								other => other,
+							}
+						});
+						let response = LSPS2Response::GetInfo(LSPS2GetInfoResponse {
+							opening_fee_params_menu,
+						});
+						let msg = LSPS2Message::Response(request_id, response).into();
+						message_queue_notifier.enqueue(counterparty_node_id, msg);
+						Ok(())
+					},
+					_ => Err(APIError::APIMisuseError {
 						err: format!(
-							"No state for the counterparty exists: {:?}",
-							counterparty_node_id
+							"No pending get_info request for request_id: {:?}",
+							request_id
 						),
 					}),
-					None,
-				),
-			}
-		};
-
-		if let Some(response) = response {
-			let msg = LSPS2Message::Response(request_id, response).into();
-			message_queue_notifier.enqueue(counterparty_node_id, msg);
+				}
+			},
+			None => Err(APIError::APIMisuseError {
+				err: format!("No state for the counterparty exists: {:?}", counterparty_node_id),
+			}),
 		}
-
-		result
 	}
 
 	/// Used by LSP to provide the client with the intercept scid and
@@ -711,70 +680,50 @@ where
 	) -> Result<(), APIError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
-		let (result, response) = {
-			let outer_state_lock = self.per_peer_state.read().unwrap();
+		let outer_state_lock = self.per_peer_state.read().unwrap();
 
-			match outer_state_lock.get(counterparty_node_id) {
-				Some(inner_state_lock) => {
-					let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		match outer_state_lock.get(counterparty_node_id) {
+			Some(inner_state_lock) => {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
-					match self.remove_pending_request(&mut peer_state_lock, &request_id) {
-						Some(LSPS2Request::Buy(buy_request)) => {
-							{
-								let mut peer_by_intercept_scid =
-									self.peer_by_intercept_scid.write().unwrap();
-								peer_by_intercept_scid
-									.insert(intercept_scid, *counterparty_node_id);
-							}
+				match self.remove_pending_request(&mut peer_state_lock, &request_id) {
+					Some(LSPS2Request::Buy(buy_request)) => {
+						{
+							let mut peer_by_intercept_scid =
+								self.peer_by_intercept_scid.write().unwrap();
+							peer_by_intercept_scid.insert(intercept_scid, *counterparty_node_id);
+						}
 
-							let outbound_jit_channel = OutboundJITChannel::new(
-								buy_request.payment_size_msat,
-								buy_request.opening_fee_params,
-								user_channel_id,
-							);
+						let outbound_jit_channel = OutboundJITChannel::new(
+							buy_request.payment_size_msat,
+							buy_request.opening_fee_params,
+							user_channel_id,
+						);
 
-							peer_state_lock
-								.intercept_scid_by_user_channel_id
-								.insert(user_channel_id, intercept_scid);
-							peer_state_lock
-								.insert_outbound_channel(intercept_scid, outbound_jit_channel);
+						peer_state_lock
+							.intercept_scid_by_user_channel_id
+							.insert(user_channel_id, intercept_scid);
+						peer_state_lock
+							.insert_outbound_channel(intercept_scid, outbound_jit_channel);
 
-							let response = LSPS2Response::Buy(LSPS2BuyResponse {
-								jit_channel_scid: intercept_scid.into(),
-								lsp_cltv_expiry_delta: cltv_expiry_delta,
-								client_trusts_lsp,
-							});
-							(Ok(()), Some(response))
-						},
-						_ => (
-							Err(APIError::APIMisuseError {
-								err: format!(
-									"No pending buy request for request_id: {:?}",
-									request_id
-								),
-							}),
-							None,
-						),
-					}
-				},
-				None => (
-					Err(APIError::APIMisuseError {
-						err: format!(
-							"No state for the counterparty exists: {:?}",
-							counterparty_node_id
-						),
+						let response = LSPS2Response::Buy(LSPS2BuyResponse {
+							jit_channel_scid: intercept_scid.into(),
+							lsp_cltv_expiry_delta: cltv_expiry_delta,
+							client_trusts_lsp,
+						});
+						let msg = LSPS2Message::Response(request_id, response).into();
+						message_queue_notifier.enqueue(counterparty_node_id, msg);
+						Ok(())
+					},
+					_ => Err(APIError::APIMisuseError {
+						err: format!("No pending buy request for request_id: {:?}", request_id),
 					}),
-					None,
-				),
-			}
-		};
-
-		if let Some(response) = response {
-			let msg = LSPS2Message::Response(request_id, response).into();
-			message_queue_notifier.enqueue(counterparty_node_id, msg);
+				}
+			},
+			None => Err(APIError::APIMisuseError {
+				err: format!("No state for the counterparty exists: {:?}", counterparty_node_id),
+			}),
 		}
-
-		result
 	}
 
 	/// Forward [`Event::HTLCIntercepted`] event parameters into this function.
@@ -1208,40 +1157,32 @@ where
 	) -> Result<(), LightningError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 		let event_queue_notifier = self.pending_events.notifier();
-		let (result, response) = {
-			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock = get_or_insert_peer_state_entry!(
-				self,
-				outer_state_lock,
-				message_queue_notifier,
-				counterparty_node_id
-			);
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
-			let request = LSPS2Request::GetInfo(params.clone());
-			match self.insert_pending_request(
-				&mut peer_state_lock,
-				request_id.clone(),
-				*counterparty_node_id,
-				request,
-			) {
-				(Ok(()), msg) => {
-					let event = LSPS2ServiceEvent::GetInfo {
-						request_id,
-						counterparty_node_id: *counterparty_node_id,
-						token: params.token,
-					};
-					event_queue_notifier.enqueue(event);
-					(Ok(()), msg)
-				},
-				(e, msg) => (e, msg),
-			}
+
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		let inner_state_lock = get_or_insert_peer_state_entry!(
+			self,
+			outer_state_lock,
+			message_queue_notifier,
+			counterparty_node_id
+		);
+		let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		let request = LSPS2Request::GetInfo(params.clone());
+		self.insert_pending_request(
+			&mut peer_state_lock,
+			&mut message_queue_notifier,
+			request_id.clone(),
+			*counterparty_node_id,
+			request,
+		)?;
+
+		let event = LSPS2ServiceEvent::GetInfo {
+			request_id,
+			counterparty_node_id: *counterparty_node_id,
+			token: params.token,
 		};
+		event_queue_notifier.enqueue(event);
 
-		if let Some(msg) = response {
-			message_queue_notifier.enqueue(counterparty_node_id, msg);
-		}
-
-		result
+		Ok(())
 	}
 
 	fn handle_buy_request(
@@ -1331,87 +1272,83 @@ where
 			});
 		}
 
-		let (result, response) = {
-			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock = get_or_insert_peer_state_entry!(
-				self,
-				outer_state_lock,
-				message_queue_notifier,
-				counterparty_node_id
-			);
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		let inner_state_lock = get_or_insert_peer_state_entry!(
+			self,
+			outer_state_lock,
+			message_queue_notifier,
+			counterparty_node_id
+		);
+		let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
-			let request = LSPS2Request::Buy(params.clone());
-			match self.insert_pending_request(
-				&mut peer_state_lock,
-				request_id.clone(),
-				*counterparty_node_id,
-				request,
-			) {
-				(Ok(()), msg) => {
-					let event = LSPS2ServiceEvent::BuyRequest {
-						request_id,
-						counterparty_node_id: *counterparty_node_id,
-						opening_fee_params: params.opening_fee_params,
-						payment_size_msat: params.payment_size_msat,
-					};
-					event_queue_notifier.enqueue(event);
+		let request = LSPS2Request::Buy(params.clone());
 
-					(Ok(()), msg)
-				},
-				(e, msg) => (e, msg),
-			}
+		self.insert_pending_request(
+			&mut peer_state_lock,
+			&mut message_queue_notifier,
+			request_id.clone(),
+			*counterparty_node_id,
+			request,
+		)?;
+
+		let event = LSPS2ServiceEvent::BuyRequest {
+			request_id,
+			counterparty_node_id: *counterparty_node_id,
+			opening_fee_params: params.opening_fee_params,
+			payment_size_msat: params.payment_size_msat,
 		};
+		event_queue_notifier.enqueue(event);
 
-		if let Some(msg) = response {
-			message_queue_notifier.enqueue(counterparty_node_id, msg);
-		}
-
-		result
+		Ok(())
 	}
 
 	fn insert_pending_request<'a>(
-		&self, peer_state_lock: &mut MutexGuard<'a, PeerState>, request_id: LSPSRequestId,
+		&self, peer_state_lock: &mut MutexGuard<'a, PeerState>,
+		message_queue_notifier: &mut MessageQueueNotifierGuard, request_id: LSPSRequestId,
 		counterparty_node_id: PublicKey, request: LSPS2Request,
-	) -> (Result<(), LightningError>, Option<LSPSMessage>) {
-		let create_pending_request_limit_exceeded_response = |error_message: String| {
-			let error_details = LSPSResponseError {
-				code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
-				message: "Reached maximum number of pending requests. Please try again later."
-					.to_string(),
-				data: None,
-			};
-			let response = match &request {
-				LSPS2Request::GetInfo(_) => LSPS2Response::GetInfoError(error_details),
-				LSPS2Request::Buy(_) => LSPS2Response::BuyError(error_details),
-			};
-			let msg = Some(LSPS2Message::Response(request_id.clone(), response).into());
+	) -> Result<(), LightningError> {
+		let create_pending_request_limit_exceeded_response =
+			|message_queue_notifier: &mut MessageQueueNotifierGuard, error_message: String| {
+				let error_details = LSPSResponseError {
+					code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
+					message: "Reached maximum number of pending requests. Please try again later."
+						.to_string(),
+					data: None,
+				};
+				let response = match &request {
+					LSPS2Request::GetInfo(_) => LSPS2Response::GetInfoError(error_details),
+					LSPS2Request::Buy(_) => LSPS2Response::BuyError(error_details),
+				};
+				let msg = LSPS2Message::Response(request_id.clone(), response).into();
+				message_queue_notifier.enqueue(&counterparty_node_id, msg);
 
-			let result = Err(LightningError {
-				err: error_message,
-				action: ErrorAction::IgnoreAndLog(Level::Debug),
-			});
-			(result, msg)
-		};
+				Err(LightningError {
+					err: error_message,
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
+				})
+			};
 
 		if self.total_pending_requests.load(Ordering::Relaxed) >= MAX_TOTAL_PENDING_REQUESTS {
 			let error_message = format!(
 				"Reached maximum number of total pending requests: {}",
 				MAX_TOTAL_PENDING_REQUESTS
 			);
-			return create_pending_request_limit_exceeded_response(error_message);
+			return create_pending_request_limit_exceeded_response(
+				message_queue_notifier,
+				error_message,
+			);
 		}
 
 		if peer_state_lock.pending_requests_and_channels() < MAX_PENDING_REQUESTS_PER_PEER {
 			peer_state_lock.pending_requests.insert(request_id, request);
 			self.total_pending_requests.fetch_add(1, Ordering::Relaxed);
-			(Ok(()), None)
+			Ok(())
 		} else {
 			let error_message = format!(
 				"Peer {} reached maximum number of pending requests: {}",
 				counterparty_node_id, MAX_PENDING_REQUESTS_PER_PEER
 			);
-			create_pending_request_limit_exceeded_response(error_message)
+			create_pending_request_limit_exceeded_response(message_queue_notifier, error_message)
 		}
 	}
 

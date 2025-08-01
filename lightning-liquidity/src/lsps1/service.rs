@@ -255,66 +255,46 @@ where
 		payment: LSPS1PaymentInfo, created_at: LSPSDateTime,
 	) -> Result<(), APIError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
-		let (result, response) = {
-			let outer_state_lock = self.per_peer_state.read().unwrap();
 
-			match outer_state_lock.get(counterparty_node_id) {
-				Some(inner_state_lock) => {
-					let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		match outer_state_lock.get(counterparty_node_id) {
+			Some(inner_state_lock) => {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
-					match peer_state_lock.pending_requests.remove(&request_id) {
-						Some(LSPS1Request::CreateOrder(params)) => {
-							let order_id = self.generate_order_id();
-							let channel = OutboundCRChannel::new(
-								params.order.clone(),
-								created_at.clone(),
-								order_id.clone(),
-								payment.clone(),
-							);
+				match peer_state_lock.pending_requests.remove(&request_id) {
+					Some(LSPS1Request::CreateOrder(params)) => {
+						let order_id = self.generate_order_id();
+						let channel = OutboundCRChannel::new(
+							params.order.clone(),
+							created_at.clone(),
+							order_id.clone(),
+							payment.clone(),
+						);
 
-							peer_state_lock.insert_outbound_channel(order_id.clone(), channel);
+						peer_state_lock.insert_outbound_channel(order_id.clone(), channel);
 
-							let response = LSPS1Response::CreateOrder(LSPS1CreateOrderResponse {
-								order: params.order,
-								order_id,
-								order_state: LSPS1OrderState::Created,
-								created_at,
-								payment,
-								channel: None,
-							});
+						let response = LSPS1Response::CreateOrder(LSPS1CreateOrderResponse {
+							order: params.order,
+							order_id,
+							order_state: LSPS1OrderState::Created,
+							created_at,
+							payment,
+							channel: None,
+						});
+						let msg = LSPS1Message::Response(request_id, response).into();
+						message_queue_notifier.enqueue(counterparty_node_id, msg);
+						Ok(())
+					},
 
-							(Ok(()), Some(response))
-						},
-
-						_ => (
-							Err(APIError::APIMisuseError {
-								err: format!(
-									"No pending buy request for request_id: {:?}",
-									request_id
-								),
-							}),
-							None,
-						),
-					}
-				},
-				None => (
-					Err(APIError::APIMisuseError {
-						err: format!(
-							"No state for the counterparty exists: {:?}",
-							counterparty_node_id
-						),
+					_ => Err(APIError::APIMisuseError {
+						err: format!("No pending buy request for request_id: {:?}", request_id),
 					}),
-					None,
-				),
-			}
-		};
-
-		if let Some(response) = response {
-			let msg = LSPS1Message::Response(request_id, response).into();
-			message_queue_notifier.enqueue(counterparty_node_id, msg);
+				}
+			},
+			None => Err(APIError::APIMisuseError {
+				err: format!("No state for the counterparty exists: {:?}", counterparty_node_id),
+			}),
 		}
-
-		result
 	}
 
 	fn handle_get_order_request(
@@ -383,54 +363,38 @@ where
 	) -> Result<(), APIError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
-		let (result, response) = {
-			let outer_state_lock = self.per_peer_state.read().unwrap();
+		let outer_state_lock = self.per_peer_state.read().unwrap();
 
-			match outer_state_lock.get(&counterparty_node_id) {
-				Some(inner_state_lock) => {
-					let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		match outer_state_lock.get(&counterparty_node_id) {
+			Some(inner_state_lock) => {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
-					if let Some(outbound_channel) =
-						peer_state_lock.outbound_channels_by_order_id.get_mut(&order_id)
-					{
-						let config = &outbound_channel.config;
+				if let Some(outbound_channel) =
+					peer_state_lock.outbound_channels_by_order_id.get_mut(&order_id)
+				{
+					let config = &outbound_channel.config;
 
-						let response = LSPS1Response::GetOrder(LSPS1CreateOrderResponse {
-							order_id,
-							order: config.order.clone(),
-							order_state,
-							created_at: config.created_at.clone(),
-							payment: config.payment.clone(),
-							channel,
-						});
-						(Ok(()), Some(response))
-					} else {
-						(
-							Err(APIError::APIMisuseError {
-								err: format!("Channel with order_id {} not found", order_id.0),
-							}),
-							None,
-						)
-					}
-				},
-				None => (
+					let response = LSPS1Response::GetOrder(LSPS1CreateOrderResponse {
+						order_id,
+						order: config.order.clone(),
+						order_state,
+						created_at: config.created_at.clone(),
+						payment: config.payment.clone(),
+						channel,
+					});
+					let msg = LSPS1Message::Response(request_id, response).into();
+					message_queue_notifier.enqueue(&counterparty_node_id, msg);
+					Ok(())
+				} else {
 					Err(APIError::APIMisuseError {
-						err: format!(
-							"No existing state with counterparty {}",
-							counterparty_node_id
-						),
-					}),
-					None,
-				),
-			}
-		};
-
-		if let Some(response) = response {
-			let msg = LSPS1Message::Response(request_id, response).into();
-			message_queue_notifier.enqueue(&counterparty_node_id, msg);
+						err: format!("Channel with order_id {} not found", order_id.0),
+					})
+				}
+			},
+			None => Err(APIError::APIMisuseError {
+				err: format!("No existing state with counterparty {}", counterparty_node_id),
+			}),
 		}
-
-		result
 	}
 
 	fn generate_order_id(&self) -> LSPS1OrderId {

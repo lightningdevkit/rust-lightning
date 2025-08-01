@@ -202,27 +202,19 @@ where
 	) -> LSPSRequestId {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
-		let (request_id, request_msg) = {
-			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock = outer_state_lock
-				.entry(*counterparty_node_id)
-				.or_insert(Mutex::new(PeerState::default()));
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		let inner_state_lock = outer_state_lock
+			.entry(*counterparty_node_id)
+			.or_insert(Mutex::new(PeerState::default()));
+		let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
-			let request_id = crate::utils::generate_request_id(&self.entropy_source);
-			let request = LSPS1Request::CreateOrder(LSPS1CreateOrderRequest {
-				order,
-				refund_onchain_address,
-			});
-			let msg = LSPS1Message::Request(request_id.clone(), request).into();
-			peer_state_lock.pending_create_order_requests.insert(request_id.clone());
+		let request_id = crate::utils::generate_request_id(&self.entropy_source);
+		let request =
+			LSPS1Request::CreateOrder(LSPS1CreateOrderRequest { order, refund_onchain_address });
+		let msg = LSPS1Message::Request(request_id.clone(), request).into();
+		peer_state_lock.pending_create_order_requests.insert(request_id.clone());
 
-			(request_id, Some(msg))
-		};
-
-		if let Some(msg) = request_msg {
-			message_queue_notifier.enqueue(&counterparty_node_id, msg);
-		}
+		message_queue_notifier.enqueue(&counterparty_node_id, msg);
 
 		request_id
 	}
@@ -328,26 +320,19 @@ where
 	) -> LSPSRequestId {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
-		let (request_id, request_msg) = {
-			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock = outer_state_lock
-				.entry(*counterparty_node_id)
-				.or_insert(Mutex::new(PeerState::default()));
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		let inner_state_lock = outer_state_lock
+			.entry(*counterparty_node_id)
+			.or_insert(Mutex::new(PeerState::default()));
+		let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
-			let request_id = crate::utils::generate_request_id(&self.entropy_source);
-			peer_state_lock.pending_get_order_requests.insert(request_id.clone());
+		let request_id = crate::utils::generate_request_id(&self.entropy_source);
+		peer_state_lock.pending_get_order_requests.insert(request_id.clone());
 
-			let request =
-				LSPS1Request::GetOrder(LSPS1GetOrderRequest { order_id: order_id.clone() });
-			let msg = LSPS1Message::Request(request_id.clone(), request).into();
+		let request = LSPS1Request::GetOrder(LSPS1GetOrderRequest { order_id: order_id.clone() });
+		let msg = LSPS1Message::Request(request_id.clone(), request).into();
 
-			(request_id, Some(msg))
-		};
-
-		if let Some(msg) = request_msg {
-			message_queue_notifier.enqueue(&counterparty_node_id, msg);
-		}
+		message_queue_notifier.enqueue(&counterparty_node_id, msg);
 
 		request_id
 	}
