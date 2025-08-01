@@ -7,6 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use crate::ln::channel::FundingTxContributions;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::util::errors::APIError;
@@ -66,6 +67,8 @@ fn test_v1_splice_in() {
 		&initiator_node,
 		&[extra_splice_funding_input_sats],
 	);
+	let funding_tx_contributions =
+		FundingTxContributions::InputsOnly { inputs: funding_inputs, change_script: None };
 	// Initiate splice-in
 	let _res = initiator_node
 		.node
@@ -73,8 +76,7 @@ fn test_v1_splice_in() {
 			&channel_id,
 			&acceptor_node.node.get_our_node_id(),
 			splice_in_sats as i64,
-			funding_inputs,
-			None, // change_script
+			funding_tx_contributions,
 			funding_feerate_per_kw,
 			None, // locktime
 		)
@@ -154,7 +156,7 @@ fn test_v1_splice_in() {
 		);
 	} else {
 		// Input is the extra input
-		let prevtx_value = tx_add_input_msg.prevtx.as_ref().unwrap().as_transaction().output
+		let prevtx_value = tx_add_input_msg.prevtx.as_ref().unwrap().output
 			[tx_add_input_msg.prevtx_out as usize]
 			.value
 			.to_sat();
@@ -182,7 +184,7 @@ fn test_v1_splice_in() {
 	);
 	if !inputs_seen_in_reverse {
 		// Input is the extra input
-		let prevtx_value = tx_add_input2_msg.prevtx.as_ref().unwrap().as_transaction().output
+		let prevtx_value = tx_add_input2_msg.prevtx.as_ref().unwrap().output
 			[tx_add_input2_msg.prevtx_out as usize]
 			.value
 			.to_sat();
@@ -316,14 +318,15 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 	let extra_splice_funding_input_sats = splice_in_sats - 1;
 	let funding_inputs =
 		create_dual_funding_utxos_with_prev_txs(&nodes[0], &[extra_splice_funding_input_sats]);
+	let funding_tx_contributions =
+		FundingTxContributions::InputsOnly { inputs: funding_inputs, change_script: None };
 
 	// Initiate splice-in, with insufficient input contribution
 	let res = nodes[0].node.splice_channel(
 		&channel_id,
 		&nodes[1].node.get_our_node_id(),
 		splice_in_sats as i64,
-		funding_inputs,
-		None, // change_script
+		funding_tx_contributions,
 		1024, // funding_feerate_per_kw,
 		None, // locktime
 	);

@@ -30,9 +30,7 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, Sequence};
-#[cfg(splicing)]
-use bitcoin::{ScriptBuf, TxIn, Weight};
+use bitcoin::{secp256k1, Sequence, SignedAmount};
 
 use crate::blinded_path::message::MessageForwardNode;
 use crate::blinded_path::message::{AsyncPaymentsContext, OffersContext};
@@ -57,6 +55,8 @@ use crate::events::{
 };
 use crate::events::{FundingInfo, PaidBolt12Invoice};
 use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
+#[cfg(splicing)]
+use crate::ln::channel::FundingTxContributions;
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::channel::{
@@ -4437,13 +4437,12 @@ where
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
-		funding_feerate_per_kw: u32, locktime: Option<u32>,
+		funding_tx_contributions: FundingTxContributions, funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let result = self.internal_splice_channel(
-				channel_id, counterparty_node_id, our_funding_contribution_satoshis, our_funding_inputs, change_script, funding_feerate_per_kw, locktime
+				channel_id, counterparty_node_id, our_funding_contribution_satoshis, funding_tx_contributions, funding_feerate_per_kw, locktime
 			);
 			res = result;
 			match res {
@@ -4458,8 +4457,7 @@ where
 	#[cfg(splicing)]
 	fn internal_splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
+		our_funding_contribution_satoshis: i64, funding_tx_contributions: FundingTxContributions,
 		funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -4483,8 +4481,7 @@ where
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
 					let msg = chan.splice_channel(
 						our_funding_contribution_satoshis,
-						our_funding_inputs,
-						change_script,
+						funding_tx_contributions,
 						funding_feerate_per_kw,
 						locktime,
 					)?;
@@ -9198,7 +9195,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 					// Inbound V2 channels with contributed inputs are not considered unfunded.
 					if let Some(unfunded_chan) = chan.as_unfunded_v2() {
-						if unfunded_chan.funding_negotiation_context.our_funding_contribution_satoshis > 0 {
+						if unfunded_chan.funding_negotiation_context.our_funding_contribution > SignedAmount::ZERO {
 							continue;
 						}
 					}
