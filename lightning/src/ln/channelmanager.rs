@@ -11905,7 +11905,8 @@ where
 	pub fn set_paths_to_static_invoice_server(
 		&self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
 	) -> Result<(), ()> {
-		self.flow.set_paths_to_static_invoice_server(paths_to_static_invoice_server)?;
+		let peers = self.get_peers_for_blinded_path();
+		self.flow.set_paths_to_static_invoice_server(paths_to_static_invoice_server, peers)?;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		Ok(())

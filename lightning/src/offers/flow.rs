@@ -162,14 +162,24 @@ where
 	/// [`Offer`]s with a static invoice server, so the server can serve [`StaticInvoice`]s to payers
 	/// on our behalf when we're offline.
 	///
+	/// This method will also send out messages initiating async offer creation to the static invoice
+	/// server, if any peers are connected.
+	///
 	/// This method only needs to be called once when the server first takes on the recipient as a
 	/// client, or when the paths change, e.g. if the paths are set to expire at a particular time.
 	#[cfg(async_payments)]
 	pub fn set_paths_to_static_invoice_server(
 		&self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
+		peers: Vec<MessageForwardNode>,
 	) -> Result<(), ()> {
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
 		cache.set_paths_to_static_invoice_server(paths_to_static_invoice_server.clone())?;
+		core::mem::drop(cache);
+
+		// We'll only fail here if no peers are connected yet for us to create reply paths to outbound
+		// offer_paths_requests, so ignore the error.
+		let _ = self.check_refresh_async_offers(peers, false);
+
 		Ok(())
 	}
 
@@ -1252,49 +1262,61 @@ where
 		R::Target: Router,
 	{
 		// Terminate early if this node does not intend to receive async payments.
-		let mut cache = self.async_receive_offer_cache.lock().unwrap();
-		if cache.paths_to_static_invoice_server().is_empty() {
-			return Ok(());
+		{
+			let cache = self.async_receive_offer_cache.lock().unwrap();
+			if cache.paths_to_static_invoice_server().is_empty() {
+				return Ok(());
+			}
 		}
 
+		self.check_refresh_async_offers(peers.clone(), timer_tick_occurred)?;
+
+		if timer_tick_occurred {
+			self.check_refresh_static_invoices(peers, usable_channels, entropy, router);
+		}
+
+		Ok(())
+	}
+
+	#[cfg(async_payments)]
+	fn check_refresh_async_offers(
+		&self, peers: Vec<MessageForwardNode>, timer_tick_occurred: bool,
+	) -> Result<(), ()> {
 		let duration_since_epoch = self.duration_since_epoch();
+		let mut cache = self.async_receive_offer_cache.lock().unwrap();
 
 		// Update the cache to remove expired offers, and check to see whether we need new offers to be
 		// interactively built with the static invoice server.
 		let needs_new_offers =
 			cache.prune_expired_offers(duration_since_epoch, timer_tick_occurred);
+		if !needs_new_offers {
+			return Ok(());
+		}
 
 		// If we need new offers, send out offer paths request messages to the static invoice server.
-		if needs_new_offers {
-			let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPaths {
-				path_absolute_expiry: duration_since_epoch
-					.saturating_add(TEMP_REPLY_PATH_RELATIVE_EXPIRY),
-			});
-			let reply_paths = match self.create_blinded_paths(peers.clone(), context) {
-				Ok(paths) => paths,
-				Err(()) => {
-					return Err(());
-				},
-			};
+		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPaths {
+			path_absolute_expiry: duration_since_epoch
+				.saturating_add(TEMP_REPLY_PATH_RELATIVE_EXPIRY),
+		});
+		let reply_paths = match self.create_blinded_paths(peers, context) {
+			Ok(paths) => paths,
+			Err(()) => {
+				return Err(());
+			},
+		};
 
-			// We can't fail past this point, so indicate to the cache that we've requested new offers.
-			cache.new_offers_requested();
+		// We can't fail past this point, so indicate to the cache that we've requested new offers.
+		cache.new_offers_requested();
 
-			let mut pending_async_payments_messages =
-				self.pending_async_payments_messages.lock().unwrap();
-			let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {});
-			enqueue_onion_message_with_reply_paths(
-				message,
-				cache.paths_to_static_invoice_server(),
-				reply_paths,
-				&mut pending_async_payments_messages,
-			);
-		}
-		core::mem::drop(cache);
-
-		if timer_tick_occurred {
-			self.check_refresh_static_invoices(peers, usable_channels, entropy, router);
-		}
+		let mut pending_async_payments_messages =
+			self.pending_async_payments_messages.lock().unwrap();
+		let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {});
+		enqueue_onion_message_with_reply_paths(
+			message,
+			cache.paths_to_static_invoice_server(),
+			reply_paths,
+			&mut pending_async_payments_messages,
+		);
 
 		Ok(())
 	}

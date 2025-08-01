@@ -330,6 +330,38 @@ fn extract_payment_preimage(event: &Event) -> PaymentPreimage {
 	}
 }
 
+fn expect_offer_paths_requests(recipient: &Node, next_hop_nodes: &[&Node]) {
+	// We want to check that the async recipient has enqueued at least one `OfferPathsRequest` and no
+	// other message types. Check this by iterating through all their outbound onion messages, peeling
+	// multiple times if the messages are forwarded through other nodes.
+	let per_msg_recipient_msgs = recipient.onion_messenger.release_pending_msgs();
+	let mut pk_to_msg = Vec::new();
+	for (pk, msgs) in per_msg_recipient_msgs {
+		for msg in msgs {
+			pk_to_msg.push((pk, msg));
+		}
+	}
+	let mut num_offer_paths_reqs: u8 = 0;
+	while let Some((pk, msg)) = pk_to_msg.pop() {
+		let node = next_hop_nodes.iter().find(|node| node.node.get_our_node_id() == pk).unwrap();
+		let peeled_msg = node.onion_messenger.peel_onion_message(&msg).unwrap();
+		match peeled_msg {
+			PeeledOnion::AsyncPayments(AsyncPaymentsMessage::OfferPathsRequest(_), _, _) => {
+				num_offer_paths_reqs += 1;
+			},
+			PeeledOnion::Forward(next_hop, msg) => {
+				let next_pk = match next_hop {
+					crate::blinded_path::message::NextMessageHop::NodeId(pk) => pk,
+					_ => panic!(),
+				};
+				pk_to_msg.push((next_pk, msg));
+			},
+			_ => panic!("Unexpected message"),
+		}
+	}
+	assert!(num_offer_paths_reqs > 0);
+}
+
 fn advance_time_by(duration: Duration, node: &Node) {
 	let target_time = (node.node.duration_since_epoch() + duration).as_secs() as u32;
 	let block = create_dummy_block(node.best_block_hash(), target_time, Vec::new());
@@ -512,6 +544,7 @@ fn ignore_unexpected_static_invoice() {
 	let inv_server_paths =
 		nodes[1].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	nodes[2].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
 
 	// Initiate payment to the sender's intended offer.
 	let valid_static_invoice =
@@ -609,6 +642,7 @@ fn async_receive_flow_success() {
 	let inv_server_paths =
 		nodes[1].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	nodes[2].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
 
 	let invoice_flow_res =
 		pass_static_invoice_server_messages(&nodes[1], &nodes[2], recipient_id.clone());
@@ -671,6 +705,7 @@ fn expired_static_invoice_fail() {
 	let inv_server_paths =
 		nodes[1].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	nodes[2].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
 
 	let static_invoice =
 		pass_static_invoice_server_messages(&nodes[1], &nodes[2], recipient_id.clone()).invoice;
@@ -746,6 +781,7 @@ fn timeout_unreleased_payment() {
 	let inv_server_paths =
 		server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
 
 	let static_invoice =
 		pass_static_invoice_server_messages(server, recipient, recipient_id.clone()).invoice;
@@ -831,6 +867,7 @@ fn async_receive_mpp() {
 	let inv_server_paths =
 		nodes[1].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	nodes[3].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[3], &[&nodes[0], &nodes[1], &nodes[2]]);
 
 	let static_invoice =
 		pass_static_invoice_server_messages(&nodes[1], &nodes[3], recipient_id.clone()).invoice;
@@ -924,6 +961,7 @@ fn amount_doesnt_match_invreq() {
 	let inv_server_paths =
 		nodes[1].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	nodes[3].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[3], &[&nodes[0], &nodes[1], &nodes[2]]);
 
 	let static_invoice =
 		pass_static_invoice_server_messages(&nodes[1], &nodes[3], recipient_id.clone()).invoice;
@@ -1124,6 +1162,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	let inv_server_paths =
 		nodes[1].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	nodes[2].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
 
 	// Set the random bytes so we can predict the offer nonce.
 	let hardcoded_random_bytes = [42; 32];
@@ -1251,6 +1290,7 @@ fn expired_static_invoice_message_path() {
 	let inv_server_paths =
 		nodes[1].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	nodes[2].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
 
 	let static_invoice =
 		pass_static_invoice_server_messages(&nodes[1], &nodes[2], recipient_id.clone()).invoice;
@@ -1315,6 +1355,7 @@ fn expired_static_invoice_payment_path() {
 	let inv_server_paths =
 		nodes[1].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	nodes[2].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
 
 	// Make sure all nodes are at the same block height in preparation for CLTV timeout things.
 	let node_max_height =
@@ -1576,10 +1617,12 @@ fn limit_offer_paths_requests() {
 	let inv_server_paths =
 		server.node.blinded_paths_for_async_recipient(recipient_id, None).unwrap();
 	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[1], &[&nodes[0]]);
 
 	// Up to TEST_MAX_UPDATE_ATTEMPTS offer_paths_requests are allowed to be sent out before the async
 	// recipient should give up.
-	for _ in 0..TEST_MAX_UPDATE_ATTEMPTS {
+	// Subtract 1 because we sent the first request when invoice server paths were set above.
+	for _ in 0..TEST_MAX_UPDATE_ATTEMPTS - 1 {
 		recipient.node.test_check_refresh_async_receive_offers();
 		let offer_paths_req = recipient
 			.onion_messenger
@@ -1744,6 +1787,7 @@ fn refresh_static_invoices() {
 	let inv_server_paths =
 		server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
 
 	// Set up the recipient to have one offer and an invoice with the static invoice server.
 	let flow_res = pass_static_invoice_server_messages(server, recipient, recipient_id.clone());
@@ -2136,6 +2180,7 @@ fn invoice_server_is_not_channel_peer() {
 	let inv_server_paths =
 		invoice_server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
 	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1], &nodes[3]]);
 	let invoice =
 		pass_static_invoice_server_messages(invoice_server, recipient, recipient_id.clone())
 			.invoice;
