@@ -116,7 +116,7 @@ impl KVStoreSync for FilesystemStore {
 			Some(key),
 			"remove",
 		)?;
-		self.inner.remove(path, lazy)
+		self.inner.remove_version(path, lazy, None)
 	}
 
 	fn list(
@@ -221,11 +221,11 @@ impl FilesystemStoreInner {
 			};
 			let mut last_written_version = inner_lock_ref.write().unwrap();
 
-			// If a version is provided, we check if we already have a newer version written. This is used in async
-			// contexts to realize eventual consistency.
+			// If a version is provided, we check if we already have a newer version written/removed. This is used in
+			// async contexts to realize eventual consistency.
 			if let Some(version) = version {
 				if version <= *last_written_version {
-					// If the version is not greater, we don't write the file.
+					// If the version is not greater, we don't touch the file.
 					return Ok(());
 				}
 
@@ -280,7 +280,9 @@ impl FilesystemStoreInner {
 		res
 	}
 
-	fn remove(&self, dest_file_path: PathBuf, lazy: bool) -> lightning::io::Result<()> {
+	fn remove_version(
+		&self, dest_file_path: PathBuf, lazy: bool, version: Option<u64>,
+	) -> lightning::io::Result<()> {
 		if !dest_file_path.is_file() {
 			return Ok(());
 		}
@@ -290,7 +292,18 @@ impl FilesystemStoreInner {
 				let mut outer_lock = self.locks.lock().unwrap();
 				Arc::clone(&outer_lock.entry(dest_file_path.clone()).or_default())
 			};
-			let _guard = inner_lock_ref.write().unwrap();
+			let mut last_written_version = inner_lock_ref.write().unwrap();
+
+			// If a version is provided, we check if we already have a newer version written/removed. This is used in
+			// async contexts to realize eventual consistency.
+			if let Some(version) = version {
+				if version <= *last_written_version {
+					// If the version is not greater, we don't touch the file.
+					return Ok(());
+				}
+
+				*last_written_version = version;
+			}
 
 			if lazy {
 				// If we're lazy we just call remove and be done with it.
@@ -477,10 +490,18 @@ impl KVStore for FilesystemStore {
 			Err(e) => return Box::pin(async move { Err(e) }),
 		};
 
+		// Obtain a version number to retain the call sequence.
+		let version = self.version_counter.fetch_add(1, Ordering::Relaxed);
+		if version == u64::MAX {
+			panic!("FilesystemStore version counter overflowed");
+		}
+
 		Box::pin(async move {
-			tokio::task::spawn_blocking(move || this.remove(path, lazy)).await.unwrap_or_else(|e| {
-				Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
-			})
+			tokio::task::spawn_blocking(move || this.remove_version(path, lazy, Some(version)))
+				.await
+				.unwrap_or_else(|e| {
+					Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
+				})
 		})
 	}
 
@@ -720,8 +741,10 @@ mod tests {
 		// Test writing the same key twice with different data. Execute the asynchronous part out of order to ensure
 		// that eventual consistency works.
 		let fut1 = fs_store.write(primary_namespace, secondary_namespace, key, data1);
-		let fut2 = fs_store.write(primary_namespace, secondary_namespace, key, data2.clone());
+		let fut2 = fs_store.remove(primary_namespace, secondary_namespace, key, false);
+		let fut3 = fs_store.write(primary_namespace, secondary_namespace, key, data2.clone());
 
+		fut3.await.unwrap();
 		fut2.await.unwrap();
 		fut1.await.unwrap();
 
