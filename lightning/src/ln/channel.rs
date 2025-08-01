@@ -5590,10 +5590,19 @@ where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
+		let mut commitment_number = self.cur_counterparty_commitment_transaction_number;
+		let mut commitment_point = self.counterparty_cur_commitment_point.unwrap();
+
+		// Use the previous commitment number and point when splicing since they shouldn't change.
+		if commitment_number != INITIAL_COMMITMENT_NUMBER {
+			commitment_number += 1;
+			commitment_point = self.counterparty_prev_commitment_point.unwrap();
+		}
+
 		let commitment_data = self.build_commitment_transaction(
 			funding,
-			self.cur_counterparty_commitment_transaction_number,
-			&self.counterparty_cur_commitment_point.unwrap(),
+			commitment_number,
+			&commitment_point,
 			false,
 			false,
 			logger,
@@ -7021,8 +7030,8 @@ where
 			.context
 			.build_commitment_transaction(
 				pending_splice_funding,
-				self.context.cur_counterparty_commitment_transaction_number,
-				&self.context.counterparty_cur_commitment_point.unwrap(),
+				self.context.cur_counterparty_commitment_transaction_number + 1,
+				&self.context.counterparty_prev_commitment_point.unwrap(),
 				false,
 				false,
 				logger,
