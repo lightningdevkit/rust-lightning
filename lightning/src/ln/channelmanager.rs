@@ -13968,6 +13968,27 @@ where
 							},
 						}
 					}
+					for (htlc_source, payment_hash) in monitor.get_onchain_failed_outbound_htlcs() {
+						if let Some(node_id) = monitor.get_counterparty_node_id() {
+							log_info!(
+								args.logger,
+								"Failing HTLC with payment hash {} as it was resolved on-chain.",
+								payment_hash
+							);
+							failed_htlcs.push((
+								htlc_source,
+								payment_hash,
+								node_id,
+								monitor.channel_id(),
+							));
+						} else {
+							log_warn!(
+								args.logger,
+								"Unable to fail HTLC with payment hash {} after being resolved on-chain due to incredibly old monitor.",
+								payment_hash
+							);
+						}
+					}
 				}
 
 				// Whether the downstream channel was closed or not, try to re-apply any payment
@@ -14554,8 +14575,9 @@ where
 		}
 
 		for htlc_source in failed_htlcs.drain(..) {
-			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
-			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
+			let (source, payment_hash, counterparty_id, channel_id) = htlc_source;
+			let receiver =
+				HTLCDestination::NextHopChannel { node_id: Some(counterparty_id), channel_id };
 			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 			channel_manager.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 		}
