@@ -1093,7 +1093,7 @@ enum PackageMalleability {
 ///
 /// As packages are time-sensitive, we fee-bump and rebroadcast them at scheduled intervals.
 /// Failing to confirm a package translate as a loss of funds for the user.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub struct PackageTemplate {
 	// List of onchain outputs and solving data to generate satisfying witnesses.
 	inputs: Vec<(BitcoinOutPoint, PackageSolvingData)>,
@@ -1120,6 +1120,50 @@ pub struct PackageTemplate {
 	// Cache of next height at which fee-bumping and rebroadcast will be attempted. In
 	// the future, we might abstract it to an observed mempool fluctuation.
 	height_timer: u32,
+}
+
+impl PartialEq for PackageTemplate {
+	fn eq(&self, o: &Self) -> bool {
+		if self.inputs != o.inputs
+			|| self.malleability != o.malleability
+			|| self.feerate_previous != o.feerate_previous
+			|| self.height_timer != o.height_timer
+		{
+			return false;
+		}
+		#[cfg(test)]
+		{
+			// In some cases we may reset `counterparty_spendable_height` to zero on reload, which
+			// can cause our test assertions that ChannelMonitors round-trip exactly to trip. Here
+			// we allow exactly the same case as we tweak in the `PackageTemplate` `Readable`
+			// implementation.
+			if self.counterparty_spendable_height == 0 {
+				for (_, input) in self.inputs.iter() {
+					if let PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput {
+						htlc, ..
+					}) = input
+					{
+						if !htlc.offered && htlc.cltv_expiry != 0 {
+							return true;
+						}
+					}
+				}
+			}
+			if o.counterparty_spendable_height == 0 {
+				for (_, input) in o.inputs.iter() {
+					if let PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput {
+						htlc, ..
+					}) = input
+					{
+						if !htlc.offered && htlc.cltv_expiry != 0 {
+							return true;
+						}
+					}
+				}
+			}
+		}
+		self.counterparty_spendable_height == o.counterparty_spendable_height
+	}
 }
 
 impl PackageTemplate {
