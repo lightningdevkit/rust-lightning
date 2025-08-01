@@ -68,4 +68,5 @@ check-cfg = [
     "cfg(splicing)",
     "cfg(async_payments)",
     "cfg(simple_close)",
+    "cfg(peer_storage)",
 ]
