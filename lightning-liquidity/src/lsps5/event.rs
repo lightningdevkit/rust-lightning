@@ -31,15 +31,13 @@ pub enum LSPS5ServiceEvent {
 	/// The LSP should send an HTTP POST to the [`url`], using the
 	/// JSON-serialized [`notification`] as the body and including the `headers`.
 	/// If the HTTP request fails, the LSP may implement a retry policy according to its
-	/// implementation preferences, but must respect rate-limiting as defined in
-	/// [`notification_cooldown_hours`].
+	/// implementation preferences.
 	///
 	/// The notification is signed using the LSP's node ID to ensure authenticity
 	/// when received by the client. The client verifies this signature using
 	/// [`validate`], which guards against replay attacks and tampering.
 	///
 	/// [`validate`]: super::validator::LSPS5Validator::validate
-	/// [`notification_cooldown_hours`]: super::service::LSPS5ServiceConfig::notification_cooldown_hours
 	/// [`url`]: super::msgs::LSPS5WebhookUrl
 	/// [`notification`]: super::msgs::WebhookNotification
 	SendWebhookNotification {
