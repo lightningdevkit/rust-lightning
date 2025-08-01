@@ -14153,20 +14153,12 @@ where
 											log_warn!(logger, "Missing counterparty node id in monitor when trying to re-claim a payment resolved on chain. This may lead to redundant PaymentSent events on restart");
 											None
 										};
-									// Note that we set `from_onchain` to "false" here,
-									// deliberately keeping the pending payment around forever.
-									// Given it should only occur when we have a channel we're
-									// force-closing for being stale that's okay.
-									// The alternative would be to wipe the state when claiming,
-									// generating a `PaymentPathSuccessful` event but regenerating
-									// it and the `PaymentSent` on every restart until the
-									// `ChannelMonitor` is removed.
 									pending_outbounds.claim_htlc(
 										payment_id,
 										preimage,
 										session_priv,
 										path,
-										false,
+										true,
 										&mut compl_action,
 										&pending_events,
 										&&logger,
