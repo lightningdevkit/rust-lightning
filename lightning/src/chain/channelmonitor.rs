@@ -77,7 +77,7 @@ use crate::util::ser::{
 use crate::prelude::*;
 
 use crate::io::{self, Error};
-use crate::sync::{LockTestExt, Mutex};
+use crate::sync::Mutex;
 use core::ops::Deref;
 use core::{cmp, mem};
 
@@ -1376,18 +1376,30 @@ macro_rules! holder_commitment_htlcs {
 /// Transaction outputs to watch for on-chain spends.
 pub type TransactionOutputs = (Txid, Vec<(u32, TxOut)>);
 
+// Because we have weird workarounds for `ChannelMonitor` equality checks in `OnchainTxHandler` and
+// `PackageTemplate` the equality implementation isn't really fit for public consumption. Instead,
+// we only expose it during tests.
+#[cfg(any(feature = "_test_utils", test))]
 impl<Signer: EcdsaChannelSigner> PartialEq for ChannelMonitor<Signer>
 where
 	Signer: PartialEq,
 {
-	#[rustfmt::skip]
 	fn eq(&self, other: &Self) -> bool {
+		use crate::sync::LockTestExt;
 		// We need some kind of total lockorder. Absent a better idea, we sort by position in
 		// memory and take locks in that order (assuming that we can't move within memory while a
 		// lock is held).
 		let ord = ((self as *const _) as usize) < ((other as *const _) as usize);
-		let a = if ord { self.inner.unsafe_well_ordered_double_lock_self() } else { other.inner.unsafe_well_ordered_double_lock_self() };
-		let b = if ord { other.inner.unsafe_well_ordered_double_lock_self() } else { self.inner.unsafe_well_ordered_double_lock_self() };
+		let a = if ord {
+			self.inner.unsafe_well_ordered_double_lock_self()
+		} else {
+			other.inner.unsafe_well_ordered_double_lock_self()
+		};
+		let b = if ord {
+			other.inner.unsafe_well_ordered_double_lock_self()
+		} else {
+			self.inner.unsafe_well_ordered_double_lock_self()
+		};
 		a.eq(&b)
 	}
 }
