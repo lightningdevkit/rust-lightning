@@ -16714,21 +16714,13 @@ where
 									let mut compl_action = Some(
 										EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(update)
 									);
-									// Note that we set `from_onchain` to "false" here,
-									// deliberately keeping the pending payment around forever.
-									// Given it should only occur when we have a channel we're
-									// force-closing for being stale that's okay.
-									// The alternative would be to wipe the state when claiming,
-									// generating a `PaymentPathSuccessful` event but regenerating
-									// it and the `PaymentSent` on every restart until the
-									// `ChannelMonitor` is removed.
 									pending_outbounds.claim_htlc(
 										payment_id,
 										preimage,
 										bolt12_invoice,
 										session_priv,
 										path,
-										false,
+										true,
 										&mut compl_action,
 										&pending_events,
 										&&logger,
