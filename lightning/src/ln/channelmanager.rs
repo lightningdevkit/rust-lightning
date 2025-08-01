@@ -15804,7 +15804,7 @@ where
 						log_error!(logger, " The ChannelMonitor for channel {} is at counterparty commitment transaction number {} but the ChannelManager is at counterparty commitment transaction number {}.",
 							&channel.context.channel_id(), monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
 					}
-					let mut shutdown_result =
+					let shutdown_result =
 						channel.force_shutdown(ClosureReason::OutdatedChannelManager);
 					if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
 						return Err(DecodeError::InvalidValue);
@@ -15836,7 +15836,10 @@ where
 							},
 						);
 					}
-					failed_htlcs.append(&mut shutdown_result.dropped_outbound_htlcs);
+					for (source, hash, cp_id, chan_id) in shutdown_result.dropped_outbound_htlcs {
+						let reason = LocalHTLCFailureReason::ChannelClosed;
+						failed_htlcs.push((source, hash, cp_id, chan_id, reason));
+					}
 					channel_closures.push_back((
 						events::Event::ChannelClosed {
 							channel_id: channel.context.channel_id(),
@@ -15878,6 +15881,7 @@ where
 								*payment_hash,
 								channel.context.get_counterparty_node_id(),
 								channel.context.channel_id(),
+								LocalHTLCFailureReason::ChannelClosed,
 							));
 						}
 					}
@@ -16601,6 +16605,20 @@ where
 							},
 						}
 					}
+					for (htlc_source, payment_hash) in monitor.get_onchain_failed_outbound_htlcs() {
+						log_info!(
+							args.logger,
+							"Failing HTLC with payment hash {} as it was resolved on-chain.",
+							payment_hash
+						);
+						failed_htlcs.push((
+							htlc_source,
+							payment_hash,
+							monitor.get_counterparty_node_id(),
+							monitor.channel_id(),
+							LocalHTLCFailureReason::OnChainTimeout,
+						));
+					}
 				}
 
 				// Whether the downstream channel was closed or not, try to re-apply any payment
@@ -17281,13 +17299,10 @@ where
 			}
 		}
 
-		for htlc_source in failed_htlcs.drain(..) {
-			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
-			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(counterparty_node_id),
-				channel_id,
-			};
+		for htlc_source in failed_htlcs {
+			let (source, payment_hash, counterparty_id, channel_id, failure_reason) = htlc_source;
+			let receiver =
+				HTLCHandlingFailureType::Forward { node_id: Some(counterparty_id), channel_id };
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
 			channel_manager.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 		}

@@ -3034,6 +3034,120 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		res
 	}
 
+	/// Gets the set of outbound HTLCs which hit the chain and ultimately were claimed by us via
+	/// the timeout path and reached [`ANTI_REORG_DELAY`] confirmations. This is used to determine
+	/// if an HTLC has failed without the `ChannelManager` having seen it prior to being persisted.
+	pub(crate) fn get_onchain_failed_outbound_htlcs(&self) -> HashMap<HTLCSource, PaymentHash> {
+		let mut res = new_hash_map();
+		let us = self.inner.lock().unwrap();
+
+		// We only want HTLCs with ANTI_REORG_DELAY confirmations, which implies the commitment
+		// transaction has least ANTI_REORG_DELAY confirmations for any dependent HTLC transactions
+		// to have been confirmed.
+		let confirmed_txid = us.funding_spend_confirmed.or_else(|| {
+			us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+				if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
+					if event.height + ANTI_REORG_DELAY - 1 <= us.best_block.height {
+						Some(event.txid)
+					} else {
+						None
+					}
+				} else {
+					None
+				}
+			})
+		});
+
+		let confirmed_txid = if let Some(txid) = confirmed_txid {
+			txid
+		} else {
+			return res;
+		};
+
+		macro_rules! walk_htlcs {
+			($htlc_iter: expr) => {
+				let mut walk_candidate_htlcs = |htlcs| {
+					for &(ref candidate_htlc, ref candidate_source) in htlcs {
+						let candidate_htlc: &HTLCOutputInCommitment = &candidate_htlc;
+						let candidate_source: &Option<Box<HTLCSource>> = &candidate_source;
+
+						let source: &HTLCSource = if let Some(source) = candidate_source {
+							source
+						} else {
+							continue;
+						};
+						let confirmed = $htlc_iter.find(|(_, conf_src)| Some(source) == *conf_src);
+						if let Some((confirmed_htlc, _)) = confirmed {
+							let filter = |v: &&IrrevocablyResolvedHTLC| {
+								v.commitment_tx_output_idx
+									== confirmed_htlc.transaction_output_index
+							};
+
+							// The HTLC was included in the confirmed commitment transaction, so we
+							// need to see if it has been irrevocably failed yet.
+							if confirmed_htlc.transaction_output_index.is_none() {
+								// Dust HTLCs are always implicitly failed once the commitment
+								// transaction reaches ANTI_REORG_DELAY confirmations.
+								res.insert(source.clone(), confirmed_htlc.payment_hash);
+							} else if let Some(state) =
+								us.htlcs_resolved_on_chain.iter().filter(filter).next()
+							{
+								if state.payment_preimage.is_none() {
+									res.insert(source.clone(), confirmed_htlc.payment_hash);
+								}
+							}
+						} else {
+							// The HTLC was not included in the confirmed commitment transaction,
+							// which has now reached ANTI_REORG_DELAY confirmations and thus the
+							// HTLC has been failed.
+							res.insert(source.clone(), candidate_htlc.payment_hash);
+						}
+					}
+				};
+
+				// We walk the set of HTLCs in the unrevoked counterparty commitment transactions (see
+				// `fail_unbroadcast_htlcs` for a description of why).
+				if let Some(ref txid) = us.funding.current_counterparty_commitment_txid {
+					let htlcs = us.funding.counterparty_claimable_outpoints.get(txid);
+					walk_candidate_htlcs(htlcs.expect("Missing tx info for latest tx"));
+				}
+				if let Some(ref txid) = us.funding.prev_counterparty_commitment_txid {
+					let htlcs = us.funding.counterparty_claimable_outpoints.get(txid);
+					walk_candidate_htlcs(htlcs.expect("Missing tx info for previous tx"));
+				}
+			};
+		}
+
+		let funding = get_confirmed_funding_scope!(us);
+
+		if Some(confirmed_txid) == funding.current_counterparty_commitment_txid
+			|| Some(confirmed_txid) == funding.prev_counterparty_commitment_txid
+		{
+			let htlcs = funding.counterparty_claimable_outpoints.get(&confirmed_txid).unwrap();
+			walk_htlcs!(htlcs.iter().filter_map(|(a, b)| {
+				if let &Some(ref source) = b {
+					Some((a, Some(&**source)))
+				} else {
+					None
+				}
+			}));
+		} else if confirmed_txid == funding.current_holder_commitment_tx.trust().txid() {
+			walk_htlcs!(holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES));
+		} else if let Some(prev_commitment_tx) = &funding.prev_holder_commitment_tx {
+			if confirmed_txid == prev_commitment_tx.trust().txid() {
+				walk_htlcs!(holder_commitment_htlcs!(us, PREV_WITH_SOURCES).unwrap());
+			} else {
+				let htlcs_confirmed: &[(&HTLCOutputInCommitment, _)] = &[];
+				walk_htlcs!(htlcs_confirmed.iter());
+			}
+		} else {
+			let htlcs_confirmed: &[(&HTLCOutputInCommitment, _)] = &[];
+			walk_htlcs!(htlcs_confirmed.iter());
+		}
+
+		res
+	}
+
 	/// Gets the set of outbound HTLCs which are pending resolution in this channel or which were
 	/// resolved with a preimage from our counterparty.
 	///
