@@ -12853,7 +12853,7 @@ where
 
 		// While we usually refresh the AsyncReceiveOfferCache on a timer, we also want to start
 		// interactively building offers as soon as we can after startup. We can't start building offers
-		// until we have some peer connection(s) to send onion messages over, so as a minor optimization
+		// until we have some peer connection(s) to receive onion messages over, so as a minor optimization
 		// refresh the cache when a peer connects.
 		#[cfg(async_payments)]
 		self.check_refresh_async_receive_offer_cache(false);
