@@ -1307,13 +1307,7 @@ where
 		}
 
 		if timer_tick_occurred {
-			self.check_refresh_static_invoices(
-				peers,
-				usable_channels,
-				duration_since_epoch,
-				entropy,
-				router,
-			);
+			self.check_refresh_static_invoices(peers, usable_channels, entropy, router);
 		}
 
 		Ok(())
@@ -1323,12 +1317,13 @@ where
 	/// server, based on the offers provided by the cache.
 	#[cfg(async_payments)]
 	fn check_refresh_static_invoices<ES: Deref, R: Deref>(
-		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>,
-		duration_since_epoch: Duration, entropy: ES, router: R,
+		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
+		router: R,
 	) where
 		ES::Target: EntropySource,
 		R::Target: Router,
 	{
+		let duration_since_epoch = self.duration_since_epoch();
 		let mut serve_static_invoice_msgs = Vec::new();
 		{
 			let cache = self.async_receive_offer_cache.lock().unwrap();
