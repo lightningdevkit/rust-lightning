@@ -3463,3 +3463,180 @@ fn test_lost_preimage_monitor_events() {
 	do_test_lost_preimage_monitor_events(true);
 	do_test_lost_preimage_monitor_events(false);
 }
+
+fn do_test_lost_timeout_monitor_events(on_counterparty_tx: bool) {
+	// `MonitorEvent`s aren't delivered to the `ChannelManager` in a durable fasion - if the
+	// `ChannelManager` fetches the pending `MonitorEvent`s, then the `ChannelMonitor` gets
+	// persisted (i.e. due to a block update) then the node crashes, prior to persisting the
+	// `ChannelManager` again, the `MonitorEvent` and its effects on the `ChannelManger` will be
+	// lost. This isn't likely in a sync persist environment, but in an async one this could be an
+	// issue.
+	//
+	// Note that this is only an issue for closed channels - `MonitorEvent`s only inform the
+	// `ChannelManager` that a channel is closed (which the `ChannelManager` will learn on startup
+	// or when it next tries to advance the channel state), that `ChannelMonitorUpdate` writes
+	// completed (which the `ChannelManager` will detect on startup), or that HTLCs resolved
+	// on-chain post closure. Of the three, only the last is problematic to lose prior to a reload.
+	//
+	// Here we test that losing `MonitorEvent`s that contain HTLC resolution via timeouts does not
+	// cause us to lose a `PaymentFailed` event.
+	let mut cfg = test_default_channel_config();
+	cfg.manually_accept_inbound_channels = true;
+	cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	let cfgs = [Some(cfg.clone()), Some(cfg.clone()), Some(cfg.clone())];
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_mon;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &cfgs);
+	let node_b_reload;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	provide_anchor_reserves(&nodes);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	let chan_a = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0).2;
+	let chan_b = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).2;
+
+	// Ensure all nodes are at the same height
+	let node_max_height =
+		nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
+	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
+
+	let (_, hash_a, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5_000_000);
+	let (_, hash_b, ..) = route_payment(&nodes[1], &[&nodes[2]], 5_000_000);
+
+	nodes[1].node.peer_disconnected(nodes[2].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(nodes[1].node.get_our_node_id());
+
+	// Force-close the channel, confirming a commitment transaction then letting C claim the HTLCs.
+	let message = "Closed".to_owned();
+	nodes[2]
+		.node
+		.force_close_broadcasting_latest_txn(&chan_b, &node_b_id, message.clone())
+		.unwrap();
+	check_added_monitors(&nodes[2], 1);
+	let c_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event!(nodes[2], 1, c_reason, [node_b_id], 1_000_000);
+	check_closed_broadcast!(nodes[2], true);
+
+	handle_bump_events(&nodes[2], true, 0);
+	let cs_commit_tx = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(cs_commit_tx.len(), 1);
+
+	let message = "Closed".to_owned();
+	nodes[1]
+		.node
+		.force_close_broadcasting_latest_txn(&chan_b, &node_c_id, message.clone())
+		.unwrap();
+	check_added_monitors(&nodes[1], 1);
+	let b_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event!(nodes[1], 1, b_reason, [node_c_id], 1_000_000);
+	check_closed_broadcast!(nodes[1], true);
+
+	handle_bump_events(&nodes[1], true, 0);
+	let bs_commit_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(bs_commit_tx.len(), 1);
+
+	let selected_commit_tx = if on_counterparty_tx {
+		&cs_commit_tx[0]
+	} else {
+		&bs_commit_tx[0]
+	};
+
+	mine_transaction(&nodes[1], selected_commit_tx);
+	// If the block gets connected first we may re-broadcast B's commitment transaction before
+	// seeing the C's confirm.
+	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	if on_counterparty_tx {
+		assert_eq!(events.len(), 1, "{events:?}");
+		match events[0] {
+			Event::SpendableOutputs { .. } => {},
+			_ => panic!("Unexpected event {events:?}"),
+		}
+	} else {
+		assert_eq!(events.len(), 0);
+	}
+
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - ANTI_REORG_DELAY + 1);
+	if !on_counterparty_tx {
+		let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1, "{events:?}");
+		match events.pop().unwrap() {
+			Event::BumpTransaction(bump_event) => {
+				nodes[1].bump_tx_handler.handle_event(&bump_event);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+	let bs_htlc_timeouts =
+		nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(bs_htlc_timeouts.len(), 1);
+
+	// Now replay the timeouts on node B, which after 6 confirmations should fail the HTLCs via
+	// `MonitorUpdate`s
+	mine_transactions(&nodes[1], &bs_htlc_timeouts.iter().collect::<Vec<_>>());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	// Now simulate a restart where the B<->C ChannelMonitor has been persisted (i.e. because we
+	// just processed a new block) but the ChannelManager was not. This should be exceedingly rare
+	// given we have to be connecting a block at the right moment and not manage to get a
+	// ChannelManager persisted after it does a thing that should immediately precede persistence,
+	// but with async persist it is more common.
+	//
+	// We do this by wiping the `MonitorEvent`s from the monitors and then reloading with the
+	// latest state.
+	let mon_events = nodes[1].chain_monitor.chain_monitor.release_pending_monitor_events();
+	assert_eq!(mon_events.len(), 1);
+	assert_eq!(mon_events[0].2.len(), 2);
+
+	let node_ser = nodes[1].node.encode();
+	let mon_a_ser = get_monitor!(nodes[1], chan_a).encode();
+	let mon_b_ser = get_monitor!(nodes[1], chan_b).encode();
+	let mons = &[&mon_a_ser[..], &mon_b_ser[..]];
+	reload_node!(nodes[1], cfg, &node_ser, mons, persister, new_chain_mon, node_b_reload);
+
+	let timeout_events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(timeout_events.len(), 3, "{timeout_events:?}");
+	for ev in timeout_events {
+		match ev {
+			Event::PaymentPathFailed { payment_hash, .. } => {
+				assert_eq!(payment_hash, hash_b);
+			},
+			Event::PaymentFailed { payment_hash, .. } => {
+				assert_eq!(payment_hash, Some(hash_b));
+			},
+			Event::HTLCHandlingFailed { prev_channel_id, .. } => {
+				assert_eq!(prev_channel_id, chan_a);
+			},
+			_ => panic!("Wrong event {ev:?}"),
+		}
+	}
+
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.pending_cell_htlc_fails = (0, 0);
+	reconnect_nodes(reconnect_args);
+
+	nodes[1].node.process_pending_htlc_forwards();
+	check_added_monitors(&nodes[1], 1);
+	let bs_fail = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_fail.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], bs_fail.commitment_signed, true, true);
+	expect_payment_failed!(nodes[0], hash_a, false);
+}
+
+#[test]
+fn test_lost_timeout_monitor_events() {
+	do_test_lost_timeout_monitor_events(true);
+	do_test_lost_timeout_monitor_events(false);
+}

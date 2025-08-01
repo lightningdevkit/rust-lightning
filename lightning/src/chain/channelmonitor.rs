@@ -2983,6 +2983,75 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		res
 	}
 
+	/// Gets the set of outbound HTLCs which hit the chain and ultimately were claimed by us via
+	/// the timeout path and reached [`ANTI_REORG_DELAY`] confirmations. This is used to determine
+	/// if an HTLC has failed without the `ChannelManager` having seen it prior to being persisted.
+	pub(crate) fn get_onchain_failed_outbound_htlcs(
+		&self,
+	) -> HashMap<HTLCSource, HTLCOutputInCommitment> {
+		let us = self.inner.lock().unwrap();
+		// We're only concerned with the confirmation count of HTLC transactions, and don't
+		// actually care how many confirmations a commitment transaction may or may not have. Thus,
+		// we look for either a FundingSpendConfirmation event or a funding_spend_confirmed.
+		let confirmed_txid = us.funding_spend_confirmed.or_else(|| {
+			us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+				if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
+					Some(event.txid)
+				} else {
+					None
+				}
+			})
+		});
+
+		if confirmed_txid.is_none() {
+			return new_hash_map();
+		}
+
+		let mut res = new_hash_map();
+		macro_rules! walk_htlcs {
+			($holder_commitment: expr, $htlc_iter: expr) => {
+				for (htlc, source) in $htlc_iter {
+					let filter = |v: &&IrrevocablyResolvedHTLC| {
+						v.commitment_tx_output_idx == htlc.transaction_output_index
+					};
+					if let Some(state) = us.htlcs_resolved_on_chain.iter().filter(filter).next() {
+						if let Some(source) = source {
+							if state.payment_preimage.is_none() {
+								res.insert(source.clone(), htlc.clone());
+							}
+						}
+					}
+				}
+			};
+		}
+
+		let txid = confirmed_txid.unwrap();
+		if Some(txid) == us.funding.current_counterparty_commitment_txid
+			|| Some(txid) == us.funding.prev_counterparty_commitment_txid
+		{
+			walk_htlcs!(
+				false,
+				us.funding.counterparty_claimable_outpoints.get(&txid).unwrap().iter().filter_map(
+					|(a, b)| {
+						if let &Some(ref source) = b {
+							Some((a, Some(&**source)))
+						} else {
+							None
+						}
+					}
+				)
+			);
+		} else if txid == us.funding.current_holder_commitment_tx.trust().txid() {
+			walk_htlcs!(true, holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES));
+		} else if let Some(prev_commitment_tx) = &us.funding.prev_holder_commitment_tx {
+			if txid == prev_commitment_tx.trust().txid() {
+				walk_htlcs!(true, holder_commitment_htlcs!(us, PREV_WITH_SOURCES).unwrap());
+			}
+		}
+
+		res
+	}
+
 	/// Gets the set of outbound HTLCs which are pending resolution in this channel or which were
 	/// resolved with a preimage from our counterparty.
 	///
