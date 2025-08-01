@@ -3450,11 +3450,14 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool) {
 
 	check_added_monitors(&nodes[1], 0);
 	let preimage_events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(preimage_events.len(), 2, "{preimage_events:?}");
+	assert_eq!(preimage_events.len(), 3, "{preimage_events:?}");
 	for ev in preimage_events {
 		match ev {
 			Event::PaymentSent { payment_hash, .. } => {
 				assert_eq!(payment_hash, hash_b);
+			},
+			Event::PaymentPathSuccessful { payment_hash, .. } => {
+				assert_eq!(payment_hash, Some(hash_b));
 			},
 			Event::PaymentForwarded { claim_from_onchain_tx, .. } => {
 				assert!(claim_from_onchain_tx);
