@@ -178,11 +178,12 @@ where
 		// store them in-memory in the `OffersMessageFlow` so the flow has access to them when building
 		// onion messages to send to the static invoice server, without introducing undesirable lock
 		// dependencies with the cache.
-		*self.paths_to_static_invoice_server.lock().unwrap() =
-			paths_to_static_invoice_server.clone();
-
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
-		cache.set_paths_to_static_invoice_server(paths_to_static_invoice_server)
+		cache.set_paths_to_static_invoice_server(paths_to_static_invoice_server.clone())?;
+		core::mem::drop(cache);
+
+		*self.paths_to_static_invoice_server.lock().unwrap() = paths_to_static_invoice_server;
+		Ok(())
 	}
 
 	/// Gets the node_id held by this [`OffersMessageFlow`]`
