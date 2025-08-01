@@ -143,8 +143,8 @@ impl AsyncReceiveOfferCache {
 		}
 	}
 
-	pub(super) fn paths_to_static_invoice_server(&self) -> Vec<BlindedMessagePath> {
-		self.paths_to_static_invoice_server.clone()
+	pub(super) fn paths_to_static_invoice_server(&self) -> &[BlindedMessagePath] {
+		&self.paths_to_static_invoice_server[..]
 	}
 
 	/// Sets the [`BlindedMessagePath`]s that we will use as an async recipient to interactively build

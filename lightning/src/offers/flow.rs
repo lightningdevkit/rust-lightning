@@ -104,9 +104,6 @@ where
 
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 	async_receive_offer_cache: Mutex<AsyncReceiveOfferCache>,
-	/// Blinded paths used to request offer paths from the static invoice server, if we are an async
-	/// recipient.
-	paths_to_static_invoice_server: Mutex<Vec<BlindedMessagePath>>,
 
 	#[cfg(feature = "dnssec")]
 	pub(crate) hrn_resolver: OMNameResolver,
@@ -146,7 +143,6 @@ where
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
 
 			async_receive_offer_cache: Mutex::new(AsyncReceiveOfferCache::new()),
-			paths_to_static_invoice_server: Mutex::new(Vec::new()),
 		}
 	}
 
@@ -158,8 +154,6 @@ where
 	pub fn with_async_payments_offers_cache(
 		mut self, async_receive_offer_cache: AsyncReceiveOfferCache,
 	) -> Self {
-		self.paths_to_static_invoice_server =
-			Mutex::new(async_receive_offer_cache.paths_to_static_invoice_server());
 		self.async_receive_offer_cache = Mutex::new(async_receive_offer_cache);
 		self
 	}
@@ -174,15 +168,9 @@ where
 	pub fn set_paths_to_static_invoice_server(
 		&self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
 	) -> Result<(), ()> {
-		// Store the paths in the async receive cache so they are persisted with the cache, but also
-		// store them in-memory in the `OffersMessageFlow` so the flow has access to them when building
-		// onion messages to send to the static invoice server, without introducing undesirable lock
-		// dependencies with the cache.
-		*self.paths_to_static_invoice_server.lock().unwrap() =
-			paths_to_static_invoice_server.clone();
-
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
-		cache.set_paths_to_static_invoice_server(paths_to_static_invoice_server)
+		cache.set_paths_to_static_invoice_server(paths_to_static_invoice_server.clone())?;
+		Ok(())
 	}
 
 	/// Gets the node_id held by this [`OffersMessageFlow`]`
@@ -1264,7 +1252,8 @@ where
 		R::Target: Router,
 	{
 		// Terminate early if this node does not intend to receive async payments.
-		if self.paths_to_static_invoice_server.lock().unwrap().is_empty() {
+		let mut cache = self.async_receive_offer_cache.lock().unwrap();
+		if cache.paths_to_static_invoice_server().is_empty() {
 			return Ok(());
 		}
 
@@ -1272,11 +1261,8 @@ where
 
 		// Update the cache to remove expired offers, and check to see whether we need new offers to be
 		// interactively built with the static invoice server.
-		let needs_new_offers = self
-			.async_receive_offer_cache
-			.lock()
-			.unwrap()
-			.prune_expired_offers(duration_since_epoch, timer_tick_occurred);
+		let needs_new_offers =
+			cache.prune_expired_offers(duration_since_epoch, timer_tick_occurred);
 
 		// If we need new offers, send out offer paths request messages to the static invoice server.
 		if needs_new_offers {
@@ -1292,18 +1278,19 @@ where
 			};
 
 			// We can't fail past this point, so indicate to the cache that we've requested new offers.
-			self.async_receive_offer_cache.lock().unwrap().new_offers_requested();
+			cache.new_offers_requested();
 
 			let mut pending_async_payments_messages =
 				self.pending_async_payments_messages.lock().unwrap();
 			let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {});
 			enqueue_onion_message_with_reply_paths(
 				message,
-				&self.paths_to_static_invoice_server.lock().unwrap()[..],
+				cache.paths_to_static_invoice_server(),
 				reply_paths,
 				&mut pending_async_payments_messages,
 			);
 		}
+		core::mem::drop(cache);
 
 		if timer_tick_occurred {
 			self.check_refresh_static_invoices(
