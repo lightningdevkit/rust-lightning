@@ -17,6 +17,7 @@ use crate::events::{
 use crate::ln::blinded_payment_tests::{fail_blinded_htlc_backwards, get_blinded_route_parameters};
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 use crate::ln::functional_test_utils::*;
+use crate::ln::inbound_payment;
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, OnionMessageHandler,
@@ -36,8 +37,11 @@ use crate::offers::flow::{
 };
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::Offer;
-use crate::offers::static_invoice::StaticInvoice;
+use crate::offers::offer::{Amount, Offer};
+use crate::offers::static_invoice::{
+	StaticInvoice, StaticInvoiceBuilder,
+	DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY,
+};
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, AsyncPaymentsMessageHandler};
 use crate::onion_message::messenger::{
 	Destination, MessageRouter, MessageSendInstructions, PeeledOnion,
@@ -240,10 +244,50 @@ fn pass_async_payments_oms(
 	(held_htlc_available_om_1_2, release_held_htlc)
 }
 
+fn create_static_invoice_builder<'a>(
+	recipient: &Node, offer: &'a Offer, offer_nonce: Nonce, relative_expiry: Option<Duration>,
+) -> StaticInvoiceBuilder<'a> {
+	let entropy = recipient.keys_manager;
+	let amount_msat = offer.amount().and_then(|amount| match amount {
+		Amount::Bitcoin { amount_msats } => Some(amount_msats),
+		Amount::Currency { .. } => None,
+	});
+
+	let relative_expiry = relative_expiry.unwrap_or(STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY);
+	let relative_expiry_secs: u32 = relative_expiry.as_secs().try_into().unwrap_or(u32::MAX);
+
+	let created_at = recipient.node.duration_since_epoch();
+	let payment_secret = inbound_payment::create_for_spontaneous_payment(
+		&recipient.keys_manager.get_inbound_payment_key(),
+		amount_msat,
+		relative_expiry_secs,
+		created_at.as_secs(),
+		None,
+	)
+	.unwrap();
+
+	recipient
+		.node
+		.flow
+		.create_static_invoice_builder(
+			&recipient.router,
+			entropy,
+			offer,
+			offer_nonce,
+			payment_secret,
+			relative_expiry_secs,
+			recipient.node.list_usable_channels(),
+			recipient.node.test_get_peers_for_blinded_path(),
+		)
+		.unwrap()
+}
+
 fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 	always_online_counterparty: &Node, recipient: &Node, relative_expiry: Option<Duration>,
 	secp_ctx: &Secp256k1<T>,
 ) -> (Offer, StaticInvoice) {
+	let entropy_source = recipient.keys_manager;
+
 	let blinded_paths_to_always_online_node = always_online_counterparty
 		.message_router
 		.create_blinded_paths(
@@ -256,15 +300,14 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 		.unwrap();
 	let (offer_builder, offer_nonce) = recipient
 		.node
-		.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
+		.flow
+		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
-	let static_invoice = recipient
-		.node
-		.create_static_invoice_builder(&offer, offer_nonce, relative_expiry)
-		.unwrap()
-		.build_and_sign(&secp_ctx)
-		.unwrap();
+	let static_invoice =
+		create_static_invoice_builder(recipient, &offer, offer_nonce, relative_expiry)
+			.build_and_sign(&secp_ctx)
+			.unwrap();
 	(offer, static_invoice)
 }
 
@@ -377,6 +420,7 @@ fn static_invoice_unknown_required_features() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let entropy_source = nodes[2].keys_manager;
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
@@ -393,16 +437,15 @@ fn static_invoice_unknown_required_features() {
 		.unwrap();
 	let (offer_builder, nonce) = nodes[2]
 		.node
-		.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
+		.flow
+		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
-	let static_invoice_unknown_req_features = nodes[2]
-		.node
-		.create_static_invoice_builder(&offer, nonce, None)
-		.unwrap()
-		.features_unchecked(Bolt12InvoiceFeatures::unknown())
-		.build_and_sign(&secp_ctx)
-		.unwrap();
+	let static_invoice_unknown_req_features =
+		create_static_invoice_builder(&nodes[2], &offer, nonce, None)
+			.features_unchecked(Bolt12InvoiceFeatures::unknown())
+			.build_and_sign(&secp_ctx)
+			.unwrap();
 
 	// Initiate payment to the offer corresponding to the manually-constructed invoice that has
 	// unknown required features.
@@ -1073,6 +1116,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 		create_node_chanmgrs(3, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), None]);
 
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let entropy_source = nodes[2].keys_manager;
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
@@ -1102,7 +1146,8 @@ fn invalid_async_receive_with_retry<F1, F2>(
 		.unwrap();
 	let (offer_builder, offer_nonce) = nodes[2]
 		.node
-		.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
+		.flow
+		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
 	let amt_msat = 5000;
@@ -1112,12 +1157,10 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	// use the same nodes to avoid complicating the test with a bunch of extra nodes.
 	let mut static_invoice_paths = Vec::new();
 	for _ in 0..3 {
-		let static_inv_for_path = nodes[2]
-			.node
-			.create_static_invoice_builder(&offer, offer_nonce, None)
-			.unwrap()
-			.build_and_sign(&secp_ctx)
-			.unwrap();
+		let static_inv_for_path =
+			create_static_invoice_builder(&nodes[2], &offer, offer_nonce, None)
+				.build_and_sign(&secp_ctx)
+				.unwrap();
 		static_invoice_paths.push(static_inv_for_path.payment_paths()[0].clone());
 	}
 	nodes[2].router.expect_blinded_payment_paths(static_invoice_paths);
