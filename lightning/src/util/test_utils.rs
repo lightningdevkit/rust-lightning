@@ -858,7 +858,7 @@ impl KVStoreSync for TestStore {
 	}
 
 	fn write(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
 	) -> io::Result<()> {
 		if self.read_only {
 			return Err(io::Error::new(
@@ -875,7 +875,7 @@ impl KVStoreSync for TestStore {
 		};
 		let outer_e = persisted_lock.entry(prefixed).or_insert(new_hash_map());
 		let mut bytes = Vec::new();
-		bytes.write_all(buf)?;
+		bytes.write_all(&buf)?;
 		outer_e.insert(key.to_string(), bytes);
 		Ok(())
 	}
