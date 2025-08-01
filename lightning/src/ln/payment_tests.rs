@@ -1379,13 +1379,19 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 		} else {
 			expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
 		}
-		// After reload, the ChannelManager identified the failed payment and queued up the
-		// PaymentSent (or not, if `persist_manager_post_event` resulted in us detecting we
-		// already did that) and corresponding ChannelMonitorUpdate to mark the payment
-		// handled, but while processing the pending `MonitorEvent`s (which were not processed
-		// before the monitor was persisted) we will end up with a duplicate
-		// ChannelMonitorUpdate.
-		check_added_monitors(&nodes[0], 2);
+		if persist_manager_post_event {
+			// After reload, the ChannelManager identified the failed payment and queued up the
+			// PaymentSent (or not, if `persist_manager_post_event` resulted in us detecting we
+			// already did that) and corresponding ChannelMonitorUpdate to mark the payment
+			// handled, but while processing the pending `MonitorEvent`s (which were not processed
+			// before the monitor was persisted) we will end up with a duplicate
+			// ChannelMonitorUpdate.
+			check_added_monitors(&nodes[0], 2);
+		} else {
+			// ...unless we got the PaymentSent event, in which case we have de-duplication logic
+			// preventing a redundant monitor event.
+			check_added_monitors(&nodes[0], 1);
+		}
 	}
 
 	// Note that if we re-connect the block which exposed nodes[0] to the payment preimage (but
@@ -4130,13 +4136,17 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	// pending payment from being re-hydrated on the next startup.
 	let events = nodes[0].node.get_and_clear_pending_events();
 	check_added_monitors(&nodes[0], 1);
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), 3, "{events:?}");
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[0] {
 	} else {
 		panic!();
 	}
 	if let Event::PaymentSent { payment_preimage, .. } = events[1] {
 		assert_eq!(payment_preimage, our_payment_preimage);
+	} else {
+		panic!();
+	}
+	if let Event::PaymentPathSuccessful { .. } = events[2] {
 	} else {
 		panic!();
 	}
