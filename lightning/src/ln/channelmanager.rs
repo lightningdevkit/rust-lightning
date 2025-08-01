@@ -16451,6 +16451,9 @@ where
 			// payments which are still in-flight via their on-chain state.
 			// We only rebuild the pending payments map if we were most recently serialized by
 			// 0.0.102+
+			//
+			// First we rebuild all pending payments, then separately re-claim and re-fail pending
+			// payments. This avoids edge-cases around MPP payments resulting in redundant actions.
 			for (channel_id, monitor) in args.channel_monitors.iter() {
 				let mut is_channel_closed = false;
 				let counterparty_node_id = monitor.get_counterparty_node_id();
@@ -16489,6 +16492,18 @@ where
 							);
 						}
 					}
+				}
+			}
+			for (channel_id, monitor) in args.channel_monitors.iter() {
+				let mut is_channel_closed = false;
+				let counterparty_node_id = monitor.get_counterparty_node_id();
+				if let Some(peer_state_mtx) = per_peer_state.get(&counterparty_node_id) {
+					let mut peer_state_lock = peer_state_mtx.lock().unwrap();
+					let peer_state = &mut *peer_state_lock;
+					is_channel_closed = !peer_state.channel_by_id.contains_key(channel_id);
+				}
+
+				if is_channel_closed {
 					for (htlc_source, (htlc, preimage_opt)) in
 						monitor.get_all_current_outbound_htlcs()
 					{
