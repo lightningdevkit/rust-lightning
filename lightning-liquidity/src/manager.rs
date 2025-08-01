@@ -633,13 +633,15 @@ where
 				LSPSMessage::from_str_with_id_map(&msg.payload, &mut request_id_to_method_map)
 			}
 			.map_err(|_| {
+				let mut message_queue_notifier = self.pending_messages.notifier();
+
 				let error = LSPSResponseError {
 					code: JSONRPC_INVALID_MESSAGE_ERROR_CODE,
 					message: JSONRPC_INVALID_MESSAGE_ERROR_MESSAGE.to_string(),
 					data: None,
 				};
 
-				self.pending_messages.enqueue(&sender_node_id, LSPSMessage::Invalid(error));
+				message_queue_notifier.enqueue(&sender_node_id, LSPSMessage::Invalid(error));
 				self.ignored_peers.write().unwrap().insert(sender_node_id);
 				let err = format!(
 					"Failed to deserialize invalid LSPS message. Ignoring peer {} from now on.",

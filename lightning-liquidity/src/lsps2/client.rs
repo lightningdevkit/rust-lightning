@@ -118,6 +118,8 @@ where
 	pub fn request_opening_params(
 		&self, counterparty_node_id: PublicKey, token: Option<String>,
 	) -> LSPSRequestId {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
 		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 
 		{
@@ -131,7 +133,7 @@ where
 
 		let request = LSPS2Request::GetInfo(LSPS2GetInfoRequest { token });
 		let msg = LSPS2Message::Request(request_id.clone(), request).into();
-		self.pending_messages.enqueue(&counterparty_node_id, msg);
+		message_queue_notifier.enqueue(&counterparty_node_id, msg);
 
 		request_id
 	}
@@ -160,6 +162,8 @@ where
 		&self, counterparty_node_id: PublicKey, payment_size_msat: Option<u64>,
 		opening_fee_params: LSPS2OpeningFeeParams,
 	) -> Result<LSPSRequestId, APIError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
 		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 
 		{
@@ -184,7 +188,7 @@ where
 
 		let request = LSPS2Request::Buy(LSPS2BuyRequest { opening_fee_params, payment_size_msat });
 		let msg = LSPS2Message::Request(request_id.clone(), request).into();
-		self.pending_messages.enqueue(&counterparty_node_id, msg);
+		message_queue_notifier.enqueue(&counterparty_node_id, msg);
 
 		Ok(request_id)
 	}

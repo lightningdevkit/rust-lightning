@@ -90,6 +90,8 @@ where
 	///
 	/// [`SupportedOptionsReady`]: crate::lsps1::event::LSPS1ClientEvent::SupportedOptionsReady
 	pub fn request_supported_options(&self, counterparty_node_id: PublicKey) -> LSPSRequestId {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
 		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 		{
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
@@ -102,7 +104,7 @@ where
 
 		let request = LSPS1Request::GetInfo(LSPS1GetInfoRequest {});
 		let msg = LSPS1Message::Request(request_id.clone(), request).into();
-		self.pending_messages.enqueue(&counterparty_node_id, msg);
+		message_queue_notifier.enqueue(&counterparty_node_id, msg);
 		request_id
 	}
 
@@ -198,27 +200,21 @@ where
 		&self, counterparty_node_id: &PublicKey, order: LSPS1OrderParams,
 		refund_onchain_address: Option<Address>,
 	) -> LSPSRequestId {
-		let (request_id, request_msg) = {
-			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock = outer_state_lock
-				.entry(*counterparty_node_id)
-				.or_insert(Mutex::new(PeerState::default()));
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		let mut message_queue_notifier = self.pending_messages.notifier();
 
-			let request_id = crate::utils::generate_request_id(&self.entropy_source);
-			let request = LSPS1Request::CreateOrder(LSPS1CreateOrderRequest {
-				order,
-				refund_onchain_address,
-			});
-			let msg = LSPS1Message::Request(request_id.clone(), request).into();
-			peer_state_lock.pending_create_order_requests.insert(request_id.clone());
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		let inner_state_lock = outer_state_lock
+			.entry(*counterparty_node_id)
+			.or_insert(Mutex::new(PeerState::default()));
+		let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
-			(request_id, Some(msg))
-		};
+		let request_id = crate::utils::generate_request_id(&self.entropy_source);
+		let request =
+			LSPS1Request::CreateOrder(LSPS1CreateOrderRequest { order, refund_onchain_address });
+		let msg = LSPS1Message::Request(request_id.clone(), request).into();
+		peer_state_lock.pending_create_order_requests.insert(request_id.clone());
 
-		if let Some(msg) = request_msg {
-			self.pending_messages.enqueue(&counterparty_node_id, msg);
-		}
+		message_queue_notifier.enqueue(&counterparty_node_id, msg);
 
 		request_id
 	}
@@ -322,26 +318,21 @@ where
 	pub fn check_order_status(
 		&self, counterparty_node_id: &PublicKey, order_id: LSPS1OrderId,
 	) -> LSPSRequestId {
-		let (request_id, request_msg) = {
-			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock = outer_state_lock
-				.entry(*counterparty_node_id)
-				.or_insert(Mutex::new(PeerState::default()));
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		let mut message_queue_notifier = self.pending_messages.notifier();
 
-			let request_id = crate::utils::generate_request_id(&self.entropy_source);
-			peer_state_lock.pending_get_order_requests.insert(request_id.clone());
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		let inner_state_lock = outer_state_lock
+			.entry(*counterparty_node_id)
+			.or_insert(Mutex::new(PeerState::default()));
+		let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
-			let request =
-				LSPS1Request::GetOrder(LSPS1GetOrderRequest { order_id: order_id.clone() });
-			let msg = LSPS1Message::Request(request_id.clone(), request).into();
+		let request_id = crate::utils::generate_request_id(&self.entropy_source);
+		peer_state_lock.pending_get_order_requests.insert(request_id.clone());
 
-			(request_id, Some(msg))
-		};
+		let request = LSPS1Request::GetOrder(LSPS1GetOrderRequest { order_id: order_id.clone() });
+		let msg = LSPS1Message::Request(request_id.clone(), request).into();
 
-		if let Some(msg) = request_msg {
-			self.pending_messages.enqueue(&counterparty_node_id, msg);
-		}
+		message_queue_notifier.enqueue(&counterparty_node_id, msg);
 
 		request_id
 	}

@@ -158,6 +158,8 @@ where
 		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
 		params: SetWebhookRequest,
 	) -> Result<(), LightningError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
 		self.check_prune_stale_webhooks();
 
 		let mut webhooks = self.webhooks.lock().unwrap();
@@ -192,7 +194,7 @@ where
 						LSPS5Response::SetWebhookError(error.clone().into()),
 					)
 					.into();
-					self.pending_messages.enqueue(&counterparty_node_id, msg);
+					message_queue_notifier.enqueue(&counterparty_node_id, msg);
 					return Err(LightningError {
 						err: error.message().into(),
 						action: ErrorAction::IgnoreAndLog(Level::Info),
@@ -221,7 +223,7 @@ where
 					LSPS5Response::SetWebhookError(e.clone().into()),
 				)
 				.into();
-				self.pending_messages.enqueue(&counterparty_node_id, msg);
+				message_queue_notifier.enqueue(&counterparty_node_id, msg);
 				LightningError {
 					err: e.message().into(),
 					action: ErrorAction::IgnoreAndLog(Level::Info),
@@ -238,7 +240,7 @@ where
 			}),
 		)
 		.into();
-		self.pending_messages.enqueue(&counterparty_node_id, msg);
+		message_queue_notifier.enqueue(&counterparty_node_id, msg);
 		Ok(())
 	}
 
@@ -246,6 +248,8 @@ where
 		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
 		_params: ListWebhooksRequest,
 	) -> Result<(), LightningError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
 		self.check_prune_stale_webhooks();
 
 		let webhooks = self.webhooks.lock().unwrap();
@@ -259,7 +263,7 @@ where
 
 		let response = ListWebhooksResponse { app_names, max_webhooks };
 		let msg = LSPS5Message::Response(request_id, LSPS5Response::ListWebhooks(response)).into();
-		self.pending_messages.enqueue(&counterparty_node_id, msg);
+		message_queue_notifier.enqueue(&counterparty_node_id, msg);
 
 		Ok(())
 	}
@@ -268,6 +272,8 @@ where
 		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
 		params: RemoveWebhookRequest,
 	) -> Result<(), LightningError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
 		self.check_prune_stale_webhooks();
 
 		let mut webhooks = self.webhooks.lock().unwrap();
@@ -278,7 +284,7 @@ where
 				let msg =
 					LSPS5Message::Response(request_id, LSPS5Response::RemoveWebhook(response))
 						.into();
-				self.pending_messages.enqueue(&counterparty_node_id, msg);
+				message_queue_notifier.enqueue(&counterparty_node_id, msg);
 
 				return Ok(());
 			}
@@ -291,7 +297,7 @@ where
 		)
 		.into();
 
-		self.pending_messages.enqueue(&counterparty_node_id, msg);
+		message_queue_notifier.enqueue(&counterparty_node_id, msg);
 		return Err(LightningError {
 			err: error.message().into(),
 			action: ErrorAction::IgnoreAndLog(Level::Info),

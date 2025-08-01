@@ -40,6 +40,8 @@ impl LSPS0ServiceHandler {
 	fn handle_request(
 		&self, request_id: LSPSRequestId, request: LSPS0Request, counterparty_node_id: &PublicKey,
 	) -> Result<(), lightning::ln::msgs::LightningError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
 		match request {
 			LSPS0Request::ListProtocols(_) => {
 				let msg = LSPS0Message::Response(
@@ -48,7 +50,7 @@ impl LSPS0ServiceHandler {
 						protocols: self.protocols.clone(),
 					}),
 				);
-				self.pending_messages.enqueue(counterparty_node_id, msg.into());
+				message_queue_notifier.enqueue(counterparty_node_id, msg.into());
 				Ok(())
 			},
 		}
