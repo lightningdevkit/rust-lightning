@@ -8381,11 +8381,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			channel_id: Some(prev_hop.channel_id),
 		};
 
-		// Note that we do process the completion action here. This totally could be a
-		// duplicate claim, but we have no way of knowing without interrogating the
-		// `ChannelMonitor` we've provided the above update to. Instead, note that `Event`s are
-		// generally always allowed to be duplicative (and it's specifically noted in
-		// `PaymentForwarded`).
+		// We don't have any idea if this is a duplicate claim without interrogating the
+		// `ChannelMonitor`, so we just always queue up the completion action after the
+		// `ChannelMonitorUpdate` we're about to generate. This may result in a duplicate `Event`,
+		// but note that `Event`s are generally always allowed to be duplicative (and it's
+		// specifically noted in `PaymentForwarded`).
 		let (action_opt, raa_blocker_opt) = completion_action(None, false);
 
 		if let Some(raa_blocker) = raa_blocker_opt {
