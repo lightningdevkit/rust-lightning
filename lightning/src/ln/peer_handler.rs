@@ -47,7 +47,7 @@ use crate::sign::{NodeSigner, Recipient};
 use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::types::string::PrintableString;
 use crate::util::atomic_counter::AtomicCounter;
-use crate::util::logger::{Level, Logger, WithContext};
+use crate::util::logger::{BoxedSpan, Level, Logger, Span, WithContext};
 use crate::util::ser::{VecWriter, Writeable, Writer};
 
 #[allow(unused_imports)]
@@ -792,6 +792,7 @@ struct Peer {
 
 	msgs_sent_since_pong: usize,
 	awaiting_pong_timer_tick_intervals: i64,
+	ping_pong_span: Option<BoxedSpan>,
 	received_message_since_timer_tick: bool,
 	sent_gossip_timestamp_filter: bool,
 
@@ -1452,6 +1453,7 @@ where
 
 					msgs_sent_since_pong: 0,
 					awaiting_pong_timer_tick_intervals: 0,
+					ping_pong_span: None,
 					received_message_since_timer_tick: false,
 					sent_gossip_timestamp_filter: false,
 
@@ -1512,6 +1514,7 @@ where
 
 					msgs_sent_since_pong: 0,
 					awaiting_pong_timer_tick_intervals: 0,
+					ping_pong_span: None,
 					received_message_since_timer_tick: false,
 					sent_gossip_timestamp_filter: false,
 
@@ -2441,6 +2444,7 @@ where
 				let mut peer_lock = peer_mutex.lock().unwrap();
 				peer_lock.awaiting_pong_timer_tick_intervals = 0;
 				peer_lock.msgs_sent_since_pong = 0;
+				peer_lock.ping_pong_span = None;
 			},
 
 			// Channel messages:
@@ -3501,6 +3505,9 @@ where
 		if peer.awaiting_pong_timer_tick_intervals == 0 {
 			peer.awaiting_pong_timer_tick_intervals = -1;
 			let ping = msgs::Ping { ponglen: 0, byteslen: 64 };
+			let ping_pong_span =
+				self.logger.start(Span::PingPong { node_id: peer.their_node_id.unwrap().0 }, None);
+			peer.ping_pong_span = Some(BoxedSpan::new(ping_pong_span));
 			self.enqueue_message(peer, &ping);
 		}
 	}
@@ -3572,6 +3579,10 @@ where
 
 					peer.awaiting_pong_timer_tick_intervals = 1;
 					let ping = msgs::Ping { ponglen: 0, byteslen: 64 };
+					let ping_pong_span = self
+						.logger
+						.start(Span::PingPong { node_id: peer.their_node_id.unwrap().0 }, None);
+					peer.ping_pong_span = Some(BoxedSpan::new(ping_pong_span));
 					self.enqueue_message(&mut *peer, &ping);
 					break;
 				}

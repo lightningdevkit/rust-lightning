@@ -21,12 +21,14 @@
 //! # use lightning::routing::router::{RouteParameters, find_route};
 //! # use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
 //! # use lightning::sign::KeysManager;
-//! # use lightning::util::logger::{Logger, Record};
+//! # use lightning::util::logger::{Logger, Record, Span};
 //! # use bitcoin::secp256k1::PublicKey;
 //! #
 //! # struct FakeLogger {};
 //! # impl Logger for FakeLogger {
+//! #     type UserSpan = ();
 //! #     fn log(&self, record: Record) { unimplemented!() }
+//! #     fn start(&self, _span: Span, parent: Option<&()>) -> () {}
 //! # }
 //! # fn find_scored_route(payer: PublicKey, route_params: RouteParameters, network_graph: NetworkGraph<&FakeLogger>) {
 //! # let logger = FakeLogger {};

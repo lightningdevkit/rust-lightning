@@ -37,7 +37,7 @@ use core::ops::Deref;
 ///   through the exchange of commitment_signed and revoke_and_ack messages.
 ///
 /// This can be used to inspect what next message an HTLC is waiting for to advance its state.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum InboundHTLCStateDetails {
 	/// We have added this HTLC in our commitment transaction by receiving commitment_signed and
 	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
@@ -130,7 +130,7 @@ impl_writeable_tlv_based!(InboundHTLCDetails, {
 ///   through the exchange of commitment_signed and revoke_and_ack messages.
 ///
 /// This can be used to inspect what next message an HTLC is waiting for to advance its state.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum OutboundHTLCStateDetails {
 	/// We are awaiting the appropriate revoke_and_ack's from the remote before the HTLC is added
 	/// on the remote's commitment transaction after update_add_htlc.
