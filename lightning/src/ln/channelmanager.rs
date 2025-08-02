@@ -16600,8 +16600,7 @@ where
 				}
 
 				if is_channel_closed {
-					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs()
-					{
+					for (htlc_source, (htlc, _)) in monitor.get_all_current_outbound_htlcs() {
 						let logger = WithChannelMonitor::from(
 							&args.logger,
 							monitor,
