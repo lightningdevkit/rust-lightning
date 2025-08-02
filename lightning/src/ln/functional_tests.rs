@@ -3711,6 +3711,8 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	let events = nodes[1].node.get_and_clear_pending_events();
 	if deliver_bs_raa {
 		check_added_monitors(&nodes[1], 1);
+	} else {
+		check_added_monitors(&nodes[1], 0);
 	}
 	assert_eq!(events.len(), if deliver_bs_raa { 3 + nodes.len() - 1 } else { 4 + nodes.len() });
 	assert!(events.iter().any(|ev| matches!(
@@ -3727,7 +3729,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	)));
 
 	nodes[1].node.process_pending_htlc_forwards();
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), if deliver_bs_raa { 4 } else { 3 });

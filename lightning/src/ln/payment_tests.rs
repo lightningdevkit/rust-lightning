@@ -973,9 +973,6 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
 	nodes[0].node.test_process_background_events();
-	check_added_monitors(&nodes[0], 1); // TODO: Removed in the next commit as this only required
-									// when we are still seeing all payments, even resolved
-									// ones.
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.send_channel_ready = (true, true);
@@ -1005,9 +1002,6 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
 	nodes[0].node.test_process_background_events();
-	check_added_monitors(&nodes[0], 1); // TODO: Removed in the next commit as this only required
-									// when we are still seeing all payments, even resolved
-									// ones.
 
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
@@ -1024,7 +1018,10 @@ fn test_completed_payment_not_retryable_on_reload() {
 	do_test_completed_payment_not_retryable_on_reload(false);
 }
 
-fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(persist_manager_post_event: bool, confirm_commitment_tx: bool, payment_timeout: bool) {
+fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
+	persist_manager_post_event: bool, persist_monitor_after_events: bool,
+	confirm_commitment_tx: bool, payment_timeout: bool,
+) {
 	// When a Channel is closed, any outbound HTLCs which were relayed through it are simply
 	// dropped. From there, the ChannelManager relies on the ChannelMonitor having a copy of the
 	// relevant fail-/claim-back data and processes the HTLC fail/claim when the ChannelMonitor tells
@@ -1115,36 +1112,58 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(persist_manager_post_event: bo
 		chan_manager_serialized = nodes[0].node.encode();
 	}
 
-	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	let mut mon_ser = Vec::new();
+	if !persist_monitor_after_events {
+		mon_ser = get_monitor!(nodes[0], chan_id).encode();
+	}
 	if payment_timeout {
 		let conditions = PaymentFailedConditions::new().from_mon_update();
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
 	} else {
 		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 	}
+	// Note that if we persist the monitor before processing the events, above, we'll always get
+	// them replayed on restart no matter what
+	if persist_monitor_after_events {
+		mon_ser = get_monitor!(nodes[0], chan_id).encode();
+	}
 
 	// If we persist the ChannelManager after we get the PaymentSent event, we shouldn't get it
 	// twice.
 	if persist_manager_post_event {
 		chan_manager_serialized = nodes[0].node.encode();
+	} else if persist_monitor_after_events {
+		// Persisting the monitor after the events (resulting in a new monitor being persisted) but
+		// didn't persist the manager will result in an FC, which we don't test here.
+		panic!();
 	}
 
 	// Now reload nodes[0]...
-	reload_node!(nodes[0], &chan_manager_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+	reload_node!(nodes[0], &chan_manager_serialized, &[&mon_ser], persister, new_chain_monitor, nodes_0_deserialized);
 
 	check_added_monitors(&nodes[0], 0);
-	if persist_manager_post_event {
+	if persist_manager_post_event && persist_monitor_after_events {
 		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
-		check_added_monitors(&nodes[0], 2);
+		check_added_monitors(&nodes[0], 0);
 	} else if payment_timeout {
-		let conditions = PaymentFailedConditions::new().from_mon_update();
+		let mut conditions = PaymentFailedConditions::new();
+		if !persist_monitor_after_events {
+			conditions = conditions.from_mon_update();
+		}
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
+		check_added_monitors(&nodes[0], 0);
 	} else {
+		if persist_manager_post_event {
+			assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+		} else {
+			expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
+		}
 		// After reload, the ChannelManager identified the failed payment and queued up the
-		// PaymentSent and corresponding ChannelMonitorUpdate to mark the payment handled, but
-		// while processing the pending `MonitorEvent`s (which were not processed before the
-		// monitor was persisted) we will end up with a duplicate ChannelMonitorUpdate.
-		expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
+		// PaymentSent (or not, if `persist_manager_post_event` resulted in us detecting we
+		// already did that) and corresponding ChannelMonitorUpdate to mark the payment
+		// handled, but while processing the pending `MonitorEvent`s (which were not processed
+		// before the monitor was persisted) we will end up with a duplicate
+		// ChannelMonitorUpdate.
 		check_added_monitors(&nodes[0], 2);
 	}
 
@@ -1158,12 +1177,15 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(persist_manager_post_event: bo
 
 #[test]
 fn test_dup_htlc_onchain_doesnt_fail_on_reload() {
-	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true);
-	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, false);
-	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, false);
-	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, true, true);
-	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, true, false);
-	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, false);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true, true);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true, false);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, false, false);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, true, true);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, true, false);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, false, false);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, true, true);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, true, false);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, false, false);
 }
 
 #[test]
@@ -3513,15 +3535,9 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 	reload_node!(nodes[0], test_default_channel_config(), &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister_b, chain_monitor_b, nodes_0_deserialized_b);
 
-	// Because the pending payment will currently stick around forever, we'll apply a
-	// ChannelMonitorUpdate on each startup to attempt to remove it.
-	// TODO: This will be dropped in the next commit after we actually remove the payment!
-	check_added_monitors(&nodes[0], 0);
 	nodes[0].node.test_process_background_events();
-	check_added_monitors(&nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert!(events.is_empty());
-	check_added_monitors(&nodes[0], 0);
 
 	// Ensure that we don't generate any further events even after the channel-closing commitment
 	// transaction is confirmed on-chain.
@@ -3536,9 +3552,6 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	reload_node!(nodes[0], test_default_channel_config(), &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister_c, chain_monitor_c, nodes_0_deserialized_c);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert!(events.is_empty());
-
-	// TODO: This will be dropped in the next commit after we actually remove the payment!
-	check_added_monitors(&nodes[0], 2);
 }
 
 #[test]

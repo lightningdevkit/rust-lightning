@@ -14064,7 +14064,7 @@ where
 				let counterparty_opt = outpoint_to_peer.get(&monitor.get_funding_txo().0);
 				// outpoint_to_peer missing the funding outpoint implies the channel is closed
 				if counterparty_opt.is_none() {
-					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
+					for (htlc_source, (htlc, _)) in monitor.get_all_current_outbound_htlcs() {
 						let logger = WithChannelMonitor::from(&args.logger, monitor, Some(htlc.payment_hash));
 						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, .. } = htlc_source {
 							if path.hops.is_empty() {

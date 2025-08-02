@@ -2577,10 +2577,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Gets the set of outbound HTLCs which can be (or have been) resolved by this
 	/// `ChannelMonitor`. This is used to determine if an HTLC was removed from the channel prior
 	/// to the `ChannelManager` having been persisted.
-	///
-	/// This is similar to [`Self::get_pending_or_resolved_outbound_htlcs`] except it includes
-	/// HTLCs which were resolved on-chain (i.e. where the final HTLC resolution was done by an
-	/// event from this `ChannelMonitor`).
 	pub(crate) fn get_all_current_outbound_htlcs(
 		&self,
 	) -> HashMap<HTLCSource, (HTLCOutputInCommitment, Option<PaymentPreimage>)> {
@@ -2593,8 +2589,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				for &(ref htlc, ref source_option) in latest_outpoints.iter() {
 					if let &Some(ref source) = source_option {
 						let htlc_id = SentHTLCId::from_source(source);
-						let preimage_opt = us.counterparty_fulfilled_htlcs.get(&htlc_id).cloned();
-						res.insert((**source).clone(), (htlc.clone(), preimage_opt));
+						if !us.htlcs_resolved_to_user.contains(&htlc_id) {
+							let preimage_opt =
+								us.counterparty_fulfilled_htlcs.get(&htlc_id).cloned();
+							res.insert((**source).clone(), (htlc.clone(), preimage_opt));
+						}
 					}
 				}
 			}
@@ -2650,6 +2649,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 						} else {
 							continue;
 						};
+						let htlc_id = SentHTLCId::from_source(source);
+						if us.htlcs_resolved_to_user.contains(&htlc_id) {
+							continue;
+						}
+
 						let confirmed = $htlc_iter.find(|(_, conf_src)| Some(source) == *conf_src);
 						if let Some((confirmed_htlc, _)) = confirmed {
 							let filter = |v: &&IrrevocablyResolvedHTLC| {
@@ -2719,93 +2723,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		} else {
 			let htlcs_confirmed: &[(&HTLCOutputInCommitment, _)] = &[];
 			walk_htlcs!(htlcs_confirmed.iter());
-		}
-
-		res
-	}
-
-	/// Gets the set of outbound HTLCs which are pending resolution in this channel or which were
-	/// resolved with a preimage from our counterparty.
-	///
-	/// This is used to reconstruct pending outbound payments on restart in the ChannelManager.
-	///
-	/// Currently, the preimage is unused, however if it is present in the relevant internal state
-	/// an HTLC is always included even if it has been resolved.
-	pub(crate) fn get_pending_or_resolved_outbound_htlcs(&self) -> HashMap<HTLCSource, (HTLCOutputInCommitment, Option<PaymentPreimage>)> {
-		let us = self.inner.lock().unwrap();
-		// We're only concerned with the confirmation count of HTLC transactions, and don't
-		// actually care how many confirmations a commitment transaction may or may not have. Thus,
-		// we look for either a FundingSpendConfirmation event or a funding_spend_confirmed.
-		let confirmed_txid = us.funding_spend_confirmed.or_else(|| {
-			us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
-				if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
-					Some(event.txid)
-				} else { None }
-			})
-		});
-
-		if confirmed_txid.is_none() {
-			// If we have not seen a commitment transaction on-chain (ie the channel is not yet
-			// closed), just get the full set.
-			mem::drop(us);
-			return self.get_all_current_outbound_htlcs();
-		}
-
-		let mut res = new_hash_map();
-		macro_rules! walk_htlcs {
-			($holder_commitment: expr, $htlc_iter: expr) => {
-				for (htlc, source) in $htlc_iter {
-					if us.htlcs_resolved_on_chain.iter().any(|v| v.commitment_tx_output_idx == htlc.transaction_output_index) {
-						// We should assert that funding_spend_confirmed is_some() here, but we
-						// have some unit tests which violate HTLC transaction CSVs entirely and
-						// would fail.
-						// TODO: Once tests all connect transactions at consensus-valid times, we
-						// should assert here like we do in `get_claimable_balances`.
-					} else if htlc.offered == $holder_commitment {
-						// If the payment was outbound, check if there's an HTLCUpdate
-						// indicating we have spent this HTLC with a timeout, claiming it back
-						// and awaiting confirmations on it.
-						let htlc_update_confd = us.onchain_events_awaiting_threshold_conf.iter().any(|event| {
-							if let OnchainEvent::HTLCUpdate { commitment_tx_output_idx: Some(commitment_tx_output_idx), .. } = event.event {
-								// If the HTLC was timed out, we wait for ANTI_REORG_DELAY blocks
-								// before considering it "no longer pending" - this matches when we
-								// provide the ChannelManager an HTLC failure event.
-								Some(commitment_tx_output_idx) == htlc.transaction_output_index &&
-									us.best_block.height >= event.height + ANTI_REORG_DELAY - 1
-							} else if let OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, .. } = event.event {
-								// If the HTLC was fulfilled with a preimage, we consider the HTLC
-								// immediately non-pending, matching when we provide ChannelManager
-								// the preimage.
-								Some(commitment_tx_output_idx) == htlc.transaction_output_index
-							} else { false }
-						});
-						let counterparty_resolved_preimage_opt =
-							us.counterparty_fulfilled_htlcs.get(&SentHTLCId::from_source(source)).cloned();
-						if !htlc_update_confd || counterparty_resolved_preimage_opt.is_some() {
-							res.insert(source.clone(), (htlc.clone(), counterparty_resolved_preimage_opt));
-						}
-					}
-				}
-			}
-		}
-
-		let txid = confirmed_txid.unwrap();
-		if Some(txid) == us.current_counterparty_commitment_txid || Some(txid) == us.prev_counterparty_commitment_txid {
-			walk_htlcs!(false, us.counterparty_claimable_outpoints.get(&txid).unwrap().iter().filter_map(|(a, b)| {
-				if let &Some(ref source) = b {
-					Some((a, &**source))
-				} else { None }
-			}));
-		} else if txid == us.current_holder_commitment_tx.txid {
-			walk_htlcs!(true, us.current_holder_commitment_tx.htlc_outputs.iter().filter_map(|(a, _, c)| {
-				if let Some(source) = c { Some((a, source)) } else { None }
-			}));
-		} else if let Some(prev_commitment) = &us.prev_holder_signed_commitment_tx {
-			if txid == prev_commitment.txid {
-				walk_htlcs!(true, prev_commitment.htlc_outputs.iter().filter_map(|(a, _, c)| {
-					if let Some(source) = c { Some((a, source)) } else { None }
-				}));
-			}
 		}
 
 		res
