@@ -933,7 +933,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		assert_eq!(txn[0].compute_txid(), as_commitment_tx.compute_txid());
 	}
 	mine_transaction(&nodes[0], &bs_htlc_claim_txn);
-	expect_payment_sent(&nodes[0], payment_preimage_1, None, true, false);
+	expect_payment_sent(&nodes[0], payment_preimage_1, None, true, true);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV * 4 + 20);
 	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = {
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
@@ -949,7 +949,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		confirm_transaction(&nodes[0], &first_htlc_timeout_tx);
 	}
 	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
-	let conditions = PaymentFailedConditions::new();
+	let conditions = PaymentFailedConditions::new().from_mon_update();
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
 
 	// Finally, retry the payment (which was reloaded from the ChannelMonitor when nodes[0] was
@@ -1164,7 +1164,8 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// (which should also still work).
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	expect_payment_failed_conditions(&nodes[0], hash, false, PaymentFailedConditions::new());
+	let conditions = PaymentFailedConditions::new().from_mon_update();
+	expect_payment_failed_conditions(&nodes[0], hash, false, conditions);
 
 	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 	let chan_1_monitor_serialized = get_monitor!(nodes[0], chan_id_3).encode();
@@ -1181,6 +1182,9 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[1].node.peer_disconnected(node_a_id);
 
 	nodes[0].node.test_process_background_events();
+	check_added_monitors(&nodes[0], 1); // TODO: Removed in the next commit as this only required
+									// when we are still seeing all payments, even resolved
+									// ones.
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.send_channel_ready = (true, true);
@@ -1213,6 +1217,9 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[1].node.peer_disconnected(node_a_id);
 
 	nodes[0].node.test_process_background_events();
+	check_added_monitors(&nodes[0], 1); // TODO: Removed in the next commit as this only required
+									// when we are still seeing all payments, even resolved
+									// ones.
 
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
@@ -1333,9 +1340,10 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 
 	let mon_ser = get_monitor!(nodes[0], chan_id).encode();
 	if payment_timeout {
-		expect_payment_failed!(nodes[0], payment_hash, false);
+		let conditions = PaymentFailedConditions::new().from_mon_update();
+		expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
 	} else {
-		expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
+		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 	}
 
 	// If we persist the ChannelManager after we get the PaymentSent event, we shouldn't get it
@@ -1347,12 +1355,20 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 	// Now reload nodes[0]...
 	reload_node!(nodes[0], &node_a_ser, &[&mon_ser], persister, chain_monitor, node_a_reload);
 
+	check_added_monitors(&nodes[0], 0);
 	if persist_manager_post_event {
 		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+		check_added_monitors(&nodes[0], 2);
 	} else if payment_timeout {
-		expect_payment_failed!(nodes[0], payment_hash, false);
+		let conditions = PaymentFailedConditions::new().from_mon_update();
+		expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
 	} else {
+		// After reload, the ChannelManager identified the failed payment and queued up the
+		// PaymentSent and corresponding ChannelMonitorUpdate to mark the payment handled, but
+		// while processing the pending `MonitorEvent`s (which were not processed before the
+		// monitor was persisted) we will end up with a duplicate ChannelMonitorUpdate.
 		expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
+		check_added_monitors(&nodes[0], 2);
 	}
 
 	// Note that if we re-connect the block which exposed nodes[0] to the payment preimage (but
@@ -1625,7 +1641,9 @@ fn onchain_failed_probe_yields_event() {
 	check_closed_broadcast!(&nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 
+	check_added_monitors(&nodes[0], 0);
 	let mut events = nodes[0].node.get_and_clear_pending_events();
+	check_added_monitors(&nodes[0], 1);
 	assert_eq!(events.len(), 2);
 	let mut found_probe_failed = false;
 	for event in events.drain(..) {
@@ -4084,7 +4102,14 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	let config = test_default_channel_config();
 	reload_node!(nodes[0], config, &node_a_ser, &[&mon_ser], persist_a, chain_monitor_a, node_a_1);
 
+	// When we first process background events, we'll apply a channel-closed monitor update...
+	check_added_monitors(&nodes[0], 0);
+	nodes[0].node.test_process_background_events();
+	check_added_monitors(&nodes[0], 1);
+	// Then once we process the PaymentSent event we'll apply a monitor update to remove the
+	// pending payment from being re-hydrated on the next startup.
 	let events = nodes[0].node.get_and_clear_pending_events();
+	check_added_monitors(&nodes[0], 1);
 	assert_eq!(events.len(), 2);
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[0] {
 	} else {
@@ -4114,8 +4139,16 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	let node_ser = nodes[0].node.encode();
 	let config = test_default_channel_config();
 	reload_node!(nodes[0], config, &node_ser, &[&mon_ser], persist_b, chain_monitor_b, node_a_2);
+
+	// Because the pending payment will currently stick around forever, we'll apply a
+	// ChannelMonitorUpdate on each startup to attempt to remove it.
+	// TODO: This will be dropped in the next commit after we actually remove the payment!
+	check_added_monitors(&nodes[0], 0);
+	nodes[0].node.test_process_background_events();
+	check_added_monitors(&nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert!(events.is_empty());
+	check_added_monitors(&nodes[0], 0);
 
 	// Ensure that we don't generate any further events even after the channel-closing commitment
 	// transaction is confirmed on-chain.
@@ -4126,6 +4159,7 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert!(events.is_empty());
+	check_added_monitors(&nodes[0], 0);
 
 	let mon_ser = get_monitor!(nodes[0], chan_id).encode();
 	let config = test_default_channel_config();
@@ -4133,6 +4167,9 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	reload_node!(nodes[0], config, &node_ser, &[&mon_ser], persist_c, chain_monitor_c, node_a_3);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert!(events.is_empty());
+
+	// TODO: This will be dropped in the next commit after we actually remove the payment!
+	check_added_monitors(&nodes[0], 1);
 }
 
 #[test]
