@@ -1684,7 +1684,7 @@ pub enum LocalHTLCFailureReason {
 	/// The amount or CLTV expiry were insufficient to route the payment to the next Trampoline.
 	TrampolineFeeOrExpiryInsufficient,
 	/// The specified next Trampoline node cannot be reached from our node.
-	UnkonwnNextTrampoline,
+	UnknownNextTrampoline,
 }
 
 impl LocalHTLCFailureReason {
@@ -1727,7 +1727,7 @@ impl LocalHTLCFailureReason {
 			Self::InvalidOnionBlinding => BADONION | PERM | 24,
 			Self::TemporaryTrampolineFailure => PERM | 25,
 			Self::TrampolineFeeOrExpiryInsufficient => PERM | 26,
-			Self::UnkonwnNextTrampoline => PERM | 27,
+			Self::UnknownNextTrampoline => PERM | 27,
 			Self::UnknownFailureCode { code } => *code,
 		}
 	}
@@ -1864,7 +1864,7 @@ impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(83, PeerOffline) => {},
 	(85, TemporaryTrampolineFailure) => {},
 	(87, TrampolineFeeOrExpiryInsufficient) => {},
-	(89, UnkonwnNextTrampoline) => {},
+	(89, UnknownNextTrampoline) => {},
 );
 
 impl From<&HTLCFailReason> for HTLCHandlingFailureReason {
@@ -2035,7 +2035,7 @@ impl HTLCFailReason {
 			LocalHTLCFailureReason::TrampolineFeeOrExpiryInsufficient => {
 				debug_assert!(data.is_empty())
 			},
-			LocalHTLCFailureReason::UnkonwnNextTrampoline => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::UnknownNextTrampoline => debug_assert!(data.is_empty()),
 		}
 
 		Self(HTLCFailReasonRepr::Reason { data, failure_reason })
