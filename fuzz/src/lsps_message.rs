@@ -10,6 +10,7 @@ use lightning::chain::{chainmonitor, BestBlock};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::ln::wire::CustomMessageReader;
+use lightning::offers::invoice_request::DefaultCurrencyConversion;
 use lightning::onion_message::messenger::DefaultMessageRouter;
 use lightning::routing::gossip::NetworkGraph;
 use lightning::routing::router::DefaultRouter;
@@ -49,6 +50,7 @@ pub fn do_test(data: &[u8]) {
 	));
 	let msg_router =
 		Arc::new(DefaultMessageRouter::new(Arc::clone(&network_graph), Arc::clone(&keys_manager)));
+	let currency_conversion = Arc::new(DefaultCurrencyConversion {});
 	let chain_source = Arc::new(TestChainSource::new(Network::Bitcoin));
 	let kv_store = Arc::new(TestStore::new(false));
 	let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(
@@ -68,6 +70,7 @@ pub fn do_test(data: &[u8]) {
 		Arc::clone(&tx_broadcaster),
 		Arc::clone(&router),
 		Arc::clone(&msg_router),
+		Arc::clone(&currency_conversion),
 		Arc::clone(&logger),
 		Arc::clone(&keys_manager),
 		Arc::clone(&keys_manager),

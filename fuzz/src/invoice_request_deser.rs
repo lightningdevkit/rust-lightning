@@ -10,6 +10,7 @@
 use crate::utils::test_logger;
 use bitcoin::secp256k1::{self, Keypair, Parity, PublicKey, Secp256k1, SecretKey};
 use core::convert::TryFrom;
+use core::ops::Deref;
 use lightning::blinded_path::payment::{
 	BlindedPaymentPath, Bolt12OfferContext, ForwardTlvs, PaymentConstraints, PaymentContext,
 	PaymentForwardNode, PaymentRelay, UnauthenticatedReceiveTlvs,
@@ -17,9 +18,11 @@ use lightning::blinded_path::payment::{
 use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
-use lightning::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
+use lightning::offers::invoice_request::{
+	CurrencyConversion, InvoiceRequest, InvoiceRequestFields,
+};
 use lightning::offers::nonce::Nonce;
-use lightning::offers::offer::OfferId;
+use lightning::offers::offer::{CurrencyCode, OfferId};
 use lightning::offers::parse::Bolt12SemanticError;
 use lightning::sign::EntropySource;
 use lightning::types::features::BlindedHopFeatures;
@@ -77,6 +80,22 @@ fn pubkey(byte: u8) -> PublicKey {
 
 fn privkey(byte: u8) -> SecretKey {
 	SecretKey::from_slice(&[byte; 32]).unwrap()
+}
+
+struct FuzzCurrencyConversion;
+
+impl Deref for FuzzCurrencyConversion {
+	type Target = Self;
+
+	fn deref(&self) -> &Self::Target {
+		self
+	}
+}
+
+impl CurrencyConversion for FuzzCurrencyConversion {
+	fn fiat_to_msats(&self, _iso4217_code: CurrencyCode) -> Result<u64, Bolt12SemanticError> {
+		unreachable!()
+	}
 }
 
 fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
@@ -145,7 +164,9 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	.unwrap();
 
 	let payment_hash = PaymentHash([42; 32]);
-	invoice_request.respond_with(vec![payment_path], payment_hash)?.build()
+	invoice_request
+		.respond_with(&FuzzCurrencyConversion {}, vec![payment_path], payment_hash)?
+		.build()
 }
 
 pub fn invoice_request_deser_test<Out: test_logger::Output>(data: &[u8], out: Out) {

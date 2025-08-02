@@ -58,6 +58,9 @@ use lightning::ln::msgs::{
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
+use lightning::offers::invoice_request::CurrencyConversion;
+use lightning::offers::offer::CurrencyCode;
+use lightning::offers::parse::Bolt12SemanticError;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::router::{
 	InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters, Router,
@@ -146,6 +149,14 @@ impl MessageRouter for FuzzRouter {
 		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
 		_context: MessageContext, _peers: Vec<MessageForwardNode>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
+		unreachable!()
+	}
+}
+
+struct FuzzCurrencyConversion {}
+
+impl CurrencyConversion for FuzzCurrencyConversion {
+	fn fiat_to_msats(&self, _iso4217_code: CurrencyCode) -> Result<u64, Bolt12SemanticError> {
 		unreachable!()
 	}
 }
@@ -464,6 +475,7 @@ type ChanMan<'a> = ChannelManager<
 	Arc<FuzzEstimator>,
 	&'a FuzzRouter,
 	&'a FuzzRouter,
+	&'a FuzzCurrencyConversion,
 	Arc<dyn Logger>,
 >;
 
@@ -637,6 +649,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let out = SearchingOutput::new(underlying_out);
 	let broadcast = Arc::new(TestBroadcaster {});
 	let router = FuzzRouter {};
+	let currency_conversion = FuzzCurrencyConversion {};
 
 	macro_rules! make_node {
 		($node_id: expr, $fee_estimator: expr) => {{
@@ -679,6 +692,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					broadcast.clone(),
 					&router,
 					&router,
+					&currency_conversion,
 					Arc::clone(&logger),
 					keys_manager.clone(),
 					keys_manager.clone(),
@@ -770,6 +784,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			tx_broadcaster: broadcast.clone(),
 			router: &router,
 			message_router: &router,
+			currency_conversion: &currency_conversion,
 			logger,
 			default_config: config,
 			channel_monitors: monitor_refs,

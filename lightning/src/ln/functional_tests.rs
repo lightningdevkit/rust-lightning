@@ -5152,6 +5152,7 @@ pub fn test_key_derivation_params() {
 		test_utils::TestRouter::new(Arc::clone(&network_graph), &chanmon_cfgs[0].logger, &scorer);
 	let message_router =
 		test_utils::TestMessageRouter::new_default(Arc::clone(&network_graph), &keys_manager);
+	let currency_conversion = test_utils::TestCurrencyConversion::new();
 	let node = NodeCfg {
 		chain_source: &chanmon_cfgs[0].chain_source,
 		logger: &chanmon_cfgs[0].logger,
@@ -5159,6 +5160,7 @@ pub fn test_key_derivation_params() {
 		fee_estimator: &chanmon_cfgs[0].fee_estimator,
 		router,
 		message_router,
+		currency_conversion,
 		chain_monitor,
 		keys_manager: &keys_manager,
 		network_graph,
