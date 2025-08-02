@@ -1267,6 +1267,12 @@ pub(crate) enum EventCompletionAction {
 		channel_funding_outpoint: Option<OutPoint>,
 		channel_id: ChannelId,
 	},
+
+	/// When a payment's resolution is communicated to the downstream logic via
+	/// [`Event::PaymentSent`] or [`Event::PaymentFailed`] we may want to mark the payment as
+	/// fully-resolved in the [`ChannelMonitor`], which we do via this action.
+	/// Note that this action will be dropped on downgrade to LDK prior to 0.2!
+	ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate),
 }
 impl_writeable_tlv_based_enum!(EventCompletionAction,
 	(0, ReleaseRAAChannelMonitorUpdate) => {
@@ -1279,6 +1285,7 @@ impl_writeable_tlv_based_enum!(EventCompletionAction,
 			ChannelId::v1_from_funding_outpoint(channel_funding_outpoint.unwrap())
 		})),
 	}
+	{1, ReleasePaymentCompleteChannelMonitorUpdate} => (),
 );
 
 /// The source argument which is passed to [`ChannelManager::claim_mpp_part`].
@@ -8009,11 +8016,20 @@ where
 				if let Some(update) = from_monitor_update_completion {
 					// If `fail_htlc` didn't `take` the post-event action, we should go ahead and
 					// complete it here as the failure was duplicative - we've already handled it.
-					// This should mostly only happen on startup, but it is possible to hit it in
-					// rare cases where a MonitorUpdate is replayed after restart because a
-					// ChannelMonitor wasn't persisted after it was applied (even though the
-					// ChannelManager was).
-					// TODO
+					// This can happen in rare cases where a MonitorUpdate is replayed after
+					// restart because a ChannelMonitor wasn't persisted after it was applied (even
+					// though the ChannelManager was).
+					// For such cases, we also check that there's no existing pending event to
+					// complete this action already, which we let finish instead.
+					let action =
+						EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(update);
+					let have_action = {
+						let pending_events = self.pending_events.lock().unwrap();
+						pending_events.iter().any(|(_, act)| act.as_ref() == Some(&action))
+					};
+					if !have_action {
+						self.handle_post_event_actions([action]);
+					}
 				}
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData {
@@ -8642,19 +8658,34 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		next_user_channel_id: Option<u128>, attribution_data: Option<AttributionData>,
 		send_timestamp: Option<Duration>,
 	) {
+		debug_assert_eq!(
+			startup_replay,
+			!self.background_events_processed_since_startup.load(Ordering::Acquire)
+		);
+		let htlc_id = SentHTLCId::from_source(&source);
 		match source {
 			HTLCSource::OutboundRoute {
 				session_priv, payment_id, path, bolt12_invoice, ..
 			} => {
-				debug_assert!(self.background_events_processed_since_startup.load(Ordering::Acquire),
+				debug_assert!(!startup_replay,
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
 				debug_assert_eq!(next_channel_counterparty_node_id, path.hops[0].pubkey);
-				let mut ev_completion_action =
+
+				let mut ev_completion_action = if from_onchain {
+					let release = PaymentCompleteUpdate {
+						counterparty_node_id: next_channel_counterparty_node_id,
+						channel_funding_outpoint: next_channel_outpoint,
+						channel_id: next_channel_id,
+						htlc_id,
+					};
+					Some(EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(release))
+				} else {
 					Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
 						channel_funding_outpoint: Some(next_channel_outpoint),
 						channel_id: next_channel_id,
 						counterparty_node_id: path.hops[0].pubkey,
-					});
+					})
+				};
 				self.pending_outbound_payments.claim_htlc(
 					payment_id,
 					payment_preimage,
@@ -11372,12 +11403,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								channel_id,
 							};
 							let reason = HTLCFailReason::from_failure_code(failure_reason);
+							let completion_update = Some(PaymentCompleteUpdate {
+								counterparty_node_id,
+								channel_funding_outpoint: funding_outpoint,
+								channel_id,
+								htlc_id: SentHTLCId::from_source(&htlc_update.source),
+							});
 							self.fail_htlc_backwards_internal(
 								&htlc_update.source,
 								&htlc_update.payment_hash,
 								&reason,
 								receiver,
-								None,
+								completion_update,
 							);
 						}
 					},
@@ -12864,7 +12901,61 @@ where
 					channel_id,
 					counterparty_node_id,
 				} => {
+					let startup_complete =
+						self.background_events_processed_since_startup.load(Ordering::Acquire);
+					debug_assert!(startup_complete);
 					self.handle_monitor_update_release(counterparty_node_id, channel_id, None);
+				},
+				EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(
+					PaymentCompleteUpdate {
+						counterparty_node_id,
+						channel_funding_outpoint,
+						channel_id,
+						htlc_id,
+					},
+				) => {
+					let per_peer_state = self.per_peer_state.read().unwrap();
+					let mut peer_state = per_peer_state
+						.get(&counterparty_node_id)
+						.map(|state| state.lock().unwrap())
+						.expect("Channels originating a payment resolution must have peer state");
+					let update_id = peer_state
+						.closed_channel_monitor_update_ids
+						.get_mut(&channel_id)
+						.expect("Channels originating a payment resolution must have a monitor");
+					*update_id += 1;
+
+					let update = ChannelMonitorUpdate {
+						update_id: *update_id,
+						channel_id: Some(channel_id),
+						updates: vec![ChannelMonitorUpdateStep::ReleasePaymentComplete {
+							htlc: htlc_id,
+						}],
+					};
+
+					let during_startup =
+						!self.background_events_processed_since_startup.load(Ordering::Acquire);
+					if during_startup {
+						let event = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+							counterparty_node_id,
+							funding_txo: channel_funding_outpoint,
+							channel_id,
+							update,
+						};
+						self.pending_background_events.lock().unwrap().push(event);
+					} else {
+						handle_new_monitor_update!(
+							self,
+							channel_funding_outpoint,
+							update,
+							peer_state,
+							peer_state,
+							per_peer_state,
+							counterparty_node_id,
+							channel_id,
+							POST_CHANNEL_CLOSE
+						);
+					}
 				},
 			}
 		}
@@ -16557,6 +16648,7 @@ where
 							monitor,
 							Some(htlc.payment_hash),
 						);
+						let htlc_id = SentHTLCId::from_source(&htlc_source);
 						match htlc_source {
 							HTLCSource::PreviousHopData(prev_hop_data) => {
 								let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
@@ -16614,6 +16706,15 @@ where
 							} => {
 								if let Some(preimage) = preimage_opt {
 									let pending_events = Mutex::new(pending_events_read);
+									let update = PaymentCompleteUpdate {
+										counterparty_node_id: monitor.get_counterparty_node_id(),
+										channel_funding_outpoint: monitor.get_funding_txo(),
+										channel_id: monitor.channel_id(),
+										htlc_id,
+									};
+									let mut compl_action = Some(
+										EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(update)
+									);
 									// Note that we set `from_onchain` to "false" here,
 									// deliberately keeping the pending payment around forever.
 									// Given it should only occur when we have a channel we're
@@ -16622,15 +16723,6 @@ where
 									// generating a `PaymentPathSuccessful` event but regenerating
 									// it and the `PaymentSent` on every restart until the
 									// `ChannelMonitor` is removed.
-									let mut compl_action = Some(
-										EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-											channel_funding_outpoint: Some(
-												monitor.get_funding_txo(),
-											),
-											channel_id: monitor.channel_id(),
-											counterparty_node_id: path.hops[0].pubkey,
-										},
-									);
 									pending_outbounds.claim_htlc(
 										payment_id,
 										preimage,
@@ -16642,6 +16734,41 @@ where
 										&pending_events,
 										&&logger,
 									);
+									// If the completion action was not consumed, then there was no
+									// payment to claim, and we need to tell the `ChannelMonitor`
+									// we don't need to hear about the HTLC again, at least as long
+									// as the PaymentSent event isn't still sitting around in our
+									// event queue.
+									let have_action = if compl_action.is_some() {
+										let pending_events = pending_events.lock().unwrap();
+										pending_events.iter().any(|(_, act)| *act == compl_action)
+									} else {
+										false
+									};
+									if !have_action && compl_action.is_some() {
+										let mut peer_state = per_peer_state
+											.get(&counterparty_node_id)
+											.map(|state| state.lock().unwrap())
+											.expect("Channels originating a preimage must have peer state");
+										let update_id = peer_state
+											.closed_channel_monitor_update_ids
+											.get_mut(channel_id)
+											.expect("Channels originating a preimage must have a monitor");
+										*update_id += 1;
+
+										pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+											counterparty_node_id: monitor.get_counterparty_node_id(),
+											funding_txo: monitor.get_funding_txo(),
+											channel_id: monitor.channel_id(),
+											update: ChannelMonitorUpdate {
+												update_id: *update_id,
+												channel_id: Some(monitor.channel_id()),
+												updates: vec![ChannelMonitorUpdateStep::ReleasePaymentComplete {
+													htlc: htlc_id,
+												}],
+											},
+										});
+									}
 									pending_events_read = pending_events.into_inner().unwrap();
 								}
 							},

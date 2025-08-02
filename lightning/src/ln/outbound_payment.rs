@@ -2185,8 +2185,6 @@ impl OutboundPayments {
 				// This could potentially lead to removing a pending payment too early,
 				// with a reorg of one block causing us to re-add the fulfilled payment on
 				// restart.
-				// TODO: We should have a second monitor event that informs us of payments
-				// irrevocably fulfilled.
 				if payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
 					let payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array()));
 					pending_events.push_back((events::Event::PaymentPathSuccessful {
@@ -2474,10 +2472,14 @@ impl OutboundPayments {
 			}
 		};
 		let mut pending_events = pending_events.lock().unwrap();
-		// TODO: Handle completion_action
-		pending_events.push_back((path_failure, None));
+		let completion_action = completion_action
+			.take()
+			.map(|act| EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(act));
 		if let Some(ev) = full_failure_ev {
-			pending_events.push_back((ev, None));
+			pending_events.push_back((path_failure, None));
+			pending_events.push_back((ev, completion_action));
+		} else {
+			pending_events.push_back((path_failure, completion_action));
 		}
 	}
 

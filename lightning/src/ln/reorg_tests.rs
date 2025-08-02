@@ -237,12 +237,13 @@ fn test_counterparty_revoked_reorg() {
 
 	// Connect the HTLC claim transaction for HTLC 3
 	mine_transaction(&nodes[1], &unrevoked_local_txn[2]);
-	expect_payment_sent(&nodes[1], payment_preimage_3, None, true, false);
+	expect_payment_sent(&nodes[1], payment_preimage_3, None, true, true);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Connect blocks to confirm the unrevoked commitment transaction
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
-	expect_payment_failed!(nodes[1], payment_hash_4, false);
+	let conditions = PaymentFailedConditions::new().from_mon_update();
+	expect_payment_failed_conditions(&nodes[1], payment_hash_4, false, conditions)
 }
 
 fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_unconfirmed: bool, connect_style: ConnectStyle) {
@@ -1047,7 +1048,9 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
 	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 	assert_eq!(txn.len(), 0);
 
+	check_added_monitors(&nodes[0], 0);
 	let sent_events = nodes[0].node.get_and_clear_pending_events();
+	check_added_monitors(&nodes[0], 2);
 	assert_eq!(sent_events.len(), 4, "{sent_events:?}");
 	let mut found_expected_events = [false, false, false, false];
 	for event in sent_events {
@@ -1136,7 +1139,9 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
 		// Connect two more blocks to get `as_third_htlc_spend_tx` to `ANTI_REORG_DELAY` confs.
 		connect_blocks(&nodes[0], 2);
 		if use_third_htlc {
+			check_added_monitors(&nodes[0], 0);
 			let failed_events = nodes[0].node.get_and_clear_pending_events();
+			check_added_monitors(&nodes[0], 1);
 			assert_eq!(failed_events.len(), 2);
 			let mut found_expected_events = [false, false];
 			for event in failed_events {
