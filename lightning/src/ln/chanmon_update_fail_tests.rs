@@ -3314,6 +3314,7 @@ fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, 
 
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[1].node.get_our_node_id()], 100000);
+	check_added_monitors(&nodes[0], 1);
 	let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_closing_tx.len(), 1);
 
