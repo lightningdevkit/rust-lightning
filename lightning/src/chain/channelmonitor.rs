@@ -4119,6 +4119,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if updates.update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID || self.lockdown_from_offchain {
 			assert_eq!(updates.updates.len(), 1);
 			match updates.updates[0] {
+				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				// We should have already seen a `ChannelForceClosed` update if we're trying to
 				// provide a preimage at this point.
