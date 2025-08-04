@@ -450,7 +450,7 @@ pub(super) struct PendingAddHTLCInfo {
 	// Note that this may be an outbound SCID alias for the associated channel.
 	prev_short_channel_id: u64,
 	prev_htlc_id: u64,
-	prev_counterparty_node_id: Option<PublicKey>,
+	prev_counterparty_node_id: PublicKey,
 	prev_channel_id: ChannelId,
 	prev_funding_outpoint: OutPoint,
 	prev_user_channel_id: u128,
@@ -670,7 +670,7 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 
 // (src_channel_id, src_counterparty_node_id, src_funding_outpoint, src_chan_id, src_user_chan_id)
 type PerSourcePendingForward =
-	(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>);
+	(u64, PublicKey, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>);
 
 type FailedHTLCForward = (HTLCSource, PaymentHash, HTLCFailReason, HTLCHandlingFailureType);
 
@@ -1258,7 +1258,7 @@ impl_writeable_tlv_based_enum!(EventCompletionAction,
 /// drop this and merge the two, however doing so may break upgrades for nodes which have pending
 /// forwarded payments.
 struct HTLCClaimSource {
-	counterparty_node_id: Option<PublicKey>,
+	counterparty_node_id: PublicKey,
 	funding_txo: OutPoint,
 	channel_id: ChannelId,
 	htlc_id: u64,
@@ -1267,7 +1267,7 @@ struct HTLCClaimSource {
 impl From<&MPPClaimHTLCSource> for HTLCClaimSource {
 	fn from(o: &MPPClaimHTLCSource) -> HTLCClaimSource {
 		HTLCClaimSource {
-			counterparty_node_id: Some(o.counterparty_node_id),
+			counterparty_node_id: o.counterparty_node_id,
 			funding_txo: o.funding_txo,
 			channel_id: o.channel_id,
 			htlc_id: o.htlc_id,
@@ -6149,7 +6149,7 @@ where
 				user_channel_id: Some(payment.prev_user_channel_id),
 				outpoint: payment.prev_funding_outpoint,
 				channel_id: payment.prev_channel_id,
-				counterparty_node_id: payment.prev_counterparty_node_id,
+				counterparty_node_id: Some(payment.prev_counterparty_node_id),
 				htlc_id: payment.prev_htlc_id,
 				incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
 				phantom_shared_secret: None,
@@ -6322,7 +6322,7 @@ where
 			// proposed to as a batch.
 			let pending_forwards = (
 				incoming_scid,
-				Some(incoming_counterparty_node_id),
+				incoming_counterparty_node_id,
 				incoming_funding_txo,
 				incoming_channel_id,
 				incoming_user_channel_id,
@@ -6511,7 +6511,7 @@ where
 								user_channel_id: Some(prev_user_channel_id),
 								channel_id: prev_channel_id,
 								outpoint: prev_funding_outpoint,
-								counterparty_node_id: prev_counterparty_node_id,
+								counterparty_node_id: Some(prev_counterparty_node_id),
 								htlc_id: prev_htlc_id,
 								incoming_packet_shared_secret: incoming_shared_secret,
 								phantom_shared_secret: phantom_ss,
@@ -6724,7 +6724,7 @@ where
 					let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 						short_channel_id: prev_short_channel_id,
 						user_channel_id: Some(prev_user_channel_id),
-						counterparty_node_id: prev_counterparty_node_id,
+						counterparty_node_id: Some(prev_counterparty_node_id),
 						channel_id: prev_channel_id,
 						outpoint: prev_funding_outpoint,
 						htlc_id: prev_htlc_id,
@@ -7035,7 +7035,7 @@ where
 						prev_hop: HTLCPreviousHopData {
 							short_channel_id: prev_short_channel_id,
 							user_channel_id: Some(prev_user_channel_id),
-							counterparty_node_id: prev_counterparty_node_id,
+							counterparty_node_id: Some(prev_counterparty_node_id),
 							channel_id: prev_channel_id,
 							outpoint: prev_funding_outpoint,
 							htlc_id: prev_htlc_id,
@@ -8080,13 +8080,12 @@ where
 			let payment_info = Some(PaymentClaimDetails { mpp_parts, claiming_payment });
 			for htlc in sources {
 				let this_mpp_claim =
-					pending_mpp_claim_ptr_opt.as_ref().and_then(|pending_mpp_claim| {
-						if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
-							let claim_ptr = PendingMPPClaimPointer(Arc::clone(pending_mpp_claim));
-							Some((cp_id, htlc.prev_hop.channel_id, claim_ptr))
-						} else {
-							None
-						}
+					pending_mpp_claim_ptr_opt.as_ref().map(|pending_mpp_claim| {
+						let counterparty_id = htlc.prev_hop.counterparty_node_id;
+						let counterparty_id = counterparty_id
+							.expect("Prior to upgrading to LDK 0.1, all pending HTLCs forwarded by LDK 0.0.123 or before must be resolved. It appears at least one claimable payment was not resolved. Please downgrade to LDK 0.0.125 and resolve the HTLC by claiming the payment prior to upgrading.");
+						let claim_ptr = PendingMPPClaimPointer(Arc::clone(pending_mpp_claim));
+						(counterparty_id, htlc.prev_hop.channel_id, claim_ptr)
 					});
 				let raa_blocker = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
 					RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
@@ -8168,6 +8167,14 @@ where
 			let short_to_chan_info = self.short_to_chan_info.read().unwrap();
 			short_to_chan_info.get(&prev_hop.short_channel_id).map(|(cp_id, _)| *cp_id)
 		});
+		let counterparty_node_id = if let Some(node_id) = counterparty_node_id {
+			node_id
+		} else {
+			let payment_hash: PaymentHash = payment_preimage.into();
+			panic!(
+				"Prior to upgrading to LDK 0.1, all pending HTLCs forwarded by LDK 0.0.123 or before must be resolved. It appears at least the HTLC with payment_hash {payment_hash} (preimage {payment_preimage}) was not resolved. Please downgrade to LDK 0.0.125 and resolve the HTLC prior to upgrading.",
+			);
+		};
 
 		let htlc_source = HTLCClaimSource {
 			counterparty_node_id,
@@ -8212,18 +8219,13 @@ where
 		const MISSING_MON_ERROR: &'static str =
 			"If we're going to claim an HTLC against a channel, we should always have *some* state for the channel, even if just the latest ChannelMonitor update_id. This failure indicates we need to claim an HTLC from a channel for which we did not have a ChannelMonitor at startup and didn't create one while running.";
 
-		// Note here that `peer_state_opt` is always `Some` if `prev_hop.counterparty_node_id` is
-		// `Some`. This is relied on in the closed-channel case below.
-		let mut peer_state_opt =
-			prev_hop.counterparty_node_id.as_ref().map(|counterparty_node_id| {
-				per_peer_state
-					.get(counterparty_node_id)
-					.map(|peer_mutex| peer_mutex.lock().unwrap())
-					.expect(MISSING_MON_ERROR)
-			});
+		let mut peer_state_lock = per_peer_state
+			.get(&prev_hop.counterparty_node_id)
+			.map(|peer_mutex| peer_mutex.lock().unwrap())
+			.expect(MISSING_MON_ERROR);
 
-		if let Some(peer_state_lock) = peer_state_opt.as_mut() {
-			let peer_state = &mut **peer_state_lock;
+		{
+			let peer_state = &mut *peer_state_lock;
 			if let hash_map::Entry::Occupied(mut chan_entry) =
 				peer_state.channel_by_id.entry(chan_id)
 			{
@@ -8261,7 +8263,7 @@ where
 								self,
 								prev_hop.funding_txo,
 								monitor_update,
-								peer_state_opt,
+								peer_state_lock,
 								peer_state,
 								per_peer_state,
 								chan
@@ -8312,7 +8314,7 @@ where
 								return;
 							}
 
-							mem::drop(peer_state_opt);
+							mem::drop(peer_state_lock);
 
 							log_trace!(logger, "Completing monitor update completion action for channel {} as claim was redundant: {:?}",
 								chan_id, action);
@@ -8365,18 +8367,7 @@ where
 			}
 		}
 
-		if prev_hop.counterparty_node_id.is_none() {
-			let payment_hash: PaymentHash = payment_preimage.into();
-			panic!(
-				"Prior to upgrading to LDK 0.1, all pending HTLCs forwarded by LDK 0.0.123 or before must be resolved. It appears at least the HTLC with payment_hash {} (preimage {}) was not resolved. Please downgrade to LDK 0.0.125 and resolve the HTLC prior to upgrading.",
-				payment_hash,
-				payment_preimage,
-			);
-		}
-		let counterparty_node_id =
-			prev_hop.counterparty_node_id.expect("Checked immediately above");
-		let mut peer_state = peer_state_opt
-			.expect("peer_state_opt is always Some when the counterparty_node_id is Some");
+		let peer_state = &mut *peer_state_lock;
 
 		let update_id = if let Some(latest_update_id) =
 			peer_state.closed_channel_monitor_update_ids.get_mut(&chan_id)
@@ -8420,7 +8411,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let payment_hash = payment_preimage.into();
 		let logger = WithContext::from(
 			&self.logger,
-			Some(counterparty_node_id),
+			Some(prev_hop.counterparty_node_id),
 			Some(chan_id),
 			Some(payment_hash),
 		);
@@ -8443,10 +8434,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			self,
 			prev_hop.funding_txo,
 			preimage_update,
-			peer_state,
+			peer_state_lock,
 			peer_state,
 			per_peer_state,
-			counterparty_node_id,
+			prev_hop.counterparty_node_id,
 			chan_id,
 			POST_CHANNEL_CLOSE
 		);
@@ -8775,7 +8766,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>,
 		tx_signatures: Option<msgs::TxSignatures>, tx_abort: Option<msgs::TxAbort>,
-	) -> (Option<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
+	) -> (Option<(u64, PublicKey, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
 		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort",
 			&channel.context.channel_id(),
@@ -8795,7 +8786,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut htlc_forwards = None;
 		if !pending_forwards.is_empty() {
 			htlc_forwards = Some((
-				short_channel_id, Some(channel.context.get_counterparty_node_id()),
+				short_channel_id, channel.context.get_counterparty_node_id(),
 				channel.funding.get_funding_txo().unwrap(), channel.context.channel_id(),
 				channel.context.get_user_id(), pending_forwards
 			));
@@ -10468,23 +10459,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
 											scid
 										);
+										let routing = &forward_info.routing;
 										let htlc_source =
 											HTLCSource::PreviousHopData(HTLCPreviousHopData {
 												short_channel_id: prev_short_channel_id,
 												user_channel_id: Some(prev_user_channel_id),
-												counterparty_node_id: prev_counterparty_node_id,
+												counterparty_node_id: Some(
+													prev_counterparty_node_id,
+												),
 												outpoint: prev_funding_outpoint,
 												channel_id: prev_channel_id,
 												htlc_id: prev_htlc_id,
 												incoming_packet_shared_secret: forward_info
 													.incoming_shared_secret,
 												phantom_shared_secret: None,
-												blinded_failure: forward_info
-													.routing
-													.blinded_failure(),
-												cltv_expiry: forward_info
-													.routing
-													.incoming_cltv_expiry(),
+												blinded_failure: routing.blinded_failure(),
+												cltv_expiry: routing.incoming_cltv_expiry(),
 											});
 
 										let payment_hash = forward_info.payment_hash;
@@ -13470,7 +13460,7 @@ where
 						htlc_id: htlc.prev_htlc_id,
 						incoming_packet_shared_secret: htlc.forward_info.incoming_shared_secret,
 						phantom_shared_secret: None,
-						counterparty_node_id: htlc.prev_counterparty_node_id,
+						counterparty_node_id: Some(htlc.prev_counterparty_node_id),
 						outpoint: htlc.prev_funding_outpoint,
 						channel_id: htlc.prev_channel_id,
 						blinded_failure: htlc.forward_info.routing.blinded_failure(),
@@ -14981,7 +14971,7 @@ impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	// Note that by the time we get past the required read for type 6 above, prev_funding_outpoint will be
 	// filled in, so we can safely unwrap it here.
 	(7, prev_channel_id, (default_value, ChannelId::v1_from_funding_outpoint(prev_funding_outpoint.0.unwrap()))),
-	(9, prev_counterparty_node_id, option),
+	(9, prev_counterparty_node_id, required),
 });
 
 impl Writeable for HTLCForwardInfo {
