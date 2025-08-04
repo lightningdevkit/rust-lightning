@@ -4694,6 +4694,23 @@ fn test_single_channel_multiple_mpp() {
 	// `update_fulfill_htlc`/`commitment_signed` pair to pass to our counterparty.
 	do_a_write.send(()).unwrap();
 
+	let event_node: &'static TestChannelManager<'static, 'static> =
+		unsafe { std::mem::transmute(nodes[8].node as &TestChannelManager) };
+	let thrd_event = std::thread::spawn(move || {
+		let mut have_event = false;
+		while !have_event {
+			let mut events = event_node.get_and_clear_pending_events();
+			assert!(events.len() == 1 || events.len() == 0);
+			if events.len() == 1 {
+				if let Event::PaymentClaimed { .. } = events[0] {
+				} else {
+					panic!("Unexpected event {events:?}");
+				}
+				have_event = true;
+			}
+		}
+	});
+
 	// Then fetch the `update_fulfill_htlc`/`commitment_signed`. Note that the
 	// `get_and_clear_pending_msg_events` will immediately hang trying to take a peer lock which
 	// `claim_funds` is holding. Thus, we release a second write after a small sleep in the
@@ -4713,7 +4730,11 @@ fn test_single_channel_multiple_mpp() {
 	});
 	block_thrd2.store(false, Ordering::Release);
 	let mut first_updates = get_htlc_update_msgs(&nodes[8], &node_h_id);
+
+	// Thread 2 could unblock first, or it could get blocked waiting on us to process a
+	// `PaymentClaimed` event. Either way, wait until both have finished.
 	thrd2.join().unwrap();
+	thrd_event.join().unwrap();
 
 	// Disconnect node 6 from all its peers so it doesn't bother to fail the HTLCs back
 	nodes[7].node.peer_disconnected(node_b_id);
@@ -4759,8 +4780,6 @@ fn test_single_channel_multiple_mpp() {
 
 	thrd4.join().unwrap();
 	thrd.join().unwrap();
-
-	expect_payment_claimed!(nodes[8], payment_hash, 50_000_000);
 
 	// At the end, we should have 7 ChannelMonitorUpdates - 6 for HTLC claims, and one for the
 	// above `revoke_and_ack`.

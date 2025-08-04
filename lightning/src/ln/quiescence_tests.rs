@@ -197,6 +197,7 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
 	nodes[1].node.claim_funds(preimage);
 	check_added_monitors(&nodes[1], 1);
+	expect_payment_claimed!(&nodes[1], payment_hash, payment_amount);
 
 	let mut update = get_htlc_update_msgs!(&nodes[1], node_id_0);
 	nodes[0].node.handle_update_fulfill_htlc(node_id_1, update.update_fulfill_htlcs.remove(0));
@@ -222,8 +223,6 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 	// Resume the signer. We should now expect to see both messages.
 	nodes[1].enable_channel_signer_op(&node_id_0, &chan_id, SignerOp::ReleaseCommitmentSecret);
 	nodes[1].node.signer_unblocked(Some((node_id_0, chan_id)));
-
-	expect_payment_claimed!(&nodes[1], payment_hash, payment_amount);
 
 	macro_rules! find_msg {
 		($events: expr, $msg: ident) => {{
@@ -418,13 +417,10 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	if fail_htlc {
 		nodes[0].node.handle_update_fail_htlc(node_id_1, &update.update_fail_htlcs[0]);
 	} else {
+		expect_payment_claimed!(nodes[1], payment_hash2, payment_amount);
 		nodes[0].node.handle_update_fulfill_htlc(node_id_1, update.update_fulfill_htlcs.remove(0));
 	}
 	commitment_signed_dance!(&nodes[0], &nodes[1], update.commitment_signed, false);
-
-	if !fail_htlc {
-		expect_payment_claimed!(nodes[1], payment_hash2, payment_amount);
-	}
 
 	// The payment from nodes[0] should now be seen as failed/successful.
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -454,6 +450,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	if fail_htlc {
 		nodes[1].node.handle_update_fail_htlc(node_id_0, &update.update_fail_htlcs[0]);
 	} else {
+		expect_payment_claimed!(nodes[0], payment_hash1, payment_amount);
 		nodes[1].node.handle_update_fulfill_htlc(node_id_0, update.update_fulfill_htlcs.remove(0));
 	}
 	commitment_signed_dance!(&nodes[1], &nodes[0], update.commitment_signed, false);
@@ -463,7 +460,6 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 		let conditions = PaymentFailedConditions::new();
 		expect_payment_failed_conditions(&nodes[1], payment_hash1, true, conditions);
 	} else {
-		expect_payment_claimed!(nodes[0], payment_hash1, payment_amount);
 		expect_payment_sent(&nodes[1], payment_preimage1, None, true, true);
 	}
 }

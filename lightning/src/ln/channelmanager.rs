@@ -934,9 +934,19 @@ struct ClaimingPayment {
 	sender_intended_value: Option<u64>,
 	onion_fields: Option<RecipientOnionFields>,
 	payment_id: Option<PaymentId>,
+	/// When we claim and generate a [`Event::PaymentClaimed`], we want to block any
+	/// payment-preimage-removing RAA [`ChannelMonitorUpdate`]s until the [`Event::PaymentClaimed`]
+	/// is handled, ensuring we can regenerate the event on restart. We pick a random channel to
+	/// block and store it here.
+	///
+	/// Note that once we disallow downgrades to 0.1 we should be able to simply use
+	/// [`Self::htlcs`] to generate this rather than storing it here (as we won't need the funding
+	/// outpoint), allowing us to remove this field.
+	durable_preimage_channel: Option<(OutPoint, PublicKey, ChannelId)>,
 }
 impl_writeable_tlv_based!(ClaimingPayment, {
 	(0, amount_msat, required),
+	(1, durable_preimage_channel, option),
 	(2, payment_purpose, required),
 	(4, receiver_node_id, required),
 	(5, htlcs, optional_vec),
@@ -1083,6 +1093,16 @@ impl ClaimablePayments {
 					.or_insert_with(|| {
 						let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
 						let sender_intended_value = payment.htlcs.first().map(|htlc| htlc.total_msat);
+						// Pick an "arbitrary" channel to block RAAs on until the `PaymentSent`
+						// event is processed, specifically the last channel to get claimed.
+						let durable_preimage_channel = payment.htlcs.last().map_or(None, |htlc| {
+							if let Some(node_id) = htlc.prev_hop.counterparty_node_id {
+								Some((htlc.prev_hop.outpoint, node_id, htlc.prev_hop.channel_id))
+							} else {
+								None
+							}
+						});
+						debug_assert!(durable_preimage_channel.is_some());
 						ClaimingPayment {
 							amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
 							payment_purpose: payment.purpose,
@@ -1091,6 +1111,7 @@ impl ClaimablePayments {
 							sender_intended_value,
 							onion_fields: payment.onion_fields,
 							payment_id: Some(payment_id),
+							durable_preimage_channel,
 						}
 					}).clone();
 
@@ -8704,6 +8725,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						sender_intended_value: sender_intended_total_msat,
 						onion_fields,
 						payment_id,
+						durable_preimage_channel,
 					}) = payment {
 						let event = events::Event::PaymentClaimed {
 							payment_hash,
@@ -8715,7 +8737,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							onion_fields,
 							payment_id,
 						};
-						let event_action = (event, None);
+						let action = if let Some((outpoint, counterparty_node_id, channel_id))
+							= durable_preimage_channel
+						{
+							Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
+								channel_funding_outpoint: Some(outpoint),
+								counterparty_node_id,
+								channel_id,
+							})
+						} else {
+							None
+						};
+						let event_action = (event, action);
 						let mut pending_events = self.pending_events.lock().unwrap();
 						// If we're replaying a claim on startup we may end up duplicating an event
 						// that's already in our queue, so check before we push another one. The
@@ -17104,6 +17137,10 @@ where
 								onion_fields: payment.onion_fields,
 								payment_id: Some(payment_id),
 							},
+							// Note that we don't bother adding a EventCompletionAction here to
+							// ensure the `PaymentClaimed` event is durable processed as this
+							// should only be hit for particularly old channels and we don't have
+							// enough information to generate such an action.
 							None,
 						));
 					}

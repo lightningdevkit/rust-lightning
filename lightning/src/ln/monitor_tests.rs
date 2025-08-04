@@ -3211,3 +3211,65 @@ fn test_update_replay_panics() {
 	monitor.update_monitor(&updates[2], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
 	monitor.update_monitor(&updates[3], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
 }
+
+#[test]
+fn test_claim_event_never_handled() {
+	// When a payment is claimed, the `ChannelMonitorUpdate` containing the payment preimage goes
+	// out and when it completes the `PaymentClaimed` event is generated. If the channel then
+	// progresses forward a few steps, the payment preimage will then eventually be removed from
+	// the channel. By that point, we have to make sure that the `PaymentClaimed` event has been
+	// handled (which ensures the user has maked the payment received).
+	// Otherwise, it is possible that, on restart, we load with a stale `ChannelManager` which
+	// doesn't have the `PaymentClaimed` event and it needs to rebuild it from the
+	// `ChannelMonitor`'s payment information and preimage.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_mon;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes_1_reload;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let init_node_ser = nodes[1].node.encode();
+
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Send the payment we'll ultimately test the PaymentClaimed event for.
+	let (preimage_a, payment_hash_a, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	nodes[1].node.claim_funds(preimage_a);
+	check_added_monitors(&nodes[1], 1);
+
+	let mut updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
+	expect_payment_sent(&nodes[0], preimage_a, None, false, false);
+
+	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
+	check_added_monitors(&nodes[0], 1);
+
+	// Once the `PaymentClaimed` event is generated, further RAA `ChannelMonitorUpdate`s will be
+	// blocked until it is handled, ensuring we never get far enough to remove the preimage.
+	let (raa, cs) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
+	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
+	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &cs);
+	check_added_monitors(&nodes[1], 0);
+
+	// The last RAA here should be blocked waiting on us to handle the PaymentClaimed event before
+	// continuing. Otherwise, we'd be able to make enough progress that the payment preimage is
+	// removed from node A's `ChannelMonitor`. This leaves us unable to make further progress.
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Finally, reload node B with an empty `ChannelManager` and check that we get the
+	// `PaymentClaimed` event.
+	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan.2).encode();
+	let mons = &[&chan_0_monitor_serialized[..]];
+	reload_node!(nodes[1], &init_node_ser, mons, persister, new_chain_mon, nodes_1_reload);
+
+	expect_payment_claimed!(nodes[1], payment_hash_a, 1_000_000);
+	// The reload logic spuriously generates a redundant payment preimage-containing
+	// `ChannelMonitorUpdate`.
+	check_added_monitors(&nodes[1], 2);
+}

@@ -1395,6 +1395,7 @@ fn test_no_disconnect_while_async_commitment_signed_expecting_remote_revoke_and_
 	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
 	nodes[1].node.claim_funds(preimage);
 	check_added_monitors(&nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash, payment_amount);
 
 	// We'll disable signing counterparty commitments on the payment sender.
 	nodes[0].disable_channel_signer_op(&node_b_id, &chan_id, SignerOp::SignCounterpartyCommitment);
@@ -1403,6 +1404,7 @@ fn test_no_disconnect_while_async_commitment_signed_expecting_remote_revoke_and_
 	// the `commitment_signed` is no longer pending.
 	let mut update = get_htlc_update_msgs!(&nodes[1], node_a_id);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update.update_fulfill_htlcs.remove(0));
+	expect_payment_sent(&nodes[0], preimage, None, false, false);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &update.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 
@@ -1426,7 +1428,4 @@ fn test_no_disconnect_while_async_commitment_signed_expecting_remote_revoke_and_
 	};
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().into_iter().any(has_disconnect_event));
-
-	expect_payment_sent(&nodes[0], preimage, None, false, false);
-	expect_payment_claimed!(nodes[1], payment_hash, payment_amount);
 }
