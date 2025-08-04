@@ -9295,7 +9295,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				},
 				channel_type,
 				is_announced,
-				params: common_fields.channel_parameters(),
+				params: match msg {
+					OpenChannelMessageRef::V1(msg) => msg.channel_parameters(),
+					OpenChannelMessageRef::V2(msg) => msg.channel_parameters(),
+				},
 			}, None));
 			peer_state.inbound_channel_request_by_id.insert(channel_id, InboundChannelRequest {
 				open_channel_msg: match msg {

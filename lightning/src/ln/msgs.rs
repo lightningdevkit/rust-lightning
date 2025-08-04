@@ -247,20 +247,6 @@ pub struct CommonOpenChannelFields {
 	pub channel_type: Option<ChannelTypeFeatures>,
 }
 
-impl CommonOpenChannelFields {
-	/// The [`ChannelParameters`] for this channel.
-	pub fn channel_parameters(&self) -> ChannelParameters {
-		ChannelParameters {
-			dust_limit_satoshis: self.dust_limit_satoshis,
-			max_htlc_value_in_flight_msat: self.max_htlc_value_in_flight_msat,
-			htlc_minimum_msat: self.htlc_minimum_msat,
-			commitment_feerate_sat_per_1000_weight: self.commitment_feerate_sat_per_1000_weight,
-			to_self_delay: self.to_self_delay,
-			max_accepted_htlcs: self.max_accepted_htlcs,
-		}
-	}
-}
-
 /// A subset of [`CommonOpenChannelFields`], containing various parameters which are set by the
 /// channel initiator and which are not part of the channel funding transaction.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -280,6 +266,8 @@ pub struct ChannelParameters {
 	pub to_self_delay: u16,
 	/// The maximum number of pending HTLCs towards the channel initiator.
 	pub max_accepted_htlcs: u16,
+	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
+	pub channel_reserve_satoshis: Option<u64>,
 }
 
 /// An [`open_channel`] message to be sent to or received from a peer.
@@ -295,6 +283,23 @@ pub struct OpenChannel {
 	pub push_msat: u64,
 	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
 	pub channel_reserve_satoshis: u64,
+}
+
+impl OpenChannel {
+	/// The [`ChannelParameters`] for this V1 channel.
+	pub fn channel_parameters(&self) -> ChannelParameters {
+		ChannelParameters {
+			dust_limit_satoshis: self.common_fields.dust_limit_satoshis,
+			max_htlc_value_in_flight_msat: self.common_fields.max_htlc_value_in_flight_msat,
+			htlc_minimum_msat: self.common_fields.htlc_minimum_msat,
+			commitment_feerate_sat_per_1000_weight: self
+				.common_fields
+				.commitment_feerate_sat_per_1000_weight,
+			to_self_delay: self.common_fields.to_self_delay,
+			max_accepted_htlcs: self.common_fields.max_accepted_htlcs,
+			channel_reserve_satoshis: Some(self.channel_reserve_satoshis),
+		}
+	}
 }
 
 /// An [`open_channel2`] message to be sent by or received from the channel initiator.
@@ -314,6 +319,23 @@ pub struct OpenChannelV2 {
 	pub second_per_commitment_point: PublicKey,
 	/// Optionally, a requirement that only confirmed inputs can be added
 	pub require_confirmed_inputs: Option<()>,
+}
+
+impl OpenChannelV2 {
+	/// The [`ChannelParameters`] for this V2 channel.
+	pub fn channel_parameters(&self) -> ChannelParameters {
+		ChannelParameters {
+			dust_limit_satoshis: self.common_fields.dust_limit_satoshis,
+			max_htlc_value_in_flight_msat: self.common_fields.max_htlc_value_in_flight_msat,
+			htlc_minimum_msat: self.common_fields.htlc_minimum_msat,
+			commitment_feerate_sat_per_1000_weight: self
+				.common_fields
+				.commitment_feerate_sat_per_1000_weight,
+			to_self_delay: self.common_fields.to_self_delay,
+			max_accepted_htlcs: self.common_fields.max_accepted_htlcs,
+			channel_reserve_satoshis: None, // V2 doesn't have this field
+		}
+	}
 }
 
 /// Contains fields that are both common to [`accept_channel`] and [`accept_channel2`] messages.
