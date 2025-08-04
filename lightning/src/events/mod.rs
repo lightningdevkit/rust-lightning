@@ -233,6 +233,11 @@ impl_writeable_tlv_based_enum_legacy!(PaymentPurpose,
 /// Information about an HTLC that is part of a payment that can be claimed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaimedHTLC {
+	/// The counterparty of the channel.
+	///
+	/// This value will always be `None` for objects serialized with LDK versions prior to 0.2 and
+	/// `Some` otherwise.
+	pub counterparty_node_id: Option<PublicKey>,
 	/// The `channel_id` of the channel over which the HTLC was received.
 	pub channel_id: ChannelId,
 	/// The `user_channel_id` of the channel over which the HTLC was received. This is the value
@@ -263,6 +268,7 @@ impl_writeable_tlv_based!(ClaimedHTLC, {
 	(0, channel_id, required),
 	(1, counterparty_skimmed_fee_msat, (default_value, 0u64)),
 	(2, user_channel_id, required),
+	(3, counterparty_node_id, option),
 	(4, cltv_expiry, required),
 	(6, value_msat, required),
 });
