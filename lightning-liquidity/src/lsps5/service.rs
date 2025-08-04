@@ -47,7 +47,7 @@ pub const PRUNE_STALE_WEBHOOKS_INTERVAL_DAYS: Duration = Duration::from_secs(24 
 
 /// A stored webhook.
 #[derive(Debug, Clone)]
-struct StoredWebhook {
+struct Webhook {
 	_app_name: LSPS5AppName,
 	url: LSPS5WebhookUrl,
 	_counterparty_node_id: PublicKey,
@@ -117,7 +117,7 @@ where
 	TP::Target: TimeProvider,
 {
 	config: LSPS5ServiceConfig,
-	webhooks: Mutex<HashMap<PublicKey, HashMap<LSPS5AppName, StoredWebhook>>>,
+	webhooks: Mutex<HashMap<PublicKey, HashMap<LSPS5AppName, Webhook>>>,
 	event_queue: Arc<EventQueue>,
 	pending_messages: Arc<MessageQueue>,
 	time_provider: TP,
@@ -189,7 +189,7 @@ where
 				} else {
 					(now, new_hash_map())
 				};
-				entry.insert(StoredWebhook {
+				entry.insert(Webhook {
 					_app_name: params.app_name.clone(),
 					url: params.webhook.clone(),
 					_counterparty_node_id: counterparty_node_id,
@@ -212,7 +212,7 @@ where
 					});
 				}
 
-				entry.insert(StoredWebhook {
+				entry.insert(Webhook {
 					_app_name: params.app_name.clone(),
 					url: params.webhook.clone(),
 					_counterparty_node_id: counterparty_node_id,
