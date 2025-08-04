@@ -5578,33 +5578,49 @@ where
 	}
 
 	/// Asserts that the commitment tx numbers have not advanced from their initial number.
-	#[rustfmt::skip]
-	fn assert_no_commitment_advancement(&self, holder_commitment_transaction_number: u64, msg_name: &str) {
-		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
-			debug_assert!(false, "Should not have advanced channel commitment tx numbers prior to {}",
-				msg_name);
+	fn assert_no_commitment_advancement(
+		&self, holder_commitment_transaction_number: u64, msg_name: &str,
+	) {
+		if self.commitment_secrets.get_min_seen_secret() != (1 << 48)
+			|| self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER
+			|| holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER
+		{
+			debug_assert!(
+				false,
+				"Should not have advanced channel commitment tx numbers prior to {}",
+				msg_name
+			);
 		}
 	}
 
-	#[rustfmt::skip]
 	fn get_initial_counterparty_commitment_signature<L: Deref>(
-		&self, funding: &FundingScope, logger: &L
+		&self, funding: &FundingScope, logger: &L,
 	) -> Option<Signature>
 	where
 		SP::Target: SignerProvider,
-		L::Target: Logger
+		L::Target: Logger,
 	{
-		let commitment_data = self.build_commitment_transaction(funding,
+		let commitment_data = self.build_commitment_transaction(
+			funding,
 			self.cur_counterparty_commitment_transaction_number,
-			&self.counterparty_cur_commitment_point.unwrap(), false, false, logger);
+			&self.counterparty_cur_commitment_point.unwrap(),
+			false,
+			false,
+			logger,
+		);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		match self.holder_signer {
 			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ref ecdsa) => {
 				let channel_parameters = &funding.channel_transaction_parameters;
-				ecdsa.sign_counterparty_commitment(channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
+				ecdsa
+					.sign_counterparty_commitment(
+						channel_parameters,
+						&counterparty_initial_commitment_tx,
+						Vec::new(),
+						Vec::new(),
+						&self.secp_ctx,
+					)
 					.map(|(signature, _)| signature)
 					.ok()
 			},
@@ -5614,19 +5630,24 @@ where
 		}
 	}
 
-	#[rustfmt::skip]
 	fn get_initial_commitment_signed_v2<L: Deref>(
-		&mut self, funding: &FundingScope, logger: &L
+		&mut self, funding: &FundingScope, logger: &L,
 	) -> Option<msgs::CommitmentSigned>
 	where
 		SP::Target: SignerProvider,
-		L::Target: Logger
+		L::Target: Logger,
 	{
-		assert!(matches!(self.channel_state, ChannelState::FundingNegotiated(flags) if flags.is_interactive_signing()));
+		assert!(
+			matches!(self.channel_state, ChannelState::FundingNegotiated(flags) if flags.is_interactive_signing())
+		);
 
 		let signature = self.get_initial_counterparty_commitment_signature(funding, logger);
 		if let Some(signature) = signature {
-			log_info!(logger, "Generated commitment_signed for peer for channel {}", &self.channel_id());
+			log_info!(
+				logger,
+				"Generated commitment_signed for peer for channel {}",
+				&self.channel_id()
+			);
 			Some(msgs::CommitmentSigned {
 				channel_id: self.channel_id,
 				htlc_signatures: vec![],
