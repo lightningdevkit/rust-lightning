@@ -72,7 +72,7 @@ impl LSPS2RawOpeningFeeParams {
 		LSPS2OpeningFeeParams {
 			min_fee_msat: self.min_fee_msat,
 			proportional: self.proportional,
-			valid_until: self.valid_until.clone(),
+			valid_until: self.valid_until,
 			min_lifetime: self.min_lifetime,
 			max_client_to_self_delay: self.max_client_to_self_delay,
 			min_payment_size_msat: self.min_payment_size_msat,
@@ -235,7 +235,7 @@ mod tests {
 		let raw = LSPS2RawOpeningFeeParams {
 			min_fee_msat,
 			proportional,
-			valid_until: valid_until.clone().into(),
+			valid_until: valid_until.into(),
 			min_lifetime,
 			max_client_to_self_delay,
 			min_payment_size_msat,

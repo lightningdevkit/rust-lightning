@@ -185,7 +185,7 @@ where
 			Entry::Occupied(mut entry) => {
 				no_change = entry.get().url == params.webhook;
 				let (last_used, last_notification_sent) = if no_change {
-					(entry.get().last_used.clone(), entry.get().last_notification_sent.clone())
+					(entry.get().last_used, entry.get().last_notification_sent.clone())
 				} else {
 					(now, new_hash_map())
 				};
@@ -438,8 +438,8 @@ where
 		}
 
 		for (app_name, webhook) in client_webhooks.iter_mut() {
-			webhook.last_notification_sent.insert(notification.method.clone(), now.clone());
-			webhook.last_used = now.clone();
+			webhook.last_notification_sent.insert(notification.method.clone(), now);
+			webhook.last_used = now;
 			self.send_notification(
 				client_id,
 				app_name.clone(),
