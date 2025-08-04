@@ -50,12 +50,14 @@ where
 	/// specifcation](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 	/// for more information.
 	pub fn list_protocols(&self, counterparty_node_id: &PublicKey) {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
 		let msg = LSPS0Message::Request(
 			utils::generate_request_id(&self.entropy_source),
 			LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {}),
 		);
 
-		self.pending_messages.enqueue(counterparty_node_id, msg.into());
+		message_queue_notifier.enqueue(counterparty_node_id, msg.into());
 	}
 
 	fn handle_response(
