@@ -1202,7 +1202,6 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// stored for later processing.
 	FreeOtherChannelImmediately {
 		downstream_counterparty_node_id: PublicKey,
-		downstream_funding_outpoint: OutPoint,
 		blocking_action: RAAMonitorUpdateBlockingAction,
 		downstream_channel_id: ChannelId,
 	},
@@ -1217,11 +1216,8 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 	// *immediately*. However, for simplicity we implement read/write here.
 	(1, FreeOtherChannelImmediately) => {
 		(0, downstream_counterparty_node_id, required),
-		(2, downstream_funding_outpoint, required),
 		(4, blocking_action, upgradable_required),
-		// Note that by the time we get past the required read above, downstream_funding_outpoint will be
-		// filled in, so we can safely unwrap it here.
-		(5, downstream_channel_id, (default_value, ChannelId::v1_from_funding_outpoint(downstream_funding_outpoint.0.unwrap()))),
+		(5, downstream_channel_id, required),
 	},
 	(2, EmitEventAndFreeOtherChannel) => {
 		(0, event, upgradable_required),
@@ -1238,17 +1234,21 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 pub(crate) enum EventCompletionAction {
 	ReleaseRAAChannelMonitorUpdate {
 		counterparty_node_id: PublicKey,
-		channel_funding_outpoint: OutPoint,
+		// Was required until LDK 0.2. Always filled in as `Some`.
+		channel_funding_outpoint: Option<OutPoint>,
 		channel_id: ChannelId,
 	},
 }
 impl_writeable_tlv_based_enum!(EventCompletionAction,
 	(0, ReleaseRAAChannelMonitorUpdate) => {
-		(0, channel_funding_outpoint, required),
+		(0, channel_funding_outpoint, option),
 		(2, counterparty_node_id, required),
-		// Note that by the time we get past the required read above, channel_funding_outpoint will be
-		// filled in, so we can safely unwrap it here.
-		(3, channel_id, (default_value, ChannelId::v1_from_funding_outpoint(channel_funding_outpoint.0.unwrap()))),
+		(3, channel_id, (default_value, {
+			if channel_funding_outpoint.is_none() {
+				Err(DecodeError::InvalidValue)?
+			}
+			ChannelId::v1_from_funding_outpoint(channel_funding_outpoint.unwrap())
+		})),
 	}
 );
 
@@ -1278,8 +1278,8 @@ impl From<&MPPClaimHTLCSource> for HTLCClaimSource {
 
 #[derive(Debug)]
 pub(crate) struct PendingMPPClaim {
-	channels_without_preimage: Vec<(PublicKey, OutPoint, ChannelId)>,
-	channels_with_preimage: Vec<(PublicKey, OutPoint, ChannelId)>,
+	channels_without_preimage: Vec<(PublicKey, ChannelId)>,
+	channels_with_preimage: Vec<(PublicKey, ChannelId)>,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -8066,7 +8066,7 @@ where
 			let pending_mpp_claim_ptr_opt = if sources.len() > 1 {
 				let mut channels_without_preimage = Vec::with_capacity(mpp_parts.len());
 				for part in mpp_parts.iter() {
-					let chan = (part.counterparty_node_id, part.funding_txo, part.channel_id);
+					let chan = (part.counterparty_node_id, part.channel_id);
 					if !channels_without_preimage.contains(&chan) {
 						channels_without_preimage.push(chan);
 					}
@@ -8321,7 +8321,6 @@ where
 								chan_id, action);
 							if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
 								downstream_counterparty_node_id: node_id,
-								downstream_funding_outpoint: _,
 								blocking_action: blocker,
 								downstream_channel_id: channel_id,
 							} = action
@@ -8494,7 +8493,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
 				debug_assert_eq!(next_channel_counterparty_node_id, path.hops[0].pubkey);
 				let ev_completion_action = EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-					channel_funding_outpoint: next_channel_outpoint,
+					channel_funding_outpoint: Some(next_channel_outpoint),
 					channel_id: next_channel_id,
 					counterparty_node_id: path.hops[0].pubkey,
 				};
@@ -8598,7 +8597,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							if let Some(other_chan) = chan_to_release {
 								(Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
 									downstream_counterparty_node_id: other_chan.counterparty_node_id,
-									downstream_funding_outpoint: other_chan.funding_txo,
 									downstream_channel_id: other_chan.channel_id,
 									blocking_action: other_chan.blocking_action,
 								}), None)
@@ -8672,17 +8670,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										if *pending_claim == claim_ptr {
 											let mut pending_claim_state_lock = pending_claim.0.lock().unwrap();
 											let pending_claim_state = &mut *pending_claim_state_lock;
-											pending_claim_state.channels_without_preimage.retain(|(cp, op, cid)| {
+											pending_claim_state.channels_without_preimage.retain(|(cp, cid)| {
 												let this_claim =
 													*cp == counterparty_node_id && *cid == chan_id;
 												if this_claim {
-													pending_claim_state.channels_with_preimage.push((*cp, *op, *cid));
+													pending_claim_state.channels_with_preimage.push((*cp, *cid));
 													false
 												} else { true }
 											});
 											if pending_claim_state.channels_without_preimage.is_empty() {
-												for (cp, op, cid) in pending_claim_state.channels_with_preimage.iter() {
-													let freed_chan = (*cp, *op, *cid, blocker.clone());
+												for (cp, cid) in pending_claim_state.channels_with_preimage.iter() {
+													let freed_chan = (*cp, *cid, blocker.clone());
 													freed_channels.push(freed_chan);
 												}
 											}
@@ -8734,17 +8732,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					self.pending_events.lock().unwrap().push_back((event, None));
 					if let Some(unblocked) = downstream_counterparty_and_funding_outpoint {
 						self.handle_monitor_update_release(
-							unblocked.counterparty_node_id, unblocked.funding_txo,
-							unblocked.channel_id, Some(unblocked.blocking_action),
+							unblocked.counterparty_node_id,
+							unblocked.channel_id,
+							Some(unblocked.blocking_action),
 						);
 					}
 				},
 				MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
-					downstream_counterparty_node_id, downstream_funding_outpoint, downstream_channel_id, blocking_action,
+					downstream_counterparty_node_id, downstream_channel_id, blocking_action,
 				} => {
 					self.handle_monitor_update_release(
 						downstream_counterparty_node_id,
-						downstream_funding_outpoint,
 						downstream_channel_id,
 						Some(blocking_action),
 					);
@@ -8752,8 +8750,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		}
 
-		for (node_id, funding_outpoint, channel_id, blocker) in freed_channels {
-			self.handle_monitor_update_release(node_id, funding_outpoint, channel_id, Some(blocker));
+		for (node_id, channel_id, blocker) in freed_channels {
+			self.handle_monitor_update_release(node_id, channel_id, Some(blocker));
 		}
 	}
 
@@ -10535,16 +10533,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	#[rustfmt::skip]
 	fn raa_monitor_updates_held(&self,
 		actions_blocking_raa_monitor_updates: &BTreeMap<ChannelId, Vec<RAAMonitorUpdateBlockingAction>>,
-		channel_funding_outpoint: OutPoint, channel_id: ChannelId, counterparty_node_id: PublicKey
+		channel_id: ChannelId, counterparty_node_id: PublicKey,
 	) -> bool {
 		actions_blocking_raa_monitor_updates
 			.get(&channel_id).map(|v| !v.is_empty()).unwrap_or(false)
 		|| self.pending_events.lock().unwrap().iter().any(|(_, action)| {
-			action == &Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-				channel_funding_outpoint,
-				channel_id,
-				counterparty_node_id,
-			})
+			if let Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
+				channel_funding_outpoint: _,
+				channel_id: ev_channel_id,
+				counterparty_node_id: ev_counterparty_node_id
+			}) = action {
+				*ev_channel_id == channel_id && *ev_counterparty_node_id == counterparty_node_id
+			} else {
+				false
+			}
 		})
 	}
 
@@ -10557,14 +10559,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let mut peer_state_lck = peer_state_mtx.lock().unwrap();
 			let peer_state = &mut *peer_state_lck;
 
-			if let Some(chan) = peer_state.channel_by_id.get(&channel_id) {
-				return self.raa_monitor_updates_held(
-					&peer_state.actions_blocking_raa_monitor_updates,
-					chan.funding().get_funding_txo().unwrap(),
-					channel_id,
-					counterparty_node_id,
-				);
-			}
+			assert!(peer_state.channel_by_id.contains_key(&channel_id));
+			return self.raa_monitor_updates_held(
+				&peer_state.actions_blocking_raa_monitor_updates,
+				channel_id,
+				counterparty_node_id,
+			);
 		}
 		false
 	}
@@ -10584,11 +10584,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 						let funding_txo_opt = chan.funding.get_funding_txo();
-						let mon_update_blocked = if let Some(funding_txo) = funding_txo_opt {
-							self.raa_monitor_updates_held(
-								&peer_state.actions_blocking_raa_monitor_updates, funding_txo, msg.channel_id,
-								*counterparty_node_id)
-						} else { false };
+						let mon_update_blocked = self.raa_monitor_updates_held(
+							&peer_state.actions_blocking_raa_monitor_updates, msg.channel_id,
+							*counterparty_node_id);
 						let (htlcs_to_fail, monitor_update_opt) = try_channel_entry!(self, peer_state,
 							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_entry);
 						if let Some(monitor_update) = monitor_update_opt {
@@ -12573,10 +12571,10 @@ where
 	/// operation. It will double-check that nothing *else* is also blocking the same channel from
 	/// making progress and then let any blocked [`ChannelMonitorUpdate`]s fly.
 	#[rustfmt::skip]
-	fn handle_monitor_update_release(&self, counterparty_node_id: PublicKey,
-		channel_funding_outpoint: OutPoint, channel_id: ChannelId,
-		mut completed_blocker: Option<RAAMonitorUpdateBlockingAction>) {
-
+	fn handle_monitor_update_release(
+		&self, counterparty_node_id: PublicKey, channel_id: ChannelId,
+		mut completed_blocker: Option<RAAMonitorUpdateBlockingAction>,
+	) {
 		let logger = WithContext::from(
 			&self.logger, Some(counterparty_node_id), Some(channel_id), None
 		);
@@ -12595,7 +12593,7 @@ where
 				}
 
 				if self.raa_monitor_updates_held(&peer_state.actions_blocking_raa_monitor_updates,
-					channel_funding_outpoint, channel_id, counterparty_node_id) {
+					channel_id, counterparty_node_id) {
 					// Check that, while holding the peer lock, we don't have anything else
 					// blocking monitor updates for this channel. If we do, release the monitor
 					// update(s) when those blockers complete.
@@ -12607,7 +12605,7 @@ where
 				if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(
 					channel_id) {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-						debug_assert_eq!(chan.funding.get_funding_txo().unwrap(), channel_funding_outpoint);
+						let channel_funding_outpoint = chan.funding_outpoint();
 						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
 							log_debug!(logger, "Unlocking monitor updating for channel {} and updating monitor",
 								channel_id);
@@ -12637,16 +12635,11 @@ where
 		for action in actions {
 			match action {
 				EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-					channel_funding_outpoint,
+					channel_funding_outpoint: _,
 					channel_id,
 					counterparty_node_id,
 				} => {
-					self.handle_monitor_update_release(
-						counterparty_node_id,
-						channel_funding_outpoint,
-						channel_id,
-						None,
-					);
+					self.handle_monitor_update_release(counterparty_node_id, channel_id, None);
 				},
 			}
 		}
@@ -16420,7 +16413,9 @@ where
 									// `ChannelMonitor` is removed.
 									let compl_action =
 										EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-											channel_funding_outpoint: monitor.get_funding_txo(),
+											channel_funding_outpoint: Some(
+												monitor.get_funding_txo(),
+											),
 											channel_id: monitor.channel_id(),
 											counterparty_node_id: path.hops[0].pubkey,
 										};
@@ -16923,13 +16918,7 @@ where
 						let mut channels_without_preimage = payment_claim
 							.mpp_parts
 							.iter()
-							.map(|htlc_info| {
-								(
-									htlc_info.counterparty_node_id,
-									htlc_info.funding_txo,
-									htlc_info.channel_id,
-								)
-							})
+							.map(|htlc_info| (htlc_info.counterparty_node_id, htlc_info.channel_id))
 							.collect::<Vec<_>>();
 						// If we have multiple MPP parts which were received over the same channel,
 						// we only track it once as once we get a preimage durably in the
