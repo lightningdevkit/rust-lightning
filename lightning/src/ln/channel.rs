@@ -4426,7 +4426,7 @@ where
 		}
 		#[cfg(any(test, fuzzing))]
 		{
-			let PredictedNextFee { predicted_feerate, predicted_nondust_htlc_count, predicted_fee_sat } = funding.next_local_fee.lock().unwrap().clone();
+			let PredictedNextFee { predicted_feerate, predicted_nondust_htlc_count, predicted_fee_sat } = *funding.next_local_fee.lock().unwrap();
 			if predicted_feerate == commitment_data.tx.feerate_per_kw() && predicted_nondust_htlc_count == commitment_data.tx.nondust_htlcs().len() {
 				assert_eq!(predicted_fee_sat, commitment_data.stats.commit_tx_fee_sat);
 			}
@@ -6025,7 +6025,7 @@ macro_rules! promote_splice_funding {
 }
 
 #[cfg(any(test, fuzzing))]
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 struct PredictedNextFee {
 	predicted_feerate: u32,
 	predicted_nondust_htlc_count: usize,
@@ -10973,7 +10973,7 @@ where
 
 		#[cfg(any(test, fuzzing))]
 		{
-			let PredictedNextFee { predicted_feerate, predicted_nondust_htlc_count, predicted_fee_sat } = funding.next_remote_fee.lock().unwrap().clone();
+			let PredictedNextFee { predicted_feerate, predicted_nondust_htlc_count, predicted_fee_sat } = *funding.next_remote_fee.lock().unwrap();
 			if predicted_feerate == counterparty_commitment_tx.feerate_per_kw() && predicted_nondust_htlc_count == counterparty_commitment_tx.nondust_htlcs().len() {
 				assert_eq!(predicted_fee_sat, commitment_data.stats.commit_tx_fee_sat);
 			}
