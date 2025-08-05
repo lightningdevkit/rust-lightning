@@ -714,8 +714,13 @@ where
 		}
 	}
 	fn peer_connected(
-		&self, _: bitcoin::secp256k1::PublicKey, _: &lightning::ln::msgs::Init, _: bool,
+		&self, counterparty_node_id: bitcoin::secp256k1::PublicKey, _: &lightning::ln::msgs::Init,
+		_: bool,
 	) -> Result<(), ()> {
+		if let Some(lsps5_service_handler) = self.lsps5_service_handler.as_ref() {
+			lsps5_service_handler.peer_connected(&counterparty_node_id);
+		}
+
 		Ok(())
 	}
 }
