@@ -171,7 +171,9 @@ impl TxBuilder for SpecTxBuilder {
 			next_commitment_htlcs.iter().filter(|htlc| !htlc.outbound).count();
 
 		// Calculate balances after htlcs
-		let value_to_counterparty_msat = channel_value_satoshis * 1000 - value_to_holder_msat;
+		let value_to_counterparty_msat = (channel_value_satoshis * 1000)
+			.checked_sub(value_to_holder_msat)
+			.expect("value_to_holder_msat outgrew the value of the channel!");
 		let outbound_htlcs_value_msat: u64 = next_commitment_htlcs
 			.iter()
 			.filter_map(|htlc| htlc.outbound.then_some(htlc.amount_msat))
