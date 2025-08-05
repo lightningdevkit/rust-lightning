@@ -274,29 +274,7 @@ fn test_v1_splice_in() {
 		_ => panic!("Unexpected event {:?}", events[1]),
 	}
 
-	// TODO(splicing): Continue with commitment flow, new tx confirmation
-
-	// === Close channel, cooperatively
-	initiator_node.node.close_channel(&channel_id, &acceptor_node.node.get_our_node_id()).unwrap();
-	let node0_shutdown_message = get_event_msg!(
-		initiator_node,
-		MessageSendEvent::SendShutdown,
-		acceptor_node.node.get_our_node_id()
-	);
-	acceptor_node
-		.node
-		.handle_shutdown(initiator_node.node.get_our_node_id(), &node0_shutdown_message);
-	let nodes_1_shutdown = get_event_msg!(
-		acceptor_node,
-		MessageSendEvent::SendShutdown,
-		initiator_node.node.get_our_node_id()
-	);
-	initiator_node.node.handle_shutdown(acceptor_node.node.get_our_node_id(), &nodes_1_shutdown);
-	let _ = get_event_msg!(
-		initiator_node,
-		MessageSendEvent::SendClosingSigned,
-		acceptor_node.node.get_our_node_id()
-	);
+	// TODO(splicing): Continue with commitment flow, new tx confirmation, and shutdown
 }
 
 #[test]
