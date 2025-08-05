@@ -16012,6 +16012,10 @@ where
 			(23, receive_htlcs, optional_vec),
 		});
 		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
+		debug_assert!(
+			receive_htlcs.as_ref().map_or(true, |r| r.is_empty())
+				|| legacy_receive_htlcs.is_empty()
+		);
 		let receive_htlcs = receive_htlcs.unwrap_or_else(|| legacy_receive_htlcs);
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
 		if fake_scid_rand_bytes.is_none() {
