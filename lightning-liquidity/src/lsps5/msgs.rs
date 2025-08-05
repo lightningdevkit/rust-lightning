@@ -51,6 +51,8 @@ pub const LSPS5_APP_NAME_NOT_FOUND_ERROR_CODE: i32 = 1010;
 pub const LSPS5_UNKNOWN_ERROR_CODE: i32 = 1000;
 /// An error occurred during serialization of LSPS5 webhook notification.
 pub const LSPS5_SERIALIZATION_ERROR_CODE: i32 = 1001;
+/// A notification was sent too frequently.
+pub const LSPS5_SLOW_DOWN_ERROR_CODE: i32 = 1002;
 
 pub(crate) const LSPS5_SET_WEBHOOK_METHOD_NAME: &str = "lsps5.set_webhook";
 pub(crate) const LSPS5_LIST_WEBHOOKS_METHOD_NAME: &str = "lsps5.list_webhooks";
@@ -103,10 +105,18 @@ pub enum LSPS5ProtocolError {
 
 	/// Error during serialization of LSPS5 webhook notification.
 	SerializationError,
+
+	/// A notification was sent too frequently.
+	///
+	/// This error indicates that the LSP is sending notifications
+	/// too quickly, violating the notification cooldown [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`]
+	///
+	/// [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`]: super::service::DEFAULT_NOTIFICATION_COOLDOWN_HOURS
+	SlowDownError,
 }
 
 impl LSPS5ProtocolError {
-	/// private code range so we never collide with the spec's codes
+	/// The error code for the LSPS5 protocol error.
 	pub fn code(&self) -> i32 {
 		match self {
 			LSPS5ProtocolError::AppNameTooLong | LSPS5ProtocolError::WebhookUrlTooLong => {
@@ -118,6 +128,7 @@ impl LSPS5ProtocolError {
 			LSPS5ProtocolError::AppNameNotFound => LSPS5_APP_NAME_NOT_FOUND_ERROR_CODE,
 			LSPS5ProtocolError::UnknownError => LSPS5_UNKNOWN_ERROR_CODE,
 			LSPS5ProtocolError::SerializationError => LSPS5_SERIALIZATION_ERROR_CODE,
+			LSPS5ProtocolError::SlowDownError => LSPS5_SLOW_DOWN_ERROR_CODE,
 		}
 	}
 	/// The error message for the LSPS5 protocol error.
@@ -133,6 +144,7 @@ impl LSPS5ProtocolError {
 			LSPS5ProtocolError::SerializationError => {
 				"Error serializing LSPS5 webhook notification"
 			},
+			LSPS5ProtocolError::SlowDownError => "Notification sent too frequently",
 		}
 	}
 }
