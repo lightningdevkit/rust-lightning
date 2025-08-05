@@ -2627,6 +2627,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	nodes[1].node.process_pending_update_add_htlcs();
 
 	// Modify the payload so the phantom hop's HMAC is bogus.
+	assert_eq!(nodes[1].node.forward_htlcs.lock().unwrap().len(), 1);
 	if let Some((_, pending_forwards)) =
 		nodes[1].node.forward_htlcs.lock().unwrap().iter_mut().next()
 	{
