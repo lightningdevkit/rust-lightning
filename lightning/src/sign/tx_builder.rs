@@ -15,7 +15,6 @@ use crate::prelude::*;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::logger::Logger;
 
-#[cfg_attr(any(test, fuzzing), derive(Clone, PartialEq, PartialOrd, Eq, Ord))]
 pub(crate) struct HTLCAmountDirection {
 	pub outbound: bool,
 	pub amount_msat: u64,
@@ -42,11 +41,11 @@ impl HTLCAmountDirection {
 }
 
 pub(crate) struct NextCommitmentStats {
-	pub next_commitment_htlcs: Vec<HTLCAmountDirection>,
 	pub inbound_htlcs_count: usize,
 	pub inbound_htlcs_value_msat: u64,
 	pub holder_balance_msat: Option<u64>,
 	pub counterparty_balance_msat: Option<u64>,
+	pub nondust_htlc_count: usize,
 	pub commit_tx_fee_sat: u64,
 	pub dust_exposure_msat: u64,
 	// If the counterparty sets a feerate on the channel in excess of our dust_exposure_limiting_feerate,
@@ -124,7 +123,7 @@ fn get_dust_buffer_feerate(feerate_per_kw: u32) -> u32 {
 pub(crate) trait TxBuilder {
 	fn get_next_commitment_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
-		value_to_holder_msat: u64, next_commitment_htlcs: Vec<HTLCAmountDirection>,
+		value_to_holder_msat: u64, next_commitment_htlcs: &[HTLCAmountDirection],
 		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
 		dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
 		channel_type: &ChannelTypeFeatures,
@@ -151,7 +150,7 @@ pub(crate) struct SpecTxBuilder {}
 impl TxBuilder for SpecTxBuilder {
 	fn get_next_commitment_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
-		value_to_holder_msat: u64, next_commitment_htlcs: Vec<HTLCAmountDirection>,
+		value_to_holder_msat: u64, next_commitment_htlcs: &[HTLCAmountDirection],
 		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
 		dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
 		channel_type: &ChannelTypeFeatures,
@@ -238,9 +237,9 @@ impl TxBuilder for SpecTxBuilder {
 			NextCommitmentStats {
 				inbound_htlcs_count,
 				inbound_htlcs_value_msat,
-				next_commitment_htlcs,
 				holder_balance_msat,
 				counterparty_balance_msat,
+				nondust_htlc_count,
 				commit_tx_fee_sat,
 				dust_exposure_msat,
 				extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat: Some(
@@ -251,9 +250,9 @@ impl TxBuilder for SpecTxBuilder {
 			NextCommitmentStats {
 				inbound_htlcs_count,
 				inbound_htlcs_value_msat,
-				next_commitment_htlcs,
 				holder_balance_msat,
 				counterparty_balance_msat,
+				nondust_htlc_count,
 				commit_tx_fee_sat,
 				dust_exposure_msat,
 				extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat: None,

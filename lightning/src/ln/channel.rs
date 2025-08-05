@@ -4224,7 +4224,7 @@ where
 			funding.is_outbound(),
 			funding.get_value_satoshis(),
 			next_value_to_self_msat,
-			next_commitment_htlcs,
+			&next_commitment_htlcs,
 			addl_nondust_htlc_count,
 			feerate_per_kw,
 			dust_exposure_limiting_feerate,
@@ -4249,7 +4249,7 @@ where
 			funding.is_outbound(),
 			funding.get_value_satoshis(),
 			next_value_to_self_msat,
-			next_commitment_htlcs,
+			&next_commitment_htlcs,
 			addl_nondust_htlc_count,
 			feerate_per_kw,
 			dust_exposure_limiting_feerate,
@@ -4323,19 +4323,15 @@ where
 
 		#[cfg(any(test, fuzzing))]
 		{
-			let mut local_predicted_htlcs = next_local_commitment_stats.next_commitment_htlcs;
-			local_predicted_htlcs.sort_unstable();
 			*funding.next_local_fee.lock().unwrap() = PredictedNextFee {
 				predicted_feerate: self.feerate_per_kw,
-				predicted_htlcs: local_predicted_htlcs,
+				predicted_nondust_htlc_count: next_local_commitment_stats.nondust_htlc_count,
 				predicted_fee_sat: next_local_commitment_stats.commit_tx_fee_sat,
 			};
 
-			let mut remote_predicted_htlcs = next_remote_commitment_stats.next_commitment_htlcs;
-			remote_predicted_htlcs.sort_unstable();
 			*funding.next_remote_fee.lock().unwrap() = PredictedNextFee {
 				predicted_feerate: self.feerate_per_kw,
-				predicted_htlcs: remote_predicted_htlcs,
+				predicted_nondust_htlc_count: next_remote_commitment_stats.nondust_htlc_count,
 				predicted_fee_sat: next_remote_commitment_stats.commit_tx_fee_sat,
 			};
 		}
@@ -4372,19 +4368,15 @@ where
 
 		#[cfg(any(test, fuzzing))]
 		{
-			let mut local_predicted_htlcs = next_local_commitment_stats.next_commitment_htlcs;
-			local_predicted_htlcs.sort_unstable();
 			*funding.next_local_fee.lock().unwrap() = PredictedNextFee {
 				predicted_feerate: msg.feerate_per_kw,
-				predicted_htlcs: local_predicted_htlcs,
+				predicted_nondust_htlc_count: next_local_commitment_stats.nondust_htlc_count,
 				predicted_fee_sat: next_local_commitment_stats.commit_tx_fee_sat,
 			};
 
-			let mut remote_predicted_htlcs = next_remote_commitment_stats.next_commitment_htlcs;
-			remote_predicted_htlcs.sort_unstable();
 			*funding.next_remote_fee.lock().unwrap() = PredictedNextFee {
 				predicted_feerate: msg.feerate_per_kw,
-				predicted_htlcs: remote_predicted_htlcs,
+				predicted_nondust_htlc_count: next_remote_commitment_stats.nondust_htlc_count,
 				predicted_fee_sat: next_remote_commitment_stats.commit_tx_fee_sat,
 			};
 		}
@@ -4434,10 +4426,8 @@ where
 		}
 		#[cfg(any(test, fuzzing))]
 		{
-			let PredictedNextFee { predicted_feerate, predicted_htlcs, predicted_fee_sat } = funding.next_local_fee.lock().unwrap().clone();
-			let mut actual_nondust_htlcs: Vec<_> = commitment_data.tx.nondust_htlcs().iter().map(|&HTLCOutputInCommitment { offered, amount_msat, .. } | HTLCAmountDirection { outbound: offered, amount_msat }).collect();
-			actual_nondust_htlcs.sort_unstable();
-			if predicted_feerate == commitment_data.tx.feerate_per_kw() && predicted_htlcs == actual_nondust_htlcs {
+			let PredictedNextFee { predicted_feerate, predicted_nondust_htlc_count, predicted_fee_sat } = funding.next_local_fee.lock().unwrap().clone();
+			if predicted_feerate == commitment_data.tx.feerate_per_kw() && predicted_nondust_htlc_count == commitment_data.tx.nondust_htlcs().len() {
 				assert_eq!(predicted_fee_sat, commitment_data.stats.commit_tx_fee_sat);
 			}
 		}
@@ -4515,11 +4505,9 @@ where
 		#[cfg(any(test, fuzzing))]
 		{
 			let next_remote_commitment_stats = self.get_next_remote_commitment_stats(funding, None, include_counterparty_unknown_htlcs, 0, feerate_per_kw, dust_exposure_limiting_feerate);
-			let mut remote_predicted_htlcs = next_remote_commitment_stats.next_commitment_htlcs;
-			remote_predicted_htlcs.sort_unstable();
 			*funding.next_remote_fee.lock().unwrap() = PredictedNextFee {
 				predicted_feerate: feerate_per_kw,
-				predicted_htlcs: remote_predicted_htlcs,
+				predicted_nondust_htlc_count: next_remote_commitment_stats.nondust_htlc_count,
 				predicted_fee_sat: next_remote_commitment_stats.commit_tx_fee_sat,
 			};
 		}
@@ -4585,11 +4573,9 @@ where
 			} else {
 				next_local_commitment_stats
 			};
-			let mut local_predicted_htlcs = next_local_commitment_stats.next_commitment_htlcs;
-			local_predicted_htlcs.sort_unstable();
 			*funding.next_local_fee.lock().unwrap() = PredictedNextFee {
 				predicted_feerate: self.feerate_per_kw,
-				predicted_htlcs: local_predicted_htlcs,
+				predicted_nondust_htlc_count: next_local_commitment_stats.nondust_htlc_count,
 				predicted_fee_sat: next_local_commitment_stats.commit_tx_fee_sat,
 			};
 
@@ -4598,11 +4584,9 @@ where
 			} else {
 				next_remote_commitment_stats
 			};
-			let mut remote_predicted_htlcs = next_remote_commitment_stats.next_commitment_htlcs;
-			remote_predicted_htlcs.sort_unstable();
 			*funding.next_remote_fee.lock().unwrap() = PredictedNextFee {
 				predicted_feerate: self.feerate_per_kw,
-				predicted_htlcs: remote_predicted_htlcs,
+				predicted_nondust_htlc_count: next_remote_commitment_stats.nondust_htlc_count,
 				predicted_fee_sat: next_remote_commitment_stats.commit_tx_fee_sat,
 			};
 		}
@@ -6044,7 +6028,7 @@ macro_rules! promote_splice_funding {
 #[derive(Clone, Default)]
 struct PredictedNextFee {
 	predicted_feerate: u32,
-	predicted_htlcs: Vec<HTLCAmountDirection>,
+	predicted_nondust_htlc_count: usize,
 	predicted_fee_sat: u64,
 }
 
@@ -10989,10 +10973,8 @@ where
 
 		#[cfg(any(test, fuzzing))]
 		{
-			let PredictedNextFee { predicted_feerate, predicted_htlcs, predicted_fee_sat } = funding.next_remote_fee.lock().unwrap().clone();
-			let mut actual_nondust_htlcs: Vec<_> = counterparty_commitment_tx.nondust_htlcs().iter().map(|&HTLCOutputInCommitment { offered, amount_msat, .. }| HTLCAmountDirection { outbound: !offered, amount_msat }).collect();
-			actual_nondust_htlcs.sort_unstable();
-			if predicted_feerate == counterparty_commitment_tx.feerate_per_kw() && predicted_htlcs == actual_nondust_htlcs {
+			let PredictedNextFee { predicted_feerate, predicted_nondust_htlc_count, predicted_fee_sat } = funding.next_remote_fee.lock().unwrap().clone();
+			if predicted_feerate == counterparty_commitment_tx.feerate_per_kw() && predicted_nondust_htlc_count == counterparty_commitment_tx.nondust_htlcs().len() {
 				assert_eq!(predicted_fee_sat, commitment_data.stats.commit_tx_fee_sat);
 			}
 		}
