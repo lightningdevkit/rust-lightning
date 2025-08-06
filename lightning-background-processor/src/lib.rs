@@ -591,7 +591,9 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 /// # use lightning_liquidity::utils::time::TimeProvider;
 /// # struct Logger {}
 /// # impl lightning::util::logger::Logger for Logger {
+/// #     type UserSpan = ();
 /// #     fn log(&self, _record: lightning::util::logger::Record) {}
+/// #     fn start(&self, _span: lightning::util::logger::Span, _parent: Option<&()>) -> () {}
 /// # }
 /// # struct StoreSync {}
 /// # impl lightning::util::persist::KVStoreSync for StoreSync {

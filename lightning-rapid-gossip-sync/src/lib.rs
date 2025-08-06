@@ -51,10 +51,12 @@
 //! use lightning::routing::gossip::NetworkGraph;
 //! use lightning_rapid_gossip_sync::RapidGossipSync;
 //!
-//! # use lightning::util::logger::{Logger, Record};
+//! # use lightning::util::logger::{Logger, Record, Span};
 //! # struct FakeLogger {}
 //! # impl Logger for FakeLogger {
+//! #     type UserSpan = ();
 //! #     fn log(&self, record: Record) { }
+//! #     fn start(&self, _span: Span, parent: Option<&()>) -> () {}
 //! # }
 //! # let logger = FakeLogger {};
 //!

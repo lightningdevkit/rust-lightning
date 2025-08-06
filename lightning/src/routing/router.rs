@@ -9424,14 +9424,16 @@ pub mod benches {
 	use crate::routing::scoring::{ScoreLookUp, ScoreUpdate};
 	use crate::types::features::Bolt11InvoiceFeatures;
 	use crate::util::config::UserConfig;
-	use crate::util::logger::{Logger, Record};
+	use crate::util::logger::{Logger, Record, Span};
 	use crate::util::test_utils::TestLogger;
 
 	use criterion::Criterion;
 
 	struct DummyLogger {}
 	impl Logger for DummyLogger {
+		type UserSpan = ();
 		fn log(&self, _record: Record) {}
+		fn start(&self, _span: Span, _parent: Option<&()>) -> () {}
 	}
 
 	#[rustfmt::skip]
