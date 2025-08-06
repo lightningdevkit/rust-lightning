@@ -30,9 +30,9 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, Sequence, SignedAmount};
 #[cfg(splicing)]
-use bitcoin::{ScriptBuf, TxIn, Weight};
+use bitcoin::ScriptBuf;
+use bitcoin::{secp256k1, Sequence, SignedAmount, Weight};
 
 use crate::blinded_path::message::MessageForwardNode;
 use crate::blinded_path::message::{AsyncPaymentsContext, OffersContext};
@@ -51,6 +51,7 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch};
+use crate::events::bump_transaction::{Utxo, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::events::{
 	self, ClosureReason, Event, EventHandler, EventsProvider, HTLCHandlingFailureType,
 	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
@@ -116,7 +117,10 @@ use crate::routing::router::{
 	RouteParameters, RouteParametersConfig, Router,
 };
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
+use crate::sign::{
+	EntropySource, NodeSigner, Recipient, SignerProvider, P2TR_KEY_PATH_WITNESS_WEIGHT,
+	P2WPKH_WITNESS_WEIGHT,
+};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::types::features::Bolt11InvoiceFeatures;
 use crate::types::features::{
@@ -199,6 +203,101 @@ pub use crate::ln::outbound_payment::{
 	RetryableSendFailure,
 };
 use crate::ln::script::ShutdownScript;
+
+/// An input to contribute to a channel's funding transaction either when using the v2 channel
+/// establishment protocol or when splicing.
+#[derive(Clone)]
+pub struct FundingTxInput {
+	/// The unspent [`TxOut`] that the input spends.
+	///
+	/// [`TxOut`]: bitcoin::TxOut
+	pub(super) utxo: Utxo,
+
+	/// The sequence number to use in the [`TxIn`].
+	///
+	/// [`TxIn`]: bitcoin::TxIn
+	pub(super) sequence: Sequence,
+
+	/// The transaction containing the unspent [`TxOut`] referenced by [`utxo`].
+	///
+	/// [`TxOut`]: bitcoin::TxOut
+	/// [`utxo`]: Self::utxo
+	pub(super) prevtx: Transaction,
+}
+
+impl FundingTxInput {
+	fn new<F: FnOnce(&bitcoin::Script) -> bool>(
+		prevtx: Transaction, vout: u32, sequence: Sequence, witness_weight: Weight,
+		script_filter: F,
+	) -> Result<Self, ()> {
+		Ok(FundingTxInput {
+			utxo: Utxo {
+				outpoint: bitcoin::OutPoint { txid: prevtx.compute_txid(), vout },
+				output: prevtx
+					.output
+					.get(vout as usize)
+					.filter(|output| script_filter(&output.script_pubkey))
+					.ok_or(())?
+					.clone(),
+				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + witness_weight.to_wu(),
+			},
+			sequence,
+			prevtx,
+		})
+	}
+
+	/// Creates an input spending a P2WPKH output from the given `prevtx` at index `vout` using the
+	/// provided `sequence` number.
+	///
+	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
+	pub fn new_p2wpkh(prevtx: Transaction, vout: u32, sequence: Sequence) -> Result<Self, ()> {
+		let witness_weight = Weight::from_wu(P2WPKH_WITNESS_WEIGHT);
+		FundingTxInput::new(prevtx, vout, sequence, witness_weight, bitcoin::Script::is_p2wpkh)
+	}
+
+	/// Creates an input spending a P2WSH output from the given `prevtx` at index `vout` using the
+	/// provided `sequence` number.
+	///
+	/// Requires passing the weight of witness needed to satisfy the output's script.
+	///
+	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
+	pub fn new_p2wsh(
+		prevtx: Transaction, vout: u32, sequence: Sequence, witness_weight: Weight,
+	) -> Result<Self, ()> {
+		FundingTxInput::new(prevtx, vout, sequence, witness_weight, bitcoin::Script::is_p2wsh)
+	}
+
+	/// Creates an input spending a P2TR output from the given `prevtx` at index `vout` using the
+	/// provided `sequence` number.
+	///
+	/// This is meant for inputs spending a taproot output using the key path. See
+	/// [`new_p2tr_script_spend`] for when spending using a script path.
+	///
+	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
+	///
+	/// [`new_p2tr_script_spend`]: Self::new_p2tr_script_spend
+	pub fn new_p2tr_key_spend(
+		prevtx: Transaction, vout: u32, sequence: Sequence,
+	) -> Result<Self, ()> {
+		let witness_weight = Weight::from_wu(P2TR_KEY_PATH_WITNESS_WEIGHT);
+		FundingTxInput::new(prevtx, vout, sequence, witness_weight, bitcoin::Script::is_p2tr)
+	}
+
+	/// Creates an input spending a P2TR output from the given `prevtx` at index `vout` using the
+	/// provided `sequence` number.
+	///
+	/// Requires passing the weight of witness needed to satisfy a script path of the taproot
+	/// output. See [`new_p2tr_key_spend`] for when spending using the key path.
+	///
+	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
+	///
+	/// [`new_p2tr_key_spend`]: Self::new_p2tr_key_spend
+	pub fn new_p2tr_script_spend(
+		prevtx: Transaction, vout: u32, sequence: Sequence, witness_weight: Weight,
+	) -> Result<Self, ()> {
+		FundingTxInput::new(prevtx, vout, sequence, witness_weight, bitcoin::Script::is_p2tr)
+	}
+}
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -4459,7 +4558,7 @@ where
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
+		our_funding_inputs: Vec<FundingTxInput>, change_script: Option<ScriptBuf>,
 		funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let mut res = Ok(());
@@ -4480,9 +4579,8 @@ where
 	#[cfg(splicing)]
 	fn internal_splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
-		funding_feerate_per_kw: u32, locktime: Option<u32>,
+		our_funding_contribution_satoshis: i64, our_funding_inputs: Vec<FundingTxInput>,
+		change_script: Option<ScriptBuf>, funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
