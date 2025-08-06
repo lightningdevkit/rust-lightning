@@ -23,6 +23,7 @@ use crate::chain::chaininterface::fee_for_weight;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 use crate::ln::channel::{FundingNegotiationContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
+use crate::ln::channelmanager::FundingTxInput;
 use crate::ln::msgs;
 use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
 use crate::ln::types::ChannelId;
@@ -1884,12 +1885,12 @@ pub(super) fn calculate_change_output_value(
 
 	let mut total_input_satoshis = 0u64;
 	let mut our_funding_inputs_weight = 0u64;
-	for (txin, tx, _) in context.our_funding_inputs.iter() {
-		let txid = tx.compute_txid();
+	for FundingTxInput { txin, prevtx, .. } in context.our_funding_inputs.iter() {
+		let txid = prevtx.compute_txid();
 		if txin.previous_output.txid != txid {
 			return Err(AbortReason::PrevTxOutInvalid);
 		}
-		let output = tx
+		let output = prevtx
 			.output
 			.get(txin.previous_output.vout as usize)
 			.ok_or(AbortReason::PrevTxOutInvalid)?;
@@ -1937,6 +1938,7 @@ pub(super) fn calculate_change_output_value(
 mod tests {
 	use crate::chain::chaininterface::{fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
 	use crate::ln::channel::{FundingNegotiationContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
+	use crate::ln::channelmanager::FundingTxInput;
 	use crate::ln::interactivetxs::{
 		calculate_change_output_value, generate_holder_serial_id, AbortReason,
 		HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
@@ -2954,23 +2956,23 @@ mod tests {
 		let inputs = input_prevouts
 			.iter()
 			.map(|txout| {
-				let tx = Transaction {
+				let prevtx = Transaction {
 					input: Vec::new(),
 					output: vec![(*txout).clone()],
 					lock_time: AbsoluteLockTime::ZERO,
 					version: Version::TWO,
 				};
-				let txid = tx.compute_txid();
+				let txid = prevtx.compute_txid();
 				let txin = TxIn {
 					previous_output: OutPoint { txid, vout: 0 },
 					script_sig: ScriptBuf::new(),
 					sequence: Sequence::ZERO,
 					witness: Witness::new(),
 				};
-				let weight = Weight::ZERO;
-				(txin, tx, weight)
+				let witness_weight = Weight::ZERO;
+				FundingTxInput { txin, prevtx, witness_weight }
 			})
-			.collect::<Vec<(TxIn, Transaction, Weight)>>();
+			.collect();
 		let our_contributed = 110_000;
 		let txout = TxOut { value: Amount::from_sat(10_000), script_pubkey: ScriptBuf::new() };
 		let outputs = vec![txout];

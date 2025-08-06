@@ -23,8 +23,8 @@ use crate::events::{
 };
 use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use crate::ln::channelmanager::{
-	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
-	RAACommitmentOrder, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA,
+	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, FundingTxInput,
+	PaymentId, RAACommitmentOrder, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{
@@ -1440,7 +1440,7 @@ fn internal_create_funding_transaction<'a, 'b, 'c>(
 /// Return the inputs (with prev tx), and the total witness weight for these inputs
 pub fn create_dual_funding_utxos_with_prev_txs(
 	node: &Node<'_, '_, '_>, utxo_values_in_satoshis: &[u64],
-) -> Vec<(TxIn, Transaction, Weight)> {
+) -> Vec<FundingTxInput> {
 	// Ensure we have unique transactions per node by using the locktime.
 	let tx = Transaction {
 		version: TxVersion::TWO,
@@ -1462,17 +1462,17 @@ pub fn create_dual_funding_utxos_with_prev_txs(
 
 	let mut inputs = vec![];
 	for i in 0..utxo_values_in_satoshis.len() {
-		inputs.push((
-			TxIn {
+		inputs.push(FundingTxInput {
+			txin: TxIn {
 				previous_output: OutPoint { txid: tx.compute_txid(), index: i as u16 }
 					.into_bitcoin_outpoint(),
 				script_sig: ScriptBuf::new(),
 				sequence: Sequence::ZERO,
 				witness: Witness::new(),
 			},
-			tx.clone(),
-			Weight::from_wu(P2WPKH_WITNESS_WEIGHT),
-		));
+			prevtx: tx.clone(),
+			witness_weight: Weight::from_wu(P2WPKH_WITNESS_WEIGHT),
+		});
 	}
 
 	inputs
