@@ -8,8 +8,11 @@
 // licenses.
 
 use crate::ln::functional_test_utils::*;
+use crate::ln::funding::SpliceContribution;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::util::errors::APIError;
+
+use bitcoin::Amount;
 
 /// Splicing test, simple splice-in flow. Starts with opening a V1 channel first.
 /// Builds on test_channel_open_simple()
@@ -66,15 +69,20 @@ fn test_v1_splice_in() {
 		&initiator_node,
 		&[extra_splice_funding_input_sats],
 	);
+
+	let contribution = SpliceContribution::SpliceIn {
+		value: Amount::from_sat(splice_in_sats),
+		inputs: funding_inputs,
+		change_script: None,
+	};
+
 	// Initiate splice-in
 	let _res = initiator_node
 		.node
 		.splice_channel(
 			&channel_id,
 			&acceptor_node.node.get_our_node_id(),
-			splice_in_sats as i64,
-			funding_inputs,
-			None, // change_script
+			contribution,
 			funding_feerate_per_kw,
 			None, // locktime
 		)
@@ -295,13 +303,17 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 	let funding_inputs =
 		create_dual_funding_utxos_with_prev_txs(&nodes[0], &[extra_splice_funding_input_sats]);
 
+	let contribution = SpliceContribution::SpliceIn {
+		value: Amount::from_sat(splice_in_sats),
+		inputs: funding_inputs,
+		change_script: None,
+	};
+
 	// Initiate splice-in, with insufficient input contribution
 	let res = nodes[0].node.splice_channel(
 		&channel_id,
 		&nodes[1].node.get_our_node_id(),
-		splice_in_sats as i64,
-		funding_inputs,
-		None, // change_script
+		contribution,
 		1024, // funding_feerate_per_kw,
 		None, // locktime
 	);

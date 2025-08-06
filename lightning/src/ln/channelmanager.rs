@@ -30,8 +30,6 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-#[cfg(splicing)]
-use bitcoin::ScriptBuf;
 use bitcoin::{secp256k1, Sequence, SignedAmount};
 
 use crate::blinded_path::message::MessageForwardNode;
@@ -66,7 +64,7 @@ use crate::ln::channel::{
 };
 use crate::ln::channel_state::ChannelDetails;
 #[cfg(splicing)]
-use crate::ln::funding::FundingTxInput;
+use crate::ln::funding::SpliceContribution;
 use crate::ln::inbound_payment;
 use crate::ln::interactivetxs::{HandleTxCompleteResult, InteractiveTxMessageSendResult};
 use crate::ln::msgs;
@@ -4460,14 +4458,13 @@ where
 	#[cfg(splicing)]
 	#[rustfmt::skip]
 	pub fn splice_channel(
-		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<FundingTxInput>, change_script: Option<ScriptBuf>,
-		funding_feerate_per_kw: u32, locktime: Option<u32>,
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let result = self.internal_splice_channel(
-				channel_id, counterparty_node_id, our_funding_contribution_satoshis, our_funding_inputs, change_script, funding_feerate_per_kw, locktime
+				channel_id, counterparty_node_id, contribution, funding_feerate_per_kw, locktime
 			);
 			res = result;
 			match res {
@@ -4482,8 +4479,7 @@ where
 	#[cfg(splicing)]
 	fn internal_splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		our_funding_contribution_satoshis: i64, our_funding_inputs: Vec<FundingTxInput>,
-		change_script: Option<ScriptBuf>, funding_feerate_per_kw: u32, locktime: Option<u32>,
+		contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -4504,13 +4500,8 @@ where
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let locktime = locktime.unwrap_or_else(|| self.current_best_block().height);
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let msg = chan.splice_channel(
-						our_funding_contribution_satoshis,
-						our_funding_inputs,
-						change_script,
-						funding_feerate_per_kw,
-						locktime,
-					)?;
+					let msg =
+						chan.splice_channel(contribution, funding_feerate_per_kw, locktime)?;
 					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceInit {
 						node_id: *counterparty_node_id,
 						msg,

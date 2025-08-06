@@ -9,10 +9,53 @@
 
 //! Types pertaining to funding channels.
 
+#[cfg(splicing)]
+use bitcoin::{Amount, ScriptBuf, SignedAmount};
 use bitcoin::{Script, Sequence, Transaction, Weight};
 
 use crate::events::bump_transaction::{Utxo, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::sign::{P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
+
+/// The components of a splice's funding transaction that are contributed by one party.
+#[cfg(splicing)]
+pub enum SpliceContribution {
+	/// When funds are added to a channel.
+	SpliceIn {
+		/// The amount to contribute to the splice.
+		value: Amount,
+
+		/// The inputs included in the splice's funding transaction to meet the contributed amount.
+		/// Any excess amount will be sent to a change output.
+		inputs: Vec<FundingTxInput>,
+
+		/// An optional change output script. This will be used if needed or, when not set,
+		/// generated using [`SignerProvider::get_destination_script`].
+		change_script: Option<ScriptBuf>,
+	},
+}
+
+#[cfg(splicing)]
+impl SpliceContribution {
+	pub(super) fn value(&self) -> SignedAmount {
+		match self {
+			SpliceContribution::SpliceIn { value, .. } => {
+				value.to_signed().unwrap_or(SignedAmount::MAX)
+			},
+		}
+	}
+
+	pub(super) fn inputs(&self) -> &[FundingTxInput] {
+		match self {
+			SpliceContribution::SpliceIn { inputs, .. } => &inputs[..],
+		}
+	}
+
+	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Option<ScriptBuf>) {
+		match self {
+			SpliceContribution::SpliceIn { inputs, change_script, .. } => (inputs, change_script),
+		}
+	}
+}
 
 /// An input to contribute to a channel's funding transaction either when using the v2 channel
 /// establishment protocol or when splicing.
