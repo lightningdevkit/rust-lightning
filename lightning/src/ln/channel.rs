@@ -5979,7 +5979,7 @@ pub(super) struct FundingNegotiationContext {
 	pub shared_funding_input: Option<SharedOwnedInput>,
 	/// The funding inputs we will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-	pub our_funding_inputs: Vec<(TxIn, Transaction)>,
+	pub our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
 	/// The change output script. This will be used if needed or -- if not set -- generated using
 	/// `SignerProvider::get_destination_script`.
 	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
@@ -6051,6 +6051,9 @@ impl FundingNegotiationContext {
 			}
 		}
 
+		let funding_inputs =
+			self.our_funding_inputs.into_iter().map(|(txin, tx, _)| (txin, tx)).collect();
+
 		let constructor_args = InteractiveTxConstructorArgs {
 			entropy_source,
 			holder_node_id,
@@ -6059,7 +6062,7 @@ impl FundingNegotiationContext {
 			feerate_sat_per_kw: self.funding_feerate_sat_per_1000_weight,
 			is_initiator: self.is_initiator,
 			funding_tx_locktime: self.funding_tx_locktime,
-			inputs_to_contribute: self.our_funding_inputs,
+			inputs_to_contribute: funding_inputs,
 			shared_funding_input: self.shared_funding_input,
 			shared_funding_output: SharedOwnedOutput::new(
 				shared_funding_output,
@@ -10669,9 +10672,8 @@ where
 				err,
 			),
 		})?;
-		// Convert inputs
-		let mut funding_inputs = Vec::new();
-		for (txin, tx, _) in our_funding_inputs.into_iter() {
+
+		for (txin, tx, _) in our_funding_inputs.iter() {
 			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
 				channel_id: ChannelId([0; 32]),
 				serial_id: 0,
@@ -10689,8 +10691,6 @@ where
 					),
 				});
 			}
-
-			funding_inputs.push((txin, tx));
 		}
 
 		let prev_funding_input = self.funding.to_splice_funding_input();
@@ -10700,7 +10700,7 @@ where
 			funding_tx_locktime: LockTime::from_consensus(locktime),
 			funding_feerate_sat_per_1000_weight: funding_feerate_per_kw,
 			shared_funding_input: Some(prev_funding_input),
-			our_funding_inputs: funding_inputs,
+			our_funding_inputs,
 			change_script,
 		};
 
@@ -12469,7 +12469,7 @@ where
 	pub fn new_outbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
-		funding_inputs: Vec<(TxIn, Transaction)>, user_id: u128, config: &UserConfig,
+		funding_inputs: Vec<(TxIn, Transaction, Weight)>, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
 		logger: L,
 	) -> Result<Self, APIError>
@@ -12683,6 +12683,8 @@ where
 			value: Amount::from_sat(funding.get_value_satoshis()),
 			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
 		};
+		let inputs_to_contribute =
+			our_funding_inputs.into_iter().map(|(txin, tx, _)| (txin, tx)).collect();
 
 		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
 			InteractiveTxConstructorArgs {
@@ -12693,7 +12695,7 @@ where
 				feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 				funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
 				is_initiator: false,
-				inputs_to_contribute: our_funding_inputs,
+				inputs_to_contribute,
 				shared_funding_input: None,
 				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_contribution_sats),
 				outputs_to_contribute: Vec::new(),

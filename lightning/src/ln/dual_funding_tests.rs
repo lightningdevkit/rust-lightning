@@ -48,10 +48,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 	let initiator_funding_inputs: Vec<_> = create_dual_funding_utxos_with_prev_txs(
 		&nodes[0],
 		&[session.initiator_input_value_satoshis],
-	)
-	.into_iter()
-	.map(|(txin, tx, _)| (txin, tx))
-	.collect();
+	);
 
 	// Alice creates a dual-funded channel as initiator.
 	let funding_satoshis = session.funding_input_sats;
