@@ -4949,13 +4949,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				.iter()
 				.find(|funding| funding.funding_txid() == txid)
 			{
-				debug_assert!(self.alternative_funding_confirmed.is_none());
-				debug_assert!(
+				assert!(self.alternative_funding_confirmed.is_none());
+				assert!(
 					!self.onchain_events_awaiting_threshold_conf.iter()
 						.any(|e| matches!(e.event, OnchainEvent::AlternativeFundingConfirmation {}))
 				);
-				debug_assert!(self.funding_spend_confirmed.is_none());
-				debug_assert!(
+				assert!(self.funding_spend_confirmed.is_none());
+				assert!(
 					!self.onchain_events_awaiting_threshold_conf.iter()
 						.any(|e| matches!(e.event, OnchainEvent::FundingSpendConfirmation { .. }))
 				);
