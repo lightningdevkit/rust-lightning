@@ -51,21 +51,20 @@ pub(crate) struct NextCommitmentStats {
 #[rustfmt::skip]
 fn excess_fees_on_counterparty_tx_dust_exposure_msat(
 	next_commitment_htlcs: &[HTLCAmountDirection], dust_buffer_feerate: u32,
-	excess_feerate: u32, counterparty_dust_limit_satoshis: u64, mut on_counterparty_tx_dust_exposure_msat: u64,
+	excess_feerate: u32, counterparty_dust_limit_satoshis: u64, dust_htlc_exposure_msat: u64,
 	channel_type: &ChannelTypeFeatures,
 ) -> (u64, u64) {
 
 	let on_counterparty_tx_accepted_nondust_htlcs = next_commitment_htlcs.iter().filter(|htlc| htlc.outbound && !htlc.is_dust(false, dust_buffer_feerate, counterparty_dust_limit_satoshis, channel_type)).count();
 	let on_counterparty_tx_offered_nondust_htlcs = next_commitment_htlcs.iter().filter(|htlc| !htlc.outbound && !htlc.is_dust(false, dust_buffer_feerate, counterparty_dust_limit_satoshis, channel_type)).count();
 
-	let extra_htlc_commit_tx_fee_sat = commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1 + on_counterparty_tx_offered_nondust_htlcs, channel_type);
-	let extra_htlc_htlc_tx_fees_sat = htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, channel_type);
+	let commitment_fee_sat = commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + on_counterparty_tx_offered_nondust_htlcs, channel_type);
+	let second_stage_fees_sat = htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs, on_counterparty_tx_offered_nondust_htlcs, channel_type);
+	let on_counterparty_tx_dust_exposure_msat = dust_htlc_exposure_msat + (commitment_fee_sat + second_stage_fees_sat) * 1000;
 
-	let commit_tx_fee_sat = commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + on_counterparty_tx_offered_nondust_htlcs, channel_type);
-	let htlc_tx_fees_sat = htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs, on_counterparty_tx_offered_nondust_htlcs, channel_type);
-
-	let extra_htlc_dust_exposure_msat = on_counterparty_tx_dust_exposure_msat + (extra_htlc_commit_tx_fee_sat + extra_htlc_htlc_tx_fees_sat) * 1000;
-	on_counterparty_tx_dust_exposure_msat += (commit_tx_fee_sat + htlc_tx_fees_sat) * 1000;
+	let extra_htlc_commitment_fee_sat = commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1 + on_counterparty_tx_offered_nondust_htlcs, channel_type);
+	let extra_htlc_second_stage_fees_sat = htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, channel_type);
+	let extra_htlc_dust_exposure_msat = dust_htlc_exposure_msat + (extra_htlc_commitment_fee_sat + extra_htlc_second_stage_fees_sat) * 1000;
 
 	(
 		on_counterparty_tx_dust_exposure_msat,
