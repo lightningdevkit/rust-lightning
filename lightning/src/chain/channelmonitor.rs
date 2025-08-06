@@ -3851,6 +3851,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.outputs_to_watch.remove(&funding.funding_txid());
 		}
 		if let Some((alternative_funding_txid, _)) = self.alternative_funding_confirmed.take() {
+			// In exceedingly rare cases, it's possible there was a reorg that caused a potential funding to
+			// be locked in that this `ChannelMonitor` has not yet seen. Thus, we avoid a runtime assertion
+			// and only assert in debug mode.
 			debug_assert_eq!(alternative_funding_txid, new_funding_txid);
 		}
 
