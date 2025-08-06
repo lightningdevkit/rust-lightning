@@ -2548,6 +2548,9 @@ pub struct ChannelManager<
 	/// Note that no consistency guarantees are made about the existence of a channel with the
 	/// `short_channel_id` here, nor the `short_channel_id` in the `PendingHTLCInfo`!
 	///
+	/// This will also hold any [`FailHTLC`]s arising from handling [`Self::pending_intercepted_htlcs`] or
+	/// [`Self::receive_htlcs`].
+	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(test)]
 	pub(super) forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
@@ -2556,9 +2559,15 @@ pub struct ChannelManager<
 	/// Storage for HTLCs that have been intercepted and bubbled up to the user. We hold them here
 	/// until the user tells us what we should do with them.
 	///
+	/// Note that any failures that may arise from handling these will be pushed to
+	/// [`Self::forward_htlcs`] with the previous hop's SCID.
+	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
 	/// Storage for HTLCs that are meant for us.
+	///
+	/// Note that any failures that may arise from handling these will be pushed to
+	/// [`Self::forward_htlcs`] with the previous hop's SCID.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(test)]
