@@ -4139,7 +4139,7 @@ where
 			.pending_outbound_htlcs
 			.iter()
 			.filter(|OutboundHTLCOutput { state, .. }| match (state, local) {
-				(OutboundHTLCState::LocalAnnounced(..), _) => if include_counterparty_unknown_htlcs { true } else { false },
+				(OutboundHTLCState::LocalAnnounced(..), _) => include_counterparty_unknown_htlcs,
 				(OutboundHTLCState::Committed, _) => true,
 				(OutboundHTLCState::RemoteRemoved(..), true) => false,
 				(OutboundHTLCState::RemoteRemoved(..), false) => true,
