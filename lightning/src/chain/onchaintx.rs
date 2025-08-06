@@ -1120,7 +1120,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(super) fn transaction_unconfirmed<B: Deref, F: Deref, L: Logger>(
 		&mut self,
 		txid: &Txid,
-		broadcaster: B,
+		broadcaster: &B,
 		conf_target: ConfirmationTarget,
 		destination_script: &Script,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
@@ -1146,7 +1146,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 	#[rustfmt::skip]
 	pub(super) fn block_disconnected<B: Deref, F: Deref, L: Logger>(
-		&mut self, height: u32, broadcaster: B, conf_target: ConfirmationTarget,
+		&mut self, height: u32, broadcaster: &B, conf_target: ConfirmationTarget,
 		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	)
 		where B::Target: BroadcasterInterface,

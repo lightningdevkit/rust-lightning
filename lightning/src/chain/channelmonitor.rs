@@ -4866,7 +4866,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
 			let conf_target = self.closure_conf_target();
 			self.onchain_tx_handler.block_disconnected(
-				height + 1, broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
+				height + 1, &broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
 			);
 			Vec::new()
 		} else { Vec::new() }
@@ -5341,16 +5341,18 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height < height);
 
 		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
+		let mut should_broadcast_commitment = false;
 		if let Some((_, conf_height)) = self.alternative_funding_confirmed.as_ref() {
 			if *conf_height == height {
 				self.alternative_funding_confirmed.take();
-				if self.holder_tx_signed {
+				if self.holder_tx_signed || self.funding_spend_seen {
 					// Cancel any previous claims that are no longer valid as they stemmed from a
-					// different funding transaction. We'll wait until we see a funding transaction
-					// confirm again before attempting to broadcast the new valid holder commitment.
+					// different funding transaction.
 					let new_holder_commitment_txid =
 						self.funding.current_holder_commitment_tx.trust().txid();
 					self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
+
+					should_broadcast_commitment = true;
 				}
 			}
 		}
@@ -5358,8 +5360,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.block_disconnected(
-			height, broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator, logger
+			height, &broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator, logger
 		);
+
+		// Only attempt to broadcast the new commitment after the `block_disconnected` call above so that
+		// it doesn't get removed from the set of pending claims.
+		if should_broadcast_commitment {
+			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, &bounded_fee_estimator, logger);
+		}
 
 		self.best_block = BestBlock::new(header.prev_blockhash, height - 1);
 	}
@@ -5395,24 +5403,32 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		debug_assert!(!self.onchain_events_awaiting_threshold_conf.iter().any(|ref entry| entry.txid == *txid));
 
 		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
+		let mut should_broadcast_commitment = false;
 		if let Some((alternative_funding_txid, _)) = self.alternative_funding_confirmed.as_ref() {
 			if alternative_funding_txid == txid {
 				self.alternative_funding_confirmed.take();
-				if self.holder_tx_signed {
+				if self.holder_tx_signed || self.funding_spend_seen {
 					// Cancel any previous claims that are no longer valid as they stemmed from a
-					// different funding transaction. We'll wait until we see a funding transaction
-					// confirm again before attempting to broadcast the new valid holder commitment.
+					// different funding transaction.
 					let new_holder_commitment_txid =
 						self.funding.current_holder_commitment_tx.trust().txid();
 					self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
+
+					should_broadcast_commitment = true;
 				}
 			}
 		}
 
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.transaction_unconfirmed(
-			txid, broadcaster, conf_target, &self.destination_script, fee_estimator, logger
+			txid, &broadcaster, conf_target, &self.destination_script, fee_estimator, logger
 		);
+
+		// Only attempt to broadcast the new commitment after the `transaction_unconfirmed` call above so
+		//  that it doesn't get removed from the set of pending claims.
+		if should_broadcast_commitment {
+			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, fee_estimator, logger);
+		}
 	}
 
 	/// Filters a block's `txdata` for transactions spending watched outputs or for any child
