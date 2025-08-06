@@ -79,17 +79,14 @@ fn excess_fees_on_counterparty_tx_dust_exposure_msat(
 }
 
 fn subtract_addl_outputs(
-	is_outbound_from_holder: bool, value_to_self_after_htlcs: Option<u64>,
-	value_to_remote_after_htlcs: Option<u64>, channel_type: &ChannelTypeFeatures,
+	is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
+	value_to_remote_after_htlcs: u64, channel_type: &ChannelTypeFeatures,
 ) -> (Option<u64>, Option<u64>) {
 	let total_anchors_sat = if channel_type.supports_anchors_zero_fee_htlc_tx() {
 		ANCHOR_OUTPUT_VALUE_SATOSHI * 2
 	} else {
 		0
 	};
-
-	let mut local_balance_before_fee_msat = value_to_self_after_htlcs;
-	let mut remote_balance_before_fee_msat = value_to_remote_after_htlcs;
 
 	// We MUST use checked subs here, as the funder's balance is not guaranteed to be greater
 	// than or equal to `total_anchors_sat`.
@@ -98,13 +95,17 @@ fn subtract_addl_outputs(
 	// commitment transaction *before* checking whether the remote party's balance is enough to
 	// cover the total anchor sum.
 
-	if is_outbound_from_holder {
-		local_balance_before_fee_msat = local_balance_before_fee_msat
-			.and_then(|balance_msat| balance_msat.checked_sub(total_anchors_sat * 1000));
+	let local_balance_before_fee_msat = if is_outbound_from_holder {
+		value_to_self_after_htlcs.checked_sub(total_anchors_sat * 1000)
 	} else {
-		remote_balance_before_fee_msat = remote_balance_before_fee_msat
-			.and_then(|balance_msat| balance_msat.checked_sub(total_anchors_sat * 1000));
-	}
+		Some(value_to_self_after_htlcs)
+	};
+
+	let remote_balance_before_fee_msat = if !is_outbound_from_holder {
+		value_to_remote_after_htlcs.checked_sub(total_anchors_sat * 1000)
+	} else {
+		Some(value_to_remote_after_htlcs)
+	};
 
 	(local_balance_before_fee_msat, remote_balance_before_fee_msat)
 }
@@ -181,10 +182,12 @@ impl TxBuilder for SpecTxBuilder {
 			.iter()
 			.filter_map(|htlc| (!htlc.outbound).then_some(htlc.amount_msat))
 			.sum();
-		let value_to_holder_after_htlcs =
-			value_to_holder_msat.checked_sub(outbound_htlcs_value_msat);
-		let value_to_counterparty_after_htlcs =
-			value_to_counterparty_msat.checked_sub(inbound_htlcs_value_msat);
+		let value_to_holder_after_htlcs = value_to_holder_msat
+			.checked_sub(outbound_htlcs_value_msat)
+			.expect("outbound_htlcs_value_msat is greater than value_to_holder_msat");
+		let value_to_counterparty_after_htlcs = value_to_counterparty_msat
+			.checked_sub(inbound_htlcs_value_msat)
+			.expect("inbound_htlcs_value_msat is greater than value_to_counterparty_msat");
 
 		// Subtract the anchors from the channel funder
 		let (holder_balance_msat, counterparty_balance_msat) = subtract_addl_outputs(
