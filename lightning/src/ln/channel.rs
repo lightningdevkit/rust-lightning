@@ -5330,6 +5330,50 @@ where
 				_ => {},
 			}
 		}
+
+		// Once we're closed, the `ChannelMonitor` is responsible for resolving any remaining
+		// HTLCs. However, in the specific case of us pushing new HTLC(s) to the counterparty in
+		// the latest commitment transaction that we haven't actually sent due to a block
+		// `ChannelMonitorUpdate`, we may have some HTLCs that the `ChannelMonitor` won't know
+		// about and thus really need to be included in `dropped_outbound_htlcs`.
+		'htlc_iter: for htlc in self.pending_outbound_htlcs.iter() {
+			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
+				for update in self.blocked_monitor_updates.iter() {
+					for update in update.update.updates.iter() {
+						let have_htlc = match update {
+							ChannelMonitorUpdateStep::LatestCounterpartyCommitment {
+								htlc_data,
+								..
+							} => {
+								let dust =
+									htlc_data.dust_htlcs.iter().map(|(_, source)| source.as_ref());
+								let nondust =
+									htlc_data.nondust_htlc_sources.iter().map(|s| Some(s));
+								dust.chain(nondust).any(|source| source == Some(&htlc.source))
+							},
+							ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
+								htlc_outputs,
+								..
+							} => htlc_outputs.iter().any(|(_, source)| {
+								source.as_ref().map(|s| &**s) == Some(&htlc.source)
+							}),
+							_ => continue,
+						};
+						debug_assert!(have_htlc);
+						if have_htlc {
+							dropped_outbound_htlcs.push((
+								htlc.source.clone(),
+								htlc.payment_hash,
+								counterparty_node_id,
+								self.channel_id,
+							));
+						}
+						continue 'htlc_iter;
+					}
+				}
+			}
+		}
+
 		let monitor_update = if let Some(funding_txo) = funding.get_funding_txo() {
 			// If we haven't yet exchanged funding signatures (ie channel_state < AwaitingChannelReady),
 			// returning a channel monitor update here would imply a channel monitor update before

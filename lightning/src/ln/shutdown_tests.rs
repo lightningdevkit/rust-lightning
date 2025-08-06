@@ -12,7 +12,7 @@
 
 use crate::chain::transaction::OutPoint;
 use crate::chain::ChannelMonitorUpdateStatus;
-use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
+use crate::events::{ClosureReason, Event, HTLCHandlingFailureReason, HTLCHandlingFailureType};
 use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
 use crate::ln::channelmanager::{self, PaymentId, RecipientOnionFields, Retry};
 use crate::ln::msgs;
@@ -1824,4 +1824,113 @@ fn test_force_closure_on_low_stale_fee() {
 		required_feerate_sat_per_kw: 253 * 2,
 	};
 	check_closed_events(&nodes[1], &[ExpectedCloseEvent::from_id_reason(chan_id, false, reason)]);
+}
+
+#[test]
+fn test_pending_htlcs_arent_lost_on_mon_delay() {
+	// Test that HTLCs which were queued to be sent to peers but which never made it out due to a
+	// pending, not-completed `ChannelMonitorUpdate` which got dropped with the `Channel`. This is
+	// only possible when the `ChannelMonitorUpdate` is blocked, as otherwise it will be queued in
+	// the `ChannelManager` and go out before any closure update.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let (_, _, chan_id_bc, ..) = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	// First route a payment from node B to C, which will allow us to block `ChannelMonitorUpdate`s
+	// by not processing the `PaymentSent` event upon claim.
+	let (preimage_a, payment_hash_a, ..) = route_payment(&nodes[1], &[&nodes[2]], 500_000);
+
+	nodes[2].node.claim_funds(preimage_a);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash_a, 500_000);
+
+	let mut claim = get_htlc_update_msgs(&nodes[2], &node_b_id);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, claim.update_fulfill_htlcs.pop().unwrap());
+
+	// Now, while sitting on the `PaymentSent` event, move the B <-> C channel forward until B is
+	// just waiting on C's last RAA.
+	nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &claim.commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+
+	let (raa, cs) = get_revoke_commit_msgs(&nodes[1], &node_c_id);
+
+	nodes[2].node.handle_revoke_and_ack(node_b_id, &raa);
+	check_added_monitors(&nodes[2], 1);
+	nodes[2].node.handle_commitment_signed_batch_test(node_b_id, &cs);
+	check_added_monitors(&nodes[2], 1);
+
+	let cs_last_raa = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, node_b_id);
+
+	// Now, while still sitting on the `PaymentSent` event, send an HTLC which will be relayed the
+	// moment `cs_last_raa` is received by B.
+	let (route_b, payment_hash_b, _preimage, payment_secret_b) =
+		get_route_and_payment_hash!(&nodes[0], nodes[2], 900_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret_b);
+	let id = PaymentId(payment_hash_b.0);
+	nodes[0].node.send_payment_with_route(route_b, payment_hash_b, onion, id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let as_send = get_htlc_update_msgs(&nodes[0], &node_b_id);
+
+	nodes[1].node.handle_update_add_htlc(node_a_id, &as_send.update_add_htlcs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], as_send.commitment_signed, false);
+
+	// Place the HTLC in the B <-> C channel holding cell for release upon RAA and finally deliver
+	// `cs_last_raa`. Because we're still waiting to handle the `PaymentSent` event, the
+	// `ChannelMonitorUpdate` and update messages will be held.
+	nodes[1].node.process_pending_htlc_forwards();
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors(&nodes[1], 0);
+
+	nodes[1].node.handle_revoke_and_ack(node_c_id, &cs_last_raa);
+	check_added_monitors(&nodes[1], 0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Now force-close the B <-> C channel, making sure that we (finally) see the `PaymentSent`, as
+	// well as the channel closure and, importantly, the HTLC fail-back to A.
+	let message = "".to_string();
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_bc, &node_c_id, message).unwrap();
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3, "{events:?}");
+	assert!(events.iter().any(|ev| {
+		if let Event::PaymentSent { payment_preimage: ev_preimage, .. } = ev {
+			assert_eq!(*ev_preimage, preimage_a);
+			true
+		} else {
+			false
+		}
+	}));
+	assert!(events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
+	assert!(events.iter().any(|ev| {
+		if let Event::HTLCHandlingFailed { failure_type, failure_reason, .. } = ev {
+			assert!(matches!(failure_type, HTLCHandlingFailureType::Forward { .. }));
+			if let Some(HTLCHandlingFailureReason::Local { reason }) = failure_reason {
+				assert_eq!(*reason, LocalHTLCFailureReason::ChannelClosed);
+			} else {
+				panic!("Unexpected failure reason {failure_reason:?}");
+			}
+			true
+		} else {
+			false
+		}
+	}));
+
+	nodes[1].node.process_pending_htlc_forwards();
+	check_added_monitors(&nodes[1], 1);
+
+	let failures = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	nodes[0].node.handle_update_fail_htlc(node_b_id, &failures.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], failures.commitment_signed, false);
+	expect_payment_failed!(nodes[0], payment_hash_b, false);
 }
