@@ -185,6 +185,9 @@ where
 	/// Also ensure the URL is valid, has HTTPS protocol, its length does not exceed [`MAX_WEBHOOK_URL_LENGTH`]
 	/// and that the URL points to a public host.
 	///
+	/// Your request may fail if you recently opened a channel or started an LSPS1 / LSPS2 flow.
+	/// Please retry shortly.
+	///
 	/// [`MAX_WEBHOOK_URL_LENGTH`]: super::msgs::MAX_WEBHOOK_URL_LENGTH
 	/// [`MAX_APP_NAME_LENGTH`]: super::msgs::MAX_APP_NAME_LENGTH
 	/// [`WebhookRegistered`]: super::event::LSPS5ClientEvent::WebhookRegistered
