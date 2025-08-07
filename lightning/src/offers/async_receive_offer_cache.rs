@@ -35,12 +35,7 @@ enum OfferStatus {
 	/// have a maximally fresh offer. We always want to have at least 1 offer in this state,
 	/// preferably a few so we can respond to user requests for new offers without returning the same
 	/// one multiple times. Returning a new offer each time is better for privacy.
-	Ready {
-		/// If this offer's invoice has been persisted for some time, it's safe to replace to ensure we
-		/// always have the freshest possible offer available when the user goes to pull an offer from
-		/// the cache.
-		invoice_confirmed_persisted_at: Duration,
-	},
+	Ready,
 	/// This offer's invoice is not yet confirmed as persisted by the static invoice server, so it is
 	/// not yet ready to receive payments.
 	Pending,
@@ -49,6 +44,9 @@ enum OfferStatus {
 #[derive(Clone)]
 struct AsyncReceiveOffer {
 	offer: Offer,
+	/// The time as duration since the Unix epoch at which this offer was created. Useful when
+	/// refreshing unused offers.
+	created_at: Duration,
 	/// Whether this offer is used, ready for use, or pending invoice persistence with the static
 	/// invoice server.
 	status: OfferStatus,
@@ -63,9 +61,7 @@ struct AsyncReceiveOffer {
 
 impl_writeable_tlv_based_enum!(OfferStatus,
 	(0, Used) => {},
-	(1, Ready) => {
-		(0, invoice_confirmed_persisted_at, required),
-	},
+	(1, Ready) => {},
 	(2, Pending) => {},
 );
 
@@ -74,6 +70,7 @@ impl_writeable_tlv_based!(AsyncReceiveOffer, {
 	(2, offer_nonce, required),
 	(4, status, required),
 	(6, update_static_invoice_path, required),
+	(8, created_at, required),
 });
 
 /// If we are an often-offline recipient, we'll want to interactively build offers and static
@@ -179,9 +176,9 @@ const MAX_CACHED_OFFERS_TARGET: usize = 10;
 #[cfg(async_payments)]
 const MAX_UPDATE_ATTEMPTS: u8 = 3;
 
-// If we have an offer that is replaceable and its invoice was confirmed as persisted more than 2
-// hours ago, we can go ahead and refresh it because we always want to have the freshest offer
-// possible when a user goes to retrieve a cached offer.
+// If we have an offer that is replaceable and is more than 2 hours old, we can go ahead and refresh
+// it because we always want to have the freshest offer possible when a user goes to retrieve a
+// cached offer.
 //
 // We avoid replacing unused offers too quickly -- this prevents the case where we send multiple
 // invoices from different offers competing for the same slot to the server, messages are received
@@ -216,14 +213,11 @@ impl AsyncReceiveOfferCache {
 	) -> Result<(Offer, bool), ()> {
 		self.prune_expired_offers(duration_since_epoch, false);
 
-		// Find the freshest unused offer, where "freshness" is based on when the invoice was confirmed
-		// persisted by the server. See `OfferStatus::Ready`.
+		// Find the freshest unused offer. See `OfferStatus::Ready`.
 		let newest_unused_offer_opt = self
-			.unused_offers()
-			.max_by(|(_, _, persisted_at_a), (_, _, persisted_at_b)| {
-				persisted_at_a.cmp(&persisted_at_b)
-			})
-			.map(|(idx, offer, _)| (idx, offer.offer.clone()));
+			.unused_ready_offers()
+			.max_by(|(_, offer_a), (_, offer_b)| offer_a.created_at.cmp(&offer_b.created_at))
+			.map(|(idx, offer)| (idx, offer.offer.clone()));
 		if let Some((idx, newest_ready_offer)) = newest_unused_offer_opt {
 			self.offers[idx].as_mut().map(|offer| offer.status = OfferStatus::Used);
 			return Ok((newest_ready_offer, true));
@@ -316,6 +310,7 @@ impl AsyncReceiveOfferCache {
 			Some(offer_opt) => {
 				*offer_opt = Some(AsyncReceiveOffer {
 					offer,
+					created_at: duration_since_epoch,
 					offer_nonce,
 					status: OfferStatus::Pending,
 					update_static_invoice_path,
@@ -365,15 +360,11 @@ impl AsyncReceiveOfferCache {
 		// Filter for unused offers where longer than OFFER_REFRESH_THRESHOLD time has passed since they
 		// were last updated, so they are stale enough to warrant replacement.
 		let awhile_ago = duration_since_epoch.saturating_sub(OFFER_REFRESH_THRESHOLD);
-		self.unused_offers()
-			.filter(|(_, _, invoice_confirmed_persisted_at)| {
-				*invoice_confirmed_persisted_at < awhile_ago
-			})
+		self.unused_ready_offers()
+			.filter(|(_, offer)| offer.created_at < awhile_ago)
 			// Get the stalest offer and return its index
-			.min_by(|(_, _, persisted_at_a), (_, _, persisted_at_b)| {
-				persisted_at_a.cmp(&persisted_at_b)
-			})
-			.map(|(idx, _, _)| idx)
+			.min_by(|(_, offer_a), (_, offer_b)| offer_a.created_at.cmp(&offer_b.created_at))
+			.map(|(idx, _)| idx)
 	}
 
 	/// Returns an iterator over (offer_idx, offer)
@@ -387,13 +378,11 @@ impl AsyncReceiveOfferCache {
 		})
 	}
 
-	/// Returns an iterator over (offer_idx, offer, invoice_confirmed_persisted_at)
-	/// where all returned offers are [`OfferStatus::Ready`]
-	fn unused_offers(&self) -> impl Iterator<Item = (usize, &AsyncReceiveOffer, Duration)> {
+	/// Returns an iterator over (offer_idx, offer) where all returned offers are
+	/// [`OfferStatus::Ready`]
+	fn unused_ready_offers(&self) -> impl Iterator<Item = (usize, &AsyncReceiveOffer)> {
 		self.offers_with_idx().filter_map(|(idx, offer)| match offer.status {
-			OfferStatus::Ready { invoice_confirmed_persisted_at } => {
-				Some((idx, offer, invoice_confirmed_persisted_at))
-			},
+			OfferStatus::Ready => Some((idx, offer)),
 			_ => None,
 		})
 	}
@@ -464,8 +453,7 @@ impl AsyncReceiveOfferCache {
 				return false;
 			}
 
-			offer.status =
-				OfferStatus::Ready { invoice_confirmed_persisted_at: duration_since_epoch };
+			offer.status = OfferStatus::Ready;
 			return true;
 		}
 
