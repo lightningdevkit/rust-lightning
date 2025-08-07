@@ -1885,7 +1885,7 @@ pub(super) fn calculate_change_output_value(
 
 	let mut total_input_satoshis = 0u64;
 	let mut our_funding_inputs_weight = 0u64;
-	for FundingTxInput { txin, prevtx, .. } in context.our_funding_inputs.iter() {
+	for FundingTxInput { txin, prevtx, witness_weight } in context.our_funding_inputs.iter() {
 		let txid = prevtx.compute_txid();
 		if txin.previous_output.txid != txid {
 			return Err(AbortReason::PrevTxOutInvalid);
@@ -1895,7 +1895,8 @@ pub(super) fn calculate_change_output_value(
 			.get(txin.previous_output.vout as usize)
 			.ok_or(AbortReason::PrevTxOutInvalid)?;
 		total_input_satoshis = total_input_satoshis.saturating_add(output.value.to_sat());
-		let weight = estimate_input_weight(output).to_wu();
+
+		let weight = BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + witness_weight.to_wu();
 		our_funding_inputs_weight = our_funding_inputs_weight.saturating_add(weight);
 	}
 
@@ -1964,7 +1965,7 @@ mod tests {
 
 	use super::{
 		get_output_weight, P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
-		P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
+		P2WPKH_WITNESS_WEIGHT, P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
 	};
 
 	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
@@ -2969,7 +2970,7 @@ mod tests {
 					sequence: Sequence::ZERO,
 					witness: Witness::new(),
 				};
-				let witness_weight = Weight::ZERO;
+				let witness_weight = Weight::from_wu(P2WPKH_WITNESS_WEIGHT);
 				FundingTxInput { txin, prevtx, witness_weight }
 			})
 			.collect();
