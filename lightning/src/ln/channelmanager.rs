@@ -203,17 +203,17 @@ use crate::ln::script::ShutdownScript;
 /// The components of a splice's funding transaction that are contributed by one party.
 #[cfg(splicing)]
 pub enum SpliceContribution {
-	/// When only inputs -- except for a possible change output -- are contributed to the splice.
+	/// When funds are added to a channel.
 	SpliceIn {
 		/// The amount to contribute to the splice.
 		value: Amount,
 
-		/// The inputs used to meet the contributed amount. Any excess amount will be sent to a
-		/// change output.
+		/// The inputs used to include in the splice's funding transaction used to meet the
+		/// contributed amount. Any excess amount will be sent to a change output.
 		inputs: Vec<FundingTxInput>,
 
-		/// An optional change output script. This will be used if needed or, if not set, generated
-		/// using `SignerProvider::get_destination_script`.
+		/// An optional change output script. This will be used if needed or, when not set,
+		/// generated using `SignerProvider::get_destination_script`.
 		change_script: Option<ScriptBuf>,
 	},
 }
