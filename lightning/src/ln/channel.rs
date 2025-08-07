@@ -39,7 +39,6 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BestBlock;
 use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
 use crate::events::{ClosureReason, Event};
-use crate::ln::chan_utils;
 #[cfg(splicing)]
 use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 use crate::ln::chan_utils::{
@@ -72,6 +71,7 @@ use crate::ln::onion_utils::{
 };
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::types::ChannelId;
+use crate::ln::{chan_utils, LN_MAX_MSG_LEN};
 use crate::routing::gossip::NodeId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::tx_builder::{SpecTxBuilder, TxBuilder};
@@ -10686,7 +10686,7 @@ where
 				shared_input_txid: None,
 			};
 			let message_len = MESSAGE_TEMPLATE.serialized_length() + tx.serialized_length();
-			if message_len > u16::MAX as usize {
+			if message_len > LN_MAX_MSG_LEN {
 				return Err(APIError::APIMisuseError {
 					err: format!("Funding input's prevtx is too large for tx_add_input"),
 				});
