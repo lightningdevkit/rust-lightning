@@ -218,7 +218,7 @@ impl wire::Type for RawLSPSMessage {
 pub struct LSPSRequestId(pub String);
 
 /// An object representing datetimes as described in bLIP-50 / LSPS0.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct LSPSDateTime(pub chrono::DateTime<chrono::Utc>);
 
@@ -240,9 +240,10 @@ impl LSPSDateTime {
 		now_seconds_since_epoch > datetime_seconds_since_epoch
 	}
 
-	/// Returns the time in seconds since the unix epoch.
-	pub fn abs_diff(&self, other: &Self) -> u64 {
-		self.0.timestamp().abs_diff(other.0.timestamp())
+	/// Returns the absolute difference between two datetimes as a `Duration`.
+	pub fn duration_since(&self, other: &Self) -> Duration {
+		let diff_secs = self.0.timestamp().abs_diff(other.0.timestamp());
+		Duration::from_secs(diff_secs)
 	}
 
 	/// Returns the time in seconds since the unix epoch.

@@ -266,7 +266,7 @@ where
 						let order_id = self.generate_order_id();
 						let channel = OutboundCRChannel::new(
 							params.order.clone(),
-							created_at.clone(),
+							created_at,
 							order_id.clone(),
 							payment.clone(),
 						);

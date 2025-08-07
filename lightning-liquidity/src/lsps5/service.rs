@@ -156,7 +156,7 @@ where
 		let should_prune = {
 			let last_pruning = self.last_pruning.lock().unwrap();
 			last_pruning.as_ref().map_or(true, |last_time| {
-				now.abs_diff(&last_time) > PRUNE_STALE_WEBHOOKS_INTERVAL_DAYS.as_secs()
+				now.duration_since(&last_time) > PRUNE_STALE_WEBHOOKS_INTERVAL_DAYS
 			})
 		};
 
@@ -185,7 +185,7 @@ where
 			Entry::Occupied(mut entry) => {
 				no_change = entry.get().url == params.webhook;
 				let (last_used, last_notification_sent) = if no_change {
-					(entry.get().last_used.clone(), entry.get().last_notification_sent.clone())
+					(entry.get().last_used, entry.get().last_notification_sent.clone())
 				} else {
 					(now, new_hash_map())
 				};
@@ -428,10 +428,8 @@ where
 				webhook
 					.last_notification_sent
 					.get(&notification.method)
-					.map(|last_sent| now.abs_diff(&last_sent))
-					.map_or(false, |duration| {
-						duration < DEFAULT_NOTIFICATION_COOLDOWN_HOURS.as_secs()
-					})
+					.map(|last_sent| now.duration_since(&last_sent))
+					.map_or(false, |duration| duration < DEFAULT_NOTIFICATION_COOLDOWN_HOURS)
 			});
 
 			if rate_limit_applies {
@@ -440,8 +438,8 @@ where
 		}
 
 		for (app_name, webhook) in client_webhooks.iter_mut() {
-			webhook.last_notification_sent.insert(notification.method.clone(), now.clone());
-			webhook.last_used = now.clone();
+			webhook.last_notification_sent.insert(notification.method.clone(), now);
+			webhook.last_used = now;
 			self.send_notification(
 				client_id,
 				app_name.clone(),
@@ -505,7 +503,7 @@ where
 		webhooks.retain(|client_id, client_webhooks| {
 			if !self.client_has_open_channel(client_id) {
 				client_webhooks.retain(|_, webhook| {
-					now.abs_diff(&webhook.last_used) < MIN_WEBHOOK_RETENTION_DAYS.as_secs()
+					now.duration_since(&webhook.last_used) < MIN_WEBHOOK_RETENTION_DAYS
 				});
 				!client_webhooks.is_empty()
 			} else {
