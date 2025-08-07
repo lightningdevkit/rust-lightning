@@ -4,8 +4,11 @@ mod common;
 
 use common::{create_service_and_client_nodes, get_lsps_message, LSPSNodes};
 
+use lightning::check_closed_event;
+use lightning::events::ClosureReason;
 use lightning::ln::functional_test_utils::{
-	create_chanmon_cfgs, create_network, create_node_cfgs, create_node_chanmgrs, Node,
+	close_channel, create_chan_between_nodes, create_chanmon_cfgs, create_network,
+	create_node_cfgs, create_node_chanmgrs, Node,
 };
 use lightning::ln::msgs::Init;
 use lightning::ln::peer_handler::CustomMessageHandler;
@@ -32,8 +35,10 @@ use std::time::Duration;
 
 pub(crate) fn lsps5_test_setup<'a, 'b, 'c>(
 	nodes: Vec<Node<'a, 'b, 'c>>, time_provider: Arc<dyn TimeProvider + Send + Sync>,
+	enforce_dos_protections: bool,
 ) -> (LSPSNodes<'a, 'b, 'c>, LSPS5Validator) {
-	let lsps5_service_config = LSPS5ServiceConfig::default();
+	let mut lsps5_service_config = LSPS5ServiceConfig::default();
+	lsps5_service_config.enforce_dos_protections = enforce_dos_protections;
 	let service_config = LiquidityServiceConfig {
 		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
@@ -101,8 +106,9 @@ fn webhook_registration_flow() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
-	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider), true);
+	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
@@ -291,8 +297,9 @@ fn webhook_error_handling_test() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider), true);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -415,8 +422,9 @@ fn webhook_notification_delivery_test() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider), true);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -523,8 +531,9 @@ fn multiple_webhooks_notification_test() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider), true);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -623,8 +632,9 @@ fn idempotency_set_webhook_test() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider), true);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -723,8 +733,9 @@ fn replay_prevention_test() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider), true);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -809,7 +820,7 @@ fn stale_webhooks() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, _) = lsps5_test_setup(nodes, time_provider);
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, time_provider, false);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
@@ -875,8 +886,9 @@ fn test_all_notifications() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider), true);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -934,8 +946,9 @@ fn test_tampered_notification() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider), true);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -987,8 +1000,9 @@ fn test_bad_signature_notification() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider), true);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -1035,8 +1049,9 @@ fn test_notify_without_webhooks_does_nothing() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider), true);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
 	let service_handler = service_node.liquidity_manager.lsps5_service_handler().unwrap();
@@ -1057,8 +1072,9 @@ fn test_send_notifications_and_peer_connected_resets_cooldown() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, _) = lsps5_test_setup(nodes, time_provider);
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, time_provider, true);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -1162,4 +1178,73 @@ fn test_send_notifications_and_peer_connected_resets_cooldown() {
 		},
 		_ => panic!("Expected SendWebhookNotification event after peer_connected"),
 	}
+}
+
+#[test]
+fn dos_protection() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider), true);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	let client_node_id = client_node.inner.node.get_our_node_id();
+	let service_node_id = service_node.inner.node.get_our_node_id();
+
+	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
+
+	let assert_reject = || -> () {
+		let _ = client_handler
+			.set_webhook(
+				service_node_id,
+				"App".to_string(),
+				"https://example.org/webhook".to_string(),
+			)
+			.expect("Request should send");
+		let request = get_lsps_message!(client_node, service_node_id);
+
+		let result = service_node.liquidity_manager.handle_custom_message(request, client_node_id);
+		assert!(result.is_err(), "Service should reject request without prior interaction");
+
+		assert!(service_node.liquidity_manager.get_and_clear_pending_msg().is_empty());
+	};
+
+	let assert_accept = || -> () {
+		let _ = client_handler
+			.set_webhook(
+				service_node_id,
+				"App".to_string(),
+				"https://example.org/webhook".to_string(),
+			)
+			.expect("Request should send");
+		let request = get_lsps_message!(client_node, service_node_id);
+
+		let result = service_node.liquidity_manager.handle_custom_message(request, client_node_id);
+		assert!(result.is_ok(), "Service should accept request after prior interaction");
+		let _ = service_node.liquidity_manager.next_event().unwrap();
+		let response = get_lsps_message!(service_node, client_node_id);
+		client_node
+			.liquidity_manager
+			.handle_custom_message(response, service_node_id)
+			.expect("Client should handle response");
+		let _ = client_node.liquidity_manager.next_event().unwrap();
+	};
+
+	// no channel is open so far -> should reject
+	assert_reject();
+
+	let (_, _, _, channel_id, funding_tx) =
+		create_chan_between_nodes(&service_node.inner, &client_node.inner);
+
+	// now that a channel is open, should accept
+	assert_accept();
+
+	close_channel(&service_node.inner, &client_node.inner, &channel_id, funding_tx, true);
+	let node_a_reason = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event!(service_node.inner, 1, node_a_reason, [client_node_id], 100000);
+	let node_b_reason = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event!(client_node.inner, 1, node_b_reason, [service_node_id], 100000);
+
+	// channel is now closed again -> should reject
+	assert_reject();
 }

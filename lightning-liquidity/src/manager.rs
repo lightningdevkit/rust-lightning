@@ -1,6 +1,7 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use crate::dos_protection_enforcer::DosProtectionEnforcer;
 use crate::events::{EventQueue, LiquidityEvent};
 use crate::lsps0::client::LSPS0ClientHandler;
 use crate::lsps0::msgs::LSPS0Message;
@@ -483,6 +484,18 @@ where
 		self.pending_events.get_and_clear_pending_events()
 	}
 
+	fn peer_is_engaged(&self, peer: &PublicKey) -> bool {
+		let lsps5_engaged =
+			self.lsps5_service_handler.as_ref().map_or(false, |h| h.is_engaged(peer));
+		let lsps2_engaged =
+			self.lsps2_service_handler.as_ref().map_or(false, |h| h.is_engaged(peer));
+		#[cfg(lsps1_service)]
+		let lsps1_engaged = self.lsps1_service_handler.as_ref().map_or(false, |h| h.is_engaged(peer));
+		#[cfg(not(lsps1_service))]
+		let lsps1_engaged = false;
+		lsps5_engaged || lsps2_engaged || lsps1_engaged
+	}
+
 	fn handle_lsps_message(
 		&self, msg: LSPSMessage, sender_node_id: &PublicKey,
 	) -> Result<(), lightning::ln::msgs::LightningError> {
@@ -559,6 +572,17 @@ where
 			LSPSMessage::LSPS5(msg @ LSPS5Message::Request(..)) => {
 				match &self.lsps5_service_handler {
 					Some(lsps5_service_handler) => {
+						if lsps5_service_handler.config().enforce_dos_protections {
+							if !self.peer_is_engaged(sender_node_id) {
+								return Err(LightningError {
+                                    err: format!(
+                                        "Rejecting LSPS5 request from {:?} without existing engagement",
+                                        sender_node_id
+                                    ),
+                                    action: ErrorAction::IgnoreAndLog(Level::Info),
+                                });
+							}
+						}
 						lsps5_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
