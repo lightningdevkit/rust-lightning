@@ -1894,7 +1894,6 @@ pub(super) fn calculate_change_output_value(
 			.get(txin.previous_output.vout as usize)
 			.ok_or(AbortReason::PrevTxOutInvalid)?;
 		total_input_satoshis = total_input_satoshis.saturating_add(output.value.to_sat());
-		// FIXME: Can we use the Weight from context.our_funding_inputs?
 		let weight = estimate_input_weight(output).to_wu();
 		our_funding_inputs_weight = our_funding_inputs_weight.saturating_add(weight);
 	}
