@@ -46,6 +46,10 @@ jobs:
       - name: Install Rust ${{ matrix.toolchain }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ matrix.toolchain }}
+      - name: Use rust-lld linker on Windows
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: echo "RUSTFLAGS=-C linker=rust-lld" >> "$GITHUB_ENV"
       - name: Install no-std-check dependencies for ARM Embedded
         if: "matrix.platform == 'self-hosted'"
         run: |
