@@ -10688,7 +10688,10 @@ where
 			let message_len = MESSAGE_TEMPLATE.serialized_length() + tx.serialized_length();
 			if message_len > LN_MAX_MSG_LEN {
 				return Err(APIError::APIMisuseError {
-					err: format!("Funding input's prevtx is too large for tx_add_input"),
+					err: format!(
+						"Funding input references a prevtx that is too large for tx_add_input: {}",
+						txin.previous_output,
+					),
 				});
 			}
 
