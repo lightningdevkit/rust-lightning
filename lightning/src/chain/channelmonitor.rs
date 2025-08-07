@@ -4187,8 +4187,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					to_countersignatory_value,
 				)| {
 					let nondust_htlcs = vec![];
+					// Since we're expected to only reach here during the initial persistence of a
+					// monitor (i.e., via [`Persist::persist_new_channel`]), we expect to only have
+					// one `FundingScope` present.
+					debug_assert!(self.pending_funding.is_empty());
+					let channel_parameters = &self.funding.channel_parameters;
 
 					let commitment_tx = self.build_counterparty_commitment_tx(
+						channel_parameters,
 						INITIAL_COMMITMENT_NUMBER,
 						&their_per_commitment_point,
 						to_broadcaster_value,
@@ -4206,11 +4212,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	#[rustfmt::skip]
 	fn build_counterparty_commitment_tx(
-		&self, commitment_number: u64, their_per_commitment_point: &PublicKey,
-		to_broadcaster_value: u64, to_countersignatory_value: u64, feerate_per_kw: u32,
+		&self, channel_parameters: &ChannelTransactionParameters, commitment_number: u64,
+		their_per_commitment_point: &PublicKey, to_broadcaster_value: u64,
+		to_countersignatory_value: u64, feerate_per_kw: u32,
 		nondust_htlcs: Vec<HTLCOutputInCommitment>
 	) -> CommitmentTransaction {
-		let channel_parameters = &self.funding.channel_parameters.as_counterparty_broadcastable();
+		let channel_parameters = &channel_parameters.as_counterparty_broadcastable();
 		CommitmentTransaction::new(commitment_number, their_per_commitment_point,
 			to_broadcaster_value, to_countersignatory_value, feerate_per_kw, nondust_htlcs, channel_parameters, &self.onchain_tx_handler.secp_ctx)
 	}
@@ -4232,9 +4239,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						htlc.transaction_output_index.map(|_| htlc).cloned()
 					}).collect::<Vec<_>>();
 
-					let commitment_tx = self.build_counterparty_commitment_tx(commitment_number,
-							&their_per_commitment_point, to_broadcaster_value,
-							to_countersignatory_value, feerate_per_kw, nondust_htlcs);
+					// This monitor update variant is only applicable while there's a single
+					// `FundingScope` active, otherwise we expect to see
+					// `LatestCounterpartyCommitment` instead.
+					debug_assert!(self.pending_funding.is_empty());
+					let channel_parameters = &self.funding.channel_parameters;
+					let commitment_tx = self.build_counterparty_commitment_tx(
+						channel_parameters,
+						commitment_number,
+						&their_per_commitment_point,
+						to_broadcaster_value,
+						to_countersignatory_value,
+						feerate_per_kw,
+						nondust_htlcs,
+					);
 
 					debug_assert_eq!(commitment_tx.trust().txid(), commitment_txid);
 
