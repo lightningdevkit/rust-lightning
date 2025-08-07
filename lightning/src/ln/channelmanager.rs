@@ -216,12 +216,10 @@ pub enum SpliceContribution {
 		/// generated using `SignerProvider::get_destination_script`.
 		change_script: Option<ScriptBuf>,
 	},
-	/// When only outputs are contributed to then funding transaction.
+	/// When funds are removed from a channel.
 	SpliceOut {
-		/// The amount to remove from the channel.
-		value: Amount,
-		/// The outputs used for removing the amount. The total value of all outputs must equal
-		/// [`SpliceOut::value`].
+		/// The outputs to include in the splice's funding transaction. The total value of all
+		/// outputs will be the amount that is removed.
 		outputs: Vec<TxOut>,
 	},
 }
@@ -233,8 +231,14 @@ impl SpliceContribution {
 			SpliceContribution::SpliceIn { value, .. } => {
 				value.to_signed().unwrap_or(SignedAmount::MAX)
 			},
-			SpliceContribution::SpliceOut { value, .. } => {
-				value.to_signed().map(|value| -value).unwrap_or(SignedAmount::MIN)
+			SpliceContribution::SpliceOut { outputs } => {
+				let value_removed = outputs
+					.iter()
+					.map(|txout| txout.value)
+					.sum::<Amount>()
+					.to_signed()
+					.unwrap_or(SignedAmount::MAX);
+				-value_removed
 			},
 		}
 	}
@@ -249,7 +253,7 @@ impl SpliceContribution {
 	pub(super) fn outputs(&self) -> &[TxOut] {
 		match self {
 			SpliceContribution::SpliceIn { .. } => &[],
-			SpliceContribution::SpliceOut { outputs, .. } => &outputs[..],
+			SpliceContribution::SpliceOut { outputs } => &outputs[..],
 		}
 	}
 
@@ -258,7 +262,7 @@ impl SpliceContribution {
 			SpliceContribution::SpliceIn { inputs, change_script, .. } => {
 				(inputs, vec![], change_script)
 			},
-			SpliceContribution::SpliceOut { outputs, .. } => (vec![], outputs, None),
+			SpliceContribution::SpliceOut { outputs } => (vec![], outputs, None),
 		}
 	}
 }

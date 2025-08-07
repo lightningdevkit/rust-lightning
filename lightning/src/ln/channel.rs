@@ -10696,19 +10696,6 @@ where
 					),
 				});
 			}
-
-			let value_removed: Amount =
-				contribution.outputs().iter().map(|txout| txout.value).sum();
-			let negated_value_removed = -value_removed.to_signed().unwrap_or(SignedAmount::MAX);
-			if negated_value_removed != our_funding_contribution {
-				return Err(APIError::APIMisuseError {
-					err: format!(
-						"Channel {} cannot be spliced out; unexpected txout amounts: {}",
-						self.context.channel_id(),
-						value_removed,
-					),
-				});
-			}
 		} else {
 			// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
 			// (Cannot test for miminum required post-splice channel value)
