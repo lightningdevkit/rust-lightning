@@ -2125,6 +2125,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// to the commitment transaction being revoked, this will return a signed transaction, but
 	/// the signature will not be valid.
 	///
+	/// Note that due to splicing, this can also return an `Err` when the counterparty commitment
+	/// this transaction is attempting to claim is no longer valid because the corresponding funding
+	/// transaction was spliced.
+	///
 	/// [`EcdsaChannelSigner::sign_justice_revoked_output`]: crate::sign::ecdsa::EcdsaChannelSigner::sign_justice_revoked_output
 	/// [`Persist`]: crate::chain::chainmonitor::Persist
 	#[rustfmt::skip]
@@ -4285,7 +4289,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
 			self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
 
-		let channel_parameters = &self.funding.channel_parameters;
+		let commitment_txid = &justice_tx.input[input_idx].previous_output.txid;
+		// Since there may be multiple counterparty commitment transactions for the same commitment
+		// number due to splicing, we have to locate the matching `FundingScope::channel_parameters`
+		// to provide the signer. Since this is intended to be called during
+		// `Persist::update_persisted_channel`, the monitor should have already had the update
+		// applied.
+		let channel_parameters = core::iter::once(&self.funding)
+			.chain(&self.pending_funding)
+			.find(|funding| funding.counterparty_claimable_outpoints.contains_key(commitment_txid))
+			.map(|funding| &funding.channel_parameters)
+			.ok_or(())?;
 		let sig = self.onchain_tx_handler.signer.sign_justice_revoked_output(
 			&channel_parameters, &justice_tx, input_idx, value, &per_commitment_key,
 			&self.onchain_tx_handler.secp_ctx,
