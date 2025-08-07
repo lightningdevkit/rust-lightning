@@ -515,6 +515,33 @@ impl<'a> TestChainMonitor<'a> {
 			self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
 		self.chain_monitor.channel_monitor_updated(*channel_id, latest_update).unwrap();
 	}
+
+	pub fn load_post_0_1_existing_monitor(
+		&self, channel_id: ChannelId, monitor: ChannelMonitor<TestChannelSigner>,
+	) -> Result<(), ()> {
+		#[cfg(feature = "std")]
+		if let Some(blocker) = &*self.write_blocker.lock().unwrap() {
+			blocker.recv().unwrap();
+		}
+
+		// At every point where we get a monitor update, we should be able to send a useful monitor
+		// to a watchtower and disk...
+		let mut w = TestVecWriter(Vec::new());
+		monitor.write(&mut w).unwrap();
+		let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+			&mut io::Cursor::new(&w.0),
+			(self.keys_manager, self.keys_manager),
+		)
+		.unwrap()
+		.1;
+		assert!(new_monitor == monitor);
+		self.latest_monitor_update_id
+			.lock()
+			.unwrap()
+			.insert(channel_id, (monitor.get_latest_update_id(), monitor.get_latest_update_id()));
+		self.added_monitors.lock().unwrap().push((channel_id, monitor));
+		self.chain_monitor.load_post_0_1_existing_monitor(channel_id, new_monitor)
+	}
 }
 impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn watch_channel(

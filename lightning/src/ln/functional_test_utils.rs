@@ -1323,10 +1323,7 @@ pub fn _reload_node<'a, 'b, 'c>(
 
 	for monitor in monitors_read.drain(..) {
 		let channel_id = monitor.channel_id();
-		assert_eq!(
-			node.chain_monitor.watch_channel(channel_id, monitor),
-			Ok(ChannelMonitorUpdateStatus::Completed)
-		);
+		assert_eq!(node.chain_monitor.load_post_0_1_existing_monitor(channel_id, monitor), Ok(()));
 		check_added_monitors!(node, 1);
 	}
 

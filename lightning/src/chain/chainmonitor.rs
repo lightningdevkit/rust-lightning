@@ -825,6 +825,43 @@ where
 
 		self.pending_send_only_events.lock().unwrap().push(send_peer_storage_event)
 	}
+
+	/// Loads a [`ChannelMonitor`] which already exists on disk after startup.
+	///
+	/// Using this over [`chain::Watch::watch_channel`] avoids re-persisting a [`ChannelMonitor`]
+	/// that hasn't changed, slowing down startup.
+	///
+	/// Note that this method *can* be used if additional blocks were replayed against the
+	/// [`ChannelMonitor`], and in general can only *not* be used if a [`ChannelMonitorUpdate`] was
+	/// replayed against the [`ChannelMonitor`] which needs to be psersisted (i.e. the state has
+	/// changed due to a [`ChannelMonitorUpdate`] such that it may be different after another
+	/// restart).
+	///
+	/// This method is only safe for [`ChannelMonitor`]s which have been loaded (in conjunction
+	/// with a `ChannelManager`) at least once by LDK 0.1 or later.
+	pub fn load_post_0_1_existing_monitor(
+		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
+	) -> Result<(), ()> {
+		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
+		let mut monitors = self.monitors.write().unwrap();
+		let entry = match monitors.entry(channel_id) {
+			hash_map::Entry::Occupied(_) => {
+				log_error!(logger, "Failed to add new channel data: channel monitor for given channel ID is already present");
+				return Err(());
+			},
+			hash_map::Entry::Vacant(e) => e,
+		};
+		log_trace!(
+			logger,
+			"Loaded existing ChannelMonitor for channel {}",
+			log_funding_info!(monitor)
+		);
+		if let Some(ref chain_source) = self.chain_source {
+			monitor.load_outputs_to_watch(chain_source, &self.logger);
+		}
+		entry.insert(MonitorHolder { monitor, pending_monitor_updates: Mutex::new(Vec::new()) });
+		Ok(())
+	}
 }
 
 impl<
