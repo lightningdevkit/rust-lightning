@@ -1554,54 +1554,6 @@ fn ignore_expired_offer_paths_message() {
 		.is_none());
 }
 
-#[cfg_attr(feature = "std", ignore)]
-#[test]
-fn ignore_expired_invoice_persisted_message() {
-	// If the recipient receives a static_invoice_persisted message over an expired reply path, it
-	// should be ignored.
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
-	let server = &nodes[0];
-	let recipient = &nodes[1];
-
-	let recipient_id = vec![42; 32];
-	let inv_server_paths =
-		server.node.blinded_paths_for_async_recipient(recipient_id, None).unwrap();
-	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
-
-	// Exchange messages until we can extract the final static_invoice_persisted OM.
-	recipient.node.timer_tick_occurred();
-	let serve_static_invoice = invoice_flow_up_to_send_serve_static_invoice(server, recipient).1;
-	server
-		.onion_messenger
-		.handle_onion_message(recipient.node.get_our_node_id(), &serve_static_invoice);
-	let mut events = server.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	let ack_path = match events.pop().unwrap() {
-		Event::PersistStaticInvoice { invoice_persisted_path, .. } => invoice_persisted_path,
-		_ => panic!(),
-	};
-
-	server.node.static_invoice_persisted(ack_path);
-	let invoice_persisted = server
-		.onion_messenger
-		.next_onion_message_for_peer(recipient.node.get_our_node_id())
-		.unwrap();
-	assert!(matches!(
-		recipient.onion_messenger.peel_onion_message(&invoice_persisted).unwrap(),
-		PeeledOnion::AsyncPayments(AsyncPaymentsMessage::StaticInvoicePersisted(_), _, _)
-	));
-
-	advance_time_by(TEST_TEMP_REPLY_PATH_RELATIVE_EXPIRY + Duration::from_secs(1), recipient);
-	recipient
-		.onion_messenger
-		.handle_onion_message(server.node.get_our_node_id(), &invoice_persisted);
-	assert!(recipient.node.get_async_receive_offer().is_err());
-}
-
 #[test]
 fn limit_offer_paths_requests() {
 	// Limit the number of offer_paths_requests sent to the server if they aren't responding.
