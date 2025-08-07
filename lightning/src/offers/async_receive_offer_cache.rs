@@ -30,12 +30,20 @@ use crate::blinded_path::message::AsyncPaymentsContext;
 enum OfferStatus {
 	/// This offer has been returned to the user from the cache, so it needs to be stored until it
 	/// expires and its invoice needs to be kept updated.
-	Used,
+	Used {
+		/// The creation time of the invoice that was last confirmed as persisted by the server. Useful
+		/// to know when the invoice needs refreshing.
+		invoice_created_at: Duration,
+	},
 	/// This offer has not yet been returned to the user, and is safe to replace to ensure we always
 	/// have a maximally fresh offer. We always want to have at least 1 offer in this state,
 	/// preferably a few so we can respond to user requests for new offers without returning the same
 	/// one multiple times. Returning a new offer each time is better for privacy.
-	Ready,
+	Ready {
+		/// The creation time of the invoice that was last confirmed as persisted by the server. Useful
+		/// to know when the invoice needs refreshing.
+		invoice_created_at: Duration,
+	},
 	/// This offer's invoice is not yet confirmed as persisted by the static invoice server, so it is
 	/// not yet ready to receive payments.
 	Pending,
@@ -60,8 +68,12 @@ struct AsyncReceiveOffer {
 }
 
 impl_writeable_tlv_based_enum!(OfferStatus,
-	(0, Used) => {},
-	(1, Ready) => {},
+	(0, Used) => {
+		(0, invoice_created_at, required),
+	},
+	(1, Ready) => {
+		(0, invoice_created_at, required),
+	},
 	(2, Pending) => {},
 );
 
@@ -216,16 +228,18 @@ impl AsyncReceiveOfferCache {
 		// Find the freshest unused offer. See `OfferStatus::Ready`.
 		let newest_unused_offer_opt = self
 			.unused_ready_offers()
-			.max_by(|(_, offer_a), (_, offer_b)| offer_a.created_at.cmp(&offer_b.created_at))
-			.map(|(idx, offer)| (idx, offer.offer.clone()));
-		if let Some((idx, newest_ready_offer)) = newest_unused_offer_opt {
-			self.offers[idx].as_mut().map(|offer| offer.status = OfferStatus::Used);
+			.max_by(|(_, offer_a, _), (_, offer_b, _)| offer_a.created_at.cmp(&offer_b.created_at))
+			.map(|(idx, offer, invoice_created_at)| (idx, offer.offer.clone(), invoice_created_at));
+		if let Some((idx, newest_ready_offer, invoice_created_at)) = newest_unused_offer_opt {
+			self.offers[idx]
+				.as_mut()
+				.map(|offer| offer.status = OfferStatus::Used { invoice_created_at });
 			return Ok((newest_ready_offer, true));
 		}
 
 		// If no unused offers are available, return the used offer with the latest absolute expiry
 		self.offers_with_idx()
-			.filter(|(_, offer)| matches!(offer.status, OfferStatus::Used))
+			.filter(|(_, offer)| matches!(offer.status, OfferStatus::Used { .. }))
 			.max_by(|a, b| {
 				let abs_expiry_a = a.1.offer.absolute_expiry().unwrap_or(Duration::MAX);
 				let abs_expiry_b = b.1.offer.absolute_expiry().unwrap_or(Duration::MAX);
@@ -338,9 +352,9 @@ impl AsyncReceiveOfferCache {
 		}
 
 		// If all of our offers are already used or pending, then none are available to be replaced
-		let no_replaceable_offers = self
-			.offers_with_idx()
-			.all(|(_, offer)| matches!(offer.status, OfferStatus::Used | OfferStatus::Pending));
+		let no_replaceable_offers = self.offers_with_idx().all(|(_, offer)| {
+			matches!(offer.status, OfferStatus::Used { .. } | OfferStatus::Pending)
+		});
 		if no_replaceable_offers {
 			return None;
 		}
@@ -350,7 +364,7 @@ impl AsyncReceiveOfferCache {
 		let num_payable_offers = self
 			.offers_with_idx()
 			.filter(|(_, offer)| {
-				matches!(offer.status, OfferStatus::Used | OfferStatus::Ready { .. })
+				matches!(offer.status, OfferStatus::Used { .. } | OfferStatus::Ready { .. })
 			})
 			.count();
 		if num_payable_offers <= 1 {
@@ -361,10 +375,10 @@ impl AsyncReceiveOfferCache {
 		// were last updated, so they are stale enough to warrant replacement.
 		let awhile_ago = duration_since_epoch.saturating_sub(OFFER_REFRESH_THRESHOLD);
 		self.unused_ready_offers()
-			.filter(|(_, offer)| offer.created_at < awhile_ago)
+			.filter(|(_, offer, _)| offer.created_at < awhile_ago)
 			// Get the stalest offer and return its index
-			.min_by(|(_, offer_a), (_, offer_b)| offer_a.created_at.cmp(&offer_b.created_at))
-			.map(|(idx, _)| idx)
+			.min_by(|(_, offer_a, _), (_, offer_b, _)| offer_a.created_at.cmp(&offer_b.created_at))
+			.map(|(idx, _, _)| idx)
 	}
 
 	/// Returns an iterator over (offer_idx, offer)
@@ -378,11 +392,11 @@ impl AsyncReceiveOfferCache {
 		})
 	}
 
-	/// Returns an iterator over (offer_idx, offer) where all returned offers are
+	/// Returns an iterator over (offer_idx, offer, invoice_created_at) where all returned offers are
 	/// [`OfferStatus::Ready`]
-	fn unused_ready_offers(&self) -> impl Iterator<Item = (usize, &AsyncReceiveOffer)> {
+	fn unused_ready_offers(&self) -> impl Iterator<Item = (usize, &AsyncReceiveOffer, Duration)> {
 		self.offers_with_idx().filter_map(|(idx, offer)| match offer.status {
-			OfferStatus::Ready => Some((idx, offer)),
+			OfferStatus::Ready { invoice_created_at } => Some((idx, offer, invoice_created_at)),
 			_ => None,
 		})
 	}
@@ -408,7 +422,7 @@ impl AsyncReceiveOfferCache {
 		// them a fresh invoice on each timer tick.
 		self.offers_with_idx().filter_map(|(idx, offer)| {
 			let needs_invoice_update =
-				offer.status == OfferStatus::Used || offer.status == OfferStatus::Pending;
+				matches!(offer.status, OfferStatus::Used { .. } | OfferStatus::Pending);
 			if needs_invoice_update {
 				let offer_slot = idx.try_into().unwrap_or(u16::MAX);
 				Some((
@@ -431,15 +445,10 @@ impl AsyncReceiveOfferCache {
 	/// is needed.
 	///
 	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
-	pub(super) fn static_invoice_persisted(
-		&mut self, context: AsyncPaymentsContext, duration_since_epoch: Duration,
-	) -> bool {
-		let offer_id = match context {
-			AsyncPaymentsContext::StaticInvoicePersisted { path_absolute_expiry, offer_id } => {
-				if duration_since_epoch > path_absolute_expiry {
-					return false;
-				}
-				offer_id
+	pub(super) fn static_invoice_persisted(&mut self, context: AsyncPaymentsContext) -> bool {
+		let (invoice_created_at, offer_id) = match context {
+			AsyncPaymentsContext::StaticInvoicePersisted { invoice_created_at, offer_id } => {
+				(invoice_created_at, offer_id)
 			},
 			_ => return false,
 		};
@@ -447,13 +456,14 @@ impl AsyncReceiveOfferCache {
 		let mut offers = self.offers.iter_mut();
 		let offer_entry = offers.find(|o| o.as_ref().map_or(false, |o| o.offer.id() == offer_id));
 		if let Some(Some(ref mut offer)) = offer_entry {
-			if offer.status == OfferStatus::Used {
-				// We succeeded in updating the invoice for a used offer, no re-persistence of the cache
-				// needed
-				return false;
+			match offer.status {
+				OfferStatus::Used { invoice_created_at: ref mut inv_created_at }
+				| OfferStatus::Ready { invoice_created_at: ref mut inv_created_at } => {
+					*inv_created_at = core::cmp::min(invoice_created_at, *inv_created_at);
+				},
+				OfferStatus::Pending => offer.status = OfferStatus::Ready { invoice_created_at },
 			}
 
-			offer.status = OfferStatus::Ready;
 			return true;
 		}
 
@@ -465,7 +475,7 @@ impl AsyncReceiveOfferCache {
 		self.offers_with_idx()
 			.filter_map(|(_, offer)| {
 				if matches!(offer.status, OfferStatus::Ready { .. })
-					|| matches!(offer.status, OfferStatus::Used)
+					|| matches!(offer.status, OfferStatus::Used { .. })
 				{
 					Some(offer.offer.clone())
 				} else {

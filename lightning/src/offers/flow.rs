@@ -1342,7 +1342,6 @@ where
 		ES::Target: EntropySource,
 		R::Target: Router,
 	{
-		let duration_since_epoch = self.duration_since_epoch();
 		let mut serve_static_invoice_msgs = Vec::new();
 		{
 			let cache = self.async_receive_offer_cache.lock().unwrap();
@@ -1363,10 +1362,8 @@ where
 				};
 
 				let reply_path_context = {
-					let path_absolute_expiry =
-						duration_since_epoch.saturating_add(TEMP_REPLY_PATH_RELATIVE_EXPIRY);
 					MessageContext::AsyncPayments(AsyncPaymentsContext::StaticInvoicePersisted {
-						path_absolute_expiry,
+						invoice_created_at: invoice.created_at(),
 						offer_id: offer.id(),
 					})
 				};
@@ -1544,11 +1541,9 @@ where
 		};
 
 		let reply_path_context = {
-			let path_absolute_expiry =
-				duration_since_epoch.saturating_add(TEMP_REPLY_PATH_RELATIVE_EXPIRY);
 			MessageContext::AsyncPayments(AsyncPaymentsContext::StaticInvoicePersisted {
 				offer_id,
-				path_absolute_expiry,
+				invoice_created_at: invoice.created_at(),
 			})
 		};
 
@@ -1669,7 +1664,7 @@ where
 	#[cfg(async_payments)]
 	pub fn handle_static_invoice_persisted(&self, context: AsyncPaymentsContext) -> bool {
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
-		cache.static_invoice_persisted(context, self.duration_since_epoch())
+		cache.static_invoice_persisted(context)
 	}
 
 	/// Get the [`AsyncReceiveOfferCache`] for persistence.
