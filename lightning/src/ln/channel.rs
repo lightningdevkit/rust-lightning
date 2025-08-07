@@ -10682,10 +10682,9 @@ where
 		if our_funding_contribution < SignedAmount::ZERO {
 			// TODO(splicing): Check that channel balance does not go below the channel reserve
 			let post_channel_value = AddSigned::checked_add_signed(
-				self.funding.get_value_satoshis(),
+				self.funding.get_value_to_self_msat() / 1000,
 				our_funding_contribution.to_sat(),
 			);
-			// FIXME: Should we check value_to_self instead? Do HTLCs need to be accounted for?
 			// FIXME: Check that we can pay for the outputs from the channel value?
 			if post_channel_value.is_none() {
 				return Err(APIError::APIMisuseError {
