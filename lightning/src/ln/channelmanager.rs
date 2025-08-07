@@ -209,10 +209,14 @@ pub struct FundingTxInput {
 
 	/// The transaction containing the unspent [`TxOut`] referenced by [`txin`].
 	///
+	/// [`TxOut`]: bitcoin::TxOut
 	/// [`txin`]: Self::txin
 	pub prevtx: Transaction,
 
 	/// The weight of the witness that is needed to spend the [`TxOut`] referenced by [`txin`].
+	///
+	/// [`TxOut`]: bitcoin::TxOut
+	/// [`txin`]: Self::txin
 	pub witness_weight: Weight,
 }
 
