@@ -13,7 +13,7 @@ use bitcoin::consensus::encode;
 use bitcoin::constants::ChainHash;
 use bitcoin::script::{Builder, Script, ScriptBuf, WScriptHash};
 use bitcoin::sighash::EcdsaSighashType;
-use bitcoin::transaction::{Transaction, TxIn, TxOut};
+use bitcoin::transaction::{Transaction, TxOut};
 use bitcoin::Weight;
 
 use bitcoin::hash_types::{BlockHash, Txid};
@@ -26,7 +26,7 @@ use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::{secp256k1, sighash};
 #[cfg(splicing)]
-use bitcoin::{Sequence, Witness};
+use bitcoin::{Sequence, TxIn, Witness};
 
 use crate::chain::chaininterface::{
 	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
@@ -14130,7 +14130,9 @@ mod tests {
 		TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 	};
 	use crate::ln::channel_keys::{RevocationBasepoint, RevocationKey};
-	use crate::ln::channelmanager::{self, FundingTxInput, HTLCSource, PaymentId};
+	#[cfg(splicing)]
+	use crate::ln::channelmanager::FundingTxInput;
+	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::msgs;
 	use crate::ln::msgs::{ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::onion_utils::{AttributionData, LocalHTLCFailureReason};
