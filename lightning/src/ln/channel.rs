@@ -14192,6 +14192,7 @@ mod tests {
 		);
 	}
 
+	#[allow(dead_code)]
 	struct Keys {
 		signer: InMemorySigner,
 	}
