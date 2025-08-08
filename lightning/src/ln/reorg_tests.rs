@@ -844,6 +844,9 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	check_closed_event(&nodes[0], 1, ClosureReason::HTLCsTimedOut, false, &[nodes[1].node.get_our_node_id()], 100_000);
+	if anchors {
+		handle_bump_close_event(&nodes[0]);
+	}
 
 	{
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -870,6 +873,9 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[1], 1, reason, false, &[nodes[0].node.get_our_node_id()], 100_000);
+	if anchors {
+		handle_bump_close_event(&nodes[1]);
+	}
 
 	let commitment_b = {
 		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
@@ -882,13 +888,23 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	// Confirm B's commitment, A should now broadcast an HTLC timeout for commitment B.
 	mine_transaction(&nodes[0], &commitment_b);
 	{
-		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 		if nodes[0].connect_style.borrow().updates_best_block_first() {
 			// `commitment_a` is rebroadcast because the best block was updated prior to seeing
 			// `commitment_b`.
-			assert_eq!(txn.len(), 2);
-			check_spends!(txn.last().unwrap(), commitment_b);
+			if anchors {
+				handle_bump_close_event(&nodes[0]);
+				let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+				assert_eq!(txn.len(), 3);
+				check_spends!(txn[0], commitment_b);
+				check_spends!(txn[1], funding_tx);
+				check_spends!(txn[2], txn[1]);  // Anchor output spend transaction.
+			} else {
+				let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+				assert_eq!(txn.len(), 2);
+				check_spends!(txn.last().unwrap(), commitment_b);
+			}
 		} else {
+			let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 			assert_eq!(txn.len(), 1);
 			check_spends!(txn[0], commitment_b);
 		}
@@ -898,11 +914,15 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	// blocks, one to get us back to the original height, and another to retry our pending claims.
 	disconnect_blocks(&nodes[0], 1);
 	connect_blocks(&nodes[0], 2);
+	if anchors {
+		handle_bump_close_event(&nodes[0]);
+	}
 	{
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 		if anchors {
-			assert_eq!(txn.len(), 1);
+			assert_eq!(txn.len(), 2);
 			check_spends!(txn[0], funding_tx);
+			check_spends!(txn[1], txn[0]);  // Anchor output spend.
 		} else {
 			assert_eq!(txn.len(), 2);
 			check_spends!(txn[0], txn[1]); // HTLC timeout A
@@ -977,6 +997,7 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
 	let message = "Channel force-closed".to_owned();
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 10_000_000);
+	handle_bump_close_event(&nodes[1]);
 
 	let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
 	assert_eq!(txn.len(), 1);
@@ -990,19 +1011,13 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
 	check_added_monitors(&nodes[0], 1);
 
 	mine_transaction(&nodes[1], &commitment_tx);
-	let mut bump_events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(bump_events.len(), 1);
-	match bump_events.pop().unwrap() {
-		Event::BumpTransaction(bump_event) => {
-			nodes[1].bump_tx_handler.handle_event(&bump_event);
-		},
-		ev => panic!("Unexpected event {ev:?}"),
-	}
+	handle_bump_events(&nodes[1], nodes[1].connect_style.borrow().updates_best_block_first(), 1);
 
 	let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
 	if nodes[1].connect_style.borrow().updates_best_block_first() {
-		assert_eq!(txn.len(), 2, "{txn:?}");
+		assert_eq!(txn.len(), 3, "{txn:?}");
 		check_spends!(txn[0], funding_tx);
+		check_spends!(txn[1], txn[0]);  // Anchor output spend.
 	} else {
 		assert_eq!(txn.len(), 1, "{txn:?}");
 	}
