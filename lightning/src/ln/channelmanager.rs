@@ -6279,7 +6279,7 @@ where
 							&chan.context,
 							Some(update_add_htlc.payment_hash),
 						);
-						chan.can_accept_incoming_htlc(update_add_htlc, &self.fee_estimator, &logger)
+						chan.can_accept_incoming_htlc(&self.fee_estimator, &logger)
 					},
 				) {
 					Some(Ok(_)) => {},
