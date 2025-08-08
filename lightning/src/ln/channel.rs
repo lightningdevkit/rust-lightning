@@ -10742,7 +10742,7 @@ where
 		// by the funding inputs.
 		let adjusted_funding_contribution = if our_funding_contribution < SignedAmount::ZERO {
 			let adjusted_funding_contribution = our_funding_contribution
-				+ fees.to_signed().expect("fees should never exceed splice-out value");
+				- fees.to_signed().expect("fees should never exceed splice-out value");
 
 			// TODO(splicing): Check that channel balance does not go below the channel reserve
 			let _post_channel_balance = AddSigned::checked_add_signed(
@@ -10800,7 +10800,7 @@ where
 
 		Ok(msgs::SpliceInit {
 			channel_id: self.context.channel_id,
-			funding_contribution_satoshis: our_funding_contribution.to_sat(),
+			funding_contribution_satoshis: adjusted_funding_contribution.to_sat(),
 			funding_feerate_per_kw,
 			locktime,
 			funding_pubkey,
