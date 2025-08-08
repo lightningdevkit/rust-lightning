@@ -60,7 +60,7 @@ pub use onion_utils::process_onion_failure;
 #[cfg(fuzzing)]
 pub use onion_utils::AttributionData;
 
-#[cfg(all(test, async_payments))]
+#[cfg(test)]
 #[allow(unused_mut)]
 mod async_payments_tests;
 #[cfg(test)]

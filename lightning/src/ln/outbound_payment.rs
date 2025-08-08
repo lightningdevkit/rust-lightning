@@ -20,7 +20,7 @@ use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{EventCompletionAction, HTLCSource, PaymentId};
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
-use crate::offers::invoice::Bolt12Invoice;
+use crate::offers::invoice::{Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder};
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
 use crate::offers::static_invoice::StaticInvoice;
@@ -37,9 +37,6 @@ use crate::util::ser::ReadableArgs;
 #[cfg(feature = "std")]
 use crate::util::time::Instant;
 
-#[cfg(async_payments)]
-use crate::offers::invoice::{DerivedSigningPubkey, InvoiceBuilder};
-
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -54,12 +51,11 @@ use crate::sync::Mutex;
 /// [`ChannelManager::timer_tick_occurred`]: crate::ln::channelmanager::ChannelManager::timer_tick_occurred
 pub(crate) const IDEMPOTENCY_TIMEOUT_TICKS: u8 = 7;
 
-#[cfg(async_payments)]
 /// The default relative expiration to wait for a pending outbound HTLC to a often-offline
 /// payee to fulfill.
 const ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 
-#[cfg(all(async_payments, test))]
+#[cfg(test)]
 pub(crate) const TEST_ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY: Duration =
 	ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY;
 
@@ -637,7 +633,6 @@ pub enum Bolt12PaymentError {
 	UnknownRequiredFeatures,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
 	SendingFailed(RetryableSendFailure),
-	#[cfg(async_payments)]
 	/// Failed to create a blinded path back to ourselves.
 	///
 	/// We attempted to initiate payment to a [`StaticInvoice`] but failed to create a reply path for
@@ -1111,7 +1106,6 @@ impl OutboundPayments {
 		Ok(())
 	}
 
-	#[cfg(async_payments)]
 	#[rustfmt::skip]
 	pub(super) fn static_invoice_received<ES: Deref>(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
@@ -1201,7 +1195,6 @@ impl OutboundPayments {
 		};
 	}
 
-	#[cfg(async_payments)]
 	#[rustfmt::skip]
 	pub(super) fn send_payment_for_static_invoice<
 		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref

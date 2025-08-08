@@ -15,9 +15,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-#[cfg(async_payments)]
-use super::async_payments::AsyncPaymentsMessage;
-use super::async_payments::AsyncPaymentsMessageHandler;
+use super::async_payments::{AsyncPaymentsMessage, AsyncPaymentsMessageHandler};
 use super::dns_resolution::{DNSResolverMessage, DNSResolverMessageHandler};
 use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::OnionMessageContents;
@@ -26,11 +24,9 @@ use super::packet::{
 	ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, BIG_PACKET_HOP_DATA_LEN,
 	SMALL_PACKET_HOP_DATA_LEN,
 };
-#[cfg(async_payments)]
-use crate::blinded_path::message::AsyncPaymentsContext;
 use crate::blinded_path::message::{
-	BlindedMessagePath, DNSResolverContext, ForwardTlvs, MessageContext, MessageForwardNode,
-	NextMessageHop, OffersContext, ReceiveTlvs,
+	AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, ForwardTlvs, MessageContext,
+	MessageForwardNode, NextMessageHop, OffersContext, ReceiveTlvs,
 };
 use crate::blinded_path::utils;
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
@@ -440,7 +436,6 @@ impl Responder {
 	}
 
 	/// Converts a [`Responder`] into its inner [`BlindedMessagePath`].
-	#[cfg(async_payments)]
 	pub(crate) fn into_blinded_path(self) -> BlindedMessagePath {
 		self.reply_path
 	}
@@ -977,7 +972,6 @@ pub enum PeeledOnion<T: OnionMessageContents> {
 	/// Received offers onion message, with decrypted contents, context, and reply path
 	Offers(OffersMessage, Option<OffersContext>, Option<BlindedMessagePath>),
 	/// Received async payments onion message, with decrypted contents, context, and reply path
-	#[cfg(async_payments)]
 	AsyncPayments(AsyncPaymentsMessage, AsyncPaymentsContext, Option<BlindedMessagePath>),
 	/// Received DNS resolver onion message, with decrypted contents, context, and reply path
 	DNSResolver(DNSResolverMessage, Option<DNSResolverContext>, Option<BlindedMessagePath>),
@@ -1181,7 +1175,6 @@ where
 			(ParsedOnionMessageContents::Offers(msg), None) => {
 				Ok(PeeledOnion::Offers(msg, None, reply_path))
 			},
-			#[cfg(async_payments)]
 			(
 				ParsedOnionMessageContents::AsyncPayments(msg),
 				Some(MessageContext::AsyncPayments(ctx)),
@@ -1678,15 +1671,12 @@ where
 			);
 		}
 
-		#[cfg(async_payments)]
-		{
-			for (message, instructions) in self.async_payments_handler.release_pending_messages() {
-				let _ = self.send_onion_message_internal(
-					message,
-					instructions,
-					format_args!("when sending AsyncPaymentsMessage"),
-				);
-			}
+		for (message, instructions) in self.async_payments_handler.release_pending_messages() {
+			let _ = self.send_onion_message_internal(
+				message,
+				instructions,
+				format_args!("when sending AsyncPaymentsMessage"),
+			);
 		}
 
 		// Enqueue any initiating `DNSResolverMessage`s to send.
@@ -2098,7 +2088,6 @@ where
 					let _ = self.handle_onion_message_response(msg, instructions);
 				}
 			},
-			#[cfg(async_payments)]
 			Ok(PeeledOnion::AsyncPayments(message, context, reply_path)) => {
 				log_receive!(message, reply_path.is_some());
 				let responder = reply_path.map(Responder::new);

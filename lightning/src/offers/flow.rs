@@ -19,11 +19,11 @@ use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 
 use crate::blinded_path::message::{
-	BlindedMessagePath, MessageContext, MessageForwardNode, OffersContext,
+	AsyncPaymentsContext, BlindedMessagePath, MessageContext, MessageForwardNode, OffersContext,
 };
 use crate::blinded_path::payment::{
-	BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints,
-	PaymentContext, UnauthenticatedReceiveTlvs,
+	AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext,
+	PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs,
 };
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 
@@ -44,31 +44,25 @@ use crate::offers::invoice_request::{
 	InvoiceRequest, InvoiceRequestBuilder, VerifiedInvoiceRequest,
 };
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{DerivedMetadata, Offer, OfferBuilder};
+use crate::offers::offer::{Amount, DerivedMetadata, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
-use crate::onion_message::async_payments::AsyncPaymentsMessage;
-use crate::onion_message::messenger::{Destination, MessageRouter, MessageSendInstructions};
+use crate::onion_message::async_payments::{
+	AsyncPaymentsMessage, HeldHtlcAvailable, OfferPaths, OfferPathsRequest, ServeStaticInvoice,
+	StaticInvoicePersisted,
+};
+use crate::onion_message::messenger::{
+	Destination, MessageRouter, MessageSendInstructions, Responder,
+};
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::router::Router;
 use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey};
+
+use crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder};
 use crate::sync::{Mutex, RwLock};
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::ser::Writeable;
-
-#[cfg(async_payments)]
-use {
-	crate::blinded_path::message::AsyncPaymentsContext,
-	crate::blinded_path::payment::AsyncBolt12OfferContext,
-	crate::offers::offer::Amount,
-	crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder},
-	crate::onion_message::async_payments::{
-		HeldHtlcAvailable, OfferPaths, OfferPathsRequest, ServeStaticInvoice,
-		StaticInvoicePersisted,
-	},
-	crate::onion_message::messenger::Responder,
-};
 
 #[cfg(feature = "dnssec")]
 use {
@@ -167,7 +161,6 @@ where
 	///
 	/// This method only needs to be called once when the server first takes on the recipient as a
 	/// client, or when the paths change, e.g. if the paths are set to expire at a particular time.
-	#[cfg(async_payments)]
 	pub fn set_paths_to_static_invoice_server(
 		&self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
 		peers: Vec<MessageForwardNode>,
@@ -192,7 +185,6 @@ where
 		self.receive_auth_key
 	}
 
-	#[cfg(async_payments)]
 	fn duration_since_epoch(&self) -> Duration {
 		#[cfg(not(feature = "std"))]
 		let now = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
@@ -242,7 +234,6 @@ where
 
 /// The maximum size of a received [`StaticInvoice`] before we'll fail verification in
 /// [`OffersMessageFlow::verify_serve_static_invoice_message].
-#[cfg(async_payments)]
 pub const MAX_STATIC_INVOICE_SIZE_BYTES: usize = 5 * 1024;
 
 /// Defines the maximum number of [`OffersMessage`] including different reply paths to be sent
@@ -252,22 +243,20 @@ pub const MAX_STATIC_INVOICE_SIZE_BYTES: usize = 5 * 1024;
 /// even if multiple invoices are received.
 const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 
-#[cfg(all(async_payments, test))]
+#[cfg(test)]
 pub(crate) const TEST_OFFERS_MESSAGE_REQUEST_LIMIT: usize = OFFERS_MESSAGE_REQUEST_LIMIT;
 
 /// The default relative expiry for reply paths where a quick response is expected and the reply
 /// path is single-use.
-#[cfg(async_payments)]
 const TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = Duration::from_secs(2 * 60 * 60);
 
-#[cfg(all(async_payments, test))]
+#[cfg(test)]
 pub(crate) const TEST_TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = TEMP_REPLY_PATH_RELATIVE_EXPIRY;
 
 // Default to async receive offers and the paths used to update them lasting one year.
-#[cfg(async_payments)]
 const DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
-#[cfg(all(async_payments, test))]
+#[cfg(test)]
 pub(crate) const TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration =
 	DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY;
 
@@ -284,7 +273,6 @@ where
 	/// [`Self::set_paths_to_static_invoice_server`].
 	///
 	/// Errors if blinded path creation fails or the provided `recipient_id` is larger than 1KiB.
-	#[cfg(async_payments)]
 	pub fn blinded_paths_for_async_recipient(
 		&self, recipient_id: Vec<u8>, relative_expiry: Option<Duration>,
 		peers: Vec<MessageForwardNode>,
@@ -360,7 +348,7 @@ where
 		)
 	}
 
-	#[cfg(all(test, async_payments))]
+	#[cfg(test)]
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
 	pub(crate) fn test_create_blinded_payment_paths<ES: Deref, R: Deref>(
@@ -445,7 +433,6 @@ where
 		let nonce = match context {
 			None if invoice_request.metadata().is_some() => None,
 			Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
-			#[cfg(async_payments)]
 			Some(OffersContext::StaticInvoiceRequested {
 				recipient_id,
 				invoice_id,
@@ -507,7 +494,6 @@ where
 	///
 	/// Returns `Err(())` if:
 	/// - The inbound payment context has expired.
-	#[cfg(async_payments)]
 	pub fn verify_inbound_async_payment_context(
 		&self, context: AsyncPaymentsContext,
 	) -> Result<(), ()> {
@@ -623,7 +609,6 @@ where
 	/// 2. Use [`Self::create_static_invoice_builder`] to create a [`StaticInvoice`] from this
 	///    [`Offer`] plus the returned [`Nonce`], and provide the static invoice to the
 	///    aforementioned always-online node.
-	#[cfg(async_payments)]
 	pub fn create_async_receive_offer_builder<ES: Deref>(
 		&self, entropy_source: ES, message_paths_to_always_online_node: Vec<BlindedMessagePath>,
 	) -> Result<(OfferBuilder<DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError>
@@ -792,7 +777,6 @@ where
 
 	/// Creates a [`StaticInvoiceBuilder`] from the corresponding [`Offer`] and [`Nonce`] that were
 	/// created via [`Self::create_async_receive_offer_builder`].
-	#[cfg(async_payments)]
 	pub fn create_static_invoice_builder<'a, ES: Deref, R: Deref>(
 		&self, router: &R, entropy_source: ES, offer: &'a Offer, offer_nonce: Nonce,
 		payment_secret: PaymentSecret, relative_expiry_secs: u32,
@@ -1115,7 +1099,6 @@ where
 	/// Forwards a [`StaticInvoice`] over the provided [`Responder`] in response to an
 	/// [`InvoiceRequest`] that we as a static invoice server received on behalf of an often-offline
 	/// recipient.
-	#[cfg(async_payments)]
 	pub fn enqueue_static_invoice(
 		&self, invoice: StaticInvoice, responder: Responder,
 	) -> Result<(), Bolt12SemanticError> {
@@ -1144,7 +1127,6 @@ where
 	///
 	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
 	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
-	#[cfg(async_payments)]
 	pub fn enqueue_held_htlc_available(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId, peers: Vec<MessageForwardNode>,
 	) -> Result<(), Bolt12SemanticError> {
@@ -1230,13 +1212,12 @@ where
 	///
 	/// Returns the requested offer as well as a bool indicating whether the cache needs to be
 	/// persisted using [`Self::writeable_async_receive_offer_cache`].
-	#[cfg(async_payments)]
 	pub fn get_async_receive_offer(&self) -> Result<(Offer, bool), ()> {
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
 		cache.get_async_receive_offer(self.duration_since_epoch())
 	}
 
-	#[cfg(all(test, async_payments))]
+	#[cfg(test)]
 	pub(crate) fn test_get_async_receive_offers(&self) -> Vec<Offer> {
 		self.async_receive_offer_cache.lock().unwrap().test_get_payable_offers()
 	}
@@ -1252,7 +1233,6 @@ where
 	/// the cache can self-regulate the number of messages sent out.
 	///
 	/// Errors if we failed to create blinded reply paths when sending an [`OfferPathsRequest`] message.
-	#[cfg(async_payments)]
 	pub fn check_refresh_async_receive_offer_cache<ES: Deref, R: Deref>(
 		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
 		router: R, timer_tick_occurred: bool,
@@ -1278,7 +1258,6 @@ where
 		Ok(())
 	}
 
-	#[cfg(async_payments)]
 	fn check_refresh_async_offers(
 		&self, peers: Vec<MessageForwardNode>, timer_tick_occurred: bool,
 	) -> Result<(), ()> {
@@ -1323,7 +1302,6 @@ where
 
 	/// Enqueue onion messages that will used to request invoice refresh from the static invoice
 	/// server, based on the offers provided by the cache.
-	#[cfg(async_payments)]
 	fn check_refresh_static_invoices<ES: Deref, R: Deref>(
 		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
 		router: R,
@@ -1392,7 +1370,6 @@ where
 	/// Handles an incoming [`OfferPathsRequest`] onion message from an often-offline recipient who
 	/// wants us (the static invoice server) to serve [`StaticInvoice`]s to payers on their behalf.
 	/// Sends out [`OfferPaths`] onion messages in response.
-	#[cfg(async_payments)]
 	pub fn handle_offer_paths_request<ES: Deref>(
 		&self, context: AsyncPaymentsContext, peers: Vec<MessageForwardNode>, entropy_source: ES,
 	) -> Option<(OfferPaths, MessageContext)>
@@ -1455,7 +1432,6 @@ where
 	///
 	/// Returns `None` if we have enough offers cached already, verification of `message` fails, or we
 	/// fail to create blinded paths.
-	#[cfg(async_payments)]
 	pub fn handle_offer_paths<ES: Deref, R: Deref>(
 		&self, message: OfferPaths, context: AsyncPaymentsContext, responder: Responder,
 		peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
@@ -1544,7 +1520,6 @@ where
 
 	/// Creates a [`StaticInvoice`] and a blinded path for the server to forward invoice requests from
 	/// payers to our node.
-	#[cfg(async_payments)]
 	fn create_static_invoice_for_server<ES: Deref, R: Deref>(
 		&self, offer: &Offer, offer_nonce: Nonce, peers: Vec<MessageForwardNode>,
 		usable_channels: Vec<ChannelDetails>, entropy: ES, router: R,
@@ -1608,7 +1583,6 @@ where
 	/// [`MAX_STATIC_INVOICE_SIZE_BYTES`].
 	///
 	/// [`ServeStaticInvoice::invoice`]: crate::onion_message::async_payments::ServeStaticInvoice::invoice
-	#[cfg(async_payments)]
 	pub fn verify_serve_static_invoice_message(
 		&self, message: &ServeStaticInvoice, context: AsyncPaymentsContext,
 	) -> Result<(Vec<u8>, u128), ()> {
@@ -1638,7 +1612,6 @@ where
 	/// to payers on behalf of an often-offline recipient. This method must be called after persisting
 	/// a [`StaticInvoice`] to confirm to the recipient that their corresponding [`Offer`] is ready to
 	/// receive async payments.
-	#[cfg(async_payments)]
 	pub fn static_invoice_persisted(&self, responder: Responder) {
 		let mut pending_async_payments_messages =
 			self.pending_async_payments_messages.lock().unwrap();
@@ -1651,7 +1624,6 @@ where
 	/// [`Self::writeable_async_receive_offer_cache`].
 	///
 	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
-	#[cfg(async_payments)]
 	pub fn handle_static_invoice_persisted(&self, context: AsyncPaymentsContext) -> bool {
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
 		cache.static_invoice_persisted(context)
