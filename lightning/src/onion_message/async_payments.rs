@@ -19,10 +19,10 @@ use crate::prelude::*;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 
 // TLV record types for the `onionmsg_tlv` TLV stream as defined in BOLT 4.
-const OFFER_PATHS_REQ_TLV_TYPE: u64 = 65538;
-const OFFER_PATHS_TLV_TYPE: u64 = 65540;
-const SERVE_INVOICE_TLV_TYPE: u64 = 65542;
-const INVOICE_PERSISTED_TLV_TYPE: u64 = 65544;
+const OFFER_PATHS_REQ_TLV_TYPE: u64 = 75540;
+const OFFER_PATHS_TLV_TYPE: u64 = 75542;
+const SERVE_INVOICE_TLV_TYPE: u64 = 75544;
+const INVOICE_PERSISTED_TLV_TYPE: u64 = 75546;
 const HELD_HTLC_AVAILABLE_TLV_TYPE: u64 = 72;
 const RELEASE_HELD_HTLC_TLV_TYPE: u64 = 74;
 
