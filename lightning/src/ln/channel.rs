@@ -10826,34 +10826,30 @@ where
 			)));
 		}
 
+		debug_assert_eq!(our_funding_contribution, SignedAmount::ZERO);
+
 		// TODO(splicing): Move this check once user-provided contributions are supported for
 		// counterparty-initiated splices.
 		if our_funding_contribution > SignedAmount::MAX_MONEY {
 			return Err(ChannelError::WarnAndDisconnect(format!(
-				"Channel {} cannot be spliced; our contribution exceeds total bitcoin supply: {}",
+				"Channel {} cannot be spliced in; our {} contribution exceeds the total bitcoin supply",
+				self.context.channel_id(),
+				our_funding_contribution,
+			)));
+		}
+
+		if our_funding_contribution < -SignedAmount::MAX_MONEY {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} cannot be spliced out; our {} contribution exhausts the total bitcoin supply",
 				self.context.channel_id(),
 				our_funding_contribution,
 			)));
 		}
 
 		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
-		if their_funding_contribution > SignedAmount::MAX_MONEY {
-			return Err(ChannelError::WarnAndDisconnect(format!(
-				"Channel {} cannot be spliced; their contribution exceeds total bitcoin supply: {}",
-				self.context.channel_id(),
-				their_funding_contribution,
-			)));
-		}
+		self.validate_splice_contribution(their_funding_contribution)?;
 
-		debug_assert_eq!(our_funding_contribution, SignedAmount::ZERO);
-		if their_funding_contribution < SignedAmount::ZERO {
-			return Err(ChannelError::WarnAndDisconnect(format!(
-				"Splice-out not supported, only splice in, contribution is {} ({} + {})",
-				their_funding_contribution + our_funding_contribution,
-				their_funding_contribution,
-				our_funding_contribution,
-			)));
-		}
+		// TODO(splicing): Check that channel balance does not go below the channel reserve
 
 		let splice_funding = FundingScope::for_splice(
 			&self.funding,
@@ -10872,6 +10868,45 @@ where
 		// TODO(splicing): Early check for reserve requirement
 
 		Ok(splice_funding)
+	}
+
+	#[cfg(splicing)]
+	fn validate_splice_contribution(
+		&self, their_funding_contribution: SignedAmount,
+	) -> Result<(), ChannelError> {
+		if their_funding_contribution > SignedAmount::MAX_MONEY {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} cannot be spliced in; their {} contribution exceeds the total bitcoin supply",
+				self.context.channel_id(),
+				their_funding_contribution,
+			)));
+		}
+
+		if their_funding_contribution < -SignedAmount::MAX_MONEY {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} cannot be spliced out; their {} contribution exhausts the total bitcoin supply",
+				self.context.channel_id(),
+				their_funding_contribution,
+			)));
+		}
+
+		let their_channel_balance = Amount::from_sat(self.funding.get_value_satoshis())
+			- Amount::from_sat(self.funding.get_value_to_self_msat() / 1000);
+		let post_channel_balance = AddSigned::checked_add_signed(
+			their_channel_balance.to_sat(),
+			their_funding_contribution.to_sat(),
+		);
+
+		if post_channel_balance.is_none() {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} cannot be spliced out; their {} contribution exhausts their channel balance: {}",
+				self.context.channel_id(),
+				their_funding_contribution,
+				their_channel_balance,
+			)));
+		}
+
+		Ok(())
 	}
 
 	/// See also [`validate_splice_init`]
@@ -10987,13 +11022,7 @@ where
 		debug_assert!(our_funding_contribution <= SignedAmount::MAX_MONEY);
 
 		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
-		if their_funding_contribution > SignedAmount::MAX_MONEY {
-			return Err(ChannelError::Warn(format!(
-				"Channel {} cannot be spliced; their contribution exceeds total bitcoin supply: {}",
-				self.context.channel_id(),
-				their_funding_contribution,
-			)));
-		}
+		self.validate_splice_contribution(their_funding_contribution)?;
 
 		let splice_funding = FundingScope::for_splice(
 			&self.funding,
@@ -11031,6 +11060,9 @@ where
 		let tx_msg_opt = interactive_tx_constructor.take_initiator_first_message();
 
 		debug_assert!(self.interactive_tx_signing_session.is_none());
+
+		let pending_splice =
+			self.pending_splice.as_mut().expect("pending_splice should still be set");
 		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction(
 			splice_funding,
 			interactive_tx_constructor,
