@@ -4534,7 +4534,7 @@ where
 	/// which peer generated this transaction and "to whom" this transaction flows.
 	#[inline]
 	#[rustfmt::skip]
-	fn build_commitment_transaction<L: Deref>(&self, funding: &FundingScope, commitment_number: u64, per_commitment_point: &PublicKey, local: bool, generated_by_local: bool, logger: &L) -> CommitmentData
+	fn build_commitment_transaction<L: Deref>(&self, funding: &FundingScope, commitment_number: u64, per_commitment_point: &PublicKey, local: bool, generated_by_local: bool, logger: &L) -> CommitmentData<'_>
 		where L::Target: Logger
 	{
 		let broadcaster_dust_limit_sat = if local { self.holder_dust_limit_satoshis } else { self.counterparty_dust_limit_satoshis };
@@ -11817,7 +11817,7 @@ where
 		}
 	}
 
-	pub fn remove_legacy_scids_before_block(&mut self, height: u32) -> alloc::vec::Drain<u64> {
+	pub fn remove_legacy_scids_before_block(&mut self, height: u32) -> alloc::vec::Drain<'_, u64> {
 		let end = self
 			.funding
 			.get_short_channel_id()

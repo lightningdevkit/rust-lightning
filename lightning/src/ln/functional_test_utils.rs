@@ -718,7 +718,7 @@ pub trait NodeHolder {
 		<Self::CM as AChannelManager>::MR,
 		<Self::CM as AChannelManager>::L,
 	>;
-	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor>;
+	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor<'_>>;
 }
 impl<H: NodeHolder> NodeHolder for &H {
 	type CM = H::CM;
@@ -737,7 +737,7 @@ impl<H: NodeHolder> NodeHolder for &H {
 	> {
 		(*self).node()
 	}
-	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> {
+	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor<'_>> {
 		(*self).chain_monitor()
 	}
 }
@@ -746,7 +746,7 @@ impl<'a, 'b: 'a, 'c: 'b> NodeHolder for Node<'a, 'b, 'c> {
 	fn node(&self) -> &TestChannelManager<'b, 'c> {
 		&self.node
 	}
-	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> {
+	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor<'_>> {
 		Some(self.chain_monitor)
 	}
 }

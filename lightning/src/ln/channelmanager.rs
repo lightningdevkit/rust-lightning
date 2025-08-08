@@ -11897,9 +11897,9 @@ where
 	L::Target: Logger,
 {
 	#[cfg(not(c_bindings))]
-	create_offer_builder!(self, OfferBuilder<DerivedMetadata, secp256k1::All>);
+	create_offer_builder!(self, OfferBuilder<'_, DerivedMetadata, secp256k1::All>);
 	#[cfg(not(c_bindings))]
-	create_refund_builder!(self, RefundBuilder<secp256k1::All>);
+	create_refund_builder!(self, RefundBuilder<'_, secp256k1::All>);
 
 	#[cfg(c_bindings)]
 	create_offer_builder!(self, OfferWithDerivedMetadataBuilder);

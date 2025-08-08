@@ -78,7 +78,7 @@ pub trait BlockSource: Sync + Send {
 	/// to allow for a more efficient lookup.
 	///
 	/// [`get_header`]: Self::get_header
-	fn get_best_block(&self) -> AsyncBlockSourceResult<(BlockHash, Option<u32>)>;
+	fn get_best_block(&self) -> AsyncBlockSourceResult<'_, (BlockHash, Option<u32>)>;
 }
 
 /// Result type for `BlockSource` requests.

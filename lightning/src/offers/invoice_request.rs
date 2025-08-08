@@ -688,7 +688,7 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 
 	/// A payer-provided note which will be seen by the recipient and reflected back in the invoice
 	/// response.
-	pub fn payer_note(&$self) -> Option<PrintableString> {
+	pub fn payer_note(&$self) -> Option<PrintableString<'_>> {
 		$contents.payer_note()
 	}
 
@@ -854,7 +854,7 @@ impl InvoiceRequest {
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self,
-		InvoiceBuilder<ExplicitSigningPubkey>
+		InvoiceBuilder<'_, ExplicitSigningPubkey>
 	);
 	invoice_request_verify_method!(self, Self);
 
@@ -889,7 +889,7 @@ impl InvoiceRequest {
 		self.signature
 	}
 
-	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceRequestTlvStreamRef {
+	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceRequestTlvStreamRef<'_> {
 		let (
 			payer_tlv_stream,
 			offer_tlv_stream,
@@ -968,7 +968,7 @@ impl VerifiedInvoiceRequest {
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self.inner,
-		InvoiceBuilder<ExplicitSigningPubkey>
+		InvoiceBuilder<'_, ExplicitSigningPubkey>
 	);
 	#[cfg(c_bindings)]
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
@@ -980,7 +980,7 @@ impl VerifiedInvoiceRequest {
 	invoice_request_respond_with_derived_signing_pubkey_methods!(
 		self,
 		self.inner,
-		InvoiceBuilder<DerivedSigningPubkey>
+		InvoiceBuilder<'_, DerivedSigningPubkey>
 	);
 	#[cfg(c_bindings)]
 	invoice_request_respond_with_derived_signing_pubkey_methods!(
@@ -1074,7 +1074,7 @@ impl InvoiceRequestContents {
 		self.payer_signing_pubkey
 	}
 
-	pub(super) fn payer_note(&self) -> Option<PrintableString> {
+	pub(super) fn payer_note(&self) -> Option<PrintableString<'_>> {
 		self.inner.payer_note.as_ref().map(|payer_note| PrintableString(payer_note.as_str()))
 	}
 
@@ -1082,7 +1082,7 @@ impl InvoiceRequestContents {
 		&self.inner.offer_from_hrn
 	}
 
-	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef {
+	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef<'_> {
 		let (payer, offer, mut invoice_request, experimental_offer, experimental_invoice_request) =
 			self.inner.as_tlv_stream();
 		invoice_request.payer_id = Some(&self.payer_signing_pubkey);
@@ -1103,7 +1103,7 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 		self.amount_msats
 	}
 
-	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef {
+	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef<'_> {
 		let payer = PayerTlvStreamRef { metadata: self.payer.0.as_bytes() };
 
 		let (offer, experimental_offer) = self.offer.as_tlv_stream();

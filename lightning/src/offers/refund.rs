@@ -480,7 +480,7 @@ pub(super) struct RefundContents {
 impl Refund {
 	/// A complete description of the purpose of the refund. Intended to be displayed to the user
 	/// but with the caveat that it has not been verified in any way.
-	pub fn description(&self) -> PrintableString {
+	pub fn description(&self) -> PrintableString<'_> {
 		self.contents.description()
 	}
 
@@ -504,7 +504,7 @@ impl Refund {
 
 	/// The issuer of the refund, possibly beginning with `user@domain` or `domain`. Intended to be
 	/// displayed to the user but with the caveat that it has not been verified in any way.
-	pub fn issuer(&self) -> Option<PrintableString> {
+	pub fn issuer(&self) -> Option<PrintableString<'_>> {
 		self.contents.issuer()
 	}
 
@@ -553,7 +553,7 @@ impl Refund {
 	}
 
 	/// Payer provided note to include in the invoice.
-	pub fn payer_note(&self) -> Option<PrintableString> {
+	pub fn payer_note(&self) -> Option<PrintableString<'_>> {
 		self.contents.payer_note()
 	}
 }
@@ -667,8 +667,8 @@ macro_rules! respond_with_derived_signing_pubkey_methods { ($self: ident, $build
 
 #[cfg(not(c_bindings))]
 impl Refund {
-	respond_with_explicit_signing_pubkey_methods!(self, InvoiceBuilder<ExplicitSigningPubkey>);
-	respond_with_derived_signing_pubkey_methods!(self, InvoiceBuilder<DerivedSigningPubkey>);
+	respond_with_explicit_signing_pubkey_methods!(self, InvoiceBuilder<'_, ExplicitSigningPubkey>);
+	respond_with_derived_signing_pubkey_methods!(self, InvoiceBuilder<'_, DerivedSigningPubkey>);
 }
 
 #[cfg(c_bindings)]
@@ -679,7 +679,7 @@ impl Refund {
 
 #[cfg(test)]
 impl Refund {
-	fn as_tlv_stream(&self) -> RefundTlvStreamRef {
+	fn as_tlv_stream(&self) -> RefundTlvStreamRef<'_> {
 		self.contents.as_tlv_stream()
 	}
 }
@@ -705,7 +705,7 @@ impl Hash for Refund {
 }
 
 impl RefundContents {
-	pub fn description(&self) -> PrintableString {
+	pub fn description(&self) -> PrintableString<'_> {
 		PrintableString(&self.description)
 	}
 
@@ -727,7 +727,7 @@ impl RefundContents {
 			.unwrap_or(false)
 	}
 
-	pub fn issuer(&self) -> Option<PrintableString> {
+	pub fn issuer(&self) -> Option<PrintableString<'_>> {
 		self.issuer.as_ref().map(|issuer| PrintableString(issuer.as_str()))
 	}
 
@@ -770,11 +770,11 @@ impl RefundContents {
 	}
 
 	/// Payer provided note to include in the invoice.
-	pub fn payer_note(&self) -> Option<PrintableString> {
+	pub fn payer_note(&self) -> Option<PrintableString<'_>> {
 		self.payer_note.as_ref().map(|payer_note| PrintableString(payer_note.as_str()))
 	}
 
-	pub(super) fn as_tlv_stream(&self) -> RefundTlvStreamRef {
+	pub(super) fn as_tlv_stream(&self) -> RefundTlvStreamRef<'_> {
 		let payer = PayerTlvStreamRef { metadata: self.payer.0.as_bytes() };
 
 		let offer = OfferTlvStreamRef {

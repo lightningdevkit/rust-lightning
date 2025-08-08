@@ -1284,7 +1284,7 @@ impl Payee {
 			Self::Blinded { features, .. } => features.as_ref().map_or(false, |f| f.supports_basic_mpp()),
 		}
 	}
-	fn features(&self) -> Option<FeaturesRef> {
+	fn features(&self) -> Option<FeaturesRef<'_>> {
 		match self {
 			Self::Clear { features, .. } => features.as_ref().map(|f| FeaturesRef::Bolt11(f)),
 			Self::Blinded { features, .. } => features.as_ref().map(|f| FeaturesRef::Bolt12(f)),

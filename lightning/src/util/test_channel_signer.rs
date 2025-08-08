@@ -145,7 +145,7 @@ impl TestChannelSigner {
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
+	pub fn get_enforcement_state(&self) -> MutexGuard<'_, EnforcementState> {
 		self.state.lock().unwrap()
 	}
 

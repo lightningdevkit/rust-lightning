@@ -235,7 +235,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// A complete description of the purpose of the originating offer, from [`Offer::description`].
 	///
 	/// [`Offer::description`]: crate::offers::offer::Offer::description
-	pub fn description(&$self) -> Option<PrintableString> {
+	pub fn description(&$self) -> Option<PrintableString<'_>> {
 		$contents.description()
 	}
 
@@ -250,7 +250,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// The issuer of the offer, from [`Offer::issuer`].
 	///
 	/// [`Offer::issuer`]: crate::offers::offer::Offer::issuer
-	pub fn issuer(&$self) -> Option<PrintableString> {
+	pub fn issuer(&$self) -> Option<PrintableString<'_>> {
 		$contents.issuer()
 	}
 
@@ -454,7 +454,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn as_tlv_stream(&self) -> PartialInvoiceTlvStreamRef {
+	fn as_tlv_stream(&self) -> PartialInvoiceTlvStreamRef<'_> {
 		let features = {
 			if self.features == Bolt12InvoiceFeatures::empty() {
 				None
@@ -503,7 +503,7 @@ impl InvoiceContents {
 		self.offer.features()
 	}
 
-	fn description(&self) -> Option<PrintableString> {
+	fn description(&self) -> Option<PrintableString<'_>> {
 		self.offer.description()
 	}
 
@@ -511,7 +511,7 @@ impl InvoiceContents {
 		self.offer.absolute_expiry()
 	}
 
-	fn issuer(&self) -> Option<PrintableString> {
+	fn issuer(&self) -> Option<PrintableString<'_>> {
 		self.offer.issuer()
 	}
 
@@ -763,7 +763,7 @@ mod tests {
 	);
 
 	impl StaticInvoice {
-		fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
+		fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef<'_> {
 			let (
 				offer_tlv_stream,
 				invoice_tlv_stream,

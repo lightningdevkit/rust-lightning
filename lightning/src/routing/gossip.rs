@@ -1054,7 +1054,7 @@ impl PartialEq for ChannelInfo {
 impl ChannelInfo {
 	/// Returns a [`DirectedChannelInfo`] for the channel directed to the given `target` from a
 	/// returned `source`, or `None` if `target` is not one of the channel's counterparties.
-	pub fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
+	pub fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo<'_>, &NodeId)> {
 		if self.one_to_two.is_none() || self.two_to_one.is_none() {
 			return None;
 		}
@@ -1073,7 +1073,7 @@ impl ChannelInfo {
 
 	/// Returns a [`DirectedChannelInfo`] for the channel directed from the given `source` to a
 	/// returned `target`, or `None` if `source` is not one of the channel's counterparties.
-	pub fn as_directed_from(&self, source: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
+	pub fn as_directed_from(&self, source: &NodeId) -> Option<(DirectedChannelInfo<'_>, &NodeId)> {
 		if self.one_to_two.is_none() || self.two_to_one.is_none() {
 			return None;
 		}
