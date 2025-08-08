@@ -50,7 +50,9 @@ use crate::chain::channelmonitor::{
 	LATENCY_GRACE_PERIOD_BLOCKS, MAX_BLOCKS_FOR_CONF,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch};
+#[allow(unused_imports)] // This thinks trait imports are unused if they're use in macros :(
+use crate::chain::Watch as _;
+use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm};
 use crate::events::{
 	self, ClosureReason, Event, EventHandler, EventsProvider, HTLCHandlingFailureType,
 	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
