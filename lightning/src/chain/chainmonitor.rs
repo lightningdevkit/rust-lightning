@@ -833,7 +833,7 @@ where
 	///
 	/// Note that this method *can* be used if additional blocks were replayed against the
 	/// [`ChannelMonitor`], and in general can only *not* be used if a [`ChannelMonitorUpdate`] was
-	/// replayed against the [`ChannelMonitor`] which needs to be psersisted (i.e. the state has
+	/// replayed against the [`ChannelMonitor`] which needs to be persisted (i.e. the state has
 	/// changed due to a [`ChannelMonitorUpdate`] such that it may be different after another
 	/// restart).
 	///
