@@ -896,6 +896,9 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	check_closed_broadcast!(nodes[0], true);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 1000000);
+	if anchors {
+		handle_bump_close_event(&nodes[0]);
+	}
 	let commitment_tx = {
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 		assert_eq!(txn.len(), 1);
@@ -905,9 +908,15 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	};
 	let commitment_tx_conf_height_a = block_from_scid(mine_transaction(&nodes[0], &commitment_tx));
 	if nodes[0].connect_style.borrow().updates_best_block_first() {
+		if anchors {
+			handle_bump_close_event(&nodes[0]);
+		}
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
-		assert_eq!(txn.len(), 1);
+		assert_eq!(txn.len(), if anchors { 2 } else { 1 });
 		assert_eq!(txn[0].compute_txid(), commitment_tx.compute_txid());
+		if anchors {
+			check_spends!(txn[1], txn[0]);  // Anchor output spend.
+		}
 	}
 
 	let htlc_balance_known_preimage = Balance::MaybeTimeoutClaimableHTLC {
@@ -2486,6 +2495,7 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id(), "".to_string()).unwrap();
 	}
 	{
+		handle_bump_close_event(&nodes[1]);
 		let txn = nodes[1].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
 		check_spends!(txn[0], funding_tx);
@@ -2553,15 +2563,18 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 	}
 
 	{
+		if nodes[1].connect_style.borrow().updates_best_block_first() {
+			handle_bump_close_event(&nodes[1]);
+		}
 		let mut txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
 		// Both HTLC claims are pinnable at this point,
 		// and will be broadcast in a single transaction.
-		assert_eq!(txn.len(), if nodes[1].connect_style.borrow().updates_best_block_first() { 2 } else { 1 });
+		assert_eq!(txn.len(), if nodes[1].connect_style.borrow().updates_best_block_first() { 3 } else { 1 });
 		if nodes[1].connect_style.borrow().updates_best_block_first() {
-			let new_commitment_tx = txn.remove(0);
-			check_spends!(new_commitment_tx, funding_tx);
+			check_spends!(txn[1], funding_tx);
+			check_spends!(txn[2], txn[1]);  // Anchor output spend.
 		}
-		let htlc_claim_tx = txn.pop().unwrap();
+		let htlc_claim_tx = &txn[0];
 		assert_eq!(htlc_claim_tx.input.len(), 2);
 		assert_eq!(htlc_claim_tx.input[0].previous_output.vout, 2);
 		assert_eq!(htlc_claim_tx.input[1].previous_output.vout, 3);
@@ -2952,6 +2965,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(&nodes[0], 1, reason, false,
 		 [nodes[1].node.get_our_node_id()], 100000);
+	handle_bump_close_event(&nodes[0]);
 
 	let commitment_tx = {
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
@@ -3036,6 +3050,9 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 	get_monitor!(closing_node, chan_id).broadcast_latest_holder_commitment_txn(
 		&closing_node.tx_broadcaster, &closing_node.fee_estimator, &closing_node.logger
 	);
+	if anchors {
+		handle_bump_close_event(&closing_node);
+	}
 
 	// The commitment transaction comes first.
 	let commitment_tx = {

@@ -16,7 +16,9 @@ pub mod sync;
 use alloc::collections::BTreeMap;
 use core::ops::Deref;
 
-use crate::chain::chaininterface::{fee_for_weight, BroadcasterInterface};
+use crate::chain::chaininterface::{
+	compute_feerate_sat_per_1000_weight, fee_for_weight, BroadcasterInterface,
+};
 use crate::chain::ClaimId;
 use crate::io_extras::sink;
 use crate::ln::chan_utils;
@@ -123,7 +125,9 @@ pub enum BumpTransactionEvent {
 	/// and child anchor transactions), possibly resulting in a loss of funds. Once the transaction
 	/// is constructed, it must be fully signed for and broadcast by the consumer of the event
 	/// along with the `commitment_tx` enclosed. Note that the `commitment_tx` must always be
-	/// broadcast first, as the child anchor transaction depends on it.
+	/// broadcast first, as the child anchor transaction depends on it. It is also possible that the
+	/// feerate of the commitment transaction is already sufficient, in which case the child anchor
+	/// transaction is not needed and only the commitment transaction should be broadcast.
 	///
 	/// The consumer should be able to sign for any of the additional inputs included within the
 	/// child anchor transaction. To sign its anchor input, an [`EcdsaChannelSigner`] should be
@@ -658,6 +662,19 @@ where
 		commitment_tx: &Transaction, commitment_tx_fee_sat: u64,
 		anchor_descriptor: &AnchorDescriptor,
 	) -> Result<(), ()> {
+		// First, check if the commitment transaction has sufficient fees on its own.
+		let commitment_tx_feerate_sat_per_1000_weight = compute_feerate_sat_per_1000_weight(
+			commitment_tx_fee_sat,
+			commitment_tx.weight().to_wu(),
+		);
+		if commitment_tx_feerate_sat_per_1000_weight >= package_target_feerate_sat_per_1000_weight {
+			log_debug!(self.logger, "Pre-signed commitment {} already has feerate {} sat/kW above required {} sat/kW, broadcasting.",
+				commitment_tx.compute_txid(), commitment_tx_feerate_sat_per_1000_weight,
+				package_target_feerate_sat_per_1000_weight);
+			self.broadcaster.broadcast_transactions(&[&commitment_tx]);
+			return Ok(());
+		}
+
 		// Our commitment transaction already has fees allocated to it, so we should take them into
 		// account. We do so by pretending the commitment transaction's fee and weight are part of
 		// the anchor input.

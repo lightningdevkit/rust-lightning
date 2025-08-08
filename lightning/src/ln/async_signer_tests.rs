@@ -1051,6 +1051,9 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 			&nodes[0].logger,
 		);
 	}
+	if anchors {
+		handle_bump_close_event(closing_node);
+	}
 
 	let commitment_tx = {
 		let mut txn = closing_node.tx_broadcaster.txn_broadcast();
