@@ -23,7 +23,6 @@ use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, MIN_FINAL_CLTV_
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::ln::onion_utils;
 use crate::offers::invoice::Bolt12Invoice;
-#[cfg(async_payments)]
 use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::gossip::{
 	DirectedChannelInfo, EffectiveCapacity, NetworkGraph, NodeId, ReadOnlyNetworkGraph,
@@ -1010,7 +1009,6 @@ impl PaymentParameters {
 	/// Creates parameters for paying to a blinded payee from the provided invoice. Sets
 	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
 	/// [`PaymentParameters::expiry_time`].
-	#[cfg(async_payments)]
 	#[rustfmt::skip]
 	pub fn from_static_invoice(invoice: &StaticInvoice) -> Self {
 		Self::blinded(invoice.payment_paths().to_vec())

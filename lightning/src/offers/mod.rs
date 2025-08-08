@@ -16,7 +16,7 @@
 pub mod offer;
 pub mod flow;
 
-pub(crate) mod async_receive_offer_cache;
+pub mod async_receive_offer_cache;
 pub mod invoice;
 pub mod invoice_error;
 mod invoice_macros;

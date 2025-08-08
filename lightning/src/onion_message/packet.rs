@@ -12,7 +12,6 @@
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::PublicKey;
 
-#[cfg(async_payments)]
 use super::async_payments::AsyncPaymentsMessage;
 use super::dns_resolution::DNSResolverMessage;
 use super::messenger::CustomOnionMessageHandler;
@@ -131,7 +130,6 @@ pub enum ParsedOnionMessageContents<T: OnionMessageContents> {
 	/// A message related to BOLT 12 Offers.
 	Offers(OffersMessage),
 	/// A message related to async payments.
-	#[cfg(async_payments)]
 	AsyncPayments(AsyncPaymentsMessage),
 	/// A message requesting or providing a DNSSEC proof
 	DNSResolver(DNSResolverMessage),
@@ -146,7 +144,6 @@ impl<T: OnionMessageContents> OnionMessageContents for ParsedOnionMessageContent
 	fn tlv_type(&self) -> u64 {
 		match self {
 			&ParsedOnionMessageContents::Offers(ref msg) => msg.tlv_type(),
-			#[cfg(async_payments)]
 			&ParsedOnionMessageContents::AsyncPayments(ref msg) => msg.tlv_type(),
 			&ParsedOnionMessageContents::DNSResolver(ref msg) => msg.tlv_type(),
 			&ParsedOnionMessageContents::Custom(ref msg) => msg.tlv_type(),
@@ -156,7 +153,6 @@ impl<T: OnionMessageContents> OnionMessageContents for ParsedOnionMessageContent
 	fn msg_type(&self) -> String {
 		match self {
 			ParsedOnionMessageContents::Offers(ref msg) => msg.msg_type(),
-			#[cfg(async_payments)]
 			ParsedOnionMessageContents::AsyncPayments(ref msg) => msg.msg_type(),
 			ParsedOnionMessageContents::DNSResolver(ref msg) => msg.msg_type(),
 			ParsedOnionMessageContents::Custom(ref msg) => msg.msg_type(),
@@ -166,7 +162,6 @@ impl<T: OnionMessageContents> OnionMessageContents for ParsedOnionMessageContent
 	fn msg_type(&self) -> &'static str {
 		match self {
 			ParsedOnionMessageContents::Offers(ref msg) => msg.msg_type(),
-			#[cfg(async_payments)]
 			ParsedOnionMessageContents::AsyncPayments(ref msg) => msg.msg_type(),
 			ParsedOnionMessageContents::DNSResolver(ref msg) => msg.msg_type(),
 			ParsedOnionMessageContents::Custom(ref msg) => msg.msg_type(),
@@ -178,7 +173,6 @@ impl<T: OnionMessageContents> Writeable for ParsedOnionMessageContents<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
 			ParsedOnionMessageContents::Offers(msg) => msg.write(w),
-			#[cfg(async_payments)]
 			ParsedOnionMessageContents::AsyncPayments(msg) => msg.write(w),
 			ParsedOnionMessageContents::DNSResolver(msg) => msg.write(w),
 			ParsedOnionMessageContents::Custom(msg) => msg.write(w),
@@ -293,7 +287,6 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 					message = Some(ParsedOnionMessageContents::Offers(msg));
 					Ok(true)
 				},
-				#[cfg(async_payments)]
 				tlv_type if AsyncPaymentsMessage::is_known_type(tlv_type) => {
 					let msg = AsyncPaymentsMessage::read(msg_reader, tlv_type)?;
 					message = Some(ParsedOnionMessageContents::AsyncPayments(msg));

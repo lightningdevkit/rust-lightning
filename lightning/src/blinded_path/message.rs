@@ -506,10 +506,9 @@ pub enum AsyncPaymentsContext {
 		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		offer_id: OfferId,
-		/// The time as duration since the Unix epoch at which this path expires and messages sent over
-		/// it should be ignored. If we receive confirmation of an invoice over this path after its
-		/// expiry, it may be outdated and a new invoice update should be sent instead.
-		path_absolute_expiry: core::time::Duration,
+		/// The time as duration since the Unix epoch at which the invoice corresponding to this path
+		/// was created. Useful to know when an invoice needs replacement.
+		invoice_created_at: core::time::Duration,
 	},
 	/// Context contained within the reply [`BlindedMessagePath`] we put in outbound
 	/// [`HeldHtlcAvailable`] messages, provided back to us in corresponding [`ReleaseHeldHtlc`]
@@ -577,7 +576,7 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	},
 	(3, StaticInvoicePersisted) => {
 		(0, offer_id, required),
-		(2, path_absolute_expiry, required),
+		(2, invoice_created_at, required),
 	},
 	(4, OfferPathsRequest) => {
 		(0, recipient_id, required),

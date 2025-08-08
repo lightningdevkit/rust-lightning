@@ -1171,6 +1171,9 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	ext_from_hex("030120", &mut test);
 	// init message (type 16) with static_remotekey required, no anchors/taproot, and other bits optional and mac
 	ext_from_hex("0010 00021aaa 0008aaa210aa2a0a9aaa 01000000000000000000000000000000", &mut test);
+	// One feerate request on peer connection due to a list_channels call when seeing if the async
+	// receive offer cache needs updating
+	ext_from_hex("00fd", &mut test);
 
 	// create outbound channel to peer 1 for 50k sat
 	ext_from_hex(

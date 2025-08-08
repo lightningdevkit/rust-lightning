@@ -227,7 +227,6 @@ pub(super) fn extract_invoice_request<'a, 'b, 'c>(
 		Ok(PeeledOnion::Offers(message, _, reply_path)) => match message {
 			OffersMessage::InvoiceRequest(invoice_request) => (invoice_request, reply_path.unwrap()),
 			OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
-			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
 			OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 		},
@@ -242,7 +241,6 @@ fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) 
 		Ok(PeeledOnion::Offers(message, _, reply_path)) => match message {
 			OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
 			OffersMessage::Invoice(invoice) => (invoice, reply_path.unwrap()),
-			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
 			OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 		},
@@ -259,7 +257,6 @@ fn extract_invoice_error<'a, 'b, 'c>(
 		Ok(PeeledOnion::Offers(message, _, _)) => match message {
 			OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
 			OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
-			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
 			OffersMessage::InvoiceError(error) => error,
 		},
@@ -1235,7 +1232,7 @@ fn pays_bolt12_invoice_asynchronously() {
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
 
-	// Re-process the same onion message to ensure idempotency — 
+	// Re-process the same onion message to ensure idempotency —
 	// we should not generate a duplicate `InvoiceReceived` event.
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
 

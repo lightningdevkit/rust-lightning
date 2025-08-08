@@ -16,7 +16,6 @@ use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::parse::Bolt12ParseError;
-#[cfg(async_payments)]
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::messenger::{MessageSendInstructions, Responder, ResponseInstruction};
 use crate::onion_message::packet::OnionMessageContents;
@@ -30,7 +29,7 @@ use crate::prelude::*;
 const INVOICE_REQUEST_TLV_TYPE: u64 = 64;
 const INVOICE_TLV_TYPE: u64 = 66;
 const INVOICE_ERROR_TLV_TYPE: u64 = 68;
-#[cfg(async_payments)]
+// Spec'd in https://github.com/lightning/bolts/pull/1149.
 const STATIC_INVOICE_TLV_TYPE: u64 = 70;
 
 /// A handler for an [`OnionMessage`] containing a BOLT 12 Offers message as its payload.
@@ -79,7 +78,6 @@ pub enum OffersMessage {
 	/// [`Refund`]: crate::offers::refund::Refund
 	Invoice(Bolt12Invoice),
 
-	#[cfg(async_payments)]
 	/// A [`StaticInvoice`] sent in response to an [`InvoiceRequest`].
 	StaticInvoice(StaticInvoice),
 
@@ -91,9 +89,10 @@ impl OffersMessage {
 	/// Returns whether `tlv_type` corresponds to a TLV record for Offers.
 	pub fn is_known_type(tlv_type: u64) -> bool {
 		match tlv_type {
-			INVOICE_REQUEST_TLV_TYPE | INVOICE_TLV_TYPE | INVOICE_ERROR_TLV_TYPE => true,
-			#[cfg(async_payments)]
-			STATIC_INVOICE_TLV_TYPE => true,
+			INVOICE_REQUEST_TLV_TYPE
+			| INVOICE_TLV_TYPE
+			| INVOICE_ERROR_TLV_TYPE
+			| STATIC_INVOICE_TLV_TYPE => true,
 			_ => false,
 		}
 	}
@@ -102,7 +101,6 @@ impl OffersMessage {
 		match tlv_type {
 			INVOICE_REQUEST_TLV_TYPE => Ok(Self::InvoiceRequest(InvoiceRequest::try_from(bytes)?)),
 			INVOICE_TLV_TYPE => Ok(Self::Invoice(Bolt12Invoice::try_from(bytes)?)),
-			#[cfg(async_payments)]
 			STATIC_INVOICE_TLV_TYPE => Ok(Self::StaticInvoice(StaticInvoice::try_from(bytes)?)),
 			_ => Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
@@ -112,7 +110,6 @@ impl OffersMessage {
 		match &self {
 			OffersMessage::InvoiceRequest(_) => "Invoice Request",
 			OffersMessage::Invoice(_) => "Invoice",
-			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(_) => "Static Invoice",
 			OffersMessage::InvoiceError(_) => "Invoice Error",
 		}
@@ -128,7 +125,6 @@ impl fmt::Debug for OffersMessage {
 			OffersMessage::Invoice(message) => {
 				write!(f, "{:?}", message.as_tlv_stream())
 			},
-			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(message) => {
 				write!(f, "{:?}", message)
 			},
@@ -144,7 +140,6 @@ impl OnionMessageContents for OffersMessage {
 		match self {
 			OffersMessage::InvoiceRequest(_) => INVOICE_REQUEST_TLV_TYPE,
 			OffersMessage::Invoice(_) => INVOICE_TLV_TYPE,
-			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(_) => STATIC_INVOICE_TLV_TYPE,
 			OffersMessage::InvoiceError(_) => INVOICE_ERROR_TLV_TYPE,
 		}
@@ -164,7 +159,6 @@ impl Writeable for OffersMessage {
 		match self {
 			OffersMessage::InvoiceRequest(message) => message.write(w),
 			OffersMessage::Invoice(message) => message.write(w),
-			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(message) => message.write(w),
 			OffersMessage::InvoiceError(message) => message.write(w),
 		}
