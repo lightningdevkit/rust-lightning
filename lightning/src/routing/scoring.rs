@@ -544,7 +544,7 @@ impl ChannelLiquidities {
 		self.0.iter()
 	}
 
-	fn entry(&mut self, short_channel_id: u64) -> Entry<u64, ChannelLiquidity, RandomState> {
+	fn entry(&mut self, short_channel_id: u64) -> Entry<'_, u64, ChannelLiquidity, RandomState> {
 		self.0.entry(short_channel_id)
 	}
 

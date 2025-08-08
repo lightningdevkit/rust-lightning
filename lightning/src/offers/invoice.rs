@@ -836,7 +836,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// From [`Offer::description`] or [`Refund::description`].
 	///
 	/// [`Offer::description`]: crate::offers::offer::Offer::description
-	pub fn description(&$self) -> Option<PrintableString> {
+	pub fn description(&$self) -> Option<PrintableString<'_>> {
 		$contents.description()
 	}
 
@@ -854,7 +854,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// From [`Offer::issuer`] or [`Refund::issuer`].
 	///
 	/// [`Offer::issuer`]: crate::offers::offer::Offer::issuer
-	pub fn issuer(&$self) -> Option<PrintableString> {
+	pub fn issuer(&$self) -> Option<PrintableString<'_>> {
 		$contents.issuer()
 	}
 
@@ -919,7 +919,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// A payer-provided note reflected back in the invoice.
 	///
 	/// From [`InvoiceRequest::payer_note`] or [`Refund::payer_note`].
-	pub fn payer_note(&$self) -> Option<PrintableString> {
+	pub fn payer_note(&$self) -> Option<PrintableString<'_>> {
 		$contents.payer_note()
 	}
 
@@ -1019,7 +1019,7 @@ impl Bolt12Invoice {
 		)
 	}
 
-	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
+	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef<'_> {
 		let (
 			payer_tlv_stream,
 			offer_tlv_stream,
@@ -1127,7 +1127,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn description(&self) -> Option<PrintableString> {
+	fn description(&self) -> Option<PrintableString<'_>> {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				invoice_request.inner.offer.description()
@@ -1154,7 +1154,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn issuer(&self) -> Option<PrintableString> {
+	fn issuer(&self) -> Option<PrintableString<'_>> {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				invoice_request.inner.offer.issuer()
@@ -1220,7 +1220,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn payer_note(&self) -> Option<PrintableString> {
+	fn payer_note(&self) -> Option<PrintableString<'_>> {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.payer_note(),
 			InvoiceContents::ForRefund { refund, .. } => refund.payer_note(),
@@ -1315,7 +1315,7 @@ impl InvoiceContents {
 		)
 	}
 
-	fn as_tlv_stream(&self) -> PartialInvoiceTlvStreamRef {
+	fn as_tlv_stream(&self) -> PartialInvoiceTlvStreamRef<'_> {
 		let (payer, offer, invoice_request, experimental_offer, experimental_invoice_request) =
 			match self {
 				InvoiceContents::ForOffer { invoice_request, .. } => {
@@ -1379,7 +1379,7 @@ pub(super) fn filter_fallbacks(chain: ChainHash, fallbacks: &Vec<FallbackAddress
 }
 
 impl InvoiceFields {
-	fn as_tlv_stream(&self) -> (InvoiceTlvStreamRef, ExperimentalInvoiceTlvStreamRef) {
+	fn as_tlv_stream(&self) -> (InvoiceTlvStreamRef<'_>, ExperimentalInvoiceTlvStreamRef) {
 		let features = {
 			if self.features == Bolt12InvoiceFeatures::empty() {
 				None

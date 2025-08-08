@@ -525,7 +525,7 @@ where
 
 	fn create_offer_builder_intern<ES: Deref, PF, I>(
 		&self, entropy_source: ES, make_paths: PF,
-	) -> Result<(OfferBuilder<DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError>
+	) -> Result<(OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 		PF: FnOnce(
@@ -580,7 +580,7 @@ where
 	/// [`DefaultMessageRouter`]: crate::onion_message::messenger::DefaultMessageRouter
 	pub fn create_offer_builder<ES: Deref>(
 		&self, entropy_source: ES, peers: Vec<MessageForwardNode>,
-	) -> Result<OfferBuilder<DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
+	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
@@ -601,7 +601,7 @@ where
 	/// See [`Self::create_offer_builder`] for more details on usage.
 	pub fn create_offer_builder_using_router<ME: Deref, ES: Deref>(
 		&self, router: ME, entropy_source: ES, peers: Vec<MessageForwardNode>,
-	) -> Result<OfferBuilder<DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
+	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
 	where
 		ME::Target: MessageRouter,
 		ES::Target: EntropySource,
@@ -627,7 +627,7 @@ where
 	#[cfg(async_payments)]
 	pub fn create_async_receive_offer_builder<ES: Deref>(
 		&self, entropy_source: ES, message_paths_to_always_online_node: Vec<BlindedMessagePath>,
-	) -> Result<(OfferBuilder<DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError>
+	) -> Result<(OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
@@ -639,7 +639,7 @@ where
 	fn create_refund_builder_intern<ES: Deref, PF, I>(
 		&self, entropy_source: ES, make_paths: PF, amount_msats: u64, absolute_expiry: Duration,
 		payment_id: PaymentId,
-	) -> Result<RefundBuilder<secp256k1::All>, Bolt12SemanticError>
+	) -> Result<RefundBuilder<'_, secp256k1::All>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 		PF: FnOnce(
@@ -712,7 +712,7 @@ where
 	pub fn create_refund_builder<ES: Deref>(
 		&self, entropy_source: ES, amount_msats: u64, absolute_expiry: Duration,
 		payment_id: PaymentId, peers: Vec<MessageForwardNode>,
-	) -> Result<RefundBuilder<secp256k1::All>, Bolt12SemanticError>
+	) -> Result<RefundBuilder<'_, secp256k1::All>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
@@ -751,7 +751,7 @@ where
 	pub fn create_refund_builder_using_router<ES: Deref, ME: Deref>(
 		&self, router: ME, entropy_source: ES, amount_msats: u64, absolute_expiry: Duration,
 		payment_id: PaymentId, peers: Vec<MessageForwardNode>,
-	) -> Result<RefundBuilder<secp256k1::All>, Bolt12SemanticError>
+	) -> Result<RefundBuilder<'_, secp256k1::All>, Bolt12SemanticError>
 	where
 		ME::Target: MessageRouter,
 		ES::Target: EntropySource,

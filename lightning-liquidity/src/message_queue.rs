@@ -33,7 +33,7 @@ impl MessageQueue {
 		self.pending_msgs_notifier.get_future()
 	}
 
-	pub(crate) fn notifier(&self) -> MessageQueueNotifierGuard {
+	pub(crate) fn notifier(&self) -> MessageQueueNotifierGuard<'_> {
 		MessageQueueNotifierGuard { msg_queue: self, buffer: VecDeque::new() }
 	}
 }

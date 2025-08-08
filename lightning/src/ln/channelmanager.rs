@@ -50,7 +50,9 @@ use crate::chain::channelmonitor::{
 	LATENCY_GRACE_PERIOD_BLOCKS, MAX_BLOCKS_FOR_CONF,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch};
+#[allow(unused_imports)] // This thinks trait imports are unused if they're use in macros :(
+use crate::chain::Watch as _;
+use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm};
 use crate::events::{
 	self, ClosureReason, Event, EventHandler, EventsProvider, HTLCHandlingFailureType,
 	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
@@ -11897,9 +11899,9 @@ where
 	L::Target: Logger,
 {
 	#[cfg(not(c_bindings))]
-	create_offer_builder!(self, OfferBuilder<DerivedMetadata, secp256k1::All>);
+	create_offer_builder!(self, OfferBuilder<'_, DerivedMetadata, secp256k1::All>);
 	#[cfg(not(c_bindings))]
-	create_refund_builder!(self, RefundBuilder<secp256k1::All>);
+	create_refund_builder!(self, RefundBuilder<'_, secp256k1::All>);
 
 	#[cfg(c_bindings)]
 	create_offer_builder!(self, OfferWithDerivedMetadataBuilder);

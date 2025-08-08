@@ -42,7 +42,8 @@ use crate::chain::package::{
 	HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedHTLCOutput, RevokedOutput,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::Filter;
+#[allow(unused_imports)] // This thinks trait imports are unused if they're use in macros :(
+use crate::chain::Filter as _;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};

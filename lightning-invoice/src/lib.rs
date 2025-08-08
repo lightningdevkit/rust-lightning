@@ -1146,7 +1146,7 @@ impl RawBolt11Invoice {
 	/// This is not exported to bindings users as there is not yet a manual mapping for a FilterMap
 	pub fn known_tagged_fields(
 		&self,
-	) -> FilterMap<Iter<RawTaggedField>, fn(&RawTaggedField) -> Option<&TaggedField>> {
+	) -> FilterMap<Iter<'_, RawTaggedField>, fn(&RawTaggedField) -> Option<&TaggedField>> {
 		// For 1.14.0 compatibility: closures' types can't be written an fn()->() in the
 		// function's type signature.
 		// TODO: refactor once impl Trait is available
@@ -1468,7 +1468,7 @@ impl Bolt11Invoice {
 	/// This is not exported to bindings users as there is not yet a manual mapping for a FilterMap
 	pub fn tagged_fields(
 		&self,
-	) -> FilterMap<Iter<RawTaggedField>, fn(&RawTaggedField) -> Option<&TaggedField>> {
+	) -> FilterMap<Iter<'_, RawTaggedField>, fn(&RawTaggedField) -> Option<&TaggedField>> {
 		self.signed_invoice.raw_invoice().known_tagged_fields()
 	}
 
@@ -1480,7 +1480,7 @@ impl Bolt11Invoice {
 	/// Return the description or a hash of it for longer ones
 	///
 	/// This is not exported to bindings users because we don't yet export Bolt11InvoiceDescription
-	pub fn description(&self) -> Bolt11InvoiceDescriptionRef {
+	pub fn description(&self) -> Bolt11InvoiceDescriptionRef<'_> {
 		if let Some(direct) = self.signed_invoice.description() {
 			return Bolt11InvoiceDescriptionRef::Direct(direct);
 		} else if let Some(hash) = self.signed_invoice.description_hash() {

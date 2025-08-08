@@ -33,7 +33,9 @@ use crate::chain::channelmonitor::{
 	WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
+#[allow(unused_imports)] // This thinks trait imports are unused if they're use in macros :(
+use crate::chain::Filter as _;
+use crate::chain::{ChannelMonitorUpdateStatus, WatchedOutput};
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::msgs::{self, BaseMessageHandler, Init, MessageSendEvent, SendOnlyMessageHandler};

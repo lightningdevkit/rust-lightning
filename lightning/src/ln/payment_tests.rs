@@ -3581,7 +3581,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
-		&[next_hop_failure.clone()]
+		core::slice::from_ref(&next_hop_failure)
 	);
 	check_added_monitors(&nodes[1], 1);
 
@@ -3755,7 +3755,7 @@ fn test_simple_partial_retry() {
 		HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 };
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
-		&[next_hop_failure.clone()]
+		core::slice::from_ref(&next_hop_failure)
 	);
 	check_added_monitors(&nodes[1], 2);
 
@@ -4247,7 +4247,10 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		// We fail the HTLC on the A->B->D path first as it expires 4 blocks earlier. We go ahead
 		// and expire both immediately, though, by connecting another 4 blocks.
 		let reason = HTLCHandlingFailureType::Receive { payment_hash: hash };
-		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[3], &[reason.clone()]);
+		expect_and_process_pending_htlcs_and_htlc_handling_failed(
+			&nodes[3],
+			core::slice::from_ref(&reason),
+		);
 		connect_blocks(&nodes[3], 4);
 		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[3], &[reason]);
 

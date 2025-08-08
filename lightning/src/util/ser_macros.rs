@@ -1677,9 +1677,9 @@ mod tests {
 		}
 
 		// TLVs from the BOLT test cases which should not decode as either n1 or n2
-		do_test!(concat!("fd01"), ShortRead);
+		do_test!("fd01", ShortRead);
 		do_test!(concat!("fd0001", "00"), InvalidValue);
-		do_test!(concat!("fd0101"), ShortRead);
+		do_test!("fd0101", ShortRead);
 		do_test!(concat!("0f", "fd"), ShortRead);
 		do_test!(concat!("0f", "fd26"), ShortRead);
 		do_test!(concat!("0f", "fd2602"), ShortRead);
@@ -1763,7 +1763,7 @@ mod tests {
 			};
 		}
 
-		do_test!(concat!(""), None, None, None, None);
+		do_test!("", None, None, None, None);
 		do_test!(concat!("21", "00"), None, None, None, None);
 		do_test!(concat!("fd0201", "00"), None, None, None, None);
 		do_test!(concat!("fd00fd", "00"), None, None, None, None);

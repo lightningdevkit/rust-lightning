@@ -111,7 +111,7 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	}
 
 	/// Returns an iterator which iterates over the `key`/`value` pairs in a given range.
-	pub fn range<R: RangeBounds<K>>(&mut self, range: R) -> Range<K, V> {
+	pub fn range<R: RangeBounds<K>>(&mut self, range: R) -> Range<'_, K, V> {
 		self.keys.sort_unstable();
 		let start = match range.start_bound() {
 			Bound::Unbounded => 0,

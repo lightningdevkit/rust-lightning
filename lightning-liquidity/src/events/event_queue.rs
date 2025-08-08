@@ -67,7 +67,7 @@ impl EventQueue {
 	}
 
 	// Returns an [`EventQueueNotifierGuard`] that will notify about new event when dropped.
-	pub fn notifier(&self) -> EventQueueNotifierGuard {
+	pub fn notifier(&self) -> EventQueueNotifierGuard<'_> {
 		EventQueueNotifierGuard(self)
 	}
 }

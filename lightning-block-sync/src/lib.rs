@@ -49,7 +49,8 @@ use bitcoin::hash_types::BlockHash;
 use bitcoin::pow::Work;
 
 use lightning::chain;
-use lightning::chain::Listen;
+#[allow(unused_imports)] // This thinks trait imports are unused if they're use in macros :(
+use lightning::chain::Listen as _;
 
 use std::future::Future;
 use std::ops::Deref;
@@ -78,7 +79,7 @@ pub trait BlockSource: Sync + Send {
 	/// to allow for a more efficient lookup.
 	///
 	/// [`get_header`]: Self::get_header
-	fn get_best_block(&self) -> AsyncBlockSourceResult<(BlockHash, Option<u32>)>;
+	fn get_best_block(&self) -> AsyncBlockSourceResult<'_, (BlockHash, Option<u32>)>;
 }
 
 /// Result type for `BlockSource` requests.
