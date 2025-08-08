@@ -837,11 +837,20 @@ where
 	/// changed due to a [`ChannelMonitorUpdate`] such that it may be different after another
 	/// restart).
 	///
-	/// This method is only safe for [`ChannelMonitor`]s which have been loaded (in conjunction
-	/// with a `ChannelManager`) at least once by LDK 0.1 or later.
-	pub fn load_post_0_1_existing_monitor(
+	/// For [`ChannelMonitor`]s which were last serialized by an LDK version prior to 0.1 this will
+	/// fall back to calling [`chain::Watch::watch_channel`] and persisting the [`ChannelMonitor`].
+	/// See the release notes for LDK 0.1 for more information on this requirement.
+	///
+	/// [`ChannelMonitor`]s which do not need to be persisted (i.e. were last written by LDK 0.1 or
+	/// later) will be loaded without persistence and this method will return
+	/// [`ChannelMonitorUpdateStatus::Completed`].
+	pub fn load_existing_monitor(
 		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
-	) -> Result<(), ()> {
+	) -> Result<ChannelMonitorUpdateStatus, ()> {
+		if !monitor.written_by_0_1_or_later() {
+			return chain::Watch::watch_channel(self, channel_id, monitor);
+		}
+
 		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 		let mut monitors = self.monitors.write().unwrap();
 		let entry = match monitors.entry(channel_id) {
@@ -860,7 +869,8 @@ where
 			monitor.load_outputs_to_watch(chain_source, &self.logger);
 		}
 		entry.insert(MonitorHolder { monitor, pending_monitor_updates: Mutex::new(Vec::new()) });
-		Ok(())
+
+		Ok(ChannelMonitorUpdateStatus::Completed)
 	}
 }
 

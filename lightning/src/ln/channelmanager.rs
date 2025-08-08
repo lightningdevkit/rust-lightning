@@ -15402,7 +15402,7 @@ impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 ///    the next step.
 ///
 ///    If you wish to avoid this for performance reasons, use
-///    [`ChainMonitor::load_post_0_1_existing_monitor`].
+///    [`ChainMonitor::load_existing_monitor`].
 /// 7) Move the [`ChannelMonitor`]s into your local [`chain::Watch`]. If you're using a
 ///    [`ChainMonitor`], this is done by calling [`chain::Watch::watch_channel`].
 ///
@@ -15417,7 +15417,7 @@ impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 /// which you've already broadcasted the transaction.
 ///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
-/// [`ChainMonitor::load_post_0_1_existing_monitor`]: crate::chain::chainmonitor::ChainMonitor::load_post_0_1_existing_monitor
+/// [`ChainMonitor::load_existing_monitor`]: crate::chain::chainmonitor::ChainMonitor::load_existing_monitor
 pub struct ChannelManagerReadArgs<
 	'a,
 	M: Deref,
