@@ -222,39 +222,31 @@ impl TxBuilder for SpecTxBuilder {
 			.sum();
 
 		// Count the excess fees on the counterparty's transaction as dust
-		if let (Some(excess_feerate), false) = (excess_feerate_opt, local) {
-			let (dust_exposure_msat, extra_htlc_dust_exposure_msat) =
-				excess_fees_on_counterparty_tx_dust_exposure_msat(
-					&next_commitment_htlcs,
-					dust_buffer_feerate,
-					excess_feerate,
-					broadcaster_dust_limit_satoshis,
-					dust_exposure_msat,
-					channel_type,
-				);
-			NextCommitmentStats {
-				inbound_htlcs_count,
-				inbound_htlcs_value_msat,
-				holder_balance_msat,
-				counterparty_balance_msat,
-				nondust_htlc_count,
-				commit_tx_fee_sat,
-				dust_exposure_msat,
-				extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat: Some(
-					extra_htlc_dust_exposure_msat,
-				),
-			}
-		} else {
-			NextCommitmentStats {
-				inbound_htlcs_count,
-				inbound_htlcs_value_msat,
-				holder_balance_msat,
-				counterparty_balance_msat,
-				nondust_htlc_count,
-				commit_tx_fee_sat,
-				dust_exposure_msat,
-				extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat: None,
-			}
+		let (dust_exposure_msat, extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat) =
+			if let (Some(excess_feerate), false) = (excess_feerate_opt, local) {
+				let (dust_exposure_msat, extra_nondust_htlc_exposure_msat) =
+					excess_fees_on_counterparty_tx_dust_exposure_msat(
+						&next_commitment_htlcs,
+						dust_buffer_feerate,
+						excess_feerate,
+						broadcaster_dust_limit_satoshis,
+						dust_exposure_msat,
+						channel_type,
+					);
+				(dust_exposure_msat, Some(extra_nondust_htlc_exposure_msat))
+			} else {
+				(dust_exposure_msat, None)
+			};
+
+		NextCommitmentStats {
+			inbound_htlcs_count,
+			inbound_htlcs_value_msat,
+			holder_balance_msat,
+			counterparty_balance_msat,
+			nondust_htlc_count,
+			commit_tx_fee_sat,
+			dust_exposure_msat,
+			extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat,
 		}
 	}
 	fn commit_tx_fee_sat(
