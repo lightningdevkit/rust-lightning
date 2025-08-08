@@ -199,6 +199,10 @@ const MAX_UPDATE_ATTEMPTS: u8 = 3;
 #[cfg(async_payments)]
 const OFFER_REFRESH_THRESHOLD: Duration = Duration::from_secs(2 * 60 * 60);
 
+/// Invoices stored with the static invoice server may become stale due to outdated channel and fee
+/// info, so they should be updated regularly.
+const INVOICE_REFRESH_THRESHOLD: Duration = Duration::from_secs(2 * 60 * 60);
+
 // Require offer paths that we receive to last at least 3 months.
 #[cfg(async_payments)]
 const MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 = 3 * 30 * 24 * 60 * 60;
@@ -209,6 +213,8 @@ pub(crate) const TEST_MAX_CACHED_OFFERS_TARGET: usize = MAX_CACHED_OFFERS_TARGET
 pub(crate) const TEST_MAX_UPDATE_ATTEMPTS: u8 = MAX_UPDATE_ATTEMPTS;
 #[cfg(all(test, async_payments))]
 pub(crate) const TEST_OFFER_REFRESH_THRESHOLD: Duration = OFFER_REFRESH_THRESHOLD;
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_INVOICE_REFRESH_THRESHOLD: Duration = INVOICE_REFRESH_THRESHOLD;
 #[cfg(all(test, async_payments))]
 pub(crate) const TEST_MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 =
 	MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS;
@@ -416,13 +422,21 @@ impl AsyncReceiveOfferCache {
 	/// Returns an iterator over the list of cached offers where we need to send an updated invoice to
 	/// the static invoice server.
 	pub(super) fn offers_needing_invoice_refresh(
-		&self,
+		&self, duration_since_epoch: Duration,
 	) -> impl Iterator<Item = (&Offer, Nonce, u16, &Responder)> {
 		// For any offers which are either in use or pending confirmation by the server, we should send
 		// them a fresh invoice on each timer tick.
-		self.offers_with_idx().filter_map(|(idx, offer)| {
-			let needs_invoice_update =
-				matches!(offer.status, OfferStatus::Used { .. } | OfferStatus::Pending);
+		self.offers_with_idx().filter_map(move |(idx, offer)| {
+			let needs_invoice_update = match offer.status {
+				OfferStatus::Used { invoice_created_at } => {
+					invoice_created_at.saturating_add(INVOICE_REFRESH_THRESHOLD)
+						< duration_since_epoch
+				},
+				OfferStatus::Pending => true,
+				// Don't bother updating `Ready` offers' invoices on a timer because the offers themselves
+				// are regularly rotated anyway.
+				OfferStatus::Ready { .. } => false,
+			};
 			if needs_invoice_update {
 				let offer_slot = idx.try_into().unwrap_or(u16::MAX);
 				Some((

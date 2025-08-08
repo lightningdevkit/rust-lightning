@@ -1333,8 +1333,9 @@ where
 	{
 		let mut serve_static_invoice_msgs = Vec::new();
 		{
+			let duration_since_epoch = self.duration_since_epoch();
 			let cache = self.async_receive_offer_cache.lock().unwrap();
-			for offer_and_metadata in cache.offers_needing_invoice_refresh() {
+			for offer_and_metadata in cache.offers_needing_invoice_refresh(duration_since_epoch) {
 				let (offer, offer_nonce, slot_number, update_static_invoice_path) =
 					offer_and_metadata;
 

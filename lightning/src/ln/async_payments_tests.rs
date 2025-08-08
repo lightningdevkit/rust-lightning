@@ -28,7 +28,7 @@ use crate::ln::outbound_payment::{
 	PendingOutboundPayment, Retry, TEST_ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY,
 };
 use crate::offers::async_receive_offer_cache::{
-	TEST_MAX_CACHED_OFFERS_TARGET, TEST_MAX_UPDATE_ATTEMPTS,
+	TEST_INVOICE_REFRESH_THRESHOLD, TEST_MAX_CACHED_OFFERS_TARGET, TEST_MAX_UPDATE_ATTEMPTS,
 	TEST_MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS, TEST_OFFER_REFRESH_THRESHOLD,
 };
 use crate::offers::flow::{
@@ -1715,11 +1715,53 @@ fn offer_cache_round_trip_ser() {
 	assert_eq!(cached_offers_pre_ser, cached_offers_post_ser);
 }
 
+#[test]
+fn refresh_static_invoices_for_pending_offers() {
+	// Check that an invoice for an  offer that is pending persistence with the server will be updated
+	// every timer tick.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let server = &nodes[0];
+	let recipient = &nodes[1];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[1], &[&nodes[0]]);
+
+	// Set up the recipient to have one offer pending with the static invoice server.
+	invoice_flow_up_to_send_serve_static_invoice(server, recipient);
+
+	// Every timer tick, we'll send a fresh invoice to the server.
+	for _ in 0..10 {
+		recipient.node.timer_tick_occurred();
+		let pending_oms = recipient.onion_messenger.release_pending_msgs();
+		pending_oms
+			.get(&server.node.get_our_node_id())
+			.unwrap()
+			.iter()
+			.find(|msg| match server.onion_messenger.peel_onion_message(&msg).unwrap() {
+				PeeledOnion::AsyncPayments(AsyncPaymentsMessage::ServeStaticInvoice(_), _, _) => {
+					true
+				},
+				PeeledOnion::AsyncPayments(AsyncPaymentsMessage::OfferPathsRequest(_), _, _) => {
+					false
+				},
+				_ => panic!("Unexpected message"),
+			})
+			.unwrap();
+	}
+}
+
 #[cfg_attr(feature = "std", ignore)]
 #[test]
-fn refresh_static_invoices() {
-	// Check that an invoice for a particular offer stored with the server will be updated once per
-	// timer tick.
+fn refresh_static_invoices_for_used_offers() {
+	// Check that an invoice for a used offer stored with the server will be updated every
+	// INVOICE_REFRESH_THRESHOLD.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
@@ -1744,25 +1786,26 @@ fn refresh_static_invoices() {
 	// Set up the recipient to have one offer and an invoice with the static invoice server.
 	let flow_res = pass_static_invoice_server_messages(server, recipient, recipient_id.clone());
 	let original_invoice = flow_res.invoice;
-	// Mark the offer as used so we'll update the invoice on timer tick.
+	// Mark the offer as used so we'll update the invoice after INVOICE_REFRESH_THRESHOLD.
 	let _offer = recipient.node.get_async_receive_offer().unwrap();
 
 	// Force the server and recipient to send OMs directly to each other for testing simplicity.
 	server.message_router.peers_override.lock().unwrap().push(recipient.node.get_our_node_id());
 	recipient.message_router.peers_override.lock().unwrap().push(server.node.get_our_node_id());
 
-	assert!(recipient
-		.onion_messenger
-		.next_onion_message_for_peer(server.node.get_our_node_id())
-		.is_none());
+	// Prior to INVOICE_REFRESH_THRESHOLD, we won't refresh the invoice.
+	advance_time_by(TEST_INVOICE_REFRESH_THRESHOLD, recipient);
+	recipient.node.timer_tick_occurred();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
 
-	// Check that we'll refresh the invoice on the next timer tick.
+	// After INVOICE_REFRESH_THRESHOLD, we will refresh the invoice.
+	advance_time_by(Duration::from_secs(1), recipient);
 	recipient.node.timer_tick_occurred();
 	let pending_oms = recipient.onion_messenger.release_pending_msgs();
 	let serve_static_invoice_om = pending_oms
 		.get(&server.node.get_our_node_id())
 		.unwrap()
-		.into_iter()
+		.iter()
 		.find(|msg| match server.onion_messenger.peel_onion_message(&msg).unwrap() {
 			PeeledOnion::AsyncPayments(AsyncPaymentsMessage::ServeStaticInvoice(_), _, _) => true,
 			PeeledOnion::AsyncPayments(AsyncPaymentsMessage::OfferPathsRequest(_), _, _) => false,
