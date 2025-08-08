@@ -5,6 +5,8 @@ set -x
 CLIPPY() {
 	# shellcheck disable=SC2086
 	RUSTFLAGS='-D warnings' cargo clippy $1 -- $2 \
+		`# https://github.com/rust-lang/rust-clippy/issues/15442` \
+		-A unused_imports \
 		`# Things clippy defaults to allowing but we should avoid` \
 		-D clippy::clone_on_ref_ptr \
 		`# Things where clippy is just wrong` \
