@@ -43,7 +43,20 @@ mod sealed {
 			// Offer encoding may be split by '+' followed by optional whitespace.
 			let encoded = match s.split('+').skip(1).next() {
 				Some(_) => {
-					for chunk in s.split('+') {
+					let mut chunks = s.split('+');
+
+					// Check first chunk without trimming
+					if let Some(first_chunk) = chunks.next() {
+						if first_chunk.contains(char::is_whitespace) {
+							return Err(Bolt12ParseError::InvalidLeadingWhitespace);
+						}
+						if first_chunk.is_empty() {
+							return Err(Bolt12ParseError::InvalidContinuation);
+						}
+					}
+
+					// Check remaining chunks
+					for chunk in chunks {
 						let chunk = chunk.trim_start();
 						if chunk.is_empty() || chunk.contains(char::is_whitespace) {
 							return Err(Bolt12ParseError::InvalidContinuation);
@@ -123,6 +136,8 @@ pub enum Bolt12ParseError {
 	/// The bech32 encoding does not conform to the BOLT 12 requirements for continuing messages
 	/// across multiple parts (i.e., '+' followed by whitespace).
 	InvalidContinuation,
+	/// The bech32 string starts with whitespace, which violates BOLT 12 encoding requirements.
+	InvalidLeadingWhitespace,
 	/// The bech32 encoding's human-readable part does not match what was expected for the message
 	/// being parsed.
 	InvalidBech32Hrp,
@@ -319,6 +334,15 @@ mod tests {
 		match encoded_offer.parse::<Offer>() {
 			Ok(_) => panic!("Valid offer: {}", encoded_offer),
 			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidBech32Hrp),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_bech32_encoded_offer_with_leading_whitespace() {
+		let encoded_offer = "\u{b}lno1pqpzwyq2p32x2um5ypmx2cm5dae8x93pqthvwfzadd7jejes8q9lhc4rvjxd022zv5l44g6qah+\u{b}\u{b}\u{b}\u{b}82ru5rdpnpj";
+		match encoded_offer.parse::<Offer>() {
+			Ok(_) => panic!("Valid offer: {}", encoded_offer),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidLeadingWhitespace),
 		}
 	}
 
