@@ -8,7 +8,8 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 
 use crate::ln::chan_utils::{
 	commit_tx_fee_sat, htlc_success_tx_weight, htlc_timeout_tx_weight, htlc_tx_fees_sat,
-	ChannelTransactionParameters, CommitmentTransaction, HTLCOutputInCommitment,
+	second_stage_tx_fees_sat, ChannelTransactionParameters, CommitmentTransaction,
+	HTLCOutputInCommitment,
 };
 use crate::ln::channel::{CommitmentStats, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use crate::prelude::*;
@@ -25,17 +26,10 @@ impl HTLCAmountDirection {
 		&self, local: bool, feerate_per_kw: u32, broadcaster_dust_limit_satoshis: u64,
 		channel_type: &ChannelTypeFeatures,
 	) -> bool {
-		let htlc_tx_fee_sat = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			0
-		} else {
-			let htlc_tx_weight = if self.outbound == local {
-				htlc_timeout_tx_weight(channel_type)
-			} else {
-				htlc_success_tx_weight(channel_type)
-			};
-			// As required by the spec, round down
-			feerate_per_kw as u64 * htlc_tx_weight / 1000
-		};
+		let (success_tx_fee_sat, timeout_tx_fee_sat) =
+			second_stage_tx_fees_sat(channel_type, feerate_per_kw);
+		let htlc_tx_fee_sat =
+			if self.outbound == local { timeout_tx_fee_sat } else { success_tx_fee_sat };
 		self.amount_msat / 1000 < broadcaster_dust_limit_satoshis + htlc_tx_fee_sat
 	}
 }
