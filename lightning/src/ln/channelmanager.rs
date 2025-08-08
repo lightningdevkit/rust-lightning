@@ -30,9 +30,9 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, Sequence};
+use bitcoin::{secp256k1, Sequence, SignedAmount, TxIn, Weight};
 #[cfg(splicing)]
-use bitcoin::{ScriptBuf, TxIn, Weight};
+use bitcoin::{Amount, ScriptBuf, TxOut};
 
 use crate::blinded_path::message::MessageForwardNode;
 use crate::blinded_path::message::{AsyncPaymentsContext, OffersContext};
@@ -201,6 +201,93 @@ pub use crate::ln::outbound_payment::{
 	RetryableSendFailure,
 };
 use crate::ln::script::ShutdownScript;
+
+/// The components of a splice's funding transaction that are contributed by one party.
+#[cfg(splicing)]
+pub enum SpliceContribution {
+	/// When funds are added to a channel.
+	SpliceIn {
+		/// The amount to contribute to the splice.
+		value: Amount,
+
+		/// The inputs used to include in the splice's funding transaction used to meet the
+		/// contributed amount. Any excess amount will be sent to a change output.
+		inputs: Vec<FundingTxInput>,
+
+		/// An optional change output script. This will be used if needed or, when not set,
+		/// generated using `SignerProvider::get_destination_script`.
+		change_script: Option<ScriptBuf>,
+	},
+	/// When funds are removed from a channel.
+	SpliceOut {
+		/// The outputs to include in the splice's funding transaction. The total value of all
+		/// outputs will be the amount that is removed.
+		outputs: Vec<TxOut>,
+	},
+}
+
+#[cfg(splicing)]
+impl SpliceContribution {
+	pub(super) fn value(&self) -> SignedAmount {
+		match self {
+			SpliceContribution::SpliceIn { value, .. } => {
+				value.to_signed().unwrap_or(SignedAmount::MAX)
+			},
+			SpliceContribution::SpliceOut { outputs } => {
+				let value_removed = outputs
+					.iter()
+					.map(|txout| txout.value)
+					.sum::<Amount>()
+					.to_signed()
+					.unwrap_or(SignedAmount::MAX);
+				-value_removed
+			},
+		}
+	}
+
+	pub(super) fn inputs(&self) -> &[FundingTxInput] {
+		match self {
+			SpliceContribution::SpliceIn { inputs, .. } => &inputs[..],
+			SpliceContribution::SpliceOut { .. } => &[],
+		}
+	}
+
+	pub(super) fn outputs(&self) -> &[TxOut] {
+		match self {
+			SpliceContribution::SpliceIn { .. } => &[],
+			SpliceContribution::SpliceOut { outputs } => &outputs[..],
+		}
+	}
+
+	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>, Option<ScriptBuf>) {
+		match self {
+			SpliceContribution::SpliceIn { inputs, change_script, .. } => {
+				(inputs, vec![], change_script)
+			},
+			SpliceContribution::SpliceOut { outputs } => (vec![], outputs, None),
+		}
+	}
+}
+
+/// An input to contribute to a channel's funding transaction either when using the v2 channel
+/// establishment protocol or when splicing.
+#[derive(Clone)]
+pub struct FundingTxInput {
+	/// An input for the funding transaction used to cover the channel contributions.
+	pub txin: TxIn,
+
+	/// The transaction containing the unspent [`TxOut`] referenced by [`txin`].
+	///
+	/// [`TxOut`]: bitcoin::TxOut
+	/// [`txin`]: Self::txin
+	pub prevtx: Transaction,
+
+	/// The weight of the witness that is needed to spend the [`TxOut`] referenced by [`txin`].
+	///
+	/// [`TxOut`]: bitcoin::TxOut
+	/// [`txin`]: Self::txin
+	pub witness_weight: Weight,
+}
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -4460,14 +4547,13 @@ where
 	#[cfg(splicing)]
 	#[rustfmt::skip]
 	pub fn splice_channel(
-		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
-		funding_feerate_per_kw: u32, locktime: Option<u32>,
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let result = self.internal_splice_channel(
-				channel_id, counterparty_node_id, our_funding_contribution_satoshis, our_funding_inputs, change_script, funding_feerate_per_kw, locktime
+				channel_id, counterparty_node_id, contribution, funding_feerate_per_kw, locktime
 			);
 			res = result;
 			match res {
@@ -4482,9 +4568,7 @@ where
 	#[cfg(splicing)]
 	fn internal_splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
-		funding_feerate_per_kw: u32, locktime: Option<u32>,
+		contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -4505,13 +4589,8 @@ where
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let locktime = locktime.unwrap_or_else(|| self.current_best_block().height);
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let msg = chan.splice_channel(
-						our_funding_contribution_satoshis,
-						our_funding_inputs,
-						change_script,
-						funding_feerate_per_kw,
-						locktime,
-					)?;
+					let msg =
+						chan.splice_channel(contribution, funding_feerate_per_kw, locktime)?;
 					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceInit {
 						node_id: *counterparty_node_id,
 						msg,
@@ -9242,7 +9321,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 					// Inbound V2 channels with contributed inputs are not considered unfunded.
 					if let Some(unfunded_chan) = chan.as_unfunded_v2() {
-						if unfunded_chan.funding_negotiation_context.our_funding_contribution_satoshis > 0 {
+						if unfunded_chan.funding_negotiation_context.our_funding_contribution > SignedAmount::ZERO {
 							continue;
 						}
 					}
