@@ -11,7 +11,7 @@
 //! server as an async recipient. The static invoice server will serve the resulting invoices to
 //! payers on our behalf when we're offline.
 
-use crate::blinded_path::message::BlindedMessagePath;
+use crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath};
 use crate::io;
 use crate::io::Read;
 use crate::ln::msgs::DecodeError;
@@ -21,9 +21,6 @@ use crate::onion_message::messenger::Responder;
 use crate::prelude::*;
 use crate::util::ser::{Readable, Writeable, Writer};
 use core::time::Duration;
-
-#[cfg(async_payments)]
-use crate::blinded_path::message::AsyncPaymentsContext;
 
 /// The status of this offer in the cache.
 #[derive(Clone, PartialEq)]
@@ -161,7 +158,6 @@ impl AsyncReceiveOfferCache {
 	/// on our behalf when we're offline.
 	///
 	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
-	#[cfg(async_payments)]
 	pub(crate) fn set_paths_to_static_invoice_server(
 		&mut self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
 	) -> Result<(), ()> {
@@ -181,11 +177,9 @@ impl AsyncReceiveOfferCache {
 // The target number of offers we want to have cached at any given time, to mitigate too much
 // reuse of the same offer while also limiting the amount of space our offers take up on the
 // server's end.
-#[cfg(async_payments)]
 const MAX_CACHED_OFFERS_TARGET: usize = 10;
 
 // The max number of times we'll attempt to request offer paths per timer tick.
-#[cfg(async_payments)]
 const MAX_UPDATE_ATTEMPTS: u8 = 3;
 
 // If we have an offer that is replaceable and is more than 2 hours old, we can go ahead and refresh
@@ -196,7 +190,6 @@ const MAX_UPDATE_ATTEMPTS: u8 = 3;
 // invoices from different offers competing for the same slot to the server, messages are received
 // delayed or out-of-order, and we end up providing an offer to the user that the server just
 // deleted and replaced.
-#[cfg(async_payments)]
 const OFFER_REFRESH_THRESHOLD: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Invoices stored with the static invoice server may become stale due to outdated channel and fee
@@ -204,22 +197,20 @@ const OFFER_REFRESH_THRESHOLD: Duration = Duration::from_secs(2 * 60 * 60);
 const INVOICE_REFRESH_THRESHOLD: Duration = Duration::from_secs(2 * 60 * 60);
 
 // Require offer paths that we receive to last at least 3 months.
-#[cfg(async_payments)]
 const MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 = 3 * 30 * 24 * 60 * 60;
 
-#[cfg(all(test, async_payments))]
+#[cfg(test)]
 pub(crate) const TEST_MAX_CACHED_OFFERS_TARGET: usize = MAX_CACHED_OFFERS_TARGET;
-#[cfg(all(test, async_payments))]
+#[cfg(test)]
 pub(crate) const TEST_MAX_UPDATE_ATTEMPTS: u8 = MAX_UPDATE_ATTEMPTS;
-#[cfg(all(test, async_payments))]
+#[cfg(test)]
 pub(crate) const TEST_OFFER_REFRESH_THRESHOLD: Duration = OFFER_REFRESH_THRESHOLD;
-#[cfg(all(test, async_payments))]
+#[cfg(test)]
 pub(crate) const TEST_INVOICE_REFRESH_THRESHOLD: Duration = INVOICE_REFRESH_THRESHOLD;
-#[cfg(all(test, async_payments))]
+#[cfg(test)]
 pub(crate) const TEST_MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 =
 	MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS;
 
-#[cfg(async_payments)]
 impl AsyncReceiveOfferCache {
 	/// Retrieve a cached [`Offer`] for receiving async payments as an often-offline recipient, as
 	/// well as returning a bool indicating whether the cache needs to be re-persisted.

@@ -213,7 +213,6 @@ pub fn create_from_hash(
 	Ok(construct_payment_secret(&iv_bytes, &metadata_bytes, &keys.metadata_key))
 }
 
-#[cfg(async_payments)]
 pub(crate) fn create_for_spontaneous_payment(
 	keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 	current_time: u64, min_final_cltv_expiry_delta: Option<u16>,
