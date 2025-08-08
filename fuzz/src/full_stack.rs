@@ -50,6 +50,9 @@ use lightning::ln::peer_handler::{
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
+use lightning::offers::invoice_request::CurrencyConversion;
+use lightning::offers::offer::CurrencyCode;
+use lightning::offers::parse::Bolt12SemanticError;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::router::{
@@ -181,6 +184,14 @@ impl MessageRouter for FuzzRouter {
 	}
 }
 
+struct FuzzCurrencyConversion {}
+
+impl CurrencyConversion for FuzzCurrencyConversion {
+	fn fiat_to_msats(&self, _iso4217_code: CurrencyCode) -> Result<u64, Bolt12SemanticError> {
+		unreachable!()
+	}
+}
+
 struct TestBroadcaster {
 	txn_broadcasted: Mutex<Vec<Transaction>>,
 }
@@ -236,6 +247,7 @@ type ChannelMan<'a> = ChannelManager<
 	Arc<FuzzEstimator>,
 	&'a FuzzRouter,
 	&'a FuzzRouter,
+	&'a FuzzCurrencyConversion,
 	Arc<dyn Logger>,
 >;
 type PeerMan<'a> = PeerManager<
@@ -543,6 +555,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	});
 	let fee_est = Arc::new(FuzzEstimator { input: input.clone() });
 	let router = FuzzRouter {};
+	let currency_conversion = FuzzCurrencyConversion {};
 
 	macro_rules! get_slice {
 		($len: expr) => {
@@ -606,6 +619,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		broadcast.clone(),
 		&router,
 		&router,
+		&currency_conversion,
 		Arc::clone(&logger),
 		keys_manager.clone(),
 		keys_manager.clone(),
