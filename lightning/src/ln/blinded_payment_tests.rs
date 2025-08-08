@@ -453,7 +453,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 				HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_1_2.2 },
 		};
 		expect_htlc_handling_failed_destinations!(
-			nodes[1].node.get_and_clear_pending_events(), &[failed_destination.clone()]
+			nodes[1].node.get_and_clear_pending_events(), core::slice::from_ref(&failed_destination)
 		);
 		match check {
 			ForwardCheckFail::ForwardPayloadEncodedAsReceive => {
@@ -484,7 +484,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 			HTLCHandlingFailureType::Forward { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_2_3.2 },
 	};
 	expect_htlc_handling_failed_destinations!(
-		nodes[2].node.get_and_clear_pending_events(), &[failed_destination.clone()]
+		nodes[2].node.get_and_clear_pending_events(), core::slice::from_ref(&failed_destination)
 	);
 	check_added_monitors!(nodes[2], 1);
 
