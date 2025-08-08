@@ -5890,6 +5890,7 @@ fn check_splice_contribution_sufficient(
 			is_initiator,
 			1, // spends the previous funding output
 			Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT),
+			contribution.outputs(),
 			funding_feerate.to_sat_per_kwu() as u32,
 		));
 
@@ -5919,14 +5920,12 @@ fn check_splice_contribution_sufficient(
 #[allow(dead_code)] // TODO(dual_funding): TODO(splicing): Remove allow once used.
 #[rustfmt::skip]
 fn estimate_v2_funding_transaction_fee(
-	is_initiator: bool, input_count: usize, witness_weight: Weight,
+	is_initiator: bool, input_count: usize, witness_weight: Weight, outputs: &[TxOut],
 	funding_feerate_sat_per_1000_weight: u32,
 ) -> u64 {
-	// Inputs
 	let mut weight = (input_count as u64) * BASE_INPUT_WEIGHT;
-
-	// Witnesses
 	weight = weight.saturating_add(witness_weight.to_wu());
+	weight = weight.saturating_add(outputs.iter().map(|txout| txout.weight().to_wu()).sum());
 
 	// If we are the initiator, we must pay for weight of all common fields in the funding transaction.
 	if is_initiator {
@@ -5963,7 +5962,7 @@ fn check_v2_funding_inputs_sufficient(
 		funding_inputs_len += 1;
 		total_input_witness_weight += Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT);
 	}
-	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs_len, total_input_witness_weight, funding_feerate_sat_per_1000_weight);
+	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs_len, total_input_witness_weight, &[], funding_feerate_sat_per_1000_weight);
 
 	let mut total_input_sats = 0u64;
 	for (idx, FundingTxInput { txin, prevtx, .. }) in funding_inputs.iter().enumerate() {
@@ -15952,31 +15951,31 @@ mod tests {
 
 		// 2 inputs with weight 300, initiator, 2000 sat/kw feerate
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 2, Weight::from_wu(300), 2000),
+			estimate_v2_funding_transaction_fee(true, 2, Weight::from_wu(300), &[], 2000),
 			1668
 		);
 
 		// higher feerate
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 2, Weight::from_wu(300), 3000),
+			estimate_v2_funding_transaction_fee(true, 2, Weight::from_wu(300), &[], 3000),
 			2502
 		);
 
 		// only 1 input
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 1, Weight::from_wu(300), 2000),
+			estimate_v2_funding_transaction_fee(true, 1, Weight::from_wu(300), &[], 2000),
 			1348
 		);
 
 		// 0 input weight
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 1, Weight::from_wu(0), 2000),
+			estimate_v2_funding_transaction_fee(true, 1, Weight::from_wu(0), &[], 2000),
 			748
 		);
 
 		// not initiator
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(false, 1, Weight::from_wu(0), 2000),
+			estimate_v2_funding_transaction_fee(false, 1, Weight::from_wu(0), &[], 2000),
 			320
 		);
 	}
