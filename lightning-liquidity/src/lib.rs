@@ -58,6 +58,7 @@ mod prelude {
 	pub(crate) use lightning::util::hash_tables::*;
 }
 
+pub mod dos_protection_enforcer;
 pub mod events;
 pub mod lsps0;
 pub mod lsps1;

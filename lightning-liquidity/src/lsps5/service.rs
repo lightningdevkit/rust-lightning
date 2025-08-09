@@ -64,6 +64,8 @@ struct StoredWebhook {
 pub struct LSPS5ServiceConfig {
 	/// Maximum number of webhooks allowed per client.
 	pub max_webhooks_per_client: u32,
+	/// Require an existing channel or active LSPS1/LSPS2 flow before accepting requests.
+	pub enforce_dos_protections: bool,
 }
 
 /// Default maximum number of webhooks allowed per client.
@@ -74,7 +76,10 @@ pub const DEFAULT_NOTIFICATION_COOLDOWN_HOURS: Duration = Duration::from_secs(60
 // Default configuration for LSPS5 service.
 impl Default for LSPS5ServiceConfig {
 	fn default() -> Self {
-		Self { max_webhooks_per_client: DEFAULT_MAX_WEBHOOKS_PER_CLIENT }
+		Self {
+			max_webhooks_per_client: DEFAULT_MAX_WEBHOOKS_PER_CLIENT,
+			enforce_dos_protections: true,
+		}
 	}
 }
 
@@ -148,6 +153,11 @@ where
 			node_signer,
 			last_pruning: Mutex::new(None),
 		}
+	}
+
+	/// Returns a reference to the used config.
+	pub fn config(&self) -> &LSPS5ServiceConfig {
+		&self.config
 	}
 
 	fn check_prune_stale_webhooks(&self) {
@@ -515,7 +525,7 @@ where
 		*last_pruning = Some(now);
 	}
 
-	fn client_has_open_channel(&self, client_id: &PublicKey) -> bool {
+	pub(crate) fn client_has_open_channel(&self, client_id: &PublicKey) -> bool {
 		self.channel_manager
 			.get_cm()
 			.list_channels()

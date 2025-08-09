@@ -427,6 +427,10 @@ impl OutboundJITChannel {
 		matches!(self.state, OutboundJITChannelState::PendingInitialPayment { .. })
 	}
 
+	fn is_pending_channel_open(&self) -> bool {
+		matches!(self.state, OutboundJITChannelState::PendingChannelOpen { .. })
+	}
+
 	fn is_prunable(&self) -> bool {
 		// We deem an OutboundJITChannel prunable if our offer expired and we haven't intercepted
 		// any HTLCs initiating the flow yet.
@@ -570,6 +574,21 @@ where
 	/// Returns a reference to the used config.
 	pub fn config(&self) -> &LSPS2ServiceConfig {
 		&self.config
+	}
+
+	pub(crate) fn has_pending_channel_open_request(
+		&self, counterparty_node_id: &PublicKey,
+	) -> bool {
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		if let Some(inner_state_lock) = outer_state_lock.get(counterparty_node_id) {
+			let peer_state = inner_state_lock.lock().unwrap();
+			peer_state
+				.outbound_channels_by_intercept_scid
+				.values()
+				.any(|c| c.is_pending_channel_open())
+		} else {
+			false
+		}
 	}
 
 	/// Used by LSP to inform a client requesting a JIT Channel the token they used is invalid.
