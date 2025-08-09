@@ -46,11 +46,12 @@ use bitcoin::network::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use core::time::Duration;
 use crate::blinded_path::IntroductionNode;
-use crate::blinded_path::message::BlindedMessagePath;
+use crate::blinded_path::message::{BlindedMessagePath, MAX_DUMMY_HOPS_COUNT};
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::blinded_path::message::OffersContext;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{Bolt12PaymentError, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry, self};
+use crate::offers::test_utils::FixedEntropy;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
@@ -60,11 +61,12 @@ use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
-use crate::onion_message::messenger::{Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion};
+use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion};
 use crate::onion_message::offers::OffersMessage;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{PaymentParameters, RouteParameters, RouteParametersConfig};
 use crate::sign::{NodeSigner, Recipient};
+use crate::sync::Arc;
 use crate::util::ser::Writeable;
 
 /// This used to determine whether we built a compact path or not, but now its just a random
@@ -435,6 +437,63 @@ fn prefers_more_connected_nodes_in_blinded_paths() {
 	for path in offer.paths() {
 		let introduction_node_id = resolve_introduction_node(david, &path);
 		assert_eq!(introduction_node_id, nodes[4].node.get_our_node_id());
+	}
+}
+
+/// Tests the dummy hop behavior of Offers based on the message router used:
+/// - Compact paths (`DefaultMessageRouter`) should not include dummy hops.
+/// - Node ID paths (`NodeIdMessageRouter`) may include 0 to [`MAX_DUMMY_HOPS_COUNT`] dummy hops.
+#[test]
+fn check_dummy_hop_pattern_in_offer() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let deterministic_entropy = Arc::new(FixedEntropy);
+
+	// Case 1: DefaultMessageRouter → uses compact blinded paths (via SCIDs)
+	// Expected: No dummy hops; each path contains only the recipient.
+	let default_router = DefaultMessageRouter::new(alice.network_graph, deterministic_entropy.clone());
+
+	let compact_offer = alice.node
+		.create_offer_builder_using_router(&default_router).unwrap()
+		.build().unwrap();
+
+	assert!(!compact_offer.paths().is_empty());
+
+	for path in compact_offer.paths() {
+		assert_eq!(
+			path.blinded_hops().len(), 1,
+			"Compact paths must include only the recipient"
+		);
+	}
+
+	// Case 2: NodeIdMessageRouter → uses node ID-based blinded paths
+	// Expected: 0 to MAX_DUMMY_HOPS_COUNT dummy hops, followed by recipient.
+	let node_id_router = NodeIdMessageRouter::new(alice.network_graph, deterministic_entropy);
+
+	let padded_offer = alice.node
+		.create_offer_builder_using_router(&node_id_router).unwrap()
+		.build().unwrap();
+
+	assert!(!padded_offer.paths().is_empty());
+
+	for path in padded_offer.paths() {
+		let hops = path.blinded_hops();
+		assert!(
+			hops.len() > 1,
+			"Non-compact paths must include at least one dummy hop plus recipient"
+		);
+
+		let dummy_count = hops.len() - 1;
+		assert!(
+			dummy_count <= MAX_DUMMY_HOPS_COUNT,
+			"Dummy hops must not exceed MAX_DUMMY_HOPS_COUNT"
+		);
 	}
 }
 
@@ -2275,7 +2334,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 	let payment_paths = invoice.payment_paths().to_vec();
 	let payment_hash = invoice.payment_hash();
 
-	let expanded_key = alice.keys_manager.get_inbound_payment_key();
+	let expanded_key = alice.keys_manager.get_expanded_key();
 	let secp_ctx = Secp256k1::new();
 
 	let created_at = alice.node.duration_since_epoch();
