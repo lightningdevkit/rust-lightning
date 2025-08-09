@@ -19,7 +19,7 @@ use lightning_liquidity::lsps5::msgs::{
 	WebhookNotificationMethod,
 };
 use lightning_liquidity::lsps5::service::{
-	LSPS5ServiceConfig, DEFAULT_MAX_WEBHOOKS_PER_CLIENT, DEFAULT_NOTIFICATION_COOLDOWN_HOURS,
+	LSPS5ServiceConfig, DEFAULT_MAX_WEBHOOKS_PER_CLIENT, NOTIFICATION_COOLDOWN_TIME,
 };
 use lightning_liquidity::lsps5::service::{
 	MIN_WEBHOOK_RETENTION_DAYS, PRUNE_STALE_WEBHOOKS_INTERVAL_DAYS,
@@ -1119,7 +1119,7 @@ fn test_send_notifications_and_peer_connected_resets_cooldown() {
 	}
 
 	// 4. Advance time past cooldown and ensure payment_incoming can be sent again
-	mock_time_provider.advance_time(DEFAULT_NOTIFICATION_COOLDOWN_HOURS.as_secs() + 1);
+	mock_time_provider.advance_time(NOTIFICATION_COOLDOWN_TIME.as_secs() + 1);
 
 	let _ = service_handler.notify_payment_incoming(client_node_id);
 	let event = service_node.liquidity_manager.next_event().unwrap();
