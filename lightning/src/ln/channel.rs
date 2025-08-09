@@ -14136,6 +14136,7 @@ mod tests {
 	use crate::ln::script::ShutdownScript;
 	use crate::prelude::*;
 	use crate::routing::router::{Path, RouteHop};
+	#[cfg(ldk_test_vectors)]
 	use crate::sign::{ChannelSigner, EntropySource, InMemorySigner, SignerProvider};
 	#[cfg(splicing)]
 	use crate::sync::Mutex;
@@ -14156,8 +14157,7 @@ mod tests {
 	use bitcoin::hex::FromHex;
 	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::network::Network;
-	use bitcoin::opcodes;
-	use bitcoin::script::{Builder, ScriptBuf};
+	use bitcoin::script::Builder;
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
@@ -14166,7 +14166,7 @@ mod tests {
 	use bitcoin::transaction::{Transaction, TxOut, Version};
 	#[cfg(splicing)]
 	use bitcoin::Weight;
-	use bitcoin::{WPubkeyHash, WitnessProgram, WitnessVersion};
+	use bitcoin::{WitnessProgram, WitnessVersion};
 	use std::cmp;
 
 	#[test]
@@ -14192,17 +14192,19 @@ mod tests {
 		);
 	}
 
-	#[allow(dead_code)]
+	#[cfg(ldk_test_vectors)]
 	struct Keys {
-		signer: InMemorySigner,
+		signer: crate::sign::InMemorySigner,
 	}
 
+	#[cfg(ldk_test_vectors)]
 	impl EntropySource for Keys {
 		fn get_secure_random_bytes(&self) -> [u8; 32] {
 			[0; 32]
 		}
 	}
 
+	#[cfg(ldk_test_vectors)]
 	impl SignerProvider for Keys {
 		type EcdsaSigner = InMemorySigner;
 		#[cfg(taproot)]
@@ -14216,16 +14218,18 @@ mod tests {
 			self.signer.clone()
 		}
 
-		fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+		fn get_destination_script(
+			&self, _channel_keys_id: [u8; 32],
+		) -> Result<bitcoin::script::ScriptBuf, ()> {
 			let secp_ctx = Secp256k1::signing_only();
 			let hex = "0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 			let channel_monitor_claim_key =
 				SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap();
-			let channel_monitor_claim_key_hash = WPubkeyHash::hash(
+			let channel_monitor_claim_key_hash = bitcoin::WPubkeyHash::hash(
 				&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize(),
 			);
 			Ok(Builder::new()
-				.push_opcode(opcodes::all::OP_PUSHBYTES_0)
+				.push_opcode(bitcoin::opcodes::all::OP_PUSHBYTES_0)
 				.push_slice(channel_monitor_claim_key_hash)
 				.into_script())
 		}
@@ -15906,7 +15910,7 @@ mod tests {
 	fn funding_input_sats(input_value_sats: u64) -> (TxIn, Transaction, Weight) {
 		use crate::sign::P2WPKH_WITNESS_WEIGHT;
 
-		let input_1_prev_out = TxOut { value: Amount::from_sat(input_value_sats), script_pubkey: ScriptBuf::default() };
+		let input_1_prev_out = TxOut { value: Amount::from_sat(input_value_sats), script_pubkey: bitcoin::ScriptBuf::default() };
 		let input_1_prev_tx = Transaction {
 			input: vec![], output: vec![input_1_prev_out],
 			version: Version::TWO, lock_time: bitcoin::absolute::LockTime::ZERO,
