@@ -2443,6 +2443,15 @@ impl PendingSplice {
 	}
 }
 
+pub(crate) enum QuiescentAction {
+	// TODO: Make this test-only once we have another variant (as some code requires *a* variant).
+	DoNothing,
+}
+
+impl_writeable_tlv_based_enum_upgradable!(QuiescentAction,
+	(99, DoNothing) => {},
+);
+
 /// Wrapper around a [`Transaction`] useful for caching the result of [`Transaction::compute_txid`].
 struct ConfirmedTransaction<'a> {
 	tx: &'a Transaction,
@@ -2742,6 +2751,12 @@ where
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
 	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
+
+	/// Once we become quiescent, if we're the initiator, there's some action we'll want to take.
+	/// This keeps track of that action. Note that if we become quiescent and we're not the
+	/// initiator we may be able to merge this action into what the counterparty wanted to do (e.g.
+	/// in the case of splicing).
+	post_quiescence_action: Option<QuiescentAction>,
 }
 
 /// A channel struct implementing this trait can receive an initial counterparty commitment
@@ -3316,6 +3331,8 @@ where
 			blocked_monitor_updates: Vec::new(),
 
 			is_manual_broadcast: false,
+
+			post_quiescence_action: None,
 		};
 
 		Ok((funding, channel_context))
@@ -3552,6 +3569,8 @@ where
 			blocked_monitor_updates: Vec::new(),
 			local_initiated_shutdown: None,
 			is_manual_broadcast: false,
+
+			post_quiescence_action: None,
 		};
 
 		Ok((funding, channel_context))
@@ -11548,7 +11567,7 @@ where
 	#[cfg(any(test, fuzzing))]
 	#[rustfmt::skip]
 	pub fn propose_quiescence<L: Deref>(
-		&mut self, logger: &L,
+		&mut self, logger: &L, action: QuiescentAction,
 	) -> Result<Option<msgs::Stfu>, ChannelError>
 	where
 		L::Target: Logger,
@@ -11560,11 +11579,13 @@ where
 				"Channel is not in a live state to propose quiescence".to_owned()
 			));
 		}
-		if self.context.channel_state.is_quiescent() {
-			return Err(ChannelError::Ignore("Channel is already quiescent".to_owned()));
+		if self.context.post_quiescence_action.is_some() {
+			return Err(ChannelError::Ignore("Channel is already quiescing".to_owned()));
 		}
 
-		if self.context.channel_state.is_awaiting_quiescence()
+		self.context.post_quiescence_action = Some(action);
+		if self.context.channel_state.is_quiescent()
+			|| self.context.channel_state.is_awaiting_quiescence()
 			|| self.context.channel_state.is_local_stfu_sent()
 		{
 			return Ok(None);
@@ -11682,6 +11703,21 @@ where
 			"Received counterparty stfu, channel is now quiescent and we are{} the initiator",
 			if !is_holder_quiescence_initiator { " not" } else { "" }
 		);
+
+		if is_holder_quiescence_initiator {
+			match self.context.post_quiescence_action.take() {
+				None => {
+					debug_assert!(false);
+					return Err(ChannelError::WarnAndDisconnect(
+						"Internal Error: Didn't have anything to do after reaching quiescence".to_owned()
+					));
+				},
+				Some(QuiescentAction::DoNothing) => {
+					// In quiescence test we want to just hang out here, letting the test manually
+					// leave quiescence.
+				},
+			}
+		}
 
 		Ok(None)
 	}
@@ -13986,6 +14022,8 @@ where
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 				is_manual_broadcast: is_manual_broadcast.unwrap_or(false),
+
+				post_quiescence_action: None,
 			},
 			interactive_tx_signing_session,
 			holder_commitment_point,
