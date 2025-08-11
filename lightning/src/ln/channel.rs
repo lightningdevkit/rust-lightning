@@ -2482,10 +2482,9 @@ impl FundingScope {
 			their_funding_contribution.to_sat(),
 		);
 
-		let post_value_to_self_msat = AddSigned::checked_add_signed(
-			prev_funding.value_to_self_msat,
-			our_funding_contribution.to_sat() * 1000,
-		);
+		let post_value_to_self_msat = prev_funding
+			.value_to_self_msat
+			.checked_add_signed(our_funding_contribution.to_sat() * 1000);
 		debug_assert!(post_value_to_self_msat.is_some());
 		let post_value_to_self_msat = post_value_to_self_msat.unwrap();
 
@@ -2551,8 +2550,7 @@ impl FundingScope {
 	pub(super) fn compute_post_splice_value(
 		&self, our_funding_contribution: i64, their_funding_contribution: i64,
 	) -> u64 {
-		AddSigned::saturating_add_signed(
-			self.get_value_satoshis(),
+		self.get_value_satoshis().saturating_add_signed(
 			our_funding_contribution.saturating_add(their_funding_contribution),
 		)
 	}
@@ -2583,30 +2581,6 @@ impl FundingScope {
 			holder_sig_first,
 			self.get_funding_redeemscript(),
 		)
-	}
-}
-
-// TODO: Remove once MSRV is at least 1.66
-trait AddSigned {
-	fn checked_add_signed(self, rhs: i64) -> Option<u64>;
-	fn saturating_add_signed(self, rhs: i64) -> u64;
-}
-
-impl AddSigned for u64 {
-	fn checked_add_signed(self, rhs: i64) -> Option<u64> {
-		if rhs >= 0 {
-			self.checked_add(rhs as u64)
-		} else {
-			self.checked_sub(rhs.unsigned_abs())
-		}
-	}
-
-	fn saturating_add_signed(self, rhs: i64) -> u64 {
-		if rhs >= 0 {
-			self.saturating_add(rhs as u64)
-		} else {
-			self.saturating_sub(rhs.unsigned_abs())
-		}
 	}
 }
 
@@ -12102,10 +12076,8 @@ where
 
 		if our_funding_contribution != SignedAmount::ZERO {
 			let post_splice_holder_balance = Amount::from_sat(
-				AddSigned::checked_add_signed(
-					holder_balance_remaining.to_sat(),
-					our_funding_contribution.to_sat(),
-				)
+				holder_balance_remaining.to_sat()
+				.checked_add_signed(our_funding_contribution.to_sat())
 				.ok_or(format!(
 					"Channel {} cannot be spliced out; our remaining balance {} does not cover our negative funding contribution {}",
 					self.context.channel_id(),
@@ -12126,10 +12098,8 @@ where
 
 		if their_funding_contribution != SignedAmount::ZERO {
 			let post_splice_counterparty_balance = Amount::from_sat(
-				AddSigned::checked_add_signed(
-					counterparty_balance_remaining.to_sat(),
-					their_funding_contribution.to_sat(),
-				)
+				counterparty_balance_remaining.to_sat()
+				.checked_add_signed(their_funding_contribution.to_sat())
 				.ok_or(format!(
 					"Channel {} cannot be spliced out; their remaining balance {} does not cover their negative funding contribution {}",
 					self.context.channel_id(),
