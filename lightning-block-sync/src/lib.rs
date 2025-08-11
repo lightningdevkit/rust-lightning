@@ -49,8 +49,7 @@ use bitcoin::hash_types::BlockHash;
 use bitcoin::pow::Work;
 
 use lightning::chain;
-#[allow(unused_imports)] // This thinks trait imports are unused if they're use in macros :(
-use lightning::chain::Listen as _;
+use lightning::chain::Listen;
 
 use std::future::Future;
 use std::ops::Deref;
