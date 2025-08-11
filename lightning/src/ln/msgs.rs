@@ -3531,7 +3531,8 @@ where
 						}),
 				} => {
 					if amt.is_some()
-						|| cltv_value.is_some() || total_msat.is_some()
+						|| cltv_value.is_some()
+						|| total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
 					{
@@ -3681,7 +3682,8 @@ where
 						}),
 				} => {
 					if amt.is_some()
-						|| cltv_value.is_some() || total_msat.is_some()
+						|| cltv_value.is_some()
+						|| total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
 					{
