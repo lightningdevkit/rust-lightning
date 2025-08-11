@@ -7,6 +7,7 @@ void invoice_deser_run(const unsigned char* data, size_t data_len);
 void invoice_request_deser_run(const unsigned char* data, size_t data_len);
 void offer_deser_run(const unsigned char* data, size_t data_len);
 void bolt11_deser_run(const unsigned char* data, size_t data_len);
+void static_invoice_deser_run(const unsigned char* data, size_t data_len);
 void onion_message_run(const unsigned char* data, size_t data_len);
 void peer_crypt_run(const unsigned char* data, size_t data_len);
 void process_network_graph_run(const unsigned char* data, size_t data_len);

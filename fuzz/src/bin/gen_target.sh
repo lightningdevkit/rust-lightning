@@ -14,6 +14,7 @@ GEN_TEST invoice_deser
 GEN_TEST invoice_request_deser
 GEN_TEST offer_deser
 GEN_TEST bolt11_deser
+GEN_TEST static_invoice_deser
 GEN_TEST onion_message
 GEN_TEST peer_crypt
 GEN_TEST process_network_graph
