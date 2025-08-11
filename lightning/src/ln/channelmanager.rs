@@ -130,7 +130,7 @@ use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::scid_utils::fake_scid;
 use crate::util::ser::{
 	BigSize, FixedLengthReader, LengthReadable, MaybeReadable, Readable, ReadableArgs, VecWriter,
-	Writeable, Writer,
+	WithoutLength, Writeable, Writer,
 };
 use crate::util::wakers::{Future, Notifier};
 
@@ -15248,7 +15248,7 @@ where
 			(15, self.inbound_payment_id_secret, required),
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
-			(21, self.flow.writeable_async_receive_offer_cache(), required),
+			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
 		});
 
 		Ok(())

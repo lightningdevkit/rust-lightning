@@ -1657,8 +1657,8 @@ where
 		cache.static_invoice_persisted(context, self.duration_since_epoch())
 	}
 
-	/// Get the [`AsyncReceiveOfferCache`] for persistence.
-	pub fn writeable_async_receive_offer_cache(&self) -> impl Writeable + '_ {
+	/// Get the encoded [`AsyncReceiveOfferCache`] for persistence.
+	pub fn writeable_async_receive_offer_cache(&self) -> Vec<u8> {
 		self.async_receive_offer_cache.encode()
 	}
 }
