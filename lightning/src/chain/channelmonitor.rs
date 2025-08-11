@@ -1599,26 +1599,26 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			_ => channel_monitor.pending_monitor_events.clone(),
 		};
 
-		write_tlv_fields!(writer, {
-			(1, channel_monitor.funding_spend_confirmed, option),
-			(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
-			(5, pending_monitor_events, required_vec),
-			(7, channel_monitor.funding_spend_seen, required),
-			(9, channel_monitor.counterparty_node_id, required),
-			(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
-			(13, channel_monitor.spendable_txids_confirmed, required_vec),
-			(15, channel_monitor.counterparty_fulfilled_htlcs, required),
-			(17, channel_monitor.initial_counterparty_commitment_info, option),
-			(19, channel_monitor.channel_id, required),
-			(21, channel_monitor.balances_empty_height, option),
-			(23, channel_monitor.holder_pays_commitment_tx_fee, option),
-			(25, channel_monitor.payment_preimages, required),
-			(27, channel_monitor.first_negotiated_funding_txo, required),
-			(29, channel_monitor.initial_counterparty_commitment_tx, option),
-			(31, channel_monitor.funding.channel_parameters, required),
-			(32, channel_monitor.pending_funding, optional_vec),
-			(34, channel_monitor.alternative_funding_confirmed, option),
-		});
+	write_tlv_fields!(writer, {
+		(1, channel_monitor.funding_spend_confirmed, option),
+		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
+		(5, pending_monitor_events, required_vec),
+		(7, channel_monitor.funding_spend_seen, required),
+		(9, channel_monitor.counterparty_node_id, required),
+		(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
+		(13, channel_monitor.spendable_txids_confirmed, required_vec),
+		(15, channel_monitor.counterparty_fulfilled_htlcs, required),
+		(17, channel_monitor.initial_counterparty_commitment_info, option),
+		(19, channel_monitor.channel_id, required),
+		(21, channel_monitor.balances_empty_height, option),
+		(23, channel_monitor.holder_pays_commitment_tx_fee, option),
+		(25, channel_monitor.payment_preimages, required),
+		(27, channel_monitor.first_negotiated_funding_txo, required),
+		(29, channel_monitor.initial_counterparty_commitment_tx, option),
+		(31, channel_monitor.funding.channel_parameters, required),
+		(32, channel_monitor.pending_funding, optional_vec),
+		(34, channel_monitor.alternative_funding_confirmed, option),
+	});
 
 	Ok(())
 }
