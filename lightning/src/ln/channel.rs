@@ -1880,11 +1880,9 @@ where
 				};
 				let res = funded_channel.initial_commitment_signed_v2(msg, best_block, signer_provider, logger)
 					.map(|monitor| (Some(monitor), None))
-					// TODO: Change to `inspect_err` when MSRV is high enough.
-					.map_err(|err| {
+					.inspect_err(|err| {
 						// We always expect a `ChannelError` close.
 						debug_assert!(matches!(err, ChannelError::Close(_)));
-						err
 					});
 				self.phase = ChannelPhase::Funded(funded_channel);
 				res
