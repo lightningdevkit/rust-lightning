@@ -23,7 +23,7 @@ use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::transaction::Transaction;
 
-use crate::chain::chaininterface::{compute_feerate_sat_per_1000_weight, ConfirmationTarget};
+use crate::chain::chaininterface::ConfirmationTarget;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::ANTI_REORG_DELAY;
 use crate::chain::package::{PackageSolvingData, PackageTemplate};
@@ -670,19 +670,8 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 					let fee_sat = input_amount_sats - tx.output.iter()
 						.map(|output| output.value.to_sat()).sum::<u64>();
-					let commitment_tx_feerate_sat_per_1000_weight =
-						compute_feerate_sat_per_1000_weight(fee_sat, tx.weight().to_wu());
 					let package_target_feerate_sat_per_1000_weight = cached_request
 						.compute_package_feerate(fee_estimator, conf_target, feerate_strategy);
-					if commitment_tx_feerate_sat_per_1000_weight >= package_target_feerate_sat_per_1000_weight {
-						log_debug!(logger, "Pre-signed commitment {} already has feerate {} sat/kW above required {} sat/kW",
-							tx.compute_txid(), commitment_tx_feerate_sat_per_1000_weight,
-							package_target_feerate_sat_per_1000_weight);
-						// The commitment transaction already meets the required feerate and doesn't
-						// need a CPFP. We still want to return something other than the event to
-						// register the claim.
-						return Some((new_timer, 0, OnchainClaim::Tx(MaybeSignedTransaction(tx))));
-					}
 
 					// We'll locate an anchor output we can spend within the commitment transaction.
 					let channel_parameters = output.channel_parameters.as_ref()

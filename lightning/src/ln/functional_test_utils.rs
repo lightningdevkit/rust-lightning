@@ -2211,21 +2211,37 @@ macro_rules! check_closed_event {
 	};
 }
 
-pub fn handle_bump_htlc_event(node: &Node, count: usize) {
+pub fn handle_bump_events(node: &Node, expected_close: bool, expected_htlc_count: usize) {
 	let events = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(events.len(), count);
-	for event in events {
+	let mut close = false;
+	let mut htlc_count = 0;
+	for event in &events {
 		match event {
-			Event::BumpTransaction(bump_event) => {
-				if let BumpTransactionEvent::HTLCResolution { .. } = &bump_event {
-				} else {
-					panic!();
-				}
-				node.bump_tx_handler.handle_event(&bump_event);
+			Event::BumpTransaction(bump @ BumpTransactionEvent::ChannelClose { .. }) => {
+				close = true;
+				node.bump_tx_handler.handle_event(&bump);
 			},
-			_ => panic!(),
+			Event::BumpTransaction(bump @ BumpTransactionEvent::HTLCResolution { .. }) => {
+				htlc_count += 1;
+				node.bump_tx_handler.handle_event(&bump);
+			},
+			_ => panic!("Unexpected non-bump event: {:?}.", event),
 		}
 	}
+	assert_eq!(close, expected_close, "Expected a bump close event, found {:?}.", events);
+	assert_eq!(
+		htlc_count, expected_htlc_count,
+		"Expected {} bump HTLC events, found {:?}",
+		expected_htlc_count, events
+	);
+}
+
+pub fn handle_bump_close_event(node: &Node) {
+	handle_bump_events(node, true, 0);
+}
+
+pub fn handle_bump_htlc_event(node: &Node, count: usize) {
+	handle_bump_events(node, false, count);
 }
 
 pub fn close_channel<'a, 'b, 'c>(
