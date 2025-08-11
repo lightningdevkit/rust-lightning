@@ -39,8 +39,7 @@ use core::ops::Deref;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task;
-
-use super::async_poll::dummy_waker;
+use core::task::Waker;
 
 /// The number of blocks we wait before we prune the tracked spendable outputs.
 pub const PRUNE_DELAY_BLOCKS: u32 = ARCHIVAL_DELAY_BLOCKS + ANTI_REORG_DELAY;
@@ -1042,7 +1041,7 @@ where
 	/// [`OutputSweeper::regenerate_and_broadcast_spend_if_necessary`].
 	pub fn regenerate_and_broadcast_spend_if_necessary(&self) -> Result<(), ()> {
 		let mut fut = Box::pin(self.sweeper.regenerate_and_broadcast_spend_if_necessary());
-		let mut waker = dummy_waker();
+		let mut waker = Waker::noop();
 		let mut ctx = task::Context::from_waker(&mut waker);
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
@@ -1064,7 +1063,7 @@ where
 			exclude_static_outputs,
 			delay_until_height,
 		));
-		let mut waker = dummy_waker();
+		let mut waker = Waker::noop();
 		let mut ctx = task::Context::from_waker(&mut waker);
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,

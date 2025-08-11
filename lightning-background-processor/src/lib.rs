@@ -337,7 +337,7 @@ pub(crate) mod futures_util {
 	use core::future::Future;
 	use core::marker::Unpin;
 	use core::pin::Pin;
-	use core::task::{Poll, RawWaker, RawWakerVTable, Waker};
+	use core::task::Poll;
 	pub(crate) struct Selector<
 		A: Future<Output = ()> + Unpin,
 		B: Future<Output = ()> + Unpin,
@@ -426,24 +426,6 @@ pub(crate) mod futures_util {
 				None => Poll::Pending,
 			}
 		}
-	}
-
-	// If we want to poll a future without an async context to figure out if it has completed or
-	// not without awaiting, we need a Waker, which needs a vtable...we fill it with dummy values
-	// but sadly there's a good bit of boilerplate here.
-	fn dummy_waker_clone(_: *const ()) -> RawWaker {
-		RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)
-	}
-	fn dummy_waker_action(_: *const ()) {}
-
-	const DUMMY_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
-		dummy_waker_clone,
-		dummy_waker_action,
-		dummy_waker_action,
-		dummy_waker_action,
-	);
-	pub(crate) fn dummy_waker() -> Waker {
-		unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) }
 	}
 
 	enum JoinerResult<E, F: Future<Output = Result<(), E>> + Unpin> {
@@ -558,7 +540,7 @@ pub(crate) mod futures_util {
 	}
 }
 use core::task;
-use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutput};
+use futures_util::{Joiner, OptionalSelector, Selector, SelectorOutput};
 
 /// Processes background events in a future.
 ///
@@ -950,7 +932,7 @@ where
 			// below. This will get it moving but won't block us for too long if the underlying
 			// future is actually async.
 			use core::future::Future;
-			let mut waker = dummy_waker();
+			let mut waker = task::Waker::noop();
 			let mut ctx = task::Context::from_waker(&mut waker);
 			match core::pin::Pin::new(&mut fut).poll(&mut ctx) {
 				task::Poll::Ready(res) => futures.set_a_res(res),
@@ -1168,7 +1150,7 @@ where
 				NETWORK_GRAPH_PERSISTENCE_KEY,
 				network_graph.encode(),
 			)
-			.await?;
+			.await?
 	}
 	Ok(())
 }
@@ -1178,7 +1160,7 @@ fn check_and_reset_sleeper<
 >(
 	fut: &mut SleepFuture, mut new_sleeper: impl FnMut() -> SleepFuture,
 ) -> Option<bool> {
-	let mut waker = dummy_waker();
+	let mut waker = task::Waker::noop();
 	let mut ctx = task::Context::from_waker(&mut waker);
 	match core::pin::Pin::new(&mut *fut).poll(&mut ctx) {
 		task::Poll::Ready(exit) => {
