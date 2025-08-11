@@ -20,3 +20,13 @@ lightning_0_0_125 = { package = "lightning", version = "0.0.125", features = ["_
 bitcoin = { version = "0.32.2", default-features = false }
 
 [dev-dependencies]
+
+[lints.rust.unexpected_cfgs]
+level = "forbid"
+# When adding a new cfg attribute, ensure that it is added to this list.
+#
+# Note that Cargo automatically declares corresponding cfgs for every feature
+# defined in the member-level [features] tables as "expected".
+check-cfg = [
+    "cfg(taproot)",
+]
