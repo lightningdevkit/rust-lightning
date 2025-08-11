@@ -5211,8 +5211,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		debug_assert!(self.best_block.height >= conf_height);
 
 		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
-		if should_broadcast {
-			let (mut new_outpoints, mut new_outputs) = self.generate_claimable_outpoints_and_watch_outputs(Some(ClosureReason::HTLCsTimedOut));
+		if let Some(payment_hash) = should_broadcast {
+			let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+			let (mut new_outpoints, mut new_outputs) =
+				self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
 			claimable_outpoints.append(&mut new_outpoints);
 			watch_outputs.append(&mut new_outputs);
 		}
@@ -5560,7 +5562,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	#[rustfmt::skip]
 	fn should_broadcast_holder_commitment_txn<L: Deref>(
 		&self, logger: &WithChannelMonitor<L>
-	) -> bool where L::Target: Logger {
+	) -> Option<PaymentHash> where L::Target: Logger {
 		// There's no need to broadcast our commitment transaction if we've seen one confirmed (even
 		// with 1 confirmation) as it'll be rejected as duplicate/conflicting.
 		if self.funding_spend_confirmed.is_some() ||
@@ -5569,7 +5571,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				_ => false,
 			}).is_some()
 		{
-			return false;
+			return None;
 		}
 		// We need to consider all HTLCs which are:
 		//  * in any unrevoked counterparty commitment transaction, as they could broadcast said
@@ -5600,7 +5602,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height) ||
 					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
 						log_info!(logger, "Force-closing channel due to {} HTLC timeout - HTLC with payment hash {} expires at {}", if htlc_outbound { "outbound" } else { "inbound"}, htlc.payment_hash, htlc.cltv_expiry);
-						return true;
+						return Some(htlc.payment_hash);
 					}
 				}
 			}
@@ -5619,7 +5621,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		false
+		None
 	}
 
 	/// Check if any transaction broadcasted is resolving HTLC output by a success or timeout on a holder

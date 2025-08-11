@@ -406,7 +406,12 @@ pub enum ClosureReason {
 	/// was ready to be broadcast.
 	FundingBatchClosure,
 	/// One of our HTLCs timed out in a channel, causing us to force close the channel.
-	HTLCsTimedOut,
+	HTLCsTimedOut {
+		/// The payment hash of an HTLC that timed out.
+		///
+		/// Will be `None` for any event serialized by LDK prior to 0.2.
+		payment_hash: Option<PaymentHash>,
+	},
 	/// Our peer provided a feerate which violated our required minimum (fetched from our
 	/// [`FeeEstimator`] either as [`ConfirmationTarget::MinAllowedAnchorChannelRemoteFee`] or
 	/// [`ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee`]).
@@ -480,7 +485,12 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::FundingBatchClosure => {
 				f.write_str("another channel in the same funding batch closed")
 			},
-			ClosureReason::HTLCsTimedOut => f.write_str("htlcs on the channel timed out"),
+			ClosureReason::HTLCsTimedOut { payment_hash: Some(hash) } => f.write_fmt(format_args!(
+				"HTLC(s) on the channel timed out (including the HTLC with payment hash {hash})",
+			)),
+			ClosureReason::HTLCsTimedOut { payment_hash: None } => {
+				f.write_fmt(format_args!("HTLC(s) on the channel timed out"))
+			},
 			ClosureReason::PeerFeerateTooLow {
 				peer_feerate_sat_per_kw,
 				required_feerate_sat_per_kw,
@@ -508,7 +518,9 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(15, FundingBatchClosure) => {},
 	(17, CounterpartyInitiatedCooperativeClosure) => {},
 	(19, LocallyInitiatedCooperativeClosure) => {},
-	(21, HTLCsTimedOut) => {},
+	(21, HTLCsTimedOut) => {
+		(1, payment_hash, option),
+	},
 	(23, PeerFeerateTooLow) => {
 		(0, peer_feerate_sat_per_kw, required),
 		(2, required_feerate_sat_per_kw, required),
