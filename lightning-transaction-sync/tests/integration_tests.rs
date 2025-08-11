@@ -109,9 +109,9 @@ where
 
 #[derive(Debug)]
 enum TestConfirmableEvent {
-	Confirmed(Txid, BlockHash, u32),
+	Confirmed(Txid),
 	Unconfirmed(Txid),
-	BestBlockUpdated(BlockHash, u32),
+	BestBlockUpdated,
 }
 
 struct TestConfirmable {
@@ -140,7 +140,7 @@ impl Confirm for TestConfirmable {
 			let block_hash = header.block_hash();
 			self.confirmed_txs.lock().unwrap().insert(txid, (block_hash, height));
 			self.unconfirmed_txs.lock().unwrap().remove(&txid);
-			let event = TestConfirmableEvent::Confirmed(txid, block_hash, height);
+			let event = TestConfirmableEvent::Confirmed(txid);
 			self.events.lock().unwrap().push(event);
 		}
 	}
@@ -154,7 +154,7 @@ impl Confirm for TestConfirmable {
 	fn best_block_updated(&self, header: &Header, height: u32) {
 		let block_hash = header.block_hash();
 		*self.best_block.lock().unwrap() = (block_hash, height);
-		let event = TestConfirmableEvent::BestBlockUpdated(block_hash, height);
+		let event = TestConfirmableEvent::BestBlockUpdated;
 		self.events.lock().unwrap().push(event);
 	}
 
@@ -281,12 +281,12 @@ macro_rules! test_syncing {
 		}
 
 		match events[2] {
-			TestConfirmableEvent::BestBlockUpdated(..) => {},
+			TestConfirmableEvent::BestBlockUpdated => {},
 			_ => panic!("Unexpected event"),
 		}
 
 		match events[3] {
-			TestConfirmableEvent::Confirmed(t, _, _) => {
+			TestConfirmableEvent::Confirmed(t) => {
 				assert!(t == txid || t == second_txid);
 				assert!(seen_txids.remove(&t));
 			},
@@ -294,7 +294,7 @@ macro_rules! test_syncing {
 		}
 
 		match events[4] {
-			TestConfirmableEvent::Confirmed(t, _, _) => {
+			TestConfirmableEvent::Confirmed(t) => {
 				assert!(t == txid || t == second_txid);
 				assert!(seen_txids.remove(&t));
 			},
