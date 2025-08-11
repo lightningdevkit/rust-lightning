@@ -1880,11 +1880,9 @@ where
 				};
 				let res = funded_channel.initial_commitment_signed_v2(msg, best_block, signer_provider, logger)
 					.map(|monitor| (Some(monitor), None))
-					// TODO: Change to `inspect_err` when MSRV is high enough.
-					.map_err(|err| {
+					.inspect_err(|err| {
 						// We always expect a `ChannelError` close.
 						debug_assert!(matches!(err, ChannelError::Close(_)));
-						err
 					});
 				self.phase = ChannelPhase::Funded(funded_channel);
 				res
@@ -2255,10 +2253,9 @@ impl FundingScope {
 			their_funding_contribution_sats,
 		);
 
-		let post_value_to_self_msat = AddSigned::checked_add_signed(
-			prev_funding.value_to_self_msat,
-			our_funding_contribution_sats * 1000,
-		);
+		let post_value_to_self_msat = prev_funding
+			.value_to_self_msat
+			.checked_add_signed(our_funding_contribution_sats * 1000);
 		debug_assert!(post_value_to_self_msat.is_some());
 		let post_value_to_self_msat = post_value_to_self_msat.unwrap();
 
@@ -2325,8 +2322,7 @@ impl FundingScope {
 	pub(super) fn compute_post_splice_value(
 		&self, our_funding_contribution: i64, their_funding_contribution: i64,
 	) -> u64 {
-		AddSigned::saturating_add_signed(
-			self.get_value_satoshis(),
+		self.get_value_satoshis().saturating_add_signed(
 			our_funding_contribution.saturating_add(their_funding_contribution),
 		)
 	}
@@ -2350,32 +2346,6 @@ impl FundingScope {
 		let local_owned = self.value_to_self_msat / 1000;
 
 		SharedOwnedInput::new(input, prev_output, local_owned)
-	}
-}
-
-// TODO: Remove once MSRV is at least 1.66
-#[cfg(splicing)]
-trait AddSigned {
-	fn checked_add_signed(self, rhs: i64) -> Option<u64>;
-	fn saturating_add_signed(self, rhs: i64) -> u64;
-}
-
-#[cfg(splicing)]
-impl AddSigned for u64 {
-	fn checked_add_signed(self, rhs: i64) -> Option<u64> {
-		if rhs >= 0 {
-			self.checked_add(rhs as u64)
-		} else {
-			self.checked_sub(rhs.unsigned_abs())
-		}
-	}
-
-	fn saturating_add_signed(self, rhs: i64) -> u64 {
-		if rhs >= 0 {
-			self.saturating_add(rhs as u64)
-		} else {
-			self.saturating_sub(rhs.unsigned_abs())
-		}
 	}
 }
 
@@ -8622,23 +8592,25 @@ where
 		log_trace!(logger, "Regenerating latest commitment update in channel {} with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
 				&self.context.channel_id(), if update_fee.is_some() { " update_fee," } else { "" },
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
-		let commitment_signed =
-			if let Ok(update) = self.send_commitment_no_state_update(logger) {
-				if self.context.signer_pending_commitment_update {
-					log_trace!(
-						logger,
-						"Commitment update generated: clearing signer_pending_commitment_update"
-					);
-					self.context.signer_pending_commitment_update = false;
-				}
-				update
-			} else {
-				if !self.context.signer_pending_commitment_update {
-					log_trace!(logger, "Commitment update awaiting signer: setting signer_pending_commitment_update");
-					self.context.signer_pending_commitment_update = true;
-				}
-				return Err(());
-			};
+		let commitment_signed = if let Ok(update) = self.send_commitment_no_state_update(logger) {
+			if self.context.signer_pending_commitment_update {
+				log_trace!(
+					logger,
+					"Commitment update generated: clearing signer_pending_commitment_update"
+				);
+				self.context.signer_pending_commitment_update = false;
+			}
+			update
+		} else {
+			if !self.context.signer_pending_commitment_update {
+				log_trace!(
+					logger,
+					"Commitment update awaiting signer: setting signer_pending_commitment_update"
+				);
+				self.context.signer_pending_commitment_update = true;
+			}
+			return Err(());
+		};
 		Ok(msgs::CommitmentUpdate {
 			update_add_htlcs,
 			update_fulfill_htlcs,

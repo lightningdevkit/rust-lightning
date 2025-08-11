@@ -1,7 +1,8 @@
 #!/bin/bash
 set -eox pipefail
 
-RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
+# Currently unused as we don't have to pin anything for MSRV:
+#RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
 
 pushd lightning-transaction-sync
 
@@ -13,12 +14,6 @@ function PIN_RELEASE_DEPS {
 }
 
 PIN_RELEASE_DEPS # pin the release dependencies
-
-# Starting with version 0.5.11, the `home` crate has an MSRV of rustc 1.81.0.
-[ "$RUSTC_MINOR_VERSION" -lt 81 ] && cargo update -p home --precise "0.5.9" --verbose
-
-# Starting with version 1.2.0, the `idna_adapter` crate has an MSRV of rustc 1.81.0.
-[ "$RUSTC_MINOR_VERSION" -lt 81 ] && cargo update -p idna_adapter --precise "1.1.0" --verbose
 
 export RUST_BACKTRACE=1
 

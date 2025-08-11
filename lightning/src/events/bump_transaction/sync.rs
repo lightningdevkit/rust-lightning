@@ -12,12 +12,13 @@
 use core::future::Future;
 use core::ops::Deref;
 use core::task;
+use core::task::Waker;
 
 use crate::chain::chaininterface::BroadcasterInterface;
 use crate::chain::ClaimId;
 use crate::prelude::*;
 use crate::sign::SignerProvider;
-use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
+use crate::util::async_poll::{AsyncResult, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
 
 use bitcoin::{Psbt, ScriptBuf, Transaction, TxOut};
@@ -110,7 +111,7 @@ where
 			must_pay_to,
 			target_feerate_sat_per_1000_weight,
 		);
-		let mut waker = dummy_waker();
+		let mut waker = Waker::noop();
 		let mut ctx = task::Context::from_waker(&mut waker);
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
@@ -124,7 +125,7 @@ where
 
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
 		let mut fut = self.wallet.sign_psbt(psbt);
-		let mut waker = dummy_waker();
+		let mut waker = Waker::noop();
 		let mut ctx = task::Context::from_waker(&mut waker);
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
@@ -219,7 +220,7 @@ where
 	/// Handles all variants of [`BumpTransactionEvent`].
 	pub fn handle_event(&self, event: &BumpTransactionEvent) {
 		let mut fut = Box::pin(self.bump_transaction_event_handler.handle_event(event));
-		let mut waker = dummy_waker();
+		let mut waker = Waker::noop();
 		let mut ctx = task::Context::from_waker(&mut waker);
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,

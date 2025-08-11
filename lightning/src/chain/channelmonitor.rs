@@ -5337,18 +5337,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		//- maturing spendable output has transaction paying us has been disconnected
 		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height < height);
 
-		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
-		if let Some((_, conf_height)) = self.alternative_funding_confirmed.as_ref() {
-			if *conf_height == height {
-				self.alternative_funding_confirmed.take();
-				if self.holder_tx_signed {
-					// Cancel any previous claims that are no longer valid as they stemmed from a
-					// different funding transaction. We'll wait until we see a funding transaction
-					// confirm again before attempting to broadcast the new valid holder commitment.
-					let new_holder_commitment_txid =
-						self.funding.current_holder_commitment_tx.trust().txid();
-					self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
-				}
+		if self.alternative_funding_confirmed.take_if(|(_, conf_height)| *conf_height == height).is_some() {
+			if self.holder_tx_signed {
+				// Cancel any previous claims that are no longer valid as they stemmed from a
+				// different funding transaction. We'll wait until we see a funding transaction
+				// confirm again before attempting to broadcast the new valid holder commitment.
+				let new_holder_commitment_txid =
+					self.funding.current_holder_commitment_tx.trust().txid();
+				self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
 			}
 		}
 
@@ -5391,18 +5387,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		debug_assert!(!self.onchain_events_awaiting_threshold_conf.iter().any(|ref entry| entry.txid == *txid));
 
-		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
-		if let Some((alternative_funding_txid, _)) = self.alternative_funding_confirmed.as_ref() {
-			if alternative_funding_txid == txid {
-				self.alternative_funding_confirmed.take();
-				if self.holder_tx_signed {
-					// Cancel any previous claims that are no longer valid as they stemmed from a
-					// different funding transaction. We'll wait until we see a funding transaction
-					// confirm again before attempting to broadcast the new valid holder commitment.
-					let new_holder_commitment_txid =
-						self.funding.current_holder_commitment_tx.trust().txid();
-					self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
-				}
+		if self.alternative_funding_confirmed.take_if(|(alternative_funding_txid, _)| alternative_funding_txid == txid).is_some() {
+			if self.holder_tx_signed {
+				// Cancel any previous claims that are no longer valid as they stemmed from a
+				// different funding transaction. We'll wait until we see a funding transaction
+				// confirm again before attempting to broadcast the new valid holder commitment.
+				let new_holder_commitment_txid =
+					self.funding.current_holder_commitment_tx.trust().txid();
+				self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
 			}
 		}
 
