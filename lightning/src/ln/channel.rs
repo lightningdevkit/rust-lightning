@@ -2253,10 +2253,9 @@ impl FundingScope {
 			their_funding_contribution_sats,
 		);
 
-		let post_value_to_self_msat = AddSigned::checked_add_signed(
-			prev_funding.value_to_self_msat,
-			our_funding_contribution_sats * 1000,
-		);
+		let post_value_to_self_msat = prev_funding
+			.value_to_self_msat
+			.checked_add_signed(our_funding_contribution_sats * 1000);
 		debug_assert!(post_value_to_self_msat.is_some());
 		let post_value_to_self_msat = post_value_to_self_msat.unwrap();
 
@@ -2323,8 +2322,7 @@ impl FundingScope {
 	pub(super) fn compute_post_splice_value(
 		&self, our_funding_contribution: i64, their_funding_contribution: i64,
 	) -> u64 {
-		AddSigned::saturating_add_signed(
-			self.get_value_satoshis(),
+		self.get_value_satoshis().saturating_add_signed(
 			our_funding_contribution.saturating_add(their_funding_contribution),
 		)
 	}
@@ -2348,32 +2346,6 @@ impl FundingScope {
 		let local_owned = self.value_to_self_msat / 1000;
 
 		SharedOwnedInput::new(input, prev_output, local_owned)
-	}
-}
-
-// TODO: Remove once MSRV is at least 1.66
-#[cfg(splicing)]
-trait AddSigned {
-	fn checked_add_signed(self, rhs: i64) -> Option<u64>;
-	fn saturating_add_signed(self, rhs: i64) -> u64;
-}
-
-#[cfg(splicing)]
-impl AddSigned for u64 {
-	fn checked_add_signed(self, rhs: i64) -> Option<u64> {
-		if rhs >= 0 {
-			self.checked_add(rhs as u64)
-		} else {
-			self.checked_sub(rhs.unsigned_abs())
-		}
-	}
-
-	fn saturating_add_signed(self, rhs: i64) -> u64 {
-		if rhs >= 0 {
-			self.saturating_add(rhs as u64)
-		} else {
-			self.saturating_sub(rhs.unsigned_abs())
-		}
 	}
 }
 
