@@ -526,6 +526,15 @@ where
 			}
 		}
 	}
+
+	pub(crate) fn peer_disconnected(&self, counterparty_node_id: &PublicKey) {
+		let mut webhooks = self.webhooks.lock().unwrap();
+		if let Some(client_webhooks) = webhooks.get_mut(counterparty_node_id) {
+			for webhook in client_webhooks.values_mut() {
+				webhook.last_notification_sent = None;
+			}
+		}
+	}
 }
 
 impl<CM: Deref, NS: Deref, TP: Deref> LSPSProtocolMessageHandler for LSPS5ServiceHandler<CM, NS, TP>

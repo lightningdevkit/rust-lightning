@@ -712,6 +712,10 @@ where
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
 			lsps2_service_handler.peer_disconnected(counterparty_node_id);
 		}
+
+		if let Some(lsps5_service_handler) = self.lsps5_service_handler.as_ref() {
+			lsps5_service_handler.peer_disconnected(&counterparty_node_id);
+		}
 	}
 	fn peer_connected(
 		&self, counterparty_node_id: bitcoin::secp256k1::PublicKey, _: &lightning::ln::msgs::Init,
