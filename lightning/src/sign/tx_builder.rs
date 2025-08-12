@@ -245,7 +245,7 @@ impl TxBuilder for SpecTxBuilder {
 			inbound_htlcs_value_msat,
 			holder_balance_msat,
 			counterparty_balance_msat,
-			nondust_htlc_count,
+			nondust_htlc_count: nondust_htlc_count + addl_nondust_htlc_count,
 			commit_tx_fee_sat,
 			dust_exposure_msat,
 			extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat,
