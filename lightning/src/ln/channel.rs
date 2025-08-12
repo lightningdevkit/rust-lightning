@@ -11153,6 +11153,11 @@ where
 			})?;
 		debug_assert!(interactive_tx_constructor.take_initiator_first_message().is_none());
 
+		// TODO(splicing): if quiescent_action is set, integrate what the user wants to do into the
+		// counterparty-initiated splice. For always-on nodes this probably isn't a useful
+		// optimization, but for often-offline nodes it may be, as we may connect and immediately
+		// go into splicing from both sides.
+
 		let funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
 
 		self.pending_splice = Some(PendingSplice {
