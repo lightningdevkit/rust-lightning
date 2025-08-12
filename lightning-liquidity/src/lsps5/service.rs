@@ -54,9 +54,9 @@ struct Webhook {
 	// Timestamp used for tracking when the webhook was created / updated, or when the last notification was sent.
 	// This is used to determine if the webhook is stale and should be pruned.
 	last_used: LSPSDateTime,
-	// Map of last notification sent timestamps for each notification method.
-	// This is used to enforce notification cooldowns.
-	last_notification_sent: HashMap<WebhookNotificationMethod, LSPSDateTime>,
+	// Timestamp when we last sent a notification to the client. This is used to enforce
+	// notification cooldowns.
+	last_notification_sent: Option<LSPSDateTime>,
 }
 
 /// Server-side configuration options for LSPS5 Webhook Registration.
@@ -184,11 +184,8 @@ where
 		match client_webhooks.entry(params.app_name.clone()) {
 			Entry::Occupied(mut entry) => {
 				no_change = entry.get().url == params.webhook;
-				let (last_used, last_notification_sent) = if no_change {
-					(entry.get().last_used, entry.get().last_notification_sent.clone())
-				} else {
-					(now, new_hash_map())
-				};
+				let last_used = if no_change { entry.get().last_used } else { now };
+				let last_notification_sent = entry.get().last_notification_sent;
 				entry.insert(Webhook {
 					_app_name: params.app_name.clone(),
 					url: params.webhook.clone(),
@@ -217,7 +214,7 @@ where
 					url: params.webhook.clone(),
 					_counterparty_node_id: counterparty_node_id,
 					last_used: now,
-					last_notification_sent: new_hash_map(),
+					last_notification_sent: None,
 				});
 			},
 		}
@@ -425,11 +422,9 @@ where
 		// (other than lsps5.webhook_registered) close in time.
 		if notification.method != WebhookNotificationMethod::LSPS5WebhookRegistered {
 			let rate_limit_applies = client_webhooks.iter().any(|(_, webhook)| {
-				webhook
-					.last_notification_sent
-					.get(&notification.method)
-					.map(|last_sent| now.duration_since(&last_sent))
-					.map_or(false, |duration| duration < NOTIFICATION_COOLDOWN_TIME)
+				webhook.last_notification_sent.as_ref().map_or(false, |last_sent| {
+					now.duration_since(&last_sent) < NOTIFICATION_COOLDOWN_TIME
+				})
 			});
 
 			if rate_limit_applies {
@@ -438,14 +433,14 @@ where
 		}
 
 		for (app_name, webhook) in client_webhooks.iter_mut() {
-			webhook.last_notification_sent.insert(notification.method.clone(), now);
-			webhook.last_used = now;
 			self.send_notification(
 				client_id,
 				app_name.clone(),
 				webhook.url.clone(),
 				notification.clone(),
 			)?;
+			webhook.last_used = now;
+			webhook.last_notification_sent = Some(now);
 		}
 		Ok(())
 	}
@@ -527,7 +522,7 @@ where
 		let mut webhooks = self.webhooks.lock().unwrap();
 		if let Some(client_webhooks) = webhooks.get_mut(counterparty_node_id) {
 			for webhook in client_webhooks.values_mut() {
-				webhook.last_notification_sent.clear();
+				webhook.last_notification_sent = None;
 			}
 		}
 	}
