@@ -33,6 +33,9 @@ use crate::ln::script::ShutdownScript;
 use crate::ln::types::ChannelId;
 use crate::ln::{msgs, wire};
 use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::offers::invoice_request::{CurrencyConversion, DefaultCurrencyConversion};
+use crate::offers::offer::CurrencyCode;
+use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::{
 	DefaultMessageRouter, Destination, MessageRouter, NodeIdMessageRouter, OnionMessagePath,
 };
@@ -409,6 +412,20 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 				secp_ctx,
 			),
 		}
+	}
+}
+
+pub struct TestCurrencyConversion(DefaultCurrencyConversion);
+
+impl TestCurrencyConversion {
+	pub fn new() -> Self {
+		TestCurrencyConversion(DefaultCurrencyConversion {})
+	}
+}
+
+impl CurrencyConversion for TestCurrencyConversion {
+	fn fiat_to_msats(&self, _iso4217_code: CurrencyCode) -> Result<u64, Bolt12SemanticError> {
+		Err(Bolt12SemanticError::UnsupportedCurrency)
 	}
 }
 

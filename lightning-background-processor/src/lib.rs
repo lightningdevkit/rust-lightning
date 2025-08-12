@@ -1672,6 +1672,7 @@ mod tests {
 		IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 	};
 	use lightning::ln::types::ChannelId;
+	use lightning::offers::invoice_request::DefaultCurrencyConversion;
 	use lightning::onion_message::messenger::{DefaultMessageRouter, OnionMessenger};
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
@@ -1745,6 +1746,7 @@ mod tests {
 				Arc<KeysManager>,
 			>,
 		>,
+		Arc<DefaultCurrencyConversion>,
 		Arc<test_utils::TestLogger>,
 	>;
 
@@ -2167,6 +2169,7 @@ mod tests {
 				Arc::clone(&network_graph),
 				Arc::clone(&keys_manager),
 			));
+			let currency_conversion = Arc::new(DefaultCurrencyConversion {});
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let kv_store =
 				Arc::new(Persister::new(format!("{}_persister_{}", &persist_dir, i).into()));
@@ -2189,6 +2192,7 @@ mod tests {
 				Arc::clone(&tx_broadcaster),
 				Arc::clone(&router),
 				Arc::clone(&msg_router),
+				currency_conversion,
 				Arc::clone(&logger),
 				Arc::clone(&keys_manager),
 				Arc::clone(&keys_manager),
