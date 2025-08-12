@@ -549,6 +549,48 @@ fn test_quiescence_timeout_while_waiting_for_counterparty_stfu() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().iter().find_map(f).is_some());
 }
 
+#[test]
+fn test_quiescence_timeout_while_waiting_for_counterparty_something_fundamental() {
+	// Test that we'll disconnect if the counterparty does not send their "something fundamental"
+	// within a reasonable time if we've reached quiescence.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	nodes[1].node.maybe_propose_quiescence(&node_id_0, &chan_id).unwrap();
+	let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	nodes[0].node.handle_stfu(node_id_1, &stfu);
+	let _stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+
+	// Node B didn't receive node A's stfu within the timeout so it'll disconnect.
+	let f = |event| {
+		if let MessageSendEvent::HandleError { action, .. } = event {
+			if let msgs::ErrorAction::DisconnectPeerWithWarning { .. } = action {
+				Some(())
+			} else {
+				None
+			}
+		} else {
+			None
+		}
+	};
+	// At this point, node A is waiting on B to do something fundamental, and node B is waiting on
+	// A's stfu that we never delivered. Thus both should disconnect each other.
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().into_iter().find_map(&f).is_some());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().into_iter().find_map(&f).is_some());
+}
+
 fn do_test_quiescence_during_disconnection(with_pending_claim: bool, propose_disconnected: bool) {
 	// Test that we'll start trying for quiescence immediately after reconnection if we're waiting
 	// to do some quiescence-required action.
