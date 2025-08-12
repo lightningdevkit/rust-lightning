@@ -176,13 +176,11 @@ where
 
 	pub(crate) fn has_active_requests(&self, counterparty_node_id: &PublicKey) -> bool {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-		if let Some(inner_state_lock) = outer_state_lock.get(counterparty_node_id) {
-			let peer_state = inner_state_lock.lock().unwrap();
+		outer_state_lock.get(counterparty_node_id).map_or(false, |inner| {
+			let peer_state = inner.lock().unwrap();
 			!(peer_state.pending_requests.is_empty()
 				&& peer_state.outbound_channels_by_order_id.is_empty())
-		} else {
-			false
-		}
+		})
 	}
 
 	fn handle_get_info_request(

@@ -107,8 +107,17 @@ struct ForwardPaymentAction(ChannelId, FeePayment);
 #[derive(Debug, PartialEq)]
 struct ForwardHTLCsAction(ChannelId, Vec<InterceptedHTLC>);
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) enum OutboundJITStage {
+	PendingInitialPayment,
+	PendingChannelOpen,
+	PendingPaymentForward,
+	PendingPayment,
+	PaymentForwarded,
+}
+
 /// The different states a requested JIT channel can be in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum OutboundJITChannelState {
 	/// The JIT channel SCID was created after a buy request, and we are awaiting an initial payment
 	/// of sufficient size to open the channel.
@@ -135,13 +144,19 @@ pub(crate) enum OutboundJITChannelState {
 }
 
 impl OutboundJITChannelState {
-	fn ord_index(&self) -> u8 {
+	pub(crate) fn stage(&self) -> OutboundJITStage {
 		match self {
-			OutboundJITChannelState::PendingInitialPayment { .. } => 0,
-			OutboundJITChannelState::PendingChannelOpen { .. } => 1,
-			OutboundJITChannelState::PendingPaymentForward { .. } => 2,
-			OutboundJITChannelState::PendingPayment { .. } => 3,
-			OutboundJITChannelState::PaymentForwarded { .. } => 4,
+			OutboundJITChannelState::PendingInitialPayment { .. } => {
+				OutboundJITStage::PendingInitialPayment
+			},
+			OutboundJITChannelState::PendingChannelOpen { .. } => {
+				OutboundJITStage::PendingChannelOpen
+			},
+			OutboundJITChannelState::PendingPaymentForward { .. } => {
+				OutboundJITStage::PendingPaymentForward
+			},
+			OutboundJITChannelState::PendingPayment { .. } => OutboundJITStage::PendingPayment,
+			OutboundJITChannelState::PaymentForwarded { .. } => OutboundJITStage::PaymentForwarded,
 		}
 	}
 }
@@ -154,7 +169,7 @@ impl PartialOrd for OutboundJITChannelState {
 
 impl Ord for OutboundJITChannelState {
 	fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-		self.ord_index().cmp(&other.ord_index())
+		self.stage().cmp(&other.stage())
 	}
 }
 
@@ -600,12 +615,10 @@ where
 		&self, counterparty_node_id: &PublicKey,
 	) -> Option<OutboundJITChannelState> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-		if let Some(inner_state_lock) = outer_state_lock.get(counterparty_node_id) {
-			let peer_state = inner_state_lock.lock().unwrap();
+		outer_state_lock.get(counterparty_node_id).and_then(|inner| {
+			let peer_state = inner.lock().unwrap();
 			peer_state.outbound_channels_by_intercept_scid.values().map(|c| c.state.clone()).max()
-		} else {
-			None
-		}
+		})
 	}
 
 	/// Used by LSP to inform a client requesting a JIT Channel the token they used is invalid.

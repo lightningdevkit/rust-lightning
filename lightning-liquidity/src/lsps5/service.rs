@@ -22,7 +22,7 @@ use crate::prelude::*;
 use crate::sync::{Arc, Mutex};
 use crate::utils::time::TimeProvider;
 
-use crate::lsps2::service::OutboundJITChannelState;
+use crate::lsps2::service::{OutboundJITChannelState, OutboundJITStage};
 use bitcoin::secp256k1::PublicKey;
 
 use lightning::ln::channelmanager::AChannelManager;
@@ -162,15 +162,7 @@ where
 	) -> bool {
 		self.client_has_open_channel(client_id)
 			|| lsps1_has_activity
-			|| lsps2_max_state.map_or(false, |s| {
-				matches!(
-					s,
-					OutboundJITChannelState::PendingChannelOpen { .. }
-						| OutboundJITChannelState::PendingPaymentForward { .. }
-						| OutboundJITChannelState::PendingPayment { .. }
-						| OutboundJITChannelState::PaymentForwarded { .. }
-				)
-			})
+			|| lsps2_max_state.map_or(false, |s| s.stage() >= OutboundJITStage::PendingChannelOpen)
 	}
 
 	fn check_prune_stale_webhooks(&self) {
