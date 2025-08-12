@@ -2989,32 +2989,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	pub(crate) fn get_onchain_failed_outbound_htlcs(
 		&self,
 	) -> HashMap<HTLCSource, HTLCOutputInCommitment> {
-		let us = self.inner.lock().unwrap();
-		// We're only concerned with the confirmation count of HTLC transactions, and don't
-		// actually care how many confirmations a commitment transaction may or may not have. Thus,
-		// we look for either a FundingSpendConfirmation event or a funding_spend_confirmed.
-		let confirmed_txid = us.funding_spend_confirmed.or_else(|| {
-			us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
-				if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
-					Some(event.txid)
-				} else {
-					None
-				}
-			})
-		});
-
-		if confirmed_txid.is_none() {
-			return new_hash_map();
-		}
-
 		let mut res = new_hash_map();
+		let us = self.inner.lock().unwrap();
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $htlc_iter: expr) => {
 				for (htlc, source) in $htlc_iter {
 					let filter = |v: &&IrrevocablyResolvedHTLC| {
 						v.commitment_tx_output_idx == htlc.transaction_output_index
 					};
-					if let Some(state) = us.htlcs_resolved_on_chain.iter().filter(filter).next() {
+					if htlc.transaction_output_index.is_none() {
+						if let Some(source) = source {
+							// Dust HTLCs are always implicitly failed once the commitment
+							// transaction reaches ANTI_REORG_DELAY confirmations.
+							res.insert(source.clone(), htlc.clone());
+						}
+					} else if let Some(state) = us.htlcs_resolved_on_chain.iter().filter(filter).next() {
 						if let Some(source) = source {
 							if state.payment_preimage.is_none() {
 								res.insert(source.clone(), htlc.clone());
@@ -3025,7 +3014,30 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			};
 		}
 
-		let txid = confirmed_txid.unwrap();
+
+		// We only want HTLCs with ANTI_REORG_DELAY confirmations, which implies the commitment
+		// transaction has least ANTI_REORG_DELAY confirmations for any dependent HTLC transactions
+		// to have been confirmed.
+		let confirmed_txid = us.funding_spend_confirmed.or_else(|| {
+			us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+				if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
+					if event.height <= us.best_block.height - ANTI_REORG_DELAY + 1 {
+						Some(event.txid)
+					} else {
+						None
+					}
+				} else {
+					None
+				}
+			})
+		});
+
+		let txid = if let Some(txid) = confirmed_txid {
+			txid
+		} else {
+			return res;
+		};
+
 		if Some(txid) == us.funding.current_counterparty_commitment_txid
 			|| Some(txid) == us.funding.prev_counterparty_commitment_txid
 		{

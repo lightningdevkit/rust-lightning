@@ -3464,7 +3464,7 @@ fn test_lost_preimage_monitor_events() {
 	do_test_lost_preimage_monitor_events(false);
 }
 
-fn do_test_lost_timeout_monitor_events(on_counterparty_tx: bool) {
+fn do_test_lost_timeout_monitor_events(on_counterparty_tx: bool, dust_htlcs: bool) {
 	// `MonitorEvent`s aren't delivered to the `ChannelManager` in a durable fasion - if the
 	// `ChannelManager` fetches the pending `MonitorEvent`s, then the `ChannelMonitor` gets
 	// persisted (i.e. due to a block update) then the node crashes, prior to persisting the
@@ -3509,8 +3509,11 @@ fn do_test_lost_timeout_monitor_events(on_counterparty_tx: bool) {
 	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
 	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
 
-	let (_, hash_a, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5_000_000);
-	let (_, hash_b, ..) = route_payment(&nodes[1], &[&nodes[2]], 5_000_000);
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 25_000_000);
+
+	let amt = if dust_htlcs { 1_000 } else { 10_000_000 };
+	let (_, hash_a, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], amt);
+	let (_, hash_b, ..) = route_payment(&nodes[1], &[&nodes[2]], amt);
 
 	nodes[1].node.peer_disconnected(nodes[2].node.get_our_node_id());
 	nodes[2].node.peer_disconnected(nodes[1].node.get_our_node_id());
@@ -3568,23 +3571,22 @@ fn do_test_lost_timeout_monitor_events(on_counterparty_tx: bool) {
 
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV - ANTI_REORG_DELAY + 1);
 	if !on_counterparty_tx {
-		let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1, "{events:?}");
-		match events.pop().unwrap() {
-			Event::BumpTransaction(bump_event) => {
-				nodes[1].bump_tx_handler.handle_event(&bump_event);
-			},
-			_ => panic!("Unexpected event"),
+		if !dust_htlcs {
+			handle_bump_events(&nodes[1], false, 1);
 		}
 	}
 	let bs_htlc_timeouts =
 		nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(bs_htlc_timeouts.len(), 1);
+	if dust_htlcs {
+		assert_eq!(bs_htlc_timeouts.len(), 0);
+	} else {
+		assert_eq!(bs_htlc_timeouts.len(), 1);
 
-	// Now replay the timeouts on node B, which after 6 confirmations should fail the HTLCs via
-	// `MonitorUpdate`s
-	mine_transactions(&nodes[1], &bs_htlc_timeouts.iter().collect::<Vec<_>>());
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+		// Now replay the timeouts on node B, which after 6 confirmations should fail the HTLCs via
+		// `MonitorUpdate`s
+		mine_transactions(&nodes[1], &bs_htlc_timeouts.iter().collect::<Vec<_>>());
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	}
 
 	// Now simulate a restart where the B<->C ChannelMonitor has been persisted (i.e. because we
 	// just processed a new block) but the ChannelManager was not. This should be exceedingly rare
@@ -3637,6 +3639,8 @@ fn do_test_lost_timeout_monitor_events(on_counterparty_tx: bool) {
 
 #[test]
 fn test_lost_timeout_monitor_events() {
-	do_test_lost_timeout_monitor_events(true);
-	do_test_lost_timeout_monitor_events(false);
+	do_test_lost_timeout_monitor_events(true, false);
+	do_test_lost_timeout_monitor_events(false, false);
+	do_test_lost_timeout_monitor_events(true, true);
+	do_test_lost_timeout_monitor_events(false, true);
 }
