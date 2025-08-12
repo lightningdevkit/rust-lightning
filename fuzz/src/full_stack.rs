@@ -1626,10 +1626,10 @@ mod tests {
 	#[test]
 	fn test_no_existing_test_breakage() {
 		// To avoid accidentally causing all existing fuzz test cases to be useless by making minor
-		// changes (such as requesting feerate info in a new place), we run a pretty full
-		// step-through with two peers and HTLC forwarding here. Obviously this is pretty finicky,
-		// so this should be updated pretty liberally, but at least we'll know when changes occur.
-		// If nothing else, this test serves as a pretty great initial full_stack_target seed.
+		// changes, we run a pretty full step-through with two peers and HTLC forwarding here.
+		// Obviously this can be somewhat finicky, so this should be updated pretty liberally, but
+		// at least we'll know when changes occur. If nothing else, this test serves as a pretty
+		// great initial full_stack_target seed.
 
 		let test = super::two_peer_forwarding_seed();
 
@@ -1662,10 +1662,9 @@ mod tests {
 	#[test]
 	fn test_gossip_exchange_breakage() {
 		// To avoid accidentally causing all existing fuzz test cases to be useless by making minor
-		// changes (such as requesting feerate info in a new place), we exchange some gossip
-		// messages. Obviously this is pretty finicky, so this should be updated pretty liberally,
-		// but at least we'll know when changes occur.
-		// This test serves as a pretty good full_stack_target seed.
+		// changes, we exchange some gossip messages. Obviously this is somewhat finicky, so this
+		// should be updated pretty liberally, but at least we'll know when changes occur.
+		// This test serves as a helpful additional full_stack_target seed.
 
 		let test = super::gossip_exchange_seed();
 
