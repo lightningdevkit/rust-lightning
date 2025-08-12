@@ -179,7 +179,6 @@ where
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
 		let mut outer_state_lock = self.per_peer_state.write().unwrap();
-		self.check_prune_stale_webhooks(&mut outer_state_lock);
 
 		let peer_state =
 			outer_state_lock.entry(counterparty_node_id).or_insert_with(PeerState::default);
@@ -263,9 +262,7 @@ where
 	) -> Result<(), LightningError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
-		let mut outer_state_lock = self.per_peer_state.write().unwrap();
-		self.check_prune_stale_webhooks(&mut outer_state_lock);
-
+		let outer_state_lock = self.per_peer_state.read().unwrap();
 		let app_names =
 			outer_state_lock.get(&counterparty_node_id).map(|p| p.app_names()).unwrap_or_default();
 
@@ -285,7 +282,6 @@ where
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
 		let mut outer_state_lock = self.per_peer_state.write().unwrap();
-		self.check_prune_stale_webhooks(&mut outer_state_lock);
 
 		if let Some(peer_state) = outer_state_lock.get_mut(&counterparty_node_id) {
 			if peer_state.remove_webhook(&params.app_name) {
@@ -410,8 +406,6 @@ where
 		&self, client_id: PublicKey, notification: WebhookNotification,
 	) -> Result<(), LSPS5ProtocolError> {
 		let mut outer_state_lock = self.per_peer_state.write().unwrap();
-		self.check_prune_stale_webhooks(&mut outer_state_lock);
-
 		let peer_state = if let Some(peer_state) = outer_state_lock.get_mut(&client_id) {
 			peer_state
 		} else {
@@ -506,6 +500,7 @@ where
 		if let Some(peer_state) = outer_state_lock.get_mut(counterparty_node_id) {
 			peer_state.reset_notification_cooldown();
 		}
+		self.check_prune_stale_webhooks(&mut outer_state_lock);
 	}
 
 	pub(crate) fn peer_disconnected(&self, counterparty_node_id: &PublicKey) {
@@ -513,6 +508,7 @@ where
 		if let Some(peer_state) = outer_state_lock.get_mut(counterparty_node_id) {
 			peer_state.reset_notification_cooldown();
 		}
+		self.check_prune_stale_webhooks(&mut outer_state_lock);
 	}
 }
 
