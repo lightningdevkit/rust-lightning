@@ -79,9 +79,11 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning::util::dyn_signer::DynSigner;
+
+use std::collections::VecDeque;
 use std::cell::RefCell;
 use std::cmp;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[inline]
@@ -110,7 +112,7 @@ pub fn slice_to_be24(v: &[u8]) -> u32 {
 struct InputData {
 	data: Vec<u8>,
 	read_pos: AtomicUsize,
-	halt_fee_est_reads: AtomicBool,
+	fee_estimates: Mutex<VecDeque<u32>>,
 }
 impl InputData {
 	fn get_slice(&self, len: usize) -> Option<&[u8]> {
@@ -137,14 +139,10 @@ struct FuzzEstimator {
 }
 impl FeeEstimator for FuzzEstimator {
 	fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
-		if self.input.halt_fee_est_reads.load(Ordering::Acquire) {
-			return 253;
+		if let Some(val) = self.input.fee_estimates.lock().unwrap().pop_front() {
+			return val;
 		}
-		//TODO: We should actually be testing at least much more than 64k...
-		match self.input.get_slice(2) {
-			Some(slice) => cmp::max(slice_to_be16(slice) as u32, 253),
-			None => 253,
-		}
+		return 253;
 	}
 }
 
@@ -539,7 +537,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	let input = Arc::new(InputData {
 		data: data.to_vec(),
 		read_pos: AtomicUsize::new(0),
-		halt_fee_est_reads: AtomicBool::new(false),
+		fee_estimates: Mutex::new(VecDeque::new()),
 	});
 	let fee_est = Arc::new(FuzzEstimator { input: input.clone() });
 	let router = FuzzRouter {};
@@ -882,12 +880,10 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 			11 => {
 				let mut txn = broadcast.txn_broadcasted.lock().unwrap().split_off(0);
 				if !txn.is_empty() {
-					input.halt_fee_est_reads.store(true, Ordering::Release);
 					loss_detector.connect_block(&txn[..]);
 					for _ in 2..100 {
 						loss_detector.connect_block(&[]);
 					}
-					input.halt_fee_est_reads.store(false, Ordering::Release);
 				}
 				for tx in txn.drain(..) {
 					loss_detector.funding_txn.push(tx);
@@ -985,6 +981,10 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 						&config,
 					);
 				}
+			},
+			48 => {
+				let fee = u32::from_le_bytes(get_slice!(4).try_into().unwrap());
+				input.fee_estimates.lock().unwrap().push_back(fee);
 			},
 			_ => return,
 		}
@@ -1084,8 +1084,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// rest of open_channel and mac
 	ext_from_hex("030000000000000000000000000000000000000000000000000000000000000005 020900000000000000000000000000000000000000000000000000000000000000 01 0000 01021000 03000000000000000000000000000000", &mut test);
 
-	// One feerate request returning min feerate, which our open_channel also uses (ingested by FuzzEstimator)
-	ext_from_hex("00fd", &mut test);
 	// client should now respond with accept_channel (CHECK 1: type 33 to peer 03000000)
 
 	// inbound read from peer id 0 of len 18
@@ -1102,45 +1100,19 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	ext_from_hex("0c005e", &mut test);
 	// the funding transaction
 	ext_from_hex("020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae0000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	// connect a block with no transactions, one per line
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	// by now client should have sent a channel_ready (CHECK 3: SendChannelReady to 03000000 for chan 3d000000)
 
 	// inbound read from peer id 0 of len 18
@@ -1171,17 +1143,12 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	ext_from_hex("030120", &mut test);
 	// init message (type 16) with static_remotekey required, no anchors/taproot, and other bits optional and mac
 	ext_from_hex("0010 00021aaa 0008aaa210aa2a0a9aaa 01000000000000000000000000000000", &mut test);
-	// One feerate request on peer connection due to a list_channels call when seeing if the async
-	// receive offer cache needs updating
-	ext_from_hex("00fd", &mut test);
 
 	// create outbound channel to peer 1 for 50k sat
 	ext_from_hex(
 		"05 01 030200000000000000000000000000000000000000000000000000000000000000 00c350 0003e8",
 		&mut test,
 	);
-	// One feerate requests (all returning min feerate) (gonna be ingested by FuzzEstimator)
-	ext_from_hex("00fd", &mut test);
 
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1201,8 +1168,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 
 	// create the funding transaction (client should send funding_created now)
 	ext_from_hex("0a", &mut test);
-	// Two feerate requests to check the dust exposure on the initial commitment tx
-	ext_from_hex("00fd00fd", &mut test);
 
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1251,9 +1216,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// end of update_add_htlc from 0 to 1 via client and mac
 	ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
-	// One feerate request to check dust exposure
-	ext_from_hex("00fd", &mut test);
-
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
 	// message header indicating message length 100
@@ -1275,8 +1237,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 
 	// process the now-pending HTLC forward
 	ext_from_hex("07", &mut test);
-	// Four feerate requests to check dust exposure while forwarding the HTLC
-	ext_from_hex("00fd00fd00fd00fd", &mut test);
 	// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7: UpdateHTLCs event for node 03020000 with 1 HTLCs for channel 2f000000)
 
 	// we respond with commitment_signed then revoke_and_ack (a weird, but valid, order)
@@ -1352,9 +1312,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// end of update_add_htlc from 0 to 1 via client and mac
 	ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
-	// One feerate request to check dust exposure
-	ext_from_hex("00fd", &mut test);
-
 	// now respond to the update_fulfill_htlc+commitment_signed messages the client sent to peer 0
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
@@ -1386,9 +1343,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 
 	// process the now-pending HTLC forward
 	ext_from_hex("07", &mut test);
-
-	// Four feerate requests to check dust exposure while forwarding the HTLC
-	ext_from_hex("00fd00fd00fd00fd", &mut test);
 
 	// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
 	// we respond with revoke_and_ack, then commitment_signed, then update_fail_htlc
@@ -1487,9 +1441,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// end of update_add_htlc from 0 to 1 via client and mac
 	ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 5200000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
-	// One feerate request to check dust exposure
-	ext_from_hex("00fd", &mut test);
-
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
 	// message header indicating message length 164
@@ -1511,43 +1462,27 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 
 	// process the now-pending HTLC forward
 	ext_from_hex("07", &mut test);
-	// Four feerate requests to check dust exposure while forwarding the HTLC
-	ext_from_hex("00fd00fd00fd00fd", &mut test);
 	// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
 
 	// connect a block with one transaction of len 125
 	ext_from_hex("0c007d", &mut test);
 	// the commitment transaction for channel 2900000000000000000000000000000000000000000000000000000000000000
 	ext_from_hex("020000000129000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200201f0000000000000000000000000000000000000000000000000000000000000013c00000000000001600143b0000000000000000000000000000000000000005000020", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	//
 	// connect a block with one transaction of len 94
 	ext_from_hex("0c005e", &mut test);
 	// the HTLC timeout transaction
 	ext_from_hex("0200000001200000000000000000000000000000000000000000000000000000000000000000000000000000000001a701000000000000220020e60000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	// connect a block with no transactions
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	// connect a block with no transactions
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	// connect a block with no transactions
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	// connect a block with no transactions
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	// connect a block with no transactions
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 
 	// process the now-pending HTLC forward
 	ext_from_hex("07", &mut test);
