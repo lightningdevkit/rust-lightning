@@ -10914,10 +10914,50 @@ where
 			msg.funding_pubkey,
 		)?;
 
-		// TODO(splicing): Pre-check for reserve requirement
-		// (Note: It should also be checked later at tx_complete)
+		if their_funding_contribution_satoshis.is_negative() {
+			self.validate_their_negative_funding_contribution(&splice_funding)?;
+		}
 
 		Ok(splice_funding)
+	}
+
+	/// Used to validate a negative `funding_contribution_satoshis` in `splice_init` and `splice_ack` messages.
+	#[cfg(splicing)]
+	fn validate_their_negative_funding_contribution(
+		&self, spliced_funding: &FundingScope,
+	) -> Result<(), ChannelError> {
+		// Calculate the remote's new balance
+		//
+		// We only validate the remote's balance on the next *remote* commitment transaction.
+		//
+		// We don't care for a small / no to_remote output on our next *local* commitment transaction as the purpose of the
+		// channel reserve is to ensure we can punish *them* if they misbehave. See `validate_update_add_htlc` for another
+		// place where we apply the same reasoning.
+		//
+		// This comment is only relevant if they are the funder of the channel because the remote balance will be the same
+		// on both local and remote commitments if they are the fundee.
+		let spliced_commitment_stats =
+			self.context.build_commitment_stats(&spliced_funding, false, true, None, None);
+		let spliced_remote_balance_msat = if spliced_funding.is_outbound() {
+			spliced_commitment_stats.remote_balance_before_fee_msat
+		} else {
+			spliced_commitment_stats
+				.remote_balance_before_fee_msat
+				.saturating_sub(spliced_commitment_stats.commit_tx_fee_sat * 1000)
+		};
+
+		// Check if the remote's new balance is under the specified reserve
+		if spliced_remote_balance_msat
+			< spliced_funding.holder_selected_channel_reserve_satoshis * 1000
+		{
+			return Err(ChannelError::Warn(format!(
+				"Remote balance below reserve mandated by holder: {} vs {}",
+				spliced_remote_balance_msat,
+				spliced_funding.holder_selected_channel_reserve_satoshis * 1000,
+			)));
+		}
+
+		Ok(())
 	}
 
 	#[cfg(splicing)]
