@@ -33,7 +33,7 @@ fn test_quiescence_tie() {
 	assert!(stfu_node_0.initiator && stfu_node_1.initiator);
 
 	assert!(nodes[0].node.exit_quiescence(&nodes[1].node.get_our_node_id(), &chan_id).unwrap());
-	assert!(!nodes[1].node.exit_quiescence(&nodes[0].node.get_our_node_id(), &chan_id).unwrap());
+	assert!(nodes[1].node.exit_quiescence(&nodes[0].node.get_our_node_id(), &chan_id).unwrap());
 }
 
 #[test]
@@ -173,7 +173,8 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 
 	// Now that the state machine is no longer pending, and `closing_signed` is ready to be sent,
 	// make sure we're still not waiting for the quiescence handshake to complete.
-	local_node.node.exit_quiescence(&remote_node_id, &chan_id).unwrap();
+	// Note that we never actually reached full quiescence here.
+	assert!(!local_node.node.exit_quiescence(&remote_node_id, &chan_id).unwrap());
 
 	let _ = get_event_msg!(local_node, MessageSendEvent::SendClosingSigned, remote_node_id);
 	check_added_monitors(local_node, 2); // One for the last revoke_and_ack, another for closing_signed
@@ -279,8 +280,8 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 	let stfu = get_event_msg!(&nodes[0], MessageSendEvent::SendStfu, node_id_1);
 	nodes[1].node.handle_stfu(node_id_0, &stfu);
 
-	nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap();
-	nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap();
+	assert!(nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap());
+	assert!(nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap());
 
 	// After exiting quiescence, we should be able to resume payments from nodes[0].
 	send_payment(&nodes[0], &[&nodes[1]], payment_amount);
@@ -336,8 +337,8 @@ fn test_quiescence_on_final_revoke_and_ack_pending_monitor_update() {
 		panic!();
 	}
 
-	nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap();
-	nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap();
+	assert!(nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap());
+	assert!(nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap());
 }
 
 #[test]
@@ -406,8 +407,8 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	let stfu = get_event_msg!(&nodes[0], MessageSendEvent::SendStfu, node_id_1);
 	nodes[1].node.handle_stfu(node_id_0, &stfu);
 
-	nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap();
-	nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap();
+	assert!(nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap());
+	assert!(nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap());
 
 	// Now that quiescence is over, nodes are allowed to make updates again. nodes[1] will have its
 	// outbound HTLC finally go out, along with the fail/claim of nodes[0]'s payment.
