@@ -10821,6 +10821,10 @@ where
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
+		if !self.context.channel_state.is_quiescent() {
+			return Err(ChannelError::WarnAndDisconnect("Quiescence needed to splice".to_owned()));
+		}
+
 		let splice_funding = self.validate_splice_init(msg, our_funding_contribution_satoshis)?;
 
 		log_info!(
