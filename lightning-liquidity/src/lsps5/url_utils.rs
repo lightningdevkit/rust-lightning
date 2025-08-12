@@ -11,15 +11,15 @@
 
 use super::msgs::LSPS5ProtocolError;
 
+use lightning::ln::msgs::DecodeError;
+use lightning::util::ser::{Readable, Writeable};
 use lightning_types::string::UntrustedString;
 
 use alloc::string::String;
 
 /// Represents a parsed URL for LSPS5 webhook notifications.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct LSPSUrl {
-	url: UntrustedString,
-}
+pub struct LSPSUrl(UntrustedString);
 
 impl LSPSUrl {
 	/// Parses a URL string into a URL instance.
@@ -66,17 +66,17 @@ impl LSPSUrl {
 			None => {},
 		};
 
-		Ok(LSPSUrl { url: UntrustedString(url_str) })
+		Ok(LSPSUrl(UntrustedString(url_str)))
 	}
 
 	/// Returns URL length.
 	pub fn url_length(&self) -> usize {
-		self.url.0.chars().count()
+		self.0 .0.chars().count()
 	}
 
 	/// Returns the full URL string.
 	pub fn url(&self) -> &str {
-		self.url.0.as_str()
+		self.0 .0.as_str()
 	}
 
 	fn is_valid_url_char(c: char) -> bool {
@@ -86,6 +86,20 @@ impl LSPSUrl {
 
 	fn is_valid_host_char(c: char) -> bool {
 		c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_')
+	}
+}
+
+impl Writeable for LSPSUrl {
+	fn write<W: lightning::util::ser::Writer>(
+		&self, writer: &mut W,
+	) -> Result<(), lightning::io::Error> {
+		self.0.write(writer)
+	}
+}
+
+impl Readable for LSPSUrl {
+	fn read<R: lightning::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self(Readable::read(reader)?))
 	}
 }
 
@@ -104,7 +118,7 @@ mod tests {
 
 		assert!(result.is_ok());
 		let url = result.unwrap();
-		assert_eq!(url.url.0.chars().count(), url_chars);
+		assert_eq!(url.0 .0.chars().count(), url_chars);
 	}
 
 	#[test]

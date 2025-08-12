@@ -23,6 +23,7 @@ use crate::utils::time::TimeProvider;
 
 use bitcoin::secp256k1::PublicKey;
 
+use lightning::impl_writeable_tlv_based;
 use lightning::ln::channelmanager::AChannelManager;
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::sign::NodeSigner;
@@ -57,6 +58,14 @@ struct Webhook {
 	// notification cooldowns.
 	last_notification_sent: Option<LSPSDateTime>,
 }
+
+impl_writeable_tlv_based!(Webhook, {
+	(0, _app_name, required),
+	(2, url, required),
+	(4, _counterparty_node_id, required),
+	(6, last_used, required),
+	(8, last_notification_sent, option),
+});
 
 /// Server-side configuration options for LSPS5 Webhook Registration.
 #[derive(Clone, Debug)]
@@ -647,3 +656,7 @@ impl PeerState {
 		self.webhooks.is_empty()
 	}
 }
+
+impl_writeable_tlv_based!(PeerState, {
+	(0, webhooks, required_vec),
+});

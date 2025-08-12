@@ -16,6 +16,8 @@ use crate::lsps0::ser::LSPSResponseError;
 
 use super::url_utils::LSPSUrl;
 
+use lightning::ln::msgs::DecodeError;
+use lightning::util::ser::{Readable, Writeable};
 use lightning_types::string::UntrustedString;
 
 use serde::de::{self, Deserializer, MapAccess, Visitor};
@@ -288,6 +290,20 @@ impl From<LSPS5Error> for LSPSResponseError {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LSPS5AppName(UntrustedString);
 
+impl Writeable for LSPS5AppName {
+	fn write<W: lightning::util::ser::Writer>(
+		&self, writer: &mut W,
+	) -> Result<(), lightning::io::Error> {
+		self.0.write(writer)
+	}
+}
+
+impl Readable for LSPS5AppName {
+	fn read<R: lightning::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self(Readable::read(reader)?))
+	}
+}
+
 impl LSPS5AppName {
 	/// Create a new LSPS5 app name.
 	pub fn new(app_name: String) -> Result<Self, LSPS5Error> {
@@ -427,6 +443,20 @@ impl AsRef<str> for LSPS5WebhookUrl {
 impl From<LSPS5WebhookUrl> for String {
 	fn from(url: LSPS5WebhookUrl) -> Self {
 		url.to_string()
+	}
+}
+
+impl Writeable for LSPS5WebhookUrl {
+	fn write<W: lightning::util::ser::Writer>(
+		&self, writer: &mut W,
+	) -> Result<(), lightning::io::Error> {
+		self.0.write(writer)
+	}
+}
+
+impl Readable for LSPS5WebhookUrl {
+	fn read<R: lightning::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self(Readable::read(reader)?))
 	}
 }
 
