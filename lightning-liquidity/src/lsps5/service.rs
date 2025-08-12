@@ -17,9 +17,8 @@ use crate::lsps5::msgs::{
 	SetWebhookRequest, SetWebhookResponse, WebhookNotification, WebhookNotificationMethod,
 };
 use crate::message_queue::MessageQueue;
-use crate::prelude::hash_map::Entry;
 use crate::prelude::*;
-use crate::sync::{Arc, Mutex};
+use crate::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use crate::utils::time::TimeProvider;
 
 use bitcoin::secp256k1::PublicKey;
@@ -117,7 +116,7 @@ where
 	TP::Target: TimeProvider,
 {
 	config: LSPS5ServiceConfig,
-	webhooks: Mutex<HashMap<PublicKey, HashMap<LSPS5AppName, Webhook>>>,
+	per_peer_state: RwLock<HashMap<PublicKey, PeerState>>,
 	event_queue: Arc<EventQueue>,
 	pending_messages: Arc<MessageQueue>,
 	time_provider: TP,
@@ -140,7 +139,7 @@ where
 		assert!(config.max_webhooks_per_client > 0, "`max_webhooks_per_client` must be > 0");
 		Self {
 			config,
-			webhooks: Mutex::new(new_hash_map()),
+			per_peer_state: RwLock::new(new_hash_map()),
 			event_queue,
 			pending_messages,
 			time_provider,
@@ -150,18 +149,26 @@ where
 		}
 	}
 
-	fn check_prune_stale_webhooks(&self) {
+	fn check_prune_stale_webhooks<'a>(
+		&self, outer_state_lock: &mut RwLockWriteGuard<'a, HashMap<PublicKey, PeerState>>,
+	) {
+		let mut last_pruning = self.last_pruning.lock().unwrap();
 		let now =
 			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
-		let should_prune = {
-			let last_pruning = self.last_pruning.lock().unwrap();
-			last_pruning.as_ref().map_or(true, |last_time| {
-				now.duration_since(&last_time) > PRUNE_STALE_WEBHOOKS_INTERVAL_DAYS
-			})
-		};
+
+		let should_prune = last_pruning.as_ref().map_or(true, |last_time| {
+			now.duration_since(&last_time) > PRUNE_STALE_WEBHOOKS_INTERVAL_DAYS
+		});
 
 		if should_prune {
-			self.prune_stale_webhooks();
+			outer_state_lock.retain(|client_id, peer_state| {
+				if self.client_has_open_channel(client_id) {
+					// Don't prune clients with open channels
+					return true;
+				}
+				!peer_state.prune_stale_webhooks(now)
+			});
+			*last_pruning = Some(now);
 		}
 	}
 
@@ -171,58 +178,56 @@ where
 	) -> Result<(), LightningError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
-		self.check_prune_stale_webhooks();
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		self.check_prune_stale_webhooks(&mut outer_state_lock);
 
-		let mut webhooks = self.webhooks.lock().unwrap();
+		let peer_state =
+			outer_state_lock.entry(counterparty_node_id).or_insert_with(PeerState::default);
 
-		let client_webhooks = webhooks.entry(counterparty_node_id).or_insert_with(new_hash_map);
 		let now =
 			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
 
-		let num_webhooks = client_webhooks.len();
+		let num_webhooks = peer_state.webhooks_len();
 		let mut no_change = false;
-		match client_webhooks.entry(params.app_name.clone()) {
-			Entry::Occupied(mut entry) => {
-				no_change = entry.get().url == params.webhook;
-				let last_used = if no_change { entry.get().last_used } else { now };
-				let last_notification_sent = entry.get().last_notification_sent;
-				entry.insert(Webhook {
-					_app_name: params.app_name.clone(),
-					url: params.webhook.clone(),
-					_counterparty_node_id: counterparty_node_id,
-					last_used,
-					last_notification_sent,
-				});
-			},
-			Entry::Vacant(entry) => {
-				if num_webhooks >= self.config.max_webhooks_per_client as usize {
-					let error = LSPS5ProtocolError::TooManyWebhooks;
-					let msg = LSPS5Message::Response(
-						request_id,
-						LSPS5Response::SetWebhookError(error.clone().into()),
-					)
-					.into();
-					message_queue_notifier.enqueue(&counterparty_node_id, msg);
-					return Err(LightningError {
-						err: error.message().into(),
-						action: ErrorAction::IgnoreAndLog(Level::Info),
-					});
-				}
 
-				entry.insert(Webhook {
-					_app_name: params.app_name.clone(),
-					url: params.webhook.clone(),
-					_counterparty_node_id: counterparty_node_id,
-					last_used: now,
-					last_notification_sent: None,
+		if let Some(webhook) = peer_state.webhook_mut(&params.app_name) {
+			no_change = webhook.url == params.webhook;
+			if !no_change {
+				// The URL was updated.
+				webhook.url = params.webhook.clone();
+				webhook.last_used = now;
+				webhook.last_notification_sent = None;
+			}
+		} else {
+			if num_webhooks >= self.config.max_webhooks_per_client as usize {
+				let error = LSPS5ProtocolError::TooManyWebhooks;
+				let msg = LSPS5Message::Response(
+					request_id,
+					LSPS5Response::SetWebhookError(error.clone().into()),
+				)
+				.into();
+				message_queue_notifier.enqueue(&counterparty_node_id, msg);
+				return Err(LightningError {
+					err: error.message().into(),
+					action: ErrorAction::IgnoreAndLog(Level::Info),
 				});
-			},
+			}
+
+			let webhook = Webhook {
+				_app_name: params.app_name.clone(),
+				url: params.webhook.clone(),
+				_counterparty_node_id: counterparty_node_id,
+				last_used: now,
+				last_notification_sent: None,
+			};
+
+			peer_state.insert_webhook(params.app_name.clone(), webhook);
 		}
 
 		if !no_change {
 			self.send_webhook_registered_notification(
 				counterparty_node_id,
-				params.app_name,
+				params.app_name.clone(),
 				params.webhook,
 			)
 			.map_err(|e| {
@@ -242,7 +247,7 @@ where
 		let msg = LSPS5Message::Response(
 			request_id,
 			LSPS5Response::SetWebhook(SetWebhookResponse {
-				num_webhooks: client_webhooks.len() as u32,
+				num_webhooks: peer_state.webhooks_len() as u32,
 				max_webhooks: self.config.max_webhooks_per_client,
 				no_change,
 			}),
@@ -258,14 +263,11 @@ where
 	) -> Result<(), LightningError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
-		self.check_prune_stale_webhooks();
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		self.check_prune_stale_webhooks(&mut outer_state_lock);
 
-		let webhooks = self.webhooks.lock().unwrap();
-
-		let app_names = webhooks
-			.get(&counterparty_node_id)
-			.map(|client_webhooks| client_webhooks.keys().cloned().collect::<Vec<_>>())
-			.unwrap_or_else(Vec::new);
+		let app_names =
+			outer_state_lock.get(&counterparty_node_id).map(|p| p.app_names()).unwrap_or_default();
 
 		let max_webhooks = self.config.max_webhooks_per_client;
 
@@ -282,12 +284,11 @@ where
 	) -> Result<(), LightningError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
-		self.check_prune_stale_webhooks();
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		self.check_prune_stale_webhooks(&mut outer_state_lock);
 
-		let mut webhooks = self.webhooks.lock().unwrap();
-
-		if let Some(client_webhooks) = webhooks.get_mut(&counterparty_node_id) {
-			if client_webhooks.remove(&params.app_name).is_some() {
+		if let Some(peer_state) = outer_state_lock.get_mut(&counterparty_node_id) {
+			if peer_state.remove_webhook(&params.app_name) {
 				let response = RemoveWebhookResponse {};
 				let msg =
 					LSPS5Message::Response(request_id, LSPS5Response::RemoveWebhook(response))
@@ -408,11 +409,13 @@ where
 	fn send_notifications_to_client_webhooks(
 		&self, client_id: PublicKey, notification: WebhookNotification,
 	) -> Result<(), LSPS5ProtocolError> {
-		let mut webhooks = self.webhooks.lock().unwrap();
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		self.check_prune_stale_webhooks(&mut outer_state_lock);
 
-		let client_webhooks = match webhooks.get_mut(&client_id) {
-			Some(webhooks) if !webhooks.is_empty() => webhooks,
-			_ => return Ok(()),
+		let peer_state = if let Some(peer_state) = outer_state_lock.get_mut(&client_id) {
+			peer_state
+		} else {
+			return Ok(());
 		};
 
 		let now =
@@ -421,7 +424,7 @@ where
 		// We must avoid sending multiple notifications of the same method
 		// (other than lsps5.webhook_registered) close in time.
 		if notification.method != WebhookNotificationMethod::LSPS5WebhookRegistered {
-			let rate_limit_applies = client_webhooks.iter().any(|(_, webhook)| {
+			let rate_limit_applies = peer_state.webhooks().iter().any(|(_, webhook)| {
 				webhook.last_notification_sent.as_ref().map_or(false, |last_sent| {
 					now.duration_since(&last_sent) < NOTIFICATION_COOLDOWN_TIME
 				})
@@ -432,7 +435,7 @@ where
 			}
 		}
 
-		for (app_name, webhook) in client_webhooks.iter_mut() {
+		for (app_name, webhook) in peer_state.webhooks_mut().iter_mut() {
 			self.send_notification(
 				client_id,
 				app_name.clone(),
@@ -490,26 +493,6 @@ where
 			.map_err(|_| LSPS5ProtocolError::UnknownError)
 	}
 
-	fn prune_stale_webhooks(&self) {
-		let now =
-			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
-		let mut webhooks = self.webhooks.lock().unwrap();
-
-		webhooks.retain(|client_id, client_webhooks| {
-			if !self.client_has_open_channel(client_id) {
-				client_webhooks.retain(|_, webhook| {
-					now.duration_since(&webhook.last_used) < MIN_WEBHOOK_RETENTION_DAYS
-				});
-				!client_webhooks.is_empty()
-			} else {
-				true
-			}
-		});
-
-		let mut last_pruning = self.last_pruning.lock().unwrap();
-		*last_pruning = Some(now);
-	}
-
 	fn client_has_open_channel(&self, client_id: &PublicKey) -> bool {
 		self.channel_manager
 			.get_cm()
@@ -519,20 +502,16 @@ where
 	}
 
 	pub(crate) fn peer_connected(&self, counterparty_node_id: &PublicKey) {
-		let mut webhooks = self.webhooks.lock().unwrap();
-		if let Some(client_webhooks) = webhooks.get_mut(counterparty_node_id) {
-			for webhook in client_webhooks.values_mut() {
-				webhook.last_notification_sent = None;
-			}
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		if let Some(peer_state) = outer_state_lock.get_mut(counterparty_node_id) {
+			peer_state.reset_notification_cooldown();
 		}
 	}
 
 	pub(crate) fn peer_disconnected(&self, counterparty_node_id: &PublicKey) {
-		let mut webhooks = self.webhooks.lock().unwrap();
-		if let Some(client_webhooks) = webhooks.get_mut(counterparty_node_id) {
-			for webhook in client_webhooks.values_mut() {
-				webhook.last_notification_sent = None;
-			}
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		if let Some(peer_state) = outer_state_lock.get_mut(counterparty_node_id) {
+			peer_state.reset_notification_cooldown();
 		}
 	}
 }
@@ -576,5 +555,71 @@ where
 				Err(LightningError { err, action: ErrorAction::IgnoreAndLog(Level::Info) })
 			},
 		}
+	}
+}
+
+#[derive(Debug, Default)]
+struct PeerState {
+	webhooks: Vec<(LSPS5AppName, Webhook)>,
+}
+
+impl PeerState {
+	fn webhook_mut(&mut self, name: &LSPS5AppName) -> Option<&mut Webhook> {
+		self.webhooks.iter_mut().find_map(|(n, h)| if n == name { Some(h) } else { None })
+	}
+
+	fn webhooks(&self) -> &Vec<(LSPS5AppName, Webhook)> {
+		&self.webhooks
+	}
+
+	fn webhooks_mut(&mut self) -> &mut Vec<(LSPS5AppName, Webhook)> {
+		&mut self.webhooks
+	}
+
+	fn webhooks_len(&self) -> usize {
+		self.webhooks.len()
+	}
+
+	fn app_names(&self) -> Vec<LSPS5AppName> {
+		self.webhooks.iter().map(|(n, _)| n).cloned().collect()
+	}
+
+	fn insert_webhook(&mut self, name: LSPS5AppName, hook: Webhook) {
+		for (n, h) in self.webhooks.iter_mut() {
+			if *n == name {
+				*h = hook;
+				return;
+			}
+		}
+
+		self.webhooks.push((name, hook));
+	}
+
+	fn remove_webhook(&mut self, name: &LSPS5AppName) -> bool {
+		let mut removed = false;
+		self.webhooks.retain(|(n, _)| {
+			if n != name {
+				true
+			} else {
+				removed = true;
+				false
+			}
+		});
+		removed
+	}
+
+	fn reset_notification_cooldown(&mut self) {
+		for (_, h) in self.webhooks.iter_mut() {
+			h.last_notification_sent = None;
+		}
+	}
+
+	// Returns whether the entire state is empty and can be pruned.
+	fn prune_stale_webhooks(&mut self, now: LSPSDateTime) -> bool {
+		self.webhooks.retain(|(_, webhook)| {
+			now.duration_since(&webhook.last_used) < MIN_WEBHOOK_RETENTION_DAYS
+		});
+
+		self.webhooks.is_empty()
 	}
 }

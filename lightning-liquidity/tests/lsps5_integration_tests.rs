@@ -1164,3 +1164,65 @@ fn test_send_notifications_and_peer_connected_resets_cooldown() {
 		_ => panic!("Expected SendWebhookNotification event after peer_connected"),
 	}
 }
+
+#[test]
+fn webhook_update_affects_future_notifications() {
+	let mock_time_provider = Arc::new(MockTimeProvider::new(1000));
+	let time_provider = Arc::<MockTimeProvider>::clone(&mock_time_provider);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, time_provider);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
+	let service_handler = service_node.liquidity_manager.lsps5_service_handler().unwrap();
+
+	let app = "UpdateTestApp".to_string();
+	let url_v1 = "https://example.org/v1".to_string();
+	let url_v2 = "https://example.org/v2".to_string();
+
+	// register v1
+	client_handler.set_webhook(service_node_id, app.clone(), url_v1).unwrap();
+	let req = get_lsps_message!(client_node, service_node_id);
+	service_node.liquidity_manager.handle_custom_message(req, client_node_id).unwrap();
+	let _ = service_node.liquidity_manager.next_event().unwrap(); // initial webhook_registered
+	let resp = get_lsps_message!(service_node, client_node_id);
+	client_node.liquidity_manager.handle_custom_message(resp, service_node_id).unwrap();
+	let _ = client_node.liquidity_manager.next_event().unwrap();
+
+	// update to v2
+	client_handler.set_webhook(service_node_id, app, url_v2.clone()).unwrap();
+	let upd_req = get_lsps_message!(client_node, service_node_id);
+	service_node.liquidity_manager.handle_custom_message(upd_req, client_node_id).unwrap();
+	let update_event = service_node.liquidity_manager.next_event().unwrap();
+	match update_event {
+		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
+			url, ..
+		}) => {
+			assert_eq!(url.as_str(), url_v2);
+		},
+		_ => panic!("Expected webhook_registered for update"),
+	}
+	let upd_resp = get_lsps_message!(service_node, client_node_id);
+	client_node.liquidity_manager.handle_custom_message(upd_resp, service_node_id).unwrap();
+	let _ = client_node.liquidity_manager.next_event().unwrap();
+
+	// Advance past cooldown and send a notification again
+	mock_time_provider.advance_time(NOTIFICATION_COOLDOWN_TIME.as_secs() + 1);
+	service_handler.notify_payment_incoming(client_node_id).unwrap();
+	let ev = service_node.liquidity_manager.next_event().unwrap();
+	match ev {
+		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
+			url,
+			notification,
+			..
+		}) => {
+			assert_eq!(notification.method, WebhookNotificationMethod::LSPS5PaymentIncoming);
+			assert_eq!(url.as_str(), url_v2, "Should target updated URL");
+		},
+		_ => panic!("Expected SendWebhookNotification after update"),
+	}
+}
