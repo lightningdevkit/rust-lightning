@@ -861,7 +861,15 @@ fn stale_webhooks() {
 		MIN_WEBHOOK_RETENTION_DAYS.as_secs() + PRUNE_STALE_WEBHOOKS_INTERVAL_DAYS.as_secs(),
 	);
 
-	// LIST calls prune before executing -> should be empty after advancing time
+	// LIST should be empty after advancing time and reconnection
+	service_node.liquidity_manager.peer_disconnected(client_node_id);
+	let init_msg = Init {
+		features: lightning_types::features::InitFeatures::empty(),
+		remote_network_address: None,
+		networks: None,
+	};
+	service_node.liquidity_manager.peer_connected(client_node_id, &init_msg, false).unwrap();
+
 	let _ = client_handler.list_webhooks(service_node_id);
 	let list_req2 = get_lsps_message!(client_node, service_node_id);
 	service_node.liquidity_manager.handle_custom_message(list_req2, client_node_id).unwrap();
@@ -1068,7 +1076,7 @@ fn test_notify_without_webhooks_does_nothing() {
 }
 
 #[test]
-fn test_send_notifications_and_peer_connected_resets_cooldown() {
+fn test_notifications_and_peer_connected_resets_cooldown() {
 	let mock_time_provider = Arc::new(MockTimeProvider::new(1000));
 	let time_provider = Arc::<MockTimeProvider>::clone(&mock_time_provider);
 	let chanmon_cfgs = create_chanmon_cfgs(2);
