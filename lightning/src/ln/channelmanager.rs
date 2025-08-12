@@ -11316,6 +11316,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							}
 						}
 					},
+					MonitorEvent::CommitmentTxConfirmed(_) => {
+						let per_peer_state = self.per_peer_state.read().unwrap();
+						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+							let peer_state = &mut *peer_state_lock;
+							if let hash_map::Entry::Occupied(chan_entry) =
+								peer_state.channel_by_id.entry(channel_id)
+							{
+								let reason = ClosureReason::CommitmentTxConfirmed;
+								let err = ChannelError::Close((reason.to_string(), reason));
+								let mut chan = chan_entry.remove();
+								let (_, e) = convert_channel_err!(self, peer_state, err, &mut chan);
+								failed_channels.push((Err(e), counterparty_node_id));
+							}
+						}
+					},
 					MonitorEvent::Completed { channel_id, monitor_update_id, .. } => {
 						self.channel_monitor_updated(
 							&channel_id,
