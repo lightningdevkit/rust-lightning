@@ -17,13 +17,22 @@ use std::sync::Arc;
 pub(crate) struct LSPSNodes<'a, 'b, 'c> {
 	pub service_node: LiquidityNode<'a, 'b, 'c>,
 	pub client_node: LiquidityNode<'a, 'b, 'c>,
-	pub payer_node_optional: Option<Node<'a, 'b, 'c>>,
 }
 
-pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
-	nodes: Vec<Node<'a, 'b, 'c>>, service_config: LiquidityServiceConfig,
+// this is ONLY used on LSPS2 so it says it's not used but it is
+#[allow(dead_code)]
+pub(crate) struct LSPSNodesWithPayer<'a, 'b, 'c> {
+	pub service_node: LiquidityNode<'a, 'b, 'c>,
+	pub client_node: LiquidityNode<'a, 'b, 'c>,
+	pub payer_node: Node<'a, 'b, 'c>,
+}
+
+// Reusable helper: consumes a Vec<Node>, builds service + client LiquidityNodes, returns optional leftover node.
+fn build_service_and_client<'a, 'b, 'c>(
+	mut nodes: Vec<Node<'a, 'b, 'c>>, service_config: LiquidityServiceConfig,
 	client_config: LiquidityClientConfig, time_provider: Arc<dyn TimeProvider + Send + Sync>,
-) -> LSPSNodes<'a, 'b, 'c> {
+) -> (LiquidityNode<'a, 'b, 'c>, LiquidityNode<'a, 'b, 'c>, Option<Node<'a, 'b, 'c>>) {
+	assert!(nodes.len() >= 2, "Need at least two nodes (service, client)");
 	let chain_params = ChainParameters {
 		network: Network::Testnet,
 		best_block: BestBlock::from_network(Network::Testnet),
@@ -50,11 +59,33 @@ pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
 		time_provider,
 	);
 
-	let mut iter = nodes.into_iter();
+	let mut iter = nodes.drain(..);
 	let service_node = LiquidityNode::new(iter.next().unwrap(), service_lm);
 	let client_node = LiquidityNode::new(iter.next().unwrap(), client_lm);
+	let leftover = iter.next(); // payer if present
+	(service_node, client_node, leftover)
+}
 
-	LSPSNodes { service_node, client_node, payer_node_optional: iter.next() }
+pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>, service_config: LiquidityServiceConfig,
+	client_config: LiquidityClientConfig, time_provider: Arc<dyn TimeProvider + Send + Sync>,
+) -> LSPSNodes<'a, 'b, 'c> {
+	let (service_node, client_node, _extra) =
+		build_service_and_client(nodes, service_config, client_config, time_provider);
+	LSPSNodes { service_node, client_node }
+}
+
+// this is ONLY used on LSPS2 so it says it's not used but it is
+#[allow(dead_code)]
+pub(crate) fn create_service_client_and_payer_nodes<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>, service_config: LiquidityServiceConfig,
+	client_config: LiquidityClientConfig, time_provider: Arc<dyn TimeProvider + Send + Sync>,
+) -> LSPSNodesWithPayer<'a, 'b, 'c> {
+	assert!(nodes.len() >= 3, "Need three nodes (service, client, payer)");
+	let (service_node, client_node, payer_opt) =
+		build_service_and_client(nodes, service_config, client_config, time_provider);
+	let payer_node = payer_opt.expect("payer node missing");
+	LSPSNodesWithPayer { service_node, client_node, payer_node }
 }
 
 pub(crate) struct LiquidityNode<'a, 'b, 'c> {

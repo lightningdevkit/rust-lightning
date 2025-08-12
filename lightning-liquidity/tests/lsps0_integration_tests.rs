@@ -60,7 +60,7 @@ fn list_protocols_integration_test() {
 	let service_node_id = nodes[0].node.get_our_node_id();
 	let client_node_id = nodes[1].node.get_our_node_id();
 
-	let LSPSNodes { service_node, client_node , ..} = create_service_and_client_nodes(
+	let LSPSNodes { service_node, client_node } = create_service_and_client_nodes(
 		nodes,
 		service_config,
 		client_config,

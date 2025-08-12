@@ -2,7 +2,10 @@
 
 mod common;
 
-use common::{create_service_and_client_nodes, get_lsps_message, LSPSNodes, LiquidityNode};
+use common::{
+	create_service_and_client_nodes, create_service_client_and_payer_nodes, get_lsps_message,
+	LSPSNodes, LSPSNodesWithPayer, LiquidityNode,
+};
 
 use lightning::check_added_monitors;
 use lightning::events::Event;
@@ -61,9 +64,7 @@ use std::time::Duration;
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
 
-fn setup_test_lsps2_nodes<'a, 'b, 'c>(
-	nodes: Vec<Node<'a, 'b, 'c>>,
-) -> (LSPSNodes<'a, 'b, 'c>, [u8; 32]) {
+fn build_lsps2_configs() -> ([u8; 32], LiquidityServiceConfig, LiquidityClientConfig) {
 	let promise_secret = [42; 32];
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
 	let service_config = LiquidityServiceConfig {
@@ -73,20 +74,38 @@ fn setup_test_lsps2_nodes<'a, 'b, 'c>(
 		lsps5_service_config: None,
 		advertise_service: true,
 	};
-
 	let lsps2_client_config = LSPS2ClientConfig::default();
 	let client_config = LiquidityClientConfig {
 		lsps1_client_config: None,
 		lsps2_client_config: Some(lsps2_client_config),
 		lsps5_client_config: None,
 	};
+	(promise_secret, service_config, client_config)
+}
+
+fn setup_test_lsps2_nodes_with_payer<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>,
+) -> (LSPSNodesWithPayer<'a, 'b, 'c>, [u8; 32]) {
+	let (promise_secret, service_config, client_config) = build_lsps2_configs();
+	let lsps_nodes = create_service_client_and_payer_nodes(
+		nodes,
+		service_config,
+		client_config,
+		Arc::new(DefaultTimeProvider),
+	);
+	(lsps_nodes, promise_secret)
+}
+
+fn setup_test_lsps2_nodes<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>,
+) -> (LSPSNodes<'a, 'b, 'c>, [u8; 32]) {
+	let (promise_secret, service_config, client_config) = build_lsps2_configs();
 	let lsps_nodes = create_service_and_client_nodes(
 		nodes,
 		service_config,
 		client_config,
 		Arc::new(DefaultTimeProvider),
 	);
-
 	(lsps_nodes, promise_secret)
 }
 
@@ -102,10 +121,6 @@ fn create_jit_invoice(
 		.map_err(|e| {
 			log_error!(node.logger, "Failed to register inbound payment: {:?}", e);
 		})?;
-
-	// Add debugging here
-	println!("Creating route hint with intercept_scid: {}", intercept_scid);
-	println!("Service node ID: {}", service_node_id);
 
 	let route_hint = RouteHint(vec![RouteHintHop {
 		src_node_id: service_node_id,
@@ -147,9 +162,6 @@ fn create_jit_invoice(
 		})
 	})?;
 
-	// Add debugging to verify the invoice
-	println!("Created invoice with route hints: {:?}", invoice.route_hints());
-
 	Ok(invoice)
 }
 
@@ -160,7 +172,7 @@ fn invoice_generation_flow() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes(nodes);
-	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -308,7 +320,7 @@ fn channel_open_failed() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
-	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
 
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
@@ -443,7 +455,7 @@ fn channel_open_failed_nonexistent_channel() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
-	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
 
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -469,7 +481,7 @@ fn channel_open_abandoned() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
-	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
 
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
@@ -553,7 +565,7 @@ fn channel_open_abandoned_nonexistent_channel() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
-	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
 
 	let client_node_id = client_node.inner.node.get_our_node_id();
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
@@ -578,7 +590,7 @@ fn max_pending_requests_per_peer_rejected() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
-	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
 
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
@@ -633,7 +645,7 @@ fn max_total_requests_buy_rejected() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
-	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
 
 	let service_node_id = service_node.inner.node.get_our_node_id();
 
@@ -762,7 +774,7 @@ fn invalid_token_flow() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
-	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
 
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
@@ -841,7 +853,7 @@ fn opening_fee_params_menu_is_sorted_by_spec() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
-	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -926,9 +938,9 @@ fn full_lsps2_flow() {
 		&[Some(service_node_config), Some(client_node_config), None],
 	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes(nodes);
-	let LSPSNodes { service_node, client_node, payer_node_optional } = lsps_nodes;
-	let payer_node = payer_node_optional.unwrap();
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+	let LSPSNodesWithPayer { service_node, client_node, payer_node } = lsps_nodes;
+
 	let payer_node_id = payer_node.node.get_our_node_id();
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
@@ -1188,7 +1200,7 @@ fn full_lsps2_flow() {
 	assert!(events.is_empty(), "Expected no events from service node, got: {:?}", events);
 
 	client_node.inner.node.claim_funds(preimage.unwrap());
-	/// TODO SIMPLIFY: put the payment_forwarded call inside a PaymentForwardedEvent
+	// TODO SIMPLIFY: put the payment_forwarded call inside a PaymentForwardedEvent
 	let expected_paths: &[&[&lightning::ln::functional_test_utils::Node<'_, '_, '_>]] =
 		&[&[&service_node.inner, &client_node.inner]];
 
@@ -1196,7 +1208,7 @@ fn full_lsps2_flow() {
 	let total_fee_msat = pass_claimed_payment_along_route(args);
 
 	service_handler.payment_forwarded(channel_id).unwrap();
-	///
+
 	match service_node.liquidity_manager.next_event().unwrap() {
 		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::BroadcastFundingTransaction {
 			counterparty_node_id,
@@ -1205,6 +1217,8 @@ fn full_lsps2_flow() {
 		}) => {
 			assert_eq!(counterparty_node_id, client_node_id);
 			assert_eq!(uid, user_channel_id);
+
+			// TODO actually broadcast transaction
 		},
 		other => panic!("Unexpected event: {:?}", other),
 	}

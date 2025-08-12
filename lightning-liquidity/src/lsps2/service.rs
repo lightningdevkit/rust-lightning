@@ -23,14 +23,6 @@ use crate::lsps0::ser::{
 	LSPS0_CLIENT_REJECTED_ERROR_CODE,
 };
 use crate::lsps2::event::LSPS2ServiceEvent;
-use crate::lsps2::msgs::{
-	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,
-	LSPS2OpeningFeeParams, LSPS2RawOpeningFeeParams, LSPS2Request, LSPS2Response,
-	LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
-	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE,
-	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE,
-	LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
-};
 use crate::lsps2::payment_queue::{InterceptedHTLC, PaymentQueue};
 use crate::lsps2::utils::{
 	compute_opening_fee, is_expired_opening_fee_params, is_valid_opening_fee_params,
@@ -51,6 +43,15 @@ use lightning_types::payment::PaymentHash;
 
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Transaction;
+
+use crate::lsps2::msgs::{
+	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,
+	LSPS2OpeningFeeParams, LSPS2RawOpeningFeeParams, LSPS2Request, LSPS2Response,
+	LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
+	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE,
+	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE,
+	LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
+};
 
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
@@ -367,7 +368,6 @@ impl OutboundJITChannelState {
 						channel_id,
 						FeePayment { opening_fee_msat: *opening_fee_msat, htlcs },
 					);
-
 					*self = OutboundJITChannelState::PendingPaymentForward {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
@@ -1036,9 +1036,9 @@ where
 								Err(e) => {
 									return Err(APIError::APIMisuseError {
 										err: format!(
-										"Forwarded payment was not applicable for JIT channel: {}",
-										e.err
-									),
+											"Forwarded payment was not applicable for JIT channel: {}",
+											e.err
+										),
 									})
 								},
 							}

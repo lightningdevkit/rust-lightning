@@ -1952,7 +1952,7 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 		total_value_out += output.value.to_sat();
 	}
 	let min_fee = (tx.weight().to_wu() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
-													 // Input amount - output amount = fee, so check that out + min_fee is smaller than input
+													// Input amount - output amount = fee, so check that out + min_fee is smaller than input
 	assert!(total_value_out + min_fee <= total_value_in);
 	tx.verify(get_output).unwrap();
 }
@@ -3010,7 +3010,6 @@ pub fn expect_channel_pending_event<'a, 'b, 'c, 'd>(
 	node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey,
 ) -> ChannelId {
 	let events = node.node.get_and_clear_pending_events();
-	println!("Pending events: {:?}", events);
 	assert_eq!(events.len(), 1);
 	match &events[0] {
 		crate::events::Event::ChannelPending { channel_id, counterparty_node_id, .. } => {
