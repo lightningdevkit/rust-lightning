@@ -353,7 +353,7 @@ pub enum OffersContext {
 	StaticInvoiceRequested {
 		/// An identifier for the async recipient for whom we as a static invoice server are serving
 		/// [`StaticInvoice`]s. Used paired with the
-		/// [`OffersContext::StaticInvoiceRequested::invoice_id`] when looking up a corresponding
+		/// [`OffersContext::StaticInvoiceRequested::invoice_slot`] when looking up a corresponding
 		/// [`StaticInvoice`] to return to the payer if the recipient is offline. This id was previously
 		/// provided via [`AsyncPaymentsContext::ServeStaticInvoice::recipient_id`].
 		///
@@ -364,15 +364,15 @@ pub enum OffersContext {
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		recipient_id: Vec<u8>,
 
-		/// A random unique identifier for a specific [`StaticInvoice`] that the recipient previously
+		/// The slot number for a specific [`StaticInvoice`] that the recipient previously
 		/// requested be served on their behalf. Useful when paired with the
 		/// [`OffersContext::StaticInvoiceRequested::recipient_id`] to pull that specific invoice from
 		/// the database when payers send an [`InvoiceRequest`]. This id was previously
-		/// provided via [`AsyncPaymentsContext::ServeStaticInvoice::invoice_id`].
+		/// provided via [`AsyncPaymentsContext::ServeStaticInvoice::invoice_slot`].
 		///
 		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-		invoice_id: u128,
+		invoice_slot: u16,
 
 		/// The time as duration since the Unix epoch at which this path expires and messages sent over
 		/// it should be ignored.
@@ -487,16 +487,16 @@ pub enum AsyncPaymentsContext {
 		recipient_id: Vec<u8>,
 		/// A random identifier for the specific [`StaticInvoice`] that the recipient is requesting be
 		/// served on their behalf. Useful when surfaced alongside the above `recipient_id` when payers
-		/// send an [`InvoiceRequest`], to pull the specific static invoice from the database. This id
-		/// will be provided back to us as the static invoice server via
-		/// [`OffersContext::StaticInvoiceRequested::invoice_id`].
+		/// send an [`InvoiceRequest`], to pull the specific static invoice from the database.
 		///
 		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		invoice_id: u128,
 		/// The slot number for the specific [`StaticInvoice`] that the recipient is requesting be
 		/// served on their behalf. Useful when surfaced alongside the above `recipient_id` when payers
-		/// send an [`InvoiceRequest`], to pull the specific static invoice from the database.
+		/// send an [`InvoiceRequest`], to pull the specific static invoice from the database. This id
+		/// will be provided back to us as the static invoice server via
+		/// [`OffersContext::StaticInvoiceRequested::invoice_slot`].
 		///
 		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
@@ -574,7 +574,7 @@ impl_writeable_tlv_based_enum!(OffersContext,
 	},
 	(3, StaticInvoiceRequested) => {
 		(0, recipient_id, required),
-		(2, invoice_id, required),
+		(2, invoice_slot, required),
 		(4, path_absolute_expiry, required),
 	},
 );

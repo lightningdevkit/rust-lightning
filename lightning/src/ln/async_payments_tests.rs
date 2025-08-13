@@ -209,7 +209,7 @@ fn pass_async_payments_oms(
 	let mut events = always_online_recipient_counterparty.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	let reply_path = match events.pop().unwrap() {
-		Event::StaticInvoiceRequested { recipient_id: ev_id, invoice_id: _, reply_path } => {
+		Event::StaticInvoiceRequested { recipient_id: ev_id, invoice_slot: _, reply_path } => {
 			assert_eq!(recipient_id, ev_id);
 			reply_path
 		},
@@ -573,7 +573,7 @@ fn ignore_unexpected_static_invoice() {
 	let mut events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	let reply_path = match events.pop().unwrap() {
-		Event::StaticInvoiceRequested { recipient_id: ev_id, invoice_id: _, reply_path } => {
+		Event::StaticInvoiceRequested { recipient_id: ev_id, invoice_slot: _, reply_path } => {
 			assert_eq!(recipient_id, ev_id);
 			reply_path
 		},

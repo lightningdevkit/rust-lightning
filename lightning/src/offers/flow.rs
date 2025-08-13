@@ -395,7 +395,7 @@ pub enum InvreqResponseInstructions {
 	/// the invoice request since it is now verified.
 	SendInvoice(VerifiedInvoiceRequest),
 	/// We are a static invoice server and should respond to this invoice request by retrieving the
-	/// [`StaticInvoice`] corresponding to the `recipient_id` and `invoice_id` and calling
+	/// [`StaticInvoice`] corresponding to the `recipient_id` and `invoice_slot` and calling
 	/// `OffersMessageFlow::enqueue_static_invoice`.
 	///
 	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
@@ -404,8 +404,8 @@ pub enum InvreqResponseInstructions {
 		///
 		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 		recipient_id: Vec<u8>,
-		/// An identifier for the specific invoice being requested by the payer.
-		invoice_id: u128,
+		/// The slot number for the specific invoice being requested by the payer.
+		invoice_slot: u16,
 	},
 }
 
@@ -435,7 +435,7 @@ where
 			Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
 			Some(OffersContext::StaticInvoiceRequested {
 				recipient_id,
-				invoice_id,
+				invoice_slot,
 				path_absolute_expiry,
 			}) => {
 				if path_absolute_expiry < self.duration_since_epoch() {
@@ -444,7 +444,7 @@ where
 
 				return Ok(InvreqResponseInstructions::SendStaticInvoice {
 					recipient_id,
-					invoice_id,
+					invoice_slot,
 				});
 			},
 			_ => return Err(()),
@@ -1401,7 +1401,7 @@ where
 			let context = MessageContext::Offers(OffersContext::StaticInvoiceRequested {
 				recipient_id: recipient_id.clone(),
 				path_absolute_expiry,
-				invoice_id,
+				invoice_slot: request.invoice_slot,
 			});
 
 			match self.create_blinded_paths(peers, context) {
