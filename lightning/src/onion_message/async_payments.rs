@@ -172,11 +172,6 @@ pub struct ServeStaticInvoice {
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub forward_invoice_request_path: BlindedMessagePath,
-	/// The "slot" in the static invoice server's database that this invoice should go into. This
-	/// allows recipients to replace a specific invoice that is stored by the server, which is useful
-	/// for limiting the number of invoices stored by the server while also keeping all the invoices
-	/// persisted with the server fresh.
-	pub invoice_slot: u16,
 }
 
 /// Confirmation from a static invoice server  that a [`StaticInvoice`] was persisted and the
@@ -251,7 +246,6 @@ impl_writeable_tlv_based!(OfferPaths, {
 impl_writeable_tlv_based!(ServeStaticInvoice, {
 	(0, invoice, required),
 	(2, forward_invoice_request_path, required),
-	(4, invoice_slot, required),
 });
 
 impl_writeable_tlv_based!(StaticInvoicePersisted, {});
