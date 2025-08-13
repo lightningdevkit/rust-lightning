@@ -3625,9 +3625,7 @@ fn do_test_lost_timeout_monitor_events(on_counterparty_tx: bool, dust_htlcs: boo
 
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 
-	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
-	reconnect_args.pending_cell_htlc_fails = (0, 0);
-	reconnect_nodes(reconnect_args);
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors(&nodes[1], 1);
