@@ -856,7 +856,8 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 	let timeout_blocks = TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1;
 	connect_blocks(&nodes[1], timeout_blocks);
 	let node_1_txn = test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::TIMEOUT);
-	check_closed_event(&nodes[1], 1, ClosureReason::HTLCsTimedOut, false, &[node_c_id], 100_000);
+	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+	check_closed_event(&nodes[1], 1, reason, false, &[node_c_id], 100_000);
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 
@@ -910,7 +911,7 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 			connect_blocks(&nodes[2], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + 2);
 			let node_2_txn = test_txn_broadcast(&nodes[2], &chan_2, None, HTLCType::SUCCESS);
 			check_closed_broadcast!(nodes[2], true);
-			let reason = ClosureReason::HTLCsTimedOut;
+			let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 			check_closed_event(&nodes[2], 1, reason, false, &[node_b_id], 100_000);
 			check_added_monitors(&nodes[2], 1);
 
@@ -1160,7 +1161,8 @@ pub fn channel_monitor_network_test() {
 		}
 		check_added_monitors(&nodes[4], 1);
 		test_txn_broadcast(&nodes[4], &chan_4, None, HTLCType::SUCCESS);
-		check_closed_event!(nodes[4], 1, ClosureReason::HTLCsTimedOut, [node_d_id], 100000);
+		let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash_2) };
+		check_closed_event!(nodes[4], 1, reason, [node_d_id], 100000);
 
 		mine_transaction(&nodes[4], &node_txn[0]);
 		check_preimage_claim(&nodes[4], &node_txn);
@@ -1177,7 +1179,8 @@ pub fn channel_monitor_network_test() {
 		nodes[3].chain_monitor.chain_monitor.watch_channel(chan_3.2, chan_3_mon),
 		Ok(ChannelMonitorUpdateStatus::Completed)
 	);
-	check_closed_event!(nodes[3], 1, ClosureReason::HTLCsTimedOut, [node_id_4], 100000);
+	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash_2) };
+	check_closed_event!(nodes[3], 1, reason, [node_id_4], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -5321,7 +5324,8 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 	test_txn_broadcast(&nodes[1], &chan, None, htlc_type);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors(&nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::HTLCsTimedOut, [node_a_id], 100000);
+	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
 }
 
 fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
@@ -5359,7 +5363,8 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 	test_txn_broadcast(&nodes[0], &chan, None, HTLCType::NONE);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors(&nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::HTLCsTimedOut, [node_b_id], 100000);
+	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
 }
 
 fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no_close: bool) {
@@ -5414,7 +5419,8 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 		test_txn_broadcast(&nodes[0], &chan, None, HTLCType::NONE);
 		check_closed_broadcast!(nodes[0], true);
 		check_added_monitors(&nodes[0], 1);
-		check_closed_event!(nodes[0], 1, ClosureReason::HTLCsTimedOut, [node_b_id], 100000);
+		let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(our_payment_hash) };
+		check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
 	} else {
 		expect_payment_failed!(nodes[0], our_payment_hash, true);
 	}
@@ -8160,7 +8166,7 @@ pub fn test_concurrent_monitor_claim() {
 	send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
 
 	// Route a HTLC from node 0 to node 1 (but don't settle)
-	route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
+	let (_, payment_hash_timeout, ..) = route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
 
 	// Copy ChainMonitor to simulate watchtower Alice and update block height her ChannelMonitor timeout HTLC onchain
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
@@ -8311,7 +8317,8 @@ pub fn test_concurrent_monitor_claim() {
 	let height = HTLC_TIMEOUT_BROADCAST + 1;
 	connect_blocks(&nodes[0], height - nodes[0].best_block_info().1);
 	check_closed_broadcast(&nodes[0], 1, true);
-	check_closed_event!(&nodes[0], 1, ClosureReason::HTLCsTimedOut, false, [node_b_id], 100000);
+	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash_timeout) };
+	check_closed_event!(&nodes[0], 1, reason, false, [node_b_id], 100000);
 	watchtower_alice.chain_monitor.block_connected(
 		&create_dummy_block(BlockHash::all_zeros(), 42, vec![bob_state_y.clone()]),
 		height,
