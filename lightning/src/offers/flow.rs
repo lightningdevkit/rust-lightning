@@ -1317,8 +1317,7 @@ where
 			let duration_since_epoch = self.duration_since_epoch();
 			let cache = self.async_receive_offer_cache.lock().unwrap();
 			for offer_and_metadata in cache.offers_needing_invoice_refresh(duration_since_epoch) {
-				let (offer, offer_nonce, slot_number, update_static_invoice_path) =
-					offer_and_metadata;
+				let (offer, offer_nonce, update_static_invoice_path) = offer_and_metadata;
 
 				let (invoice, forward_invreq_path) = match self.create_static_invoice_for_server(
 					offer,
@@ -1342,7 +1341,6 @@ where
 				let serve_invoice_message = ServeStaticInvoice {
 					invoice,
 					forward_invoice_request_path: forward_invreq_path,
-					invoice_slot: slot_number,
 				};
 				serve_static_invoice_msgs.push((
 					serve_invoice_message,
@@ -1518,8 +1516,7 @@ where
 			})
 		};
 
-		let serve_invoice_message =
-			ServeStaticInvoice { invoice, forward_invoice_request_path, invoice_slot };
+		let serve_invoice_message = ServeStaticInvoice { invoice, forward_invoice_request_path };
 		Some((serve_invoice_message, reply_path_context))
 	}
 

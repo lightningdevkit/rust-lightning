@@ -368,12 +368,13 @@ impl AsyncReceiveOfferCache {
 
 	/// If we have any empty slots in the cache or offers that can and should be replaced with a fresh
 	/// offer, here we return the index of the slot that needs a new offer. The index is used for
-	/// setting [`ServeStaticInvoice::invoice_slot`] when sending the corresponding new static invoice
-	/// to the server, so the server knows which existing persisted invoice is being replaced, if any.
+	/// setting [`OfferPathsRequest::invoice_slot`] when requesting offer paths from the server, so
+	/// the server can include the slot in the offer paths and reply paths that they create in
+	/// response.
 	///
 	/// Returns `None` if the cache is full and no offers can currently be replaced.
 	///
-	/// [`ServeStaticInvoice::invoice_slot`]: crate::onion_message::async_payments::ServeStaticInvoice::invoice_slot
+	/// [`OfferPathsRequest::invoice_slot`]: crate::onion_message::async_payments::OfferPathsRequest::invoice_slot
 	fn needs_new_offer_idx(&self, duration_since_epoch: Duration) -> Option<usize> {
 		// If we have any empty offer slots, return the first one we find
 		let empty_slot_idx_opt = self.offers.iter().position(|offer_opt| offer_opt.is_none());
@@ -446,10 +447,10 @@ impl AsyncReceiveOfferCache {
 	/// the static invoice server.
 	pub(super) fn offers_needing_invoice_refresh(
 		&self, duration_since_epoch: Duration,
-	) -> impl Iterator<Item = (&Offer, Nonce, u16, &Responder)> {
+	) -> impl Iterator<Item = (&Offer, Nonce, &Responder)> {
 		// For any offers which are either in use or pending confirmation by the server, we should send
 		// them a fresh invoice on each timer tick.
-		self.offers_with_idx().filter_map(move |(idx, offer)| {
+		self.offers_with_idx().filter_map(move |(_, offer)| {
 			let needs_invoice_update = match offer.status {
 				OfferStatus::Used { invoice_created_at } => {
 					invoice_created_at.saturating_add(INVOICE_REFRESH_THRESHOLD)
@@ -461,13 +462,7 @@ impl AsyncReceiveOfferCache {
 				OfferStatus::Ready { .. } => false,
 			};
 			if needs_invoice_update {
-				let offer_slot = idx.try_into().unwrap_or(u16::MAX);
-				Some((
-					&offer.offer,
-					offer.offer_nonce,
-					offer_slot,
-					&offer.update_static_invoice_path,
-				))
+				Some((&offer.offer, offer.offer_nonce, &offer.update_static_invoice_path))
 			} else {
 				None
 			}
