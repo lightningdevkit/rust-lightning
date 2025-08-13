@@ -107,18 +107,9 @@ struct ForwardPaymentAction(ChannelId, FeePayment);
 #[derive(Debug, PartialEq)]
 struct ForwardHTLCsAction(ChannelId, Vec<InterceptedHTLC>);
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) enum OutboundJITStage {
-	PendingInitialPayment,
-	PendingChannelOpen,
-	PendingPaymentForward,
-	PendingPayment,
-	PaymentForwarded,
-}
-
 /// The different states a requested JIT channel can be in.
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub(crate) enum OutboundJITChannelState {
+#[derive(Debug)]
+enum OutboundJITChannelState {
 	/// The JIT channel SCID was created after a buy request, and we are awaiting an initial payment
 	/// of sufficient size to open the channel.
 	PendingInitialPayment { payment_queue: PaymentQueue },
@@ -141,36 +132,6 @@ pub(crate) enum OutboundJITChannelState {
 	/// The channel is open and a payment was successfully forwarded while skimming the JIT channel
 	/// fee. Any subsequent HTLCs can be forwarded without additional logic.
 	PaymentForwarded { channel_id: ChannelId },
-}
-
-impl OutboundJITChannelState {
-	pub(crate) fn stage(&self) -> OutboundJITStage {
-		match self {
-			OutboundJITChannelState::PendingInitialPayment { .. } => {
-				OutboundJITStage::PendingInitialPayment
-			},
-			OutboundJITChannelState::PendingChannelOpen { .. } => {
-				OutboundJITStage::PendingChannelOpen
-			},
-			OutboundJITChannelState::PendingPaymentForward { .. } => {
-				OutboundJITStage::PendingPaymentForward
-			},
-			OutboundJITChannelState::PendingPayment { .. } => OutboundJITStage::PendingPayment,
-			OutboundJITChannelState::PaymentForwarded { .. } => OutboundJITStage::PaymentForwarded,
-		}
-	}
-}
-
-impl PartialOrd for OutboundJITChannelState {
-	fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
-		Some(self.cmp(other))
-	}
-}
-
-impl Ord for OutboundJITChannelState {
-	fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-		self.stage().cmp(&other.stage())
-	}
 }
 
 impl OutboundJITChannelState {
@@ -611,13 +572,20 @@ where
 		&self.config
 	}
 
-	pub(crate) fn highest_state_for_peer(
-		&self, counterparty_node_id: &PublicKey,
-	) -> Option<OutboundJITChannelState> {
+	/// Returns whether the peer has any opening or open JIT channels.
+	pub(crate) fn has_opening_or_open_jit_channel(&self, counterparty_node_id: &PublicKey) -> bool {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-		outer_state_lock.get(counterparty_node_id).and_then(|inner| {
+		outer_state_lock.get(counterparty_node_id).map_or(false, |inner| {
 			let peer_state = inner.lock().unwrap();
-			peer_state.outbound_channels_by_intercept_scid.values().map(|c| c.state.clone()).max()
+			peer_state.outbound_channels_by_intercept_scid.values().any(|chan| {
+				matches!(
+					chan.state,
+					OutboundJITChannelState::PendingChannelOpen { .. }
+						| OutboundJITChannelState::PendingPaymentForward { .. }
+						| OutboundJITChannelState::PendingPayment { .. }
+						| OutboundJITChannelState::PaymentForwarded { .. }
+				)
+			})
 		})
 	}
 
@@ -1953,56 +1921,5 @@ mod tests {
 				matches!(action, Some(HTLCInterceptedAction::ForwardHTLC(channel_id)) if channel_id == ChannelId([200; 32]))
 			);
 		}
-	}
-
-	#[test]
-	fn highest_state_for_peer_orders() {
-		let opening_fee_params = LSPS2OpeningFeeParams {
-			min_fee_msat: 0,
-			proportional: 0,
-			valid_until: LSPSDateTime::from_str("1970-01-01T00:00:00Z").unwrap(),
-			min_lifetime: 0,
-			max_client_to_self_delay: 0,
-			min_payment_size_msat: 0,
-			max_payment_size_msat: 0,
-			promise: String::new(),
-		};
-
-		let mut map = new_hash_map();
-		map.insert(
-			0,
-			OutboundJITChannel {
-				state: OutboundJITChannelState::PendingInitialPayment {
-					payment_queue: PaymentQueue::new(),
-				},
-				user_channel_id: 0,
-				opening_fee_params: opening_fee_params.clone(),
-				payment_size_msat: None,
-			},
-		);
-		map.insert(
-			1,
-			OutboundJITChannel {
-				state: OutboundJITChannelState::PendingChannelOpen {
-					payment_queue: PaymentQueue::new(),
-					opening_fee_msat: 0,
-				},
-				user_channel_id: 1,
-				opening_fee_params: opening_fee_params.clone(),
-				payment_size_msat: None,
-			},
-		);
-		map.insert(
-			2,
-			OutboundJITChannel {
-				state: OutboundJITChannelState::PaymentForwarded { channel_id: ChannelId([0; 32]) },
-				user_channel_id: 2,
-				opening_fee_params,
-				payment_size_msat: None,
-			},
-		);
-
-		let max_state = map.values().map(|c| c.state.clone()).max().unwrap();
-		assert!(matches!(max_state, OutboundJITChannelState::PaymentForwarded { .. }));
 	}
 }

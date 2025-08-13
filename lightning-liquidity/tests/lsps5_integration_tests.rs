@@ -1221,6 +1221,49 @@ fn test_send_notifications_and_peer_connected_resets_cooldown() {
 	}
 }
 
+macro_rules! assert_lsps5_reject {
+	($client_handler:expr, $service_node:expr, $client_node:expr, $service_node_id:expr, $client_node_id:expr) => {{
+		let _ = $client_handler
+			.set_webhook(
+				$service_node_id,
+				"App".to_string(),
+				"https://example.org/webhook".to_string(),
+			)
+			.expect("Request should send");
+		let request = get_lsps_message!($client_node, $service_node_id);
+
+		let result =
+			$service_node.liquidity_manager.handle_custom_message(request, $client_node_id);
+		assert!(result.is_err(), "Service should reject request without prior interaction");
+
+		assert!($service_node.liquidity_manager.get_and_clear_pending_msg().is_empty());
+	}};
+}
+
+macro_rules! assert_lsps5_accept {
+	($client_handler:expr, $service_node:expr, $client_node:expr, $service_node_id:expr, $client_node_id:expr) => {{
+		let _ = $client_handler
+			.set_webhook(
+				$service_node_id,
+				"App".to_string(),
+				"https://example.org/webhook".to_string(),
+			)
+			.expect("Request should send");
+		let request = get_lsps_message!($client_node, $service_node_id);
+
+		let result =
+			$service_node.liquidity_manager.handle_custom_message(request, $client_node_id);
+		assert!(result.is_ok(), "Service should accept request after prior interaction");
+		let _ = $service_node.liquidity_manager.next_event().unwrap();
+		let response = get_lsps_message!($service_node, $client_node_id);
+		$client_node
+			.liquidity_manager
+			.handle_custom_message(response, $service_node_id)
+			.expect("Client should handle response");
+		let _ = $client_node.liquidity_manager.next_event().unwrap();
+	}};
+}
+
 #[test]
 fn dos_protection() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1234,51 +1277,26 @@ fn dos_protection() {
 
 	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
 
-	let assert_reject = || -> () {
-		let _ = client_handler
-			.set_webhook(
-				service_node_id,
-				"App".to_string(),
-				"https://example.org/webhook".to_string(),
-			)
-			.expect("Request should send");
-		let request = get_lsps_message!(client_node, service_node_id);
-
-		let result = service_node.liquidity_manager.handle_custom_message(request, client_node_id);
-		assert!(result.is_err(), "Service should reject request without prior interaction");
-
-		assert!(service_node.liquidity_manager.get_and_clear_pending_msg().is_empty());
-	};
-
-	let assert_accept = || -> () {
-		let _ = client_handler
-			.set_webhook(
-				service_node_id,
-				"App".to_string(),
-				"https://example.org/webhook".to_string(),
-			)
-			.expect("Request should send");
-		let request = get_lsps_message!(client_node, service_node_id);
-
-		let result = service_node.liquidity_manager.handle_custom_message(request, client_node_id);
-		assert!(result.is_ok(), "Service should accept request after prior interaction");
-		let _ = service_node.liquidity_manager.next_event().unwrap();
-		let response = get_lsps_message!(service_node, client_node_id);
-		client_node
-			.liquidity_manager
-			.handle_custom_message(response, service_node_id)
-			.expect("Client should handle response");
-		let _ = client_node.liquidity_manager.next_event().unwrap();
-	};
-
 	// no channel is open so far -> should reject
-	assert_reject();
+	assert_lsps5_reject!(
+		client_handler,
+		service_node,
+		client_node,
+		service_node_id,
+		client_node_id
+	);
 
 	let (_, _, _, channel_id, funding_tx) =
 		create_chan_between_nodes(&service_node.inner, &client_node.inner);
 
 	// now that a channel is open, should accept
-	assert_accept();
+	assert_lsps5_accept!(
+		client_handler,
+		service_node,
+		client_node,
+		service_node_id,
+		client_node_id
+	);
 
 	close_channel(&service_node.inner, &client_node.inner, &channel_id, funding_tx, true);
 	let node_a_reason = ClosureReason::CounterpartyInitiatedCooperativeClosure;
@@ -1287,7 +1305,13 @@ fn dos_protection() {
 	check_closed_event!(client_node.inner, 1, node_b_reason, [service_node_id], 100000);
 
 	// channel is now closed again -> should reject
-	assert_reject();
+	assert_lsps5_reject!(
+		client_handler,
+		service_node,
+		client_node,
+		service_node_id,
+		client_node_id
+	);
 }
 
 #[test]
@@ -1298,20 +1322,28 @@ fn lsps2_state_allows_lsps5_request() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (lsps_nodes, _) = lsps5_lsps2_test_setup(nodes, Arc::new(DefaultTimeProvider));
+
+	let client_node_id = lsps_nodes.client_node.inner.node.get_our_node_id();
+	let service_node_id = lsps_nodes.service_node.inner.node.get_our_node_id();
+	let client_handler = lsps_nodes.client_node.liquidity_manager.lsps5_client_handler().unwrap();
+
+	assert_lsps5_reject!(
+		client_handler,
+		lsps_nodes.service_node,
+		lsps_nodes.client_node,
+		service_node_id,
+		client_node_id
+	);
+
 	establish_lsps2_prior_interaction(&lsps_nodes);
 
-	let LSPSNodes { service_node, client_node } = lsps_nodes;
-	let service_node_id = service_node.inner.node.get_our_node_id();
-	let client_node_id = client_node.inner.node.get_our_node_id();
-
-	let lsps5_client = client_node.liquidity_manager.lsps5_client_handler().unwrap();
-
-	let _ = lsps5_client
-		.set_webhook(service_node_id, "App".to_string(), "https://example.org/webhook".to_string())
-		.expect("Request should send");
-	let request = get_lsps_message!(client_node, service_node_id);
-	let result = service_node.liquidity_manager.handle_custom_message(request, client_node_id);
-	assert!(result.is_ok(), "Service should accept request based on LSPS2 state");
+	assert_lsps5_accept!(
+		client_handler,
+		lsps_nodes.service_node,
+		lsps_nodes.client_node,
+		service_node_id,
+		client_node_id
+	);
 }
 
 fn establish_lsps2_prior_interaction(lsps_nodes: &LSPSNodes) {
