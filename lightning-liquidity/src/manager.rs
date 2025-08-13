@@ -7,6 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
@@ -53,7 +54,9 @@ use lightning_types::features::{InitFeatures, NodeFeatures};
 
 use bitcoin::secp256k1::PublicKey;
 
+use core::future::Future as StdFuture;
 use core::ops::Deref;
+use core::pin::Pin;
 
 const LSPS_FEATURE_BIT: usize = 729;
 
@@ -266,7 +269,6 @@ pub struct LiquidityManager<
 	_client_config: Option<LiquidityClientConfig>,
 	best_block: RwLock<Option<BestBlock>>,
 	_chain_source: Option<C>,
-	kv_store: Arc<dyn KVStore + Send + Sync>,
 }
 
 #[cfg(feature = "time")]
@@ -353,6 +355,7 @@ where
 					Arc::clone(&pending_messages),
 					Arc::clone(&pending_events),
 					channel_manager.clone(),
+					Arc::clone(&kv_store),
 					config.clone(),
 				)
 			})
@@ -448,7 +451,6 @@ where
 			_client_config: client_config,
 			best_block: RwLock::new(chain_params.map(|chain_params| chain_params.best_block)),
 			_chain_source: chain_source,
-			kv_store,
 		}
 	}
 
@@ -487,7 +489,7 @@ where
 
 	/// Returns a reference to the LSPS2 server-side handler.
 	///
-	/// The returned handler allows to initiate the LSPS2 service-side flow.
+	/// The returned hendler allows to initiate the LSPS2 service-side flow.
 	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM>> {
 		self.lsps2_service_handler.as_ref()
 	}
@@ -561,6 +563,31 @@ where
 	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
 	pub fn get_and_clear_pending_events(&self) -> Vec<LiquidityEvent> {
 		self.pending_events.get_and_clear_pending_events()
+	}
+
+	/// Persists the state of the service handlers towards the given [`KVStore`] implementation.
+	///
+	/// This will be regularly called by LDK's background processor if necessary and only needs to
+	/// be called manually if it's not utilized.
+	pub fn persist(
+		&self,
+	) -> Pin<Box<dyn StdFuture<Output = Result<(), lightning::io::Error>> + Send>> {
+		let mut futures = Vec::new();
+		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
+			futures.push(lsps2_service_handler.persist());
+		}
+
+		// TODO: We should eventually persist in parallel.
+		Box::pin(async move {
+			let mut ret = Ok(());
+			for fut in futures {
+				let res = fut.await;
+				if res.is_err() {
+					ret = res;
+				}
+			}
+			ret
+		})
 	}
 
 	fn handle_lsps_message(
