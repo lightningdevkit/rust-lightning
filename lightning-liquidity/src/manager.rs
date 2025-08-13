@@ -7,6 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
@@ -34,6 +35,7 @@ use crate::lsps2::msgs::LSPS2Message;
 use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler};
 use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
+use crate::utils::async_poll::dummy_waker;
 #[cfg(feature = "time")]
 use crate::utils::time::DefaultTimeProvider;
 use crate::utils::time::TimeProvider;
@@ -53,7 +55,9 @@ use lightning_types::features::{InitFeatures, NodeFeatures};
 
 use bitcoin::secp256k1::PublicKey;
 
+use core::future::Future as StdFuture;
 use core::ops::Deref;
+use core::task;
 
 const LSPS_FEATURE_BIT: usize = 729;
 
@@ -297,7 +301,7 @@ pub struct LiquidityManager<
 	#[cfg(lsps1_service)]
 	lsps1_service_handler: Option<LSPS1ServiceHandler<ES, CM, C>>,
 	lsps1_client_handler: Option<LSPS1ClientHandler<ES>>,
-	lsps2_service_handler: Option<LSPS2ServiceHandler<CM>>,
+	lsps2_service_handler: Option<LSPS2ServiceHandler<CM, K>>,
 	lsps2_client_handler: Option<LSPS2ClientHandler<ES>>,
 	lsps5_service_handler: Option<LSPS5ServiceHandler<CM, NS, TP>>,
 	lsps5_client_handler: Option<LSPS5ClientHandler<ES>>,
@@ -305,7 +309,6 @@ pub struct LiquidityManager<
 	_client_config: Option<LiquidityClientConfig>,
 	best_block: RwLock<Option<BestBlock>>,
 	_chain_source: Option<C>,
-	kv_store: K,
 }
 
 #[cfg(feature = "time")]
@@ -392,7 +395,7 @@ where
 		let lsps2_service_handler = service_config.as_ref().and_then(|config| {
 			config.lsps2_service_config.as_ref().map(|config| {
 				if let Some(number) =
-					<LSPS2ServiceHandler<CM> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
+					<LSPS2ServiceHandler<CM, K> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
 				{
 					supported_protocols.push(number);
 				}
@@ -400,6 +403,7 @@ where
 					Arc::clone(&pending_messages),
 					Arc::clone(&pending_events),
 					channel_manager.clone(),
+					kv_store.clone(),
 					config.clone(),
 				)
 			})
@@ -495,7 +499,6 @@ where
 			_client_config: client_config,
 			best_block: RwLock::new(chain_params.map(|chain_params| chain_params.best_block)),
 			_chain_source: chain_source,
-			kv_store,
 		}
 	}
 
@@ -534,8 +537,8 @@ where
 
 	/// Returns a reference to the LSPS2 server-side handler.
 	///
-	/// The returned handler allows to initiate the LSPS2 service-side flow.
-	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM>> {
+	/// The returned hendler allows to initiate the LSPS2 service-side flow.
+	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM, K>> {
 		self.lsps2_service_handler.as_ref()
 	}
 
@@ -608,6 +611,19 @@ where
 	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
 	pub fn get_and_clear_pending_events(&self) -> Vec<LiquidityEvent> {
 		self.pending_events.get_and_clear_pending_events()
+	}
+
+	/// Persists the state of the service handlers towards the given [`KVStore`] implementation.
+	///
+	/// This will be regularly called by LDK's background processor if necessary and only needs to
+	/// be called manually if it's not utilized.
+	pub async fn persist(&self) -> Result<(), lightning::io::Error> {
+		// TODO: We should eventually persist in parallel.
+		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
+			lsps2_service_handler.persist().await?;
+		}
+
+		Ok(())
 	}
 
 	fn handle_lsps_message(
@@ -1110,7 +1126,9 @@ where
 	/// Returns a reference to the LSPS2 server-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps2_service_handler`].
-	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM>> {
+	pub fn lsps2_service_handler(
+		&self,
+	) -> Option<&LSPS2ServiceHandler<CM, Arc<KVStoreSyncWrapper<KS>>>> {
 		self.inner.lsps2_service_handler()
 	}
 
@@ -1162,6 +1180,21 @@ where
 	/// Wraps [`LiquidityManager::get_and_clear_pending_events`].
 	pub fn get_and_clear_pending_events(&self) -> Vec<LiquidityEvent> {
 		self.inner.get_and_clear_pending_events()
+	}
+
+	/// Persists the state of the service handlers towards the given [`KVStoreSync`] implementation.
+	///
+	/// Wraps [`LiquidityManager::persist`].
+	pub fn persist(&self) -> Result<(), lightning::io::Error> {
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match Box::pin(self.inner.persist()).as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("LiquidityManager::persist should not be pending in a sync context");
+			},
+		}
 	}
 }
 
