@@ -66,7 +66,6 @@ use core::time::Duration;
 struct StaticInvoiceServerFlowResult {
 	invoice: StaticInvoice,
 	invoice_slot: u16,
-	invoice_id: u128,
 
 	// Returning messages that were sent along the way allows us to test handling duplicate messages.
 	offer_paths_request: msgs::OnionMessage,
@@ -148,16 +147,15 @@ fn pass_static_invoice_server_messages(
 	// that the static invoice should be persisted.
 	let mut events = server.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
-	let (invoice, invoice_slot, invoice_id, ack_path) = match events.pop().unwrap() {
+	let (invoice, invoice_slot, ack_path) = match events.pop().unwrap() {
 		Event::PersistStaticInvoice {
 			invoice,
 			invoice_persisted_path,
 			recipient_id: ev_id,
 			invoice_slot,
-			invoice_id,
 		} => {
 			assert_eq!(recipient_id, ev_id);
-			(invoice, invoice_slot, invoice_id, invoice_persisted_path)
+			(invoice, invoice_slot, invoice_persisted_path)
 		},
 		_ => panic!(),
 	};
@@ -183,7 +181,6 @@ fn pass_static_invoice_server_messages(
 		static_invoice_persisted_message: invoice_persisted_om,
 		invoice,
 		invoice_slot,
-		invoice_id,
 	}
 }
 
@@ -1626,13 +1623,13 @@ fn limit_serve_static_invoice_requests() {
 
 	// Build the target number of offers interactively with the static invoice server.
 	let mut offer_paths_req = None;
-	let mut invoice_ids = new_hash_set();
+	let mut invoice_slots = new_hash_set();
 	for expected_inv_slot in 0..TEST_MAX_CACHED_OFFERS_TARGET {
 		let flow_res = pass_static_invoice_server_messages(server, recipient, recipient_id.clone());
 		assert_eq!(flow_res.invoice_slot, expected_inv_slot as u16);
 
 		offer_paths_req = Some(flow_res.offer_paths_request);
-		invoice_ids.insert(flow_res.invoice_id);
+		invoice_slots.insert(flow_res.invoice_slot);
 
 		// Trigger a cache refresh
 		recipient.node.timer_tick_occurred();
@@ -1641,8 +1638,8 @@ fn limit_serve_static_invoice_requests() {
 		recipient.node.flow.test_get_async_receive_offers().len(),
 		TEST_MAX_CACHED_OFFERS_TARGET
 	);
-	// Check that all invoice ids are unique.
-	assert_eq!(invoice_ids.len(), TEST_MAX_CACHED_OFFERS_TARGET);
+	// Check that all invoice slot numbers are unique.
+	assert_eq!(invoice_slots.len(), TEST_MAX_CACHED_OFFERS_TARGET);
 
 	// Force allowing more offer paths request attempts so we can check that the recipient will not
 	// attempt to build any further offers.
@@ -1822,16 +1819,15 @@ fn refresh_static_invoices_for_used_offers() {
 		Event::PersistStaticInvoice {
 			invoice,
 			invoice_slot,
-			invoice_id,
 			invoice_persisted_path,
 			recipient_id: ev_id,
 		} => {
 			assert_ne!(original_invoice, invoice);
 			assert_eq!(recipient_id, ev_id);
 			assert_eq!(invoice_slot, flow_res.invoice_slot);
-			// When we update the invoice corresponding to a specific offer, the invoice_id stays the
+			// When we update the invoice corresponding to a specific offer, the invoice_slot stays the
 			// same.
-			assert_eq!(invoice_id, flow_res.invoice_id);
+			assert_eq!(invoice_slot, flow_res.invoice_slot);
 			(invoice, invoice_persisted_path)
 		},
 		_ => panic!(),

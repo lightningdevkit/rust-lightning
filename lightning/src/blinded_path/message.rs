@@ -474,7 +474,7 @@ pub enum AsyncPaymentsContext {
 		/// An identifier for the async recipient that is requesting that a [`StaticInvoice`] be served
 		/// on their behalf.
 		///
-		/// Useful when surfaced alongside the below `invoice_id` when payers send an
+		/// Useful when surfaced alongside the below `invoice_slot` when payers send an
 		/// [`InvoiceRequest`], to pull the specific static invoice from the database.
 		///
 		/// Also useful to rate limit the invoices being persisted on behalf of a particular recipient.
@@ -485,13 +485,6 @@ pub enum AsyncPaymentsContext {
 		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		recipient_id: Vec<u8>,
-		/// A random identifier for the specific [`StaticInvoice`] that the recipient is requesting be
-		/// served on their behalf. Useful when surfaced alongside the above `recipient_id` when payers
-		/// send an [`InvoiceRequest`], to pull the specific static invoice from the database.
-		///
-		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
-		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-		invoice_id: u128,
 		/// The slot number for the specific [`StaticInvoice`] that the recipient is requesting be
 		/// served on their behalf. Useful when surfaced alongside the above `recipient_id` when payers
 		/// send an [`InvoiceRequest`], to pull the specific static invoice from the database. This id
@@ -600,9 +593,8 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	},
 	(5, ServeStaticInvoice) => {
 		(0, recipient_id, required),
-		(2, invoice_id, required),
+		(2, invoice_slot, required),
 		(4, path_absolute_expiry, required),
-		(6, invoice_slot, required),
 	},
 );
 
