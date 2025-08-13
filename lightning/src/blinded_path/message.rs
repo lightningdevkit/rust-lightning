@@ -494,6 +494,13 @@ pub enum AsyncPaymentsContext {
 		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		invoice_id: u128,
+		/// The slot number for the specific [`StaticInvoice`] that the recipient is requesting be
+		/// served on their behalf. Useful when surfaced alongside the above `recipient_id` when payers
+		/// send an [`InvoiceRequest`], to pull the specific static invoice from the database.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		invoice_slot: u16,
 		/// The time as duration since the Unix epoch at which this path expires and messages sent over
 		/// it should be ignored.
 		///
@@ -595,6 +602,7 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 		(0, recipient_id, required),
 		(2, invoice_id, required),
 		(4, path_absolute_expiry, required),
+		(6, invoice_slot, required),
 	},
 );
 
