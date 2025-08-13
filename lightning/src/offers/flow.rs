@@ -1374,7 +1374,8 @@ where
 	/// wants us (the static invoice server) to serve [`StaticInvoice`]s to payers on their behalf.
 	/// Sends out [`OfferPaths`] onion messages in response.
 	pub fn handle_offer_paths_request<ES: Deref>(
-		&self, context: AsyncPaymentsContext, peers: Vec<MessageForwardNode>, entropy_source: ES,
+		&self, request: &OfferPathsRequest, context: AsyncPaymentsContext,
+		peers: Vec<MessageForwardNode>, entropy_source: ES,
 	) -> Option<(OfferPaths, MessageContext)>
 	where
 		ES::Target: EntropySource,
@@ -1420,6 +1421,7 @@ where
 			MessageContext::AsyncPayments(AsyncPaymentsContext::ServeStaticInvoice {
 				recipient_id,
 				invoice_id,
+				invoice_slot: request.invoice_slot,
 				path_absolute_expiry,
 			})
 		};
@@ -1588,7 +1590,7 @@ where
 	/// [`ServeStaticInvoice::invoice`]: crate::onion_message::async_payments::ServeStaticInvoice::invoice
 	pub fn verify_serve_static_invoice_message(
 		&self, message: &ServeStaticInvoice, context: AsyncPaymentsContext,
-	) -> Result<(Vec<u8>, u128), ()> {
+	) -> Result<(Vec<u8>, u16, u128), ()> {
 		if message.invoice.is_expired_no_std(self.duration_since_epoch()) {
 			return Err(());
 		}
@@ -1599,13 +1601,14 @@ where
 			AsyncPaymentsContext::ServeStaticInvoice {
 				recipient_id,
 				invoice_id,
+				invoice_slot,
 				path_absolute_expiry,
 			} => {
 				if self.duration_since_epoch() > path_absolute_expiry {
 					return Err(());
 				}
 
-				return Ok((recipient_id, invoice_id));
+				return Ok((recipient_id, invoice_slot, invoice_id));
 			},
 			_ => return Err(()),
 		};

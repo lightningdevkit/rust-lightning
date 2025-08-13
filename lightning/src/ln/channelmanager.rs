@@ -14441,13 +14441,13 @@ where
 	L::Target: Logger,
 {
 	fn handle_offer_paths_request(
-		&self, _message: OfferPathsRequest, context: AsyncPaymentsContext,
+		&self, message: OfferPathsRequest, context: AsyncPaymentsContext,
 		responder: Option<Responder>,
 	) -> Option<(OfferPaths, ResponseInstruction)> {
 		let peers = self.get_peers_for_blinded_path();
 		let entropy = &*self.entropy_source;
 		let (message, reply_path_context) =
-			match self.flow.handle_offer_paths_request(context, peers, entropy) {
+			match self.flow.handle_offer_paths_request(&message, context, peers, entropy) {
 				Some(msg) => msg,
 				None => return None,
 			};
@@ -14490,9 +14490,9 @@ where
 			None => return,
 		};
 
-		let (recipient_id, invoice_id) =
+		let (recipient_id, invoice_slot, invoice_id) =
 			match self.flow.verify_serve_static_invoice_message(&message, context) {
-				Ok((recipient_id, inv_id)) => (recipient_id, inv_id),
+				Ok((recipient_id, inv_slot, inv_id)) => (recipient_id, inv_slot, inv_id),
 				Err(()) => return,
 			};
 
@@ -14500,7 +14500,7 @@ where
 		pending_events.push_back((
 			Event::PersistStaticInvoice {
 				invoice: message.invoice,
-				invoice_slot: message.invoice_slot,
+				invoice_slot,
 				recipient_id,
 				invoice_id,
 				invoice_persisted_path: responder,
