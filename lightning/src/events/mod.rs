@@ -1661,18 +1661,11 @@ pub enum Event {
 		/// [`ChannelManager::blinded_paths_for_async_recipient`].
 		///
 		/// When an [`Event::StaticInvoiceRequested`] comes in for the invoice, this id will be surfaced
-		/// and can be used alongside the `invoice_id` to retrieve the invoice from the database.
+		/// and can be used alongside the `invoice_slot` to retrieve the invoice from the database.
 		///
 		///[`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
 		recipient_id: Vec<u8>,
-		/// A random identifier for the invoice. When an [`Event::StaticInvoiceRequested`] comes in for
-		/// the invoice, this id will be surfaced and can be used alongside the `recipient_id` to
-		/// retrieve the invoice from the database.
-		///
-		/// Note that this id will remain the same for all invoice updates corresponding to a particular
-		/// offer that the recipient has cached.
-		invoice_id: u128,
-		/// Once the [`StaticInvoice`], `invoice_slot` and `invoice_id` are persisted,
+		/// Once the [`StaticInvoice`] and `invoice_slot` are persisted,
 		/// [`ChannelManager::static_invoice_persisted`] should be called with this responder to confirm
 		/// to the recipient that their [`Offer`] is ready to be used for async payments.
 		///
