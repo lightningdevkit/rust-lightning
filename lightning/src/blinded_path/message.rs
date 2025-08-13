@@ -448,6 +448,14 @@ pub enum AsyncPaymentsContext {
 	/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
 	/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
 	OfferPaths {
+		/// The "slot" in the static invoice server's database that the invoice corresponding to these
+		/// offer paths should go into, originally set by us in [`OfferPathsRequest::invoice_slot`]. This
+		/// value allows us as the recipient to replace a specific invoice that is stored by the server,
+		/// which is useful for limiting the number of invoices stored by the server while also keeping
+		/// all the invoices persisted with the server fresh.
+		///
+		/// [`OfferPathsRequest::invoice_slot`]: crate::onion_message::async_payments::OfferPathsRequest::invoice_slot
+		invoice_slot: u16,
 		/// The time as duration since the Unix epoch at which this path expires and messages sent over
 		/// it should be ignored.
 		///
@@ -573,6 +581,7 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	},
 	(2, OfferPaths) => {
 		(0, path_absolute_expiry, required),
+		(2, invoice_slot, required),
 	},
 	(3, StaticInvoicePersisted) => {
 		(0, offer_id, required),

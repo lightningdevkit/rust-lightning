@@ -46,7 +46,7 @@ enum OfferStatus {
 	Pending,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct AsyncReceiveOffer {
 	offer: Offer,
 	/// The time as duration since the Unix epoch at which this offer was created. Useful when
@@ -304,8 +304,8 @@ impl AsyncReceiveOfferCache {
 	/// until it succeeds, see [`AsyncReceiveOfferCache`] docs.
 	pub(super) fn cache_pending_offer(
 		&mut self, offer: Offer, offer_paths_absolute_expiry_secs: Option<u64>, offer_nonce: Nonce,
-		update_static_invoice_path: Responder, duration_since_epoch: Duration,
-	) -> Result<u16, ()> {
+		update_static_invoice_path: Responder, duration_since_epoch: Duration, cache_slot: u16,
+	) -> Result<(), ()> {
 		self.prune_expired_offers(duration_since_epoch, false);
 
 		if !self.should_build_offer_with_paths(
@@ -316,25 +316,23 @@ impl AsyncReceiveOfferCache {
 			return Err(());
 		}
 
-		let idx = match self.needs_new_offer_idx(duration_since_epoch) {
-			Some(idx) => idx,
-			None => return Err(()),
-		};
-
-		match self.offers.get_mut(idx) {
-			Some(offer_opt) => {
-				*offer_opt = Some(AsyncReceiveOffer {
-					offer,
-					created_at: duration_since_epoch,
-					offer_nonce,
-					status: OfferStatus::Pending,
-					update_static_invoice_path,
-				});
-			},
-			None => return Err(()),
+		let slot_needs_new_offer = self.offers.get(cache_slot as usize) == Some(&None)
+			|| self
+				.unused_offers_needing_refresh(duration_since_epoch)
+				.find(|(idx, _)| *idx == cache_slot as usize)
+				.is_some();
+		if !slot_needs_new_offer {
+			return Err(());
 		}
 
-		Ok(idx.try_into().map_err(|_| ())?)
+		self.offers[cache_slot as usize] = Some(AsyncReceiveOffer {
+			offer,
+			created_at: duration_since_epoch,
+			offer_nonce,
+			status: OfferStatus::Pending,
+			update_static_invoice_path,
+		});
+		Ok(())
 	}
 
 	/// If we have any empty slots in the cache or offers that can and should be replaced with a fresh
@@ -372,14 +370,9 @@ impl AsyncReceiveOfferCache {
 			return None;
 		}
 
-		// Filter for unused offers where longer than OFFER_REFRESH_THRESHOLD time has passed since they
-		// were last updated, so they are stale enough to warrant replacement.
-		let awhile_ago = duration_since_epoch.saturating_sub(OFFER_REFRESH_THRESHOLD);
-		self.unused_ready_offers()
-			.filter(|(_, offer, _)| offer.created_at < awhile_ago)
-			// Get the stalest offer and return its index
-			.min_by(|(_, offer_a, _), (_, offer_b, _)| offer_a.created_at.cmp(&offer_b.created_at))
-			.map(|(idx, _, _)| idx)
+		self.unused_offers_needing_refresh(duration_since_epoch)
+			.min_by(|(_, offer_a), (_, offer_b)| offer_a.created_at.cmp(&offer_b.created_at))
+			.map(|(idx, _)| idx)
 	}
 
 	/// Returns an iterator over (offer_idx, offer)
@@ -440,6 +433,21 @@ impl AsyncReceiveOfferCache {
 					offer_slot,
 					&offer.update_static_invoice_path,
 				))
+			} else {
+				None
+			}
+		})
+	}
+
+	// Filter for unused offers where longer than OFFER_REFRESH_THRESHOLD time has passed since they
+	// were last updated, so they are stale enough to warrant replacement.
+	fn unused_offers_needing_refresh(
+		&self, duration_since_epoch: Duration,
+	) -> impl Iterator<Item = (usize, &AsyncReceiveOffer)> {
+		let awhile_ago = duration_since_epoch.saturating_sub(OFFER_REFRESH_THRESHOLD);
+		self.unused_ready_offers().filter_map(move |(idx, offer, _)| {
+			if offer.created_at < awhile_ago {
+				Some((idx, offer))
 			} else {
 				None
 			}
