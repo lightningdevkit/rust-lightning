@@ -15695,15 +15695,28 @@ where
 						},
 						None,
 					));
-					for (channel_htlc_source, payment_hash) in channel.inflight_htlc_sources() {
-						let mut found_htlc = false;
-						for (monitor_htlc_source, _) in monitor.get_all_current_outbound_htlcs() {
-							if *channel_htlc_source == monitor_htlc_source {
-								found_htlc = true;
-								break;
-							}
-						}
-						if !found_htlc {
+					// Collecting all outbound HTLC sources into a HashSet allows for efficient,
+					// O(1) average-time lookups. This also avoids a slow, nested O(n*m) loop later on.
+					let monitor_htlc_sources: HashSet<HTLCSource> = monitor
+						.get_all_current_outbound_htlcs()
+						.into_iter()
+						.map(|(source, _)| source)
+						.collect();
+
+					// Grouping all HTLCs from the `ChannelManager` by their
+					// `payment_hash`, ensures that we treat all identical HTLCs
+					// as a single logical unit, enabling us to fail them all immediately.
+					let mut htlcs_by_hash: HashMap<PaymentHash, Vec<HTLCSource>> = new_hash_map();
+					for (source, payment_hash) in channel.inflight_htlc_sources() {
+						htlcs_by_hash.entry(*payment_hash).or_default().push(source.clone());
+					}
+
+					for (payment_hash, htlc_sources) in htlcs_by_hash {
+						let is_any_htlc_missing = htlc_sources
+							.iter()
+							.any(|source| !monitor_htlc_sources.contains(source));
+
+						if is_any_htlc_missing {
 							// If we have some HTLCs in the channel which are not present in the newer
 							// ChannelMonitor, they have been removed and should be failed back to
 							// ensure we don't forget them entirely. Note that if the missing HTLC(s)
@@ -15714,17 +15727,24 @@ where
 							let logger = WithChannelContext::from(
 								&args.logger,
 								&channel.context,
-								Some(*payment_hash),
+								Some(payment_hash),
 							);
 							log_info!(logger,
-								"Failing HTLC with hash {} as it is missing in the ChannelMonitor for channel {} but was present in the (stale) ChannelManager",
-								&channel.context.channel_id(), &payment_hash);
-							failed_htlcs.push((
-								channel_htlc_source.clone(),
-								*payment_hash,
-								channel.context.get_counterparty_node_id(),
-								channel.context.channel_id(),
-							));
+								"Failing ALL HTLCs with hash {} as it is missing in the ChannelMonitor for channel {} but was present in the (stale) ChannelManager",
+								&payment_hash, &channel.context.channel_id());
+
+							// Since at least one HTLC was missing, we now
+							// iterate through the entire group we collected and add each one to the
+							// `failed_htlcs` list. This guarantees that all identical HTLCs are
+							// failed back at the same time, not just the single one we detected was missing.
+							for source in htlc_sources {
+								failed_htlcs.push((
+									source,
+									payment_hash,
+									channel.context.get_counterparty_node_id(),
+									channel.context.channel_id(),
+								));
+							}
 						}
 					}
 				} else {
