@@ -1688,7 +1688,7 @@ pub enum Event {
 	/// them via [`ChannelManager::set_paths_to_static_invoice_server`].
 	///
 	/// If we previously persisted a [`StaticInvoice`] from an [`Event::PersistStaticInvoice`] that
-	/// matches the below `recipient_id` and `invoice_id`, that invoice should be retrieved now
+	/// matches the below `recipient_id` and `invoice_slot`, that invoice should be retrieved now
 	/// and forwarded to the payer via [`ChannelManager::send_static_invoice`].
 	///
 	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
@@ -1697,13 +1697,13 @@ pub enum Event {
 	/// [`ChannelManager::send_static_invoice`]: crate::ln::channelmanager::ChannelManager::send_static_invoice
 	StaticInvoiceRequested {
 		/// An identifier for the recipient previously surfaced in
-		/// [`Event::PersistStaticInvoice::recipient_id`]. Useful when paired with the `invoice_id` to
+		/// [`Event::PersistStaticInvoice::recipient_id`]. Useful when paired with the `invoice_slot` to
 		/// retrieve the [`StaticInvoice`] requested by the payer.
 		recipient_id: Vec<u8>,
-		/// A random identifier for the invoice being requested, previously surfaced in
-		/// [`Event::PersistStaticInvoice::invoice_id`]. Useful when paired with the `recipient_id` to
+		/// The slot number for the invoice being requested, previously surfaced in
+		/// [`Event::PersistStaticInvoice::invoice_slot`]. Useful when paired with the `recipient_id` to
 		/// retrieve the [`StaticInvoice`] requested by the payer.
-		invoice_id: u128,
+		invoice_slot: u16,
 		/// The path over which the [`StaticInvoice`] will be sent to the payer, which should be
 		/// provided to [`ChannelManager::send_static_invoice`] along with the invoice.
 		///

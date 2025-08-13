@@ -14317,9 +14317,9 @@ where
 
 				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
 					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
-					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_id }) => {
+					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot }) => {
 						self.pending_events.lock().unwrap().push_back((Event::StaticInvoiceRequested {
-							recipient_id, invoice_id, reply_path: responder
+							recipient_id, invoice_slot, reply_path: responder
 						}, None));
 
 						return None
