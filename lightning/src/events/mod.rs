@@ -1634,7 +1634,6 @@ pub enum Event {
 	///
 	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
 	/// [`ChannelManager::set_paths_to_static_invoice_server`]: crate::ln::channelmanager::ChannelManager::set_paths_to_static_invoice_server
-	#[cfg(async_payments)]
 	PersistStaticInvoice {
 		/// The invoice that should be persisted and later provided to payers when handling a future
 		/// [`Event::StaticInvoiceRequested`].
@@ -1651,6 +1650,8 @@ pub enum Event {
 		///
 		/// When an [`Event::StaticInvoiceRequested`] comes in for the invoice, this id will be surfaced
 		/// and can be used alongside the `invoice_id` to retrieve the invoice from the database.
+		///
+		///[`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
 		recipient_id: Vec<u8>,
 		/// A random identifier for the invoice. When an [`Event::StaticInvoiceRequested`] comes in for
 		/// the invoice, this id will be surfaced and can be used alongside the `recipient_id` to
@@ -1682,7 +1683,6 @@ pub enum Event {
 	/// [`ChannelManager::set_paths_to_static_invoice_server`]: crate::ln::channelmanager::ChannelManager::set_paths_to_static_invoice_server
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`ChannelManager::send_static_invoice`]: crate::ln::channelmanager::ChannelManager::send_static_invoice
-	#[cfg(async_payments)]
 	StaticInvoiceRequested {
 		/// An identifier for the recipient previously surfaced in
 		/// [`Event::PersistStaticInvoice::recipient_id`]. Useful when paired with the `invoice_id` to
@@ -2175,13 +2175,11 @@ impl Writeable for Event {
 					(8, former_temporary_channel_id, required),
 				});
 			},
-			#[cfg(async_payments)]
 			&Event::PersistStaticInvoice { .. } => {
 				45u8.write(writer)?;
 				// No need to write these events because we can just restart the static invoice negotiation
 				// on startup.
 			},
-			#[cfg(async_payments)]
 			&Event::StaticInvoiceRequested { .. } => {
 				47u8.write(writer)?;
 				// Never write StaticInvoiceRequested events as buffered onion messages aren't serialized.
@@ -2768,10 +2766,8 @@ impl MaybeReadable for Event {
 				}))
 			},
 			// Note that we do not write a length-prefixed TLV for PersistStaticInvoice events.
-			#[cfg(async_payments)]
 			45u8 => Ok(None),
 			// Note that we do not write a length-prefixed TLV for StaticInvoiceRequested events.
-			#[cfg(async_payments)]
 			47u8 => Ok(None),
 			// Note that we do not write a length-prefixed TLV for FundingTransactionReadyForSigning events.
 			49u8 => Ok(None),

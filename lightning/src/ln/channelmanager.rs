@@ -34,8 +34,9 @@ use bitcoin::{secp256k1, Sequence};
 #[cfg(splicing)]
 use bitcoin::{ScriptBuf, TxIn, Weight};
 
-use crate::blinded_path::message::MessageForwardNode;
-use crate::blinded_path::message::{AsyncPaymentsContext, OffersContext};
+use crate::blinded_path::message::{
+	AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, OffersContext,
+};
 use crate::blinded_path::payment::{
 	AsyncBolt12OfferContext, Bolt12OfferContext, PaymentContext, UnauthenticatedReceiveTlvs,
 };
@@ -102,6 +103,7 @@ use crate::offers::offer::Offer;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::Refund;
 use crate::offers::signer;
+use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{
 	AsyncPaymentsMessage, AsyncPaymentsMessageHandler, HeldHtlcAvailable, OfferPaths,
 	OfferPathsRequest, ReleaseHeldHtlc, ServeStaticInvoice, StaticInvoicePersisted,
@@ -130,21 +132,12 @@ use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::scid_utils::fake_scid;
 use crate::util::ser::{
 	BigSize, FixedLengthReader, LengthReadable, MaybeReadable, Readable, ReadableArgs, VecWriter,
-	Writeable, Writer,
+	WithoutLength, Writeable, Writer,
 };
 use crate::util::wakers::{Future, Notifier};
 
-#[cfg(all(test, async_payments))]
+#[cfg(test)]
 use crate::blinded_path::payment::BlindedPaymentPath;
-#[cfg(async_payments)]
-use {
-	crate::blinded_path::message::BlindedMessagePath,
-	crate::offers::offer::Amount,
-	crate::offers::static_invoice::{
-		StaticInvoice, StaticInvoiceBuilder,
-		DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY,
-	},
-};
 
 #[cfg(feature = "dnssec")]
 use {
@@ -5121,7 +5114,7 @@ where
 		)
 	}
 
-	#[cfg(all(test, async_payments))]
+	#[cfg(test)]
 	pub(crate) fn test_modify_pending_payment<Fn>(&self, payment_id: &PaymentId, mut callback: Fn)
 	where
 		Fn: FnMut(&mut PendingOutboundPayment),
@@ -5251,7 +5244,6 @@ where
 		)
 	}
 
-	#[cfg(async_payments)]
 	fn check_refresh_async_receive_offer_cache(&self, timer_tick_occurred: bool) {
 		let peers = self.get_peers_for_blinded_path();
 		let channels = self.list_usable_channels();
@@ -5275,27 +5267,24 @@ where
 		}
 	}
 
-	#[cfg(all(test, async_payments))]
+	#[cfg(test)]
 	pub(crate) fn test_check_refresh_async_receive_offers(&self) {
 		self.check_refresh_async_receive_offer_cache(false);
 	}
 
 	/// Should be called after handling an [`Event::PersistStaticInvoice`], where the `Responder`
 	/// comes from [`Event::PersistStaticInvoice::invoice_persisted_path`].
-	#[cfg(async_payments)]
 	pub fn static_invoice_persisted(&self, invoice_persisted_path: Responder) {
 		self.flow.static_invoice_persisted(invoice_persisted_path);
 	}
 
 	/// Forwards a [`StaticInvoice`] in response to an [`Event::StaticInvoiceRequested`].
-	#[cfg(async_payments)]
 	pub fn send_static_invoice(
 		&self, invoice: StaticInvoice, responder: Responder,
 	) -> Result<(), Bolt12SemanticError> {
 		self.flow.enqueue_static_invoice(invoice, responder)
 	}
 
-	#[cfg(async_payments)]
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId,
 	) -> Result<(), Bolt12PaymentError> {
@@ -5345,7 +5334,6 @@ where
 		res
 	}
 
-	#[cfg(async_payments)]
 	fn send_payment_for_static_invoice(
 		&self, payment_id: PaymentId,
 	) -> Result<(), Bolt12PaymentError> {
@@ -7818,7 +7806,6 @@ where
 			self.pending_outbound_payments
 				.remove_stale_payments(duration_since_epoch, &self.pending_events);
 
-			#[cfg(async_payments)]
 			self.check_refresh_async_receive_offer_cache(true);
 
 			// Technically we don't need to do this here, but if we have holding cell entries in a
@@ -12067,7 +12054,6 @@ where
 	/// interactively building a [`StaticInvoice`] with the static invoice server.
 	///
 	/// Useful for posting offers to receive payments later, such as posting an offer on a website.
-	#[cfg(async_payments)]
 	pub fn get_async_receive_offer(&self) -> Result<Offer, ()> {
 		let (offer, needs_persist) = self.flow.get_async_receive_offer()?;
 		if needs_persist {
@@ -12078,79 +12064,17 @@ where
 		Ok(offer)
 	}
 
-	/// Create an offer for receiving async payments as an often-offline recipient.
-	///
-	/// Instead of using this method, it is preferable to call
-	/// [`Self::set_paths_to_static_invoice_server`] and retrieve the automatically built offer via
-	/// [`Self::get_async_receive_offer`].
-	///
-	/// If you want to build the [`StaticInvoice`] manually using this method instead, you MUST:
-	/// 1. Provide at least 1 [`BlindedMessagePath`] terminating at an always-online node that will
-	///    serve the [`StaticInvoice`] created from this offer on our behalf.
-	/// 2. Use [`Self::create_static_invoice_builder`] to create a [`StaticInvoice`] from this
-	///    [`Offer`] plus the returned [`Nonce`], and provide the static invoice to the
-	///    aforementioned always-online node.
-	#[cfg(async_payments)]
-	pub fn create_async_receive_offer_builder(
-		&self, message_paths_to_always_online_node: Vec<BlindedMessagePath>,
-	) -> Result<(OfferBuilder<DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError> {
-		let entropy = &*self.entropy_source;
-		self.flow.create_async_receive_offer_builder(entropy, message_paths_to_always_online_node)
-	}
-
-	/// Creates a [`StaticInvoiceBuilder`] from the corresponding [`Offer`] and [`Nonce`] that were
-	/// created via [`Self::create_async_receive_offer_builder`]. If `relative_expiry` is unset, the
-	/// invoice's expiry will default to [`STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY`].
-	///
-	/// Instead of using this method to manually build the invoice, it is preferable to set
-	/// [`Self::set_paths_to_static_invoice_server`] and retrieve the automatically built offer via
-	/// [`Self::get_async_receive_offer`].
-	#[cfg(async_payments)]
-	pub fn create_static_invoice_builder<'a>(
-		&self, offer: &'a Offer, offer_nonce: Nonce, relative_expiry: Option<Duration>,
-	) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError> {
-		let entropy = &*self.entropy_source;
-		let amount_msat = offer.amount().and_then(|amount| match amount {
-			Amount::Bitcoin { amount_msats } => Some(amount_msats),
-			Amount::Currency { .. } => None,
-		});
-
-		let relative_expiry = relative_expiry.unwrap_or(STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY);
-		let relative_expiry_secs: u32 = relative_expiry.as_secs().try_into().unwrap_or(u32::MAX);
-
-		let created_at = self.duration_since_epoch();
-		let payment_secret = inbound_payment::create_for_spontaneous_payment(
-			&self.inbound_payment_key,
-			amount_msat,
-			relative_expiry_secs,
-			created_at.as_secs(),
-			None,
-		)
-		.map_err(|()| Bolt12SemanticError::InvalidAmount)?;
-
-		self.flow.create_static_invoice_builder(
-			&self.router,
-			entropy,
-			offer,
-			offer_nonce,
-			payment_secret,
-			relative_expiry_secs,
-			self.list_usable_channels(),
-			self.get_peers_for_blinded_path(),
-		)
-	}
-
 	/// Sets the [`BlindedMessagePath`]s that we will use as an async recipient to interactively build
 	/// [`Offer`]s with a static invoice server, so the server can serve [`StaticInvoice`]s to payers
 	/// on our behalf when we're offline.
 	///
 	/// This method only needs to be called once when the server first takes on the recipient as a
 	/// client, or when the paths change, e.g. if the paths are set to expire at a particular time.
-	#[cfg(async_payments)]
 	pub fn set_paths_to_static_invoice_server(
 		&self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
 	) -> Result<(), ()> {
-		self.flow.set_paths_to_static_invoice_server(paths_to_static_invoice_server)?;
+		let peers = self.get_peers_for_blinded_path();
+		self.flow.set_paths_to_static_invoice_server(paths_to_static_invoice_server, peers)?;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		Ok(())
@@ -12551,7 +12475,6 @@ where
 	/// The provided `recipient_id` must uniquely identify the recipient, and will be surfaced later
 	/// when the recipient provides us with a static invoice to persist and serve to payers on their
 	/// behalf.
-	#[cfg(async_payments)]
 	pub fn blinded_paths_for_async_recipient(
 		&self, recipient_id: Vec<u8>, relative_expiry: Option<Duration>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
@@ -12559,7 +12482,6 @@ where
 		self.flow.blinded_paths_for_async_recipient(recipient_id, relative_expiry, peers)
 	}
 
-	#[cfg(any(test, async_payments))]
 	pub(super) fn duration_since_epoch(&self) -> Duration {
 		#[cfg(not(feature = "std"))]
 		let now = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
@@ -12591,7 +12513,12 @@ where
 			.collect::<Vec<_>>()
 	}
 
-	#[cfg(all(test, async_payments))]
+	#[cfg(test)]
+	pub(super) fn test_get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
+		self.get_peers_for_blinded_path()
+	}
+
+	#[cfg(test)]
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
 	pub(super) fn test_create_blinded_payment_paths(
@@ -13088,9 +13015,8 @@ where
 
 		// While we usually refresh the AsyncReceiveOfferCache on a timer, we also want to start
 		// interactively building offers as soon as we can after startup. We can't start building offers
-		// until we have some peer connection(s) to send onion messages over, so as a minor optimization
+		// until we have some peer connection(s) to receive onion messages over, so as a minor optimization
 		// refresh the cache when a peer connects.
-		#[cfg(async_payments)]
 		self.check_refresh_async_receive_offer_cache(false);
 		res
 	}
@@ -14362,7 +14288,6 @@ where
 						log_trace!($logger, "Failed paying invoice: {:?}", e);
 						InvoiceError::from_string(format!("{:?}", e))
 					},
-					#[cfg(async_payments)]
 					Err(Bolt12PaymentError::BlindedPathCreationFailed) => {
 						let err_msg = "Failed to create a blinded path back to ourselves";
 						log_trace!($logger, "{}", err_msg);
@@ -14395,7 +14320,6 @@ where
 					Ok(InvreqResponseInstructions::SendStaticInvoice {
 						recipient_id: _recipient_id, invoice_id: _invoice_id
 					}) => {
-						#[cfg(async_payments)]
 						self.pending_events.lock().unwrap().push_back((Event::StaticInvoiceRequested {
 							recipient_id: _recipient_id, invoice_id: _invoice_id, reply_path: responder
 						}, None));
@@ -14460,7 +14384,6 @@ where
 				let res = self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id);
 				handle_pay_invoice_res!(res, invoice, logger);
 			},
-			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(invoice) => {
 				let payment_id = match context {
 					Some(OffersContext::OutboundPayment { payment_id, .. }) => payment_id,
@@ -14523,95 +14446,77 @@ where
 		&self, _message: OfferPathsRequest, _context: AsyncPaymentsContext,
 		_responder: Option<Responder>,
 	) -> Option<(OfferPaths, ResponseInstruction)> {
-		#[cfg(async_payments)]
-		{
-			let peers = self.get_peers_for_blinded_path();
-			let entropy = &*self.entropy_source;
-			let (message, reply_path_context) =
-				match self.flow.handle_offer_paths_request(_context, peers, entropy) {
-					Some(msg) => msg,
-					None => return None,
-				};
-			_responder.map(|resp| (message, resp.respond_with_reply_path(reply_path_context)))
-		}
-
-		#[cfg(not(async_payments))]
-		None
+		let peers = self.get_peers_for_blinded_path();
+		let entropy = &*self.entropy_source;
+		let (message, reply_path_context) =
+			match self.flow.handle_offer_paths_request(_context, peers, entropy) {
+				Some(msg) => msg,
+				None => return None,
+			};
+		_responder.map(|resp| (message, resp.respond_with_reply_path(reply_path_context)))
 	}
 
 	fn handle_offer_paths(
 		&self, _message: OfferPaths, _context: AsyncPaymentsContext, _responder: Option<Responder>,
 	) -> Option<(ServeStaticInvoice, ResponseInstruction)> {
-		#[cfg(async_payments)]
-		{
-			let responder = match _responder {
-				Some(responder) => responder,
-				None => return None,
-			};
-			let (serve_static_invoice, reply_context) = match self.flow.handle_offer_paths(
-				_message,
-				_context,
-				responder.clone(),
-				self.get_peers_for_blinded_path(),
-				self.list_usable_channels(),
-				&*self.entropy_source,
-				&*self.router,
-			) {
-				Some((msg, ctx)) => (msg, ctx),
-				None => return None,
-			};
+		let responder = match _responder {
+			Some(responder) => responder,
+			None => return None,
+		};
+		let (serve_static_invoice, reply_context) = match self.flow.handle_offer_paths(
+			_message,
+			_context,
+			responder.clone(),
+			self.get_peers_for_blinded_path(),
+			self.list_usable_channels(),
+			&*self.entropy_source,
+			&*self.router,
+		) {
+			Some((msg, ctx)) => (msg, ctx),
+			None => return None,
+		};
 
-			// We cached a new pending offer, so persist the cache.
-			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		// We cached a new pending offer, so persist the cache.
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-			let response_instructions = responder.respond_with_reply_path(reply_context);
-			return Some((serve_static_invoice, response_instructions));
-		}
-
-		#[cfg(not(async_payments))]
-		return None;
+		let response_instructions = responder.respond_with_reply_path(reply_context);
+		return Some((serve_static_invoice, response_instructions));
 	}
 
 	fn handle_serve_static_invoice(
 		&self, _message: ServeStaticInvoice, _context: AsyncPaymentsContext,
 		_responder: Option<Responder>,
 	) {
-		#[cfg(async_payments)]
-		{
-			let responder = match _responder {
-				Some(resp) => resp,
-				None => return,
+		let responder = match _responder {
+			Some(resp) => resp,
+			None => return,
+		};
+
+		let (recipient_id, invoice_id) =
+			match self.flow.verify_serve_static_invoice_message(&_message, _context) {
+				Ok((recipient_id, inv_id)) => (recipient_id, inv_id),
+				Err(()) => return,
 			};
 
-			let (recipient_id, invoice_id) =
-				match self.flow.verify_serve_static_invoice_message(&_message, _context) {
-					Ok((recipient_id, inv_id)) => (recipient_id, inv_id),
-					Err(()) => return,
-				};
-
-			let mut pending_events = self.pending_events.lock().unwrap();
-			pending_events.push_back((
-				Event::PersistStaticInvoice {
-					invoice: _message.invoice,
-					invoice_slot: _message.invoice_slot,
-					recipient_id,
-					invoice_id,
-					invoice_persisted_path: responder,
-				},
-				None,
-			));
-		}
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push_back((
+			Event::PersistStaticInvoice {
+				invoice: _message.invoice,
+				invoice_slot: _message.invoice_slot,
+				recipient_id,
+				invoice_id,
+				invoice_persisted_path: responder,
+			},
+			None,
+		));
 	}
 
 	fn handle_static_invoice_persisted(
 		&self, _message: StaticInvoicePersisted, _context: AsyncPaymentsContext,
 	) {
-		#[cfg(async_payments)]
-		{
-			let should_persist = self.flow.handle_static_invoice_persisted(_context);
-			if should_persist {
-				let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-			}
+		let should_persist = self.flow.handle_static_invoice_persisted(_context);
+		if should_persist {
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		}
 	}
 
@@ -14619,31 +14524,23 @@ where
 		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
 		_responder: Option<Responder>,
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
-		#[cfg(async_payments)]
-		{
-			self.flow.verify_inbound_async_payment_context(_context).ok()?;
-			return _responder.map(|responder| (ReleaseHeldHtlc {}, responder.respond()));
-		}
-		#[cfg(not(async_payments))]
-		return None;
+		self.flow.verify_inbound_async_payment_context(_context).ok()?;
+		return _responder.map(|responder| (ReleaseHeldHtlc {}, responder.respond()));
 	}
 
 	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
-		#[cfg(async_payments)]
-		{
-			let payment_id = match _context {
-				AsyncPaymentsContext::OutboundPayment { payment_id } => payment_id,
-				_ => return,
-			};
+		let payment_id = match _context {
+			AsyncPaymentsContext::OutboundPayment { payment_id } => payment_id,
+			_ => return,
+		};
 
-			if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
-				log_trace!(
-					self.logger,
-					"Failed to release held HTLC with payment id {}: {:?}",
-					payment_id,
-					e
-				);
-			}
+		if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
+			log_trace!(
+				self.logger,
+				"Failed to release held HTLC with payment id {}: {:?}",
+				payment_id,
+				e
+			);
 		}
 	}
 
@@ -15483,7 +15380,7 @@ where
 			(15, self.inbound_payment_id_secret, required),
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
-			(21, self.flow.writeable_async_receive_offer_cache(), required),
+			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
 		});
 
 		Ok(())
