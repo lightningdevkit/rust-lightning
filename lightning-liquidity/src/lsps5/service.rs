@@ -68,8 +68,8 @@ pub struct LSPS5ServiceConfig {
 
 /// Default maximum number of webhooks allowed per client.
 pub const DEFAULT_MAX_WEBHOOKS_PER_CLIENT: u32 = 10;
-/// Default notification cooldown time in hours.
-pub const DEFAULT_NOTIFICATION_COOLDOWN_HOURS: Duration = Duration::from_secs(60 * 60); // 1 hour
+/// Default notification cooldown time in minutes.
+pub const NOTIFICATION_COOLDOWN_TIME: Duration = Duration::from_secs(60); // 1 minute
 
 // Default configuration for LSPS5 service.
 impl Default for LSPS5ServiceConfig {
@@ -330,13 +330,13 @@ where
 	/// node key, and enqueues HTTP POSTs to all registered webhook URLs for that client.
 	///
 	/// This may fail if a similar notification was sent too recently,
-	/// violating the notification cooldown period defined in [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`].
+	/// violating the notification cooldown period defined in [`NOTIFICATION_COOLDOWN_TIME`].
 	///
 	/// # Parameters
 	/// - `client_id`: the client's node-ID whose webhooks should be invoked.
 	///
 	/// [`WebhookNotificationMethod::LSPS5PaymentIncoming`]: super::msgs::WebhookNotificationMethod::LSPS5PaymentIncoming
-	/// [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`]: super::service::DEFAULT_NOTIFICATION_COOLDOWN_HOURS
+	/// [`NOTIFICATION_COOLDOWN_TIME`]: super::service::NOTIFICATION_COOLDOWN_TIME
 	pub fn notify_payment_incoming(&self, client_id: PublicKey) -> Result<(), LSPS5ProtocolError> {
 		let notification = WebhookNotification::payment_incoming();
 		self.send_notifications_to_client_webhooks(client_id, notification)
@@ -351,14 +351,14 @@ where
 	/// registered webhooks.
 	///
 	/// This may fail if a similar notification was sent too recently,
-	/// violating the notification cooldown period defined in [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`].
+	/// violating the notification cooldown period defined in [`NOTIFICATION_COOLDOWN_TIME`].
 	///
 	/// # Parameters
 	/// - `client_id`: the client's node-ID whose webhooks should be invoked.
 	/// - `timeout`: the block height at which the channel contract will expire.
 	///
 	/// [`WebhookNotificationMethod::LSPS5ExpirySoon`]: super::msgs::WebhookNotificationMethod::LSPS5ExpirySoon
-	/// [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`]: super::service::DEFAULT_NOTIFICATION_COOLDOWN_HOURS
+	/// [`NOTIFICATION_COOLDOWN_TIME`]: super::service::NOTIFICATION_COOLDOWN_TIME
 	pub fn notify_expiry_soon(
 		&self, client_id: PublicKey, timeout: u32,
 	) -> Result<(), LSPS5ProtocolError> {
@@ -373,13 +373,13 @@ where
 	/// signs it, and sends it to all of the client's registered webhook URLs.
 	///
 	/// This may fail if a similar notification was sent too recently,
-	/// violating the notification cooldown period defined in [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`].
+	/// violating the notification cooldown period defined in [`NOTIFICATION_COOLDOWN_TIME`].
 	///
 	/// # Parameters
 	/// - `client_id`: the client's node-ID whose webhooks should be invoked.
 	///
 	/// [`WebhookNotificationMethod::LSPS5LiquidityManagementRequest`]: super::msgs::WebhookNotificationMethod::LSPS5LiquidityManagementRequest
-	/// [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`]: super::service::DEFAULT_NOTIFICATION_COOLDOWN_HOURS
+	/// [`NOTIFICATION_COOLDOWN_TIME`]: super::service::NOTIFICATION_COOLDOWN_TIME
 	pub fn notify_liquidity_management_request(
 		&self, client_id: PublicKey,
 	) -> Result<(), LSPS5ProtocolError> {
@@ -394,13 +394,13 @@ where
 	/// notification, signs it, and enqueues HTTP POSTs to each registered webhook.
 	///
 	/// This may fail if a similar notification was sent too recently,
-	/// violating the notification cooldown period defined in [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`].
+	/// violating the notification cooldown period defined in [`NOTIFICATION_COOLDOWN_TIME`].
 	///
 	/// # Parameters
 	/// - `client_id`: the client's node-ID whose webhooks should be invoked.
 	///
 	/// [`WebhookNotificationMethod::LSPS5OnionMessageIncoming`]: super::msgs::WebhookNotificationMethod::LSPS5OnionMessageIncoming
-	/// [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`]: super::service::DEFAULT_NOTIFICATION_COOLDOWN_HOURS
+	/// [`NOTIFICATION_COOLDOWN_TIME`]: super::service::NOTIFICATION_COOLDOWN_TIME
 	pub fn notify_onion_message_incoming(
 		&self, client_id: PublicKey,
 	) -> Result<(), LSPS5ProtocolError> {
@@ -429,7 +429,7 @@ where
 					.last_notification_sent
 					.get(&notification.method)
 					.map(|last_sent| now.duration_since(&last_sent))
-					.map_or(false, |duration| duration < DEFAULT_NOTIFICATION_COOLDOWN_HOURS)
+					.map_or(false, |duration| duration < NOTIFICATION_COOLDOWN_TIME)
 			});
 
 			if rate_limit_applies {

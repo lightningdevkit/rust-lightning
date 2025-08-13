@@ -109,9 +109,9 @@ pub enum LSPS5ProtocolError {
 	/// A notification was sent too frequently.
 	///
 	/// This error indicates that the LSP is sending notifications
-	/// too quickly, violating the notification cooldown [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`]
+	/// too quickly, violating the notification cooldown [`NOTIFICATION_COOLDOWN_TIME`]
 	///
-	/// [`DEFAULT_NOTIFICATION_COOLDOWN_HOURS`]: super::service::DEFAULT_NOTIFICATION_COOLDOWN_HOURS
+	/// [`NOTIFICATION_COOLDOWN_TIME`]: super::service::NOTIFICATION_COOLDOWN_TIME
 	SlowDownError,
 }
 
