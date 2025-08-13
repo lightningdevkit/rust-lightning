@@ -11451,26 +11451,17 @@ where
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
-		let pending_splice = if let Some(ref mut pending_splice) = &mut self.pending_splice {
-			pending_splice
-		} else {
-			return Err(ChannelError::Ignore(format!("Channel is not in pending splice")));
-		};
-
 		// TODO(splicing): Add check that we are the splice (quiescence) initiator
 
-		let funding_negotiation_context = match pending_splice.funding_negotiation.take() {
+		let funding_negotiation_context = match &self
+			.pending_splice
+			.as_ref()
+			.ok_or(ChannelError::Ignore(format!("Channel is not in pending splice")))?
+			.funding_negotiation
+		{
 			Some(FundingNegotiation::AwaitingAck(context)) => context,
-			Some(FundingNegotiation::ConstructingTransaction(funding, constructor)) => {
-				pending_splice.funding_negotiation =
-					Some(FundingNegotiation::ConstructingTransaction(funding, constructor));
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Got unexpected splice_ack; splice negotiation already in progress"
-				)));
-			},
-			Some(FundingNegotiation::AwaitingSignatures(funding)) => {
-				pending_splice.funding_negotiation =
-					Some(FundingNegotiation::AwaitingSignatures(funding));
+			Some(FundingNegotiation::ConstructingTransaction(_, _))
+			| Some(FundingNegotiation::AwaitingSignatures(_)) => {
 				return Err(ChannelError::WarnAndDisconnect(format!(
 					"Got unexpected splice_ack; splice negotiation already in progress"
 				)));
@@ -11507,6 +11498,17 @@ where
 			self.funding.get_value_satoshis(),
 		);
 
+		let pending_splice =
+			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
+		// TODO: Good candidate for a let else statement once MSRV >= 1.65
+		let funding_negotiation_context = if let Some(FundingNegotiation::AwaitingAck(context)) =
+			pending_splice.funding_negotiation.take()
+		{
+			context
+		} else {
+			panic!("We should have returned an error earlier!");
+		};
+
 		let mut interactive_tx_constructor = funding_negotiation_context
 			.into_interactive_tx_constructor(
 				&self.context,
@@ -11525,8 +11527,6 @@ where
 
 		debug_assert!(self.interactive_tx_signing_session.is_none());
 
-		let pending_splice =
-			self.pending_splice.as_mut().expect("pending_splice should still be set");
 		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction(
 			splice_funding,
 			interactive_tx_constructor,
