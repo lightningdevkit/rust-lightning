@@ -10748,7 +10748,9 @@ where
 		// Note on channel reserve requirement pre-check: as the splice acceptor does not contribute,
 		// it can't go below reserve, therefore no pre-check is done here.
 
-		// TODO(splicing): Early check for reserve requirement
+		if their_funding_contribution_satoshis.is_negative() {
+			self.validate_their_negative_funding_contribution(&splice_funding)?;
+		}
 
 		Ok(splice_funding)
 	}
