@@ -9,11 +9,15 @@
 
 //! Contains the main bLIP-52 / LSPS2 server-side object, [`LSPS2ServiceHandler`].
 
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use lightning::util::persist::KVStore;
 
 use core::cmp::Ordering as CmpOrdering;
+use core::future::Future;
 use core::ops::Deref;
+use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::events::EventQueue;
@@ -28,6 +32,9 @@ use crate::lsps2::utils::{
 	compute_opening_fee, is_expired_opening_fee_params, is_valid_opening_fee_params,
 };
 use crate::message_queue::{MessageQueue, MessageQueueNotifierGuard};
+use crate::persist::{
+	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+};
 use crate::prelude::hash_map::Entry;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -38,6 +45,7 @@ use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::types::ChannelId;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
+use lightning::util::ser::Writeable;
 use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
 
 use lightning_types::payment::PaymentHash;
@@ -564,11 +572,13 @@ macro_rules! get_or_insert_peer_state_entry {
 }
 
 /// The main object allowing to send and receive bLIP-52 / LSPS2 messages.
-pub struct LSPS2ServiceHandler<CM: Deref>
+pub struct LSPS2ServiceHandler<CM: Deref, K: Deref + Clone>
 where
 	CM::Target: AChannelManager,
+	K::Target: KVStore,
 {
 	channel_manager: CM,
+	kv_store: K,
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
@@ -578,14 +588,15 @@ where
 	config: LSPS2ServiceConfig,
 }
 
-impl<CM: Deref> LSPS2ServiceHandler<CM>
+impl<CM: Deref, K: Deref + Clone> LSPS2ServiceHandler<CM, K>
 where
 	CM::Target: AChannelManager,
+	K::Target: KVStore,
 {
 	/// Constructs a `LSPS2ServiceHandler`.
 	pub(crate) fn new(
 		pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>, channel_manager: CM,
-		config: LSPS2ServiceConfig,
+		kv_store: K, config: LSPS2ServiceConfig,
 	) -> Self {
 		Self {
 			pending_messages,
@@ -595,6 +606,7 @@ where
 			peer_by_channel_id: RwLock::new(new_hash_map()),
 			total_pending_requests: AtomicUsize::new(0),
 			channel_manager,
+			kv_store,
 			config,
 		}
 	}
@@ -1442,6 +1454,45 @@ where
 		);
 	}
 
+	fn persist_peer_state(
+		&self, counterparty_node_id: PublicKey, peer_state: &PeerState,
+	) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + Send>> {
+		let key = counterparty_node_id.to_string();
+		let encoded = peer_state.encode();
+		self.kv_store.write(
+			LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key,
+			encoded,
+		)
+	}
+
+	pub(crate) fn persist(
+		&self,
+	) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + Send>> {
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		let mut futures = Vec::new();
+		for (counterparty_node_id, inner_state_lock) in outer_state_lock.iter() {
+			let peer_state_lock = inner_state_lock.lock().unwrap();
+			let fut = self.persist_peer_state(*counterparty_node_id, &*peer_state_lock);
+			futures.push(fut);
+		}
+
+		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
+		// introduce some batching to upper-bound the number of requests inflight at any given
+		// time.
+		Box::pin(async move {
+			let mut ret = Ok(());
+			for fut in futures {
+				let res = fut.await;
+				if res.is_err() {
+					ret = res;
+				}
+			}
+			ret
+		})
+	}
+
 	pub(crate) fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
 		let mut outer_state_lock = self.per_peer_state.write().unwrap();
 		let is_prunable =
@@ -1468,9 +1519,10 @@ where
 	}
 }
 
-impl<CM: Deref> LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM>
+impl<CM: Deref, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM, K>
 where
 	CM::Target: AChannelManager,
+	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS2Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(2);
