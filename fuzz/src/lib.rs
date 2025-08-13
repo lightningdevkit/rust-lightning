@@ -42,6 +42,7 @@ pub mod process_network_graph;
 pub mod process_onion_failure;
 pub mod refund_deser;
 pub mod router;
+pub mod static_invoice_deser;
 pub mod zbase32;
 
 pub mod msg_targets;
