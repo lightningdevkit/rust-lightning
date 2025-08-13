@@ -3003,7 +3003,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 							// transaction reaches ANTI_REORG_DELAY confirmations.
 							res.insert(source.clone(), htlc.clone());
 						}
-					} else if let Some(state) = us.htlcs_resolved_on_chain.iter().filter(filter).next() {
+					} else if let Some(state) =
+						us.htlcs_resolved_on_chain.iter().filter(filter).next()
+					{
 						if let Some(source) = source {
 							if state.payment_preimage.is_none() {
 								res.insert(source.clone(), htlc.clone());
@@ -3013,7 +3015,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				}
 			};
 		}
-
 
 		// We only want HTLCs with ANTI_REORG_DELAY confirmations, which implies the commitment
 		// transaction has least ANTI_REORG_DELAY confirmations for any dependent HTLC transactions
