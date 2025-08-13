@@ -21,7 +21,6 @@ use crate::prelude::*;
 use crate::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use crate::utils::time::TimeProvider;
 
-use crate::lsps2::service::{OutboundJITChannelState, OutboundJITStage};
 use bitcoin::secp256k1::PublicKey;
 
 use lightning::ln::channelmanager::AChannelManager;
@@ -153,15 +152,14 @@ where
 	/// Returns whether a request from the given client should be accepted.
 	///
 	/// Prior activity includes an existing open channel, an active LSPS1 flow,
-	/// or an LSPS2 flow that has progressed to at least
-	/// [`OutboundJITChannelState::PendingChannelOpen`].
+	/// or an LSPS2 flow that has an opening or open JIT channel.
 	pub(crate) fn can_accept_request(
-		&self, client_id: &PublicKey, lsps2_max_state: Option<OutboundJITChannelState>,
+		&self, client_id: &PublicKey, lsps2_has_opening_or_open_jit_channel: bool,
 		lsps1_has_activity: bool,
 	) -> bool {
 		self.client_has_open_channel(client_id)
+			|| lsps2_has_opening_or_open_jit_channel
 			|| lsps1_has_activity
-			|| lsps2_max_state.map_or(false, |s| s.stage() >= OutboundJITStage::PendingChannelOpen)
 	}
 
 	fn check_prune_stale_webhooks<'a>(
@@ -502,7 +500,7 @@ where
 			.map_err(|_| LSPS5ProtocolError::UnknownError)
 	}
 
-	pub(crate) fn client_has_open_channel(&self, client_id: &PublicKey) -> bool {
+	fn client_has_open_channel(&self, client_id: &PublicKey) -> bool {
 		self.channel_manager
 			.get_cm()
 			.list_channels()
