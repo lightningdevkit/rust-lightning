@@ -350,6 +350,10 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(
 			assert!(events.is_empty(), "expected no message, got {}", events.len());
 		}
 	}
+
+	// Enable SignerOp::GetPerCommitmentPoint since testing the node serialization round-trip
+	// involves using the signer to get the previous holder commitment point.
+	dst.enable_channel_signer_op(&src_node_id, &chan_id, SignerOp::GetPerCommitmentPoint);
 }
 
 #[test]

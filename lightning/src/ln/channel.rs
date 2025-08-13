@@ -1310,32 +1310,31 @@ impl HolderCommitmentPoint {
 		}
 	}
 
-	/// If we are not pending the next commitment point, this method advances the commitment number
-	/// and requests the next commitment point from the signer. Returns `Ok` if we were able to
-	/// advance our commitment number (even if we are still pending the next commitment point).
+	/// Returns the next [`HolderCommitmentPoint`] if it is available (i.e., was previously obtained
+	/// from `signer` and cached), leaving the callee unchanged.
 	///
-	/// If our signer is not ready to provide the next commitment point, we will advance but won't
-	/// be able to advance again immediately. Instead, this hould be tried again later in
-	/// `signer_unblocked` via `try_resolve_pending`.
+	/// Otherwise, returns an `Err` indicating that the signer wasn't previously ready and that the
+	/// caller must invoke `try_resolve_pending` once it is.
 	///
-	/// If our signer is ready to provide the next commitment point, the next call to `advance` will
-	/// succeed.
+	/// Attempts to resolve the next point on the *returned* [`HolderCommitmentPoint`], if `signer`
+	/// is ready, allowing *it* to be advanced later. Otherwise, `try_resolve_pending` must be
+	/// called on it, typically via [`Channel::signer_maybe_unblocked`].
 	pub fn advance<SP: Deref, L: Deref>(
-		&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
-	) -> Result<(), ()>
+		&self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
+	) -> Result<HolderCommitmentPoint, ()>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
 		if let Some(next_point) = self.next_point {
-			*self = Self {
+			let mut advanced_point = Self {
 				transaction_number: self.transaction_number - 1,
 				point: next_point,
 				next_point: None,
 			};
 
-			self.try_resolve_pending(signer, secp_ctx, logger);
-			return Ok(());
+			advanced_point.try_resolve_pending(signer, secp_ctx, logger);
+			return Ok(advanced_point);
 		}
 		Err(())
 	}
@@ -1851,6 +1850,7 @@ where
 					pending_funding: vec![],
 					context: chan.context,
 					interactive_tx_signing_session: chan.interactive_tx_signing_session,
+					previous_holder_commitment_point: None,
 					next_holder_commitment_point: initial_holder_commitment_point,
 					#[cfg(splicing)]
 					pending_splice: None,
@@ -2766,9 +2766,9 @@ where
 
 	#[rustfmt::skip]
 	fn initial_commitment_signed<L: Deref>(
-		&mut self, channel_id: ChannelId, counterparty_signature: Signature, holder_commitment_point: &mut HolderCommitmentPoint,
+		&mut self, channel_id: ChannelId, counterparty_signature: Signature, holder_commitment_point: &HolderCommitmentPoint,
 		best_block: BestBlock, signer_provider: &SP, logger: &L,
-	) -> Result<(ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, CommitmentTransaction), ChannelError>
+	) -> Result<(ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, CommitmentTransaction, HolderCommitmentPoint), ChannelError>
 	where
 		L::Target: Logger
 	{
@@ -2824,14 +2824,16 @@ where
 				context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			}
 		}
-		if holder_commitment_point.advance(&context.holder_signer, &context.secp_ctx, logger).is_err() {
-			// We only fail to advance our commitment point/number if we're currently
-			// waiting for our signer to unblock and provide a commitment point.
-			// We cannot send accept_channel/open_channel before this has occurred, so if we
-			// err here by the time we receive funding_created/funding_signed, something has gone wrong.
-			debug_assert!(false, "We should be ready to advance our commitment point by the time we receive {}", self.received_msg());
-			return Err(ChannelError::close("Failed to advance holder commitment point".to_owned()));
-		}
+		let advanced_holder_commitment_point = holder_commitment_point
+			.advance(&context.holder_signer, &context.secp_ctx, logger)
+			.map_err(|()| {
+				// We only fail to advance our commitment point/number if we're currently
+				// waiting for our signer to unblock and provide a commitment point.
+				// We cannot send accept_channel/open_channel before this has occurred, so if we
+				// err here by the time we receive funding_created/funding_signed, something has gone wrong.
+				debug_assert!(false, "We should be ready to advance our commitment point by the time we receive {}", self.received_msg());
+				ChannelError::close("Failed to advance holder commitment point".to_owned())
+			})?;
 
 		let context = self.context();
 		let funding = self.funding();
@@ -2852,7 +2854,7 @@ where
 
 		self.context_mut().cur_counterparty_commitment_transaction_number -= 1;
 
-		Ok((channel_monitor, counterparty_initial_commitment_tx))
+		Ok((channel_monitor, counterparty_initial_commitment_tx, advanced_holder_commitment_point))
 	}
 
 	fn is_v2_established(&self) -> bool;
@@ -6066,6 +6068,9 @@ where
 	/// This field is cleared once our counterparty sends a `channel_ready`.
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 
+	/// The commitment point used for the previous commitment transaction.
+	previous_holder_commitment_point: Option<HolderCommitmentPoint>,
+
 	/// The commitment point used for the next holder commitment transaction.
 	next_holder_commitment_point: HolderCommitmentPoint,
 
@@ -6947,12 +6952,13 @@ where
 			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		}
 
-		let next_holder_commitment_point = &mut self.next_holder_commitment_point.clone();
-		self.context.assert_no_commitment_advancement(next_holder_commitment_point.transaction_number(), "initial commitment_signed");
+		let holder_commitment_point = self.next_holder_commitment_point.clone();
+		self.context.assert_no_commitment_advancement(holder_commitment_point.transaction_number(), "initial commitment_signed");
 
-		let (channel_monitor, _) = self.initial_commitment_signed(
-			self.context.channel_id(), msg.signature, next_holder_commitment_point, best_block, signer_provider, logger)?;
-		self.next_holder_commitment_point = *next_holder_commitment_point;
+		let (channel_monitor, _, next_holder_commitment_point) = self.initial_commitment_signed(
+			self.context.channel_id(), msg.signature, &holder_commitment_point, best_block, signer_provider, logger)?;
+		self.previous_holder_commitment_point = Some(holder_commitment_point);
+		self.next_holder_commitment_point = next_holder_commitment_point;
 
 		log_info!(logger, "Received initial commitment_signed from peer for channel {}", &self.context.channel_id());
 
@@ -7083,14 +7089,10 @@ where
 			));
 		}
 
+		let holder_commitment_point = &self.next_holder_commitment_point;
 		let update = self
 			.context
-			.validate_commitment_signed(
-				&self.funding,
-				&self.next_holder_commitment_point,
-				msg,
-				logger,
-			)
+			.validate_commitment_signed(&self.funding, holder_commitment_point, msg, logger)
 			.map(|(commitment_tx, htlcs_included)| {
 				let (nondust_htlc_sources, dust_htlcs) =
 					Self::get_commitment_htlc_data(&htlcs_included);
@@ -7212,23 +7214,24 @@ where
 	where
 		L::Target: Logger,
 	{
-		if self
+		let next_holder_commitment_point = self
 			.next_holder_commitment_point
 			.advance(&self.context.holder_signer, &self.context.secp_ctx, logger)
-			.is_err()
-		{
-			// We only fail to advance our commitment point/number if we're currently
-			// waiting for our signer to unblock and provide a commitment point.
-			// During post-funding channel operation, we only advance our point upon
-			// receiving a commitment_signed, and our counterparty cannot send us
-			// another commitment signed until we've provided a new commitment point
-			// in revoke_and_ack, which requires unblocking our signer and completing
-			// the advance to the next point. This should be unreachable since
-			// a new commitment_signed should fail at our signature checks in
-			// validate_commitment_signed.
-			debug_assert!(false, "We should be ready to advance our commitment point by the time we receive commitment_signed");
-			return Err(ChannelError::close("Failed to advance our commitment point".to_owned()));
-		}
+			.map_err(|()| {
+				// We only fail to advance our commitment point/number if we're currently
+				// waiting for our signer to unblock and provide a commitment point.
+				// During post-funding channel operation, we only advance our point upon
+				// receiving a commitment_signed, and our counterparty cannot send us
+				// another commitment signed until we've provided a new commitment point
+				// in revoke_and_ack, which requires unblocking our signer and completing
+				// the advance to the next point. This should be unreachable since
+				// a new commitment_signed should fail at our signature checks in
+				// validate_commitment_signed.
+				debug_assert!(false, "We should be ready to advance our commitment point by the time we receive commitment_signed");
+				ChannelError::close("Failed to advance our commitment point".to_owned())
+			})?;
+		self.previous_holder_commitment_point = Some(self.next_holder_commitment_point);
+		self.next_holder_commitment_point = next_holder_commitment_point;
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_commitment = false;
@@ -12042,15 +12045,15 @@ where
 		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated(_)) {
 			return Err((self, ChannelError::close("Received funding_signed in strange state!".to_owned())));
 		}
-		let mut initial_holder_commitment_point = match self.unfunded_context.initial_holder_commitment_point {
+		let initial_holder_commitment_point = match self.unfunded_context.initial_holder_commitment_point {
 			Some(point) => point,
 			None => return Err((self, ChannelError::close("Received funding_signed before our first commitment point was available".to_owned()))),
 		};
 		self.context.assert_no_commitment_advancement(initial_holder_commitment_point.transaction_number(), "funding_signed");
 
-		let (channel_monitor, _) = match self.initial_commitment_signed(
+		let (channel_monitor, _, next_holder_commitment_point) = match self.initial_commitment_signed(
 			self.context.channel_id(), msg.signature,
-			&mut initial_holder_commitment_point, best_block, signer_provider, logger
+			&initial_holder_commitment_point, best_block, signer_provider, logger
 		) {
 			Ok(channel_monitor) => channel_monitor,
 			Err(err) => return Err((self, err)),
@@ -12063,7 +12066,8 @@ where
 			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
-			next_holder_commitment_point: initial_holder_commitment_point,
+			previous_holder_commitment_point: Some(initial_holder_commitment_point),
+			next_holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
 		};
@@ -12318,7 +12322,7 @@ where
 			// channel.
 			return Err((self, ChannelError::close("Received funding_created after we got the channel!".to_owned())));
 		}
-		let mut initial_holder_commitment_point = match self.unfunded_context.initial_holder_commitment_point {
+		let initial_holder_commitment_point = match self.unfunded_context.initial_holder_commitment_point {
 			Some(point) => point,
 			None => return Err((self, ChannelError::close("Received funding_created before our first commitment point was available".to_owned()))),
 		};
@@ -12327,9 +12331,9 @@ where
 		let funding_txo = OutPoint { txid: msg.funding_txid, index: msg.funding_output_index };
 		self.funding.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 
-		let (channel_monitor, counterparty_initial_commitment_tx) = match self.initial_commitment_signed(
+		let (channel_monitor, counterparty_initial_commitment_tx, next_holder_commitment_point) = match self.initial_commitment_signed(
 			ChannelId::v1_from_funding_outpoint(funding_txo), msg.signature,
-			&mut initial_holder_commitment_point, best_block, signer_provider, logger
+			&initial_holder_commitment_point, best_block, signer_provider, logger
 		) {
 			Ok(channel_monitor) => channel_monitor,
 			Err(err) => return Err((self, err)),
@@ -12349,7 +12353,8 @@ where
 			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
-			next_holder_commitment_point: initial_holder_commitment_point,
+			previous_holder_commitment_point: Some(initial_holder_commitment_point),
+			next_holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
 		};
@@ -13868,6 +13873,21 @@ where
 			},
 		};
 
+		let previous_holder_commitment_point = {
+			let previous_holder_commitment_transaction_number =
+				next_holder_commitment_point.transaction_number() + 1;
+			let previous_point = holder_signer
+				.get_per_commitment_point(previous_holder_commitment_transaction_number, &secp_ctx)
+				.expect(
+					"Must be able to derive the previous commitment point upon channel restoration",
+				);
+			Some(HolderCommitmentPoint {
+				transaction_number: previous_holder_commitment_transaction_number,
+				point: previous_point,
+				next_point: Some(next_holder_commitment_point.point()),
+			})
+		};
+
 		Ok(FundedChannel {
 			funding: FundingScope {
 				value_to_self_msat,
@@ -14005,6 +14025,7 @@ where
 				is_holder_quiescence_initiator: None,
 			},
 			interactive_tx_signing_session,
+			previous_holder_commitment_point,
 			next_holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
