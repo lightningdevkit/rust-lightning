@@ -581,16 +581,15 @@ impl PeerState {
 		self.webhooks.iter().map(|(n, _)| n).cloned().collect()
 	}
 
-	fn insert_webhook(&mut self, name: LSPS5AppName, hook: Webhook) -> bool {
+	fn insert_webhook(&mut self, name: LSPS5AppName, hook: Webhook) {
 		for (n, h) in self.webhooks.iter_mut() {
 			if *n == name {
 				*h = hook;
-				return true;
+				return;
 			}
 		}
 
 		self.webhooks.push((name, hook));
-		false
 	}
 
 	fn remove_webhook(&mut self, name: &LSPS5AppName) -> bool {
