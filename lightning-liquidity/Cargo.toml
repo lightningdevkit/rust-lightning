@@ -18,6 +18,7 @@ default = ["std", "time"]
 std = ["lightning/std"]
 time = ["std"]
 backtrace = ["dep:backtrace"]
+_test_utils = []
 
 [dependencies]
 lightning = { version = "0.2.0", path = "../lightning", default-features = false }

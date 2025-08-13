@@ -45,6 +45,7 @@ use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::ln::wire::CustomMessageReader;
 use lightning::sign::{EntropySource, NodeSigner};
 use lightning::util::logger::Level;
+use lightning::util::persist::{KVStore, KVStoreSync, KVStoreSyncWrapper};
 use lightning::util::ser::{LengthLimitedRead, LengthReadable};
 use lightning::util::wakers::Future;
 
@@ -108,12 +109,17 @@ pub trait ALiquidityManager {
 	type Filter: Filter + ?Sized;
 	/// A type that may be dereferenced to [`Self::Filter`].
 	type C: Deref<Target = Self::Filter> + Clone;
+	/// A type implementing [`KVStore`].
+	type KVStore: KVStore + ?Sized;
+	/// A type that may be dereferenced to [`Self::KVStore`].
+	type K: Deref<Target = Self::KVStore> + Clone;
 	/// A type implementing [`TimeProvider`].
 	type TimeProvider: TimeProvider + ?Sized;
 	/// A type that may be dereferenced to [`Self::TimeProvider`].
 	type TP: Deref<Target = Self::TimeProvider> + Clone;
 	/// Returns a reference to the actual [`LiquidityManager`] object.
-	fn get_lm(&self) -> &LiquidityManager<Self::ES, Self::NS, Self::CM, Self::C, Self::TP>;
+	fn get_lm(&self)
+		-> &LiquidityManager<Self::ES, Self::NS, Self::CM, Self::C, Self::K, Self::TP>;
 }
 
 impl<
@@ -121,13 +127,15 @@ impl<
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
+		K: Deref + Clone,
 		TP: Deref + Clone,
-	> ALiquidityManager for LiquidityManager<ES, NS, CM, C, TP>
+	> ALiquidityManager for LiquidityManager<ES, NS, CM, C, K, TP>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	type EntropySource = ES::Target;
@@ -138,9 +146,109 @@ where
 	type CM = CM;
 	type Filter = C::Target;
 	type C = C;
+	type KVStore = K::Target;
+	type K = K;
 	type TimeProvider = TP::Target;
 	type TP = TP;
-	fn get_lm(&self) -> &LiquidityManager<ES, NS, CM, C, TP> {
+	fn get_lm(&self) -> &LiquidityManager<ES, NS, CM, C, K, TP> {
+		self
+	}
+}
+
+/// A trivial trait which describes any [`LiquidityManagerSync`].
+///
+/// This is not exported to bindings users as general cover traits aren't useful in other
+/// languages.
+pub trait ALiquidityManagerSync {
+	/// A type implementing [`EntropySource`]
+	type EntropySource: EntropySource + ?Sized;
+	/// A type that may be dereferenced to [`Self::EntropySource`].
+	type ES: Deref<Target = Self::EntropySource> + Clone;
+	/// A type implementing [`NodeSigner`]
+	type NodeSigner: NodeSigner + ?Sized;
+	/// A type that may be dereferenced to [`Self::NodeSigner`].
+	type NS: Deref<Target = Self::NodeSigner> + Clone;
+	/// A type implementing [`AChannelManager`]
+	type AChannelManager: AChannelManager + ?Sized;
+	/// A type that may be dereferenced to [`Self::AChannelManager`].
+	type CM: Deref<Target = Self::AChannelManager> + Clone;
+	/// A type implementing [`Filter`].
+	type Filter: Filter + ?Sized;
+	/// A type that may be dereferenced to [`Self::Filter`].
+	type C: Deref<Target = Self::Filter> + Clone;
+	/// A type implementing [`KVStoreSync`].
+	type KVStoreSync: KVStoreSync + ?Sized;
+	/// A type that may be dereferenced to [`Self::KVStoreSync`].
+	type KS: Deref<Target = Self::KVStoreSync> + Clone;
+	/// A type implementing [`TimeProvider`].
+	type TimeProvider: TimeProvider + ?Sized;
+	/// A type that may be dereferenced to [`Self::TimeProvider`].
+	type TP: Deref<Target = Self::TimeProvider> + Clone;
+	/// Returns the inner async [`LiquidityManager`] for testing purposes.
+	#[cfg(any(test, feature = "_test_utils"))]
+	fn get_lm_async(
+		&self,
+	) -> Arc<
+		LiquidityManager<
+			Self::ES,
+			Self::NS,
+			Self::CM,
+			Self::C,
+			Arc<KVStoreSyncWrapper<Self::KS>>,
+			Self::TP,
+		>,
+	>;
+	/// Returns a reference to the actual [`LiquidityManager`] object.
+	fn get_lm(
+		&self,
+	) -> &LiquidityManagerSync<Self::ES, Self::NS, Self::CM, Self::C, Self::KS, Self::TP>;
+}
+
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		KS: Deref + Clone,
+		TP: Deref + Clone,
+	> ALiquidityManagerSync for LiquidityManagerSync<ES, NS, CM, C, KS, TP>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	CM::Target: AChannelManager,
+	C::Target: Filter,
+	KS::Target: KVStoreSync,
+	TP::Target: TimeProvider,
+{
+	type EntropySource = ES::Target;
+	type ES = ES;
+	type NodeSigner = NS::Target;
+	type NS = NS;
+	type AChannelManager = CM::Target;
+	type CM = CM;
+	type Filter = C::Target;
+	type C = C;
+	type KVStoreSync = KS::Target;
+	type KS = KS;
+	type TimeProvider = TP::Target;
+	type TP = TP;
+	/// Returns the inner async [`LiquidityManager`] for testing purposes.
+	#[cfg(any(test, feature = "_test_utils"))]
+	fn get_lm_async(
+		&self,
+	) -> Arc<
+		LiquidityManager<
+			Self::ES,
+			Self::NS,
+			Self::CM,
+			Self::C,
+			Arc<KVStoreSyncWrapper<Self::KS>>,
+			Self::TP,
+		>,
+	> {
+		Arc::clone(&self.inner)
+	}
+	fn get_lm(&self) -> &LiquidityManagerSync<ES, NS, CM, C, KS, TP> {
 		self
 	}
 }
@@ -169,12 +277,14 @@ pub struct LiquidityManager<
 	NS: Deref + Clone,
 	CM: Deref + Clone,
 	C: Deref + Clone,
+	K: Deref + Clone,
 	TP: Deref + Clone,
 > where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	pending_messages: Arc<MessageQueue>,
@@ -195,21 +305,29 @@ pub struct LiquidityManager<
 	_client_config: Option<LiquidityClientConfig>,
 	best_block: RwLock<Option<BestBlock>>,
 	_chain_source: Option<C>,
+	kv_store: K,
 }
 
 #[cfg(feature = "time")]
-impl<ES: Deref + Clone, NS: Deref + Clone, CM: Deref + Clone, C: Deref + Clone>
-	LiquidityManager<ES, NS, CM, C, Arc<DefaultTimeProvider>>
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		K: Deref + Clone,
+	> LiquidityManager<ES, NS, CM, C, K, Arc<DefaultTimeProvider>>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	K::Target: KVStore,
 {
 	/// Constructor for the [`LiquidityManager`] using the default system clock
 	pub fn new(
 		entropy_source: ES, node_signer: NS, channel_manager: CM, chain_source: Option<C>,
-		chain_params: Option<ChainParameters>, service_config: Option<LiquidityServiceConfig>,
+		chain_params: Option<ChainParameters>, kv_store: K,
+		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>,
 	) -> Self {
 		let time_provider = Arc::new(DefaultTimeProvider);
@@ -219,6 +337,7 @@ where
 			channel_manager,
 			chain_source,
 			chain_params,
+			kv_store,
 			service_config,
 			client_config,
 			time_provider,
@@ -231,13 +350,15 @@ impl<
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
+		K: Deref + Clone,
 		TP: Deref + Clone,
-	> LiquidityManager<ES, NS, CM, C, TP>
+	> LiquidityManager<ES, NS, CM, C, K, TP>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	/// Constructor for the [`LiquidityManager`] with a custom time provider.
@@ -248,7 +369,8 @@ where
 	/// [`LiquidityClientConfig`] and [`LiquidityServiceConfig`].
 	pub fn new_with_custom_time_provider(
 		entropy_source: ES, node_signer: NS, channel_manager: CM, chain_source: Option<C>,
-		chain_params: Option<ChainParameters>, service_config: Option<LiquidityServiceConfig>,
+		chain_params: Option<ChainParameters>, kv_store: K,
+		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
 	) -> Self {
 		let pending_messages = Arc::new(MessageQueue::new());
@@ -373,6 +495,7 @@ where
 			_client_config: client_config,
 			best_block: RwLock::new(chain_params.map(|chain_params| chain_params.best_block)),
 			_chain_source: chain_source,
+			kv_store,
 		}
 	}
 
@@ -388,7 +511,7 @@ where
 
 	/// Returns a reference to the LSPS1 client-side handler.
 	///
-	/// The returned hendler allows to initiate the LSPS1 client-side flow, i.e., allows to request
+	/// The returned handler allows to initiate the LSPS1 client-side flow, i.e., allows to request
 	/// channels from the configured LSP.
 	pub fn lsps1_client_handler(&self) -> Option<&LSPS1ClientHandler<ES>> {
 		self.lsps1_client_handler.as_ref()
@@ -402,7 +525,7 @@ where
 
 	/// Returns a reference to the LSPS2 client-side handler.
 	///
-	/// The returned hendler allows to initiate the LSPS2 client-side flow. That is, it allows to
+	/// The returned handler allows to initiate the LSPS2 client-side flow. That is, it allows to
 	/// retrieve all necessary data to create 'just-in-time' invoices that, when paid, will have
 	/// the configured LSP open a 'just-in-time' channel.
 	pub fn lsps2_client_handler(&self) -> Option<&LSPS2ClientHandler<ES>> {
@@ -411,21 +534,21 @@ where
 
 	/// Returns a reference to the LSPS2 server-side handler.
 	///
-	/// The returned hendler allows to initiate the LSPS2 service-side flow.
+	/// The returned handler allows to initiate the LSPS2 service-side flow.
 	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM>> {
 		self.lsps2_service_handler.as_ref()
 	}
 
 	/// Returns a reference to the LSPS5 client-side handler.
 	///
-	/// The returned hendler allows to initiate the LSPS5 client-side flow. That is, it allows to
+	/// The returned handler allows to initiate the LSPS5 client-side flow. That is, it allows to
 	pub fn lsps5_client_handler(&self) -> Option<&LSPS5ClientHandler<ES>> {
 		self.lsps5_client_handler.as_ref()
 	}
 
 	/// Returns a reference to the LSPS5 server-side handler.
 	///
-	/// The returned hendler allows to initiate the LSPS5 service-side flow.
+	/// The returned handler allows to initiate the LSPS5 service-side flow.
 	pub fn lsps5_service_handler(&self) -> Option<&LSPS5ServiceHandler<CM, NS, TP>> {
 		self.lsps5_service_handler.as_ref()
 	}
@@ -441,15 +564,10 @@ where
 
 	/// Blocks the current thread until next event is ready and returns it.
 	///
-	/// Typically you would spawn a thread or task that calls this in a loop.
-	///
-	/// **Note**: Users must handle events as soon as possible to avoid an increased event queue
-	/// memory footprint. We will start dropping any generated events after
-	/// [`MAX_EVENT_QUEUE_SIZE`] has been reached.
-	///
-	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
+	/// Only available via the [`LiquidityManagerSync`] interface to avoid having users
+	/// accidentally blocking their async contexts.
 	#[cfg(feature = "std")]
-	pub fn wait_next_event(&self) -> LiquidityEvent {
+	pub(crate) fn wait_next_event(&self) -> LiquidityEvent {
 		self.pending_events.wait_next_event()
 	}
 
@@ -608,13 +726,15 @@ impl<
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
+		K: Deref + Clone,
 		TP: Deref + Clone,
-	> CustomMessageReader for LiquidityManager<ES, NS, CM, C, TP>
+	> CustomMessageReader for LiquidityManager<ES, NS, CM, C, K, TP>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	type CustomMessage = RawLSPSMessage;
@@ -636,13 +756,15 @@ impl<
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
+		K: Deref + Clone,
 		TP: Deref + Clone,
-	> CustomMessageHandler for LiquidityManager<ES, NS, CM, C, TP>
+	> CustomMessageHandler for LiquidityManager<ES, NS, CM, C, K, TP>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	fn handle_custom_message(
@@ -766,13 +888,15 @@ impl<
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
+		K: Deref + Clone,
 		TP: Deref + Clone,
-	> Listen for LiquidityManager<ES, NS, CM, C, TP>
+	> Listen for LiquidityManager<ES, NS, CM, C, K, TP>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	fn filtered_block_connected(
@@ -808,13 +932,15 @@ impl<
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
+		K: Deref + Clone,
 		TP: Deref + Clone,
-	> Confirm for LiquidityManager<ES, NS, CM, C, TP>
+	> Confirm for LiquidityManager<ES, NS, CM, C, K, TP>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	fn transactions_confirmed(
@@ -843,5 +969,332 @@ where
 	fn get_relevant_txids(&self) -> Vec<(bitcoin::Txid, u32, Option<bitcoin::BlockHash>)> {
 		// TODO: Collect relevant txids from all sub-modules that, e.g., LSPS1MessageHandler.
 		Vec::new()
+	}
+}
+
+/// A synchroneous wrapper around [`LiquidityManager`] to be used in contexts where async is not
+/// available.
+pub struct LiquidityManagerSync<
+	ES: Deref + Clone,
+	NS: Deref + Clone,
+	CM: Deref + Clone,
+	C: Deref + Clone,
+	KS: Deref + Clone,
+	TP: Deref + Clone,
+> where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	CM::Target: AChannelManager,
+	C::Target: Filter,
+	KS::Target: KVStoreSync,
+	TP::Target: TimeProvider,
+{
+	inner: Arc<LiquidityManager<ES, NS, CM, C, Arc<KVStoreSyncWrapper<KS>>, TP>>,
+}
+
+#[cfg(feature = "time")]
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		KS: Deref + Clone,
+	> LiquidityManagerSync<ES, NS, CM, C, KS, Arc<DefaultTimeProvider>>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	CM::Target: AChannelManager,
+	KS::Target: KVStoreSync,
+	C::Target: Filter,
+{
+	/// Constructor for the [`LiquidityManagerSync`] using the default system clock
+	///
+	/// Wraps [`LiquidityManager::new`].
+	pub fn new(
+		entropy_source: ES, node_signer: NS, channel_manager: CM, chain_source: Option<C>,
+		chain_params: Option<ChainParameters>, kv_store_sync: KS,
+		service_config: Option<LiquidityServiceConfig>,
+		client_config: Option<LiquidityClientConfig>,
+	) -> Self {
+		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store_sync));
+		let inner = Arc::new(LiquidityManager::new(
+			entropy_source,
+			node_signer,
+			channel_manager,
+			chain_source,
+			chain_params,
+			kv_store,
+			service_config,
+			client_config,
+		));
+		Self { inner }
+	}
+}
+
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		KS: Deref + Clone,
+		TP: Deref + Clone,
+	> LiquidityManagerSync<ES, NS, CM, C, KS, TP>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	CM::Target: AChannelManager,
+	C::Target: Filter,
+	KS::Target: KVStoreSync,
+	TP::Target: TimeProvider,
+{
+	/// Constructor for the [`LiquidityManagerSync`] with a custom time provider.
+	///
+	/// Wraps [`LiquidityManager::new_with_custom_time_provider`].
+	pub fn new_with_custom_time_provider(
+		entropy_source: ES, node_signer: NS, channel_manager: CM, chain_source: Option<C>,
+		chain_params: Option<ChainParameters>, kv_store_sync: KS,
+		service_config: Option<LiquidityServiceConfig>,
+		client_config: Option<LiquidityClientConfig>, time_provider: TP,
+	) -> Self {
+		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store_sync));
+		let inner = Arc::new(LiquidityManager::new_with_custom_time_provider(
+			entropy_source,
+			node_signer,
+			channel_manager,
+			chain_source,
+			chain_params,
+			kv_store,
+			service_config,
+			client_config,
+			time_provider,
+		));
+		Self { inner }
+	}
+
+	/// Returns a reference to the LSPS0 client-side handler.
+	///
+	/// Wraps [`LiquidityManager::lsps0_client_handler`].
+	pub fn lsps0_client_handler(&self) -> &LSPS0ClientHandler<ES> {
+		self.inner.lsps0_client_handler()
+	}
+
+	/// Returns a reference to the LSPS0 server-side handler.
+	///
+	/// Wraps [`LiquidityManager::lsps0_service_handler`].
+	pub fn lsps0_service_handler(&self) -> Option<&LSPS0ServiceHandler> {
+		self.inner.lsps0_service_handler()
+	}
+
+	/// Returns a reference to the LSPS1 client-side handler.
+	///
+	/// Wraps [`LiquidityManager::lsps1_client_handler`].
+	pub fn lsps1_client_handler(&self) -> Option<&LSPS1ClientHandler<ES>> {
+		self.inner.lsps1_client_handler()
+	}
+
+	/// Returns a reference to the LSPS1 server-side handler.
+	///
+	/// Wraps [`LiquidityManager::lsps1_service_handler`].
+	#[cfg(lsps1_service)]
+	pub fn lsps1_service_handler(&self) -> Option<&LSPS1ServiceHandler<ES, CM, C>> {
+		self.inner.lsps1_service_handler()
+	}
+
+	/// Returns a reference to the LSPS2 client-side handler.
+	///
+	/// Wraps [`LiquidityManager::lsps2_client_handler`].
+	pub fn lsps2_client_handler(&self) -> Option<&LSPS2ClientHandler<ES>> {
+		self.inner.lsps2_client_handler()
+	}
+
+	/// Returns a reference to the LSPS2 server-side handler.
+	///
+	/// Wraps [`LiquidityManager::lsps2_service_handler`].
+	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM>> {
+		self.inner.lsps2_service_handler()
+	}
+
+	/// Returns a reference to the LSPS5 client-side handler.
+	///
+	/// Wraps [`LiquidityManager::lsps5_client_handler`].
+	pub fn lsps5_client_handler(&self) -> Option<&LSPS5ClientHandler<ES>> {
+		self.inner.lsps5_client_handler()
+	}
+
+	/// Returns a reference to the LSPS5 server-side handler.
+	///
+	/// Wraps [`LiquidityManager::lsps5_service_handler`].
+	pub fn lsps5_service_handler(&self) -> Option<&LSPS5ServiceHandler<CM, NS, TP>> {
+		self.inner.lsps5_service_handler()
+	}
+
+	/// Returns a [`Future`] that will complete when the next batch of pending messages is ready to
+	/// be processed.
+	///
+	/// Wraps [`LiquidityManager::get_pending_msgs_future`].
+	pub fn get_pending_msgs_future(&self) -> Future {
+		self.inner.get_pending_msgs_future()
+	}
+
+	/// Blocks the current thread until next event is ready and returns it.
+	///
+	/// Typically you would spawn a thread or task that calls this in a loop.
+	///
+	/// **Note**: Users must handle events as soon as possible to avoid an increased event queue
+	/// memory footprint. We will start dropping any generated events after
+	/// [`MAX_EVENT_QUEUE_SIZE`] has been reached.
+	///
+	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
+	#[cfg(feature = "std")]
+	pub fn wait_next_event(&self) -> LiquidityEvent {
+		self.inner.wait_next_event()
+	}
+
+	/// Returns `Some` if an event is ready.
+	///
+	/// Wraps [`LiquidityManager::next_event`].
+	pub fn next_event(&self) -> Option<LiquidityEvent> {
+		self.inner.next_event()
+	}
+
+	/// Returns and clears all events without blocking.
+	///
+	/// Wraps [`LiquidityManager::get_and_clear_pending_events`].
+	pub fn get_and_clear_pending_events(&self) -> Vec<LiquidityEvent> {
+		self.inner.get_and_clear_pending_events()
+	}
+}
+
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		KS: Deref + Clone,
+		TP: Deref + Clone,
+	> CustomMessageReader for LiquidityManagerSync<ES, NS, CM, C, KS, TP>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	CM::Target: AChannelManager,
+	C::Target: Filter,
+	KS::Target: KVStoreSync,
+	TP::Target: TimeProvider,
+{
+	type CustomMessage = RawLSPSMessage;
+
+	fn read<RD: LengthLimitedRead>(
+		&self, message_type: u16, buffer: &mut RD,
+	) -> Result<Option<Self::CustomMessage>, lightning::ln::msgs::DecodeError> {
+		self.inner.read(message_type, buffer)
+	}
+}
+
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		KS: Deref + Clone,
+		TP: Deref + Clone,
+	> CustomMessageHandler for LiquidityManagerSync<ES, NS, CM, C, KS, TP>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	CM::Target: AChannelManager,
+	C::Target: Filter,
+	KS::Target: KVStoreSync,
+	TP::Target: TimeProvider,
+{
+	fn handle_custom_message(
+		&self, msg: Self::CustomMessage, sender_node_id: PublicKey,
+	) -> Result<(), lightning::ln::msgs::LightningError> {
+		self.inner.handle_custom_message(msg, sender_node_id)
+	}
+
+	fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
+		self.inner.get_and_clear_pending_msg()
+	}
+
+	fn provided_node_features(&self) -> NodeFeatures {
+		self.inner.provided_node_features()
+	}
+
+	fn provided_init_features(&self, their_node_id: PublicKey) -> InitFeatures {
+		self.inner.provided_init_features(their_node_id)
+	}
+
+	fn peer_disconnected(&self, counterparty_node_id: bitcoin::secp256k1::PublicKey) {
+		self.inner.peer_disconnected(counterparty_node_id)
+	}
+	fn peer_connected(
+		&self, counterparty_node_id: bitcoin::secp256k1::PublicKey,
+		init_msg: &lightning::ln::msgs::Init, inbound: bool,
+	) -> Result<(), ()> {
+		self.inner.peer_connected(counterparty_node_id, init_msg, inbound)
+	}
+}
+
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		KS: Deref + Clone,
+		TP: Deref + Clone,
+	> Listen for LiquidityManagerSync<ES, NS, CM, C, KS, TP>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	CM::Target: AChannelManager,
+	C::Target: Filter,
+	KS::Target: KVStoreSync,
+	TP::Target: TimeProvider,
+{
+	fn filtered_block_connected(
+		&self, header: &bitcoin::block::Header, txdata: &chain::transaction::TransactionData,
+		height: u32,
+	) {
+		self.inner.filtered_block_connected(header, txdata, height)
+	}
+
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		self.inner.blocks_disconnected(fork_point);
+	}
+}
+
+impl<
+		ES: Deref + Clone,
+		NS: Deref + Clone,
+		CM: Deref + Clone,
+		C: Deref + Clone,
+		KS: Deref + Clone,
+		TP: Deref + Clone,
+	> Confirm for LiquidityManagerSync<ES, NS, CM, C, KS, TP>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	CM::Target: AChannelManager,
+	C::Target: Filter,
+	KS::Target: KVStoreSync,
+	TP::Target: TimeProvider,
+{
+	fn transactions_confirmed(
+		&self, header: &bitcoin::block::Header, txdata: &chain::transaction::TransactionData,
+		height: u32,
+	) {
+		self.inner.transactions_confirmed(header, txdata, height)
+	}
+
+	fn transaction_unconfirmed(&self, txid: &bitcoin::Txid) {
+		self.inner.transaction_unconfirmed(txid)
+	}
+
+	fn best_block_updated(&self, header: &bitcoin::block::Header, height: u32) {
+		self.inner.best_block_updated(header, height)
+	}
+
+	fn get_relevant_txids(&self) -> Vec<(bitcoin::Txid, u32, Option<bitcoin::BlockHash>)> {
+		self.inner.get_relevant_txids()
 	}
 }

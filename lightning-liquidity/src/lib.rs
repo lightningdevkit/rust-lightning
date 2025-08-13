@@ -73,5 +73,6 @@ mod tests;
 pub mod utils;
 
 pub use manager::{
-	ALiquidityManager, LiquidityClientConfig, LiquidityManager, LiquidityServiceConfig,
+	ALiquidityManager, ALiquidityManagerSync, LiquidityClientConfig, LiquidityManager,
+	LiquidityManagerSync, LiquidityServiceConfig,
 };
