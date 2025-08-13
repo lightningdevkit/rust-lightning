@@ -246,10 +246,11 @@ impl AsyncReceiveOfferCache {
 			.ok_or(())
 	}
 
-	/// Remove expired offers from the cache, returning whether new offers are needed.
+	/// Remove expired offers from the cache, returning the first slot number in the cache that needs
+	/// a new offer, if any exist.
 	pub(super) fn prune_expired_offers(
 		&mut self, duration_since_epoch: Duration, force_reset_request_attempts: bool,
-	) -> bool {
+	) -> Option<u16> {
 		// Remove expired offers from the cache.
 		let mut offer_was_removed = false;
 		for offer_opt in self.offers.iter_mut() {
@@ -268,8 +269,14 @@ impl AsyncReceiveOfferCache {
 			self.reset_offer_paths_request_attempts()
 		}
 
-		self.needs_new_offer_idx(duration_since_epoch).is_some()
-			&& self.offer_paths_request_attempts < MAX_UPDATE_ATTEMPTS
+		if self.offer_paths_request_attempts >= MAX_UPDATE_ATTEMPTS {
+			return None;
+		}
+
+		self.needs_new_offer_idx(duration_since_epoch).and_then(|idx| {
+			debug_assert!(idx < MAX_CACHED_OFFERS_TARGET);
+			idx.try_into().ok()
+		})
 	}
 
 	/// Returns whether the new paths we've just received from the static invoice server should be used

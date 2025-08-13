@@ -1266,11 +1266,11 @@ where
 
 		// Update the cache to remove expired offers, and check to see whether we need new offers to be
 		// interactively built with the static invoice server.
-		let needs_new_offers =
-			cache.prune_expired_offers(duration_since_epoch, timer_tick_occurred);
-		if !needs_new_offers {
-			return Ok(());
-		}
+		let needs_new_offer_slot =
+			match cache.prune_expired_offers(duration_since_epoch, timer_tick_occurred) {
+				Some(idx) => idx,
+				None => return Ok(()),
+			};
 
 		// If we need new offers, send out offer paths request messages to the static invoice server.
 		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPaths {
@@ -1289,7 +1289,9 @@ where
 
 		let mut pending_async_payments_messages =
 			self.pending_async_payments_messages.lock().unwrap();
-		let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {});
+		let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {
+			invoice_slot: needs_new_offer_slot,
+		});
 		enqueue_onion_message_with_reply_paths(
 			message,
 			cache.paths_to_static_invoice_server(),
