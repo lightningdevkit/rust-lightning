@@ -79,9 +79,11 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning::util::dyn_signer::DynSigner;
+
+use std::collections::VecDeque;
 use std::cell::RefCell;
 use std::cmp;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[inline]
@@ -110,7 +112,7 @@ pub fn slice_to_be24(v: &[u8]) -> u32 {
 struct InputData {
 	data: Vec<u8>,
 	read_pos: AtomicUsize,
-	halt_fee_est_reads: AtomicBool,
+	fee_estimates: Mutex<VecDeque<u32>>,
 }
 impl InputData {
 	fn get_slice(&self, len: usize) -> Option<&[u8]> {
@@ -137,14 +139,10 @@ struct FuzzEstimator {
 }
 impl FeeEstimator for FuzzEstimator {
 	fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
-		if self.input.halt_fee_est_reads.load(Ordering::Acquire) {
-			return 253;
+		if let Some(val) = self.input.fee_estimates.lock().unwrap().pop_front() {
+			return val;
 		}
-		//TODO: We should actually be testing at least much more than 64k...
-		match self.input.get_slice(2) {
-			Some(slice) => cmp::max(slice_to_be16(slice) as u32, 253),
-			None => 253,
-		}
+		return 253;
 	}
 }
 
@@ -377,16 +375,12 @@ struct KeyProvider {
 	inbound_payment_key: ExpandedKey,
 	counter: AtomicU64,
 	signer_state: RefCell<HashMap<u8, (bool, Arc<Mutex<EnforcementState>>)>>,
+	rng_output: RefCell<[u8; 32]>,
 }
 
 impl EntropySource for KeyProvider {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
-		#[rustfmt::skip]
-		let random_bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8,
-			(ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8];
-		random_bytes
+		*self.rng_output.borrow()
 	}
 }
 
@@ -539,7 +533,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	let input = Arc::new(InputData {
 		data: data.to_vec(),
 		read_pos: AtomicUsize::new(0),
-		halt_fee_est_reads: AtomicBool::new(false),
+		fee_estimates: Mutex::new(VecDeque::new()),
 	});
 	let fee_est = Arc::new(FuzzEstimator { input: input.clone() });
 	let router = FuzzRouter {};
@@ -585,6 +579,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		inbound_payment_key: ExpandedKey::new(inbound_payment_key),
 		counter: AtomicU64::new(0),
 		signer_state: RefCell::new(new_hash_map()),
+		rng_output: RefCell::new([42; 32]),
 	});
 
 	let monitor = Arc::new(chainmonitor::ChainMonitor::new(
@@ -882,12 +877,10 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 			11 => {
 				let mut txn = broadcast.txn_broadcasted.lock().unwrap().split_off(0);
 				if !txn.is_empty() {
-					input.halt_fee_est_reads.store(true, Ordering::Release);
 					loss_detector.connect_block(&txn[..]);
 					for _ in 2..100 {
 						loss_detector.connect_block(&[]);
 					}
-					input.halt_fee_est_reads.store(false, Ordering::Release);
 				}
 				for tx in txn.drain(..) {
 					loss_detector.funding_txn.push(tx);
@@ -985,6 +978,15 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 						&config,
 					);
 				}
+			},
+			48 => {
+				let fee = u32::from_le_bytes(get_slice!(4).try_into().unwrap());
+				input.fee_estimates.lock().unwrap().push_back(fee);
+			},
+			49 => {
+				let mut rng_output = [0; 32];
+				rng_output.copy_from_slice(&get_slice!(32));
+				*keys_manager.rng_output.borrow_mut() = rng_output;
 			},
 			_ => return,
 		}
@@ -1084,8 +1086,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// rest of open_channel and mac
 	ext_from_hex("030000000000000000000000000000000000000000000000000000000000000005 020900000000000000000000000000000000000000000000000000000000000000 01 0000 01021000 03000000000000000000000000000000", &mut test);
 
-	// One feerate request returning min feerate, which our open_channel also uses (ingested by FuzzEstimator)
-	ext_from_hex("00fd", &mut test);
 	// client should now respond with accept_channel (CHECK 1: type 33 to peer 03000000)
 
 	// inbound read from peer id 0 of len 18
@@ -1095,53 +1095,27 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 148
 	ext_from_hex("030094", &mut test);
 	// funding_created and mac
-	ext_from_hex("0022 ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679 3d00000000000000000000000000000000000000000000000000000000000000 0000 00000000000000000000000000000000000000000000000000000000000000210100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0022 ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679 c000000000000000000000000000000000000000000000000000000000000000 0000 00000000000000000000000000000000000000000000000000000000000000dc0100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 	// client should now respond with funding_signed (CHECK 2: type 35 to peer 03000000)
 
 	// connect a block with one transaction of len 94
 	ext_from_hex("0c005e", &mut test);
 	// the funding transaction
-	ext_from_hex("020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae0000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
+	ext_from_hex("020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020530000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
 	// connect a block with no transactions, one per line
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
-	// by now client should have sent a channel_ready (CHECK 3: SendChannelReady to 03000000 for chan 3d000000)
+	// by now client should have sent a channel_ready (CHECK 3: SendChannelReady to 03000000 for chan c0000000)
 
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
@@ -1150,7 +1124,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 83
 	ext_from_hex("030053", &mut test);
 	// channel_ready and mac
-	ext_from_hex("0024 3d00000000000000000000000000000000000000000000000000000000000000 020800000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0024 c000000000000000000000000000000000000000000000000000000000000000 020800000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	// new inbound connection with id 1
 	ext_from_hex("01", &mut test);
@@ -1171,17 +1145,12 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	ext_from_hex("030120", &mut test);
 	// init message (type 16) with static_remotekey required, no anchors/taproot, and other bits optional and mac
 	ext_from_hex("0010 00021aaa 0008aaa210aa2a0a9aaa 01000000000000000000000000000000", &mut test);
-	// One feerate request on peer connection due to a list_channels call when seeing if the async
-	// receive offer cache needs updating
-	ext_from_hex("00fd", &mut test);
 
 	// create outbound channel to peer 1 for 50k sat
 	ext_from_hex(
 		"05 01 030200000000000000000000000000000000000000000000000000000000000000 00c350 0003e8",
 		&mut test,
 	);
-	// One feerate requests (all returning min feerate) (gonna be ingested by FuzzEstimator)
-	ext_from_hex("00fd", &mut test);
 
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1190,7 +1159,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 255
 	ext_from_hex("0301ff", &mut test);
 	// beginning of accept_channel
-	ext_from_hex("0021 0000000000000000000000000000000000000000000000000000000000000e12 0000000000000162 00000000004c4b40 00000000000003e8 00000000000003e8 00000002 03f0 0005 030000000000000000000000000000000000000000000000000000000000000100 030000000000000000000000000000000000000000000000000000000000000200 030000000000000000000000000000000000000000000000000000000000000300 030000000000000000000000000000000000000000000000000000000000000400 030000000000000000000000000000000000000000000000000000000000000500 02660000000000000000000000000000", &mut test);
+	ext_from_hex("0021 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a 0000000000000162 00000000004c4b40 00000000000003e8 00000000000003e8 00000002 03f0 0005 030000000000000000000000000000000000000000000000000000000000000100 030000000000000000000000000000000000000000000000000000000000000200 030000000000000000000000000000000000000000000000000000000000000300 030000000000000000000000000000000000000000000000000000000000000400 030000000000000000000000000000000000000000000000000000000000000500 02660000000000000000000000000000", &mut test);
 	// inbound read from peer id 1 of len 39
 	ext_from_hex("030127", &mut test);
 	// rest of accept_channel and mac
@@ -1201,8 +1170,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 
 	// create the funding transaction (client should send funding_created now)
 	ext_from_hex("0a", &mut test);
-	// Two feerate requests to check the dust exposure on the initial commitment tx
-	ext_from_hex("00fd00fd", &mut test);
 
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1211,7 +1178,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 114
 	ext_from_hex("030172", &mut test);
 	// funding_signed message and mac
-	ext_from_hex("0023 2900000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000b90001000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0023 c400000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000310001000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
 
 	// broadcast funding transaction
 	ext_from_hex("0b", &mut test);
@@ -1224,7 +1191,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 83
 	ext_from_hex("030153", &mut test);
 	// channel_ready and mac
-	ext_from_hex("0024 2900000000000000000000000000000000000000000000000000000000000000 026700000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0024 c400000000000000000000000000000000000000000000000000000000000000 026700000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
@@ -1233,7 +1200,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 255
 	ext_from_hex("0300ff", &mut test);
 	// beginning of update_add_htlc from 0 to 1 via client
-	ext_from_hex("0080 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000000 0000000000003e80 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 11 020203e8 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+	ext_from_hex("0080 c000000000000000000000000000000000000000000000000000000000000000 0000000000000000 0000000000003e80 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 11 020203e8 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
 	// inbound read from peer id 0 of len 255
 	ext_from_hex("0300ff", &mut test);
 	ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
@@ -1251,9 +1218,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// end of update_add_htlc from 0 to 1 via client and mac
 	ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
-	// One feerate request to check dust exposure
-	ext_from_hex("00fd", &mut test);
-
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
 	// message header indicating message length 100
@@ -1261,7 +1225,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 116
 	ext_from_hex("030074", &mut test);
 	// commitment_signed and mac
-	ext_from_hex("0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000300100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0084 c000000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000cd0100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000", &mut test);
 	// client should now respond with revoke_and_ack and commitment_signed (CHECK 5/6: types 133 and 132 to peer 03000000)
 
 	// inbound read from peer id 0 of len 18
@@ -1271,12 +1235,10 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 115
 	ext_from_hex("030073", &mut test);
 	// revoke_and_ack and mac
-	ext_from_hex("0085 3d00000000000000000000000000000000000000000000000000000000000000 0900000000000000000000000000000000000000000000000000000000000000 020b00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0085 c000000000000000000000000000000000000000000000000000000000000000 0900000000000000000000000000000000000000000000000000000000000000 020b00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	// process the now-pending HTLC forward
 	ext_from_hex("07", &mut test);
-	// Four feerate requests to check dust exposure while forwarding the HTLC
-	ext_from_hex("00fd00fd00fd00fd", &mut test);
 	// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7: UpdateHTLCs event for node 03020000 with 1 HTLCs for channel 2f000000)
 
 	// we respond with commitment_signed then revoke_and_ack (a weird, but valid, order)
@@ -1287,7 +1249,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 116
 	ext_from_hex("030174", &mut test);
 	// commitment_signed and mac
-	ext_from_hex("0084 2900000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000e40001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0084 c400000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000720001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
 	//
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1296,7 +1258,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 115
 	ext_from_hex("030173", &mut test);
 	// revoke_and_ack and mac
-	ext_from_hex("0085 2900000000000000000000000000000000000000000000000000000000000000 6600000000000000000000000000000000000000000000000000000000000000 026400000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0085 c400000000000000000000000000000000000000000000000000000000000000 6600000000000000000000000000000000000000000000000000000000000000 026400000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
 	//
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1305,8 +1267,8 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 90
 	ext_from_hex("03015a", &mut test);
 	// update_fulfill_htlc and mac
-	ext_from_hex("0082 2900000000000000000000000000000000000000000000000000000000000000 0000000000000000 ff00888888888888888888888888888888888888888888888888888888888888 01000000000000000000000000000000", &mut test);
-	// client should immediately claim the pending HTLC from peer 0 (CHECK 8: SendFulfillHTLCs for node 03000000 with preimage ff00888888 for channel 3d000000)
+	ext_from_hex("0082 c400000000000000000000000000000000000000000000000000000000000000 0000000000000000 ff00888888888888888888888888888888888888888888888888888888888888 01000000000000000000000000000000", &mut test);
+	// client should immediately claim the pending HTLC from peer 0 (CHECK 8: SendFulfillHTLCs for node 03000000 with preimage ff00888888 for channel c0000000)
 
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1315,7 +1277,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 116
 	ext_from_hex("030174", &mut test);
 	// commitment_signed and mac
-	ext_from_hex("0084 2900000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000330001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0084 c400000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000700001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1324,7 +1286,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 115
 	ext_from_hex("030173", &mut test);
 	// revoke_and_ack and mac
-	ext_from_hex("0085 2900000000000000000000000000000000000000000000000000000000000000 6700000000000000000000000000000000000000000000000000000000000000 026500000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0085 c400000000000000000000000000000000000000000000000000000000000000 6700000000000000000000000000000000000000000000000000000000000000 026500000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
 
 	// before responding to the commitment_signed generated above, send a new HTLC
 	// inbound read from peer id 0 of len 18
@@ -1334,7 +1296,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 255
 	ext_from_hex("0300ff", &mut test);
 	// beginning of update_add_htlc from 0 to 1 via client
-	ext_from_hex("0080 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000001 0000000000003e80 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 11 020203e8 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+	ext_from_hex("0080 c000000000000000000000000000000000000000000000000000000000000000 0000000000000001 0000000000003e80 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 11 020203e8 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
 	// inbound read from peer id 0 of len 255
 	ext_from_hex("0300ff", &mut test);
 	ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
@@ -1352,9 +1314,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// end of update_add_htlc from 0 to 1 via client and mac
 	ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
-	// One feerate request to check dust exposure
-	ext_from_hex("00fd", &mut test);
-
 	// now respond to the update_fulfill_htlc+commitment_signed messages the client sent to peer 0
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
@@ -1363,7 +1322,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 115
 	ext_from_hex("030073", &mut test);
 	// revoke_and_ack and mac
-	ext_from_hex("0085 3d00000000000000000000000000000000000000000000000000000000000000 0800000000000000000000000000000000000000000000000000000000000000 020a00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0085 c000000000000000000000000000000000000000000000000000000000000000 0800000000000000000000000000000000000000000000000000000000000000 020a00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 	// client should now respond with revoke_and_ack and commitment_signed (CHECK 5/6 duplicates)
 
 	// inbound read from peer id 0 of len 18
@@ -1373,7 +1332,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 116
 	ext_from_hex("030074", &mut test);
 	// commitment_signed and mac
-	ext_from_hex("0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000c30100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0084 c000000000000000000000000000000000000000000000000000000000000000 000000000000000000000000000000000000000000000000000000000000003e0100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
@@ -1382,13 +1341,10 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 115
 	ext_from_hex("030073", &mut test);
 	// revoke_and_ack and mac
-	ext_from_hex("0085 3d00000000000000000000000000000000000000000000000000000000000000 0b00000000000000000000000000000000000000000000000000000000000000 020d00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0085 c000000000000000000000000000000000000000000000000000000000000000 0b00000000000000000000000000000000000000000000000000000000000000 020d00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	// process the now-pending HTLC forward
 	ext_from_hex("07", &mut test);
-
-	// Four feerate requests to check dust exposure while forwarding the HTLC
-	ext_from_hex("00fd00fd00fd00fd", &mut test);
 
 	// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
 	// we respond with revoke_and_ack, then commitment_signed, then update_fail_htlc
@@ -1400,7 +1356,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 116
 	ext_from_hex("030174", &mut test);
 	// commitment_signed and mac
-	ext_from_hex("0084 2900000000000000000000000000000000000000000000000000000000000000 000000000000000000000000000000000000000000000000000000000000009c0001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0084 c400000000000000000000000000000000000000000000000000000000000000 000000000000000000000000000000000000000000000000000000000000007e0001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1409,7 +1365,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 115
 	ext_from_hex("030173", &mut test);
 	// revoke_and_ack and mac
-	ext_from_hex("0085 2900000000000000000000000000000000000000000000000000000000000000 6400000000000000000000000000000000000000000000000000000000000000 027000000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0085 c400000000000000000000000000000000000000000000000000000000000000 6400000000000000000000000000000000000000000000000000000000000000 027000000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1418,7 +1374,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 60
 	ext_from_hex("03013c", &mut test);
 	// update_fail_htlc and mac
-	ext_from_hex("0083 2900000000000000000000000000000000000000000000000000000000000000 0000000000000001 0000 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0083 c400000000000000000000000000000000000000000000000000000000000000 0000000000000001 0000 01000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1427,7 +1383,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 116
 	ext_from_hex("030174", &mut test);
 	// commitment_signed and mac
-	ext_from_hex("0084 2900000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000e20001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0084 c400000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000410001000000000000000000000000000000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1436,7 +1392,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 1 of len 115
 	ext_from_hex("030173", &mut test);
 	// revoke_and_ack and mac
-	ext_from_hex("0085 2900000000000000000000000000000000000000000000000000000000000000 6500000000000000000000000000000000000000000000000000000000000000 027100000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
+	ext_from_hex("0085 c400000000000000000000000000000000000000000000000000000000000000 6500000000000000000000000000000000000000000000000000000000000000 027100000000000000000000000000000000000000000000000000000000000000 01000000000000000000000000000000", &mut test);
 
 	// process the now-pending HTLC forward
 	ext_from_hex("07", &mut test);
@@ -1450,7 +1406,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 115
 	ext_from_hex("030073", &mut test);
 	// revoke_and_ack and mac
-	ext_from_hex("0085 3d00000000000000000000000000000000000000000000000000000000000000 0a00000000000000000000000000000000000000000000000000000000000000 020c00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0085 c000000000000000000000000000000000000000000000000000000000000000 0a00000000000000000000000000000000000000000000000000000000000000 020c00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
@@ -1459,7 +1415,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 116
 	ext_from_hex("030074", &mut test);
 	// commitment_signed and mac
-	ext_from_hex("0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000320100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0084 c000000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000cf0100000000000000000000000000000000000000000000000000000000000000 0000 03000000000000000000000000000000", &mut test);
 	// client should now respond with revoke_and_ack (CHECK 5 duplicate)
 
 	// inbound read from peer id 0 of len 18
@@ -1469,7 +1425,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 255
 	ext_from_hex("0300ff", &mut test);
 	// beginning of update_add_htlc from 0 to 1 via client
-	ext_from_hex("0080 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000002 00000000000b0838 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 12 02030927c1 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
+	ext_from_hex("0080 c000000000000000000000000000000000000000000000000000000000000000 0000000000000002 00000000000b0838 ff00000000000000000000000000000000000000000000000000000000000000 000003f0 00 030000000000000000000000000000000000000000000000000000000000000555 12 02030927c1 0401a0 060800000e0000010000 0a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
 	// inbound read from peer id 0 of len 255
 	ext_from_hex("0300ff", &mut test);
 	ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", &mut test);
@@ -1487,9 +1443,6 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// end of update_add_htlc from 0 to 1 via client and mac
 	ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 5200000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
-	// One feerate request to check dust exposure
-	ext_from_hex("00fd", &mut test);
-
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
 	// message header indicating message length 164
@@ -1497,7 +1450,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 180
 	ext_from_hex("0300b4", &mut test);
 	// commitment_signed and mac
-	ext_from_hex("0084 3d00000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000750100000000000000000000000000000000000000000000000000000000000000 0001 00000000000000000000000000000000000000000000000000000000000000670500000000000000000000000000000000000000000000000000000000000006 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0084 c000000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000f60100000000000000000000000000000000000000000000000000000000000000 0001 000000000000000000000000000000000000000000000000000000000000009b05000000000000000000000000000000000000000000000000000000000000fb 03000000000000000000000000000000", &mut test);
 	// client should now respond with revoke_and_ack and commitment_signed (CHECK 5/6 duplicates)
 
 	// inbound read from peer id 0 of len 18
@@ -1507,47 +1460,31 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 115
 	ext_from_hex("030073", &mut test);
 	// revoke_and_ack and mac
-	ext_from_hex("0085 3d00000000000000000000000000000000000000000000000000000000000000 0d00000000000000000000000000000000000000000000000000000000000000 020f00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0085 c000000000000000000000000000000000000000000000000000000000000000 0d00000000000000000000000000000000000000000000000000000000000000 020f00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	// process the now-pending HTLC forward
 	ext_from_hex("07", &mut test);
-	// Four feerate requests to check dust exposure while forwarding the HTLC
-	ext_from_hex("00fd00fd00fd00fd", &mut test);
 	// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
 
 	// connect a block with one transaction of len 125
 	ext_from_hex("0c007d", &mut test);
-	// the commitment transaction for channel 2900000000000000000000000000000000000000000000000000000000000000
-	ext_from_hex("020000000129000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200201f0000000000000000000000000000000000000000000000000000000000000013c00000000000001600143b0000000000000000000000000000000000000005000020", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
+	// the commitment transaction for channel c400000000000000000000000000000000000000000000000000000000000000
+	ext_from_hex("0200000001c400000000000000000000000000000000000000000000000000000000000000000000000000000080025802000000000000220020940000000000000000000000000000000000000000000000000000000000000013c0000000000000160014d60000000000000000000000000000000000000005000020", &mut test);
 	//
 	// connect a block with one transaction of len 94
 	ext_from_hex("0c005e", &mut test);
 	// the HTLC timeout transaction
-	ext_from_hex("0200000001200000000000000000000000000000000000000000000000000000000000000000000000000000000001a701000000000000220020e60000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
+	ext_from_hex("0200000001ab0000000000000000000000000000000000000000000000000000000000000000000000000000000001a7010000000000002200206c0000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
 	// connect a block with no transactions
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	// connect a block with no transactions
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	// connect a block with no transactions
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	// connect a block with no transactions
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 	// connect a block with no transactions
 	ext_from_hex("0c0000", &mut test);
-	// Two feerate requests during block connection
-	ext_from_hex("00fd00fd", &mut test);
 
 	// process the now-pending HTLC forward
 	ext_from_hex("07", &mut test);
@@ -1689,10 +1626,10 @@ mod tests {
 	#[test]
 	fn test_no_existing_test_breakage() {
 		// To avoid accidentally causing all existing fuzz test cases to be useless by making minor
-		// changes (such as requesting feerate info in a new place), we run a pretty full
-		// step-through with two peers and HTLC forwarding here. Obviously this is pretty finicky,
-		// so this should be updated pretty liberally, but at least we'll know when changes occur.
-		// If nothing else, this test serves as a pretty great initial full_stack_target seed.
+		// changes, we run a pretty full step-through with two peers and HTLC forwarding here.
+		// Obviously this can be somewhat finicky, so this should be updated pretty liberally, but
+		// at least we'll know when changes occur. If nothing else, this test serves as a pretty
+		// great initial full_stack_target seed.
 
 		let test = super::two_peer_forwarding_seed();
 
@@ -1703,32 +1640,31 @@ mod tests {
 		// 1
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendAcceptChannel event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679".to_string())), Some(&1));
 		// 2
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingSigned event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingSigned event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
 		// 3
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
 		// 4
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 for channel 2900000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 for channel c400000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
 		// 5
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendRevokeAndACK event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&4));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendRevokeAndACK event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&4));
 		// 6
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 0 fails, 1 commits for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 0 fails, 1 commits for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3));
 		// 7
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 with 1 adds, 0 fulfills, 0 fails, 1 commits for channel 2900000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 with 1 adds, 0 fulfills, 0 fails, 1 commits for channel c400000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3));
 		// 8
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 1 fulfills, 0 fails, 1 commits for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 1 fulfills, 0 fails, 1 commits for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
 		// 9
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 1 fails, 1 commits for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 1 fails, 1 commits for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2));
 		// 10
-		assert_eq!(log_entries.get(&("lightning::chain::channelmonitor".to_string(), "Input spending counterparty commitment tx (0000000000000000000000000000000000000000000000000000000000000020:0) in 0000000000000000000000000000000000000000000000000000000000000060 resolves outbound HTLC with payment hash ff00000000000000000000000000000000000000000000000000000000000000 with timeout".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::chain::channelmonitor".to_string(), "Input spending counterparty commitment tx (00000000000000000000000000000000000000000000000000000000000000ab:0) in 0000000000000000000000000000000000000000000000000000000000000061 resolves outbound HTLC with payment hash ff00000000000000000000000000000000000000000000000000000000000000 with timeout".to_string())), Some(&1));
 	}
 
 	#[test]
 	fn test_gossip_exchange_breakage() {
 		// To avoid accidentally causing all existing fuzz test cases to be useless by making minor
-		// changes (such as requesting feerate info in a new place), we exchange some gossip
-		// messages. Obviously this is pretty finicky, so this should be updated pretty liberally,
-		// but at least we'll know when changes occur.
-		// This test serves as a pretty good full_stack_target seed.
+		// changes, we exchange some gossip messages. Obviously this is somewhat finicky, so this
+		// should be updated pretty liberally, but at least we'll know when changes occur.
+		// This test serves as a helpful additional full_stack_target seed.
 
 		let test = super::gossip_exchange_seed();
 
