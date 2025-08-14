@@ -46,7 +46,7 @@ enum OfferStatus {
 	Pending,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct AsyncReceiveOffer {
 	offer: Offer,
 	/// The time as duration since the Unix epoch at which this offer was created. Useful when
@@ -246,10 +246,11 @@ impl AsyncReceiveOfferCache {
 			.ok_or(())
 	}
 
-	/// Remove expired offers from the cache, returning whether new offers are needed.
+	/// Remove expired offers from the cache, returning an index of the slot in the cache that needs a
+	/// new offer, if any exist.
 	pub(super) fn prune_expired_offers(
 		&mut self, duration_since_epoch: Duration, force_reset_request_attempts: bool,
-	) -> bool {
+	) -> Option<usize> {
 		// Remove expired offers from the cache.
 		let mut offer_was_removed = false;
 		for offer_opt in self.offers.iter_mut() {
@@ -268,8 +269,11 @@ impl AsyncReceiveOfferCache {
 			self.reset_offer_paths_request_attempts()
 		}
 
-		self.needs_new_offer_idx(duration_since_epoch).is_some()
-			&& self.offer_paths_request_attempts < MAX_UPDATE_ATTEMPTS
+		if self.offer_paths_request_attempts >= MAX_UPDATE_ATTEMPTS {
+			return None;
+		}
+
+		self.needs_new_offer_idx(duration_since_epoch)
 	}
 
 	/// Returns whether the new paths we've just received from the static invoice server should be used
@@ -300,8 +304,8 @@ impl AsyncReceiveOfferCache {
 	/// until it succeeds, see [`AsyncReceiveOfferCache`] docs.
 	pub(super) fn cache_pending_offer(
 		&mut self, offer: Offer, offer_paths_absolute_expiry_secs: Option<u64>, offer_nonce: Nonce,
-		update_static_invoice_path: Responder, duration_since_epoch: Duration,
-	) -> Result<u16, ()> {
+		update_static_invoice_path: Responder, duration_since_epoch: Duration, cache_slot: u16,
+	) -> Result<(), ()> {
 		self.prune_expired_offers(duration_since_epoch, false);
 
 		if !self.should_build_offer_with_paths(
@@ -312,35 +316,34 @@ impl AsyncReceiveOfferCache {
 			return Err(());
 		}
 
-		let idx = match self.needs_new_offer_idx(duration_since_epoch) {
-			Some(idx) => idx,
-			None => return Err(()),
-		};
-
-		match self.offers.get_mut(idx) {
-			Some(offer_opt) => {
-				*offer_opt = Some(AsyncReceiveOffer {
-					offer,
-					created_at: duration_since_epoch,
-					offer_nonce,
-					status: OfferStatus::Pending,
-					update_static_invoice_path,
-				});
-			},
-			None => return Err(()),
+		let slot_needs_new_offer = self.offers.get(cache_slot as usize) == Some(&None)
+			|| self
+				.unused_offers_needing_refresh(duration_since_epoch)
+				.find(|(idx, _)| *idx == cache_slot as usize)
+				.is_some();
+		if !slot_needs_new_offer {
+			return Err(());
 		}
 
-		Ok(idx.try_into().map_err(|_| ())?)
+		self.offers[cache_slot as usize] = Some(AsyncReceiveOffer {
+			offer,
+			created_at: duration_since_epoch,
+			offer_nonce,
+			status: OfferStatus::Pending,
+			update_static_invoice_path,
+		});
+		Ok(())
 	}
 
 	/// If we have any empty slots in the cache or offers that can and should be replaced with a fresh
 	/// offer, here we return the index of the slot that needs a new offer. The index is used for
-	/// setting [`ServeStaticInvoice::invoice_slot`] when sending the corresponding new static invoice
-	/// to the server, so the server knows which existing persisted invoice is being replaced, if any.
+	/// setting [`OfferPathsRequest::invoice_slot`] when requesting offer paths from the server, so
+	/// the server can include the slot in the offer paths and reply paths that they create in
+	/// response.
 	///
 	/// Returns `None` if the cache is full and no offers can currently be replaced.
 	///
-	/// [`ServeStaticInvoice::invoice_slot`]: crate::onion_message::async_payments::ServeStaticInvoice::invoice_slot
+	/// [`OfferPathsRequest::invoice_slot`]: crate::onion_message::async_payments::OfferPathsRequest::invoice_slot
 	fn needs_new_offer_idx(&self, duration_since_epoch: Duration) -> Option<usize> {
 		// If we have any empty offer slots, return the first one we find
 		let empty_slot_idx_opt = self.offers.iter().position(|offer_opt| offer_opt.is_none());
@@ -368,14 +371,9 @@ impl AsyncReceiveOfferCache {
 			return None;
 		}
 
-		// Filter for unused offers where longer than OFFER_REFRESH_THRESHOLD time has passed since they
-		// were last updated, so they are stale enough to warrant replacement.
-		let awhile_ago = duration_since_epoch.saturating_sub(OFFER_REFRESH_THRESHOLD);
-		self.unused_ready_offers()
-			.filter(|(_, offer, _)| offer.created_at < awhile_ago)
-			// Get the stalest offer and return its index
-			.min_by(|(_, offer_a, _), (_, offer_b, _)| offer_a.created_at.cmp(&offer_b.created_at))
-			.map(|(idx, _, _)| idx)
+		self.unused_offers_needing_refresh(duration_since_epoch)
+			.min_by(|(_, offer_a), (_, offer_b)| offer_a.created_at.cmp(&offer_b.created_at))
+			.map(|(idx, _)| idx)
 	}
 
 	/// Returns an iterator over (offer_idx, offer)
@@ -414,10 +412,10 @@ impl AsyncReceiveOfferCache {
 	/// the static invoice server.
 	pub(super) fn offers_needing_invoice_refresh(
 		&self, duration_since_epoch: Duration,
-	) -> impl Iterator<Item = (&Offer, Nonce, u16, &Responder)> {
+	) -> impl Iterator<Item = (&Offer, Nonce, &Responder)> {
 		// For any offers which are either in use or pending confirmation by the server, we should send
 		// them a fresh invoice on each timer tick.
-		self.offers_with_idx().filter_map(move |(idx, offer)| {
+		self.offers_with_idx().filter_map(move |(_, offer)| {
 			let needs_invoice_update = match offer.status {
 				OfferStatus::Used { invoice_created_at } => {
 					invoice_created_at.saturating_add(INVOICE_REFRESH_THRESHOLD)
@@ -429,13 +427,22 @@ impl AsyncReceiveOfferCache {
 				OfferStatus::Ready { .. } => false,
 			};
 			if needs_invoice_update {
-				let offer_slot = idx.try_into().unwrap_or(u16::MAX);
-				Some((
-					&offer.offer,
-					offer.offer_nonce,
-					offer_slot,
-					&offer.update_static_invoice_path,
-				))
+				Some((&offer.offer, offer.offer_nonce, &offer.update_static_invoice_path))
+			} else {
+				None
+			}
+		})
+	}
+
+	// Filter for unused offers where longer than OFFER_REFRESH_THRESHOLD time has passed since they
+	// were last updated, so they are stale enough to warrant replacement.
+	fn unused_offers_needing_refresh(
+		&self, duration_since_epoch: Duration,
+	) -> impl Iterator<Item = (usize, &AsyncReceiveOffer)> {
+		let awhile_ago = duration_since_epoch.saturating_sub(OFFER_REFRESH_THRESHOLD);
+		self.unused_ready_offers().filter_map(move |(idx, offer, _)| {
+			if offer.created_at < awhile_ago {
+				Some((idx, offer))
 			} else {
 				None
 			}
