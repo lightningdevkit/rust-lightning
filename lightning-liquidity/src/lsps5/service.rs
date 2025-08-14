@@ -190,7 +190,7 @@ where
 		let num_webhooks = peer_state_lock.app_names().len();
 		let mut no_change = false;
 
-		if let Some(webhook) = peer_state_lock.webhook_mut(&params.app_name.clone()) {
+		if let Some(webhook) = peer_state_lock.webhook_mut(&params.app_name) {
 			no_change = webhook.url == params.webhook;
 			if !no_change {
 				webhook.last_used = now
