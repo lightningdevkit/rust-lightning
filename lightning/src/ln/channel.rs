@@ -1836,7 +1836,7 @@ where
 		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
 		match phase {
 			ChannelPhase::UnfundedV2(chan) => {
-				let holder_commitment_point = match chan.unfunded_context.holder_commitment_point {
+				let initial_holder_commitment_point = match chan.unfunded_context.initial_holder_commitment_point {
 					Some(point) => point,
 					None => {
 						let channel_id = chan.context.channel_id();
@@ -1851,7 +1851,7 @@ where
 					pending_funding: vec![],
 					context: chan.context,
 					interactive_tx_signing_session: chan.interactive_tx_signing_session,
-					holder_commitment_point,
+					holder_commitment_point: initial_holder_commitment_point,
 					#[cfg(splicing)]
 					pending_splice: None,
 				};
@@ -1988,7 +1988,7 @@ pub(super) struct UnfundedChannelContext {
 	/// in a timely manner.
 	unfunded_channel_age_ticks: usize,
 	/// Tracks the commitment number and commitment point before the channel is funded.
-	holder_commitment_point: Option<HolderCommitmentPoint>,
+	initial_holder_commitment_point: Option<HolderCommitmentPoint>,
 }
 
 impl UnfundedChannelContext {
@@ -2002,7 +2002,7 @@ impl UnfundedChannelContext {
 	}
 
 	fn transaction_number(&self) -> u64 {
-		self.holder_commitment_point
+		self.initial_holder_commitment_point
 			.as_ref()
 			.map(|point| point.transaction_number())
 			.unwrap_or(INITIAL_COMMITMENT_NUMBER)
@@ -11832,7 +11832,7 @@ where
 		)?;
 		let unfunded_context = UnfundedChannelContext {
 			unfunded_channel_age_ticks: 0,
-			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
+			initial_holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
 
 		// We initialize `signer_pending_open_channel` to false, and leave setting the flag
@@ -11963,7 +11963,7 @@ where
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
-		let first_per_commitment_point = match self.unfunded_context.holder_commitment_point {
+		let first_per_commitment_point = match self.unfunded_context.initial_holder_commitment_point {
 			Some(holder_commitment_point) if holder_commitment_point.can_advance() => {
 				self.signer_pending_open_channel = false;
 				holder_commitment_point.point()
@@ -12034,15 +12034,15 @@ where
 		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated(_)) {
 			return Err((self, ChannelError::close("Received funding_signed in strange state!".to_owned())));
 		}
-		let mut holder_commitment_point = match self.unfunded_context.holder_commitment_point {
+		let mut initial_holder_commitment_point = match self.unfunded_context.initial_holder_commitment_point {
 			Some(point) => point,
 			None => return Err((self, ChannelError::close("Received funding_signed before our first commitment point was available".to_owned()))),
 		};
-		self.context.assert_no_commitment_advancement(holder_commitment_point.transaction_number(), "funding_signed");
+		self.context.assert_no_commitment_advancement(initial_holder_commitment_point.transaction_number(), "funding_signed");
 
 		let (channel_monitor, _) = match self.initial_commitment_signed(
 			self.context.channel_id(), msg.signature,
-			&mut holder_commitment_point, best_block, signer_provider, logger
+			&mut initial_holder_commitment_point, best_block, signer_provider, logger
 		) {
 			Ok(channel_monitor) => channel_monitor,
 			Err(err) => return Err((self, err)),
@@ -12055,7 +12055,7 @@ where
 			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
-			holder_commitment_point,
+			holder_commitment_point: initial_holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
 		};
@@ -12074,10 +12074,10 @@ where
 	) -> (Option<msgs::OpenChannel>, Option<msgs::FundingCreated>) where L::Target: Logger {
 		// If we were pending a commitment point, retry the signer and advance to an
 		// available state.
-		if self.unfunded_context.holder_commitment_point.is_none() {
-			self.unfunded_context.holder_commitment_point = HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx);
+		if self.unfunded_context.initial_holder_commitment_point.is_none() {
+			self.unfunded_context.initial_holder_commitment_point = HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx);
 		}
-		if let Some(ref mut point) = self.unfunded_context.holder_commitment_point {
+		if let Some(ref mut point) = self.unfunded_context.initial_holder_commitment_point {
 			if !point.can_advance() {
 				point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
 			}
@@ -12198,7 +12198,7 @@ where
 		)?;
 		let unfunded_context = UnfundedChannelContext {
 			unfunded_channel_age_ticks: 0,
-			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
+			initial_holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
 		let chan = Self { funding, context, unfunded_context, signer_pending_accept_channel: false };
 		Ok(chan)
@@ -12237,7 +12237,7 @@ where
 	fn generate_accept_channel_message<L: Deref>(
 		&mut self, _logger: &L
 	) -> Option<msgs::AcceptChannel> where L::Target: Logger {
-		let first_per_commitment_point = match self.unfunded_context.holder_commitment_point {
+		let first_per_commitment_point = match self.unfunded_context.initial_holder_commitment_point {
 			Some(holder_commitment_point) if holder_commitment_point.can_advance() => {
 				self.signer_pending_accept_channel = false;
 				holder_commitment_point.point()
@@ -12310,18 +12310,18 @@ where
 			// channel.
 			return Err((self, ChannelError::close("Received funding_created after we got the channel!".to_owned())));
 		}
-		let mut holder_commitment_point = match self.unfunded_context.holder_commitment_point {
+		let mut initial_holder_commitment_point = match self.unfunded_context.initial_holder_commitment_point {
 			Some(point) => point,
 			None => return Err((self, ChannelError::close("Received funding_created before our first commitment point was available".to_owned()))),
 		};
-		self.context.assert_no_commitment_advancement(holder_commitment_point.transaction_number(), "funding_created");
+		self.context.assert_no_commitment_advancement(initial_holder_commitment_point.transaction_number(), "funding_created");
 
 		let funding_txo = OutPoint { txid: msg.funding_txid, index: msg.funding_output_index };
 		self.funding.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 
 		let (channel_monitor, counterparty_initial_commitment_tx) = match self.initial_commitment_signed(
 			ChannelId::v1_from_funding_outpoint(funding_txo), msg.signature,
-			&mut holder_commitment_point, best_block, signer_provider, logger
+			&mut initial_holder_commitment_point, best_block, signer_provider, logger
 		) {
 			Ok(channel_monitor) => channel_monitor,
 			Err(err) => return Err((self, err)),
@@ -12341,7 +12341,7 @@ where
 			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
-			holder_commitment_point,
+			holder_commitment_point: initial_holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
 		};
@@ -12358,10 +12358,10 @@ where
 	pub fn signer_maybe_unblocked<L: Deref>(
 		&mut self, logger: &L
 	) -> Option<msgs::AcceptChannel> where L::Target: Logger {
-		if self.unfunded_context.holder_commitment_point.is_none() {
-			self.unfunded_context.holder_commitment_point = HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx);
+		if self.unfunded_context.initial_holder_commitment_point.is_none() {
+			self.unfunded_context.initial_holder_commitment_point = HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx);
 		}
-		if let Some(ref mut point) = self.unfunded_context.holder_commitment_point {
+		if let Some(ref mut point) = self.unfunded_context.initial_holder_commitment_point {
 			if !point.can_advance() {
 				point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
 			}
@@ -12442,7 +12442,7 @@ where
 		)?;
 		let unfunded_context = UnfundedChannelContext {
 			unfunded_channel_age_ticks: 0,
-			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
+			initial_holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: true,
@@ -12637,7 +12637,7 @@ where
 
 		let unfunded_context = UnfundedChannelContext {
 			unfunded_channel_age_ticks: 0,
-			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
+			initial_holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
 		Ok(Self {
 			funding,
