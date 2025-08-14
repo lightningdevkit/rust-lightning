@@ -161,10 +161,6 @@ where
 		});
 
 		if should_prune {
-			let now = LSPSDateTime::new_from_duration_since_epoch(
-				self.time_provider.duration_since_epoch(),
-			);
-
 			outer_state_lock.retain(|client_id, peer_state| {
 				if self.client_has_open_channel(client_id) {
 					// Don't prune clients with open channels
