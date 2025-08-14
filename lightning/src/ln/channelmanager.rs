@@ -2666,6 +2666,9 @@ pub struct ChannelManager<
 	fee_estimator: LowerBoundedFeeEstimator<F>,
 	chain_monitor: M,
 	tx_broadcaster: T,
+	#[cfg(test)]
+	pub(super) router: R,
+	#[cfg(not(test))]
 	router: R,
 
 	#[cfg(test)]
@@ -2892,6 +2895,9 @@ pub struct ChannelManager<
 	pub(super) entropy_source: ES,
 	#[cfg(not(test))]
 	entropy_source: ES,
+	#[cfg(test)]
+	pub(super) node_signer: NS,
+	#[cfg(not(test))]
 	node_signer: NS,
 	#[cfg(test)]
 	pub(super) signer_provider: SP,
@@ -13416,7 +13422,7 @@ where
 		now
 	}
 
-	fn get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
+	pub(crate) fn get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		per_peer_state
 			.iter()

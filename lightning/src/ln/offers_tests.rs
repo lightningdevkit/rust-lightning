@@ -51,6 +51,7 @@ use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, Paym
 use crate::blinded_path::message::OffersContext;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{Bolt12PaymentError, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry, self};
+use crate::offers::flow::OfferMessageFlowEvent;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
@@ -846,6 +847,119 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let (invoice, reply_path) = extract_invoice(bob, &onion_message);
+	assert_eq!(invoice.amount_msats(), 10_000_000);
+	assert_ne!(invoice.signing_pubkey(), alice_id);
+	assert!(!invoice.payment_paths().is_empty());
+	for path in invoice.payment_paths() {
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
+	}
+	assert!(check_compact_path_introduction_node(&reply_path, bob, alice_id));
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Checks that an offer can be paid through a one-hop blinded path and that ephemeral pubkeys are
+/// used rather than exposing a node's pubkey. However, the node's pubkey is still used as the
+/// introduction node of the blinded path.
+#[test]
+fn creates_and_manually_respond_to_ir_then_pays_for_offer_using_one_hop_blinded_path() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	node_chanmgrs[0].flow.enable_events();
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
+	assert!(!offer.paths().is_empty());
+	for path in offer.paths() {
+		assert!(check_compact_path_introduction_node(&path, bob, alice_id));
+	}
+
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let flow_events = alice.node.flow.release_pending_flow_events();
+	assert_eq!(flow_events.len(), 1, "expected exactly one flow event");
+
+	let (invoice_request, reply_path) = match flow_events.into_iter().next().unwrap() {
+		OfferMessageFlowEvent::InvoiceRequestReceived {
+			invoice_request: InvoiceRequestVerifiedFromOffer::DerivedKeys(req),
+			reply_path
+		} => (req, reply_path),
+		_ => panic!("Unexpected flow event"),
+	};
+
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+			human_readable_name: None,
+		},
+	});
+	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
+	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
+
+	// Create response for invoice request manually.
+	let get_payment_info = |amount_msats, relative_expiry| {
+		alice
+			.node
+			.create_inbound_payment(Some(amount_msats), relative_expiry, None)
+			.map_err(|_| Bolt12SemanticError::InvalidAmount)
+	};
+
+	let router = &alice.node.router;
+	let (builder, _) = alice
+		.node
+		.flow
+		.create_invoice_builder_from_invoice_request_with_keys(
+			router,
+			&DefaultCurrencyConversion {},
+			&invoice_request,
+			alice.node.list_usable_channels(),
+			get_payment_info,
+		)
+		.expect("failed to create builder with derived keys");
+
+	let invoice = builder
+		.build_and_sign(&alice.node.secp_ctx)
+		.expect("failed to build and sign invoice");
+
+	alice
+		.node
+		.flow
+		.enqueue_invoice_using_reply_paths(
+			invoice,
+			&[reply_path],
+			alice.node.get_peers_for_blinded_path(),
+		)
+		.expect("failed to enqueue invoice");
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
