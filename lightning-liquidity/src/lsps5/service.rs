@@ -181,16 +181,16 @@ where
 		let mut outer_state_lock = self.per_peer_state.write().unwrap();
 		self.check_prune_stale_webhooks(&mut outer_state_lock);
 
-		let peer_state_lock =
+		let peer_state =
 			outer_state_lock.entry(counterparty_node_id).or_insert_with(PeerState::default);
 
 		let now =
 			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
 
-		let num_webhooks = peer_state_lock.app_names().len();
+		let num_webhooks = peer_state.app_names().len();
 		let mut no_change = false;
 
-		if let Some(webhook) = peer_state_lock.webhook_mut(&params.app_name) {
+		if let Some(webhook) = peer_state.webhook_mut(&params.app_name) {
 			no_change = webhook.url == params.webhook;
 			if !no_change {
 				webhook.last_used = now
@@ -218,7 +218,7 @@ where
 				last_notification_sent: None,
 			};
 
-			peer_state_lock.insert_webhook(params.app_name.clone(), webhook);
+			peer_state.insert_webhook(params.app_name.clone(), webhook);
 		}
 
 		if !no_change {
@@ -244,7 +244,7 @@ where
 		let msg = LSPS5Message::Response(
 			request_id,
 			LSPS5Response::SetWebhook(SetWebhookResponse {
-				num_webhooks: peer_state_lock.app_names().len() as u32,
+				num_webhooks: peer_state.app_names().len() as u32,
 				max_webhooks: self.config.max_webhooks_per_client,
 				no_change,
 			}),
