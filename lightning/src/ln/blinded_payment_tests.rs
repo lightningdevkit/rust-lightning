@@ -2075,7 +2075,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
 						fee_msat: amt_msat,
-						cltv_expiry_delta: 24,
+						cltv_expiry_delta: 104,
 					},
 				],
 				hops: carol_blinded_hops,
@@ -2241,7 +2241,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
 						fee_msat: amt_msat,
-						cltv_expiry_delta: 24,
+						cltv_expiry_delta: 104,
 					},
 				],
 				hops: blinded_path.blinded_hops().to_vec(),
@@ -2273,9 +2273,13 @@ fn test_trampoline_single_hop_receive() {
 	do_test_trampoline_single_hop_receive(false);
 }
 
-#[test]
-fn test_trampoline_unblinded_receive() {
-	// Simulate a payment of A (0) -> B (1) -> C(Trampoline) (2)
+fn do_test_trampoline_unblinded_receive(underpay: bool) {
+	// Test trampoline payment receipt with unblinded final hop.
+	// Creates custom onion packet where the final trampoline hop uses unblinded receive format
+	// (not natively supported) to validate payment amount verification.
+	// - When underpay=false: Payment succeeds with correct amount
+	// - When underpay=true: Payment fails due to amount mismatch (sends 1/2 expected amount)
+	// Topology: A (0) -> B (1) C  -> (Trampoline receiver) (2)
 
 	const TOTAL_NODE_COUNT: usize = 3;
 	let secp_ctx = Secp256k1::new();
@@ -2321,7 +2325,7 @@ fn test_trampoline_unblinded_receive() {
 					node_features: NodeFeatures::empty(),
 					short_channel_id: bob_carol_scid,
 					channel_features: ChannelFeatures::empty(),
-					fee_msat: 0,
+					fee_msat: 0, // no routing fees because it's the final hop
 					cltv_expiry_delta: 48,
 					maybe_announced_channel: false,
 				}
@@ -2332,8 +2336,8 @@ fn test_trampoline_unblinded_receive() {
 					TrampolineHop {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
-						fee_msat: amt_msat,
-						cltv_expiry_delta: 24,
+						fee_msat: 0, // no trampoline fee because we are receiving.
+						cltv_expiry_delta: 72, // blinded hop cltv to be used building the outer onion.
 					},
 				],
 				// The blinded path data is unused because we replace the onion of the last hop
@@ -2362,13 +2366,15 @@ fn test_trampoline_unblinded_receive() {
 		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 
 		let blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
-		let (_, _, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, amt_msat, &recipient_onion_fields, 32, &None).unwrap();
+		let (_, outer_total_msat, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, amt_msat, &recipient_onion_fields, 32, &None).unwrap();
+		let replacement_payload_amount = if underpay { amt_msat * 2 } else { amt_msat };
 		let trampoline_payloads = vec![msgs::OutboundTrampolinePayload::Receive {
 			payment_data: Some(msgs::FinalOnionHopData {
 				payment_secret,
-				total_msat: amt_msat,
+				total_msat: replacement_payload_amount,
 			}),
-			sender_intended_htlc_amt_msat: amt_msat,
+			sender_intended_htlc_amt_msat: replacement_payload_amount,
+			// We will use the same cltv to the outer onion: 72 (blinded tail) + 32 (offset).
 			cltv_expiry_height: 104,
 		}];
 
@@ -2383,8 +2389,236 @@ fn test_trampoline_unblinded_receive() {
 
 		// Use a different session key to construct the replacement onion packet. Note that the sender isn't aware of
 		// this and won't be able to decode the fulfill hold times.
+		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
+		let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
+		let outer_packet = onion_utils::construct_onion_packet(
+			outer_payloads,
+			outer_onion_keys,
+            override_random_bytes,
+			&payment_hash,
+		).unwrap();
 
-		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], amt_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
+		outer_packet
+	};
+
+	check_added_monitors!(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let mut first_message_event = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let mut update_message = match first_message_event {
+		MessageSendEvent::UpdateHTLCs { ref mut updates, .. } => {
+			assert_eq!(updates.update_add_htlcs.len(), 1);
+			updates.update_add_htlcs.get_mut(0)
+		},
+		_ => panic!()
+	};
+	update_message.map(|msg| {
+		msg.onion_routing_packet = replacement_onion.clone();
+	});
+
+	let route: &[&Node] = &[&nodes[1], &nodes[2]];
+	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event);
+
+	let args = if underpay {
+		args.with_payment_preimage(payment_preimage)
+				.without_claimable_event()
+				.expect_failure(HTLCHandlingFailureType::Receive { payment_hash })
+	} else {
+			args.with_payment_secret(payment_secret)
+		};
+
+	do_pass_along_path(args);
+
+	if underpay {
+		{
+			let unblinded_node_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+			nodes[1].node.handle_update_fail_htlc(
+				nodes[2].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+			);
+			do_commitment_signed_dance(&nodes[1], &nodes[2], &unblinded_node_updates.commitment_signed, true, false);
+		}
+		{
+			let unblinded_node_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_update_fail_htlc(
+				nodes[1].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+			);
+			do_commitment_signed_dance(&nodes[0], &nodes[1], &unblinded_node_updates.commitment_signed, false, false);
+		}
+		{
+			let expected_error_data = amt_msat.to_be_bytes();
+			let payment_failed_conditions = PaymentFailedConditions::new()
+				.expected_htlc_error_data(LocalHTLCFailureReason::FinalIncorrectHTLCAmount, &expected_error_data);
+			expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
+		}
+	} else {
+		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+	}
+}
+
+#[test]
+fn test_trampoline_unblinded_receive_underpay() {
+    do_test_trampoline_unblinded_receive(true);
+}
+
+#[test]
+fn test_trampoline_unblinded_receive_normal() {
+    do_test_trampoline_unblinded_receive(false);
+}
+
+#[derive(PartialEq)]
+enum TrampolineConstraintFailureScenarios {
+	TrampolineCLTVGreaterThanOnion,
+	#[allow(dead_code)]
+	// TODO: To test amount greater than onion we need the ability
+	// to forward Trampoline payments.
+	TrampolineAmountGreaterThanOnion,
+}
+
+fn do_test_trampoline_unblinded_receive_constraint_failure(failure_scenario: TrampolineConstraintFailureScenarios) {
+	// Test trampoline payment constraint validation failures with unblinded receive format.
+	// Creates deliberately invalid trampoline payments to verify constraint enforcement:
+	// - TrampolineCLTVGreaterThanOnion: Trampoline CLTV exceeds outer onion requirements
+	// - TrampolineAmountGreaterThanOnion: Trampoline amount exceeds outer onion value
+	// Uses custom onion construction to simulate constraint violations that should trigger
+	// specific HTLC failure codes (FinalIncorrectCLTVExpiry or FinalIncorrectHTLCAmount).
+	// Topology: A (0) -> B (1) -> C (Trampoline receiver) (2)
+
+	const TOTAL_NODE_COUNT: usize = 3;
+	let secp_ctx = Secp256k1::new();
+
+	let chanmon_cfgs = create_chanmon_cfgs(TOTAL_NODE_COUNT);
+	let node_cfgs = create_node_cfgs(TOTAL_NODE_COUNT, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(TOTAL_NODE_COUNT, &node_cfgs, &vec![None; TOTAL_NODE_COUNT]);
+	let mut nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id_alice_bob, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let (_, _, chan_id_bob_carol, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	for i in 0..TOTAL_NODE_COUNT { // connect all nodes' blocks
+		connect_blocks(&nodes[i], (TOTAL_NODE_COUNT as u32) * CHAN_CONFIRM_DEPTH + 1 - nodes[i].best_block_info().1);
+	}
+
+	let alice_node_id = nodes[0].node().get_our_node_id();
+	let bob_node_id = nodes[1].node().get_our_node_id();
+	let carol_node_id = nodes[2].node().get_our_node_id();
+
+	let alice_bob_scid = nodes[0].node().list_channels().iter().find(|c| c.channel_id == chan_id_alice_bob).unwrap().short_channel_id.unwrap();
+	let bob_carol_scid = nodes[1].node().list_channels().iter().find(|c| c.channel_id == chan_id_bob_carol).unwrap().short_channel_id.unwrap();
+
+	let amt_msat = 1000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+	let payee_tlvs = blinded_path::payment::TrampolineForwardTlvs {
+		next_trampoline: alice_node_id,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: amt_msat,
+		},
+		features: BlindedHopFeatures::empty(),
+		payment_relay: PaymentRelay {
+			cltv_expiry_delta: 0,
+			fee_proportional_millionths: 0,
+			fee_base_msat: 0,
+		},
+		next_blinding_override: None,
+	};
+
+	let carol_unblinded_tlvs = payee_tlvs.encode();
+	let path = [((carol_node_id, None), WithoutLength(&carol_unblinded_tlvs))];
+	let carol_alice_trampoline_session_priv = secret_from_hex("a0f4b8d7b6c2d0ffdfaf718f76e9decaef4d9fb38a8c4addb95c4007cc3eee03");
+	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &carol_alice_trampoline_session_priv);
+	let carol_blinded_hops = blinded_path::utils::construct_blinded_hops(
+		&secp_ctx, path.into_iter(), &carol_alice_trampoline_session_priv,
+	).unwrap();
+
+	// We decide an arbitrary ctlv delta for the blinded hop that will be the only cltv delta
+	// in the blinded tail.
+	let blinded_hop_cltv = if failure_scenario == TrampolineConstraintFailureScenarios::TrampolineCLTVGreaterThanOnion { 52 } else { 72 };
+	// Then when building the trampoline hop we use an arbitrary cltv delta offset to be used
+	// when re-building the outer trampoline onion.
+	let starting_cltv_offset_trampoline = 32;
+	// Finally we decide a forced cltv delta expiry for the trampoline hop itself.
+	// This one will be compared against the outer onion ctlv delta.
+	let forced_trampoline_cltv_delta = 104;
+	let route = Route {
+		paths: vec![Path {
+			hops: vec![
+				// Bob
+				RouteHop {
+					pubkey: bob_node_id,
+					node_features: NodeFeatures::empty(),
+					short_channel_id: alice_bob_scid,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 1000,
+					cltv_expiry_delta: 48,
+					maybe_announced_channel: false,
+				},
+
+				// Carol
+				RouteHop {
+					pubkey: carol_node_id,
+					node_features: NodeFeatures::empty(),
+					short_channel_id: bob_carol_scid,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 0, // no routing fees because it's the final hop
+					cltv_expiry_delta: 48,
+					maybe_announced_channel: false,
+				}
+			],
+			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![
+					// Carol
+					TrampolineHop {
+						pubkey: carol_node_id,
+						node_features: Features::empty(),
+						fee_msat: amt_msat,
+						cltv_expiry_delta: blinded_hop_cltv, // blinded tail ctlv delta.
+					},
+				],
+				hops: carol_blinded_hops,
+				blinding_point: carol_blinding_point,
+				// This will be ignored because we force the cltv_expiry of the trampoline hop.
+				excess_final_cltv_expiry_delta: 39,
+				final_value_msat: amt_msat,
+			})
+		}],
+		route_params: None,
+	};
+
+	let override_random_bytes = [42; 32];
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(override_random_bytes);
+
+	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
+
+	let replacement_onion = {
+		// create a substitute onion where the last Trampoline hop is an unblinded receive, which we
+		// (deliberately) do not support out of the box, therefore necessitating this workaround
+		let outer_session_priv = SecretKey::from_slice(&override_random_bytes[..]).unwrap();
+		let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
+		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
+
+		let blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
+
+		let (_ , outer_total_msat, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, amt_msat, &recipient_onion_fields, starting_cltv_offset_trampoline, &None).unwrap();
+		let trampoline_payloads = vec![msgs::OutboundTrampolinePayload::Receive {
+			payment_data: Some(msgs::FinalOnionHopData {
+				payment_secret,
+				total_msat: amt_msat,
+			}),
+			sender_intended_htlc_amt_msat: amt_msat,
+			cltv_expiry_height: forced_trampoline_cltv_delta,
+		}];
+
+		let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &trampoline_session_priv);
+		let trampoline_packet = onion_utils::construct_trampoline_onion_packet(
+			trampoline_payloads,
+			trampoline_onion_keys,
+            override_random_bytes,
+			&payment_hash,
+			None,
+		).unwrap();
+
+		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
 		let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
 		let outer_packet = onion_utils::construct_onion_packet(
 			outer_payloads,
@@ -2414,10 +2648,199 @@ fn test_trampoline_unblinded_receive() {
 
 	let route: &[&Node] = &[&nodes[1], &nodes[2]];
 	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
-		.with_payment_secret(payment_secret);
-	do_pass_along_path(args);
+		.with_payment_preimage(payment_preimage)
+		.without_claimable_event()
+		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 
-	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+	do_pass_along_path(args);
+	{
+		let unblinded_node_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_update_fail_htlc(
+			nodes[2].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+		);
+		do_commitment_signed_dance(&nodes[1], &nodes[2], &unblinded_node_updates.commitment_signed, true, false);
+	}
+	{
+		let unblinded_node_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fail_htlc(
+			nodes[1].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+		);
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &unblinded_node_updates.commitment_signed, false, false);
+	}
+
+	match failure_scenario {
+		TrampolineConstraintFailureScenarios::TrampolineAmountGreaterThanOnion => {
+			let expected_error_data = amt_msat.to_be_bytes();
+			let payment_failed_conditions = PaymentFailedConditions::new()
+					.expected_htlc_error_data(LocalHTLCFailureReason::FinalIncorrectHTLCAmount, &expected_error_data);
+			expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
+		},
+		TrampolineConstraintFailureScenarios::TrampolineCLTVGreaterThanOnion => {
+			// The amount of the outer onion cltv delta plus the trampoline offset.
+			let expected_error_data = (blinded_hop_cltv + starting_cltv_offset_trampoline).to_be_bytes();
+			let payment_failed_conditions = PaymentFailedConditions::new()
+				.expected_htlc_error_data(LocalHTLCFailureReason::FinalIncorrectCLTVExpiry, &expected_error_data);
+			expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
+		}
+	}
+}
+
+fn do_test_trampoline_blinded_receive_constraint_failure(failure_scenario: TrampolineConstraintFailureScenarios) {
+	// Test trampoline payment constraint validation failures with blinded receive format.
+	// Creates deliberately invalid trampoline payments to verify constraint enforcement:
+	// - TrampolineCLTVGreaterThanOnion: Trampoline CLTV exceeds outer onion requirements
+	// - TrampolineAmountGreaterThanOnion: Trampoline amount exceeds outer onion value
+	// Topology: A (0) -> B (1) -> C (Trampoline receiver inside blinded path) (2)
+
+	const TOTAL_NODE_COUNT: usize = 3;
+	let secp_ctx = Secp256k1::new();
+
+	let chanmon_cfgs = create_chanmon_cfgs(TOTAL_NODE_COUNT);
+	let node_cfgs = create_node_cfgs(TOTAL_NODE_COUNT, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(TOTAL_NODE_COUNT, &node_cfgs, &vec![None; TOTAL_NODE_COUNT]);
+	let mut nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id_alice_bob, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let (_, _, chan_id_bob_carol, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	for i in 0..TOTAL_NODE_COUNT { // connect all nodes' blocks
+		connect_blocks(&nodes[i], (TOTAL_NODE_COUNT as u32) * CHAN_CONFIRM_DEPTH + 1 - nodes[i].best_block_info().1);
+	}
+
+	let bob_node_id = nodes[1].node().get_our_node_id();
+	let carol_node_id = nodes[2].node().get_our_node_id();
+
+	let alice_bob_scid = nodes[0].node().list_channels().iter().find(|c| c.channel_id == chan_id_alice_bob).unwrap().short_channel_id.unwrap();
+	let bob_carol_scid = nodes[1].node().list_channels().iter().find(|c| c.channel_id == chan_id_bob_carol).unwrap().short_channel_id.unwrap();
+	let amt_msat = 1000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+
+	let alice_carol_trampoline_shared_secret = secret_from_hex("a0f4b8d7b6c2d0ffdfaf718f76e9decaef4d9fb38a8c4addb95c4007cc3eee03");
+	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &alice_carol_trampoline_shared_secret);
+	let payee_tlvs = UnauthenticatedReceiveTlvs {
+		payment_secret,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: amt_msat,
+		},
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+	};
+
+	let nonce = Nonce([42u8; 16]);
+	let expanded_key = nodes[2].keys_manager.get_inbound_payment_key();
+	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
+	let carol_unblinded_tlvs = payee_tlvs.encode();
+
+	// Blinded path is Carol as recipient.
+	let path = [((carol_node_id, None), WithoutLength(&carol_unblinded_tlvs))];
+	let blinded_hops = blinded_path::utils::construct_blinded_hops(
+		&secp_ctx, path.into_iter(), &alice_carol_trampoline_shared_secret,
+	).unwrap();
+
+	// We decide an arbitrary ctlv delta for the blinded hop that will be the only cltv delta
+	// in the blinded tail.
+	let blinded_hop_cltv = if failure_scenario == TrampolineConstraintFailureScenarios::TrampolineCLTVGreaterThanOnion { 2 } else { 144 };
+
+	let route = Route {
+		paths: vec![Path {
+			hops: vec![
+				// Bob
+				RouteHop {
+					pubkey: bob_node_id,
+					node_features: NodeFeatures::empty(),
+					short_channel_id: alice_bob_scid,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 1000, // forwarding fee to Carol
+					cltv_expiry_delta: 48,
+					maybe_announced_channel: false,
+				},
+
+				// Carol
+				RouteHop {
+					pubkey: carol_node_id,
+					node_features: NodeFeatures::empty(),
+					short_channel_id: bob_carol_scid,
+					channel_features: ChannelFeatures::empty(),
+					// fee for the usage of the entire blinded path, including Trampoline.
+					// In this case is zero as we are the recipient of the payment.
+					fee_msat: 0,
+					cltv_expiry_delta: 48,
+					maybe_announced_channel: false,
+				}
+			],
+			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![
+            // Carol
+            TrampolineHop {
+                pubkey: carol_node_id,
+                node_features: Features::empty(),
+                fee_msat: amt_msat,
+                cltv_expiry_delta: blinded_hop_cltv,
+            },
+
+        ],
+				hops: blinded_hops,
+				blinding_point: carol_blinding_point,
+				excess_final_cltv_expiry_delta: 39,
+				final_value_msat: amt_msat,
+			})
+		}],
+		route_params: None,
+	};
+
+	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
+	check_added_monitors!(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let first_message_event = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+
+	let route: &[&Node] = &[&nodes[1], &nodes[2]];
+	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
+		.with_payment_preimage(payment_preimage)
+		.without_claimable_event()
+		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
+
+	do_pass_along_path(args);
+	{
+		let unblinded_node_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_update_fail_htlc(
+			nodes[2].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+		);
+		do_commitment_signed_dance(&nodes[1], &nodes[2], &unblinded_node_updates.commitment_signed, true, false);
+	}
+	{
+		let unblinded_node_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fail_htlc(
+			nodes[1].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+		);
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &unblinded_node_updates.commitment_signed, false, false);
+	}
+
+	// We don't share the error data when receiving inside a blinded path.
+	let expected_error_data = [0; 32];
+	match failure_scenario {
+		TrampolineConstraintFailureScenarios::TrampolineAmountGreaterThanOnion => {
+			let payment_failed_conditions = PaymentFailedConditions::new()
+					.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionBlinding, &expected_error_data);
+			expect_payment_failed_conditions(&nodes[0], payment_hash, true, payment_failed_conditions);
+		},
+		TrampolineConstraintFailureScenarios::TrampolineCLTVGreaterThanOnion => {
+			let payment_failed_conditions = PaymentFailedConditions::new()
+				.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionBlinding, &expected_error_data);
+			expect_payment_failed_conditions(&nodes[0], payment_hash, true, payment_failed_conditions);
+		}
+	}
+}
+
+#[test]
+fn test_trampoline_enforced_constraint_cltv() {
+    do_test_trampoline_unblinded_receive_constraint_failure(TrampolineConstraintFailureScenarios::TrampolineCLTVGreaterThanOnion);
+}
+
+#[test]
+fn test_trampoline_blinded_receive_enforced_constraint_cltv() {
+    do_test_trampoline_blinded_receive_constraint_failure(TrampolineConstraintFailureScenarios::TrampolineCLTVGreaterThanOnion);
 }
 
 #[test]
