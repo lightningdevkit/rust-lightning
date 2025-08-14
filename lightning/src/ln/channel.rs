@@ -7003,9 +7003,13 @@ where
 			})
 			.and_then(|funding_negotiation| funding_negotiation.as_funding())
 			.expect("Funding must exist for negotiated pending splice");
+		let holder_commitment_point = self
+			.current_holder_commitment_point
+			.as_ref()
+			.expect("current should be set after receiving the initial commitment_signed");
 		let (holder_commitment_tx, _) = self.context.validate_commitment_signed(
 			pending_splice_funding,
-			&self.next_holder_commitment_point,
+			holder_commitment_point,
 			msg,
 			logger,
 		)?;
