@@ -4195,7 +4195,7 @@ where
 
 	#[rustfmt::skip]
 	fn validate_commitment_signed<L: Deref>(
-		&self, funding: &FundingScope, holder_commitment_point: &HolderCommitmentPoint,
+		&self, funding: &FundingScope, transaction_number: u64, commitment_point: PublicKey,
 		msg: &msgs::CommitmentSigned, logger: &L,
 	) -> Result<(HolderCommitmentTransaction, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>), ChannelError>
 	where
@@ -4203,9 +4203,9 @@ where
 	{
 		let funding_script = funding.get_funding_redeemscript();
 
-		let commitment_data = self.build_commitment_transaction(funding,
-			holder_commitment_point.next_transaction_number(), &holder_commitment_point.next_point(),
-			true, false, logger);
+		let commitment_data = self.build_commitment_transaction(
+			funding, transaction_number, &commitment_point, true, false, logger,
+		);
 		let commitment_txid = {
 			let trusted_tx = commitment_data.tx.trust();
 			let bitcoin_tx = trusted_tx.built_transaction();
@@ -7003,9 +7003,15 @@ where
 			})
 			.and_then(|funding_negotiation| funding_negotiation.as_funding())
 			.expect("Funding must exist for negotiated pending splice");
+		let transaction_number = self.holder_commitment_point.current_transaction_number();
+		let commitment_point = self
+			.holder_commitment_point
+			.current_point()
+			.expect("current should be set after receiving the initial commitment_signed");
 		let (holder_commitment_tx, _) = self.context.validate_commitment_signed(
 			pending_splice_funding,
-			&self.holder_commitment_point,
+			transaction_number,
+			commitment_point,
 			msg,
 			logger,
 		)?;
@@ -7089,9 +7095,17 @@ where
 			));
 		}
 
+		let transaction_number = self.holder_commitment_point.next_transaction_number();
+		let commitment_point = self.holder_commitment_point.next_point();
 		let update = self
 			.context
-			.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)
+			.validate_commitment_signed(
+				&self.funding,
+				transaction_number,
+				commitment_point,
+				msg,
+				logger,
+			)
 			.map(|(commitment_tx, htlcs_included)| {
 				let (nondust_htlc_sources, dust_htlcs) =
 					Self::get_commitment_htlc_data(&htlcs_included);
@@ -7153,9 +7167,12 @@ where
 					funding_txid
 				))
 			})?;
+			let transaction_number = self.holder_commitment_point.next_transaction_number();
+			let commitment_point = self.holder_commitment_point.next_point();
 			let (commitment_tx, htlcs_included) = self.context.validate_commitment_signed(
 				funding,
-				&self.holder_commitment_point,
+				transaction_number,
+				commitment_point,
 				msg,
 				logger,
 			)?;
