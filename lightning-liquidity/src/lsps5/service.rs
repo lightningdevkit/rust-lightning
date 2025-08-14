@@ -193,7 +193,10 @@ where
 		if let Some(webhook) = peer_state.webhook_mut(&params.app_name) {
 			no_change = webhook.url == params.webhook;
 			if !no_change {
-				webhook.last_used = now
+				// The URL was updated.
+				webhook.url = params.webhook.clone();
+				webhook.last_used = now;
+				webhook.last_notification_sent = None;
 			}
 		} else {
 			if num_webhooks >= self.config.max_webhooks_per_client as usize {
