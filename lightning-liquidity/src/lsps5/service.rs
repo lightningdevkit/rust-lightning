@@ -187,7 +187,7 @@ where
 		let now =
 			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
 
-		let num_webhooks = peer_state.app_names().len();
+		let num_webhooks = peer_state.webhooks_len();
 		let mut no_change = false;
 
 		if let Some(webhook) = peer_state.webhook_mut(&params.app_name) {
@@ -247,7 +247,7 @@ where
 		let msg = LSPS5Message::Response(
 			request_id,
 			LSPS5Response::SetWebhook(SetWebhookResponse {
-				num_webhooks: peer_state.app_names().len() as u32,
+				num_webhooks: peer_state.webhooks_len() as u32,
 				max_webhooks: self.config.max_webhooks_per_client,
 				no_change,
 			}),
@@ -574,6 +574,10 @@ impl PeerState {
 
 	fn webhooks_mut(&mut self) -> &mut Vec<(LSPS5AppName, Webhook)> {
 		&mut self.webhooks
+	}
+
+	fn webhooks_len(&self) -> usize {
+		self.webhooks.len()
 	}
 
 	fn app_names(&self) -> Vec<LSPS5AppName> {
