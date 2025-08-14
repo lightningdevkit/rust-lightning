@@ -559,6 +559,32 @@ where
 			LSPSMessage::LSPS5(msg @ LSPS5Message::Request(..)) => {
 				match &self.lsps5_service_handler {
 					Some(lsps5_service_handler) => {
+						let lsps2_has_opening_or_open_jit_channel = self
+							.lsps2_service_handler
+							.as_ref()
+							.map_or(false, |h| h.has_opening_or_open_jit_channel(sender_node_id));
+						#[cfg(lsps1_service)]
+						let lsps1_has_active_requests = self
+							.lsps1_service_handler
+							.as_ref()
+							.map_or(false, |h| h.has_active_requests(sender_node_id));
+						#[cfg(not(lsps1_service))]
+						let lsps1_has_active_requests = false;
+
+						if !lsps5_service_handler.can_accept_request(
+							sender_node_id,
+							lsps2_has_opening_or_open_jit_channel,
+							lsps1_has_active_requests,
+						) {
+							return Err(LightningError {
+                                    err: format!(
+                                        "Rejecting LSPS5 request from {:?} without prior activity (requires open channel or active LSPS1 or LSPS2 flow)",
+                                        sender_node_id
+                                    ),
+                                    action: ErrorAction::IgnoreAndLog(Level::Debug),
+                                });
+						}
+
 						lsps5_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
