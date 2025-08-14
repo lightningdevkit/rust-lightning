@@ -242,12 +242,10 @@ impl OutboundJITChannelState {
 			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				payment_queue.add_htlc(htlc);
-				if let Some((_payment_hash, htlcs)) =
-					payment_queue.pop_greater_than_msat(*opening_fee_msat)
-				{
+				if let Some(entry) = payment_queue.pop_greater_than_msat(*opening_fee_msat) {
 					let forward_payment = HTLCInterceptedAction::ForwardPayment(
 						*channel_id,
-						FeePayment { htlcs, opening_fee_msat: *opening_fee_msat },
+						FeePayment { htlcs: entry.htlcs, opening_fee_msat: *opening_fee_msat },
 					);
 					*self = OutboundJITChannelState::PendingPaymentForward {
 						payment_queue,
@@ -277,12 +275,10 @@ impl OutboundJITChannelState {
 	) -> Result<ForwardPaymentAction, ChannelStateError> {
 		match self {
 			OutboundJITChannelState::PendingChannelOpen { payment_queue, opening_fee_msat } => {
-				if let Some((_payment_hash, htlcs)) =
-					payment_queue.pop_greater_than_msat(*opening_fee_msat)
-				{
+				if let Some(entry) = payment_queue.pop_greater_than_msat(*opening_fee_msat) {
 					let forward_payment = ForwardPaymentAction(
 						channel_id,
-						FeePayment { opening_fee_msat: *opening_fee_msat, htlcs },
+						FeePayment { htlcs: entry.htlcs, opening_fee_msat: *opening_fee_msat },
 					);
 					*self = OutboundJITChannelState::PendingPaymentForward {
 						payment_queue: core::mem::take(payment_queue),
@@ -311,12 +307,10 @@ impl OutboundJITChannelState {
 				opening_fee_msat,
 				channel_id,
 			} => {
-				if let Some((_payment_hash, htlcs)) =
-					payment_queue.pop_greater_than_msat(*opening_fee_msat)
-				{
+				if let Some(entry) = payment_queue.pop_greater_than_msat(*opening_fee_msat) {
 					let forward_payment = ForwardPaymentAction(
 						*channel_id,
-						FeePayment { htlcs, opening_fee_msat: *opening_fee_msat },
+						FeePayment { htlcs: entry.htlcs, opening_fee_msat: *opening_fee_msat },
 					);
 					*self = OutboundJITChannelState::PendingPaymentForward {
 						payment_queue: core::mem::take(payment_queue),
