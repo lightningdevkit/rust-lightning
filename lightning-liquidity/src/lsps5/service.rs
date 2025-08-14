@@ -433,14 +433,14 @@ where
 		}
 
 		for (app_name, webhook) in client_webhooks.iter_mut() {
-			webhook.last_used = now;
-			webhook.last_notification_sent = Some(now);
 			self.send_notification(
 				client_id,
 				app_name.clone(),
 				webhook.url.clone(),
 				notification.clone(),
 			)?;
+			webhook.last_used = now;
+			webhook.last_notification_sent = Some(now);
 		}
 		Ok(())
 	}
