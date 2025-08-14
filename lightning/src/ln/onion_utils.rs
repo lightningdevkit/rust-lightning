@@ -1668,6 +1668,13 @@ pub enum LocalHTLCFailureReason {
 	HTLCMaximum,
 	/// The HTLC was failed because our remote peer is offline.
 	PeerOffline,
+	/// We have been unable to forward a payment to the next Trampoline node but may be able to
+	/// do it later.
+	TemporaryTrampolineFailure,
+	/// The amount or CLTV expiry were insufficient to route the payment to the next Trampoline.
+	TrampolineFeeOrExpiryInsufficient,
+	/// The specified next Trampoline node cannot be reached from our node.
+	UnknownNextTrampoline,
 }
 
 impl LocalHTLCFailureReason {
@@ -1708,6 +1715,9 @@ impl LocalHTLCFailureReason {
 			Self::InvalidOnionPayload | Self::InvalidTrampolinePayload => PERM | 22,
 			Self::MPPTimeout => 23,
 			Self::InvalidOnionBlinding => BADONION | PERM | 24,
+			Self::TemporaryTrampolineFailure => NODE | 25,
+			Self::TrampolineFeeOrExpiryInsufficient => NODE | 26,
+			Self::UnknownNextTrampoline => PERM | 27,
 			Self::UnknownFailureCode { code } => *code,
 		}
 	}
@@ -1842,6 +1852,9 @@ impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(79, HTLCMinimum) => {},
 	(81, HTLCMaximum) => {},
 	(83, PeerOffline) => {},
+	(85, TemporaryTrampolineFailure) => {},
+	(87, TrampolineFeeOrExpiryInsufficient) => {},
+	(89, UnknownNextTrampoline) => {},
 );
 
 impl From<&HTLCFailReason> for HTLCHandlingFailureReason {
@@ -2008,6 +2021,11 @@ impl HTLCFailReason {
 					debug_assert!(false, "Unknown failure code: {}", code)
 				}
 			},
+			LocalHTLCFailureReason::TemporaryTrampolineFailure => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::TrampolineFeeOrExpiryInsufficient => {
+				debug_assert_eq!(data.len(), 10)
+			},
+			LocalHTLCFailureReason::UnknownNextTrampoline => debug_assert!(data.is_empty()),
 		}
 
 		Self(HTLCFailReasonRepr::Reason { data, failure_reason })
