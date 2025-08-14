@@ -311,6 +311,17 @@ impl<'f> Display for Bolt11InvoiceDescriptionRef<'f> {
 	}
 }
 
+impl From<Bolt11InvoiceDescriptionRef<'_>> for Bolt11InvoiceDescription {
+	fn from(desc_ref: Bolt11InvoiceDescriptionRef) -> Self {
+		match desc_ref {
+			Bolt11InvoiceDescriptionRef::Direct(desc) => {
+				Bolt11InvoiceDescription::Direct(desc.clone())
+			},
+			Bolt11InvoiceDescriptionRef::Hash(hash) => Bolt11InvoiceDescription::Hash(hash.clone()),
+		}
+	}
+}
+
 /// Represents a signed [`RawBolt11Invoice`] with cached hash. The signature is not checked and may be
 /// invalid.
 ///
