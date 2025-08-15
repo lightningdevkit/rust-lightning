@@ -19,11 +19,11 @@ use {
 	crate::ln::channel::PendingV2Channel,
 	crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint},
 	crate::ln::functional_test_utils::*,
+	crate::ln::funding::FundingTxInput,
 	crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent},
 	crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete, TxSignatures},
 	crate::ln::types::ChannelId,
 	crate::prelude::*,
-	crate::util::ser::TransactionU16LenLimited,
 	crate::util::test_utils,
 	bitcoin::Witness,
 };
@@ -49,10 +49,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 	let initiator_funding_inputs: Vec<_> = create_dual_funding_utxos_with_prev_txs(
 		&nodes[0],
 		&[session.initiator_input_value_satoshis],
-	)
-	.into_iter()
-	.map(|(txin, tx, _)| (txin, TransactionU16LenLimited::new(tx).unwrap()))
-	.collect();
+	);
 
 	// Alice creates a dual-funded channel as initiator.
 	let funding_satoshis = session.funding_input_sats;
@@ -86,15 +83,16 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		&RevocationBasepoint::from(open_channel_v2_msg.common_fields.revocation_basepoint),
 	);
 
+	let FundingTxInput { sequence, prevtx, .. } = &initiator_funding_inputs[0];
 	let tx_add_input_msg = TxAddInput {
 		channel_id,
 		serial_id: 2, // Even serial_id from initiator.
-		prevtx: Some(initiator_funding_inputs[0].1.clone()),
+		prevtx: Some(prevtx.clone()),
 		prevtx_out: 0,
-		sequence: initiator_funding_inputs[0].0.sequence.0,
+		sequence: sequence.0,
 		shared_input_txid: None,
 	};
-	let input_value = tx_add_input_msg.prevtx.as_ref().unwrap().as_transaction().output
+	let input_value = tx_add_input_msg.prevtx.as_ref().unwrap().output
 		[tx_add_input_msg.prevtx_out as usize]
 		.value;
 	assert_eq!(input_value.to_sat(), session.initiator_input_value_satoshis);
