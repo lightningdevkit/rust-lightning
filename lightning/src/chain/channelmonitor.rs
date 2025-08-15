@@ -205,6 +205,10 @@ pub enum MonitorEvent {
 	/// channel.
 	HolderForceClosed(OutPoint),
 
+	/// Indicates that we've detected a commitment transaction (either holder's or counterparty's)
+	/// be included in a block and should consider the channel closed.
+	CommitmentTxConfirmed(()),
+
 	/// Indicates a [`ChannelMonitor`] update has completed. See
 	/// [`ChannelMonitorUpdateStatus::InProgress`] for more information on how this is used.
 	///
@@ -236,6 +240,7 @@ impl_writeable_tlv_based_enum_upgradable_legacy!(MonitorEvent,
 		(4, channel_id, required),
 	},
 ;
+	(1, CommitmentTxConfirmed),
 	(2, HTLCEvent),
 	(4, HolderForceClosed),
 	// 6 was `UpdateFailed` until LDK 0.0.117
@@ -5088,6 +5093,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					);
 					log_info!(logger, "Channel {} closed by funding output spend in txid {txid}",
 						self.channel_id());
+					if !self.funding_spend_seen {
+						self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(()));
+					}
 					self.funding_spend_seen = true;
 
 					let mut balance_spendable_csv = None;
@@ -6371,6 +6379,7 @@ mod tests {
 	use bitcoin::{Sequence, Witness};
 
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
+	use crate::events::ClosureReason;
 
 	use super::ChannelMonitorUpdateStep;
 	use crate::chain::channelmonitor::{ChannelMonitor, WithChannelMonitor};
@@ -6468,22 +6477,26 @@ mod tests {
 		// Build a new ChannelMonitorUpdate which contains both the failing commitment tx update
 		// and provides the claim preimages for the two pending HTLCs. The first update generates
 		// an error, but the point of this test is to ensure the later updates are still applied.
-		let monitor_updates = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
-		let mut replay_update = monitor_updates.get(&channel.2).unwrap().iter().next_back().unwrap().clone();
-		assert_eq!(replay_update.updates.len(), 1);
-		if let ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. } = replay_update.updates[0] {
-		} else { panic!(); }
-		replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage {
-			payment_preimage: payment_preimage_1, payment_info: None,
-		});
-		replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage {
-			payment_preimage: payment_preimage_2, payment_info: None,
-		});
+		let replay_update = {
+			let monitor_updates = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
+			let mut replay_update = monitor_updates.get(&channel.2).unwrap().iter().next_back().unwrap().clone();
+			assert_eq!(replay_update.updates.len(), 1);
+			if let ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. } = replay_update.updates[0] {
+			} else { panic!(); }
+			replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage {
+				payment_preimage: payment_preimage_1, payment_info: None,
+			});
+			replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage {
+				payment_preimage: payment_preimage_2, payment_info: None,
+			});
+			replay_update
+		};
 
 		let broadcaster = TestBroadcaster::with_blocks(Arc::clone(&nodes[1].blocks));
 		assert!(
 			pre_update_monitor.update_monitor(&replay_update, &&broadcaster, &&chanmon_cfgs[1].fee_estimator, &nodes[1].logger)
 			.is_err());
+
 		// Even though we error'd on the first update, we should still have generated an HTLC claim
 		// transaction
 		let txn_broadcasted = broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -6495,7 +6508,12 @@ mod tests {
 		assert_eq!(htlc_txn.len(), 2);
 		check_spends!(htlc_txn[0], broadcast_tx);
 		check_spends!(htlc_txn[1], broadcast_tx);
+
+		check_closed_broadcast(&nodes[1], 1, true);
+		check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false, &[nodes[0].node.get_our_node_id()], 100000);
+		check_added_monitors(&nodes[1], 1);
 	}
+
 	#[test]
 	fn test_funding_spend_refuses_updates() {
 		do_test_funding_spend_refuses_updates(true);

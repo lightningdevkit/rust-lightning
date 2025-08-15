@@ -5775,35 +5775,6 @@ where
 		Ok(false)
 	}
 
-	#[rustfmt::skip]
-	fn check_for_funding_tx_spent<L: Deref>(
-		&mut self, funding: &FundingScope, tx: &Transaction, logger: &L,
-	) -> Result<(), ClosureReason>
-	where
-		L::Target: Logger,
-	{
-		let funding_txo = match funding.get_funding_txo() {
-			Some(funding_txo) => funding_txo,
-			None => {
-				debug_assert!(false);
-				return Ok(());
-			},
-		};
-
-		for input in tx.input.iter() {
-			if input.previous_output == funding_txo.into_bitcoin_outpoint() {
-				log_info!(
-					logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}",
-					tx.compute_txid(), input.previous_output.txid, input.previous_output.vout,
-					&self.channel_id(),
-				);
-				return Err(ClosureReason::CommitmentTxConfirmed);
-			}
-		}
-
-		Ok(())
-	}
-
 	/// Returns SCIDs that have been associated with the channel's funding transactions.
 	pub fn historical_scids(&self) -> &[u64] {
 		&self.historical_scids[..]
@@ -10005,12 +9976,6 @@ where
 				}
 
 				if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
-					for &(idx, tx) in txdata.iter() {
-						if idx > index_in_block {
-							self.context.check_for_funding_tx_spent(&self.funding, tx, logger)?;
-						}
-					}
-
 					log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
 					let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
 					return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), announcement_sigs));
@@ -10051,12 +10016,6 @@ where
 				let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
 
 				if let Some(splice_locked) = pending_splice.check_get_splice_locked(&self.context, funding, height) {
-					for &(idx, tx) in txdata.iter() {
-						if idx > index_in_block {
-							self.context.check_for_funding_tx_spent(funding, tx, logger)?;
-						}
-					}
-
 					log_info!(
 						logger,
 						"Sending splice_locked txid {} to our peer for channel {}",
@@ -10076,13 +10035,6 @@ where
 					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update)), announcement_sigs));
 				}
 			}
-
-			self.context.check_for_funding_tx_spent(&self.funding, tx, logger)?;
-			#[cfg(splicing)]
-			for funding in self.pending_funding.iter() {
-				self.context.check_for_funding_tx_spent(funding, tx, logger)?;
-			}
-
 		}
 
 		Ok((None, None))

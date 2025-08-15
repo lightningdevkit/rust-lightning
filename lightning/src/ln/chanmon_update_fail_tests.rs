@@ -3895,6 +3895,11 @@ fn do_test_durable_preimages_on_closed_channel(
 			persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 		}
 	}
+	if !close_chans_before_reload {
+		check_closed_broadcast(&nodes[1], 1, true);
+		let reason = ClosureReason::CommitmentTxConfirmed;
+		check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
+	}
 	nodes[1].node.timer_tick_occurred();
 	check_added_monitors(&nodes[1], mons_added);
 
@@ -3906,12 +3911,6 @@ fn do_test_durable_preimages_on_closed_channel(
 		.find(|tx| tx.input[0].previous_output.txid == as_closing_tx[0].compute_txid())
 		.unwrap();
 	check_spends!(bs_preimage_tx, as_closing_tx[0]);
-
-	if !close_chans_before_reload {
-		check_closed_broadcast(&nodes[1], 1, true);
-		let reason = ClosureReason::CommitmentTxConfirmed;
-		check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
-	}
 
 	mine_transactions(&nodes[0], &[&as_closing_tx[0], bs_preimage_tx]);
 	check_closed_broadcast(&nodes[0], 1, true);
@@ -4048,7 +4047,7 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	let mut events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if close_during_reload { 2 } else { 1 });
 	expect_payment_forwarded(
-		events.pop().unwrap(),
+		events.remove(0),
 		&nodes[1],
 		&nodes[0],
 		&nodes[2],
@@ -4491,9 +4490,9 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	assert_eq!(as_commit_tx.len(), 1);
 
 	mine_transaction(&nodes[1], &as_commit_tx[0]);
+	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [node_a_id], 1000000);
-	check_closed_broadcast!(nodes[1], true);
 
 	// Now that B has a pending forwarded payment across it with the inbound edge on-chain, claim
 	// the payment on C and give B the preimage for it.
@@ -4567,9 +4566,9 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 	assert_eq!(as_commit_tx.len(), 1);
 
 	mine_transaction(&nodes[1], &as_commit_tx[0]);
+	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [node_a_id], 1000000);
-	check_closed_broadcast!(nodes[1], true);
 
 	// Now that B has a pending payment with the inbound HTLC on a closed channel, claim the
 	// payment on disk, but don't let the `ChannelMonitorUpdate` complete. This should prevent the

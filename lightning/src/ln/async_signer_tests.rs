@@ -1010,7 +1010,7 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 
 	// Route an HTLC and set the signer as unavailable.
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
-	route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (_, payment_hash, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	if remote_commitment {
 		let message = "Channel force-closed".to_owned();
@@ -1086,16 +1086,14 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	nodes[0].disable_channel_signer_op(&node_b_id, &chan_id, sign_htlc_op);
 	mine_transaction(&nodes[0], &commitment_tx);
 
-	check_added_monitors(&nodes[0], 1);
 	check_closed_broadcast(&nodes[0], 1, true);
-	check_closed_event(
-		&nodes[0],
-		1,
-		ClosureReason::CommitmentTxConfirmed,
-		false,
-		&[node_b_id],
-		100_000,
-	);
+	check_added_monitors(&nodes[0], 1);
+	let closure_reason = if remote_commitment {
+		ClosureReason::CommitmentTxConfirmed
+	} else {
+		ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) }
+	};
+	check_closed_event(&nodes[0], 1, closure_reason, false, &[node_b_id], 100_000);
 
 	// If the counterparty broadcast its latest commitment, we need to mine enough blocks for the
 	// HTLC timeout.

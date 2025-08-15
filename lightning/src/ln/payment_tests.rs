@@ -4270,8 +4270,8 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		assert_eq!(bs_tx.len(), 1);
 
 		mine_transaction(&nodes[3], &bs_tx[0]);
-		check_added_monitors(&nodes[3], 1);
 		check_closed_broadcast(&nodes[3], 1, true);
+		check_added_monitors(&nodes[3], 1);
 		let reason = ClosureReason::CommitmentTxConfirmed;
 		check_closed_event!(&nodes[3], 1, reason, false, [node_b_id], 1000000);
 
