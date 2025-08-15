@@ -13252,8 +13252,7 @@ where
 		let is_manual_broadcast = Some(self.context.is_manual_broadcast);
 
 		let holder_commitment_point_current = self.holder_commitment_point.current_point();
-		// `HolderCommitmentPoint::next_point` will become optional when async signing is implemented.
-		let holder_commitment_point_next = Some(self.holder_commitment_point.next_point());
+		let holder_commitment_point_next = self.holder_commitment_point.next_point();
 		let holder_commitment_point_pending_next = self.holder_commitment_point.pending_next_point;
 
 		write_tlv_fields!(writer, {
@@ -13292,7 +13291,7 @@ where
 			(39, pending_outbound_blinding_points, optional_vec),
 			(41, holding_cell_blinding_points, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
-			(45, holder_commitment_point_next, option),
+			(45, holder_commitment_point_next, required),
 			(47, holder_commitment_point_pending_next, option),
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
