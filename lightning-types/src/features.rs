@@ -80,6 +80,8 @@
 //!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-quiescence) for more information).
 //! - `ZeroFeeCommitments` - A channel type which always uses zero transaction fee on commitment transactions.
 //!   (see [BOLT PR #1228](https://github.com/lightning/bolts/pull/1228) for more info).
+//! - `HtlcHold` - requires/supports holding HTLCs and forwarding on receipt of an onion message
+//!   (see [BOLT-2](https://github.com/lightning/bolts/pull/989/files) for more information).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -161,7 +163,7 @@ mod sealed {
 			// Byte 5
 			ProvideStorage | ChannelType | SCIDPrivacy | AnchorZeroFeeCommitments,
 			// Byte 6
-			ZeroConf,
+			ZeroConf | HtlcHold,
 			// Byte 7
 			Trampoline | SimpleClose,
 		]
@@ -182,7 +184,7 @@ mod sealed {
 			// Byte 5
 			ProvideStorage | ChannelType | SCIDPrivacy | AnchorZeroFeeCommitments,
 			// Byte 6
-			ZeroConf | Keysend,
+			ZeroConf | HtlcHold | Keysend,
 			// Byte 7
 			Trampoline | SimpleClose,
 			// Byte 8 - 31
@@ -640,6 +642,17 @@ mod sealed {
 	define_feature!(51, ZeroConf, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for accepting channels with zero confirmations. Called `option_zeroconf` in the BOLTs",
 		set_zero_conf_optional, set_zero_conf_required, supports_zero_conf, requires_zero_conf);
+	define_feature!(
+		53,
+		HtlcHold,
+		[InitContext, NodeContext],
+		"Feature flags for holding HTLCs and forwarding on receipt of an onion message",
+		set_htlc_hold_optional,
+		set_htlc_hold_required,
+		clear_htlc_hold,
+		supports_htlc_hold,
+		requires_htlc_hold
+	);
 	define_feature!(
 		55,
 		Keysend,
