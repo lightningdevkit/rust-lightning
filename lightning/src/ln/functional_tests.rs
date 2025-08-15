@@ -2288,6 +2288,7 @@ pub fn fail_backward_pending_htlc_upon_channel_failure() {
 			onion_routing_packet,
 			skimmed_fee_msat: None,
 			blinding_point: None,
+			hold_htlc: None,
 		};
 		nodes[0].node.handle_update_add_htlc(node_b_id, &update_add_htlc);
 	}
