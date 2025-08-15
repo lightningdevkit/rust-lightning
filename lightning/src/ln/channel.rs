@@ -13242,10 +13242,9 @@ where
 		}
 		let is_manual_broadcast = Some(self.context.is_manual_broadcast);
 
-		// `HolderCommitmentPoint::point` will become optional when async signing is implemented.
 		let current_holder_commitment_point =
 			self.current_holder_commitment_point.map(|p| p.point());
-		let next_holder_commitment_point = Some(self.next_holder_commitment_point.point());
+		let next_holder_commitment_point = self.next_holder_commitment_point.point();
 		let next_holder_commitment_point_next_advance =
 			self.next_holder_commitment_point.next_point();
 
@@ -13285,7 +13284,7 @@ where
 			(39, pending_outbound_blinding_points, optional_vec),
 			(41, holding_cell_blinding_points, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
-			(45, next_holder_commitment_point, option),
+			(45, next_holder_commitment_point, required),
 			(47, next_holder_commitment_point_next_advance, option),
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
