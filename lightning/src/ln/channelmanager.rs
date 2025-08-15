@@ -3395,7 +3395,8 @@ macro_rules! handle_monitor_update_completion {
 			&mut $peer_state.pending_msg_events, $chan, updates.raa,
 			updates.commitment_update, updates.order, updates.accepted_htlcs, updates.pending_update_adds,
 			updates.funding_broadcastable, updates.channel_ready,
-			updates.announcement_sigs, updates.tx_signatures, None);
+			updates.announcement_sigs, updates.tx_signatures, None, None,
+		);
 		if let Some(upd) = channel_update {
 			$peer_state.pending_msg_events.push(upd);
 		}
@@ -8905,9 +8906,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>,
 		tx_signatures: Option<msgs::TxSignatures>, tx_abort: Option<msgs::TxAbort>,
+		splice_locked: Option<msgs::SpliceLocked>,
 	) -> (Option<(u64, PublicKey, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort",
+		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort, {} splice_locked",
 			&channel.context.channel_id(),
 			if raa.is_some() { "an" } else { "no" },
 			if commitment_update.is_some() { "a" } else { "no" },
@@ -8917,6 +8919,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			if announcement_sigs.is_some() { "sending" } else { "without" },
 			if tx_signatures.is_some() { "sending" } else { "without" },
 			if tx_abort.is_some() { "sending" } else { "without" },
+			if splice_locked.is_some() { "sending" } else { "without" },
 		);
 
 		let counterparty_node_id = channel.context.get_counterparty_node_id();
@@ -8953,6 +8956,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 		if let Some(msg) = tx_abort {
 			pending_msg_events.push(MessageSendEvent::SendTxAbort {
+				node_id: counterparty_node_id,
+				msg,
+			});
+		}
+		if let Some(msg) = splice_locked {
+			pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
 				node_id: counterparty_node_id,
 				msg,
 			});
@@ -10953,7 +10962,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	#[rustfmt::skip]
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<NotifyOption, MsgHandleErrInternal> {
-		let need_lnd_workaround = {
+		let (implicit_splice_locked, need_lnd_workaround) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -10970,12 +10979,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+						let features = &peer_state.latest_features;
 						// Currently, we expect all holding cell update_adds to be dropped on peer
 						// disconnect, so Channel's reestablish will never hand us any holding cell
 						// freed HTLCs to fail backwards. If in the future we no longer drop pending
 						// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
 						let responses = try_channel_entry!(self, peer_state, chan.channel_reestablish(
-							msg, &&logger, &self.node_signer, self.chain_hash,
+							msg, &&logger, &self.node_signer, self.chain_hash, features,
 							&self.default_configuration, &*self.best_block.read().unwrap()), chan_entry);
 						let mut channel_update = None;
 						if let Some(msg) = responses.shutdown_msg {
@@ -10998,13 +11008,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let (htlc_forwards, decode_update_add_htlcs) = self.handle_channel_resumption(
 							&mut peer_state.pending_msg_events, chan, responses.raa, responses.commitment_update, responses.order,
 							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs,
-							responses.tx_signatures, responses.tx_abort);
+							responses.tx_signatures, responses.tx_abort, responses.splice_locked,
+						);
 						debug_assert!(htlc_forwards.is_none());
 						debug_assert!(decode_update_add_htlcs.is_none());
 						if let Some(upd) = channel_update {
 							peer_state.pending_msg_events.push(upd);
 						}
-						need_lnd_workaround
+
+						(responses.implicit_splice_locked, need_lnd_workaround)
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
 							"Got a channel_reestablish message for an unfunded channel!".into())), chan_entry);
@@ -11036,6 +11048,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							your_last_per_commitment_secret: [1u8; 32],
 							my_current_per_commitment_point: PublicKey::from_slice(&[2u8; 33]).unwrap(),
 							next_funding_txid: None,
+							your_last_funding_locked_txid: None,
+							my_current_funding_locked_txid: None,
 						},
 					});
 					return Err(MsgHandleErrInternal::send_err_msg_no_close(
@@ -11049,6 +11063,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if let Some(channel_ready_msg) = need_lnd_workaround {
 			self.internal_channel_ready(counterparty_node_id, &channel_ready_msg)?;
 		}
+
+		#[cfg(not(splicing))]
+		let _ = implicit_splice_locked;
+		#[cfg(splicing)]
+		if let Some(splice_locked) = implicit_splice_locked {
+			self.internal_splice_locked(counterparty_node_id, &splice_locked)?;
+			return Ok(NotifyOption::DoPersist);
+		}
+
 		Ok(NotifyOption::SkipPersistHandleEvents)
 	}
 

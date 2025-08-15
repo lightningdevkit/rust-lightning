@@ -80,6 +80,8 @@
 //!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-quiescence) for more information).
 //! - `ZeroFeeCommitments` - A channel type which always uses zero transaction fee on commitment transactions.
 //!   (see [BOLT PR #1228](https://github.com/lightning/bolts/pull/1228) for more info).
+//! - `Splice` - Allows replacing the currently-locked funding transaction with a new one
+//!   (see [BOLT PR #1160](https://github.com/lightning/bolts/pull/1160) for more information).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -163,7 +165,7 @@ mod sealed {
 			// Byte 6
 			ZeroConf,
 			// Byte 7
-			Trampoline | SimpleClose,
+			Trampoline | SimpleClose | Splice,
 		]
 	);
 	define_context!(
@@ -184,7 +186,7 @@ mod sealed {
 			// Byte 6
 			ZeroConf | Keysend,
 			// Byte 7
-			Trampoline | SimpleClose,
+			Trampoline | SimpleClose | Splice,
 			// Byte 8 - 31
 			,,,,,,,,,,,,,,,,,,,,,,,,
 			// Byte 32
@@ -673,9 +675,20 @@ mod sealed {
 		supports_simple_close,
 		requires_simple_close
 	);
-	// By default, allocate enough bytes to cover up to SimpleClose. Update this as new features are
+	define_feature!(
+		63,
+		Splice,
+		[InitContext, NodeContext],
+		"Feature flags for channel splicing.",
+		set_splicing_optional,
+		set_splicing_required,
+		clear_splicing,
+		supports_splicing,
+		requires_splicing
+	);
+	// By default, allocate enough bytes to cover up to Splice. Update this as new features are
 	// added which we expect to appear commonly across contexts.
-	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = (61 + 7) / 8;
+	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = (63 + 7) / 8;
 	define_feature!(
 		259,
 		DnsResolver,
@@ -1369,6 +1382,7 @@ mod tests {
 		init_features.set_zero_conf_optional();
 		init_features.set_quiescence_optional();
 		init_features.set_simple_close_optional();
+		init_features.set_splicing_optional();
 
 		assert!(init_features.initial_routing_sync());
 		assert!(!init_features.supports_upfront_shutdown_script());
@@ -1384,7 +1398,7 @@ mod tests {
 			// - onion_messages
 			// - option_channel_type | option_scid_alias
 			// - option_zeroconf
-			// - option_simple_close
+			// - option_simple_close | option_splice
 			assert_eq!(node_features.flags.len(), 8);
 			assert_eq!(node_features.flags[0], 0b00000001);
 			assert_eq!(node_features.flags[1], 0b01010001);
@@ -1393,7 +1407,7 @@ mod tests {
 			assert_eq!(node_features.flags[4], 0b10001000);
 			assert_eq!(node_features.flags[5], 0b10100000);
 			assert_eq!(node_features.flags[6], 0b00001000);
-			assert_eq!(node_features.flags[7], 0b00100000);
+			assert_eq!(node_features.flags[7], 0b10100000);
 		}
 
 		// Check that cleared flags are kept blank when converting back:

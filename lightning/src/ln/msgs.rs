@@ -927,6 +927,16 @@ pub struct ChannelReestablish {
 	///   * `channel_reestablish`-sending node: https:///github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2466-L2470
 	///   * `channel_reestablish`-receiving node: https:///github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2520-L2531
 	pub next_funding_txid: Option<Txid>,
+	/// The last funding txid received by the sending node, which may be:
+	/// - the txid of the last `splice_locked` it received, otherwise
+	/// - the txid of the funding transaction if it received `channel_ready`, or else
+	/// - `None` if it has never received `channel_ready` or `splice_locked`
+	pub your_last_funding_locked_txid: Option<Txid>,
+	/// The last funding txid sent by the sending node, which may be:
+	/// - the txid of the last `splice_locked` it sent, otherwise
+	/// - the txid of the funding transaction if it sent `channel_ready`, or else
+	/// - `None` if it has never sent `channel_ready` or `splice_locked`
+	pub my_current_funding_locked_txid: Option<Txid>,
 }
 
 /// An [`announcement_signatures`] message to be sent to or received from a peer.
@@ -2811,6 +2821,8 @@ impl_writeable_msg!(ChannelReestablish, {
 	my_current_per_commitment_point,
 }, {
 	(0, next_funding_txid, option),
+	(1, your_last_funding_locked_txid, option),
+	(3, my_current_funding_locked_txid, option),
 });
 
 impl_writeable_msg!(ClosingSigned,
@@ -4283,6 +4295,8 @@ mod tests {
 			your_last_per_commitment_secret: [9; 32],
 			my_current_per_commitment_point: public_key,
 			next_funding_txid: None,
+			your_last_funding_locked_txid: None,
+			my_current_funding_locked_txid: None,
 		};
 
 		let encoded_value = cr.encode();
@@ -4334,6 +4348,8 @@ mod tests {
 				])
 				.unwrap(),
 			)),
+			your_last_funding_locked_txid: None,
+			my_current_funding_locked_txid: None,
 		};
 
 		let encoded_value = cr.encode();
@@ -4352,6 +4368,73 @@ mod tests {
 				0,   // Type (next_funding_txid)
 				32,  // Length
 				48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80, 4,
+				12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124, // Value
+			]
+		);
+	}
+
+	#[test]
+	fn encoding_channel_reestablish_with_funding_locked_txid() {
+		let public_key = {
+			let secp_ctx = Secp256k1::new();
+			PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(
+					&<Vec<u8>>::from_hex(
+						"0101010101010101010101010101010101010101010101010101010101010101",
+					)
+					.unwrap()[..],
+				)
+				.unwrap(),
+			)
+		};
+
+		let cr = msgs::ChannelReestablish {
+			channel_id: ChannelId::from_bytes([
+				4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0,
+				0, 0, 0, 0,
+			]),
+			next_local_commitment_number: 3,
+			next_remote_commitment_number: 4,
+			your_last_per_commitment_secret: [9; 32],
+			my_current_per_commitment_point: public_key,
+			next_funding_txid: None,
+			your_last_funding_locked_txid: Some(Txid::from_raw_hash(
+				bitcoin::hashes::Hash::from_slice(&[
+					48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80,
+					4, 12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124,
+				])
+				.unwrap(),
+			)),
+			my_current_funding_locked_txid: Some(Txid::from_raw_hash(
+				bitcoin::hashes::Hash::from_slice(&[
+					21, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80,
+					4, 12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124,
+				])
+				.unwrap(),
+			)),
+		};
+
+		let encoded_value = cr.encode();
+		assert_eq!(
+			encoded_value,
+			vec![
+				4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0,
+				0, 0, 0, 0, // channel_id
+				0, 0, 0, 0, 0, 0, 0, 3, // next_local_commitment_number
+				0, 0, 0, 0, 0, 0, 0, 4, // next_remote_commitment_number
+				9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+				9, 9, 9, 9, // your_last_per_commitment_secret
+				3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30,
+				24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7,
+				143, // my_current_per_commitment_point
+				1,   // Type (your_last_funding_locked_txid)
+				32,  // Length
+				48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80, 4,
+				12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124, // Value
+				3,   // Type (my_current_funding_locked_txid)
+				32,  // Length
+				21, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80, 4,
 				12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124, // Value
 			]
 		);
