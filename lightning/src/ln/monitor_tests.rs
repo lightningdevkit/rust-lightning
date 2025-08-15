@@ -3474,7 +3474,7 @@ enum CommitmentType {
 }
 
 fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: bool) {
-	// `MonitorEvent`s aren't delivered to the `ChannelManager` in a durable fasion - if the
+	// `MonitorEvent`s aren't delivered to the `ChannelManager` in a durable fashion - if the
 	// `ChannelManager` fetches the pending `MonitorEvent`s, then the `ChannelMonitor` gets
 	// persisted (i.e. due to a block update) then the node crashes, prior to persisting the
 	// `ChannelManager` again, the `MonitorEvent` and its effects on the `ChannelManger` will be
