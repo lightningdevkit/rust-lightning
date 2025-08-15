@@ -10595,6 +10595,15 @@ where
 		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
 		funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<msgs::SpliceInit, APIError> {
+		if self.current_holder_commitment_point.is_none() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot be spliced, commitment point needs to be advanced once",
+					self.context.channel_id(),
+				),
+			});
+		}
+
 		// Check if a splice has been initiated already.
 		// Note: only a single outstanding splice is supported (per spec)
 		if self.pending_splice.is_some() {
@@ -10695,6 +10704,13 @@ where
 		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
 
 		// TODO(splicing): Add check that we are the quiescence acceptor
+
+		if self.current_holder_commitment_point.is_none() {
+			return Err(ChannelError::Warn(format!(
+				"Channel {} commitment point needs to be advanced once before spliced",
+				self.context.channel_id(),
+			)));
+		}
 
 		// Check if a splice has been initiated already.
 		if self.pending_splice.is_some() {
@@ -13214,6 +13230,8 @@ where
 		let is_manual_broadcast = Some(self.context.is_manual_broadcast);
 
 		// `HolderCommitmentPoint::point` will become optional when async signing is implemented.
+		let current_holder_commitment_point =
+			self.current_holder_commitment_point.map(|p| p.point());
 		let next_holder_commitment_point = Some(self.next_holder_commitment_point.point());
 		let next_holder_commitment_point_next_advance =
 			self.next_holder_commitment_point.next_point();
@@ -13266,6 +13284,7 @@ where
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
+			(63, current_holder_commitment_point, option), // Added in 0.2
 		});
 
 		Ok(())
@@ -13615,6 +13634,7 @@ where
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
 		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
 
+		let mut current_holder_commitment_point_opt: Option<PublicKey> = None;
 		let mut next_holder_commitment_point_opt: Option<PublicKey> = None;
 		let mut next_holder_commitment_point_next_advance_opt: Option<PublicKey> = None;
 		let mut is_manual_broadcast = None;
@@ -13668,6 +13688,7 @@ where
 			(59, minimum_depth_override, option), // Added in 0.2
 			(60, historical_scids, optional_vec), // Added in 0.2
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
+			(63, current_holder_commitment_point_opt, option), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -13873,20 +13894,13 @@ where
 			},
 		};
 
-		let current_holder_commitment_point = {
-			let current_holder_commitment_transaction_number =
-				next_holder_commitment_point.transaction_number() + 1;
-			let point = holder_signer
-				.get_per_commitment_point(current_holder_commitment_transaction_number, &secp_ctx)
-				.expect(
-					"Must be able to derive the current commitment point upon channel restoration",
-				);
-			Some(HolderCommitmentPoint {
-				transaction_number: current_holder_commitment_transaction_number,
+		let current_holder_commitment_point =
+			current_holder_commitment_point_opt.map(|point| HolderCommitmentPoint {
+				transaction_number: next_holder_commitment_point.transaction_number() + 1,
 				point,
-				next_point: Some(next_holder_commitment_point.point()),
-			})
-		};
+				// Not needed since current_holder_commitment_point is never advanced
+				next_point: None,
+			});
 
 		Ok(FundedChannel {
 			funding: FundingScope {
