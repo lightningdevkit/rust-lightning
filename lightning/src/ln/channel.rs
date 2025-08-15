@@ -9045,6 +9045,7 @@ where
 					onion_routing_packet: (**onion_packet).clone(),
 					skimmed_fee_msat: htlc.skimmed_fee_msat,
 					blinding_point: htlc.blinding_point,
+					hold_htlc: None, // Will be set by the async sender when support is added
 				});
 			}
 		}
