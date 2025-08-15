@@ -7,8 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::ln::channelmanager::SpliceContribution;
 use crate::ln::functional_test_utils::*;
+use crate::ln::funding::SpliceContribution;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::util::errors::APIError;
 

@@ -52,14 +52,14 @@ use crate::ln::channel_state::{
 	ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails,
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
-#[cfg(splicing)]
-use crate::ln::channelmanager::SpliceContribution;
 use crate::ln::channelmanager::{
 	self, FundingConfirmedMessage, HTLCFailureMsg, HTLCSource, OpenChannelMessage,
 	PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus, RAACommitmentOrder, SentHTLCId,
 	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::FundingTxInput;
+#[cfg(splicing)]
+use crate::ln::funding::SpliceContribution;
 #[cfg(splicing)]
 use crate::ln::interactivetxs::{
 	calculate_change_output_value, AbortReason, InteractiveTxMessageSend,

@@ -31,8 +31,6 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::{secp256k1, Sequence, SignedAmount};
-#[cfg(splicing)]
-use bitcoin::{Amount, ScriptBuf};
 
 use crate::blinded_path::message::MessageForwardNode;
 use crate::blinded_path::message::{AsyncPaymentsContext, OffersContext};
@@ -66,7 +64,7 @@ use crate::ln::channel::{
 };
 use crate::ln::channel_state::ChannelDetails;
 #[cfg(splicing)]
-use crate::ln::funding::FundingTxInput;
+use crate::ln::funding::SpliceContribution;
 use crate::ln::inbound_payment;
 use crate::ln::interactivetxs::{HandleTxCompleteResult, InteractiveTxMessageSendResult};
 use crate::ln::msgs;
@@ -201,47 +199,6 @@ pub use crate::ln::outbound_payment::{
 	RetryableSendFailure,
 };
 use crate::ln::script::ShutdownScript;
-
-/// The components of a splice's funding transaction that are contributed by one party.
-#[cfg(splicing)]
-pub enum SpliceContribution {
-	/// When funds are added to a channel.
-	SpliceIn {
-		/// The amount to contribute to the splice.
-		value: Amount,
-
-		/// The inputs included in the splice's funding transaction to meet the contributed amount.
-		/// Any excess amount will be sent to a change output.
-		inputs: Vec<FundingTxInput>,
-
-		/// An optional change output script. This will be used if needed or, when not set,
-		/// generated using [`SignerProvider::get_destination_script`].
-		change_script: Option<ScriptBuf>,
-	},
-}
-
-#[cfg(splicing)]
-impl SpliceContribution {
-	pub(super) fn value(&self) -> SignedAmount {
-		match self {
-			SpliceContribution::SpliceIn { value, .. } => {
-				value.to_signed().unwrap_or(SignedAmount::MAX)
-			},
-		}
-	}
-
-	pub(super) fn inputs(&self) -> &[FundingTxInput] {
-		match self {
-			SpliceContribution::SpliceIn { inputs, .. } => &inputs[..],
-		}
-	}
-
-	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Option<ScriptBuf>) {
-		match self {
-			SpliceContribution::SpliceIn { inputs, change_script, .. } => (inputs, change_script),
-		}
-	}
-}
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
