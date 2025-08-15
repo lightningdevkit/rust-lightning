@@ -1850,7 +1850,7 @@ where
 					pending_funding: vec![],
 					context: chan.context,
 					interactive_tx_signing_session: chan.interactive_tx_signing_session,
-					previous_holder_commitment_point: None,
+					current_holder_commitment_point: None,
 					next_holder_commitment_point: initial_holder_commitment_point,
 					#[cfg(splicing)]
 					pending_splice: None,
@@ -6068,8 +6068,8 @@ where
 	/// This field is cleared once our counterparty sends a `channel_ready`.
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 
-	/// The commitment point used for the previous commitment transaction.
-	previous_holder_commitment_point: Option<HolderCommitmentPoint>,
+	/// The commitment point used for the current holder commitment transaction.
+	current_holder_commitment_point: Option<HolderCommitmentPoint>,
 
 	/// The commitment point used for the next holder commitment transaction.
 	next_holder_commitment_point: HolderCommitmentPoint,
@@ -6957,7 +6957,7 @@ where
 
 		let (channel_monitor, _, next_holder_commitment_point) = self.initial_commitment_signed(
 			self.context.channel_id(), msg.signature, &holder_commitment_point, best_block, signer_provider, logger)?;
-		self.previous_holder_commitment_point = Some(holder_commitment_point);
+		self.current_holder_commitment_point = Some(holder_commitment_point);
 		self.next_holder_commitment_point = next_holder_commitment_point;
 
 		log_info!(logger, "Received initial commitment_signed from peer for channel {}", &self.context.channel_id());
@@ -7230,7 +7230,7 @@ where
 				debug_assert!(false, "We should be ready to advance our commitment point by the time we receive commitment_signed");
 				ChannelError::close("Failed to advance our commitment point".to_owned())
 			})?;
-		self.previous_holder_commitment_point = Some(self.next_holder_commitment_point);
+		self.current_holder_commitment_point = Some(self.next_holder_commitment_point);
 		self.next_holder_commitment_point = next_holder_commitment_point;
 
 		// Update state now that we've passed all the can-fail calls...
@@ -12066,7 +12066,7 @@ where
 			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
-			previous_holder_commitment_point: Some(initial_holder_commitment_point),
+			current_holder_commitment_point: Some(initial_holder_commitment_point),
 			next_holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
@@ -12353,7 +12353,7 @@ where
 			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
-			previous_holder_commitment_point: Some(initial_holder_commitment_point),
+			current_holder_commitment_point: Some(initial_holder_commitment_point),
 			next_holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
@@ -13873,17 +13873,17 @@ where
 			},
 		};
 
-		let previous_holder_commitment_point = {
-			let previous_holder_commitment_transaction_number =
+		let current_holder_commitment_point = {
+			let current_holder_commitment_transaction_number =
 				next_holder_commitment_point.transaction_number() + 1;
-			let previous_point = holder_signer
-				.get_per_commitment_point(previous_holder_commitment_transaction_number, &secp_ctx)
+			let point = holder_signer
+				.get_per_commitment_point(current_holder_commitment_transaction_number, &secp_ctx)
 				.expect(
-					"Must be able to derive the previous commitment point upon channel restoration",
+					"Must be able to derive the current commitment point upon channel restoration",
 				);
 			Some(HolderCommitmentPoint {
-				transaction_number: previous_holder_commitment_transaction_number,
-				point: previous_point,
+				transaction_number: current_holder_commitment_transaction_number,
+				point,
 				next_point: Some(next_holder_commitment_point.point()),
 			})
 		};
@@ -14025,7 +14025,7 @@ where
 				is_holder_quiescence_initiator: None,
 			},
 			interactive_tx_signing_session,
-			previous_holder_commitment_point,
+			current_holder_commitment_point,
 			next_holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
