@@ -3464,7 +3464,16 @@ fn test_lost_preimage_monitor_events() {
 	do_test_lost_preimage_monitor_events(false);
 }
 
-fn do_test_lost_timeout_monitor_events(on_counterparty_tx: bool, dust_htlcs: bool) {
+#[derive(PartialEq)]
+enum CommitmentType {
+	RevokedCounterparty,
+	LatestCounterparty,
+	PreviousCounterparty,
+	LocalWithoutLastHTLC,
+	LocalWithLastHTLC,
+}
+
+fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: bool) {
 	// `MonitorEvent`s aren't delivered to the `ChannelManager` in a durable fasion - if the
 	// `ChannelManager` fetches the pending `MonitorEvent`s, then the `ChannelMonitor` gets
 	// persisted (i.e. due to a block update) then the node crashes, prior to persisting the
@@ -3511,9 +3520,37 @@ fn do_test_lost_timeout_monitor_events(on_counterparty_tx: bool, dust_htlcs: boo
 
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 25_000_000);
 
+	let cs_revoked_commit = get_local_commitment_txn!(nodes[2], chan_b);
+	assert_eq!(cs_revoked_commit.len(), 1);
+
 	let amt = if dust_htlcs { 1_000 } else { 10_000_000 };
 	let (_, hash_a, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], amt);
-	let (_, hash_b, ..) = route_payment(&nodes[1], &[&nodes[2]], amt);
+
+	let cs_previous_commit = get_local_commitment_txn!(nodes[2], chan_b);
+	assert_eq!(cs_previous_commit.len(), 1);
+
+	let (route, hash_b, _, payment_secret_b) =
+		get_route_and_payment_hash!(nodes[1], nodes[2], amt);
+	let onion = RecipientOnionFields::secret_only(payment_secret_b);
+	nodes[1].node.send_payment_with_route(route, hash_b, onion, PaymentId(hash_b.0)).unwrap();
+	check_added_monitors(&nodes[1], 1);
+
+	let updates = get_htlc_update_msgs(&nodes[1], &node_c_id);
+	nodes[2].node.handle_update_add_htlc(node_b_id, &updates.update_add_htlcs[0]);
+	nodes[2].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
+	check_added_monitors(&nodes[2], 1);
+
+	let (cs_raa, cs_cs) = get_revoke_commit_msgs!(nodes[2], node_b_id);
+	if confirm_tx == CommitmentType::LocalWithLastHTLC {
+		// Only deliver the last RAA + CS if we need to update the local commitment with the third
+		// HTLC.
+		nodes[1].node.handle_revoke_and_ack(node_c_id, &cs_raa);
+		check_added_monitors(&nodes[1], 1);
+		nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &cs_cs);
+		check_added_monitors(&nodes[1], 1);
+
+		let _bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_c_id);
+	}
 
 	nodes[1].node.peer_disconnected(nodes[2].node.get_our_node_id());
 	nodes[2].node.peer_disconnected(nodes[1].node.get_our_node_id());
@@ -3547,44 +3584,68 @@ fn do_test_lost_timeout_monitor_events(on_counterparty_tx: bool, dust_htlcs: boo
 	let bs_commit_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_commit_tx.len(), 1);
 
-	let selected_commit_tx = if on_counterparty_tx {
-		&cs_commit_tx[0]
-	} else {
-		&bs_commit_tx[0]
+	let selected_commit_tx = match confirm_tx {
+		CommitmentType::RevokedCounterparty => &cs_revoked_commit[0],
+		CommitmentType::PreviousCounterparty => &cs_previous_commit[0],
+		CommitmentType::LatestCounterparty => &cs_commit_tx[0],
+		CommitmentType::LocalWithoutLastHTLC|CommitmentType::LocalWithLastHTLC => &bs_commit_tx[0],
 	};
 
 	mine_transaction(&nodes[1], selected_commit_tx);
 	// If the block gets connected first we may re-broadcast B's commitment transaction before
-	// seeing the C's confirm.
-	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	if on_counterparty_tx {
-		assert_eq!(events.len(), 1, "{events:?}");
-		match events[0] {
-			Event::SpendableOutputs { .. } => {},
-			_ => panic!("Unexpected event {events:?}"),
-		}
+	// seeing the C's confirm. In any case, if we confirmed the revoked counterparty commitment
+	// transaction, we want to go ahead and confirm the spend of it.
+	let bs_transactions = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	if confirm_tx == CommitmentType::RevokedCounterparty {
+		assert!(bs_transactions.len() == 1 || bs_transactions.len() == 2);
+		mine_transaction(&nodes[1], bs_transactions.last().unwrap());
 	} else {
-		assert_eq!(events.len(), 0);
+		assert!(bs_transactions.len() == 1 || bs_transactions.len() == 0);
 	}
 
-	connect_blocks(&nodes[1], TEST_FINAL_CLTV - ANTI_REORG_DELAY + 1);
-	if !on_counterparty_tx {
-		if !dust_htlcs {
-			handle_bump_events(&nodes[1], false, 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	match confirm_tx {
+		CommitmentType::LocalWithoutLastHTLC|CommitmentType::LocalWithLastHTLC => {
+			assert_eq!(events.len(), 0, "{events:?}");
+		},
+		CommitmentType::PreviousCounterparty|CommitmentType::LatestCounterparty => {
+			assert_eq!(events.len(), 1, "{events:?}");
+			match events[0] {
+				Event::SpendableOutputs { .. } => {},
+				_ => panic!("Unexpected event {events:?}"),
+			}
+		},
+		CommitmentType::RevokedCounterparty => {
+			assert_eq!(events.len(), 2, "{events:?}");
+			for event in events {
+				match event {
+					Event::SpendableOutputs { .. } => {},
+					_ => panic!("Unexpected event {event:?}"),
+				}
+			}
+		},
+	}
+
+	if confirm_tx != CommitmentType::RevokedCounterparty {
+		connect_blocks(&nodes[1], TEST_FINAL_CLTV - ANTI_REORG_DELAY + 1);
+		if confirm_tx == CommitmentType::LocalWithoutLastHTLC || confirm_tx == CommitmentType::LocalWithLastHTLC {
+			if !dust_htlcs {
+				handle_bump_events(&nodes[1], false, 1);
+			}
 		}
 	}
+
 	let bs_htlc_timeouts =
 		nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	if dust_htlcs {
+	if dust_htlcs || confirm_tx == CommitmentType::RevokedCounterparty {
 		assert_eq!(bs_htlc_timeouts.len(), 0);
 	} else {
 		assert_eq!(bs_htlc_timeouts.len(), 1);
 
 		// Now replay the timeouts on node B, which after 6 confirmations should fail the HTLCs via
 		// `MonitorUpdate`s
-		mine_transactions(&nodes[1], &bs_htlc_timeouts.iter().collect::<Vec<_>>());
+		mine_transaction(&nodes[1], &bs_htlc_timeouts[0]);
 		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	}
 
@@ -3637,8 +3698,14 @@ fn do_test_lost_timeout_monitor_events(on_counterparty_tx: bool, dust_htlcs: boo
 
 #[test]
 fn test_lost_timeout_monitor_events() {
-	do_test_lost_timeout_monitor_events(true, false);
-	do_test_lost_timeout_monitor_events(false, false);
-	do_test_lost_timeout_monitor_events(true, true);
-	do_test_lost_timeout_monitor_events(false, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, true);
 }

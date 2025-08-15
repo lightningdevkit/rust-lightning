@@ -16541,15 +16541,15 @@ where
 							},
 						}
 					}
-					for (htlc_source, htlc) in monitor.get_onchain_failed_outbound_htlcs() {
+					for (htlc_source, payment_hash) in monitor.get_onchain_failed_outbound_htlcs() {
 						log_info!(
 							args.logger,
 							"Failing HTLC with payment hash {} as it was resolved on-chain.",
-							htlc.payment_hash
+							payment_hash
 						);
 						failed_htlcs.push((
 							htlc_source,
-							htlc.payment_hash,
+							payment_hash,
 							monitor.get_counterparty_node_id(),
 							monitor.channel_id(),
 							LocalHTLCFailureReason::OnChainTimeout,
