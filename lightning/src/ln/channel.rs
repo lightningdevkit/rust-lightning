@@ -6066,7 +6066,7 @@ where
 	/// This field is cleared once our counterparty sends a `channel_ready`.
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 
-	/// The commitment point used for the next commitment transaction.
+	/// The commitment point used for the next holder commitment transaction.
 	next_holder_commitment_point: HolderCommitmentPoint,
 
 	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
