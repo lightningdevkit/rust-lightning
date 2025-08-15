@@ -23,9 +23,10 @@ use crate::events::{
 };
 use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use crate::ln::channelmanager::{
-	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, FundingTxInput,
-	PaymentId, RAACommitmentOrder, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA,
+	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
+	RAACommitmentOrder, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA,
 };
+use crate::ln::funding::FundingTxInput;
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,

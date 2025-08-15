@@ -53,10 +53,11 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, FundingConfirmedMessage, FundingTxInput, HTLCFailureMsg, HTLCSource, OpenChannelMessage,
+	self, FundingConfirmedMessage, HTLCFailureMsg, HTLCSource, OpenChannelMessage,
 	PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus, RAACommitmentOrder, SentHTLCId,
 	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
+use crate::ln::funding::FundingTxInput;
 #[cfg(splicing)]
 use crate::ln::interactivetxs::{
 	calculate_change_output_value, AbortReason, InteractiveTxMessageSend,
@@ -14122,9 +14123,9 @@ mod tests {
 		TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 	};
 	use crate::ln::channel_keys::{RevocationBasepoint, RevocationKey};
-	#[cfg(splicing)]
-	use crate::ln::channelmanager::FundingTxInput;
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
+	#[cfg(splicing)]
+	use crate::ln::funding::FundingTxInput;
 	use crate::ln::msgs;
 	use crate::ln::msgs::{ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::onion_utils::{AttributionData, LocalHTLCFailureReason};
