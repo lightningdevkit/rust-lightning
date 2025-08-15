@@ -3021,7 +3021,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 						let candidate_source: &Option<Box<HTLCSource>> = &candidate_source;
 
 						let source: &HTLCSource = if let Some(source) = candidate_source {
-							&*source
+							source
 						} else {
 							continue;
 						};
@@ -3069,25 +3069,25 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			};
 		}
 
-		if Some(confirmed_txid) == us.funding.current_counterparty_commitment_txid
-			|| Some(confirmed_txid) == us.funding.prev_counterparty_commitment_txid
+		let funding = get_confirmed_funding_scope!(us);
+
+		if Some(confirmed_txid) == funding.current_counterparty_commitment_txid
+			|| Some(confirmed_txid) == funding.prev_counterparty_commitment_txid
 		{
 			let htlcs = funding.counterparty_claimable_outpoints.get(&confirmed_txid).unwrap();
 			walk_htlcs!(
 				false,
-				htlcs.iter().filter_map(
-					|(a, b)| {
-						if let &Some(ref source) = b {
-							Some((a, Some(&**source)))
-						} else {
-							None
-						}
+				htlcs.iter().filter_map(|(a, b)| {
+					if let &Some(ref source) = b {
+						Some((a, Some(&**source)))
+					} else {
+						None
 					}
-				)
+				})
 			);
-		} else if confirmed_txid == us.funding.current_holder_commitment_tx.trust().txid() {
+		} else if confirmed_txid == funding.current_holder_commitment_tx.trust().txid() {
 			walk_htlcs!(true, holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES));
-		} else if let Some(prev_commitment_tx) = &us.funding.prev_holder_commitment_tx {
+		} else if let Some(prev_commitment_tx) = &funding.prev_holder_commitment_tx {
 			if confirmed_txid == prev_commitment_tx.trust().txid() {
 				walk_htlcs!(true, holder_commitment_htlcs!(us, PREV_WITH_SOURCES).unwrap());
 			} else {
