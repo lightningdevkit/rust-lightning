@@ -5918,16 +5918,16 @@ fn check_v2_funding_inputs_sufficient(
 	contribution_amount: i64, funding_inputs: &[FundingTxInput], is_initiator: bool,
 	is_splice: bool, funding_feerate_sat_per_1000_weight: u32,
 ) -> Result<u64, ChannelError> {
-	let mut total_input_witness_weight = Weight::from_wu(
+	let mut total_input_satisfaction_weight = Weight::from_wu(
 		funding_inputs.iter().map(|input| input.utxo.satisfaction_weight).sum(),
 	);
 	let mut funding_inputs_len = funding_inputs.len();
 	if is_initiator && is_splice {
 		// consider the weight of the input and witness needed for spending the old funding transaction
 		funding_inputs_len += 1;
-		total_input_witness_weight += Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT);
+		total_input_satisfaction_weight += Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT);
 	}
-	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs_len, total_input_witness_weight, funding_feerate_sat_per_1000_weight);
+	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs_len, total_input_satisfaction_weight, funding_feerate_sat_per_1000_weight);
 
 	let mut total_input_sats = 0u64;
 	for FundingTxInput { utxo, .. } in funding_inputs.iter() {
