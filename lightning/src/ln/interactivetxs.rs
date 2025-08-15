@@ -2076,11 +2076,7 @@ pub(super) fn calculate_change_output_value(
 
 	let mut total_input_satoshis = 0u64;
 	let mut our_funding_inputs_weight = 0u64;
-	for FundingTxInput { utxo, prevtx, .. } in context.our_funding_inputs.iter() {
-		let txid = prevtx.compute_txid();
-		if utxo.outpoint.txid != txid {
-			return Err(AbortReason::PrevTxOutInvalid);
-		}
+	for FundingTxInput { utxo, .. } in context.our_funding_inputs.iter() {
 		total_input_satoshis = total_input_satoshis.saturating_add(utxo.output.value.to_sat());
 
 		let weight = BASE_INPUT_WEIGHT + utxo.satisfaction_weight;
