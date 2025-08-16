@@ -3298,3 +3298,80 @@ fn test_claim_event_never_handled() {
 	// `ChannelMonitorUpdate`.
 	check_added_monitors(&nodes[1], 2);
 }
+
+#[test]
+
+fn test_watched_output_block_hash_persistence_after_restart() {
+	use crate::chain::WatchedOutput;
+	use crate::sync::Mutex;
+	use std::ops::Deref;
+	
+	// Custom test filter to capture full WatchedOutput instances
+	struct TestFilter {
+		watched_outputs: Mutex<Vec<WatchedOutput>>,
+	}
+	
+	impl TestFilter {
+		fn new() -> Self {
+			Self { watched_outputs: Mutex::new(Vec::new()) }
+		}
+	}
+	
+	impl crate::chain::Filter for TestFilter {
+		fn register_tx(&self, _txid: &bitcoin::Txid, _script_pubkey: &bitcoin::Script) {}
+		
+		fn register_output(&self, output: WatchedOutput) {
+			self.watched_outputs.lock().unwrap().push(output);
+		}
+	}
+	
+	impl Deref for TestFilter {
+		type Target = TestFilter;
+		fn deref(&self) -> &Self::Target {
+			self
+		}
+	}
+	
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_mon;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes_1_reload;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+    
+	//Block mining to advance best block hash
+	for _ in 0..10 {
+		mine_transactions(&nodes[1], &[]);
+	}
+	
+	let expected_block_hash = nodes[1].best_block_hash();
+
+	let init_node_ser = nodes[1].node.encode();
+	let chan_1_monitor_serialized = {
+		let monitor = get_monitor!(nodes[1], chan.2);
+		monitor.encode()
+	}; 
+	let mons = &[&chan_1_monitor_serialized[..]];
+
+	// Reload node to simulate restart
+	reload_node!(nodes[1], &init_node_ser, mons, persister, new_chain_mon, nodes_1_reload);
+
+	let test_filter = TestFilter::new();
+	
+	{
+		let monitor = get_monitor!(nodes[1], chan.2);
+		monitor.load_outputs_to_watch(&test_filter, &nodes[1].logger);
+	}
+	
+	let watched_outputs = test_filter.watched_outputs.lock().unwrap();
+	assert!(!watched_outputs.is_empty(), "Should have watched_outputs after reload");
+	
+	for watched_output in watched_outputs.iter() {
+		assert_eq!(watched_output.block_hash, Some(expected_block_hash),
+			"WatchedOutput block_hash should match the monitor's best block hash after restart");
+	}
+
+}
