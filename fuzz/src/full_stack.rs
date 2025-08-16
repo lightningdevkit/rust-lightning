@@ -857,20 +857,14 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				}
 				if tx.version.0 <= 0xff && !channels.is_empty() {
 					let chans = channels.iter().map(|(a, b)| (a, b)).collect::<Vec<_>>();
-					if let Err(e) =
-						channelmanager.batch_funding_transaction_generated(&chans, tx.clone())
-					{
-						// It's possible the channel has been closed in the mean time, but any other
-						// failure may be a bug.
-						if let APIError::ChannelUnavailable { .. } = e {
-						} else {
-							panic!();
+					let res =
+						channelmanager.batch_funding_transaction_generated(&chans, tx.clone());
+					if res.is_ok() {
+						let funding_txid = tx.compute_txid();
+						for idx in 0..tx.output.len() {
+							let outpoint = OutPoint { txid: funding_txid, index: idx as u16 };
+							pending_funding_signatures.insert(outpoint, tx.clone());
 						}
-					}
-					let funding_txid = tx.compute_txid();
-					for idx in 0..tx.output.len() {
-						let outpoint = OutPoint { txid: funding_txid, index: idx as u16 };
-						pending_funding_signatures.insert(outpoint, tx.clone());
 					}
 				}
 			},
