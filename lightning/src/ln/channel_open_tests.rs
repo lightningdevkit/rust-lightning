@@ -1,3 +1,14 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
+//! Tests that test the channel open process.
+
 use crate::events::Event;
 use crate::ln::channelmanager::{MAX_UNFUNDED_CHANNEL_PEERS, MAX_UNFUNDED_CHANS_PER_PEER};
 use crate::ln::msgs::{
