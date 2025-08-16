@@ -2509,3 +2509,38 @@ pub fn test_funding_signed_event() {
 	nodes[0].node.get_and_clear_pending_msg_events();
 	nodes[1].node.get_and_clear_pending_msg_events();
 }
+
+#[xtest(feature = "_externalize_tests")]
+fn test_fund_pending_channel() {
+	// Previously, we would panic if a user called `batch_funding_transaction_generated` for a
+	// channel which wasn't ready to receive funding. While this isn't a major bug - users
+	// shouldn't do that - we shouldn't panic and should instead return an error.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	let open_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+
+	let tx = Transaction {
+		version: Version(2),
+		lock_time: LockTime::ZERO,
+		input: vec![],
+		output: vec![],
+	};
+	let pending_chan = [(&open_msg.common_fields.temporary_channel_id, &node_b_id)];
+	let res = nodes[0].node.batch_funding_transaction_generated(&pending_chan, tx);
+	if let Err(APIError::APIMisuseError { err }) = res {
+		assert_eq!(err, "Channel f7fee84016d554015f5166c0a0df6479942ef55fd70713883b0493493a38e13a with counterparty 0355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23 is not an unfunded, outbound channel ready to fund");
+	} else {
+		panic!("Unexpected result {res:?}");
+	}
+	get_err_msg(&nodes[0], &node_b_id);
+	let reason = ClosureReason::ProcessingError {
+		err: "Error in transaction funding: Misuse error: Channel f7fee84016d554015f5166c0a0df6479942ef55fd70713883b0493493a38e13a with counterparty 0355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23 is not an unfunded, outbound channel ready to fund".to_owned(),
+	};
+	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100_000);
+}
