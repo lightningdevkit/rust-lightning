@@ -449,6 +449,27 @@ pub(super) struct PendingAddHTLCInfo {
 	prev_user_channel_id: u128,
 }
 
+impl PendingAddHTLCInfo {
+	fn htlc_previous_hop_data(&self) -> HTLCPreviousHopData {
+		let phantom_shared_secret = match self.forward_info.routing {
+			PendingHTLCRouting::Receive { phantom_shared_secret, .. } => phantom_shared_secret,
+			_ => None,
+		};
+		HTLCPreviousHopData {
+			short_channel_id: self.prev_short_channel_id,
+			user_channel_id: Some(self.prev_user_channel_id),
+			outpoint: self.prev_funding_outpoint,
+			channel_id: self.prev_channel_id,
+			counterparty_node_id: Some(self.prev_counterparty_node_id),
+			htlc_id: self.prev_htlc_id,
+			incoming_packet_shared_secret: self.forward_info.incoming_shared_secret,
+			phantom_shared_secret,
+			blinded_failure: self.forward_info.routing.blinded_failure(),
+			cltv_expiry: self.forward_info.routing.incoming_cltv_expiry(),
+		}
+	}
+}
+
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 pub(super) enum HTLCForwardInfo {
 	AddHTLC(PendingAddHTLCInfo),
@@ -6294,20 +6315,8 @@ where
 				err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.0))
 			})?;
 
-		if let PendingHTLCRouting::Forward { short_channel_id, incoming_cltv_expiry, .. } = payment.forward_info.routing {
-			let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-				short_channel_id: payment.prev_short_channel_id,
-				user_channel_id: Some(payment.prev_user_channel_id),
-				outpoint: payment.prev_funding_outpoint,
-				channel_id: payment.prev_channel_id,
-				counterparty_node_id: Some(payment.prev_counterparty_node_id),
-				htlc_id: payment.prev_htlc_id,
-				incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
-				phantom_shared_secret: None,
-				blinded_failure: payment.forward_info.routing.blinded_failure(),
-				cltv_expiry: incoming_cltv_expiry,
-			});
-
+		if let PendingHTLCRouting::Forward { short_channel_id, .. } = payment.forward_info.routing {
+			let htlc_source = HTLCSource::PreviousHopData(payment.htlc_previous_hop_data());
 			let reason = HTLCFailReason::from_failure_code(LocalHTLCFailureReason::UnknownNextPeer);
 			let destination = HTLCHandlingFailureType::InvalidForward { requested_forward_scid: short_channel_id };
 			self.fail_htlc_backwards_internal(&htlc_source, &payment.forward_info.payment_hash, &reason, destination);
@@ -6629,24 +6638,24 @@ where
 	) {
 		for forward_info in forward_infos {
 			match forward_info {
-				HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-					prev_short_channel_id,
-					prev_htlc_id,
-					prev_channel_id,
-					prev_funding_outpoint,
-					prev_user_channel_id,
-					prev_counterparty_node_id,
-					forward_info:
-						PendingHTLCInfo {
-							routing,
-							incoming_shared_secret,
-							payment_hash,
-							outgoing_amt_msat,
-							outgoing_cltv_value,
-							..
-						},
-				}) => {
-					let cltv_expiry = routing.incoming_cltv_expiry();
+				HTLCForwardInfo::AddHTLC(payment) => {
+					let PendingAddHTLCInfo {
+						prev_short_channel_id,
+						prev_htlc_id,
+						prev_channel_id,
+						prev_funding_outpoint,
+						prev_user_channel_id,
+						prev_counterparty_node_id,
+						forward_info:
+							PendingHTLCInfo {
+								ref routing,
+								incoming_shared_secret,
+								payment_hash,
+								outgoing_amt_msat,
+								outgoing_cltv_value,
+								..
+							},
+					} = payment;
 					let logger = WithContext::from(
 						&self.logger,
 						forwarding_counterparty,
@@ -6657,19 +6666,11 @@ where
 						|msg, reason, err_data, phantom_ss, next_hop_unknown| {
 							log_info!(logger, "Failed to accept/forward incoming HTLC: {}", msg);
 
-							let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-								short_channel_id: prev_short_channel_id,
-								user_channel_id: Some(prev_user_channel_id),
-								channel_id: prev_channel_id,
-								outpoint: prev_funding_outpoint,
-								counterparty_node_id: Some(prev_counterparty_node_id),
-								htlc_id: prev_htlc_id,
-								incoming_packet_shared_secret: incoming_shared_secret,
-								phantom_shared_secret: phantom_ss,
-								blinded_failure: routing.blinded_failure(),
-								cltv_expiry,
-							});
-
+							let mut prev_hop = payment.htlc_previous_hop_data();
+							// Override the phantom shared secret because it wasn't set in the originating
+							// `PendingAddHTLCInfo` above, it was calculated below after detecting this as a
+							// phantom payment.
+							prev_hop.phantom_shared_secret = phantom_ss;
 							let failure_type = if next_hop_unknown {
 								HTLCHandlingFailureType::InvalidForward {
 									requested_forward_scid: short_chan_id,
@@ -6679,7 +6680,7 @@ where
 							};
 
 							failed_forwards.push((
-								htlc_source,
+								HTLCSource::PreviousHopData(prev_hop),
 								payment_hash,
 								HTLCFailReason::reason(reason, err_data),
 								failure_type,
@@ -6848,43 +6849,29 @@ where
 		let mut draining_pending_forwards = pending_forwards.drain(..);
 		while let Some(forward_info) = draining_pending_forwards.next() {
 			let queue_fail_htlc_res = match forward_info {
-				HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-					prev_short_channel_id,
-					prev_htlc_id,
-					prev_channel_id,
-					prev_funding_outpoint,
-					prev_user_channel_id,
-					prev_counterparty_node_id,
-					forward_info:
-						PendingHTLCInfo {
-							incoming_shared_secret,
-							payment_hash,
-							outgoing_amt_msat,
-							outgoing_cltv_value,
-							routing:
-								PendingHTLCRouting::Forward {
-									ref onion_packet,
-									blinded,
-									incoming_cltv_expiry,
-									..
-								},
-							skimmed_fee_msat,
-							..
+				HTLCForwardInfo::AddHTLC(ref payment) => {
+					let htlc_source = HTLCSource::PreviousHopData(payment.htlc_previous_hop_data());
+					let PendingAddHTLCInfo {
+						prev_short_channel_id,
+						forward_info:
+							PendingHTLCInfo {
+								payment_hash,
+								outgoing_amt_msat,
+								outgoing_cltv_value,
+								routing,
+								skimmed_fee_msat,
+								..
+							},
+						..
+					} = payment;
+					let (onion_packet, blinded) = match routing {
+						PendingHTLCRouting::Forward { ref onion_packet, blinded, .. } => {
+							(onion_packet, blinded)
 						},
-				}) => {
-					let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-						short_channel_id: prev_short_channel_id,
-						user_channel_id: Some(prev_user_channel_id),
-						counterparty_node_id: Some(prev_counterparty_node_id),
-						channel_id: prev_channel_id,
-						outpoint: prev_funding_outpoint,
-						htlc_id: prev_htlc_id,
-						incoming_packet_shared_secret: incoming_shared_secret,
-						// Phantom payments are only PendingHTLCRouting::Receive.
-						phantom_shared_secret: None,
-						blinded_failure: blinded.map(|b| b.failure),
-						cltv_expiry: incoming_cltv_expiry,
-					});
+						_ => {
+							panic!("short_channel_id != 0 should imply any pending_forward entries are of type Forward");
+						},
+					};
 					let next_blinding_point = blinded.and_then(|b| {
 						b.next_blinding_override.or_else(|| {
 							let encrypted_tlvs_ss = self
@@ -6950,7 +6937,7 @@ where
 					let logger = WithChannelContext::from(
 						&self.logger,
 						&optimal_channel.context,
-						Some(payment_hash),
+						Some(*payment_hash),
 					);
 					let channel_description =
 						if optimal_channel.funding.get_short_channel_id() == Some(short_chan_id) {
@@ -6961,12 +6948,12 @@ where
 					log_trace!(logger, "Forwarding HTLC from SCID {} with payment_hash {} and next hop SCID {} over {} channel {} with corresponding peer {}",
 						prev_short_channel_id, &payment_hash, short_chan_id, channel_description, optimal_channel.context.channel_id(), &counterparty_node_id);
 					if let Err((reason, msg)) = optimal_channel.queue_add_htlc(
-						outgoing_amt_msat,
-						payment_hash,
-						outgoing_cltv_value,
+						*outgoing_amt_msat,
+						*payment_hash,
+						*outgoing_cltv_value,
 						htlc_source.clone(),
 						onion_packet.clone(),
-						skimmed_fee_msat,
+						*skimmed_fee_msat,
 						next_blinding_point,
 						&self.fee_estimator,
 						&&logger,
@@ -6991,7 +6978,7 @@ where
 							};
 							failed_forwards.push((
 								htlc_source,
-								payment_hash,
+								*payment_hash,
 								HTLCFailReason::reason(reason, data),
 								failure_type,
 							));
@@ -7007,9 +6994,6 @@ where
 						}
 					}
 					None
-				},
-				HTLCForwardInfo::AddHTLC { .. } => {
-					panic!("short_channel_id != 0 should imply any pending_forward entries are of type Forward");
 				},
 				HTLCForwardInfo::FailHTLC { htlc_id, ref err_packet } => {
 					if let Some(chan) = peer_state
@@ -7094,24 +7078,22 @@ where
 	) {
 		'next_forwardable_htlc: for forward_info in pending_forwards.drain(..) {
 			match forward_info {
-				HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-					prev_short_channel_id,
-					prev_htlc_id,
-					prev_channel_id,
-					prev_funding_outpoint,
-					prev_user_channel_id,
-					prev_counterparty_node_id,
-					forward_info:
-						PendingHTLCInfo {
-							routing,
-							incoming_shared_secret,
-							payment_hash,
-							incoming_amt_msat,
-							outgoing_amt_msat,
-							skimmed_fee_msat,
-							..
-						},
-				}) => {
+				HTLCForwardInfo::AddHTLC(payment) => {
+					let prev_hop = payment.htlc_previous_hop_data();
+					let PendingAddHTLCInfo {
+						prev_channel_id,
+						prev_funding_outpoint,
+						forward_info:
+							PendingHTLCInfo {
+								routing,
+								payment_hash,
+								incoming_amt_msat,
+								outgoing_amt_msat,
+								skimmed_fee_msat,
+								..
+							},
+						..
+					} = payment;
 					let blinded_failure = routing.blinded_failure();
 					let (
 						cltv_expiry,
@@ -7183,18 +7165,7 @@ where
 						},
 					};
 					let claimable_htlc = ClaimableHTLC {
-						prev_hop: HTLCPreviousHopData {
-							short_channel_id: prev_short_channel_id,
-							user_channel_id: Some(prev_user_channel_id),
-							counterparty_node_id: Some(prev_counterparty_node_id),
-							channel_id: prev_channel_id,
-							outpoint: prev_funding_outpoint,
-							htlc_id: prev_htlc_id,
-							incoming_packet_shared_secret: incoming_shared_secret,
-							phantom_shared_secret,
-							blinded_failure,
-							cltv_expiry: Some(cltv_expiry),
-						},
+						prev_hop,
 						// We differentiate the received value from the sender intended value
 						// if possible so that we don't prematurely mark MPP payments complete
 						// if routing nodes overpay
@@ -13701,19 +13672,7 @@ where
 			let mut intercepted_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
 			intercepted_htlcs.retain(|_, htlc| {
 				if height >= htlc.forward_info.outgoing_cltv_value - HTLC_FAIL_BACK_BUFFER {
-					let prev_hop_data = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-						short_channel_id: htlc.prev_short_channel_id,
-						user_channel_id: Some(htlc.prev_user_channel_id),
-						htlc_id: htlc.prev_htlc_id,
-						incoming_packet_shared_secret: htlc.forward_info.incoming_shared_secret,
-						phantom_shared_secret: None,
-						counterparty_node_id: Some(htlc.prev_counterparty_node_id),
-						outpoint: htlc.prev_funding_outpoint,
-						channel_id: htlc.prev_channel_id,
-						blinded_failure: htlc.forward_info.routing.blinded_failure(),
-						cltv_expiry: htlc.forward_info.routing.incoming_cltv_expiry(),
-					});
-
+					let prev_hop_data = HTLCSource::PreviousHopData(htlc.htlc_previous_hop_data());
 					let requested_forward_scid /* intercept scid */ = match htlc.forward_info.routing {
 						PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
 						_ => unreachable!(),
