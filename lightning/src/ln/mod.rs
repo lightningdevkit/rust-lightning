@@ -77,7 +77,7 @@ pub mod bolt11_payment_tests;
 mod chanmon_update_fail_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
-mod channel_acceptance_tests;
+mod channel_open_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod channel_type_tests;
