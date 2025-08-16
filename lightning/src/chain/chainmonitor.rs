@@ -1202,6 +1202,7 @@ where
 
 				// We may need to start monitoring for any alternative funding transactions.
 				if let Some(ref chain_source) = self.chain_source {
+					let current_block_hash = monitor.current_best_block().block_hash;
 					for (funding_outpoint, funding_script) in
 						update.internal_renegotiated_funding_data()
 					{
@@ -1212,7 +1213,8 @@ where
 						);
 						chain_source.register_tx(&funding_outpoint.txid, &funding_script);
 						chain_source.register_output(WatchedOutput {
-							block_hash: None,
+							block_hash: Some(current_block_hash),
+							// block_hash: None,
 							outpoint: funding_outpoint,
 							script_pubkey: funding_script,
 						});

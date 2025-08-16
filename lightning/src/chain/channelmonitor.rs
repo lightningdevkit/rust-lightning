@@ -1990,6 +1990,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let lock = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*lock, None);
+		let current_block_hash = lock.best_block.block_hash;
 		for funding in core::iter::once(&lock.funding).chain(&lock.pending_funding) {
 			let funding_outpoint = funding.funding_outpoint();
 			log_trace!(&logger, "Registering funding outpoint {} with the filter to monitor confirmations", &funding_outpoint);
@@ -2002,7 +2003,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				let outpoint = OutPoint { txid: *txid, index: *index as u16 };
 				log_trace!(logger, "Registering outpoint {} with the filter to monitor spend", outpoint);
 				filter.register_output(WatchedOutput {
-					block_hash: None,
+					block_hash: Some(current_block_hash),
+					// block_hash: None,
 					outpoint,
 					script_pubkey: script_pubkey.clone(),
 				});
