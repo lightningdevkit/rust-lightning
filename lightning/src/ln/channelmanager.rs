@@ -229,6 +229,9 @@ pub enum PendingHTLCRouting {
 		blinded: Option<BlindedForward>,
 		/// The absolute CLTV of the inbound HTLC
 		incoming_cltv_expiry: Option<u32>,
+		/// Whether this HTLC should be held by our node until we receive a corresponding
+		/// [`ReleaseHeldHtlc`] onion message.
+		hold_htlc: Option<()>,
 	},
 	/// An HTLC which should be forwarded on to another Trampoline node.
 	TrampolineForward {
@@ -369,6 +372,15 @@ impl PendingHTLCRouting {
 			Self::TrampolineForward { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
 			Self::Receive { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
 			Self::ReceiveKeysend { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
+		}
+	}
+
+	/// Whether this HTLC should be held by our node until we receive a corresponding
+	/// [`ReleaseHeldHtlc`] onion message.
+	fn should_hold_htlc(&self) -> bool {
+		match self {
+			Self::Forward { hold_htlc: Some(()), .. } => true,
+			_ => false,
 		}
 	}
 }
@@ -640,6 +652,34 @@ impl Readable for PaymentId {
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct InterceptId(pub [u8; 32]);
+
+impl InterceptId {
+	/// This intercept id corresponds to an HTLC that will be forwarded on
+	/// [`ChannelManager::forward_intercepted_htlc`].
+	fn from_incoming_shared_secret(ss: &[u8; 32]) -> Self {
+		Self(Sha256::hash(ss).to_byte_array())
+	}
+
+	/// This intercept id corresponds to an HTLC that will be forwarded on receipt of a
+	/// [`ReleaseHeldHtlc`] onion message.
+	fn from_htlc_id_and_chan_id(
+		htlc_id: u64, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+	) -> Self {
+		let htlc_id_size = core::mem::size_of::<u64>();
+		let chan_id_size = core::mem::size_of::<ChannelId>();
+		let cp_id_serialized = counterparty_node_id.serialize();
+
+		const RES_SIZE: usize = 8 + 32 + 33;
+		debug_assert_eq!(RES_SIZE, htlc_id_size + chan_id_size + cp_id_serialized.len());
+
+		let mut res = [0u8; RES_SIZE];
+		res[..htlc_id_size].copy_from_slice(&htlc_id.to_be_bytes());
+		res[htlc_id_size..htlc_id_size + chan_id_size].copy_from_slice(&channel_id.0);
+		res[htlc_id_size + chan_id_size..].copy_from_slice(&cp_id_serialized);
+
+		Self(Sha256::hash(&res[..]).to_byte_array())
+	}
+}
 
 impl Writeable for InterceptId {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -2588,8 +2628,14 @@ pub struct ChannelManager<
 	pub(super) forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
 	#[cfg(not(test))]
 	forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
-	/// Storage for HTLCs that have been intercepted and bubbled up to the user. We hold them here
-	/// until the user tells us what we should do with them.
+	/// Storage for HTLCs that have been intercepted.
+	///
+	/// These HTLCs fall into two categories:
+	/// 1. HTLCs that are bubbled up to the user and held until the invocation of
+	///    [`ChannelManager::forward_intercepted_htlc`] or [`ChannelManager::fail_intercepted_htlc`]
+	///    (or timeout)
+	/// 2. HTLCs that are being held on behalf of an often-offline sender until receipt of a
+	///    [`ReleaseHeldHtlc`] onion message from an often-offline recipient
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
@@ -6268,13 +6314,18 @@ where
 			})?;
 
 		let routing = match payment.forward_info.routing {
-			PendingHTLCRouting::Forward { onion_packet, blinded, incoming_cltv_expiry, .. } => {
-				PendingHTLCRouting::Forward {
-					onion_packet,
-					blinded,
-					incoming_cltv_expiry,
-					short_channel_id: next_hop_scid,
-				}
+			PendingHTLCRouting::Forward {
+				onion_packet,
+				blinded,
+				incoming_cltv_expiry,
+				hold_htlc,
+				..
+			} => PendingHTLCRouting::Forward {
+				onion_packet,
+				blinded,
+				incoming_cltv_expiry,
+				hold_htlc,
+				short_channel_id: next_hop_scid,
 			},
 			_ => unreachable!(), // Only `PendingHTLCRouting::Forward`s are intercepted
 		};
@@ -10682,7 +10733,25 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					};
 					match forward_htlcs.entry(scid) {
 						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
+							if pending_add.forward_info.routing.should_hold_htlc() {
+								let intercept_id = InterceptId::from_htlc_id_and_chan_id(
+									prev_htlc_id,
+									&prev_channel_id,
+									&prev_counterparty_node_id,
+								);
+								let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
+								match held_htlcs.entry(intercept_id) {
+									hash_map::Entry::Vacant(entry) => {
+										entry.insert(pending_add);
+									},
+									hash_map::Entry::Occupied(_) => {
+										debug_assert!(false, "Should never have two HTLCs with the same scid and htlc id");
+										fail_intercepted_htlc();
+									},
+								}
+							} else {
+								entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
+							}
 						},
 						hash_map::Entry::Vacant(entry) => {
 							if !is_our_scid
@@ -10692,9 +10761,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									scid,
 									&self.chain_hash,
 								) {
-								let intercept_id = InterceptId(
-									Sha256::hash(&pending_add.forward_info.incoming_shared_secret)
-										.to_byte_array(),
+								let intercept_id = InterceptId::from_incoming_shared_secret(
+									&pending_add.forward_info.incoming_shared_secret,
 								);
 								let mut pending_intercepts =
 									self.pending_intercepted_htlcs.lock().unwrap();
@@ -10729,6 +10797,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
 											scid
 										);
+										fail_intercepted_htlc();
+									},
+								}
+							} else if pending_add.forward_info.routing.should_hold_htlc() {
+								let intercept_id = InterceptId::from_htlc_id_and_chan_id(
+									prev_htlc_id,
+									&prev_channel_id,
+									&prev_counterparty_node_id,
+								);
+								let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
+								match held_htlcs.entry(intercept_id) {
+									hash_map::Entry::Vacant(entry) => {
+										entry.insert(pending_add);
+									},
+									hash_map::Entry::Occupied(_) => {
+										debug_assert!(false, "Should never have two HTLCs with the same scid and htlc id");
 										fail_intercepted_htlc();
 									},
 								}
@@ -14850,6 +14934,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(1, blinded, option),
 		(2, short_channel_id, required),
 		(3, incoming_cltv_expiry, option),
+		(5, hold_htlc, option),
 	},
 	(1, Receive) => {
 		(0, payment_data, required),
