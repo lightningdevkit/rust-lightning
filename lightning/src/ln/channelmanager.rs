@@ -10628,28 +10628,30 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					let is_our_scid = self.short_to_chan_info.read().unwrap().contains_key(&scid);
 
 					let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
+					let payment_hash = forward_info.payment_hash;
+					let pending_add = PendingAddHTLCInfo {
+						prev_short_channel_id,
+						prev_counterparty_node_id,
+						prev_funding_outpoint,
+						prev_channel_id,
+						prev_htlc_id,
+						prev_user_channel_id,
+						forward_info,
+					};
 					match forward_htlcs.entry(scid) {
 						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-								prev_short_channel_id,
-								prev_counterparty_node_id,
-								prev_funding_outpoint,
-								prev_channel_id,
-								prev_htlc_id,
-								prev_user_channel_id,
-								forward_info,
-							}));
+							entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
 						},
 						hash_map::Entry::Vacant(entry) => {
 							if !is_our_scid
-								&& forward_info.incoming_amt_msat.is_some()
+								&& pending_add.forward_info.incoming_amt_msat.is_some()
 								&& fake_scid::is_valid_intercept(
 									&self.fake_scid_rand_bytes,
 									scid,
 									&self.chain_hash,
 								) {
 								let intercept_id = InterceptId(
-									Sha256::hash(&forward_info.incoming_shared_secret)
+									Sha256::hash(&pending_add.forward_info.incoming_shared_secret)
 										.to_byte_array(),
 								);
 								let mut pending_intercepts =
@@ -10659,57 +10661,35 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										new_intercept_events.push_back((
 											events::Event::HTLCIntercepted {
 												requested_next_hop_scid: scid,
-												payment_hash: forward_info.payment_hash,
-												inbound_amount_msat: forward_info
+												payment_hash,
+												inbound_amount_msat: pending_add
+													.forward_info
 													.incoming_amt_msat
 													.unwrap(),
-												expected_outbound_amount_msat: forward_info
+												expected_outbound_amount_msat: pending_add
+													.forward_info
 													.outgoing_amt_msat,
 												intercept_id,
 											},
 											None,
 										));
-										entry.insert(PendingAddHTLCInfo {
-											prev_short_channel_id,
-											prev_counterparty_node_id,
-											prev_funding_outpoint,
-											prev_channel_id,
-											prev_htlc_id,
-											prev_user_channel_id,
-											forward_info,
-										});
+										entry.insert(pending_add);
 									},
 									hash_map::Entry::Occupied(_) => {
 										let logger = WithContext::from(
 											&self.logger,
 											None,
 											Some(prev_channel_id),
-											Some(forward_info.payment_hash),
+											Some(payment_hash),
 										);
 										log_info!(
 											logger,
 											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
 											scid
 										);
-										let routing = &forward_info.routing;
-										let htlc_source =
-											HTLCSource::PreviousHopData(HTLCPreviousHopData {
-												short_channel_id: prev_short_channel_id,
-												user_channel_id: Some(prev_user_channel_id),
-												counterparty_node_id: Some(
-													prev_counterparty_node_id,
-												),
-												outpoint: prev_funding_outpoint,
-												channel_id: prev_channel_id,
-												htlc_id: prev_htlc_id,
-												incoming_packet_shared_secret: forward_info
-													.incoming_shared_secret,
-												phantom_shared_secret: None,
-												blinded_failure: routing.blinded_failure(),
-												cltv_expiry: routing.incoming_cltv_expiry(),
-											});
-
-										let payment_hash = forward_info.payment_hash;
+										let htlc_source = HTLCSource::PreviousHopData(
+											pending_add.htlc_previous_hop_data(),
+										);
 										let reason = HTLCFailReason::from_failure_code(
 											LocalHTLCFailureReason::UnknownNextPeer,
 										);
@@ -10726,15 +10706,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									},
 								}
 							} else {
-								entry.insert(vec![HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-									prev_short_channel_id,
-									prev_counterparty_node_id,
-									prev_funding_outpoint,
-									prev_channel_id,
-									prev_htlc_id,
-									prev_user_channel_id,
-									forward_info,
-								})]);
+								entry.insert(vec![HTLCForwardInfo::AddHTLC(pending_add)]);
 							}
 						},
 					}
