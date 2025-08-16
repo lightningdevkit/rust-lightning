@@ -229,6 +229,9 @@ pub enum PendingHTLCRouting {
 		blinded: Option<BlindedForward>,
 		/// The absolute CLTV of the inbound HTLC
 		incoming_cltv_expiry: Option<u32>,
+		/// Whether this HTLC should be held by our node until we receive a corresponding
+		/// [`ReleaseHeldHtlc`] onion message.
+		hold_htlc: Option<()>,
 	},
 	/// An HTLC which should be forwarded on to another Trampoline node.
 	TrampolineForward {
@@ -369,6 +372,15 @@ impl PendingHTLCRouting {
 			Self::TrampolineForward { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
 			Self::Receive { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
 			Self::ReceiveKeysend { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
+		}
+	}
+
+	/// Whether this HTLC should be held by our node until we receive a corresponding
+	/// [`ReleaseHeldHtlc`] onion message.
+	fn should_hold_htlc(&self) -> bool {
+		match self {
+			Self::Forward { hold_htlc: Some(()), .. } => true,
+			_ => false,
 		}
 	}
 }
@@ -638,8 +650,39 @@ impl Readable for PaymentId {
 /// An identifier used to uniquely identify an intercepted HTLC to LDK.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Hash, Copy, Clone, PartialEq, Eq)]
 pub struct InterceptId(pub [u8; 32]);
+
+impl InterceptId {
+	/// This intercept id corresponds to an HTLC that will be forwarded on
+	/// [`ChannelManager::forward_intercepted_htlc`].
+	fn from_incoming_shared_secret(ss: &[u8; 32]) -> Self {
+		Self(Sha256::hash(ss).to_byte_array())
+	}
+
+	/// This intercept id corresponds to an HTLC that will be forwarded on receipt of a
+	/// [`ReleaseHeldHtlc`] onion message.
+	fn from_htlc_id_and_chan_id(
+		htlc_id: u64, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+	) -> Self {
+		let mut sha = Sha256::engine();
+		sha.input(&htlc_id.to_be_bytes());
+		sha.input(&channel_id.0);
+		sha.input(&counterparty_node_id.serialize());
+		Self(Sha256::from_engine(sha).to_byte_array())
+	}
+}
+
+impl Borrow<[u8]> for InterceptId {
+	fn borrow(&self) -> &[u8] {
+		&self.0[..]
+	}
+}
+impl_fmt_traits! {
+	impl fmt_traits for InterceptId {
+		const LENGTH: usize = 32;
+	}
+}
 
 impl Writeable for InterceptId {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -2598,8 +2641,14 @@ pub struct ChannelManager<
 	pub(super) forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
 	#[cfg(not(test))]
 	forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
-	/// Storage for HTLCs that have been intercepted and bubbled up to the user. We hold them here
-	/// until the user tells us what we should do with them.
+	/// Storage for HTLCs that have been intercepted.
+	///
+	/// These HTLCs fall into two categories:
+	/// 1. HTLCs that are bubbled up to the user and held until the invocation of
+	///    [`ChannelManager::forward_intercepted_htlc`] or [`ChannelManager::fail_intercepted_htlc`]
+	///    (or timeout)
+	/// 2. HTLCs that are being held on behalf of an often-offline sender until receipt of a
+	///    [`ReleaseHeldHtlc`] onion message from an often-offline recipient
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
@@ -6282,11 +6331,19 @@ where
 			})?;
 
 		let routing = match payment.forward_info.routing {
-			PendingHTLCRouting::Forward { onion_packet, blinded, incoming_cltv_expiry, .. } => {
+			PendingHTLCRouting::Forward {
+				onion_packet,
+				blinded,
+				incoming_cltv_expiry,
+				hold_htlc,
+				..
+			} => {
+				debug_assert!(hold_htlc.is_none(), "Held intercept HTLCs should not be surfaced in an event until the recipient comes online");
 				PendingHTLCRouting::Forward {
 					onion_packet,
 					blinded,
 					incoming_cltv_expiry,
+					hold_htlc,
 					short_channel_id: next_hop_scid,
 				}
 			},
@@ -10719,16 +10776,43 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						));
 					};
 
-					if !is_our_scid
+					// In the case that we have an HTLC that we're supposed to hold onto until the
+					// recipient comes online *and* the outbound scid is encoded as
+					// `fake_scid::is_valid_intercept`, we should first wait for the recipient to come
+					// online before generating an `HTLCIntercepted` event, since the event cannot be
+					// acted on until the recipient is online to cooperatively open the JIT channel. Once
+					// we receive the `ReleaseHeldHtlc` message from the recipient, we will circle back
+					// here and resume generating the event below.
+					if pending_add.forward_info.routing.should_hold_htlc() {
+						let intercept_id = InterceptId::from_htlc_id_and_chan_id(
+							prev_htlc_id,
+							&prev_channel_id,
+							&prev_counterparty_node_id,
+						);
+						let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
+						match held_htlcs.entry(intercept_id) {
+							hash_map::Entry::Vacant(entry) => {
+								log_trace!(
+									logger,
+									"Intercepted held HTLC with id {}, holding until the recipient is online",
+									intercept_id
+								);
+								entry.insert(pending_add);
+							},
+							hash_map::Entry::Occupied(_) => {
+								debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
+								fail_intercepted_htlc(pending_add);
+							},
+						}
+					} else if !is_our_scid
 						&& pending_add.forward_info.incoming_amt_msat.is_some()
 						&& fake_scid::is_valid_intercept(
 							&self.fake_scid_rand_bytes,
 							scid,
 							&self.chain_hash,
 						) {
-						let intercept_id = InterceptId(
-							Sha256::hash(&pending_add.forward_info.incoming_shared_secret)
-								.to_byte_array(),
+						let intercept_id = InterceptId::from_incoming_shared_secret(
+							&pending_add.forward_info.incoming_shared_secret,
 						);
 						let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 						match pending_intercepts.entry(intercept_id) {
@@ -14905,6 +14989,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(1, blinded, option),
 		(2, short_channel_id, required),
 		(3, incoming_cltv_expiry, option),
+		(4, hold_htlc, option),
 	},
 	(1, Receive) => {
 		(0, payment_data, required),
