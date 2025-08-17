@@ -370,11 +370,11 @@ fn expect_channel_shutdown_state_with_force_closure() {
 	assert_eq!(node_txn.len(), 1);
 	check_spends!(node_txn[0], chan_1.3);
 	mine_transaction(&nodes[0], &node_txn[0]);
+	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
-	check_closed_broadcast!(nodes[0], true);
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [node_b_id], 100000);
 	let reason_b = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
