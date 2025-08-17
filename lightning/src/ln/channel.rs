@@ -9304,13 +9304,20 @@ where
 				"Peer sent shutdown when we needed a channel_reestablish".to_owned(),
 			));
 		}
-		if self.context.channel_state.is_pre_funded_state() {
+		let mut not_broadcasted =
+			matches!(self.context.channel_state, ChannelState::NegotiatingFunding(_));
+		if let ChannelState::FundingNegotiated(flags) = &self.context.channel_state {
+			if !flags.is_our_tx_signatures_ready() {
+				// If we're a V1 channel or we haven't yet sent our `tx_signatures`, the funding tx
+				// couldn't be broadcasted yet, so just short-circuit the shutdown logic.
+				not_broadcasted = true;
+			}
+		}
+		if not_broadcasted {
 			// Spec says we should fail the connection, not the channel, but that's nonsense, there
 			// are plenty of reasons you may want to fail a channel pre-funding, and spec says you
 			// can do that via error message without getting a connection fail anyway...
-			return Err(ChannelError::close(
-				"Peer sent shutdown pre-funding generation".to_owned(),
-			));
+			return Err(ChannelError::close("Shutdown before funding was broadcasted".to_owned()));
 		}
 		for htlc in self.context.pending_inbound_htlcs.iter() {
 			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
