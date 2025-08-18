@@ -23,14 +23,6 @@ use crate::lsps0::ser::{
 	LSPS0_CLIENT_REJECTED_ERROR_CODE,
 };
 use crate::lsps2::event::LSPS2ServiceEvent;
-use crate::lsps2::msgs::{
-	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,
-	LSPS2OpeningFeeParams, LSPS2RawOpeningFeeParams, LSPS2Request, LSPS2Response,
-	LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
-	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE,
-	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE,
-	LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
-};
 use crate::lsps2::payment_queue::{InterceptedHTLC, PaymentQueue};
 use crate::lsps2::utils::{
 	compute_opening_fee, is_expired_opening_fee_params, is_valid_opening_fee_params,
@@ -51,6 +43,15 @@ use lightning_types::payment::PaymentHash;
 
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Transaction;
+
+use crate::lsps2::msgs::{
+	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,
+	LSPS2OpeningFeeParams, LSPS2RawOpeningFeeParams, LSPS2Request, LSPS2Response,
+	LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
+	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE,
+	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE,
+	LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
+};
 
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
@@ -112,20 +113,21 @@ enum TrustModel {
 	ClientTrustsLsp {
 		funding_tx_broadcast_safe: bool,
 		payment_claimed: bool,
-		funding_tx: Option<Transaction>,
+		funding_tx: Option<Arc<Transaction>>,
 	},
 	LspTrustsClient,
 }
 
 impl TrustModel {
-	fn should_broadcast(&self) -> bool {
+	fn should_manually_broadcast(&self) -> bool {
 		match self {
 			TrustModel::ClientTrustsLsp {
 				funding_tx_broadcast_safe,
 				payment_claimed,
 				funding_tx,
 			} => *funding_tx_broadcast_safe && *payment_claimed && funding_tx.is_some(),
-			TrustModel::LspTrustsClient => true,
+			// in lsp-trusts-client, the broadcast is automatic, so we never need to manually broadcast.
+			TrustModel::LspTrustsClient => false,
 		}
 	}
 
@@ -141,7 +143,7 @@ impl TrustModel {
 		}
 	}
 
-	fn set_funding_tx(&mut self, funding_tx: Transaction) {
+	fn set_funding_tx(&mut self, funding_tx: Arc<Transaction>) {
 		match self {
 			TrustModel::ClientTrustsLsp { funding_tx: tx, .. } => {
 				*tx = Some(funding_tx);
@@ -174,10 +176,17 @@ impl TrustModel {
 		}
 	}
 
-	fn get_funding_tx(&self) -> Option<Transaction> {
+	fn get_funding_tx(&self) -> Option<Arc<Transaction>> {
 		match self {
-			TrustModel::ClientTrustsLsp { funding_tx, .. } => funding_tx.clone(),
-			TrustModel::LspTrustsClient => None,
+			TrustModel::ClientTrustsLsp { funding_tx: Some(tx), .. } => Some(Arc::clone(&tx)),
+			_ => None,
+		}
+	}
+
+	fn is_client_trusts_lsp(&self) -> bool {
+		match self {
+			TrustModel::ClientTrustsLsp { .. } => true,
+			TrustModel::LspTrustsClient => false,
 		}
 	}
 }
@@ -355,7 +364,6 @@ impl OutboundJITChannelState {
 						channel_id,
 						FeePayment { htlcs: entry.htlcs, opening_fee_msat: *opening_fee_msat },
 					);
-
 					*self = OutboundJITChannelState::PendingPaymentForward {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
@@ -453,8 +461,7 @@ struct OutboundJITChannel {
 	user_channel_id: u128,
 	opening_fee_params: LSPS2OpeningFeeParams,
 	payment_size_msat: Option<u64>,
-	client_trusts_lsp: bool,
-	trust_model: Option<TrustModel>,
+	trust_model: TrustModel,
 }
 
 impl OutboundJITChannel {
@@ -467,23 +474,15 @@ impl OutboundJITChannel {
 			state: OutboundJITChannelState::new(),
 			opening_fee_params,
 			payment_size_msat,
-			client_trusts_lsp,
-			trust_model: None,
+			trust_model: TrustModel::new(client_trusts_lsp),
 		}
 	}
 
 	fn htlc_intercepted(
 		&mut self, htlc: InterceptedHTLC,
 	) -> Result<Option<HTLCInterceptedAction>, LightningError> {
-		let was_initial =
-			matches!(self.state, OutboundJITChannelState::PendingInitialPayment { .. });
 		let action =
 			self.state.htlc_intercepted(&self.opening_fee_params, &self.payment_size_msat, htlc)?;
-		if was_initial && self.trust_model.is_none() {
-			if !matches!(self.state, OutboundJITChannelState::PendingInitialPayment { .. }) {
-				self.trust_model = Some(TrustModel::new(self.client_trusts_lsp));
-			}
-		}
 		Ok(action)
 	}
 
@@ -502,9 +501,7 @@ impl OutboundJITChannel {
 	fn payment_forwarded(&mut self) -> Result<Option<ForwardHTLCsAction>, LightningError> {
 		let action = self.state.payment_forwarded()?;
 		if action.is_some() {
-			if let Some(tm) = &mut self.trust_model {
-				tm.set_payment_claimed(true);
-			}
+			self.trust_model.set_payment_claimed(true);
 		}
 		Ok(action)
 	}
@@ -520,43 +517,24 @@ impl OutboundJITChannel {
 		self.is_pending_initial_payment() && is_expired
 	}
 
-	fn set_funding_tx(&mut self, funding_tx: Transaction) -> Result<(), LightningError> {
-		if let Some(tm) = &mut self.trust_model {
-			tm.set_funding_tx(funding_tx);
-			Ok(())
-		} else {
-			Err(LightningError::from(ChannelStateError(
-				"Store funding transaction when JIT Channel was in invalid state".to_string(),
-			)))
-		}
+	fn set_funding_tx(&mut self, funding_tx: Arc<Transaction>) {
+		self.trust_model.set_funding_tx(funding_tx);
 	}
 
-	fn set_funding_tx_broadcast_safe(
-		&mut self, funding_tx_broadcast_safe: bool,
-	) -> Result<(), LightningError> {
-		if let Some(tm) = &mut self.trust_model {
-			tm.set_funding_tx_broadcast_safe(funding_tx_broadcast_safe);
-			Ok(())
-		} else {
-			Err(LightningError::from(ChannelStateError(
-				"Store funding transaction broadcast safe when JIT Channel was in invalid state"
-					.to_string(),
-			)))
-		}
+	fn set_funding_tx_broadcast_safe(&mut self, funding_tx_broadcast_safe: bool) {
+		self.trust_model.set_funding_tx_broadcast_safe(funding_tx_broadcast_safe);
 	}
 
 	fn should_broadcast_funding_transaction(&self) -> bool {
-		self.trust_model.as_ref().map_or(false, |tm| tm.should_broadcast())
+		self.trust_model.should_manually_broadcast()
 	}
 
-	fn get_funding_tx(&self) -> Option<Transaction> {
-		self.trust_model.as_ref().and_then(|tm| tm.get_funding_tx())
+	fn get_funding_tx(&self) -> Option<Arc<Transaction>> {
+		self.trust_model.get_funding_tx()
 	}
 
 	fn client_trusts_lsp(&self) -> bool {
-		self.trust_model
-			.as_ref()
-			.map_or(false, |tm| matches!(tm, TrustModel::ClientTrustsLsp { .. }))
+		self.trust_model.is_client_trusts_lsp()
 	}
 }
 
@@ -796,6 +774,12 @@ where
 	/// must be retrieved from [`ChannelManager::get_intercept_scid`].
 	///
 	/// Should be called in response to receiving a [`LSPS2ServiceEvent::BuyRequest`] event.
+	///
+	/// `client_trusts_lsp`:
+	/// * false (default) => "LSP trusts client": LSP broadcasts the funding
+	///   transaction as soon as it is safe and forwards the payment normally.
+	/// * true => "Client trusts LSP": LSP may defer broadcasting the funding
+	///   transaction until after the client claims the forwarded HTLC(s).
 	///
 	/// [`ChannelManager::get_intercept_scid`]: lightning::ln::channelmanager::ChannelManager::get_intercept_scid
 	/// [`LSPS2ServiceEvent::BuyRequest`]: crate::lsps2::event::LSPS2ServiceEvent::BuyRequest
@@ -1052,14 +1036,17 @@ where
 								Err(e) => {
 									return Err(APIError::APIMisuseError {
 										err: format!(
-										"Forwarded payment was not applicable for JIT channel: {}",
-										e.err
-									),
+											"Forwarded payment was not applicable for JIT channel: {}",
+											e.err
+										),
 									})
 								},
 							}
 
-							self.broadcast_transaction_if_applies(&jit_channel);
+							self.emit_broadcast_funding_transaction_event_if_applies(
+								jit_channel,
+								counterparty_node_id,
+							);
 						}
 					} else {
 						return Err(APIError::APIMisuseError {
@@ -1583,7 +1570,8 @@ where
 	/// Called to store the funding transaction for a JIT channel.
 	/// This should be called when the funding transaction is created but before it's broadcast.
 	pub fn store_funding_transaction(
-		&self, user_channel_id: u128, counterparty_node_id: &PublicKey, funding_tx: Transaction,
+		&self, user_channel_id: u128, counterparty_node_id: &PublicKey,
+		funding_tx: Arc<Transaction>,
 	) -> Result<(), APIError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		let inner_state_lock =
@@ -1610,11 +1598,9 @@ where
 			),
 		})?;
 
-		jit_channel
-			.set_funding_tx(funding_tx)
-			.map_err(|e| APIError::APIMisuseError { err: e.err.to_string() })?;
+		jit_channel.set_funding_tx(funding_tx);
 
-		self.broadcast_transaction_if_applies(jit_channel);
+		self.emit_broadcast_funding_transaction_event_if_applies(jit_channel, counterparty_node_id);
 		Ok(())
 	}
 
@@ -1648,20 +1634,26 @@ where
 			),
 		})?;
 
-		jit_channel
-			.set_funding_tx_broadcast_safe(true)
-			.map_err(|e| APIError::APIMisuseError { err: e.err.to_string() })?;
+		jit_channel.set_funding_tx_broadcast_safe(true);
 
-		self.broadcast_transaction_if_applies(jit_channel);
+		self.emit_broadcast_funding_transaction_event_if_applies(jit_channel, counterparty_node_id);
 		Ok(())
 	}
 
-	fn broadcast_transaction_if_applies(&self, jit_channel: &OutboundJITChannel) {
+	fn emit_broadcast_funding_transaction_event_if_applies(
+		&self, jit_channel: &OutboundJITChannel, counterparty_node_id: &PublicKey,
+	) {
 		if jit_channel.should_broadcast_funding_transaction() {
 			let funding_tx = jit_channel.get_funding_tx();
 
 			if let Some(funding_tx) = funding_tx {
-				self.channel_manager.get_cm().broadcast_transaction(&funding_tx);
+				let event_queue_notifier = self.pending_events.notifier();
+				let event = LSPS2ServiceEvent::BroadcastFundingTransaction {
+					counterparty_node_id: *counterparty_node_id,
+					user_channel_id: jit_channel.user_channel_id,
+					funding_tx: funding_tx.as_ref().clone(),
+				};
+				event_queue_notifier.enqueue(event);
 			}
 		}
 	}

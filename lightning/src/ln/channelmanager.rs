@@ -5808,7 +5808,9 @@ where
 	#[rustfmt::skip]
 	fn batch_funding_transaction_generated_intern(&self, temporary_channels: &[(&ChannelId, &PublicKey)], funding: FundingType) -> Result<(), APIError> {
 		let mut result = Ok(());
-		if let FundingType::Checked(funding_transaction) = &funding {
+		if let FundingType::Checked(funding_transaction) |
+			FundingType::CheckedManualBroadcast(funding_transaction) = &funding
+		{
 			if !funding_transaction.is_coinbase() {
 				for inp in funding_transaction.input.iter() {
 					if inp.witness.is_empty() {
@@ -11572,7 +11574,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// over transaction broadcast timing is required (e.g., LSPS2 workflows).
 	pub fn broadcast_transaction(&self, tx: &Transaction) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		log_info!(self.logger, "Broadcasting transaction {}", log_tx!(tx));
 		self.tx_broadcaster.broadcast_transactions(&[tx]);
 	}
 
