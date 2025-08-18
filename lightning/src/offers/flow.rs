@@ -1276,6 +1276,7 @@ where
 		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPaths {
 			path_absolute_expiry: duration_since_epoch
 				.saturating_add(TEMP_REPLY_PATH_RELATIVE_EXPIRY),
+			invoice_slot: needs_new_offer_slot,
 		});
 		let reply_paths = match self.create_blinded_paths(peers, context) {
 			Ok(paths) => paths,
@@ -1444,14 +1445,15 @@ where
 		R::Target: Router,
 	{
 		let duration_since_epoch = self.duration_since_epoch();
-		match context {
-			AsyncPaymentsContext::OfferPaths { path_absolute_expiry } => {
+		let invoice_slot = match context {
+			AsyncPaymentsContext::OfferPaths { invoice_slot, path_absolute_expiry } => {
 				if duration_since_epoch > path_absolute_expiry {
 					return None;
 				}
+				invoice_slot
 			},
 			_ => return None,
-		}
+		};
 
 		{
 			// Only respond with `ServeStaticInvoice` if we actually need a new offer built.
@@ -1460,6 +1462,7 @@ where
 			if !cache.should_build_offer_with_paths(
 				&message.paths[..],
 				message.paths_absolute_expiry,
+				invoice_slot,
 				duration_since_epoch,
 			) {
 				return None;
@@ -1495,18 +1498,16 @@ where
 			Err(()) => return None,
 		};
 
-		let res = self.async_receive_offer_cache.lock().unwrap().cache_pending_offer(
+		if let Err(()) = self.async_receive_offer_cache.lock().unwrap().cache_pending_offer(
 			offer,
 			message.paths_absolute_expiry,
 			offer_nonce,
 			responder,
 			duration_since_epoch,
-		);
-
-		let invoice_slot = match res {
-			Ok(idx) => idx,
-			Err(()) => return None,
-		};
+			invoice_slot,
+		) {
+			return None;
+		}
 
 		let reply_path_context = {
 			MessageContext::AsyncPayments(AsyncPaymentsContext::StaticInvoicePersisted {
