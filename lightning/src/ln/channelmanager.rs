@@ -17543,7 +17543,6 @@ mod tests {
 	}
 
 	#[test]
-	#[rustfmt::skip]
 	#[cfg(peer_storage)]
 	fn test_peer_storage() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -17564,8 +17563,10 @@ mod tests {
 		connect_blocks(&nodes[0], 1);
 		connect_blocks(&nodes[0], 1);
 
-		let peer_storage_msg_events_node0 = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
-		let peer_storage_msg_events_node1 = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+		let peer_storage_msg_events_node0 =
+			nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+		let peer_storage_msg_events_node1 =
+			nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
 		assert_ne!(peer_storage_msg_events_node0.len(), 0);
 		assert_ne!(peer_storage_msg_events_node1.len(), 0);
 
@@ -17574,7 +17575,7 @@ mod tests {
 				MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
 					assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 					nodes[1].node.handle_peer_storage(nodes[0].node.get_our_node_id(), msg.clone());
-				}
+				},
 				_ => panic!("Unexpected event"),
 			}
 		}
@@ -17584,7 +17585,7 @@ mod tests {
 				MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
 					assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 					nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msg.clone());
-				}
+				},
 				_ => panic!("Unexpected event"),
 			}
 		}
@@ -17594,14 +17595,41 @@ mod tests {
 
 		// Reload Node!
 		// TODO: Handle the case where we've completely forgotten about an active channel.
-		reload_node!(nodes[0], test_default_channel_config(), &nodes_0_serialized, &[&old_state_monitor[..]], persister, chain_monitor, nodes_0_deserialized);
+		reload_node!(
+			nodes[0],
+			test_default_channel_config(),
+			&nodes_0_serialized,
+			&[&old_state_monitor[..]],
+			persister,
+			chain_monitor,
+			nodes_0_deserialized
+		);
 
-		nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
-			features: nodes[1].node.init_features(), networks: None, remote_network_address: None
-		}, true).unwrap();
-		nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
-			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
-		}, false).unwrap();
+		nodes[0]
+			.node
+			.peer_connected(
+				nodes[1].node.get_our_node_id(),
+				&msgs::Init {
+					features: nodes[1].node.init_features(),
+					networks: None,
+					remote_network_address: None,
+				},
+				true,
+			)
+			.unwrap();
+
+		nodes[1]
+			.node
+			.peer_connected(
+				nodes[0].node.get_our_node_id(),
+				&msgs::Init {
+					features: nodes[0].node.init_features(),
+					networks: None,
+					remote_network_address: None,
+				},
+				false,
+			)
+			.unwrap();
 
 		let node_1_events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(node_1_events.len(), 2);
@@ -17612,19 +17640,18 @@ mod tests {
 
 		match node_0_events[0] {
 			MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
-					assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-					// nodes[0] would send a bogus channel reestablish, so there's no need to handle this.
-				}
-				_ => panic!("Unexpected event"),
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+				// nodes[0] would send a bogus channel reestablish, so there's no need to handle this.
+			},
+			_ => panic!("Unexpected event"),
 		}
 
 		for msg in node_1_events {
 			if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
 				nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), msg);
 				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			} else if let MessageSendEvent::SendPeerStorageRetrieval { ref node_id, ref msg } = msg {
-				// Should Panic here!
-				nodes[0].node.handle_peer_storage_retrieval(nodes[1].node.get_our_node_id(), msg.clone());
+			} else if let MessageSendEvent::SendPeerStorageRetrieval { ref node_id, ref msg } = msg
+			{
 				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 				// Should Panic here!
 				let res = std::panic::catch_unwind(|| {
