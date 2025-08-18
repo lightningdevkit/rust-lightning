@@ -154,12 +154,9 @@ where
 	/// Prior activity includes an existing open channel, an active LSPS1 flow,
 	/// or an LSPS2 flow that has an opening or open JIT channel.
 	pub(crate) fn can_accept_request(
-		&self, client_id: &PublicKey, lsps2_has_opening_or_open_jit_channel: bool,
-		lsps1_has_activity: bool,
+		&self, client_id: &PublicKey, lsps2_has_active_requests: bool, lsps1_has_activity: bool,
 	) -> bool {
-		self.client_has_open_channel(client_id)
-			|| lsps2_has_opening_or_open_jit_channel
-			|| lsps1_has_activity
+		self.client_has_open_channel(client_id) || lsps2_has_active_requests || lsps1_has_activity
 	}
 
 	fn check_prune_stale_webhooks<'a>(

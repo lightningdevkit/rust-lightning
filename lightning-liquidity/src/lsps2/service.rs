@@ -566,20 +566,12 @@ where
 		&self.config
 	}
 
-	/// Returns whether the peer has any opening or open JIT channels.
-	pub(crate) fn has_opening_or_open_jit_channel(&self, counterparty_node_id: &PublicKey) -> bool {
+	/// Returns whether the peer has any active LSPS2 requests.
+	pub(crate) fn has_active_requests(&self, counterparty_node_id: &PublicKey) -> bool {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		outer_state_lock.get(counterparty_node_id).map_or(false, |inner| {
 			let peer_state = inner.lock().unwrap();
-			peer_state.outbound_channels_by_intercept_scid.values().any(|chan| {
-				matches!(
-					chan.state,
-					OutboundJITChannelState::PendingChannelOpen { .. }
-						| OutboundJITChannelState::PendingPaymentForward { .. }
-						| OutboundJITChannelState::PendingPayment { .. }
-						| OutboundJITChannelState::PaymentForwarded { .. }
-				)
-			})
+			!peer_state.outbound_channels_by_intercept_scid.is_empty()
 		})
 	}
 
