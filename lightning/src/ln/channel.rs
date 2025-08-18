@@ -804,11 +804,11 @@ impl ChannelState {
 		}
 	}
 
-	fn is_pre_funded_state(&self) -> bool {
+	fn can_resume_on_reconnect(&self) -> bool {
 		match self {
-			ChannelState::NegotiatingFunding(_) => true,
-			ChannelState::FundingNegotiated(flags) => !flags.is_interactive_signing(),
-			_ => false,
+			ChannelState::NegotiatingFunding(_) => false,
+			ChannelState::FundingNegotiated(flags) => flags.is_interactive_signing(),
+			_ => true,
 		}
 	}
 
@@ -4076,11 +4076,28 @@ where
 		self.is_manual_broadcast = true;
 	}
 
+	/// Returns true if this channel can be resume after a restart, implying its past the initial
+	/// funding negotiation stages (and any assocated batch channels are similarly past initial
+	/// funding negotiation).
+	///
+	/// This is equivalent to saying the  channel can be persisted to disk.
+	pub fn can_resume_on_restart(&self) -> bool {
+		self.channel_state.can_resume_on_reconnect() &&
+			match self.channel_state {
+				ChannelState::AwaitingChannelReady(flags) => !flags.is_waiting_for_batch(),
+				_ => true,
+			}
+	}
+
 	/// Returns true if funding_signed was sent/received and the
 	/// funding transaction has been broadcast if necessary.
-	pub fn is_funding_broadcast(&self) -> bool {
-		!self.channel_state.is_pre_funded_state()
-			&& !matches!(self.channel_state, ChannelState::AwaitingChannelReady(flags) if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH))
+	fn is_funding_broadcast(&self) -> bool {
+		match self.channel_state {
+			ChannelState::NegotiatingFunding(_) => false,
+			ChannelState::FundingNegotiated(flags) => !flags.is_our_tx_signatures_ready(),
+			ChannelState::AwaitingChannelReady(flags) => !flags.is_waiting_for_batch(),
+			_ => true,
+		}
 	}
 
 	#[rustfmt::skip]
@@ -8115,12 +8132,12 @@ where
 	#[rustfmt::skip]
 	fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L) -> Result<(), ()> where L::Target: Logger {
 		assert!(!matches!(self.context.channel_state, ChannelState::ShutdownComplete));
-		if self.context.channel_state.is_pre_funded_state() {
+		if !self.context.channel_state.can_resume_on_reconnect() {
 			return Err(())
 		}
 
 		// We only clear `peer_disconnected` if we were able to reestablish the channel. We always
- 		// reset our awaiting response in case we failed reestablishment and are disconnecting.
+		// reset our awaiting response in case we failed reestablishment and are disconnecting.
 		self.context.sent_message_awaiting_response = None;
 
 		if self.context.channel_state.is_peer_disconnected() {
