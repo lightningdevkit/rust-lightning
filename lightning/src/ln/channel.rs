@@ -1252,7 +1252,7 @@ pub(crate) struct ShutdownResult {
 struct HolderCommitmentPoint {
 	transaction_number: u64,
 	point: PublicKey,
-	next_point: Option<PublicKey>,
+	pending_next_point: Option<PublicKey>,
 }
 
 impl HolderCommitmentPoint {
@@ -1263,12 +1263,12 @@ impl HolderCommitmentPoint {
 		Some(HolderCommitmentPoint {
 			transaction_number: INITIAL_COMMITMENT_NUMBER,
 			point: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, secp_ctx).ok()?,
-			next_point: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx).ok(),
+			pending_next_point: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx).ok(),
 		})
 	}
 
 	pub fn can_advance(&self) -> bool {
-		self.next_point.is_some()
+		self.pending_next_point.is_some()
 	}
 
 	pub fn transaction_number(&self) -> u64 {
@@ -1279,11 +1279,8 @@ impl HolderCommitmentPoint {
 		self.point
 	}
 
-	pub fn next_point(&self) -> Option<PublicKey> {
-		self.next_point
-	}
-
-	/// If we are pending the next commitment point, this method tries asking the signer again.
+	/// If we are pending advancing the next commitment point, this method tries asking the signer
+	/// again.
 	pub fn try_resolve_pending<SP: Deref, L: Deref>(
 		&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
 	) where
@@ -1291,20 +1288,20 @@ impl HolderCommitmentPoint {
 		L::Target: Logger,
 	{
 		if !self.can_advance() {
-			let next =
+			let pending_next_point =
 				signer.as_ref().get_per_commitment_point(self.transaction_number - 1, secp_ctx);
-			if let Ok(next) = next {
+			if let Ok(point) = pending_next_point {
 				log_trace!(
 					logger,
-					"Retrieved next per-commitment point {}",
+					"Retrieved per-commitment point {} for next advancement",
 					self.transaction_number - 1
 				);
-				self.next_point = Some(next);
+				self.pending_next_point = Some(point);
 			} else {
 				log_trace!(
 					logger,
-					"Next per-commitment point {} is pending",
-					self.transaction_number
+					"Pending per-commitment point {} for next advancement",
+					self.transaction_number - 1
 				);
 			}
 		}
@@ -1327,11 +1324,11 @@ impl HolderCommitmentPoint {
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
-		if let Some(next_point) = self.next_point {
+		if let Some(next_point) = self.pending_next_point {
 			*self = Self {
 				transaction_number: self.transaction_number - 1,
 				point: next_point,
-				next_point: None,
+				pending_next_point: None,
 			};
 
 			self.try_resolve_pending(signer, secp_ctx, logger);
@@ -13202,7 +13199,7 @@ where
 
 		// `HolderCommitmentPoint::point` will become optional when async signing is implemented.
 		let holder_commitment_point = Some(self.holder_commitment_point.point());
-		let holder_commitment_point_next_advance = self.holder_commitment_point.next_point();
+		let holder_commitment_point_pending_next = self.holder_commitment_point.pending_next_point;
 
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
@@ -13241,7 +13238,7 @@ where
 			(41, holding_cell_blinding_points, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
 			(45, holder_commitment_point, option),
-			(47, holder_commitment_point_next_advance, option),
+			(47, holder_commitment_point_pending_next, option),
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
@@ -13602,7 +13599,7 @@ where
 		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
 
 		let mut holder_commitment_point_opt: Option<PublicKey> = None;
-		let mut holder_commitment_point_next_advance_opt: Option<PublicKey> = None;
+		let mut holder_commitment_point_pending_next_opt: Option<PublicKey> = None;
 		let mut is_manual_broadcast = None;
 
 		let mut pending_funding = Some(Vec::new());
@@ -13643,7 +13640,7 @@ where
 			(41, holding_cell_blinding_points_opt, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
 			(45, holder_commitment_point_opt, option),
-			(47, holder_commitment_point_next_advance_opt, option),
+			(47, holder_commitment_point_pending_next_opt, option),
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
@@ -13832,27 +13829,27 @@ where
 		// signer be available so that we can immediately populate the current commitment point. Channel
 		// restoration will fail if this is not possible.
 		let holder_commitment_point =
-			match (holder_commitment_point_opt, holder_commitment_point_next_advance_opt) {
-				(Some(point), next_point) => HolderCommitmentPoint {
+			match (holder_commitment_point_opt, holder_commitment_point_pending_next_opt) {
+				(Some(point), pending_next_point) => HolderCommitmentPoint {
 					transaction_number: holder_commitment_transaction_number,
 					point,
-					next_point,
+					pending_next_point,
 				},
 				(_, _) => {
 					let point = holder_signer.get_per_commitment_point(holder_commitment_transaction_number, &secp_ctx)
 						.expect("Must be able to derive the current commitment point upon channel restoration");
-					let next_point = holder_signer
+					let pending_next_point = holder_signer
 						.get_per_commitment_point(
 							holder_commitment_transaction_number - 1,
 							&secp_ctx,
 						)
 						.expect(
-							"Must be able to derive the next commitment point upon channel restoration",
+							"Must be able to derive the pending next commitment point upon channel restoration",
 						);
 					HolderCommitmentPoint {
 						transaction_number: holder_commitment_transaction_number,
 						point,
-						next_point: Some(next_point),
+						pending_next_point: Some(pending_next_point),
 					}
 				},
 			};
