@@ -1251,6 +1251,7 @@ pub(crate) struct ShutdownResult {
 #[derive(Debug, Copy, Clone)]
 struct HolderCommitmentPoint {
 	next_transaction_number: u64,
+	current_point: Option<PublicKey>,
 	next_point: PublicKey,
 	pending_next_point: Option<PublicKey>,
 }
@@ -1262,6 +1263,7 @@ impl HolderCommitmentPoint {
 	{
 		Some(HolderCommitmentPoint {
 			next_transaction_number: INITIAL_COMMITMENT_NUMBER,
+			current_point: None,
 			next_point: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, secp_ctx).ok()?,
 			pending_next_point: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx).ok(),
 		})
@@ -1269,6 +1271,14 @@ impl HolderCommitmentPoint {
 
 	pub fn can_advance(&self) -> bool {
 		self.pending_next_point.is_some()
+	}
+
+	pub fn current_transaction_number(&self) -> u64 {
+		self.next_transaction_number + 1
+	}
+
+	pub fn current_point(&self) -> Option<PublicKey> {
+		self.current_point
 	}
 
 	pub fn next_transaction_number(&self) -> u64 {
@@ -1328,6 +1338,7 @@ impl HolderCommitmentPoint {
 		if let Some(next_point) = self.pending_next_point {
 			*self = Self {
 				next_transaction_number: self.next_transaction_number - 1,
+				current_point: Some(self.next_point),
 				next_point,
 				pending_next_point: None,
 			};
@@ -9591,7 +9602,7 @@ where
 	}
 
 	pub fn get_cur_holder_commitment_transaction_number(&self) -> u64 {
-		self.holder_commitment_point.next_transaction_number() + 1
+		self.holder_commitment_point.current_transaction_number()
 	}
 
 	pub fn get_cur_counterparty_commitment_transaction_number(&self) -> u64 {
@@ -10582,6 +10593,15 @@ where
 		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
 		funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<msgs::SpliceInit, APIError> {
+		if self.holder_commitment_point.current_point().is_none() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot be spliced, commitment point needs to be advanced once",
+					self.context.channel_id(),
+				),
+			});
+		}
+
 		// Check if a splice has been initiated already.
 		// Note: only a single outstanding splice is supported (per spec)
 		if self.pending_splice.is_some() {
@@ -10682,6 +10702,13 @@ where
 		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
 
 		// TODO(splicing): Add check that we are the quiescence acceptor
+
+		if self.holder_commitment_point.current_point().is_none() {
+			return Err(ChannelError::Warn(format!(
+				"Channel {} commitment point needs to be advanced once before spliced",
+				self.context.channel_id(),
+			)));
+		}
 
 		// Check if a splice has been initiated already.
 		if self.pending_splice.is_some() {
@@ -13198,6 +13225,7 @@ where
 		}
 		let is_manual_broadcast = Some(self.context.is_manual_broadcast);
 
+		let holder_commitment_point_current = self.holder_commitment_point.current_point();
 		// `HolderCommitmentPoint::next_point` will become optional when async signing is implemented.
 		let holder_commitment_point_next = Some(self.holder_commitment_point.next_point());
 		let holder_commitment_point_pending_next = self.holder_commitment_point.pending_next_point;
@@ -13250,6 +13278,7 @@ where
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
+			(63, holder_commitment_point_current, option), // Added in 0.2
 		});
 
 		Ok(())
@@ -13599,6 +13628,7 @@ where
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
 		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
 
+		let mut holder_commitment_point_current_opt: Option<PublicKey> = None;
 		let mut holder_commitment_point_next_opt: Option<PublicKey> = None;
 		let mut holder_commitment_point_pending_next_opt: Option<PublicKey> = None;
 		let mut is_manual_broadcast = None;
@@ -13652,6 +13682,7 @@ where
 			(59, minimum_depth_override, option), // Added in 0.2
 			(60, historical_scids, optional_vec), // Added in 0.2
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
+			(63, holder_commitment_point_current_opt, option), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -13833,6 +13864,7 @@ where
 			match (holder_commitment_point_next_opt, holder_commitment_point_pending_next_opt) {
 				(Some(next_point), pending_next_point) => HolderCommitmentPoint {
 					next_transaction_number: holder_commitment_next_transaction_number,
+					current_point: None,
 					next_point,
 					pending_next_point,
 				},
@@ -13852,6 +13884,7 @@ where
 						);
 					HolderCommitmentPoint {
 						next_transaction_number: holder_commitment_next_transaction_number,
+						current_point: holder_commitment_point_current_opt,
 						next_point,
 						pending_next_point: Some(pending_next_point),
 					}
