@@ -411,11 +411,13 @@ fn webhook_error_handling_test() {
 
 #[test]
 fn webhook_notification_delivery_test() {
+	let mock_time_provider = Arc::new(MockTimeProvider::new(1000));
+	let time_provider = Arc::<MockTimeProvider>::clone(&mock_time_provider);
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, validator) = lsps5_test_setup(nodes, time_provider);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
@@ -498,6 +500,8 @@ fn webhook_notification_delivery_test() {
 		service_node.liquidity_manager.next_event().is_none(),
 		"No event should be emitted due to cooldown"
 	);
+
+	mock_time_provider.advance_time(NOTIFICATION_COOLDOWN_TIME.as_secs() + 1);
 
 	let timeout_block = 700000; // Some future block height
 	let _ = service_handler.notify_expiry_soon(client_node_id, timeout_block);
@@ -719,11 +723,13 @@ fn idempotency_set_webhook_test() {
 
 #[test]
 fn replay_prevention_test() {
+	let mock_time_provider = Arc::new(MockTimeProvider::new(1000));
+	let time_provider = Arc::<MockTimeProvider>::clone(&mock_time_provider);
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, validator) = lsps5_test_setup(nodes, time_provider);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
@@ -774,6 +780,9 @@ fn replay_prevention_test() {
 
 	// Fill up the validator's signature cache to push out the original signature.
 	for i in 0..MAX_RECENT_SIGNATURES {
+		// Advance time, allowing for another notification
+		mock_time_provider.advance_time(NOTIFICATION_COOLDOWN_TIME.as_secs() + 1);
+
 		let timeout_block = 700000 + i as u32;
 		let _ = service_handler.notify_expiry_soon(client_node_id, timeout_block);
 		let event = service_node.liquidity_manager.next_event().unwrap();
@@ -852,7 +861,15 @@ fn stale_webhooks() {
 		MIN_WEBHOOK_RETENTION_DAYS.as_secs() + PRUNE_STALE_WEBHOOKS_INTERVAL_DAYS.as_secs(),
 	);
 
-	// LIST calls prune before executing -> should be empty after advancing time
+	// LIST should be empty after advancing time and reconnection
+	service_node.liquidity_manager.peer_disconnected(client_node_id);
+	let init_msg = Init {
+		features: lightning_types::features::InitFeatures::empty(),
+		remote_network_address: None,
+		networks: None,
+	};
+	service_node.liquidity_manager.peer_connected(client_node_id, &init_msg, false).unwrap();
+
 	let _ = client_handler.list_webhooks(service_node_id);
 	let list_req2 = get_lsps_message!(client_node, service_node_id);
 	service_node.liquidity_manager.handle_custom_message(list_req2, client_node_id).unwrap();
@@ -871,11 +888,13 @@ fn stale_webhooks() {
 
 #[test]
 fn test_all_notifications() {
+	let mock_time_provider = Arc::new(MockTimeProvider::new(1000));
+	let time_provider = Arc::<MockTimeProvider>::clone(&mock_time_provider);
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, validator) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let (lsps_nodes, validator) = lsps5_test_setup(nodes, time_provider);
 	let LSPSNodes { service_node, client_node } = lsps_nodes;
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
@@ -894,9 +913,16 @@ fn test_all_notifications() {
 	// consume initial SendWebhookNotification
 	let _ = service_node.liquidity_manager.next_event().unwrap();
 
+	mock_time_provider.advance_time(NOTIFICATION_COOLDOWN_TIME.as_secs() + 1);
 	let _ = service_handler.notify_onion_message_incoming(client_node_id);
+
+	mock_time_provider.advance_time(NOTIFICATION_COOLDOWN_TIME.as_secs() + 1);
 	let _ = service_handler.notify_payment_incoming(client_node_id);
+
+	mock_time_provider.advance_time(NOTIFICATION_COOLDOWN_TIME.as_secs() + 1);
 	let _ = service_handler.notify_expiry_soon(client_node_id, 1000);
+
+	mock_time_provider.advance_time(NOTIFICATION_COOLDOWN_TIME.as_secs() + 1);
 	let _ = service_handler.notify_liquidity_management_request(client_node_id);
 
 	let expected_notifications = vec![
@@ -1050,7 +1076,7 @@ fn test_notify_without_webhooks_does_nothing() {
 }
 
 #[test]
-fn test_send_notifications_and_peer_connected_resets_cooldown() {
+fn test_notifications_and_peer_connected_resets_cooldown() {
 	let mock_time_provider = Arc::new(MockTimeProvider::new(1000));
 	let time_provider = Arc::<MockTimeProvider>::clone(&mock_time_provider);
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1101,24 +1127,7 @@ fn test_send_notifications_and_peer_connected_resets_cooldown() {
 		"Should not emit event due to cooldown"
 	);
 
-	// 3. Notification of a different method CAN be sent
-	let timeout_block = 424242;
-	let _ = service_handler.notify_expiry_soon(client_node_id, timeout_block);
-	let event = service_node.liquidity_manager.next_event().unwrap();
-	match event {
-		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
-			notification,
-			..
-		}) => {
-			assert!(matches!(
-				notification.method,
-				WebhookNotificationMethod::LSPS5ExpirySoon { timeout } if timeout == timeout_block
-			));
-		},
-		_ => panic!("Expected SendWebhookNotification event for expiry_soon"),
-	}
-
-	// 4. Advance time past cooldown and ensure payment_incoming can be sent again
+	// 3. Advance time past cooldown and ensure payment_incoming can be sent again
 	mock_time_provider.advance_time(NOTIFICATION_COOLDOWN_TIME.as_secs() + 1);
 
 	let _ = service_handler.notify_payment_incoming(client_node_id);
@@ -1133,7 +1142,7 @@ fn test_send_notifications_and_peer_connected_resets_cooldown() {
 		_ => panic!("Expected SendWebhookNotification event after cooldown"),
 	}
 
-	// 5. Can't send payment_incoming notification again immediately after cooldown
+	// 4. Can't send payment_incoming notification again immediately after cooldown
 	let result = service_handler.notify_payment_incoming(client_node_id);
 
 	let error = result.unwrap_err();
@@ -1144,7 +1153,7 @@ fn test_send_notifications_and_peer_connected_resets_cooldown() {
 		"Should not emit event due to cooldown"
 	);
 
-	// 6. After peer_connected, notification should be sent again immediately
+	// 5. After peer_connected, notification should be sent again immediately
 	let init_msg = Init {
 		features: lightning_types::features::InitFeatures::empty(),
 		remote_network_address: None,
@@ -1161,5 +1170,67 @@ fn test_send_notifications_and_peer_connected_resets_cooldown() {
 			assert_eq!(notification.method, WebhookNotificationMethod::LSPS5PaymentIncoming);
 		},
 		_ => panic!("Expected SendWebhookNotification event after peer_connected"),
+	}
+}
+
+#[test]
+fn webhook_update_affects_future_notifications() {
+	let mock_time_provider = Arc::new(MockTimeProvider::new(1000));
+	let time_provider = Arc::<MockTimeProvider>::clone(&mock_time_provider);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, time_provider);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
+	let service_handler = service_node.liquidity_manager.lsps5_service_handler().unwrap();
+
+	let app = "UpdateTestApp".to_string();
+	let url_v1 = "https://example.org/v1".to_string();
+	let url_v2 = "https://example.org/v2".to_string();
+
+	// register v1
+	client_handler.set_webhook(service_node_id, app.clone(), url_v1).unwrap();
+	let req = get_lsps_message!(client_node, service_node_id);
+	service_node.liquidity_manager.handle_custom_message(req, client_node_id).unwrap();
+	let _ = service_node.liquidity_manager.next_event().unwrap(); // initial webhook_registered
+	let resp = get_lsps_message!(service_node, client_node_id);
+	client_node.liquidity_manager.handle_custom_message(resp, service_node_id).unwrap();
+	let _ = client_node.liquidity_manager.next_event().unwrap();
+
+	// update to v2
+	client_handler.set_webhook(service_node_id, app, url_v2.clone()).unwrap();
+	let upd_req = get_lsps_message!(client_node, service_node_id);
+	service_node.liquidity_manager.handle_custom_message(upd_req, client_node_id).unwrap();
+	let update_event = service_node.liquidity_manager.next_event().unwrap();
+	match update_event {
+		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
+			url, ..
+		}) => {
+			assert_eq!(url.as_str(), url_v2);
+		},
+		_ => panic!("Expected webhook_registered for update"),
+	}
+	let upd_resp = get_lsps_message!(service_node, client_node_id);
+	client_node.liquidity_manager.handle_custom_message(upd_resp, service_node_id).unwrap();
+	let _ = client_node.liquidity_manager.next_event().unwrap();
+
+	// Advance past cooldown and send a notification again
+	mock_time_provider.advance_time(NOTIFICATION_COOLDOWN_TIME.as_secs() + 1);
+	service_handler.notify_payment_incoming(client_node_id).unwrap();
+	let ev = service_node.liquidity_manager.next_event().unwrap();
+	match ev {
+		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
+			url,
+			notification,
+			..
+		}) => {
+			assert_eq!(notification.method, WebhookNotificationMethod::LSPS5PaymentIncoming);
+			assert_eq!(url.as_str(), url_v2, "Should target updated URL");
+		},
+		_ => panic!("Expected SendWebhookNotification after update"),
 	}
 }
