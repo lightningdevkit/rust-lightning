@@ -97,7 +97,7 @@ use crate::offers::invoice_request::{
 	DefaultCurrencyConversion, InvoiceRequest, InvoiceRequestVerifiedFromOffer,
 };
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferFromHrn};
+use crate::offers::offer::{Amount, Offer, OfferFromHrn};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::Refund;
 use crate::offers::static_invoice::StaticInvoice;
@@ -12938,11 +12938,20 @@ where
 	/// Uses [`InvoiceRequestBuilder`] such that the [`InvoiceRequest`] it builds is recognized by
 	/// the [`ChannelManager`] when handling a [`Bolt12Invoice`] message in response to the request.
 	///
-	/// `amount_msats` allows you to overpay what is required to satisfy the offer, or may be
-	/// required if the offer does not require a specific amount.
-	///
 	/// If the [`Offer`] was built from a human readable name resolved using BIP 353, you *must*
 	/// instead call [`Self::pay_for_offer_from_hrn`].
+	///
+	/// # Amount
+	///	`amount_msats` allows you to overpay what is required to satisfy the offer, or may be
+	/// required if the offer does not require a specific amount.
+	///
+	/// # Currency
+	///
+	/// If the [`Offer`] specifies its amount in a currency (that is, [`Amount::Currency`]), callers
+	/// must provide the `amount_msats`. [`ChannelManager`] enforces only that an amount is present
+	/// in this case. It does not verify here that the provided `amount_msats` is sufficient once
+	/// converted from the currency amount. The recipient may reject the resulting [`InvoiceRequest`]
+	/// if the amount is insufficient after conversion.
 	///
 	/// # Payment
 	///
@@ -13080,6 +13089,13 @@ where
 	) -> Result<(), Bolt12SemanticError> {
 		let entropy = &*self.entropy_source;
 		let nonce = Nonce::from_entropy_source(entropy);
+
+		// If the offer is for a specific currency, ensure the amount is provided.
+		if let Some(Amount::Currency { iso4217_code: _, amount: _ }) = offer.amount() {
+			if amount_msats.is_none() {
+				return Err(Bolt12SemanticError::MissingAmount);
+			}
+		}
 
 		let builder = self.flow.create_invoice_request_builder(
 			offer, nonce, payment_id,
