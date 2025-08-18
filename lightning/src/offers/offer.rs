@@ -1287,7 +1287,9 @@ impl TryFrom<FullOfferTlvStream> for OfferContents {
 
 		let (issuer_signing_pubkey, paths) = match (issuer_id, paths) {
 			(None, None) => return Err(Bolt12SemanticError::MissingIssuerSigningPubkey),
-			(_, Some(paths)) if paths.is_empty() => return Err(Bolt12SemanticError::MissingPaths),
+			(None, Some(paths)) if paths.is_empty() => {
+				return Err(Bolt12SemanticError::MissingPaths)
+			},
 			(issuer_id, paths) => (issuer_id, paths),
 		};
 
@@ -2001,6 +2003,7 @@ mod tests {
 		}
 
 		let mut builder = OfferBuilder::new(pubkey(42));
+		builder.offer.issuer_signing_pubkey = None;
 		builder.offer.paths = Some(vec![]);
 
 		let offer = builder.build().unwrap();
