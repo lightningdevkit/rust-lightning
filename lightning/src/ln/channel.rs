@@ -5496,15 +5496,14 @@ where
 		}
 
 		let monitor_update = if let Some(funding_txo) = funding.get_funding_txo() {
-			// If we haven't yet exchanged funding signatures (ie channel_state < AwaitingChannelReady),
-			// returning a channel monitor update here would imply a channel monitor update before
-			// we even registered the channel monitor to begin with, which is invalid.
-			// Thus, if we aren't actually at a point where we could conceivably broadcast the
-			// funding transaction, don't return a funding txo (which prevents providing the
-			// monitor update to the user, even if we return one).
-			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
-			if !self.channel_state.is_pre_funded_state() {
+			// We should only generate a closing `ChannelMonitorUpdate` if we already have a
+			// `ChannelMonitor` for the disk (i.e. `counterparty_next_commitment_transaction_number`
+			// has been decremented once, which hapens when we generate the initial
+			// `ChannelMonitor`).  Otherwise, that would imply a channel monitor update before we
+			// even registered the channel monitor to begin with, which is invalid.
+			if self.counterparty_next_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 				self.latest_monitor_update_id = self.get_latest_unblocked_monitor_update_id() + 1;
+
 				let update = ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
