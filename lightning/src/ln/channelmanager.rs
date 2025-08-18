@@ -750,6 +750,10 @@ mod fuzzy_channelmanager {
 			/// we can provide proof-of-payment details in payment claim events even after a restart
 			/// with a stale ChannelManager state.
 			bolt12_invoice: Option<PaidBolt12Invoice>,
+			/// Whether we want our next-hop channel peer to hold onto this HTLC until they receive an
+			/// onion message from the often-offline recipient indicating that the recipient is online and
+			/// ready to receive the HTLC.
+			hold_htlc: Option<()>,
 		},
 	}
 
@@ -793,6 +797,7 @@ impl core::hash::Hash for HTLCSource {
 				payment_id,
 				first_hop_htlc_msat,
 				bolt12_invoice,
+				hold_htlc,
 			} => {
 				1u8.hash(hasher);
 				path.hash(hasher);
@@ -800,6 +805,7 @@ impl core::hash::Hash for HTLCSource {
 				payment_id.hash(hasher);
 				first_hop_htlc_msat.hash(hasher);
 				bolt12_invoice.hash(hasher);
+				hold_htlc.hash(hasher);
 			},
 		}
 	}
@@ -813,6 +819,7 @@ impl HTLCSource {
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
 			bolt12_invoice: None,
+			hold_htlc: None,
 		}
 	}
 
@@ -5032,6 +5039,7 @@ where
 							first_hop_htlc_msat: htlc_msat,
 							payment_id,
 							bolt12_invoice: bolt12_invoice.cloned(),
+							hold_htlc: None,
 						};
 						let send_res = chan.send_htlc_and_commit(
 							htlc_msat,
@@ -15180,6 +15188,7 @@ impl Readable for HTLCSource {
 				let mut payment_params: Option<PaymentParameters> = None;
 				let mut blinded_tail: Option<BlindedTail> = None;
 				let mut bolt12_invoice: Option<PaidBolt12Invoice> = None;
+				let mut hold_htlc: Option<()> = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),
@@ -15188,6 +15197,7 @@ impl Readable for HTLCSource {
 					(5, payment_params, (option: ReadableArgs, 0)),
 					(6, blinded_tail, option),
 					(7, bolt12_invoice, option),
+					(9, hold_htlc, option),
 				});
 				if payment_id.is_none() {
 					// For backwards compat, if there was no payment_id written, use the session_priv bytes
@@ -15211,6 +15221,7 @@ impl Readable for HTLCSource {
 					path,
 					payment_id: payment_id.unwrap(),
 					bolt12_invoice,
+					hold_htlc,
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
@@ -15228,6 +15239,7 @@ impl Writeable for HTLCSource {
 				ref path,
 				payment_id,
 				bolt12_invoice,
+				hold_htlc,
 			} => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
@@ -15240,6 +15252,7 @@ impl Writeable for HTLCSource {
 				   (5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
 				   (6, path.blinded_tail, option),
 				   (7, bolt12_invoice, option),
+					 (9, hold_htlc, option),
 				});
 			},
 			HTLCSource::PreviousHopData(ref field) => {
