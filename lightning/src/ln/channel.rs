@@ -8958,12 +8958,24 @@ where
 		}
 	}
 
-	#[rustfmt::skip]
-	fn get_last_revoke_and_ack<L: Deref>(&mut self, logger: &L) -> Option<msgs::RevokeAndACK> where L::Target: Logger {
-		debug_assert!(self.holder_commitment_point.next_transaction_number() <= INITIAL_COMMITMENT_NUMBER - 2);
-		self.holder_commitment_point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
-		let per_commitment_secret = self.context.holder_signer.as_ref()
-			.release_commitment_secret(self.holder_commitment_point.next_transaction_number() + 2).ok();
+	fn get_last_revoke_and_ack<L: Deref>(&mut self, logger: &L) -> Option<msgs::RevokeAndACK>
+	where
+		L::Target: Logger,
+	{
+		debug_assert!(
+			self.holder_commitment_point.next_transaction_number() <= INITIAL_COMMITMENT_NUMBER - 2
+		);
+		self.holder_commitment_point.try_resolve_pending(
+			&self.context.holder_signer,
+			&self.context.secp_ctx,
+			logger,
+		);
+		let per_commitment_secret = self
+			.context
+			.holder_signer
+			.as_ref()
+			.release_commitment_secret(self.holder_commitment_point.next_transaction_number() + 2)
+			.ok();
 		if let Some(per_commitment_secret) = per_commitment_secret {
 			if self.holder_commitment_point.can_advance() {
 				self.context.signer_pending_revoke_and_ack = false;
@@ -8973,7 +8985,7 @@ where
 					next_per_commitment_point: self.holder_commitment_point.next_point(),
 					#[cfg(taproot)]
 					next_local_nonce: None,
-				})
+				});
 			}
 		}
 		if !self.holder_commitment_point.can_advance() {
