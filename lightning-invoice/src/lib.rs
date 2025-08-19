@@ -777,6 +777,16 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool>
 			Bolt11InvoiceDescription::Hash(hash) => self.description_hash(hash.0),
 		}
 	}
+
+	/// Set the description or description hash. This function is only available if no description (hash) was set.
+	pub fn invoice_description_ref(
+		self, description_ref: Bolt11InvoiceDescriptionRef<'_>,
+	) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
+		match description_ref {
+			Bolt11InvoiceDescriptionRef::Direct(desc) => self.description(desc.clone().0 .0),
+			Bolt11InvoiceDescriptionRef::Hash(hash) => self.description_hash(hash.0),
+		}
+	}
 }
 
 impl<D: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool>
