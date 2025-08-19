@@ -14726,18 +14726,48 @@ where
 	}
 
 	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, context: AsyncPaymentsContext) {
-		let payment_id = match context {
-			AsyncPaymentsContext::OutboundPayment { payment_id } => payment_id,
+		match context {
+			AsyncPaymentsContext::OutboundPayment { payment_id } => {
+				if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
+					log_trace!(
+						self.logger,
+						"Failed to release held HTLC with payment id {}: {:?}",
+						payment_id,
+						e
+					);
+				}
+			},
+			AsyncPaymentsContext::ReleaseHeldHtlc { intercept_id } => {
+				let mut htlc = {
+					let mut pending_intercept_htlcs =
+						self.pending_intercepted_htlcs.lock().unwrap();
+					match pending_intercept_htlcs.remove(&intercept_id) {
+						Some(htlc) => htlc,
+						None => return,
+					}
+				};
+				match htlc.forward_info.routing {
+					PendingHTLCRouting::Forward { ref mut hold_htlc, .. } => {
+						debug_assert!(hold_htlc.is_some());
+						*hold_htlc = None;
+					},
+					_ => {
+						debug_assert!(false, "HTLC intercepts can only be forwards");
+						return;
+					},
+				}
+				let mut per_source_pending_forward = [(
+					htlc.prev_short_channel_id,
+					htlc.prev_counterparty_node_id,
+					htlc.prev_funding_outpoint,
+					htlc.prev_channel_id,
+					htlc.prev_user_channel_id,
+					vec![(htlc.forward_info, htlc.prev_htlc_id)],
+				)];
+				self.forward_htlcs(&mut per_source_pending_forward);
+				PersistenceNotifierGuard::notify_on_drop(self);
+			},
 			_ => return,
-		};
-
-		if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
-			log_trace!(
-				self.logger,
-				"Failed to release held HTLC with payment id {}: {:?}",
-				payment_id,
-				e
-			);
 		}
 	}
 
