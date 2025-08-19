@@ -11067,7 +11067,25 @@ where
 			.or_else(|| {
 				self.is_our_channel_ready().then(|| self.funding.get_funding_txid()).flatten()
 			})
-			.map(|txid| msgs::FundingLocked { txid, retransmit_flags: 0 })
+			.map(|txid| {
+				let mut funding_locked = msgs::FundingLocked { txid, retransmit_flags: 0 };
+
+				// - if `my_current_funding_locked` is included:
+				//   - if `announce_channel` is set for this channel:
+				//     - if it has not received `announcement_signatures` for that transaction:
+				//       - MUST set the `announcement_signatures` bit to `1` in `retransmit_flags`.
+				//     - otherwise:
+				//       - MUST set the `announcement_signatures` bit to `0` in `retransmit_flags`.
+				if self.context.config.announce_for_forwarding {
+					if self.funding.get_funding_txid() != Some(txid)
+						|| self.context.announcement_sigs.is_none()
+					{
+						funding_locked.retransmit(msgs::FundingLockedFlags::AnnouncementSignatures);
+					}
+				}
+
+				funding_locked
+			})
 	}
 
 	#[cfg(not(splicing))]
