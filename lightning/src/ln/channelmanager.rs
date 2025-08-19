@@ -5775,7 +5775,16 @@ where
 		self.batch_funding_transaction_generated_intern(temporary_chans, funding_type)
 	}
 
-	/// Same as batch_funding_transaction_generated but it does not automatically broadcast the funding transaction
+	/// Call this upon creation of a funding transaction for the given channel.
+	///
+	/// This method executes the same checks as [`ChannelManager::funding_transaction_generated`],
+	/// but it does not automatically broadcast the funding transaction.
+	///
+	/// Call this in response to a [`Event::FundingGenerationReady`] event, only in a context where you want to manually
+	/// control the broadcast of the funding transaction.
+	///
+	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
 	pub fn funding_transaction_generated_manual_broadcast(
 		&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey,
 		funding_transaction: Transaction,
