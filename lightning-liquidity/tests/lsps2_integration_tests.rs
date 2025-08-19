@@ -1316,7 +1316,7 @@ fn create_channel_with_manual_broadcast(
 					assert_eq!(funding_txo.vout, funding_outpoint.index as u32);
 
 					service_handler
-						.funding_tx_broadcast_safe(*user_channel_id, counterparty_node_id)
+						.set_funding_tx_broadcast_safe(*user_channel_id, counterparty_node_id)
 						.unwrap();
 				},
 				_ => panic!("Unexpected event"),

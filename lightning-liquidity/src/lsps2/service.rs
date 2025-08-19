@@ -1608,9 +1608,10 @@ where
 		Ok(())
 	}
 
-	/// Called when the funding transaction is safe to broadcast.
-	/// This marks the funding_tx_broadcast_safe flag as true for the given user_channel_id.
-	pub fn funding_tx_broadcast_safe(
+	/// This should be called when the event [`Event::FundingTxBroadcastSafe`] is received.
+	///
+	/// [`Event::FundingTxBroadcastSafe`]: lightning::events::Event::FundingTxBroadcastSafe
+	pub fn set_funding_tx_broadcast_safe(
 		&self, user_channel_id: u128, counterparty_node_id: &PublicKey,
 	) -> Result<(), APIError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
