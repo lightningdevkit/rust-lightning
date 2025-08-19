@@ -114,7 +114,7 @@ enum TrustModel {
 	ClientTrustsLsp {
 		funding_tx_broadcast_safe: bool,
 		payment_claimed: bool,
-		funding_tx: Option<Arc<Transaction>>,
+		funding_tx: Option<Transaction>,
 	},
 	LspTrustsClient,
 }
@@ -144,7 +144,7 @@ impl TrustModel {
 		}
 	}
 
-	fn set_funding_tx(&mut self, funding_tx: Arc<Transaction>) {
+	fn set_funding_tx(&mut self, funding_tx: Transaction) {
 		match self {
 			TrustModel::ClientTrustsLsp { funding_tx: tx, .. } => {
 				*tx = Some(funding_tx);
@@ -177,9 +177,9 @@ impl TrustModel {
 		}
 	}
 
-	fn get_funding_tx(&self) -> Option<Arc<Transaction>> {
+	fn get_funding_tx(&self) -> Option<Transaction> {
 		match self {
-			TrustModel::ClientTrustsLsp { funding_tx: Some(tx), .. } => Some(Arc::clone(&tx)),
+			TrustModel::ClientTrustsLsp { funding_tx, .. } => funding_tx.clone(),
 			_ => None,
 		}
 	}
@@ -518,7 +518,7 @@ impl OutboundJITChannel {
 		self.is_pending_initial_payment() && is_expired
 	}
 
-	fn set_funding_tx(&mut self, funding_tx: Arc<Transaction>) {
+	fn set_funding_tx(&mut self, funding_tx: Transaction) {
 		self.trust_model.set_funding_tx(funding_tx);
 	}
 
@@ -530,7 +530,7 @@ impl OutboundJITChannel {
 		self.trust_model.should_manually_broadcast()
 	}
 
-	fn get_funding_tx(&self) -> Option<Arc<Transaction>> {
+	fn get_funding_tx(&self) -> Option<Transaction> {
 		self.trust_model.get_funding_tx()
 	}
 
@@ -1575,8 +1575,7 @@ where
 	/// Called to store the funding transaction for a JIT channel.
 	/// This should be called when the funding transaction is created but before it's broadcast.
 	pub fn store_funding_transaction(
-		&self, user_channel_id: u128, counterparty_node_id: &PublicKey,
-		funding_tx: Arc<Transaction>,
+		&self, user_channel_id: u128, counterparty_node_id: &PublicKey, funding_tx: Transaction,
 	) -> Result<(), APIError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		let inner_state_lock =
@@ -1656,7 +1655,7 @@ where
 				let event = LSPS2ServiceEvent::BroadcastFundingTransaction {
 					counterparty_node_id: *counterparty_node_id,
 					user_channel_id: jit_channel.user_channel_id,
-					funding_tx: funding_tx.as_ref().clone(),
+					funding_tx,
 				};
 				event_queue_notifier.enqueue(event);
 			}

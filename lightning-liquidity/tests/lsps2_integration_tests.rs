@@ -1283,7 +1283,7 @@ fn create_channel_with_manual_broadcast(
 	);
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
 	service_handler
-		.store_funding_transaction(user_channel_id, &client_node_id, Arc::new(tx.clone()))
+		.store_funding_transaction(user_channel_id, &client_node_id, tx.clone())
 		.unwrap();
 	service_node
 		.node
