@@ -1222,7 +1222,7 @@ fn client_trusts_lsp_end_to_end_test() {
 			assert_eq!(counterparty_node_id, client_node_id);
 			assert_eq!(uid, user_channel_id);
 
-			service_node.inner.node.broadcast_transaction(&funding_tx);
+			service_handler.broadcast_transaction(&funding_tx);
 
 			let broadcasted = service_node.inner.tx_broadcaster.txn_broadcasted.lock().unwrap();
 			assert!(broadcasted.iter().any(|b| b.compute_txid() == funding_tx.compute_txid()));

@@ -6,7 +6,7 @@ use lightning_liquidity::{LiquidityClientConfig, LiquidityManager, LiquidityServ
 use lightning::chain::{BestBlock, Filter};
 use lightning::ln::channelmanager::ChainParameters;
 use lightning::ln::functional_test_utils::{Node, TestChannelManager};
-use lightning::util::test_utils::TestKeysInterface;
+use lightning::util::test_utils::{TestBroadcaster, TestKeysInterface};
 
 use bitcoin::Network;
 
@@ -40,6 +40,7 @@ fn build_service_and_client<'a, 'b, 'c>(
 		nodes[0].keys_manager,
 		nodes[0].keys_manager,
 		nodes[0].node,
+		nodes[0].tx_broadcaster,
 		None::<Arc<dyn Filter + Send + Sync>>,
 		Some(chain_params.clone()),
 		Some(service_config),
@@ -51,6 +52,7 @@ fn build_service_and_client<'a, 'b, 'c>(
 		nodes[1].keys_manager,
 		nodes[1].keys_manager,
 		nodes[1].node,
+		nodes[1].tx_broadcaster,
 		None::<Arc<dyn Filter + Send + Sync>>,
 		Some(chain_params),
 		None,
@@ -95,6 +97,7 @@ pub(crate) struct LiquidityNode<'a, 'b, 'c> {
 		&'a TestChannelManager<'b, 'c>,
 		Arc<dyn Filter + Send + Sync>,
 		Arc<dyn TimeProvider + Send + Sync>,
+		&'c TestBroadcaster,
 	>,
 }
 
@@ -107,6 +110,7 @@ impl<'a, 'b, 'c> LiquidityNode<'a, 'b, 'c> {
 			&'a TestChannelManager<'b, 'c>,
 			Arc<dyn Filter + Send + Sync>,
 			Arc<dyn TimeProvider + Send + Sync>,
+			&'c TestBroadcaster,
 		>,
 	) -> Self {
 		Self { inner: node, liquidity_manager }

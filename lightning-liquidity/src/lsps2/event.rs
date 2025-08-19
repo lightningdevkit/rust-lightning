@@ -165,12 +165,12 @@ pub enum LSPS2ServiceEvent {
 	/// This event is emitted once both [`Event::FundingTxBroadcastSafe`] and the
 	/// corresponding payment has been successfully claimed.
 	///
-	/// Call [`ChannelManager::broadcast_transaction`] with the funding
+	/// Call [`LSPS2ServiceHandler::broadcast_transaction`] with the funding
 	/// transaction to publish it on-chain.
 	///
 	/// [`Event::FundingTxBroadcastSafe`]: lightning::events::Event::FundingTxBroadcastSafe
 	/// [`Event::PaymentClaimed`]: lightning::events::Event::PaymentClaimed
-	/// [`ChannelManager::broadcast_transaction`]: lightning::ln::channelmanager::ChannelManager::broadcast_transaction
+	/// [`LSPS2ServiceHandler::broadcast_transaction`]: crate::lsps2::service::LSPS2ServiceHandler::broadcast_transaction
 	BroadcastFundingTransaction {
 		/// The node id of the counterparty.
 		counterparty_node_id: PublicKey,

@@ -11568,15 +11568,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	/// Manually broadcast a transaction using the internal transaction broadcaster.
-	///
-	/// This method should only be used in specific scenarios where manual control
-	/// over transaction broadcast timing is required (e.g., LSPS2 workflows).
-	pub fn broadcast_transaction(&self, tx: &Transaction) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		self.tx_broadcaster.broadcast_transactions(&[tx]);
-	}
-
 	/// Check whether any channels have finished removing all pending updates after a shutdown
 	/// exchange and can now send a closing_signed.
 	/// Returns whether any closing_signed messages were generated.

@@ -32,6 +32,7 @@ use crate::prelude::hash_map::Entry;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
 
+use lightning::chain::chaininterface::BroadcasterInterface;
 use lightning::events::HTLCHandlingFailureType;
 use lightning::ln::channelmanager::{AChannelManager, FailureCode, InterceptId};
 use lightning::ln::msgs::{ErrorAction, LightningError};
@@ -635,11 +636,13 @@ macro_rules! get_or_insert_peer_state_entry {
 }
 
 /// The main object allowing to send and receive bLIP-52 / LSPS2 messages.
-pub struct LSPS2ServiceHandler<CM: Deref>
+pub struct LSPS2ServiceHandler<CM: Deref, T: Deref>
 where
 	CM::Target: AChannelManager,
+	T::Target: BroadcasterInterface,
 {
 	channel_manager: CM,
+	tx_broadcaster: T,
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
@@ -649,14 +652,15 @@ where
 	config: LSPS2ServiceConfig,
 }
 
-impl<CM: Deref> LSPS2ServiceHandler<CM>
+impl<CM: Deref, T: Deref> LSPS2ServiceHandler<CM, T>
 where
 	CM::Target: AChannelManager,
+	T::Target: BroadcasterInterface,
 {
 	/// Constructs a `LSPS2ServiceHandler`.
 	pub(crate) fn new(
 		pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>, channel_manager: CM,
-		config: LSPS2ServiceConfig,
+		tx_broadcaster: T, config: LSPS2ServiceConfig,
 	) -> Self {
 		Self {
 			pending_messages,
@@ -666,6 +670,7 @@ where
 			peer_by_channel_id: RwLock::new(new_hash_map()),
 			total_pending_requests: AtomicUsize::new(0),
 			channel_manager,
+			tx_broadcaster,
 			config,
 		}
 	}
@@ -1657,11 +1662,20 @@ where
 			}
 		}
 	}
+
+	/// Manually broadcast a transaction.
+	///
+	/// This method should only be used when manual control over transaction
+	/// broadcast timing is required (e.g. client_trusts_lsp=true)
+	pub fn broadcast_transaction(&self, tx: &Transaction) {
+		self.tx_broadcaster.broadcast_transactions(&[tx]);
+	}
 }
 
-impl<CM: Deref> LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM>
+impl<CM: Deref, T: Deref> LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM, T>
 where
 	CM::Target: AChannelManager,
+	T::Target: BroadcasterInterface,
 {
 	type ProtocolMessage = LSPS2Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(2);
