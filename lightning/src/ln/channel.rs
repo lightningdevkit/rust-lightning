@@ -9173,6 +9173,20 @@ where
 
 		let shutdown_msg = self.get_outbound_shutdown();
 
+		// A receiving node:
+		//   - if `my_current_funding_locked` is included with the `announcement_signatures` bit
+		//     set in the `retransmit_flags`:
+		//     - if `announce_channel` is set for this channel and the receiving node is ready
+		//       to send `announcement_signatures` for the corresponding splice transaction:
+		//       - MUST retransmit `announcement_signatures`.
+		if let Some(funding_locked) = &msg.my_current_funding_locked {
+			if funding_locked.should_retransmit(msgs::FundingLockedFlags::AnnouncementSignatures) {
+				if self.funding.get_funding_txid() == Some(funding_locked.txid) {
+					self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
+				}
+			}
+		}
+
 		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger);
 
 		let mut commitment_update = None;
