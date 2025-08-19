@@ -8,8 +8,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-#[cfg(feature = "tokio")]
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -43,13 +41,23 @@ fn path_to_windows_str<T: AsRef<OsStr>>(path: &T) -> Vec<u16> {
 // a consistent view and error out.
 const LIST_DIR_CONSISTENCY_RETRIES: usize = 10;
 
+#[derive(Default)]
+struct AsyncState {
+	// Version counter to ensure that writes are applied in the correct order. It is assumed that read, list and remove
+	// operations aren't sensitive to the order of execution.
+	latest_version: u64,
+
+	// The last version that was written to disk.
+	last_written_version: u64,
+}
+
 struct FilesystemStoreInner {
 	data_dir: PathBuf,
 	tmp_file_counter: AtomicUsize,
 
 	// Per path lock that ensures that we don't have concurrent writes to the same file. The lock also encapsulates the
 	// latest written version per key.
-	locks: Mutex<HashMap<PathBuf, Arc<RwLock<u64>>>>,
+	locks: Mutex<HashMap<PathBuf, Arc<RwLock<AsyncState>>>>,
 }
 
 /// A [`KVStore`] and [`KVStoreSync`] implementation that writes to and reads from the file system.
@@ -57,11 +65,6 @@ struct FilesystemStoreInner {
 /// [`KVStore`]: lightning::util::persist::KVStore
 pub struct FilesystemStore {
 	inner: Arc<FilesystemStoreInner>,
-
-	// Version counter to ensure that writes are applied in the correct order. It is assumed that read, list and remove
-	// operations aren't sensitive to the order of execution.
-	#[cfg(feature = "tokio")]
-	version_counter: AtomicU64,
 }
 
 impl FilesystemStore {
@@ -69,16 +72,18 @@ impl FilesystemStore {
 	pub fn new(data_dir: PathBuf) -> Self {
 		let locks = Mutex::new(HashMap::new());
 		let tmp_file_counter = AtomicUsize::new(0);
-		Self {
-			inner: Arc::new(FilesystemStoreInner { data_dir, tmp_file_counter, locks }),
-			#[cfg(feature = "tokio")]
-			version_counter: AtomicU64::new(0),
-		}
+		Self { inner: Arc::new(FilesystemStoreInner { data_dir, tmp_file_counter, locks }) }
 	}
 
 	/// Returns the data directory.
 	pub fn get_data_dir(&self) -> PathBuf {
 		self.inner.data_dir.clone()
+	}
+
+	#[cfg(all(feature = "tokio", test))]
+	pub(crate) fn state_size(&self) -> usize {
+		let outer_lock = self.inner.locks.lock().unwrap();
+		outer_lock.len()
 	}
 }
 
@@ -104,7 +109,8 @@ impl KVStoreSync for FilesystemStore {
 			Some(key),
 			"write",
 		)?;
-		self.inner.write_version(path, buf, None)
+		let inner_lock_ref = self.inner.get_inner_lock_ref(path.clone());
+		self.inner.write_version(inner_lock_ref, path, buf, None)
 	}
 
 	fn remove(
@@ -116,7 +122,8 @@ impl KVStoreSync for FilesystemStore {
 			Some(key),
 			"remove",
 		)?;
-		self.inner.remove_version(path, lazy, None)
+		let inner_lock_ref = self.inner.get_inner_lock_ref(path.clone());
+		self.inner.remove_version(inner_lock_ref, path, lazy, None)
 	}
 
 	fn list(
@@ -133,6 +140,11 @@ impl KVStoreSync for FilesystemStore {
 }
 
 impl FilesystemStoreInner {
+	fn get_inner_lock_ref(&self, path: PathBuf) -> Arc<RwLock<AsyncState>> {
+		let mut outer_lock = self.locks.lock().unwrap();
+		Arc::clone(&outer_lock.entry(path).or_default())
+	}
+
 	fn get_dest_dir_path(
 		&self, primary_namespace: &str, secondary_namespace: &str,
 	) -> std::io::Result<PathBuf> {
@@ -171,13 +183,31 @@ impl FilesystemStoreInner {
 		Ok(dest_file_path)
 	}
 
+	#[cfg(feature = "tokio")]
+	fn get_new_version_and_state(&self, dest_file_path: PathBuf) -> (u64, Arc<RwLock<AsyncState>>) {
+		let inner_lock_ref: Arc<RwLock<AsyncState>> = self.get_inner_lock_ref(dest_file_path);
+
+		let new_version = {
+			let mut async_state = inner_lock_ref.write().unwrap();
+			Self::get_new_version(&mut async_state)
+		};
+
+		return (new_version, inner_lock_ref);
+	}
+
+	fn get_new_version(async_state: &mut AsyncState) -> u64 {
+		async_state.latest_version += 1;
+		if async_state.latest_version == 0 {
+			panic!("FilesystemStore version counter overflowed");
+		}
+
+		async_state.latest_version
+	}
+
 	fn read(&self, dest_file_path: PathBuf) -> lightning::io::Result<Vec<u8>> {
 		let mut buf = Vec::new();
 		{
-			let inner_lock_ref = {
-				let mut outer_lock = self.locks.lock().unwrap();
-				Arc::clone(&outer_lock.entry(dest_file_path.clone()).or_default())
-			};
+			let inner_lock_ref = self.get_inner_lock_ref(dest_file_path.clone());
 			let _guard = inner_lock_ref.read().unwrap();
 
 			let mut f = fs::File::open(dest_file_path)?;
@@ -187,10 +217,44 @@ impl FilesystemStoreInner {
 		Ok(buf)
 	}
 
+	fn execute_locked<F: FnOnce() -> Result<(), lightning::io::Error>>(
+		&self, inner_lock_ref: Arc<RwLock<AsyncState>>, dest_file_path: PathBuf,
+		version: Option<u64>, callback: F,
+	) -> Result<(), lightning::io::Error> {
+		let mut async_state = inner_lock_ref.write().unwrap();
+
+		// Sync calls haven't assigned a version yet because it would require another lock acquisition.
+		let version = version.unwrap_or_else(|| Self::get_new_version(&mut async_state));
+
+		// Check if we already have a newer version written/removed. This is used in async contexts to realize eventual
+		// consistency.
+		let stale = version <= async_state.last_written_version;
+
+		// If the version is not stale, we execute the callback. Otherwise we can and must skip writing.
+		let res = if stale {
+			Ok(())
+		} else {
+			callback().map(|_| {
+				async_state.last_written_version = version;
+			})
+		};
+
+		let more_writes_pending = async_state.last_written_version < async_state.latest_version;
+
+		// If there are no more writes pending and no arcs in use elsewhere, we can remove the map entry to prevent
+		// leaking memory. The two arcs are the one in the map and the one held here in inner_lock_ref.
+		if !more_writes_pending && Arc::strong_count(&inner_lock_ref) == 2 {
+			self.locks.lock().unwrap().remove(&dest_file_path);
+		}
+
+		res
+	}
+
 	/// Writes a specific version of a key to the filesystem. If a newer version has been written already, this function
 	/// returns early without writing.
 	fn write_version(
-		&self, dest_file_path: PathBuf, buf: Vec<u8>, version: Option<u64>,
+		&self, inner_lock_ref: Arc<RwLock<AsyncState>>, dest_file_path: PathBuf, buf: Vec<u8>,
+		version: Option<u64>,
 	) -> lightning::io::Result<()> {
 		let parent_directory = dest_file_path.parent().ok_or_else(|| {
 			let msg =
@@ -214,24 +278,7 @@ impl FilesystemStoreInner {
 			tmp_file.sync_all()?;
 		}
 
-		let res = {
-			let inner_lock_ref = {
-				let mut outer_lock = self.locks.lock().unwrap();
-				Arc::clone(&outer_lock.entry(dest_file_path.clone()).or_default())
-			};
-			let mut last_written_version = inner_lock_ref.write().unwrap();
-
-			// If a version is provided, we check if we already have a newer version written/removed. This is used in
-			// async contexts to realize eventual consistency.
-			if let Some(version) = version {
-				if version <= *last_written_version {
-					// If the version is not greater, we don't touch the file.
-					return Ok(());
-				}
-
-				*last_written_version = version;
-			}
-
+		self.execute_locked(inner_lock_ref, dest_file_path.clone(), version, || {
 			#[cfg(not(target_os = "windows"))]
 			{
 				fs::rename(&tmp_file_path, &dest_file_path)?;
@@ -275,34 +322,16 @@ impl FilesystemStoreInner {
 					Err(e) => Err(e.into()),
 				}
 			}
-		};
-
-		res
+		})
 	}
 
 	fn remove_version(
-		&self, dest_file_path: PathBuf, lazy: bool, version: Option<u64>,
+		&self, inner_lock_ref: Arc<RwLock<AsyncState>>, dest_file_path: PathBuf, lazy: bool,
+		version: Option<u64>,
 	) -> lightning::io::Result<()> {
-		if !dest_file_path.is_file() {
-			return Ok(());
-		}
-
-		{
-			let inner_lock_ref = {
-				let mut outer_lock = self.locks.lock().unwrap();
-				Arc::clone(&outer_lock.entry(dest_file_path.clone()).or_default())
-			};
-			let mut last_written_version = inner_lock_ref.write().unwrap();
-
-			// If a version is provided, we check if we already have a newer version written/removed. This is used in
-			// async contexts to realize eventual consistency.
-			if let Some(version) = version {
-				if version <= *last_written_version {
-					// If the version is not greater, we don't touch the file.
-					return Ok(());
-				}
-
-				*last_written_version = version;
+		self.execute_locked(inner_lock_ref, dest_file_path.clone(), version, || {
+			if !dest_file_path.is_file() {
+				return Ok(());
 			}
 
 			if lazy {
@@ -352,11 +381,11 @@ impl FilesystemStoreInner {
 
 					call!(unsafe {
 						windows_sys::Win32::Storage::FileSystem::MoveFileExW(
-							path_to_windows_str(&dest_file_path).as_ptr(),
-							path_to_windows_str(&trash_file_path).as_ptr(),
-							windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
+						path_to_windows_str(&dest_file_path).as_ptr(),
+						path_to_windows_str(&trash_file_path).as_ptr(),
+						windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
 							| windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
-							)
+					)
 					})?;
 
 					{
@@ -374,9 +403,9 @@ impl FilesystemStoreInner {
 					fs::remove_file(trash_file_path).ok();
 				}
 			}
-		}
 
-		Ok(())
+			Ok(())
+		})
 	}
 
 	fn list(&self, prefixed_dest: PathBuf) -> lightning::io::Result<Vec<String>> {
@@ -462,17 +491,13 @@ impl KVStore for FilesystemStore {
 		};
 
 		// Obtain a version number to retain the call sequence.
-		let version = self.version_counter.fetch_add(1, Ordering::Relaxed);
-		if version == u64::MAX {
-			panic!("FilesystemStore version counter overflowed");
-		}
-
+		let (version, inner_lock_ref) = self.inner.get_new_version_and_state(path.clone());
 		Box::pin(async move {
-			tokio::task::spawn_blocking(move || this.write_version(path, buf, Some(version)))
-				.await
-				.unwrap_or_else(|e| {
-					Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
-				})
+			tokio::task::spawn_blocking(move || {
+				this.write_version(inner_lock_ref, path, buf, Some(version))
+			})
+			.await
+			.unwrap_or_else(|e| Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e)))
 		})
 	}
 
@@ -491,17 +516,13 @@ impl KVStore for FilesystemStore {
 		};
 
 		// Obtain a version number to retain the call sequence.
-		let version = self.version_counter.fetch_add(1, Ordering::Relaxed);
-		if version == u64::MAX {
-			panic!("FilesystemStore version counter overflowed");
-		}
-
+		let (version, inner_lock_ref) = self.inner.get_new_version_and_state(path.clone());
 		Box::pin(async move {
-			tokio::task::spawn_blocking(move || this.remove_version(path, lazy, Some(version)))
-				.await
-				.unwrap_or_else(|e| {
-					Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
-				})
+			tokio::task::spawn_blocking(move || {
+				this.remove_version(inner_lock_ref, path, lazy, Some(version))
+			})
+			.await
+			.unwrap_or_else(|e| Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e)))
 		})
 	}
 
@@ -729,7 +750,10 @@ mod tests {
 
 		let mut temp_path = std::env::temp_dir();
 		temp_path.push("test_read_write_remove_list_persist_async");
-		let fs_store: Arc<dyn KVStore> = Arc::new(FilesystemStore::new(temp_path));
+		let fs_store = Arc::new(FilesystemStore::new(temp_path));
+		assert_eq!(fs_store.state_size(), 0);
+
+		let async_fs_store: Arc<dyn KVStore> = fs_store.clone();
 
 		let data1 = vec![42u8; 32];
 		let data2 = vec![43u8; 32];
@@ -740,27 +764,40 @@ mod tests {
 
 		// Test writing the same key twice with different data. Execute the asynchronous part out of order to ensure
 		// that eventual consistency works.
-		let fut1 = fs_store.write(primary_namespace, secondary_namespace, key, data1);
-		let fut2 = fs_store.remove(primary_namespace, secondary_namespace, key, false);
-		let fut3 = fs_store.write(primary_namespace, secondary_namespace, key, data2.clone());
+		let fut1 = async_fs_store.write(primary_namespace, secondary_namespace, key, data1);
+		assert_eq!(fs_store.state_size(), 1);
+
+		let fut2 = async_fs_store.remove(primary_namespace, secondary_namespace, key, false);
+		assert_eq!(fs_store.state_size(), 1);
+
+		let fut3 = async_fs_store.write(primary_namespace, secondary_namespace, key, data2.clone());
+		assert_eq!(fs_store.state_size(), 1);
 
 		fut3.await.unwrap();
+		assert_eq!(fs_store.state_size(), 1);
+
 		fut2.await.unwrap();
+		assert_eq!(fs_store.state_size(), 1);
+
 		fut1.await.unwrap();
+		assert_eq!(fs_store.state_size(), 0);
 
 		// Test list.
-		let listed_keys = fs_store.list(primary_namespace, secondary_namespace).await.unwrap();
+		let listed_keys =
+			async_fs_store.list(primary_namespace, secondary_namespace).await.unwrap();
 		assert_eq!(listed_keys.len(), 1);
 		assert_eq!(listed_keys[0], key);
 
 		// Test read. We expect to read data2, as the write call was initiated later.
-		let read_data = fs_store.read(primary_namespace, secondary_namespace, key).await.unwrap();
+		let read_data =
+			async_fs_store.read(primary_namespace, secondary_namespace, key).await.unwrap();
 		assert_eq!(data2, &*read_data);
 
 		// Test remove.
-		fs_store.remove(primary_namespace, secondary_namespace, key, false).await.unwrap();
+		async_fs_store.remove(primary_namespace, secondary_namespace, key, false).await.unwrap();
 
-		let listed_keys = fs_store.list(primary_namespace, secondary_namespace).await.unwrap();
+		let listed_keys =
+			async_fs_store.list(primary_namespace, secondary_namespace).await.unwrap();
 		assert_eq!(listed_keys.len(), 0);
 	}
 
