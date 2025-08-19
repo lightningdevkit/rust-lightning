@@ -936,6 +936,7 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 		next_per_commitment_point: next_local_point,
 		#[cfg(taproot)]
 		next_local_nonce: None,
+		release_htlc_message_paths: Vec::new(),
 	};
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa_msg);
 	expect_and_process_pending_htlcs(&nodes[1], false);
@@ -2381,6 +2382,7 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 			next_per_commitment_point: next_local_point,
 			#[cfg(taproot)]
 			next_local_nonce: None,
+			release_htlc_message_paths: Vec::new(),
 		};
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &raa_msg);
 

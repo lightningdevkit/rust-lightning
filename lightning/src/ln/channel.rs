@@ -8980,6 +8980,7 @@ where
 					next_per_commitment_point: self.holder_commitment_point.next_point(),
 					#[cfg(taproot)]
 					next_local_nonce: None,
+					release_htlc_message_paths: Vec::new(),
 				});
 			}
 		}

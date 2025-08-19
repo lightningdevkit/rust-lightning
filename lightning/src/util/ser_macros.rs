@@ -700,7 +700,7 @@ macro_rules! impl_writeable_msg {
 		impl $crate::util::ser::Writeable for $st {
 			fn write<W: $crate::util::ser::Writer>(&self, w: &mut W) -> Result<(), $crate::io::Error> {
 				$( self.$field.write(w)?; )*
-				$crate::encode_tlv_stream!(w, {$(($type, self.$tlvfield.as_ref(), $fieldty)),*});
+				$crate::encode_tlv_stream!(w, {$(($type, &self.$tlvfield, $fieldty)),*});
 				Ok(())
 			}
 		}
@@ -713,7 +713,7 @@ macro_rules! impl_writeable_msg {
 				$crate::decode_tlv_stream!(r, {$(($type, $tlvfield, $fieldty)),*});
 				Ok(Self {
 					$($field,)*
-					$($tlvfield),*
+					$($tlvfield: $crate::_init_tlv_based_struct_field!($tlvfield, $fieldty)),*
 				})
 			}
 		}
