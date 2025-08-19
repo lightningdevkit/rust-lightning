@@ -31,6 +31,7 @@ use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{secp256k1, Transaction, Witness};
 
+use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{
 	BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, UnauthenticatedReceiveTlvs,
 };
@@ -888,6 +889,13 @@ pub struct RevokeAndACK {
 	#[cfg(taproot)]
 	/// Musig nonce the recipient should use in their next commitment signature message
 	pub next_local_nonce: Option<musig2::types::PublicNonce>,
+	/// A list of `(htlc_id, blinded_path)`. The receiver of this message will use the blinded paths
+	/// as reply paths to [`HeldHtlcAvailable`] onion messages that they send to the often-offline
+	/// receiver of this HTLC. The `htlc_id` is used by the receiver of this message to identify which
+	/// held HTLC a given blinded path corresponds to.
+	///
+	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+	pub release_htlc_message_paths: Vec<(u64, BlindedMessagePath)>,
 }
 
 /// An [`update_fee`] message to be sent to or received from a peer
@@ -3260,7 +3268,9 @@ impl_writeable_msg!(RevokeAndACK, {
 	channel_id,
 	per_commitment_secret,
 	next_per_commitment_point
-}, {});
+}, {
+	(75537, release_htlc_message_paths, optional_vec)
+});
 
 #[cfg(taproot)]
 impl_writeable_msg!(RevokeAndACK, {
@@ -3268,7 +3278,8 @@ impl_writeable_msg!(RevokeAndACK, {
 	per_commitment_secret,
 	next_per_commitment_point
 }, {
-	(4, next_local_nonce, option)
+	(4, next_local_nonce, option),
+	(75537, release_htlc_message_paths, optional_vec)
 });
 
 impl_writeable_msg!(Shutdown, {
@@ -5976,6 +5987,7 @@ mod tests {
 			next_per_commitment_point: pubkey_1,
 			#[cfg(taproot)]
 			next_local_nonce: None,
+			release_htlc_message_paths: Vec::new(),
 		};
 		let encoded_value = raa.encode();
 		let target_value = <Vec<u8>>::from_hex("02020202020202020202020202020202020202020202020202020202020202020101010101010101010101010101010101010101010101010101010101010101031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
