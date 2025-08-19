@@ -4080,7 +4080,7 @@ where
 	/// funding negotiation stages (and any assocated batch channels are similarly past initial
 	/// funding negotiation).
 	///
-	/// This is equivalent to saying the  channel can be persisted to disk.
+	/// This is equivalent to saying the channel can be persisted to disk.
 	pub fn can_resume_on_restart(&self) -> bool {
 		self.channel_state.can_resume_on_reconnect() &&
 			match self.channel_state {
