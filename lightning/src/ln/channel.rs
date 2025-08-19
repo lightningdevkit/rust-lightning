@@ -8965,14 +8965,9 @@ where
 		debug_assert!(
 			self.holder_commitment_point.next_transaction_number() <= INITIAL_COMMITMENT_NUMBER - 2
 		);
-		self.holder_commitment_point.try_resolve_pending(
-			&self.context.holder_signer,
-			&self.context.secp_ctx,
-			logger,
-		);
-		let per_commitment_secret = self
-			.context
-			.holder_signer
+		let signer = &self.context.holder_signer;
+		self.holder_commitment_point.try_resolve_pending(signer, &self.context.secp_ctx, logger);
+		let per_commitment_secret = signer
 			.as_ref()
 			.release_commitment_secret(self.holder_commitment_point.next_transaction_number() + 2)
 			.ok();
