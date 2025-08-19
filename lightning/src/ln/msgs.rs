@@ -954,6 +954,11 @@ impl FundingLocked {
 	pub fn retransmit(&mut self, flag: RetransmitFlag) {
 		self.retransmit_flags |= 1 << flag as u8;
 	}
+
+	/// Returns whether the message corresponding to `flag` should be retransmitted.
+	pub fn should_retransmit(&self, flag: RetransmitFlag) -> bool {
+		self.retransmit_flags & (1 << flag as u8) != 0
+	}
 }
 
 /// Bit positions used in [`FundingLocked::retransmit_flags`] for requesting message retransmission.
