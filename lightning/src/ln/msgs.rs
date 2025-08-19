@@ -976,10 +976,22 @@ pub struct FundingLocked {
 
 	/// A bitfield indicating which messages should be retransmitted by the receiving node.
 	///
-	/// | Bit Position  | Name                      |
-	/// | ------------- | --------------------------|
-	/// | 0             | `announcement_signatures` |
+	/// See [`FundingLockedFlags`] for details.
 	pub retransmit_flags: u8,
+}
+
+impl FundingLocked {
+	/// Sets the bit in `retransmit_flags` for retransmitting the message corresponding to `flag`.
+	pub fn retransmit(&mut self, flag: FundingLockedFlags) {
+		self.retransmit_flags |= 1 << flag as u8;
+	}
+}
+
+/// Bit positions used in [`FundingLocked::retransmit_flags`] for requesting message retransmission.
+#[repr(u8)]
+pub enum FundingLockedFlags {
+	/// Retransmit `announcement_signatures`.
+	AnnouncementSignatures = 0,
 }
 
 /// An [`announcement_signatures`] message to be sent to or received from a peer.
