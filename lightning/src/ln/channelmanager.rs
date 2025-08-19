@@ -17634,36 +17634,36 @@ mod tests {
 		let node_1_events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(node_1_events.len(), 2);
 
-		// Since, node-0 does not have any memory it would not send any message.
 		let node_0_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(node_0_events.len(), 1);
 
 		match node_0_events[0] {
 			MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
 				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-				// nodes[0] would send a bogus channel reestablish, so there's no need to handle this.
+				// nodes[0] would send a stale channel reestablish, so there's no need to handle this.
 			},
 			_ => panic!("Unexpected event"),
 		}
 
-		for msg in node_1_events {
-			if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
-				nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), msg);
-				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			} else if let MessageSendEvent::SendPeerStorageRetrieval { ref node_id, ref msg } = msg
-			{
-				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-				// Should Panic here!
-				let res = std::panic::catch_unwind(|| {
-					nodes[0]
-						.node
-						.handle_peer_storage_retrieval(nodes[1].node.get_our_node_id(), msg.clone())
-				});
-				assert!(res.is_err());
-				break;
-			} else {
-				panic!("Unexpected event")
-			}
+		if let MessageSendEvent::SendPeerStorageRetrieval { node_id, msg } = &node_1_events[0] {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			// Should Panic here!
+			let res = std::panic::catch_unwind(|| {
+				nodes[0]
+					.node
+					.handle_peer_storage_retrieval(nodes[1].node.get_our_node_id(), msg.clone())
+			});
+			assert!(res.is_err());
+		} else {
+			panic!("Unexpected event {node_1_events:?}")
+		}
+
+		if let MessageSendEvent::SendChannelReestablish { .. } = &node_1_events[1] {
+			// After the `peer_storage_retreival` message would come a `channel_reestablish` (which
+			// would also cause nodes[0] to panic) but it already went down due to lost state so
+			// there's nothing to deliver.
+		} else {
+			panic!("Unexpected event {node_1_events:?}")
 		}
 		// When we panic'd, we expect to panic on `Drop`.
 		let res = std::panic::catch_unwind(|| drop(nodes));
