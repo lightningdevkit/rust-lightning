@@ -9608,7 +9608,9 @@ where
 	}
 
 	pub fn get_revoked_counterparty_commitment_transaction_number(&self) -> u64 {
-		self.context.cur_counterparty_commitment_transaction_number + 2
+		let ret = self.context.cur_counterparty_commitment_transaction_number + 2;
+		debug_assert_eq!(self.context.commitment_secrets.get_min_seen_secret(), ret);
+		ret
 	}
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
