@@ -1318,6 +1318,9 @@ fn test_peer_storage() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
 	let (_, _, cid, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
 	send_payment(&nodes[0], &[&nodes[1]], 1000);
 	let nodes_0_serialized = nodes[0].node.encode();
@@ -1339,8 +1342,8 @@ fn test_peer_storage() {
 	for ps_msg in peer_storage_msg_events_node0 {
 		match ps_msg {
 			MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
-				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-				nodes[1].node.handle_peer_storage(nodes[0].node.get_our_node_id(), msg.clone());
+				assert_eq!(*node_id, node_b_id);
+				nodes[1].node.handle_peer_storage(node_a_id, msg.clone());
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -1349,15 +1352,15 @@ fn test_peer_storage() {
 	for ps_msg in peer_storage_msg_events_node1 {
 		match ps_msg {
 			MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
-				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-				nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msg.clone());
+				assert_eq!(*node_id, node_a_id);
+				nodes[0].node.handle_peer_storage(node_b_id, msg.clone());
 			},
 			_ => panic!("Unexpected event"),
 		}
 	}
 
-	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
-	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+	nodes[0].node.peer_disconnected(node_b_id);
+	nodes[1].node.peer_disconnected(node_a_id);
 
 	// Reload Node!
 	// TODO: Handle the case where we've completely forgotten about an active channel.
@@ -1371,31 +1374,14 @@ fn test_peer_storage() {
 		nodes_0_deserialized
 	);
 
-	nodes[0]
-		.node
-		.peer_connected(
-			nodes[1].node.get_our_node_id(),
-			&msgs::Init {
-				features: nodes[1].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			true,
-		)
-		.unwrap();
+	let init_msg = msgs::Init {
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
 
-	nodes[1]
-		.node
-		.peer_connected(
-			nodes[0].node.get_our_node_id(),
-			&msgs::Init {
-				features: nodes[0].node.init_features(),
-				networks: None,
-				remote_network_address: None,
-			},
-			false,
-		)
-		.unwrap();
+	nodes[0].node.peer_connected(node_b_id, &init_msg, true).unwrap();
+	nodes[1].node.peer_connected(node_a_id, &init_msg, true).unwrap();
 
 	let node_1_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(node_1_events.len(), 2);
@@ -1405,19 +1391,17 @@ fn test_peer_storage() {
 
 	match node_0_events[0] {
 		MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
-			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+			assert_eq!(*node_id, node_b_id);
 			// nodes[0] would send a stale channel reestablish, so there's no need to handle this.
 		},
 		_ => panic!("Unexpected event"),
 	}
 
 	if let MessageSendEvent::SendPeerStorageRetrieval { node_id, msg } = &node_1_events[0] {
-		assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		assert_eq!(*node_id, node_a_id);
 		// Should Panic here!
 		let res = std::panic::catch_unwind(|| {
-			nodes[0]
-				.node
-				.handle_peer_storage_retrieval(nodes[1].node.get_our_node_id(), msg.clone())
+			nodes[0].node.handle_peer_storage_retrieval(node_b_id, msg.clone());
 		});
 		assert!(res.is_err());
 	} else {
