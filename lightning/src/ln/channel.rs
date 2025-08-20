@@ -10682,7 +10682,7 @@ where
 		// TODO(splicing): Add check that we are the quiescence acceptor
 
 		if self.holder_commitment_point.current_point().is_none() {
-			return Err(ChannelError::Warn(format!(
+			return Err(ChannelError::WarnAndDisconnect(format!(
 				"Channel {} commitment point needs to be advanced once before spliced",
 				self.context.channel_id(),
 			)));
