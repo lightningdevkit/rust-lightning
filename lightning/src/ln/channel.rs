@@ -13835,7 +13835,7 @@ where
 		}
 
 		// If we're restoring this channel for the first time after an upgrade, then we require that the
-		// signer be available so that we can immediately populate the current commitment point. Channel
+		// signer be available so that we can immediately populate the next commitment point. Channel
 		// restoration will fail if this is not possible.
 		let holder_commitment_point =
 			match (holder_commitment_point_next_opt, holder_commitment_point_pending_next_opt) {
