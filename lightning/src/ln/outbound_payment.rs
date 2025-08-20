@@ -1195,12 +1195,17 @@ impl OutboundPayments {
 		};
 	}
 
-	#[rustfmt::skip]
 	pub(super) fn send_payment_for_static_invoice<
-		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref
+		R: Deref,
+		ES: Deref,
+		NS: Deref,
+		NL: Deref,
+		IH,
+		SP,
+		L: Deref,
 	>(
-		&self, payment_id: PaymentId, router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH,
-		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+		&self, payment_id: PaymentId, router: &R, first_hops: Vec<ChannelDetails>,
+		inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		send_payment_along_path: SP,
@@ -1214,24 +1219,55 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		let (payment_hash, keysend_preimage, route_params, retry_strategy, invoice_request, invoice) =
-			match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
-				hash_map::Entry::Occupied(entry) => match entry.get() {
-					PendingOutboundPayment::StaticInvoiceReceived {
-						payment_hash, route_params, retry_strategy, keysend_preimage, invoice_request, static_invoice, ..
-					} => {
-						(*payment_hash, *keysend_preimage, route_params.clone(), *retry_strategy,
-						 invoice_request.clone(), static_invoice.clone())
-					},
-					_ => return Err(Bolt12PaymentError::DuplicateInvoice),
-				},
-				hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
-			};
+		let (
+			payment_hash,
+			keysend_preimage,
+			route_params,
+			retry_strategy,
+			invoice_request,
+			invoice,
+		) = match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(entry) => match entry.get() {
+				PendingOutboundPayment::StaticInvoiceReceived {
+					payment_hash,
+					route_params,
+					retry_strategy,
+					keysend_preimage,
+					invoice_request,
+					static_invoice,
+					..
+				} => (
+					*payment_hash,
+					*keysend_preimage,
+					route_params.clone(),
+					*retry_strategy,
+					invoice_request.clone(),
+					static_invoice.clone(),
+				),
+				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
+			},
+			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
+		};
 		let invoice = PaidBolt12Invoice::StaticInvoice(invoice);
 		self.send_payment_for_bolt12_invoice_internal(
-			payment_id, payment_hash, Some(keysend_preimage), Some(&invoice_request), invoice, route_params,
-			retry_strategy, router, first_hops, inflight_htlcs, entropy_source, node_signer,
-			node_id_lookup, secp_ctx, best_block_height, logger, pending_events, send_payment_along_path
+			payment_id,
+			payment_hash,
+			Some(keysend_preimage),
+			Some(&invoice_request),
+			invoice,
+			route_params,
+			retry_strategy,
+			router,
+			first_hops,
+			inflight_htlcs,
+			entropy_source,
+			node_signer,
+			node_id_lookup,
+			secp_ctx,
+			best_block_height,
+			logger,
+			pending_events,
+			send_payment_along_path,
 		)
 	}
 
