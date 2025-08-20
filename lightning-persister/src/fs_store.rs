@@ -48,7 +48,7 @@ struct AsyncState {
 	latest_version: u64,
 
 	// The last version that was written to disk.
-	last_written_version: u64,
+	latest_written_version: u64,
 }
 
 struct FilesystemStoreInner {
@@ -201,6 +201,8 @@ impl FilesystemStoreInner {
 			panic!("FilesystemStore version counter overflowed");
 		}
 
+		debug_assert!(async_state.latest_version > async_state.latest_written_version);
+
 		async_state.latest_version
 	}
 
@@ -208,10 +210,19 @@ impl FilesystemStoreInner {
 		let mut buf = Vec::new();
 		{
 			let inner_lock_ref = self.get_inner_lock_ref(dest_file_path.clone());
-			let _guard = inner_lock_ref.read().unwrap();
+			let async_state = inner_lock_ref.read().unwrap();
 
-			let mut f = fs::File::open(dest_file_path)?;
+			let mut f = fs::File::open(dest_file_path.clone())?;
 			f.read_to_end(&mut buf)?;
+
+			let more_writes_pending =
+				async_state.latest_written_version < async_state.latest_version;
+
+			// If there are no more writes pending and no arcs in use elsewhere, we can remove the map entry to prevent
+			// leaking memory. The two arcs are the one in the map and the one held here in inner_lock_ref.
+			if !more_writes_pending && Arc::strong_count(&inner_lock_ref) == 2 {
+				self.locks.lock().unwrap().remove(&dest_file_path);
+			}
 		}
 
 		Ok(buf)
@@ -228,18 +239,18 @@ impl FilesystemStoreInner {
 
 		// Check if we already have a newer version written/removed. This is used in async contexts to realize eventual
 		// consistency.
-		let stale = version <= async_state.last_written_version;
+		let is_stale_version = version <= async_state.latest_written_version;
 
 		// If the version is not stale, we execute the callback. Otherwise we can and must skip writing.
-		let res = if stale {
+		let res = if is_stale_version {
 			Ok(())
 		} else {
 			callback().map(|_| {
-				async_state.last_written_version = version;
+				async_state.latest_written_version = version;
 			})
 		};
 
-		let more_writes_pending = async_state.last_written_version < async_state.latest_version;
+		let more_writes_pending = async_state.latest_written_version < async_state.latest_version;
 
 		// If there are no more writes pending and no arcs in use elsewhere, we can remove the map entry to prevent
 		// leaking memory. The two arcs are the one in the map and the one held here in inner_lock_ref.
@@ -381,11 +392,11 @@ impl FilesystemStoreInner {
 
 					call!(unsafe {
 						windows_sys::Win32::Storage::FileSystem::MoveFileExW(
-						path_to_windows_str(&dest_file_path).as_ptr(),
-						path_to_windows_str(&trash_file_path).as_ptr(),
-						windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
+							path_to_windows_str(&dest_file_path).as_ptr(),
+							path_to_windows_str(&trash_file_path).as_ptr(),
+							windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
 							| windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
-					)
+							)
 					})?;
 
 					{
