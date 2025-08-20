@@ -11742,3 +11742,78 @@ pub fn test_funding_signed_event() {
 	nodes[0].node.get_and_clear_pending_msg_events();
 	nodes[1].node.get_and_clear_pending_msg_events();
 }
+
+#[xtest(feature = "_externalize_tests")]
+pub fn test_stale_force_close_with_identical_htlcs() {
+	// This tests that if a peer force-closes with a stale
+	// state after we've received two identical HTLCs, we must fail back both
+	// of them immediately.
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_a_b = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let _chan_b_c = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let stale_tx = get_local_commitment_txn!(nodes[0], chan_a_b.2)[0].clone();
+
+	let (payment_preimage, payment_hash, _payment_secret, _payment_id_1) =
+		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 10_000);
+
+	*nodes[0].network_payment_count.borrow_mut() -= 1;
+	let (payment_preimage_2, payment_hash_2, _payment_secret_2, _payment_id_2) =
+		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 10_000);
+
+	assert_eq!(payment_hash, payment_hash_2, "Both HTLCs should have identical payment hashes");
+	assert_eq!(payment_preimage, payment_preimage_2, "Both HTLCs should have identical preimages");
+
+	mine_transaction(&nodes[1], &stale_tx);
+	check_added_monitors!(nodes[1], 1);
+
+	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(nodes[2].node.get_our_node_id());
+
+	nodes[0]
+		.node
+		.peer_connected(
+			nodes[1].node.get_our_node_id(),
+			&msgs::Init {
+				features: nodes[1].node.init_features(),
+				networks: None,
+				remote_network_address: None,
+			},
+			true,
+		)
+		.unwrap();
+	nodes[2]
+		.node
+		.peer_connected(
+			nodes[1].node.get_our_node_id(),
+			&msgs::Init {
+				features: nodes[1].node.init_features(),
+				networks: None,
+				remote_network_address: None,
+			},
+			true,
+		)
+		.unwrap();
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	let mut fail_htlc_count = 0;
+	for event in &events {
+		match event {
+			MessageSendEvent::UpdateHTLCs { updates, .. } => {
+				fail_htlc_count += updates.update_fail_htlcs.len();
+			},
+			_ => {},
+		}
+	}
+
+	assert_eq!(
+		fail_htlc_count, 2,
+		"Force-close immediately fails 2 committed HTLCs (expected). Got: {}",
+		fail_htlc_count
+	);
+}
