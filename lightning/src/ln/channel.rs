@@ -13841,7 +13841,7 @@ where
 			match (holder_commitment_point_next_opt, holder_commitment_point_pending_next_opt) {
 				(Some(next_point), pending_next_point) => HolderCommitmentPoint {
 					next_transaction_number: holder_commitment_next_transaction_number,
-					current_point: None,
+					current_point: holder_commitment_point_current_opt,
 					next_point,
 					pending_next_point,
 				},
