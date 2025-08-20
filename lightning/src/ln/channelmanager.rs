@@ -2557,6 +2557,8 @@ pub struct ChannelManager<
 
 	/// SCID/SCID Alias -> forward infos.
 	///
+	/// Note that key of 0 means it's a trampoline payment.
+	///
 	/// Note that because we may have an SCID Alias as the key we can have two entries per channel,
 	/// though in practice we probably won't be receiving HTLCs for a channel both via the alias
 	/// and via the classic SCID.
