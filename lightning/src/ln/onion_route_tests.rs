@@ -1553,6 +1553,7 @@ fn test_overshoot_final_cltv() {
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[1].node.process_pending_update_add_htlcs();
 	for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
 		for f in pending_forwards.iter_mut() {
 			match f {
