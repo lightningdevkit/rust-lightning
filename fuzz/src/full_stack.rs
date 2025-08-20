@@ -1182,7 +1182,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 
 	// broadcast funding transaction
 	ext_from_hex("0b", &mut test);
-	// by now client should have sent a channel_ready (CHECK 4: SendChannelReady to 03020000 for chan 3f000000)
+	// by now client should have sent a channel_ready (CHECK 4: SendChannelReady to 03020000 for chan 2f000000)
 
 	// inbound read from peer id 1 of len 18
 	ext_from_hex("030112", &mut test);
@@ -1441,7 +1441,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 193
 	ext_from_hex("0300c1", &mut test);
 	// end of update_add_htlc from 0 to 1 via client and mac
-	ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 5300000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 5200000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	// inbound read from peer id 0 of len 18
 	ext_from_hex("030012", &mut test);
