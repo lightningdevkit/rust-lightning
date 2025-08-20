@@ -13837,11 +13837,26 @@ where
 		// If we're restoring this channel for the first time after an upgrade, then we require that the
 		// signer be available so that we can immediately populate the next commitment point. Channel
 		// restoration will fail if this is not possible.
-		let holder_commitment_point =
+		let holder_commitment_point = {
+			let current_point = holder_commitment_point_current_opt.or_else(|| {
+				if holder_commitment_next_transaction_number == INITIAL_COMMITMENT_NUMBER {
+					None
+				} else {
+					// If the current point is not available then splicing can't be initiated
+					// until the next point is advanced and becomes the current point.
+					holder_signer
+						.get_per_commitment_point(
+							holder_commitment_next_transaction_number + 1,
+							&secp_ctx,
+						)
+						.ok()
+				}
+			});
+
 			match (holder_commitment_point_next_opt, holder_commitment_point_pending_next_opt) {
 				(Some(next_point), pending_next_point) => HolderCommitmentPoint {
 					next_transaction_number: holder_commitment_next_transaction_number,
-					current_point: holder_commitment_point_current_opt,
+					current_point,
 					next_point,
 					pending_next_point,
 				},
@@ -13861,12 +13876,13 @@ where
 						);
 					HolderCommitmentPoint {
 						next_transaction_number: holder_commitment_next_transaction_number,
-						current_point: holder_commitment_point_current_opt,
+						current_point,
 						next_point,
 						pending_next_point: Some(pending_next_point),
 					}
 				},
-			};
+			}
+		};
 
 		Ok(FundedChannel {
 			funding: FundingScope {
