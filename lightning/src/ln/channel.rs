@@ -1863,6 +1863,7 @@ where
 					holder_commitment_point,
 					#[cfg(splicing)]
 					pending_splice: None,
+					quiescent_action: None,
 				};
 				let res = funded_channel.initial_commitment_signed_v2(msg, best_block, signer_provider, logger)
 					.map(|monitor| (Some(monitor), None))
@@ -2429,6 +2430,15 @@ impl PendingSplice {
 	}
 }
 
+pub(crate) enum QuiescentAction {
+	// TODO: Make this test-only once we have another variant (as some code requires *a* variant).
+	DoNothing,
+}
+
+impl_writeable_tlv_based_enum_upgradable!(QuiescentAction,
+	(99, DoNothing) => {},
+);
+
 /// Wrapper around a [`Transaction`] useful for caching the result of [`Transaction::compute_txid`].
 struct ConfirmedTransaction<'a> {
 	tx: &'a Transaction,
@@ -2728,10 +2738,6 @@ where
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
 	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
-
-	/// Only set when a counterparty `stfu` has been processed to track which node is allowed to
-	/// propose "something fundamental" upon becoming quiescent.
-	is_holder_quiescence_initiator: Option<bool>,
 }
 
 /// A channel struct implementing this trait can receive an initial counterparty commitment
@@ -3306,8 +3312,6 @@ where
 			blocked_monitor_updates: Vec::new(),
 
 			is_manual_broadcast: false,
-
-			is_holder_quiescence_initiator: None,
 		};
 
 		Ok((funding, channel_context))
@@ -3544,8 +3548,6 @@ where
 			blocked_monitor_updates: Vec::new(),
 			local_initiated_shutdown: None,
 			is_manual_broadcast: false,
-
-			is_holder_quiescence_initiator: None,
 		};
 
 		Ok((funding, channel_context))
@@ -6058,6 +6060,12 @@ where
 	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
 	#[cfg(splicing)]
 	pending_splice: Option<PendingSplice>,
+
+	/// Once we become quiescent, if we're the initiator, there's some action we'll want to take.
+	/// This keeps track of that action. Note that if we become quiescent and we're not the
+	/// initiator we may be able to merge this action into what the counterparty wanted to do (e.g.
+	/// in the case of splicing).
+	quiescent_action: Option<QuiescentAction>,
 }
 
 #[cfg(splicing)]
@@ -8198,11 +8206,13 @@ where
 
 		// Reset any quiescence-related state as it is implicitly terminated once disconnected.
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			self.context.channel_state.clear_awaiting_quiescence();
+			if self.quiescent_action.is_some() {
+				// If we were trying to get quiescent, try again after reconnection.
+				self.context.channel_state.set_awaiting_quiescence();
+			}
 			self.context.channel_state.clear_local_stfu_sent();
 			self.context.channel_state.clear_remote_stfu_sent();
 			self.context.channel_state.clear_quiescent();
-			self.context.is_holder_quiescence_initiator.take();
 		}
 
 		self.context.channel_state.set_peer_disconnected();
@@ -11540,30 +11550,36 @@ where
 	#[cfg(any(test, fuzzing))]
 	#[rustfmt::skip]
 	pub fn propose_quiescence<L: Deref>(
-		&mut self, logger: &L,
+		&mut self, logger: &L, action: QuiescentAction,
 	) -> Result<Option<msgs::Stfu>, ChannelError>
 	where
 		L::Target: Logger,
 	{
 		log_debug!(logger, "Attempting to initiate quiescence");
 
-		if !self.context.is_live() {
+		if !self.context.is_usable() {
 			return Err(ChannelError::Ignore(
-				"Channel is not in a live state to propose quiescence".to_owned()
+				"Channel is not in a usable state to propose quiescence".to_owned()
 			));
 		}
-		if self.context.channel_state.is_quiescent() {
-			return Err(ChannelError::Ignore("Channel is already quiescent".to_owned()));
+		if self.quiescent_action.is_some() {
+			return Err(ChannelError::Ignore("Channel is already quiescing".to_owned()));
 		}
 
-		if self.context.channel_state.is_awaiting_quiescence()
+		self.quiescent_action = Some(action);
+		if self.context.channel_state.is_quiescent()
+			|| self.context.channel_state.is_awaiting_quiescence()
 			|| self.context.channel_state.is_local_stfu_sent()
 		{
 			return Ok(None);
 		}
 
 		self.context.channel_state.set_awaiting_quiescence();
-		Ok(Some(self.send_stfu(logger)?))
+		if self.context.is_live() {
+			Ok(Some(self.send_stfu(logger)?))
+		} else {
+			Ok(None)
+		}
 	}
 
 	// Assumes we are either awaiting quiescence or our counterparty has requested quiescence.
@@ -11573,7 +11589,6 @@ where
 		L::Target: Logger,
 	{
 		debug_assert!(!self.context.channel_state.is_local_stfu_sent());
-		// Either state being set implies the channel is live.
 		debug_assert!(
 			self.context.channel_state.is_awaiting_quiescence()
 				|| self.context.channel_state.is_remote_stfu_sent()
@@ -11593,18 +11608,10 @@ where
 			self.context.channel_state.clear_awaiting_quiescence();
 			self.context.channel_state.clear_remote_stfu_sent();
 			self.context.channel_state.set_quiescent();
-			if let Some(initiator) = self.context.is_holder_quiescence_initiator.as_ref() {
-				log_debug!(
-					logger,
-					"Responding to counterparty stfu with our own, channel is now quiescent and we are{} the initiator",
-					if !initiator { " not" } else { "" }
-				);
-
-				*initiator
-			} else {
-				debug_assert!(false, "Quiescence initiator must have been set when we received stfu");
-				false
-			}
+			// We are sending an stfu in response to our couterparty's stfu, but had not yet sent
+			// our own stfu (even if `awaiting_quiescence` was set). Thus, the counterparty is the
+			// initiator and they can do "something fundamental".
+			false
 		} else {
 			log_debug!(logger, "Sending stfu as quiescence initiator");
 			debug_assert!(self.context.channel_state.is_awaiting_quiescence());
@@ -11635,9 +11642,7 @@ where
 			));
 		}
 
-		if self.context.channel_state.is_awaiting_quiescence()
-			|| !self.context.channel_state.is_local_stfu_sent()
-		{
+		if !self.context.channel_state.is_local_stfu_sent() {
 			if !msg.initiator {
 				return Err(ChannelError::WarnAndDisconnect(
 					"Peer sent unexpected `stfu` without signaling as initiator".to_owned()
@@ -11651,15 +11656,6 @@ where
 			// then.
 			self.context.channel_state.set_remote_stfu_sent();
 
-			let is_holder_initiator = if self.context.channel_state.is_awaiting_quiescence() {
-				// We were also planning to propose quiescence, let the tie-breaker decide the
-				// initiator.
-				self.funding.is_outbound()
-			} else {
-				false
-			};
-			self.context.is_holder_quiescence_initiator = Some(is_holder_initiator);
-
 			log_debug!(logger, "Received counterparty stfu proposing quiescence");
 			return self.send_stfu(logger).map(|stfu| Some(stfu));
 		}
@@ -11667,7 +11663,6 @@ where
 		// We already sent `stfu` and are now processing theirs. It may be in response to ours, or
 		// we happened to both send `stfu` at the same time and a tie-break is needed.
 		let is_holder_quiescence_initiator = !msg.initiator || self.funding.is_outbound();
-		self.context.is_holder_quiescence_initiator = Some(is_holder_quiescence_initiator);
 
 		// We were expecting to receive `stfu` because we already sent ours.
 		self.mark_response_received();
@@ -11695,6 +11690,21 @@ where
 			if !is_holder_quiescence_initiator { " not" } else { "" }
 		);
 
+		if is_holder_quiescence_initiator {
+			match self.quiescent_action.take() {
+				None => {
+					debug_assert!(false);
+					return Err(ChannelError::WarnAndDisconnect(
+						"Internal Error: Didn't have anything to do after reaching quiescence".to_owned()
+					));
+				},
+				Some(QuiescentAction::DoNothing) => {
+					// In quiescence test we want to just hang out here, letting the test manually
+					// leave quiescence.
+				},
+			}
+		}
+
 		Ok(None)
 	}
 
@@ -11709,6 +11719,10 @@ where
 			!(self.context.channel_state.is_local_stfu_sent()
 				&& self.context.channel_state.is_remote_stfu_sent())
 		);
+
+		if !self.context.is_live() {
+			return Ok(None);
+		}
 
 		// We need to send our `stfu`, either because we're trying to initiate quiescence, or the
 		// counterparty is and we've yet to send ours.
@@ -11735,13 +11749,10 @@ where
 		debug_assert!(!self.context.channel_state.is_local_stfu_sent());
 		debug_assert!(!self.context.channel_state.is_remote_stfu_sent());
 
-		if self.context.channel_state.is_quiescent() {
-			self.mark_response_received();
-			self.context.channel_state.clear_quiescent();
-			self.context.is_holder_quiescence_initiator.take().expect("Must always be set while quiescent")
-		} else {
-			false
-		}
+		self.mark_response_received();
+		let was_quiescent = self.context.channel_state.is_quiescent();
+		self.context.channel_state.clear_quiescent();
+		was_quiescent
 	}
 
 	pub fn remove_legacy_scids_before_block(&mut self, height: u32) -> alloc::vec::Drain<'_, u64> {
@@ -12063,6 +12074,7 @@ where
 			holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
+			quiescent_action: None,
 		};
 
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
@@ -12349,6 +12361,7 @@ where
 			holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
+			quiescent_action: None,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
 			|| channel.context.signer_pending_channel_ready;
@@ -12850,7 +12863,11 @@ where
 			match channel_state {
 				ChannelState::AwaitingChannelReady(_) => {},
 				ChannelState::ChannelReady(_) => {
-					channel_state.clear_awaiting_quiescence();
+					if self.quiescent_action.is_some() {
+						// If we're trying to get quiescent to do something, try again when we
+						// reconnect to the peer.
+						channel_state.set_awaiting_quiescence();
+					}
 					channel_state.clear_local_stfu_sent();
 					channel_state.clear_remote_stfu_sent();
 					channel_state.clear_quiescent();
@@ -13258,6 +13275,7 @@ where
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
 			(63, holder_commitment_point_current, option), // Added in 0.2
+			(65, self.quiescent_action, option), // Added in 0.2
 		});
 
 		Ok(())
@@ -13619,6 +13637,8 @@ where
 
 		let mut minimum_depth_override: Option<u32> = None;
 
+		let mut quiescent_action = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -13662,6 +13682,7 @@ where
 			(60, historical_scids, optional_vec), // Added in 0.2
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
 			(63, holder_commitment_point_current_opt, option), // Added in 0.2
+			(65, quiescent_action, upgradable_option), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -14003,13 +14024,12 @@ where
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 				is_manual_broadcast: is_manual_broadcast.unwrap_or(false),
-
-				is_holder_quiescence_initiator: None,
 			},
 			interactive_tx_signing_session,
 			holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
+			quiescent_action,
 		})
 	}
 }

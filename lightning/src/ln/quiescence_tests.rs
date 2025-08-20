@@ -33,7 +33,7 @@ fn test_quiescence_tie() {
 	assert!(stfu_node_0.initiator && stfu_node_1.initiator);
 
 	assert!(nodes[0].node.exit_quiescence(&nodes[1].node.get_our_node_id(), &chan_id).unwrap());
-	assert!(!nodes[1].node.exit_quiescence(&nodes[0].node.get_our_node_id(), &chan_id).unwrap());
+	assert!(nodes[1].node.exit_quiescence(&nodes[0].node.get_our_node_id(), &chan_id).unwrap());
 }
 
 #[test]
@@ -173,7 +173,8 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 
 	// Now that the state machine is no longer pending, and `closing_signed` is ready to be sent,
 	// make sure we're still not waiting for the quiescence handshake to complete.
-	local_node.node.exit_quiescence(&remote_node_id, &chan_id).unwrap();
+	// Note that we never actually reached full quiescence here.
+	assert!(!local_node.node.exit_quiescence(&remote_node_id, &chan_id).unwrap());
 
 	let _ = get_event_msg!(local_node, MessageSendEvent::SendClosingSigned, remote_node_id);
 	check_added_monitors(local_node, 2); // One for the last revoke_and_ack, another for closing_signed
@@ -279,8 +280,8 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 	let stfu = get_event_msg!(&nodes[0], MessageSendEvent::SendStfu, node_id_1);
 	nodes[1].node.handle_stfu(node_id_0, &stfu);
 
-	nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap();
-	nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap();
+	assert!(nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap());
+	assert!(nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap());
 
 	// After exiting quiescence, we should be able to resume payments from nodes[0].
 	send_payment(&nodes[0], &[&nodes[1]], payment_amount);
@@ -336,8 +337,8 @@ fn test_quiescence_on_final_revoke_and_ack_pending_monitor_update() {
 		panic!();
 	}
 
-	nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap();
-	nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap();
+	assert!(nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap());
+	assert!(nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap());
 }
 
 #[test]
@@ -406,8 +407,8 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	let stfu = get_event_msg!(&nodes[0], MessageSendEvent::SendStfu, node_id_1);
 	nodes[1].node.handle_stfu(node_id_0, &stfu);
 
-	nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap();
-	nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap();
+	assert!(nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap());
+	assert!(nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap());
 
 	// Now that quiescence is over, nodes are allowed to make updates again. nodes[1] will have its
 	// outbound HTLC finally go out, along with the fail/claim of nodes[0]'s payment.
@@ -546,4 +547,113 @@ fn test_quiescence_timeout_while_waiting_for_counterparty_stfu() {
 		}
 	};
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().iter().find_map(f).is_some());
+}
+
+fn do_test_quiescence_during_disconnection(with_pending_claim: bool, propose_disconnected: bool) {
+	// Test that we'll start trying for quiescence immediately after reconnection if we're waiting
+	// to do some quiescence-required action.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	// First get both nodes off the starting state so we don't have to deal with channel_ready
+	// retransmissions on reconect.
+	send_payment(&nodes[0], &[&nodes[1]], 100_000);
+
+	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
+	if with_pending_claim {
+		// Optionally reconnect with pending quiescence while there's some pending messages to
+		// deliver.
+		nodes[1].node.claim_funds(preimage);
+		check_added_monitors(&nodes[1], 1);
+		expect_payment_claimed!(nodes[1], payment_hash, 100_000);
+		let _ = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	}
+
+	if !propose_disconnected {
+		nodes[1].node.maybe_propose_quiescence(&node_a_id, &chan_id).unwrap();
+	}
+
+	nodes[0].node.peer_disconnected(node_b_id);
+	nodes[1].node.peer_disconnected(node_a_id);
+
+	if propose_disconnected {
+		nodes[1].node.maybe_propose_quiescence(&node_a_id, &chan_id).unwrap();
+	}
+
+	let init_msg = msgs::Init {
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	nodes[0].node.peer_connected(node_b_id, &init_msg, true).unwrap();
+	nodes[1].node.peer_connected(node_a_id, &init_msg, true).unwrap();
+
+	let reestab_a = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, node_b_id);
+	let reestab_b = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, node_a_id);
+
+	nodes[0].node.handle_channel_reestablish(node_b_id, &reestab_b);
+	get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_b_id);
+
+	nodes[1].node.handle_channel_reestablish(node_a_id, &reestab_a);
+	let mut bs_msgs = nodes[1].node.get_and_clear_pending_msg_events();
+	bs_msgs.retain(|msg| !matches!(msg, MessageSendEvent::SendChannelUpdate { .. }));
+	assert_eq!(bs_msgs.len(), 1, "{bs_msgs:?}");
+	let stfu = if with_pending_claim {
+		// Node B should first re-send its channel update, then try to enter quiescence once that
+		// completes...
+		let msg = bs_msgs.pop().unwrap();
+		if let MessageSendEvent::UpdateHTLCs { mut updates, .. } = msg {
+			let fulfill = updates.update_fulfill_htlcs.pop().unwrap();
+			nodes[0].node.handle_update_fulfill_htlc(node_b_id, fulfill);
+			let cs = updates.commitment_signed;
+			nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &cs);
+			check_added_monitors(&nodes[0], 1);
+
+			let (raa, cs) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
+			nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
+			check_added_monitors(&nodes[1], 1);
+			nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &cs);
+			check_added_monitors(&nodes[1], 1);
+
+			let mut bs_raa_stfu = nodes[1].node.get_and_clear_pending_msg_events();
+			assert_eq!(bs_raa_stfu.len(), 2);
+			if let MessageSendEvent::SendRevokeAndACK { msg, .. } = &bs_raa_stfu[0] {
+				nodes[0].node.handle_revoke_and_ack(node_b_id, &msg);
+				expect_payment_sent!(&nodes[0], preimage);
+			} else {
+				panic!("Unexpected first message {bs_raa_stfu:?}");
+			}
+
+			bs_raa_stfu.pop().unwrap()
+		} else {
+			panic!("Unexpected message {msg:?}");
+		}
+	} else {
+		bs_msgs.pop().unwrap()
+	};
+	if let MessageSendEvent::SendStfu { msg, .. } = stfu {
+		nodes[0].node.handle_stfu(node_b_id, &msg);
+	} else {
+		panic!("Unexpected message {stfu:?}");
+	}
+
+	let stfu_resp = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_b_id);
+	nodes[1].node.handle_stfu(node_a_id, &stfu_resp);
+
+	assert!(nodes[0].node.exit_quiescence(&node_b_id, &chan_id).unwrap());
+	assert!(nodes[1].node.exit_quiescence(&node_a_id, &chan_id).unwrap());
+}
+
+#[test]
+fn test_quiescence_during_disconnection() {
+	do_test_quiescence_during_disconnection(false, false);
+	do_test_quiescence_during_disconnection(true, false);
+	do_test_quiescence_during_disconnection(false, true);
+	do_test_quiescence_during_disconnection(true, true);
 }

@@ -58,8 +58,8 @@ use crate::events::{
 };
 use crate::events::{FundingInfo, PaidBolt12Invoice};
 use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
-// Since this struct is returned in `list_channels` methods, expose it here in case users want to
-// construct one themselves.
+#[cfg(any(test, fuzzing))]
+use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, FundedChannel,
 	InboundV1Channel, OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult,
@@ -11712,7 +11712,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							&self.logger, Some(*counterparty_node_id), Some(*channel_id), None
 						);
 
-						match chan.propose_quiescence(&&logger) {
+						match chan.propose_quiescence(&&logger, QuiescentAction::DoNothing) {
 							Ok(None) => {},
 							Ok(Some(stfu)) => {
 								peer_state.pending_msg_events.push(MessageSendEvent::SendStfu {
