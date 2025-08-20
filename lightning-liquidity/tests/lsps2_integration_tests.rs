@@ -18,14 +18,13 @@ use lightning::ln::functional_test_utils::do_commitment_signed_dance;
 use lightning::ln::functional_test_utils::expect_channel_pending_event;
 use lightning::ln::functional_test_utils::expect_channel_ready_event;
 use lightning::ln::functional_test_utils::expect_payment_sent;
-use lightning::ln::functional_test_utils::pass_claimed_payment_along_route;
 use lightning::ln::functional_test_utils::test_default_channel_config;
-use lightning::ln::functional_test_utils::ClaimAlongRouteArgs;
 use lightning::ln::functional_test_utils::SendEvent;
 use lightning::ln::msgs::BaseMessageHandler;
 use lightning::ln::msgs::ChannelMessageHandler;
 use lightning::ln::msgs::MessageSendEvent;
 use lightning::ln::types::ChannelId;
+
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::ser::LSPSDateTime;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
@@ -56,6 +55,7 @@ use lightning_types::payment::PaymentHash;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::Network;
+use lightning_types::payment::PaymentPreimage;
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -950,11 +950,10 @@ fn client_trusts_lsp_end_to_end_test() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut service_node_config = test_default_channel_config();
 	service_node_config.accept_intercept_htlcs = true;
-	service_node_config.channel_config.forwarding_fee_base_msat = 0;
-	service_node_config.channel_config.forwarding_fee_proportional_millionths = 0;
 
 	let mut client_node_config = test_default_channel_config();
 	client_node_config.manually_accept_inbound_channels = true;
+	client_node_config.channel_config.accept_underpaying_htlcs = true;
 	let node_chanmgrs = create_node_chanmgrs(
 		3,
 		&node_cfgs,
@@ -977,6 +976,8 @@ fn client_trusts_lsp_end_to_end_test() {
 	let cltv_expiry_delta: u32 = 144;
 	let payment_size_msat = Some(1_000_000);
 
+	let fee_base_msat = 1000;
+
 	execute_lsps2_dance(
 		&lsps_nodes,
 		intercept_scid,
@@ -984,6 +985,7 @@ fn client_trusts_lsp_end_to_end_test() {
 		cltv_expiry_delta,
 		promise_secret,
 		payment_size_msat,
+		fee_base_msat,
 	);
 
 	let invoice = create_jit_invoice(
@@ -1022,8 +1024,8 @@ fn client_trusts_lsp_end_to_end_test() {
 			intercept_id,
 			requested_next_hop_scid,
 			payment_hash,
-			inbound_amount_msat,
 			expected_outbound_amount_msat,
+			..
 		} => {
 			assert_eq!(*requested_next_hop_scid, intercept_scid);
 
@@ -1031,7 +1033,7 @@ fn client_trusts_lsp_end_to_end_test() {
 				.htlc_intercepted(
 					*requested_next_hop_scid,
 					*intercept_id,
-					*inbound_amount_msat,
+					*expected_outbound_amount_msat,
 					*payment_hash,
 				)
 				.unwrap();
@@ -1051,8 +1053,8 @@ fn client_trusts_lsp_end_to_end_test() {
 			intercept_scid: iscd,
 		}) => {
 			assert_eq!(their_network_key, client_node_id);
-			assert_eq!(amt_to_forward_msat, payment_size_msat.unwrap());
-			assert_eq!(opening_fee_msat, 0);
+			assert_eq!(amt_to_forward_msat, payment_size_msat.unwrap() - fee_base_msat);
+			assert_eq!(opening_fee_msat, fee_base_msat);
 			assert_eq!(user_channel_id, 42);
 			assert_eq!(iscd, intercept_scid);
 		},
@@ -1114,13 +1116,31 @@ fn client_trusts_lsp_end_to_end_test() {
 
 	client_node.inner.node.claim_funds(preimage.unwrap());
 
-	let expected_paths: &[&[&lightning::ln::functional_test_utils::Node<'_, '_, '_>]] =
-		&[&[&service_node.inner, &client_node.inner]];
+	claim_and_assert_forwarded_only(
+		&payer_node,
+		&service_node.inner,
+		&client_node.inner,
+		preimage.unwrap(),
+	);
 
-	let args = ClaimAlongRouteArgs::new(&payer_node, expected_paths, preimage.unwrap());
-	let total_fee_msat = pass_claimed_payment_along_route(args);
+	let service_events = service_node.node.get_and_clear_pending_events();
+	assert_eq!(service_events.len(), 1);
 
-	service_handler.payment_forwarded(channel_id).unwrap();
+	let total_fee_msat = match service_events[0].clone() {
+		Event::PaymentForwarded {
+			prev_node_id,
+			next_node_id,
+			skimmed_fee_msat,
+			total_fee_earned_msat,
+			..
+		} => {
+			assert_eq!(prev_node_id, Some(payer_node_id));
+			assert_eq!(next_node_id, Some(client_node_id));
+			service_handler.payment_forwarded(channel_id, skimmed_fee_msat).unwrap();
+			Some(total_fee_earned_msat.unwrap() - skimmed_fee_msat.unwrap())
+		},
+		_ => panic!("Expected PaymentForwarded event, got: {:?}", service_events[0]),
+	};
 
 	match service_node.liquidity_manager.next_event().unwrap() {
 		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::BroadcastFundingTransaction {
@@ -1139,12 +1159,13 @@ fn client_trusts_lsp_end_to_end_test() {
 		other => panic!("Unexpected event: {:?}", other),
 	}
 
-	expect_payment_sent(&payer_node, preimage.unwrap(), Some(Some(total_fee_msat)), true, true);
+	expect_payment_sent(&payer_node, preimage.unwrap(), Some(total_fee_msat), true, true);
 }
 
 fn execute_lsps2_dance(
 	lsps_nodes: &LSPSNodesWithPayer, intercept_scid: u64, user_channel_id: u128,
 	cltv_expiry_delta: u32, promise_secret: [u8; 32], payment_size_msat: Option<u64>,
+	fee_base_msat: u64,
 ) {
 	let service_node = &lsps_nodes.service_node;
 	let client_node = &lsps_nodes.client_node;
@@ -1175,7 +1196,7 @@ fn execute_lsps2_dance(
 	}
 
 	let raw_opening_params = LSPS2RawOpeningFeeParams {
-		min_fee_msat: 0,
+		min_fee_msat: fee_base_msat,
 		proportional: 0,
 		valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
 		min_lifetime: 144,
@@ -1396,4 +1417,323 @@ fn create_channel_with_manual_broadcast(
 	client_node.node.handle_channel_update(*service_node_id, &as_channel_update);
 
 	as_channel_ready.channel_id
+}
+
+fn claim_and_assert_forwarded_only<'a, 'b, 'c>(
+	payer_node: &lightning::ln::functional_test_utils::Node<'a, 'b, 'c>,
+	service_node: &lightning::ln::functional_test_utils::Node<'a, 'b, 'c>,
+	client_node: &lightning::ln::functional_test_utils::Node<'a, 'b, 'c>,
+	preimage: PaymentPreimage,
+) {
+	let payer_node_id = payer_node.node.get_our_node_id();
+	let service_node_id = service_node.node.get_our_node_id();
+	let client_node_id = client_node.node.get_our_node_id();
+
+	let client_events = client_node.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	match &client_events[0] {
+		Event::PaymentClaimed { purpose, .. } => {
+			assert_eq!(purpose.preimage().unwrap(), preimage);
+		},
+		other => panic!("Expected PaymentClaimed, got {:?}", other),
+	}
+
+	let mut client_msg_events = client_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(client_msg_events.len(), 1);
+	let (fulfill_msg, client_commitment_signed) = match client_msg_events.remove(0) {
+		MessageSendEvent::UpdateHTLCs { node_id, updates, .. } => {
+			assert_eq!(node_id, service_node_id);
+			assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+			(updates.update_fulfill_htlcs[0].clone(), updates.commitment_signed.clone())
+		},
+		other => panic!("Unexpected client msg event: {:?}", other),
+	};
+
+	service_node.node.handle_update_fulfill_htlc(client_node_id, fulfill_msg);
+	service_node
+		.node
+		.handle_commitment_signed_batch_test(client_node_id, &client_commitment_signed);
+	service_node.chain_monitor.added_monitors.lock().unwrap().clear();
+
+	let service_msg_events = service_node.node.get_and_clear_pending_msg_events();
+	assert!(
+		service_msg_events.len() >= 2 && service_msg_events.len() <= 3,
+		"Unexpected service msg events len = {}",
+		service_msg_events.len()
+	);
+
+	let mut revoke_and_ack_to_client = None;
+	let mut upstream_updates = None;
+	let mut client_commitment_update = None;
+
+	for ev in service_msg_events {
+		match ev {
+			MessageSendEvent::SendRevokeAndACK { node_id, msg } => {
+				assert_eq!(node_id, client_node_id);
+				revoke_and_ack_to_client = Some(msg);
+			},
+			MessageSendEvent::UpdateHTLCs { node_id, updates, .. } => {
+				if node_id == payer_node_id {
+					assert_eq!(updates.update_fulfill_htlcs.len(), 1, "Expected upstream fulfill");
+					upstream_updates = Some(updates);
+				} else if node_id == client_node_id {
+					assert!(updates.update_fulfill_htlcs.is_empty());
+					client_commitment_update = Some(updates);
+				} else {
+					panic!("Unexpected UpdateHTLCs destination");
+				}
+			},
+			other => panic!("Unexpected service msg event: {:?}", other),
+		}
+	}
+
+	let revoke_and_ack_to_client =
+		revoke_and_ack_to_client.expect("Missing RevokeAndACK to client");
+	let upstream_updates = upstream_updates.expect("Missing upstream fulfill updates");
+
+	client_node.node.handle_revoke_and_ack(service_node_id, &revoke_and_ack_to_client);
+	client_node.chain_monitor.added_monitors.lock().unwrap().clear();
+
+	if let Some(cu) = client_commitment_update {
+		client_node
+			.node
+			.handle_commitment_signed_batch_test(service_node_id, &cu.commitment_signed);
+		client_node.chain_monitor.added_monitors.lock().unwrap().clear();
+
+		let raa_back =
+			get_event_msg!(client_node, MessageSendEvent::SendRevokeAndACK, service_node_id);
+		service_node.node.handle_revoke_and_ack(client_node_id, &raa_back);
+		service_node.chain_monitor.added_monitors.lock().unwrap().clear();
+	}
+
+	payer_node.node.handle_update_fulfill_htlc(
+		service_node_id,
+		upstream_updates.update_fulfill_htlcs[0].clone(),
+	);
+	payer_node
+		.node
+		.handle_commitment_signed_batch_test(service_node_id, &upstream_updates.commitment_signed);
+	payer_node.chain_monitor.added_monitors.lock().unwrap().clear();
+
+	let payer_msg_events = payer_node.node.get_and_clear_pending_msg_events();
+
+	for ev in payer_msg_events {
+		match ev {
+			MessageSendEvent::SendRevokeAndACK { node_id, msg } => {
+				assert_eq!(node_id, service_node_id);
+				service_node.node.handle_revoke_and_ack(payer_node_id, &msg);
+				service_node.chain_monitor.added_monitors.lock().unwrap().clear();
+			},
+			MessageSendEvent::UpdateHTLCs { updates, .. } => {
+				service_node
+					.node
+					.handle_commitment_signed_batch_test(payer_node_id, &updates.commitment_signed);
+				service_node.chain_monitor.added_monitors.lock().unwrap().clear();
+				let mut svc_resp = service_node.node.get_and_clear_pending_msg_events();
+				for resp in svc_resp.drain(..) {
+					match resp {
+						MessageSendEvent::SendRevokeAndACK { msg, .. } => {
+							payer_node.node.handle_revoke_and_ack(service_node_id, &msg);
+							payer_node.chain_monitor.added_monitors.lock().unwrap().clear();
+						},
+						MessageSendEvent::UpdateHTLCs { updates, .. } => {
+							payer_node.node.handle_commitment_signed_batch_test(
+								service_node_id,
+								&updates.commitment_signed,
+							);
+							payer_node.chain_monitor.added_monitors.lock().unwrap().clear();
+							let maybe_final = payer_node.node.get_and_clear_pending_msg_events();
+							for final_ev in maybe_final {
+								if let MessageSendEvent::SendRevokeAndACK { msg, .. } = final_ev {
+									service_node.node.handle_revoke_and_ack(payer_node_id, &msg);
+									service_node
+										.chain_monitor
+										.added_monitors
+										.lock()
+										.unwrap()
+										.clear();
+								}
+							}
+						},
+						_ => {},
+					}
+				}
+			},
+			other => panic!("Unexpected payer msg event: {:?}", other),
+		}
+	}
+}
+
+#[test]
+fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut service_node_config = test_default_channel_config();
+	service_node_config.accept_intercept_htlcs = true;
+
+	let mut client_node_config = test_default_channel_config();
+	client_node_config.manually_accept_inbound_channels = true;
+	client_node_config.channel_config.accept_underpaying_htlcs = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(service_node_config), Some(client_node_config), None],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+	let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = lsps_nodes;
+
+	let payer_node_id = payer_node.node.get_our_node_id();
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	create_chan_between_nodes_with_value(&payer_node, &service_node.inner, 2_000_000, 100_000);
+
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let user_channel_id = 42;
+	let cltv_expiry_delta: u32 = 144;
+	let payment_size_msat = Some(1_000_000);
+
+	let fee_base_msat: u64 = 10_000;
+
+	execute_lsps2_dance(
+		&lsps_nodes,
+		intercept_scid,
+		user_channel_id,
+		cltv_expiry_delta,
+		promise_secret,
+		payment_size_msat,
+		fee_base_msat,
+	);
+
+	let invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"test partial fee",
+		3600,
+	)
+	.unwrap();
+
+	payer_node
+		.node
+		.pay_for_bolt11_invoice(
+			&invoice,
+			PaymentId(invoice.payment_hash().to_byte_array()),
+			None,
+			Default::default(),
+			Retry::Attempts(3),
+		)
+		.unwrap();
+
+	check_added_monitors!(payer_node, 1);
+	let events = payer_node.node.get_and_clear_pending_msg_events();
+	let ev = SendEvent::from_event(events[0].clone());
+	service_node.inner.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
+	do_commitment_signed_dance(&service_node.inner, &payer_node, &ev.commitment_msg, false, true);
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	let events = service_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let (payment_hash, expected_outbound_amount_msat) = match &events[0] {
+		Event::HTLCIntercepted {
+			intercept_id,
+			requested_next_hop_scid,
+			payment_hash,
+			expected_outbound_amount_msat,
+			..
+		} => {
+			assert_eq!(*requested_next_hop_scid, intercept_scid);
+			service_handler
+				.htlc_intercepted(
+					*requested_next_hop_scid,
+					*intercept_id,
+					*expected_outbound_amount_msat,
+					*payment_hash,
+				)
+				.unwrap();
+			(*payment_hash, expected_outbound_amount_msat)
+		},
+		other => panic!("Expected HTLCIntercepted, got {:?}", other),
+	};
+
+	match service_node.liquidity_manager.next_event().unwrap() {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel {
+			their_network_key,
+			amt_to_forward_msat,
+			opening_fee_msat,
+			user_channel_id: u,
+			intercept_scid: sc,
+		}) => {
+			assert_eq!(their_network_key, client_node_id);
+			assert_eq!(u, user_channel_id);
+			assert_eq!(sc, intercept_scid);
+			assert_eq!(opening_fee_msat, fee_base_msat);
+			assert_eq!(amt_to_forward_msat, payment_size_msat.unwrap() - fee_base_msat);
+		},
+		other => panic!("Unexpected event: {:?}", other),
+	};
+
+	assert!(service_handler
+		.channel_needs_manual_broadcast(user_channel_id, &client_node_id)
+		.unwrap());
+
+	let channel_id = create_channel_with_manual_broadcast(
+		&service_node_id,
+		&client_node_id,
+		&service_node,
+		&client_node,
+		user_channel_id,
+		expected_outbound_amount_msat,
+	);
+
+	service_handler.channel_ready(user_channel_id, &channel_id, &client_node_id).unwrap();
+
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	let pay_event = {
+		{
+			let mut added_monitors =
+				service_node.inner.chain_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let mut msg_events = service_node.inner.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1);
+		SendEvent::from_event(msg_events.remove(0))
+	};
+
+	client_node.inner.node.handle_update_add_htlc(service_node_id, &pay_event.msgs[0]);
+	do_commitment_signed_dance(
+		&client_node.inner,
+		&service_node.inner,
+		&pay_event.commitment_msg,
+		false,
+		true,
+	);
+	client_node.inner.node.process_pending_htlc_forwards();
+
+	let client_events = client_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	match &client_events[0] {
+		Event::PaymentClaimable { payment_hash: ph, .. } => assert_eq!(*ph, payment_hash),
+		other => panic!("Expected PaymentClaimable, got {:?}", other),
+	};
+
+	assert!(service_node.liquidity_manager.get_and_clear_pending_events().is_empty());
+
+	let partial_skim_msat = fee_base_msat - 1; // less than promised fee
+	service_handler.payment_forwarded(channel_id, Some(partial_skim_msat)).unwrap();
+
+	let events_after_partial = service_node.liquidity_manager.get_and_clear_pending_events();
+	assert!(
+		events_after_partial.is_empty(),
+		"Funding tx broadcast event emitted prematurely: {:?}",
+		events_after_partial
+	);
 }
