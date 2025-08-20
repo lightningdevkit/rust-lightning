@@ -1106,12 +1106,14 @@ impl OutboundPayments {
 		Ok(())
 	}
 
-	#[rustfmt::skip]
 	pub(super) fn static_invoice_received<ES: Deref>(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
 		best_block_height: u32, duration_since_epoch: Duration, entropy_source: ES,
-		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>
-	) -> Result<(), Bolt12PaymentError> where ES::Target: EntropySource {
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+	) -> Result<(), Bolt12PaymentError>
+	where
+		ES::Target: EntropySource,
+	{
 		macro_rules! abandon_with_entry {
 			($payment: expr, $reason: expr) => {
 				assert!(
@@ -1130,64 +1132,82 @@ impl OutboundPayments {
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 			hash_map::Entry::Occupied(mut entry) => match entry.get_mut() {
 				PendingOutboundPayment::AwaitingInvoice {
-					retry_strategy, retryable_invoice_request, route_params_config, ..
+					retry_strategy,
+					retryable_invoice_request,
+					route_params_config,
+					..
 				} => {
 					let invreq = &retryable_invoice_request
 						.as_ref()
 						.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
 						.invoice_request;
 					if !invoice.is_from_same_offer(invreq) {
-						return Err(Bolt12PaymentError::UnexpectedInvoice)
+						return Err(Bolt12PaymentError::UnexpectedInvoice);
 					}
 					if invoice.invoice_features().requires_unknown_bits_from(&features) {
 						abandon_with_entry!(entry, PaymentFailureReason::UnknownRequiredFeatures);
-						return Err(Bolt12PaymentError::UnknownRequiredFeatures)
+						return Err(Bolt12PaymentError::UnknownRequiredFeatures);
 					}
-					if duration_since_epoch > invoice.created_at().saturating_add(invoice.relative_expiry()) {
+					if duration_since_epoch
+						> invoice.created_at().saturating_add(invoice.relative_expiry())
+					{
 						abandon_with_entry!(entry, PaymentFailureReason::PaymentExpired);
-						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::PaymentExpired))
+						return Err(Bolt12PaymentError::SendingFailed(
+							RetryableSendFailure::PaymentExpired,
+						));
 					}
 
-					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(invreq) {
+					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
+						invreq,
+					) {
 						Ok(amt) => amt,
 						Err(_) => {
 							// We check this during invoice request parsing, when constructing the invreq's
 							// contents from its TLV stream.
 							debug_assert!(false, "LDK requires an msat amount in either the invreq or the invreq's underlying offer");
 							abandon_with_entry!(entry, PaymentFailureReason::UnexpectedError);
-							return Err(Bolt12PaymentError::UnknownRequiredFeatures)
-						}
+							return Err(Bolt12PaymentError::UnknownRequiredFeatures);
+						},
 					};
-					let keysend_preimage = PaymentPreimage(entropy_source.get_secure_random_bytes());
-					let payment_hash = PaymentHash(Sha256::hash(&keysend_preimage.0).to_byte_array());
+					let keysend_preimage =
+						PaymentPreimage(entropy_source.get_secure_random_bytes());
+					let payment_hash =
+						PaymentHash(Sha256::hash(&keysend_preimage.0).to_byte_array());
 					let pay_params = PaymentParameters::from_static_invoice(invoice)
 						.with_user_config_ignoring_fee_limit(*route_params_config);
-					let mut route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
-					route_params.max_total_routing_fee_msat = route_params_config.max_total_routing_fee_msat;
+					let mut route_params =
+						RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
+					route_params.max_total_routing_fee_msat =
+						route_params_config.max_total_routing_fee_msat;
 
 					if let Err(()) = onion_utils::set_max_path_length(
-						&mut route_params, &RecipientOnionFields::spontaneous_empty(), Some(keysend_preimage),
-						Some(invreq), best_block_height
+						&mut route_params,
+						&RecipientOnionFields::spontaneous_empty(),
+						Some(keysend_preimage),
+						Some(invreq),
+						best_block_height,
 					) {
 						abandon_with_entry!(entry, PaymentFailureReason::RouteNotFound);
-						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded))
+						return Err(Bolt12PaymentError::SendingFailed(
+							RetryableSendFailure::OnionPacketSizeExceeded,
+						));
 					}
-					let absolute_expiry = duration_since_epoch.saturating_add(ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY);
+					let absolute_expiry =
+						duration_since_epoch.saturating_add(ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY);
 
 					*entry.into_mut() = PendingOutboundPayment::StaticInvoiceReceived {
 						payment_hash,
 						keysend_preimage,
 						retry_strategy: *retry_strategy,
 						route_params,
-						invoice_request:
-							retryable_invoice_request
+						invoice_request: retryable_invoice_request
 							.take()
 							.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
 							.invoice_request,
 						static_invoice: invoice.clone(),
 						expiry_time: absolute_expiry,
 					};
-					return Ok(())
+					return Ok(());
 				},
 				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 			},
