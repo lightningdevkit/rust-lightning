@@ -10574,7 +10574,7 @@ where
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Channel {} cannot be spliced, commitment point needs to be advanced once",
+					"Channel {} cannot be spliced until a payment is routed",
 					self.context.channel_id(),
 				),
 			});
