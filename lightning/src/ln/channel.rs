@@ -6984,10 +6984,12 @@ where
 			.and_then(|funding_negotiation| funding_negotiation.as_funding())
 			.expect("Funding must exist for negotiated pending splice");
 		let transaction_number = self.holder_commitment_point.current_transaction_number();
-		let commitment_point = self
-			.holder_commitment_point
-			.current_point()
-			.expect("current should be set after receiving the initial commitment_signed");
+		let commitment_point = self.holder_commitment_point.current_point().ok_or_else(|| {
+			debug_assert!(false);
+			ChannelError::close(
+				"current_point should be set for channels initiating splicing".to_owned(),
+			)
+		})?;
 		let (holder_commitment_tx, _) = self.context.validate_commitment_signed(
 			pending_splice_funding,
 			transaction_number,
