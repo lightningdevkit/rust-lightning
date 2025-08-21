@@ -160,8 +160,7 @@ delegate!(DynSigner, EcdsaChannelSigner, inner,
 	fn sign_holder_htlc_transaction(, htlc_tx: &Transaction, input: usize,
 		htlc_descriptor: &HTLCDescriptor, secp_ctx: &Secp256k1<All>) -> Result<Signature, ()>,
 	fn sign_splicing_funding_input(, channel_parameters: &ChannelTransactionParameters,
-		tx: &Transaction, input_index: usize, input_value: u64,
-		secp_ctx: &Secp256k1<All>) -> Result<Signature, ()>
+		tx: &Transaction, input_index: usize, secp_ctx: &Secp256k1<All>) -> Result<Signature, ()>
 );
 
 delegate!(DynSigner, ChannelSigner,

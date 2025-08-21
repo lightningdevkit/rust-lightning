@@ -247,15 +247,17 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// In splicing, the previous funding transaction output is spent as the input of
 	/// the new funding transaction, and is a 2-of-2 multisig.
 	///
+	/// `channel_parameters`: The [`ChannelTransactionParameters`] for the channel's current funding
+	/// transaction that is being spent in the splice transaction to sign. A new set of
+	/// [`ChannelTransactionParameters`] will become available for the new funding transaction.
+	///
 	/// `input_index`: The index of the input within the new funding transaction `tx`,
 	///    spending the previous funding transaction's output
-	///
-	/// `input_value`: The value of the previous funding transaction output.
 	///
 	/// This method is *not* asynchronous. If an `Err` is returned, the channel will be immediately
 	/// closed.
 	fn sign_splicing_funding_input(
 		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
-		input_index: usize, input_value: u64, secp_ctx: &Secp256k1<secp256k1::All>,
+		input_index: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 }
