@@ -2192,6 +2192,11 @@ impl FundingScope {
 		self.channel_transaction_parameters.make_funding_redeemscript()
 	}
 
+	#[cfg(splicing)]
+	fn holder_funding_pubkey(&self) -> &PublicKey {
+		&self.get_holder_pubkeys().funding_pubkey
+	}
+
 	fn counterparty_funding_pubkey(&self) -> &PublicKey {
 		&self.get_counterparty_pubkeys().funding_pubkey
 	}
@@ -2335,8 +2340,16 @@ impl FundingScope {
 		};
 
 		let local_owned = self.value_to_self_msat / 1000;
+		let holder_sig_first = self.holder_funding_pubkey().serialize()[..]
+			< self.counterparty_funding_pubkey().serialize()[..];
 
-		SharedOwnedInput::new(input, prev_output, local_owned)
+		SharedOwnedInput::new(
+			input,
+			prev_output,
+			local_owned,
+			holder_sig_first,
+			self.get_funding_redeemscript(),
+		)
 	}
 }
 
@@ -7969,9 +7982,9 @@ where
 	}
 
 	pub fn funding_transaction_signed(
-		&mut self, witnesses: Vec<Witness>,
+		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>,
 	) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), APIError> {
-		let (funding_tx_opt, tx_signatures_opt) = self
+		let (tx_signatures_opt, funding_tx_opt) = self
 			.interactive_tx_signing_session
 			.as_mut()
 			.ok_or_else(|| APIError::APIMisuseError {
@@ -7981,12 +7994,21 @@ where
 				),
 			})
 			.and_then(|signing_session| {
+				let tx = signing_session.unsigned_tx().build_unsigned_tx();
+				if funding_txid_signed != tx.compute_txid() {
+					return Err(APIError::APIMisuseError {
+						err: "Transaction was malleated prior to signing".to_owned(),
+					});
+				}
+
+				let tx_signatures = msgs::TxSignatures {
+					channel_id: self.context.channel_id,
+					tx_hash: funding_txid_signed,
+					witnesses,
+					shared_input_signature: None,
+				};
 				signing_session
-					.provide_holder_witnesses(
-						&self.context.secp_ctx,
-						self.context.channel_id,
-						witnesses,
-					)
+					.provide_holder_witnesses(tx_signatures, &self.context.secp_ctx)
 					.map_err(|err| APIError::APIMisuseError { err })
 			})?;
 
@@ -8004,7 +8026,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn tx_signatures(&mut self, msg: &msgs::TxSignatures) -> Result<(Option<Transaction>, Option<msgs::TxSignatures>), ChannelError> {
+	pub fn tx_signatures(&mut self, msg: &msgs::TxSignatures) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), ChannelError> {
 		if !self.context.channel_state.is_interactive_signing()
 			|| self.context.channel_state.is_their_tx_signatures_sent()
 		{
@@ -8035,7 +8057,7 @@ where
 				}
 			}
 
-			let (holder_tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg.clone())
+			let (holder_tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg)
 				.map_err(|msg| ChannelError::Warn(msg))?;
 
 			// Set `THEIR_TX_SIGNATURES_SENT` flag after all potential errors.
@@ -8050,7 +8072,7 @@ where
 				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			}
 
-			Ok((funding_tx_opt, holder_tx_signatures_opt))
+			Ok((holder_tx_signatures_opt, funding_tx_opt))
 		} else {
 			let msg = "Unexpected tx_signatures. No funding transaction awaiting signatures";
 			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
