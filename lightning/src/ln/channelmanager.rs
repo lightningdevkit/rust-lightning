@@ -5973,7 +5973,7 @@ where
 							.input
 							.into_iter()
 							.map(|input| input.witness)
-							.filter(|witness| witness.is_empty())
+							.filter(|witness| !witness.is_empty())
 							.collect();
 						match chan.funding_transaction_signed(witnesses) {
 							Ok((Some(tx_signatures), funding_tx_opt)) => {
