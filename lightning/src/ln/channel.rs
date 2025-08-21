@@ -7984,6 +7984,35 @@ where
 	pub fn funding_transaction_signed(
 		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>,
 	) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), APIError> {
+		if !self.context.channel_state.is_interactive_signing() {
+			let err =
+				format!("Channel {} not expecting funding signatures", self.context.channel_id);
+			return Err(APIError::APIMisuseError { err });
+		}
+		if self.context.channel_state.is_our_tx_signatures_ready() {
+			let err =
+				format!("Channel {} already received funding signatures", self.context.channel_id);
+			return Err(APIError::APIMisuseError { err });
+		}
+		#[cfg(splicing)]
+		if let Some(pending_splice) = self.pending_splice.as_ref() {
+			if !pending_splice
+				.funding_negotiation
+				.as_ref()
+				.map(|funding_negotiation| {
+					matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures(_))
+				})
+				.unwrap_or(false)
+			{
+				debug_assert!(false);
+				let err = format!(
+					"Channel {} with pending splice is not expecting funding signatures yet",
+					self.context.channel_id
+				);
+				return Err(APIError::APIMisuseError { err });
+			}
+		}
+
 		let (tx_signatures_opt, funding_tx_opt) = self
 			.interactive_tx_signing_session
 			.as_mut()
@@ -8001,11 +8030,31 @@ where
 					});
 				}
 
+				let shared_input_signature = if let Some(splice_input_index) =
+					signing_session.unsigned_tx().shared_input_index()
+				{
+					let sig = match &self.context.holder_signer {
+						ChannelSignerType::Ecdsa(signer) => signer.sign_splice_shared_input(
+							&self.funding.channel_transaction_parameters,
+							&tx,
+							splice_input_index as usize,
+							&self.context.secp_ctx,
+						),
+						#[cfg(taproot)]
+						ChannelSignerType::Taproot(_) => todo!(),
+					};
+					Some(sig)
+				} else {
+					None
+				};
+				#[cfg(splicing)]
+				debug_assert_eq!(self.pending_splice.is_some(), shared_input_signature.is_some());
+
 				let tx_signatures = msgs::TxSignatures {
 					channel_id: self.context.channel_id,
 					tx_hash: funding_txid_signed,
 					witnesses,
-					shared_input_signature: None,
+					shared_input_signature,
 				};
 				signing_session
 					.provide_holder_witnesses(tx_signatures, &self.context.secp_ctx)

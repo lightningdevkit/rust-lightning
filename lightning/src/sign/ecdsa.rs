@@ -242,7 +242,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 		msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 
-	/// Signs the input of a splicing funding transaction with our funding key.
+	/// Signs the shared input of a splice transaction with our funding key.
 	///
 	/// In splicing, the previous funding transaction output is spent as the input of
 	/// the new funding transaction, and is a 2-of-2 multisig.
@@ -253,11 +253,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///
 	/// `input_index`: The index of the input within the new funding transaction `tx`,
 	///    spending the previous funding transaction's output
-	///
-	/// This method is *not* asynchronous. If an `Err` is returned, the channel will be immediately
-	/// closed.
-	fn sign_splicing_funding_input(
+	fn sign_splice_shared_input(
 		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
 		input_index: usize, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()>;
+	) -> Signature;
 }

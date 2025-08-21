@@ -1753,10 +1753,10 @@ impl EcdsaChannelSigner for InMemorySigner {
 		Ok(secp_ctx.sign_ecdsa(&msghash, &funding_key))
 	}
 
-	fn sign_splicing_funding_input(
+	fn sign_splice_shared_input(
 		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
 		input_index: usize, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()> {
+	) -> Signature {
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		assert_eq!(
 			tx.input[input_index].previous_output,
@@ -1782,7 +1782,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 			)
 			.unwrap()[..];
 		let msg = hash_to_message!(sighash);
-		Ok(sign(secp_ctx, &msg, &funding_key))
+		sign(secp_ctx, &msg, &funding_key)
 	}
 }
 
