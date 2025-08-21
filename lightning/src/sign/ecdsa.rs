@@ -254,8 +254,10 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// `input_index`: The index of the input within the new funding transaction `tx`,
 	///    spending the previous funding transaction's output
 	///
-	/// This method is *not* asynchronous. If an `Err` is returned, the channel will be immediately
-	/// closed.
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
+	/// signature and should be retried later via [`ChannelManager::funding_transaction_signed`].
+	///
+	/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
 	fn sign_splicing_funding_input(
 		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
 		input_index: usize, secp_ctx: &Secp256k1<secp256k1::All>,

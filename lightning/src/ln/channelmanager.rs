@@ -9044,7 +9044,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Ok((None, _)) => {
 						debug_assert!(false, "If our tx_signatures is empty, then we should send it first!");
 					},
-					Err(err) => debug_assert!(false, "We should not error here but we got: {:?}", err),
+					Err(err) => {
+						log_warn!(logger, "Failed signing interactive funding transaction: {err:?}");
+					},
 				}
 			}
 		}
