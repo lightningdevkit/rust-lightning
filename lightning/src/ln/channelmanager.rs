@@ -16452,9 +16452,8 @@ where
 			// We only rebuild the pending payments map if we were most recently serialized by
 			// 0.0.102+
 			//
-			// First we rebuild the pending payments, and only once we do so we go through and
-			// re-claim and re-fail pending payments. This avoids edge-cases around MPP payments
-			// resulting in redundant actions.
+			// First we rebuild all pending payments, then separately re-claim and re-fail pending
+			// payments. This avoids edge-cases around MPP payments resulting in redundant actions.
 			for (channel_id, monitor) in args.channel_monitors.iter() {
 				let mut is_channel_closed = false;
 				let counterparty_node_id = monitor.get_counterparty_node_id();
