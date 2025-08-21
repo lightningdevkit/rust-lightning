@@ -5609,42 +5609,48 @@ where
 			Err($api_err)
 		} } }
 
-		let funding_txo;
-		let (mut chan, msg_opt) = match peer_state.channel_by_id.remove(&temporary_channel_id)
-			.map(Channel::into_unfunded_outbound_v1)
-		{
-			Some(Ok(mut chan)) => {
-				match find_funding_output(&chan) {
-					Ok(found_funding_txo) => funding_txo = found_funding_txo,
-					Err(err) => {
-						let chan_err = ChannelError::close(err.to_owned());
-						let api_err = APIError::APIMisuseError { err: err.to_owned() };
-						return abandon_chan!(chan_err, api_err, chan);
+		let mut chan = match peer_state.channel_by_id.entry(temporary_channel_id) {
+			hash_map::Entry::Occupied(chan) => {
+				if !chan.get().ready_to_fund() {
+					return Err(APIError::APIMisuseError {
+						err: format!("Channel {temporary_channel_id} with counterparty {counterparty_node_id} is not an unfunded, outbound channel ready to fund"),
+					});
+				}
+				match chan.remove().into_unfunded_outbound_v1() {
+					Ok(chan) => chan,
+					Err(chan) => {
+						debug_assert!(false, "ready_to_fund guarantees into_unfunded_outbound_v1 will succeed");
+						peer_state.channel_by_id.insert(temporary_channel_id, chan);
+						return Err(APIError::APIMisuseError {
+							err: "Invalid state, please report this bug".to_owned(),
+						});
 					},
 				}
+			},
+			hash_map::Entry::Vacant(_) => {
+				return Err(APIError::ChannelUnavailable {
+					err: format!("Channel {temporary_channel_id} with counterparty {counterparty_node_id} not found"),
+				});
+			},
+		};
 
-				let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-				let funding_res = chan.get_funding_created(funding_transaction, funding_txo, is_batch_funding, &&logger);
-				match funding_res {
-					Ok(funding_msg) => (chan, funding_msg),
-					Err((mut chan, chan_err)) => {
-						let api_err = APIError::ChannelUnavailable { err: "Signer refused to sign the initial commitment transaction".to_owned() };
-						return abandon_chan!(chan_err, api_err, chan);
-					}
-				}
+		let funding_txo = match find_funding_output(&chan) {
+			Ok(found_funding_txo) => found_funding_txo,
+			Err(err) => {
+				let chan_err = ChannelError::close(err.to_owned());
+				let api_err = APIError::APIMisuseError { err: err.to_owned() };
+				return abandon_chan!(chan_err, api_err, chan);
 			},
-			Some(Err(chan)) => {
-				peer_state.channel_by_id.insert(temporary_channel_id, chan);
-				return Err(APIError::APIMisuseError {
-					err: format!(
-						"Channel with id {} for the passed counterparty node_id {} is not an unfunded, outbound V1 channel",
-						temporary_channel_id, counterparty_node_id),
-				})
-			},
-			None => return Err(APIError::ChannelUnavailable {err: format!(
-				"Channel with id {} not found for the passed counterparty node_id {}",
-				temporary_channel_id, counterparty_node_id),
-				}),
+		};
+
+		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+		let funding_res = chan.get_funding_created(funding_transaction, funding_txo, is_batch_funding, &&logger);
+		let (mut chan, msg_opt) = match funding_res {
+			Ok(funding_msg) => (chan, funding_msg),
+			Err((mut chan, chan_err)) => {
+				let api_err = APIError::ChannelUnavailable { err: "Signer refused to sign the initial commitment transaction".to_owned() };
+				return abandon_chan!(chan_err, api_err, chan);
+			}
 		};
 
 		match peer_state.channel_by_id.entry(chan.context.channel_id()) {

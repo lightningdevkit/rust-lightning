@@ -1551,6 +1551,22 @@ where
 		)
 	}
 
+	/// Returns true if this channel is waiting on a (batch) funding transaction to be provided.
+	///
+	/// If this method returns true, [`Self::into_unfunded_outbound_v1`] will also succeed.
+	pub fn ready_to_fund(&self) -> bool {
+		if !self.funding().is_outbound() {
+			return false;
+		}
+		match self.context().channel_state {
+			ChannelState::NegotiatingFunding(flags) => {
+				debug_assert!(matches!(self.phase, ChannelPhase::UnfundedOutboundV1(_)));
+				flags.is_our_init_sent() && flags.is_their_init_sent()
+			},
+			_ => false,
+		}
+	}
+
 	pub fn into_unfunded_outbound_v1(self) -> Result<OutboundV1Channel<SP>, Self> {
 		if let ChannelPhase::UnfundedOutboundV1(channel) = self.phase {
 			Ok(channel)
