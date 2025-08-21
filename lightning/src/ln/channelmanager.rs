@@ -9025,9 +9025,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					None,
 				);
 
-				if pending_events.contains(&event_action) {
-					debug_assert!(false, "FundingTransactionReadyForSigning should not have been queued already");
-				} else {
+				if !pending_events.contains(&event_action) {
 					pending_events.push_back(event_action);
 				}
 			} else {
