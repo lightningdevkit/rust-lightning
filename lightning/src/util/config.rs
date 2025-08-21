@@ -947,6 +947,18 @@ pub struct UserConfig {
 	/// Default value: `false`
 	#[cfg(test)]
 	pub enable_htlc_hold: bool,
+	/// If this is set to true, then if we as an often-offline payer receive a [`StaticInvoice`] to
+	/// pay, we will attempt to hold the corresponding outbound HTLCs with our next-hop channel
+	/// counterparty(s) that support the `htlc_hold` feature. This allows our node to go offline once
+	/// the HTLCs are locked in even though the recipient may not yet be online to receive them.
+	///
+	/// This option only applies if we are a private node, and will be ignored if we are an announced
+	/// node that is expected to be online at all times.
+	///
+	/// Default value: `true`
+	///
+	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+	pub hold_outbound_htlcs_at_next_hop: bool,
 }
 
 impl Default for UserConfig {
@@ -963,6 +975,7 @@ impl Default for UserConfig {
 			enable_dual_funded_channels: false,
 			#[cfg(test)]
 			enable_htlc_hold: false,
+			hold_outbound_htlcs_at_next_hop: true,
 		}
 	}
 }
@@ -983,6 +996,7 @@ impl Readable for UserConfig {
 			accept_intercept_htlcs: Readable::read(reader)?,
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
 			enable_dual_funded_channels: Readable::read(reader)?,
+			hold_outbound_htlcs_at_next_hop: Readable::read(reader)?,
 		})
 	}
 }

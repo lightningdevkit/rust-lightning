@@ -177,7 +177,7 @@ use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, RwLock, Rw
 use bitcoin::hex::impl_fmt_traits;
 
 use core::borrow::Borrow;
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::convert::Infallible;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -5398,12 +5398,14 @@ where
 		&self, invoice: &StaticInvoice, payment_id: PaymentId,
 	) -> Result<(), Bolt12PaymentError> {
 		let mut res = Ok(());
+		let hold_htlc_channels_res = self.hold_htlc_channels();
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let best_block_height = self.best_block.read().unwrap().height;
 			let features = self.bolt12_invoice_features();
 			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
 				invoice,
 				payment_id,
+				hold_htlc_channels_res.is_ok(),
 				features,
 				best_block_height,
 				self.duration_since_epoch(),
@@ -5441,6 +5443,43 @@ where
 		});
 
 		res
+	}
+
+	/// Returns a list of channels where our counterparty supports
+	/// [`InitFeatures::supports_htlc_hold`], or an error if there are none or we detect that we are
+	/// an announced node. Useful for sending async payments to [`StaticInvoice`]s.
+	fn hold_htlc_channels(&self) -> Result<Vec<ChannelDetails>, ()> {
+		let should_send_async = {
+			let cfg = self.config.read().unwrap();
+			cfg.hold_outbound_htlcs_at_next_hop
+				&& !cfg.channel_handshake_config.announce_for_forwarding
+				&& cfg.channel_handshake_limits.force_announced_channel_preference
+		};
+		if !should_send_async {
+			return Err(());
+		}
+
+		let any_announced_channels = Cell::new(false);
+		let hold_htlc_channels =
+			self.list_funded_channels_with_filter(|&(init_features, _, ref channel)| {
+				// If we have an announced channel, we are a node that is expected to be always-online and
+				// shouldn't be relying on channel counterparties to hold onto our HTLCs for us while
+				// waiting for the payment recipient to come online.
+				if channel.context().should_announce() {
+					any_announced_channels.set(true);
+				}
+				if any_announced_channels.get() {
+					return false;
+				}
+
+				init_features.supports_htlc_hold() && channel.context().is_live()
+			});
+
+		if any_announced_channels.get() || hold_htlc_channels.is_empty() {
+			Err(())
+		} else {
+			Ok(hold_htlc_channels)
+		}
 	}
 
 	fn send_payment_for_static_invoice(
