@@ -3124,15 +3124,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			|| Some(confirmed_txid) == funding.prev_counterparty_commitment_txid
 		{
 			let htlcs = funding.counterparty_claimable_outpoints.get(&confirmed_txid).unwrap();
-			walk_htlcs!(
-				htlcs.iter().filter_map(|(a, b)| {
-					if let &Some(ref source) = b {
-						Some((a, Some(&**source)))
-					} else {
-						None
-					}
-				})
-			);
+			walk_htlcs!(htlcs.iter().filter_map(|(a, b)| {
+				if let &Some(ref source) = b {
+					Some((a, Some(&**source)))
+				} else {
+					None
+				}
+			}));
 		} else if confirmed_txid == funding.current_holder_commitment_tx.trust().txid() {
 			walk_htlcs!(holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES));
 		} else if let Some(prev_commitment_tx) = &funding.prev_holder_commitment_tx {
