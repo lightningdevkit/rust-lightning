@@ -103,6 +103,10 @@ pub(crate) enum PendingOutboundPayment {
 		route_params: RouteParameters,
 		invoice_request: InvoiceRequest,
 		static_invoice: StaticInvoice,
+		// Whether we should pay the static invoice asynchronously, i.e. by setting
+		// [`UpdateAddHTLC::hold_htlc`] so our channel counterparty(s) hold the HTLC(s) for us until the
+		// recipient comes online, allowing us to go offline after locking in the HTLC(s).
+		hold_htlcs_at_next_hop: bool,
 		// The deadline as duration since the Unix epoch for the async recipient to come online,
 		// after which we'll fail the payment.
 		//
@@ -1107,8 +1111,9 @@ impl OutboundPayments {
 	}
 
 	pub(super) fn static_invoice_received<ES: Deref>(
-		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
-		best_block_height: u32, duration_since_epoch: Duration, entropy_source: ES,
+		&self, invoice: &StaticInvoice, payment_id: PaymentId, hold_htlcs_at_next_hop: bool,
+		features: Bolt12InvoiceFeatures, best_block_height: u32, duration_since_epoch: Duration,
+		entropy_source: ES,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 	) -> Result<(), Bolt12PaymentError>
 	where
@@ -1192,6 +1197,13 @@ impl OutboundPayments {
 							RetryableSendFailure::OnionPacketSizeExceeded,
 						));
 					}
+
+					// If we expect the HTLCs for this payment to be held at our next-hop counterparty, don't
+					// retry the payment. In future iterations of this feature, we will send this payment via
+					// trampoline and the counterparty will retry on our behalf.
+					if hold_htlcs_at_next_hop {
+						*retry_strategy = Retry::Attempts(0);
+					}
 					let absolute_expiry =
 						duration_since_epoch.saturating_add(ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY);
 
@@ -1200,6 +1212,7 @@ impl OutboundPayments {
 						keysend_preimage,
 						retry_strategy: *retry_strategy,
 						route_params,
+						hold_htlcs_at_next_hop,
 						invoice_request: retryable_invoice_request
 							.take()
 							.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
@@ -2759,6 +2772,12 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	// HTLCs are in-flight.
 	(9, StaticInvoiceReceived) => {
 		(0, payment_hash, required),
+		// Added in 0.2. If this field is set when this variant is created, the HTLCs are sent
+		// immediately after and the pending outbound is also immediately transitioned to Retryable.
+		// However, if we crash and then downgrade before the transition to Retryable, this payment will
+		// sit in outbounds until it either times out in `remove_stale_payments` or is manually
+		// abandoned.
+		(1, hold_htlcs_at_next_hop, required),
 		(2, keysend_preimage, required),
 		(4, retry_strategy, required),
 		(6, route_params, required),
@@ -3418,6 +3437,7 @@ mod tests {
 			invoice_request: dummy_invoice_request(),
 			static_invoice: dummy_static_invoice(),
 			expiry_time: Duration::from_secs(absolute_expiry + 2),
+			hold_htlcs_at_next_hop: false
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);
@@ -3468,6 +3488,7 @@ mod tests {
 			invoice_request: dummy_invoice_request(),
 			static_invoice: dummy_static_invoice(),
 			expiry_time: now(),
+			hold_htlcs_at_next_hop: false,
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);
