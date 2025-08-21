@@ -395,7 +395,7 @@ pub enum InvreqResponseInstructions {
 	/// the invoice request since it is now verified.
 	SendInvoice(VerifiedInvoiceRequest),
 	/// We are a static invoice server and should respond to this invoice request by retrieving the
-	/// [`StaticInvoice`] corresponding to the `recipient_id` and `invoice_id` and calling
+	/// [`StaticInvoice`] corresponding to the `recipient_id` and `invoice_slot` and calling
 	/// `OffersMessageFlow::enqueue_static_invoice`.
 	///
 	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
@@ -404,8 +404,8 @@ pub enum InvreqResponseInstructions {
 		///
 		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 		recipient_id: Vec<u8>,
-		/// An identifier for the specific invoice being requested by the payer.
-		invoice_id: u128,
+		/// The slot number for the specific invoice being requested by the payer.
+		invoice_slot: u16,
 	},
 }
 
@@ -435,7 +435,7 @@ where
 			Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
 			Some(OffersContext::StaticInvoiceRequested {
 				recipient_id,
-				invoice_id,
+				invoice_slot,
 				path_absolute_expiry,
 			}) => {
 				if path_absolute_expiry < self.duration_since_epoch() {
@@ -444,7 +444,7 @@ where
 
 				return Ok(InvreqResponseInstructions::SendStaticInvoice {
 					recipient_id,
-					invoice_id,
+					invoice_slot,
 				});
 			},
 			_ => return Err(()),
@@ -1266,16 +1266,17 @@ where
 
 		// Update the cache to remove expired offers, and check to see whether we need new offers to be
 		// interactively built with the static invoice server.
-		let needs_new_offers =
-			cache.prune_expired_offers(duration_since_epoch, timer_tick_occurred);
-		if !needs_new_offers {
-			return Ok(());
-		}
+		let needs_new_offer_slot =
+			match cache.prune_expired_offers(duration_since_epoch, timer_tick_occurred) {
+				Some(idx) => idx,
+				None => return Ok(()),
+			};
 
 		// If we need new offers, send out offer paths request messages to the static invoice server.
 		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPaths {
 			path_absolute_expiry: duration_since_epoch
 				.saturating_add(TEMP_REPLY_PATH_RELATIVE_EXPIRY),
+			invoice_slot: needs_new_offer_slot,
 		});
 		let reply_paths = match self.create_blinded_paths(peers, context) {
 			Ok(paths) => paths,
@@ -1289,7 +1290,9 @@ where
 
 		let mut pending_async_payments_messages =
 			self.pending_async_payments_messages.lock().unwrap();
-		let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {});
+		let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {
+			invoice_slot: needs_new_offer_slot,
+		});
 		enqueue_onion_message_with_reply_paths(
 			message,
 			cache.paths_to_static_invoice_server(),
@@ -1314,8 +1317,7 @@ where
 			let duration_since_epoch = self.duration_since_epoch();
 			let cache = self.async_receive_offer_cache.lock().unwrap();
 			for offer_and_metadata in cache.offers_needing_invoice_refresh(duration_since_epoch) {
-				let (offer, offer_nonce, slot_number, update_static_invoice_path) =
-					offer_and_metadata;
+				let (offer, offer_nonce, update_static_invoice_path) = offer_and_metadata;
 
 				let (invoice, forward_invreq_path) = match self.create_static_invoice_for_server(
 					offer,
@@ -1339,7 +1341,6 @@ where
 				let serve_invoice_message = ServeStaticInvoice {
 					invoice,
 					forward_invoice_request_path: forward_invreq_path,
-					invoice_slot: slot_number,
 				};
 				serve_static_invoice_msgs.push((
 					serve_invoice_message,
@@ -1370,12 +1371,10 @@ where
 	/// Handles an incoming [`OfferPathsRequest`] onion message from an often-offline recipient who
 	/// wants us (the static invoice server) to serve [`StaticInvoice`]s to payers on their behalf.
 	/// Sends out [`OfferPaths`] onion messages in response.
-	pub fn handle_offer_paths_request<ES: Deref>(
-		&self, context: AsyncPaymentsContext, peers: Vec<MessageForwardNode>, entropy_source: ES,
-	) -> Option<(OfferPaths, MessageContext)>
-	where
-		ES::Target: EntropySource,
-	{
+	pub fn handle_offer_paths_request(
+		&self, request: &OfferPathsRequest, context: AsyncPaymentsContext,
+		peers: Vec<MessageForwardNode>,
+	) -> Option<(OfferPaths, MessageContext)> {
 		let duration_since_epoch = self.duration_since_epoch();
 
 		let recipient_id = match context {
@@ -1388,10 +1387,6 @@ where
 			_ => return None,
 		};
 
-		let mut random_bytes = [0u8; 16];
-		random_bytes.copy_from_slice(&entropy_source.get_secure_random_bytes()[..16]);
-		let invoice_id = u128::from_be_bytes(random_bytes);
-
 		// Create the blinded paths that will be included in the async recipient's offer.
 		let (offer_paths, paths_expiry) = {
 			let path_absolute_expiry =
@@ -1399,7 +1394,7 @@ where
 			let context = MessageContext::Offers(OffersContext::StaticInvoiceRequested {
 				recipient_id: recipient_id.clone(),
 				path_absolute_expiry,
-				invoice_id,
+				invoice_slot: request.invoice_slot,
 			});
 
 			match self.create_blinded_paths(peers, context) {
@@ -1416,7 +1411,7 @@ where
 				duration_since_epoch.saturating_add(DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY);
 			MessageContext::AsyncPayments(AsyncPaymentsContext::ServeStaticInvoice {
 				recipient_id,
-				invoice_id,
+				invoice_slot: request.invoice_slot,
 				path_absolute_expiry,
 			})
 		};
@@ -1442,14 +1437,15 @@ where
 		R::Target: Router,
 	{
 		let duration_since_epoch = self.duration_since_epoch();
-		match context {
-			AsyncPaymentsContext::OfferPaths { path_absolute_expiry } => {
+		let invoice_slot = match context {
+			AsyncPaymentsContext::OfferPaths { invoice_slot, path_absolute_expiry } => {
 				if duration_since_epoch > path_absolute_expiry {
 					return None;
 				}
+				invoice_slot
 			},
 			_ => return None,
-		}
+		};
 
 		{
 			// Only respond with `ServeStaticInvoice` if we actually need a new offer built.
@@ -1458,6 +1454,7 @@ where
 			if !cache.should_build_offer_with_paths(
 				&message.paths[..],
 				message.paths_absolute_expiry,
+				invoice_slot,
 				duration_since_epoch,
 			) {
 				return None;
@@ -1493,18 +1490,16 @@ where
 			Err(()) => return None,
 		};
 
-		let res = self.async_receive_offer_cache.lock().unwrap().cache_pending_offer(
+		if let Err(()) = self.async_receive_offer_cache.lock().unwrap().cache_pending_offer(
 			offer,
 			message.paths_absolute_expiry,
 			offer_nonce,
 			responder,
 			duration_since_epoch,
-		);
-
-		let invoice_slot = match res {
-			Ok(idx) => idx,
-			Err(()) => return None,
-		};
+			invoice_slot,
+		) {
+			return None;
+		}
 
 		let reply_path_context = {
 			MessageContext::AsyncPayments(AsyncPaymentsContext::StaticInvoicePersisted {
@@ -1513,8 +1508,7 @@ where
 			})
 		};
 
-		let serve_invoice_message =
-			ServeStaticInvoice { invoice, forward_invoice_request_path, invoice_slot };
+		let serve_invoice_message = ServeStaticInvoice { invoice, forward_invoice_request_path };
 		Some((serve_invoice_message, reply_path_context))
 	}
 
@@ -1576,7 +1570,7 @@ where
 	/// wants us as a static invoice server to serve the [`ServeStaticInvoice::invoice`] to payers on
 	/// their behalf.
 	///
-	/// On success, returns `(recipient_id, invoice_id)` for use in persisting and later retrieving
+	/// On success, returns `(recipient_id, invoice_slot)` for use in persisting and later retrieving
 	/// the static invoice from the database.
 	///
 	/// Errors if the [`ServeStaticInvoice::invoice`] is expired or larger than
@@ -1585,7 +1579,7 @@ where
 	/// [`ServeStaticInvoice::invoice`]: crate::onion_message::async_payments::ServeStaticInvoice::invoice
 	pub fn verify_serve_static_invoice_message(
 		&self, message: &ServeStaticInvoice, context: AsyncPaymentsContext,
-	) -> Result<(Vec<u8>, u128), ()> {
+	) -> Result<(Vec<u8>, u16), ()> {
 		if message.invoice.is_expired_no_std(self.duration_since_epoch()) {
 			return Err(());
 		}
@@ -1595,14 +1589,14 @@ where
 		match context {
 			AsyncPaymentsContext::ServeStaticInvoice {
 				recipient_id,
-				invoice_id,
+				invoice_slot,
 				path_absolute_expiry,
 			} => {
 				if self.duration_since_epoch() > path_absolute_expiry {
 					return Err(());
 				}
 
-				return Ok((recipient_id, invoice_id));
+				return Ok((recipient_id, invoice_slot));
 			},
 			_ => return Err(()),
 		};

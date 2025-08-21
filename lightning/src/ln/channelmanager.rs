@@ -14388,11 +14388,9 @@ where
 
 				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
 					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
-					Ok(InvreqResponseInstructions::SendStaticInvoice {
-						recipient_id: _recipient_id, invoice_id: _invoice_id
-					}) => {
+					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot }) => {
 						self.pending_events.lock().unwrap().push_back((Event::StaticInvoiceRequested {
-							recipient_id: _recipient_id, invoice_id: _invoice_id, reply_path: responder
+							recipient_id, invoice_slot, reply_path: responder
 						}, None));
 
 						return None
@@ -14514,29 +14512,28 @@ where
 	L::Target: Logger,
 {
 	fn handle_offer_paths_request(
-		&self, _message: OfferPathsRequest, _context: AsyncPaymentsContext,
-		_responder: Option<Responder>,
+		&self, message: OfferPathsRequest, context: AsyncPaymentsContext,
+		responder: Option<Responder>,
 	) -> Option<(OfferPaths, ResponseInstruction)> {
 		let peers = self.get_peers_for_blinded_path();
-		let entropy = &*self.entropy_source;
 		let (message, reply_path_context) =
-			match self.flow.handle_offer_paths_request(_context, peers, entropy) {
+			match self.flow.handle_offer_paths_request(&message, context, peers) {
 				Some(msg) => msg,
 				None => return None,
 			};
-		_responder.map(|resp| (message, resp.respond_with_reply_path(reply_path_context)))
+		responder.map(|resp| (message, resp.respond_with_reply_path(reply_path_context)))
 	}
 
 	fn handle_offer_paths(
-		&self, _message: OfferPaths, _context: AsyncPaymentsContext, _responder: Option<Responder>,
+		&self, message: OfferPaths, context: AsyncPaymentsContext, responder: Option<Responder>,
 	) -> Option<(ServeStaticInvoice, ResponseInstruction)> {
-		let responder = match _responder {
+		let responder = match responder {
 			Some(responder) => responder,
 			None => return None,
 		};
 		let (serve_static_invoice, reply_context) = match self.flow.handle_offer_paths(
-			_message,
-			_context,
+			message,
+			context,
 			responder.clone(),
 			self.get_peers_for_blinded_path(),
 			self.list_usable_channels(),
@@ -14555,27 +14552,26 @@ where
 	}
 
 	fn handle_serve_static_invoice(
-		&self, _message: ServeStaticInvoice, _context: AsyncPaymentsContext,
-		_responder: Option<Responder>,
+		&self, message: ServeStaticInvoice, context: AsyncPaymentsContext,
+		responder: Option<Responder>,
 	) {
-		let responder = match _responder {
+		let responder = match responder {
 			Some(resp) => resp,
 			None => return,
 		};
 
-		let (recipient_id, invoice_id) =
-			match self.flow.verify_serve_static_invoice_message(&_message, _context) {
-				Ok((recipient_id, inv_id)) => (recipient_id, inv_id),
+		let (recipient_id, invoice_slot) =
+			match self.flow.verify_serve_static_invoice_message(&message, context) {
+				Ok((recipient_id, inv_slot)) => (recipient_id, inv_slot),
 				Err(()) => return,
 			};
 
 		let mut pending_events = self.pending_events.lock().unwrap();
 		pending_events.push_back((
 			Event::PersistStaticInvoice {
-				invoice: _message.invoice,
-				invoice_slot: _message.invoice_slot,
+				invoice: message.invoice,
+				invoice_slot,
 				recipient_id,
-				invoice_id,
 				invoice_persisted_path: responder,
 			},
 			None,
@@ -14583,24 +14579,24 @@ where
 	}
 
 	fn handle_static_invoice_persisted(
-		&self, _message: StaticInvoicePersisted, _context: AsyncPaymentsContext,
+		&self, _message: StaticInvoicePersisted, context: AsyncPaymentsContext,
 	) {
-		let should_persist = self.flow.handle_static_invoice_persisted(_context);
+		let should_persist = self.flow.handle_static_invoice_persisted(context);
 		if should_persist {
 			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		}
 	}
 
 	fn handle_held_htlc_available(
-		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
-		_responder: Option<Responder>,
+		&self, _message: HeldHtlcAvailable, context: AsyncPaymentsContext,
+		responder: Option<Responder>,
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
-		self.flow.verify_inbound_async_payment_context(_context).ok()?;
-		return _responder.map(|responder| (ReleaseHeldHtlc {}, responder.respond()));
+		self.flow.verify_inbound_async_payment_context(context).ok()?;
+		return responder.map(|responder| (ReleaseHeldHtlc {}, responder.respond()));
 	}
 
-	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
-		let payment_id = match _context {
+	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, context: AsyncPaymentsContext) {
+		let payment_id = match context {
 			AsyncPaymentsContext::OutboundPayment { payment_id } => payment_id,
 			_ => return,
 		};
