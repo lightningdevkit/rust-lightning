@@ -3065,7 +3065,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		};
 
 		macro_rules! walk_htlcs {
-			($holder_commitment: expr, $htlc_iter: expr) => {
+			($htlc_iter: expr) => {
 				let mut walk_candidate_htlcs = |htlcs| {
 					for &(ref candidate_htlc, ref candidate_source) in htlcs {
 						let candidate_htlc: &HTLCOutputInCommitment = &candidate_htlc;
@@ -3108,14 +3108,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				// We walk the set of HTLCs in the unrevoked counterparty commitment transactions (see
 				// `fail_unbroadcast_htlcs` for a description of why).
 				if let Some(ref txid) = us.funding.current_counterparty_commitment_txid {
-					if let Some(htlcs) = us.funding.counterparty_claimable_outpoints.get(txid) {
-						walk_candidate_htlcs(htlcs);
-					}
+					let htlcs = us.funding.counterparty_claimable_outpoints.get(txid);
+					walk_candidate_htlcs(htlcs.expect("Missing tx info for latest tx"));
 				}
 				if let Some(ref txid) = us.funding.prev_counterparty_commitment_txid {
-					if let Some(htlcs) = us.funding.counterparty_claimable_outpoints.get(txid) {
-						walk_candidate_htlcs(htlcs);
-					}
+					let htlcs = us.funding.counterparty_claimable_outpoints.get(txid);
+					walk_candidate_htlcs(htlcs.expect("Missing tx info for previous tx"));
 				}
 			};
 		}
@@ -3127,7 +3125,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		{
 			let htlcs = funding.counterparty_claimable_outpoints.get(&confirmed_txid).unwrap();
 			walk_htlcs!(
-				false,
 				htlcs.iter().filter_map(|(a, b)| {
 					if let &Some(ref source) = b {
 						Some((a, Some(&**source)))
@@ -3137,17 +3134,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				})
 			);
 		} else if confirmed_txid == funding.current_holder_commitment_tx.trust().txid() {
-			walk_htlcs!(true, holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES));
+			walk_htlcs!(holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES));
 		} else if let Some(prev_commitment_tx) = &funding.prev_holder_commitment_tx {
 			if confirmed_txid == prev_commitment_tx.trust().txid() {
-				walk_htlcs!(true, holder_commitment_htlcs!(us, PREV_WITH_SOURCES).unwrap());
+				walk_htlcs!(holder_commitment_htlcs!(us, PREV_WITH_SOURCES).unwrap());
 			} else {
 				let htlcs_confirmed: &[(&HTLCOutputInCommitment, _)] = &[];
-				walk_htlcs!(false, htlcs_confirmed.iter());
+				walk_htlcs!(htlcs_confirmed.iter());
 			}
 		} else {
 			let htlcs_confirmed: &[(&HTLCOutputInCommitment, _)] = &[];
-			walk_htlcs!(false, htlcs_confirmed.iter());
+			walk_htlcs!(htlcs_confirmed.iter());
 		}
 
 		res
