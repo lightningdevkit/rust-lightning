@@ -4082,8 +4082,8 @@ where
 	///
 	/// This is equivalent to saying the channel can be persisted to disk.
 	pub fn can_resume_on_restart(&self) -> bool {
-		self.channel_state.can_resume_on_reconnect() &&
-			match self.channel_state {
+		self.channel_state.can_resume_on_reconnect()
+			&& match self.channel_state {
 				ChannelState::AwaitingChannelReady(flags) => !flags.is_waiting_for_batch(),
 				_ => true,
 			}
