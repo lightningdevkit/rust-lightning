@@ -38,6 +38,8 @@ use crate::chain::channelmonitor::{
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BestBlock;
 use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
+#[cfg(splicing)]
+use crate::events::bump_transaction::EMPTY_SCRIPT_SIG_WEIGHT;
 use crate::events::ClosureReason;
 use crate::ln::chan_utils;
 #[cfg(splicing)]
@@ -5879,18 +5881,18 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 
 /// Estimate our part of the fee of the new funding transaction.
 /// input_count: Number of contributed inputs.
-/// witness_weight: The witness weight for contributed inputs.
+/// input_satisfaction_weight: The satisfaction weight for contributed inputs.
 #[allow(dead_code)] // TODO(dual_funding): TODO(splicing): Remove allow once used.
 #[rustfmt::skip]
 fn estimate_v2_funding_transaction_fee(
-	is_initiator: bool, input_count: usize, witness_weight: Weight,
+	is_initiator: bool, input_count: usize, input_satisfaction_weight: Weight,
 	funding_feerate_sat_per_1000_weight: u32,
 ) -> u64 {
 	// Inputs
 	let mut weight = (input_count as u64) * BASE_INPUT_WEIGHT;
 
 	// Witnesses
-	weight = weight.saturating_add(witness_weight.to_wu());
+	weight = weight.saturating_add(input_satisfaction_weight.to_wu());
 
 	// If we are the initiator, we must pay for weight of all common fields in the funding transaction.
 	if is_initiator {
@@ -5919,14 +5921,15 @@ fn check_v2_funding_inputs_sufficient(
 	contribution_amount: i64, funding_inputs: &[(TxIn, Transaction, Weight)], is_initiator: bool,
 	is_splice: bool, funding_feerate_sat_per_1000_weight: u32,
 ) -> Result<u64, ChannelError> {
-	let mut total_input_witness_weight = Weight::from_wu(funding_inputs.iter().map(|(_, _, w)| w.to_wu()).sum());
+	let mut total_input_satisfaction_weight = Weight::from_wu(funding_inputs.iter().map(|(_, _, w)| w.to_wu()).sum());
 	let mut funding_inputs_len = funding_inputs.len();
 	if is_initiator && is_splice {
 		// consider the weight of the input and witness needed for spending the old funding transaction
 		funding_inputs_len += 1;
-		total_input_witness_weight += Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT);
+		total_input_satisfaction_weight +=
+			Weight::from_wu(EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT);
 	}
-	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs_len, total_input_witness_weight, funding_feerate_sat_per_1000_weight);
+	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs_len, total_input_satisfaction_weight, funding_feerate_sat_per_1000_weight);
 
 	let mut total_input_sats = 0u64;
 	for (idx, input) in funding_inputs.iter().enumerate() {
@@ -15931,7 +15934,7 @@ mod tests {
 				true,
 				2000,
 			).unwrap(),
-			2268,
+			2276,
 		);
 
 		// negative case, inputs clearly insufficient
@@ -15947,13 +15950,13 @@ mod tests {
 			);
 			assert_eq!(
 				format!("{:?}", res.err().unwrap()),
-				"Warn: Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1730. Need more inputs.",
+				"Warn: Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1738. Need more inputs.",
 			);
 		}
 
 		// barely covers
 		{
-			let expected_fee: u64 = 2268;
+			let expected_fee: u64 = 2276;
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
 					(300_000 - expected_fee - 20) as i64,
@@ -15983,7 +15986,7 @@ mod tests {
 			);
 			assert_eq!(
 				format!("{:?}", res.err().unwrap()),
-				"Warn: Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2495. Need more inputs.",
+				"Warn: Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2504. Need more inputs.",
 			);
 		}
 
