@@ -3047,7 +3047,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let confirmed_txid = us.funding_spend_confirmed.or_else(|| {
 			us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
 				if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
-					if event.height <= us.best_block.height - ANTI_REORG_DELAY + 1 {
+					if event.height + ANTI_REORG_DELAY - 1 <= us.best_block.height {
 						Some(event.txid)
 					} else {
 						None
