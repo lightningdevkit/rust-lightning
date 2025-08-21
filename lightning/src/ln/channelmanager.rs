@@ -16455,7 +16455,7 @@ where
 			// First we rebuild all pending payments, then separately re-claim and re-fail pending
 			// payments. This avoids edge-cases around MPP payments resulting in redundant actions.
 			for (channel_id, monitor) in args.channel_monitors.iter() {
-				let mut is_channel_closed = false;
+				let mut is_channel_closed = true;
 				let counterparty_node_id = monitor.get_counterparty_node_id();
 				if let Some(peer_state_mtx) = per_peer_state.get(&counterparty_node_id) {
 					let mut peer_state_lock = peer_state_mtx.lock().unwrap();
@@ -16495,7 +16495,7 @@ where
 				}
 			}
 			for (channel_id, monitor) in args.channel_monitors.iter() {
-				let mut is_channel_closed = false;
+				let mut is_channel_closed = true;
 				let counterparty_node_id = monitor.get_counterparty_node_id();
 				if let Some(peer_state_mtx) = per_peer_state.get(&counterparty_node_id) {
 					let mut peer_state_lock = peer_state_mtx.lock().unwrap();
