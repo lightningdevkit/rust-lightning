@@ -13,8 +13,8 @@ use bitcoin::consensus::encode;
 use bitcoin::constants::ChainHash;
 use bitcoin::script::{Builder, Script, ScriptBuf, WScriptHash};
 use bitcoin::sighash::EcdsaSighashType;
-use bitcoin::transaction::{Transaction, TxIn, TxOut};
-use bitcoin::{Weight, Witness};
+use bitcoin::transaction::{Transaction, TxOut};
+use bitcoin::Witness;
 
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -26,7 +26,7 @@ use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 #[cfg(splicing)]
 use bitcoin::Sequence;
-use bitcoin::{secp256k1, sighash};
+use bitcoin::{secp256k1, sighash, TxIn};
 
 use crate::chain::chaininterface::{
 	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
@@ -37,18 +37,15 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BestBlock;
-use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
-#[cfg(splicing)]
-use crate::events::bump_transaction::EMPTY_SCRIPT_SIG_WEIGHT;
+use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::events::ClosureReason;
 use crate::ln::chan_utils;
-#[cfg(splicing)]
-use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 use crate::ln::chan_utils::{
 	get_commitment_transaction_number_obscure_factor, max_htlcs, second_stage_tx_fees_sat,
 	selected_commitment_sat_per_1000_weight, ChannelPublicKeys, ChannelTransactionParameters,
 	ClosingTransaction, CommitmentTransaction, CounterpartyChannelTransactionParameters,
 	CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HolderCommitmentTransaction,
+	FUNDING_TRANSACTION_WITNESS_WEIGHT,
 };
 use crate::ln::channel_state::{
 	ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails,
@@ -59,6 +56,7 @@ use crate::ln::channelmanager::{
 	PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus, RAACommitmentOrder, SentHTLCId,
 	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
+use crate::ln::funding::FundingTxInput;
 #[cfg(splicing)]
 use crate::ln::interactivetxs::{
 	calculate_change_output_value, AbortReason, InteractiveTxMessageSend,
@@ -5880,21 +5878,18 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 }
 
 /// Estimate our part of the fee of the new funding transaction.
-/// input_count: Number of contributed inputs.
-/// input_satisfaction_weight: The satisfaction weight for contributed inputs.
 #[allow(dead_code)] // TODO(dual_funding): TODO(splicing): Remove allow once used.
 #[rustfmt::skip]
 fn estimate_v2_funding_transaction_fee(
-	is_initiator: bool, input_count: usize, input_satisfaction_weight: Weight,
+	funding_inputs: &[FundingTxInput], is_initiator: bool, is_splice: bool,
 	funding_feerate_sat_per_1000_weight: u32,
 ) -> u64 {
-	// Inputs
-	let mut weight = (input_count as u64) * BASE_INPUT_WEIGHT;
+	let mut weight: u64 = funding_inputs
+		.iter()
+		.map(|input| BASE_INPUT_WEIGHT.saturating_add(input.utxo.satisfaction_weight))
+		.fold(0, |total_weight, input_weight| total_weight.saturating_add(input_weight));
 
-	// Witnesses
-	weight = weight.saturating_add(input_satisfaction_weight.to_wu());
-
-	// If we are the initiator, we must pay for weight of all common fields in the funding transaction.
+	// The initiator pays for all common fields and the shared output in the funding transaction.
 	if is_initiator {
 		weight = weight
 			.saturating_add(TX_COMMON_FIELDS_WEIGHT)
@@ -5903,7 +5898,15 @@ fn estimate_v2_funding_transaction_fee(
 			// to calculate the contributed weight, so we use an all-zero hash.
 			.saturating_add(get_output_weight(&ScriptBuf::new_p2wsh(
 				&WScriptHash::from_raw_hash(Hash::all_zeros())
-			)).to_wu())
+			)).to_wu());
+
+		// The splice initiator pays for the input spending the previous funding output.
+		if is_splice {
+			weight = weight
+				.saturating_add(BASE_INPUT_WEIGHT)
+				.saturating_add(EMPTY_SCRIPT_SIG_WEIGHT)
+				.saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT);
+		}
 	}
 
 	fee_for_weight(funding_feerate_sat_per_1000_weight, weight)
@@ -5918,29 +5921,16 @@ fn estimate_v2_funding_transaction_fee(
 #[cfg(splicing)]
 #[rustfmt::skip]
 fn check_v2_funding_inputs_sufficient(
-	contribution_amount: i64, funding_inputs: &[(TxIn, Transaction, Weight)], is_initiator: bool,
+	contribution_amount: i64, funding_inputs: &[FundingTxInput], is_initiator: bool,
 	is_splice: bool, funding_feerate_sat_per_1000_weight: u32,
 ) -> Result<u64, ChannelError> {
-	let mut total_input_satisfaction_weight = Weight::from_wu(funding_inputs.iter().map(|(_, _, w)| w.to_wu()).sum());
-	let mut funding_inputs_len = funding_inputs.len();
-	if is_initiator && is_splice {
-		// consider the weight of the input and witness needed for spending the old funding transaction
-		funding_inputs_len += 1;
-		total_input_satisfaction_weight +=
-			Weight::from_wu(EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT);
-	}
-	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs_len, total_input_satisfaction_weight, funding_feerate_sat_per_1000_weight);
+	let estimated_fee = estimate_v2_funding_transaction_fee(
+		funding_inputs, is_initiator, is_splice, funding_feerate_sat_per_1000_weight,
+	);
 
 	let mut total_input_sats = 0u64;
-	for (idx, input) in funding_inputs.iter().enumerate() {
-		if let Some(output) = input.1.output.get(input.0.previous_output.vout as usize) {
-			total_input_sats = total_input_sats.saturating_add(output.value.to_sat());
-		} else {
-			return Err(ChannelError::Warn(format!(
-				"Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
-				input.1.compute_txid(), input.0.previous_output.vout, idx
-			)));
-		}
+	for FundingTxInput { utxo, .. } in funding_inputs.iter() {
+		total_input_sats = total_input_sats.saturating_add(utxo.output.value.to_sat());
 	}
 
 	// If the inputs are enough to cover intended contribution amount, with fees even when
@@ -5982,7 +5972,7 @@ pub(super) struct FundingNegotiationContext {
 	pub shared_funding_input: Option<SharedOwnedInput>,
 	/// The funding inputs we will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-	pub our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
+	pub our_funding_inputs: Vec<FundingTxInput>,
 	/// The change output script. This will be used if needed or -- if not set -- generated using
 	/// `SignerProvider::get_destination_script`.
 	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
@@ -6054,8 +6044,13 @@ impl FundingNegotiationContext {
 			}
 		}
 
-		let funding_inputs =
-			self.our_funding_inputs.into_iter().map(|(txin, tx, _)| (txin, tx)).collect();
+		let funding_inputs = self
+			.our_funding_inputs
+			.into_iter()
+			.map(|FundingTxInput { utxo, sequence, prevtx }| {
+				(TxIn { previous_output: utxo.outpoint, sequence, ..Default::default() }, prevtx)
+			})
+			.collect();
 
 		let constructor_args = InteractiveTxConstructorArgs {
 			entropy_source,
@@ -10608,9 +10603,8 @@ where
 	///   generated by `SignerProvider::get_destination_script`.
 	#[cfg(splicing)]
 	pub fn splice_channel(
-		&mut self, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
-		funding_feerate_per_kw: u32, locktime: u32,
+		&mut self, our_funding_contribution_satoshis: i64, our_funding_inputs: Vec<FundingTxInput>,
+		change_script: Option<ScriptBuf>, funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<msgs::SpliceInit, APIError> {
 		// Check if a splice has been initiated already.
 		// Note: only a single outstanding splice is supported (per spec)
@@ -10676,21 +10670,22 @@ where
 			),
 		})?;
 
-		for (txin, tx, _) in our_funding_inputs.iter() {
+		for FundingTxInput { utxo, prevtx, .. } in our_funding_inputs.iter() {
 			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
 				channel_id: ChannelId([0; 32]),
 				serial_id: 0,
 				prevtx: None,
 				prevtx_out: 0,
 				sequence: 0,
+				// Mutually exclusive with prevtx, which is accounted for below.
 				shared_input_txid: None,
 			};
-			let message_len = MESSAGE_TEMPLATE.serialized_length() + tx.serialized_length();
+			let message_len = MESSAGE_TEMPLATE.serialized_length() + prevtx.serialized_length();
 			if message_len > LN_MAX_MSG_LEN {
 				return Err(APIError::APIMisuseError {
 					err: format!(
 						"Funding input references a prevtx that is too large for tx_add_input: {}",
-						txin.previous_output,
+						utxo.outpoint,
 					),
 				});
 			}
@@ -12472,7 +12467,7 @@ where
 	pub fn new_outbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
-		funding_inputs: Vec<(TxIn, Transaction, Weight)>, user_id: u128, config: &UserConfig,
+		funding_inputs: Vec<FundingTxInput>, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
 		logger: L,
 	) -> Result<Self, APIError>
@@ -12686,8 +12681,12 @@ where
 			value: Amount::from_sat(funding.get_value_satoshis()),
 			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
 		};
-		let inputs_to_contribute =
-			our_funding_inputs.into_iter().map(|(txin, tx, _)| (txin, tx)).collect();
+		let inputs_to_contribute = our_funding_inputs
+			.into_iter()
+			.map(|FundingTxInput { utxo, sequence, prevtx }| {
+				(TxIn { previous_output: utxo.outpoint, sequence, ..Default::default() }, prevtx)
+			})
+			.collect();
 
 		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
 			InteractiveTxConstructorArgs {
@@ -14124,6 +14123,7 @@ mod tests {
 	};
 	use crate::ln::channel_keys::{RevocationBasepoint, RevocationKey};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
+	use crate::ln::funding::FundingTxInput;
 	use crate::ln::msgs;
 	use crate::ln::msgs::{ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::onion_utils::{AttributionData, LocalHTLCFailureReason};
@@ -14155,12 +14155,8 @@ mod tests {
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
-	#[cfg(splicing)]
-	use bitcoin::transaction::TxIn;
 	use bitcoin::transaction::{Transaction, TxOut, Version};
-	#[cfg(splicing)]
-	use bitcoin::Weight;
-	use bitcoin::{WitnessProgram, WitnessVersion};
+	use bitcoin::{ScriptBuf, WPubkeyHash, WitnessProgram, WitnessVersion};
 	use std::cmp;
 
 	#[test]
@@ -15866,54 +15862,65 @@ mod tests {
 	#[rustfmt::skip]
 	fn test_estimate_v2_funding_transaction_fee() {
 		use crate::ln::channel::estimate_v2_funding_transaction_fee;
-		use bitcoin::Weight;
 
-		// 2 inputs with weight 300, initiator, 2000 sat/kw feerate
+		let one_input = [funding_input_sats(1_000)];
+		let two_inputs = [funding_input_sats(1_000), funding_input_sats(1_000)];
+
+		// 2 inputs, initiator, 2000 sat/kw feerate
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 2, Weight::from_wu(300), 2000),
-			1668
+			estimate_v2_funding_transaction_fee(&two_inputs, true, false, 2000),
+			1520,
 		);
 
 		// higher feerate
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 2, Weight::from_wu(300), 3000),
-			2502
+			estimate_v2_funding_transaction_fee(&two_inputs, true, false, 3000),
+			2280,
 		);
 
 		// only 1 input
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 1, Weight::from_wu(300), 2000),
-			1348
+			estimate_v2_funding_transaction_fee(&one_input, true, false, 2000),
+			974,
 		);
 
-		// 0 input weight
+		// 0 inputs
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(true, 1, Weight::from_wu(0), 2000),
-			748
+			estimate_v2_funding_transaction_fee(&[], true, false, 2000),
+			428,
 		);
 
 		// not initiator
 		assert_eq!(
-			estimate_v2_funding_transaction_fee(false, 1, Weight::from_wu(0), 2000),
-			320
+			estimate_v2_funding_transaction_fee(&[], false, false, 2000),
+			0,
+		);
+
+		// splice initiator
+		assert_eq!(
+			estimate_v2_funding_transaction_fee(&one_input, true, true, 2000),
+			1746,
+		);
+
+		// splice acceptor
+		assert_eq!(
+			estimate_v2_funding_transaction_fee(&one_input, false, true, 2000),
+			546,
 		);
 	}
 
-	#[cfg(splicing)]
 	#[rustfmt::skip]
-	fn funding_input_sats(input_value_sats: u64) -> (TxIn, Transaction, Weight) {
-		use crate::sign::P2WPKH_WITNESS_WEIGHT;
-
-		let input_1_prev_out = TxOut { value: Amount::from_sat(input_value_sats), script_pubkey: bitcoin::ScriptBuf::default() };
-		let input_1_prev_tx = Transaction {
-			input: vec![], output: vec![input_1_prev_out],
+	fn funding_input_sats(input_value_sats: u64) -> FundingTxInput {
+		let prevout = TxOut {
+			value: Amount::from_sat(input_value_sats),
+			script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+		};
+		let prevtx = Transaction {
+			input: vec![], output: vec![prevout],
 			version: Version::TWO, lock_time: bitcoin::absolute::LockTime::ZERO,
 		};
-		let input_1_txin = TxIn {
-			previous_output: bitcoin::OutPoint { txid: input_1_prev_tx.compute_txid(), vout: 0 },
-			..Default::default()
-		};
-		(input_1_txin, input_1_prev_tx, Weight::from_wu(P2WPKH_WITNESS_WEIGHT))
+
+		FundingTxInput::new_p2wpkh(prevtx, 0).unwrap()
 	}
 
 	#[cfg(splicing)]
@@ -15934,7 +15941,7 @@ mod tests {
 				true,
 				2000,
 			).unwrap(),
-			2276,
+			2292,
 		);
 
 		// negative case, inputs clearly insufficient
@@ -15950,13 +15957,13 @@ mod tests {
 			);
 			assert_eq!(
 				format!("{:?}", res.err().unwrap()),
-				"Warn: Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1738. Need more inputs.",
+				"Warn: Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1746. Need more inputs.",
 			);
 		}
 
 		// barely covers
 		{
-			let expected_fee: u64 = 2276;
+			let expected_fee: u64 = 2292;
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
 					(300_000 - expected_fee - 20) as i64,
@@ -15986,13 +15993,13 @@ mod tests {
 			);
 			assert_eq!(
 				format!("{:?}", res.err().unwrap()),
-				"Warn: Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2504. Need more inputs.",
+				"Warn: Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2522. Need more inputs.",
 			);
 		}
 
 		// barely covers, less fees (no extra weight, no init)
 		{
-			let expected_fee: u64 = 1076;
+			let expected_fee: u64 = 1092;
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
 					(300_000 - expected_fee - 20) as i64,

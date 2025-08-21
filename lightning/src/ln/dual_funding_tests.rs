@@ -19,6 +19,7 @@ use {
 	crate::ln::channel::PendingV2Channel,
 	crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint},
 	crate::ln::functional_test_utils::*,
+	crate::ln::funding::FundingTxInput,
 	crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent},
 	crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete, TxSignatures},
 	crate::ln::types::ChannelId,
@@ -82,12 +83,13 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		&RevocationBasepoint::from(open_channel_v2_msg.common_fields.revocation_basepoint),
 	);
 
+	let FundingTxInput { sequence, prevtx, .. } = &initiator_funding_inputs[0];
 	let tx_add_input_msg = TxAddInput {
 		channel_id,
 		serial_id: 2, // Even serial_id from initiator.
-		prevtx: Some(initiator_funding_inputs[0].1.clone()),
+		prevtx: Some(prevtx.clone()),
 		prevtx_out: 0,
-		sequence: initiator_funding_inputs[0].0.sequence.0,
+		sequence: sequence.0,
 		shared_input_txid: None,
 	};
 	let input_value = tx_add_input_msg.prevtx.as_ref().unwrap().output

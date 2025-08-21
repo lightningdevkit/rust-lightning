@@ -28,6 +28,7 @@ use crate::chain::chaininterface::fee_for_weight;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 use crate::ln::channel::{FundingNegotiationContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
+use crate::ln::funding::FundingTxInput;
 use crate::ln::msgs;
 use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
 use crate::ln::types::ChannelId;
@@ -2075,17 +2076,10 @@ pub(super) fn calculate_change_output_value(
 
 	let mut total_input_satoshis = 0u64;
 	let mut our_funding_inputs_weight = 0u64;
-	for (txin, tx, _) in context.our_funding_inputs.iter() {
-		let txid = tx.compute_txid();
-		if txin.previous_output.txid != txid {
-			return Err(AbortReason::PrevTxOutInvalid);
-		}
-		let output = tx
-			.output
-			.get(txin.previous_output.vout as usize)
-			.ok_or(AbortReason::PrevTxOutInvalid)?;
-		total_input_satoshis = total_input_satoshis.saturating_add(output.value.to_sat());
-		let weight = estimate_input_weight(output).to_wu();
+	for FundingTxInput { utxo, .. } in context.our_funding_inputs.iter() {
+		total_input_satoshis = total_input_satoshis.saturating_add(utxo.output.value.to_sat());
+
+		let weight = BASE_INPUT_WEIGHT + utxo.satisfaction_weight;
 		our_funding_inputs_weight = our_funding_inputs_weight.saturating_add(weight);
 	}
 
@@ -2128,6 +2122,7 @@ pub(super) fn calculate_change_output_value(
 mod tests {
 	use crate::chain::chaininterface::{fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
 	use crate::ln::channel::{FundingNegotiationContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
+	use crate::ln::funding::FundingTxInput;
 	use crate::ln::interactivetxs::{
 		calculate_change_output_value, generate_holder_serial_id, AbortReason,
 		HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
@@ -2148,7 +2143,7 @@ mod tests {
 	use bitcoin::{opcodes, WScriptHash, Weight, XOnlyPublicKey};
 	use bitcoin::{
 		OutPoint, PubkeyHash, ScriptBuf, Sequence, SignedAmount, Transaction, TxIn, TxOut,
-		WPubkeyHash, Witness,
+		WPubkeyHash,
 	};
 	use core::ops::Deref;
 
@@ -3141,29 +3136,28 @@ mod tests {
 	#[test]
 	fn test_calculate_change_output_value_open() {
 		let input_prevouts = [
-			TxOut { value: Amount::from_sat(70_000), script_pubkey: ScriptBuf::new() },
-			TxOut { value: Amount::from_sat(60_000), script_pubkey: ScriptBuf::new() },
+			TxOut {
+				value: Amount::from_sat(70_000),
+				script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+			},
+			TxOut {
+				value: Amount::from_sat(60_000),
+				script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+			},
 		];
 		let inputs = input_prevouts
 			.iter()
 			.map(|txout| {
-				let tx = Transaction {
+				let prevtx = Transaction {
 					input: Vec::new(),
 					output: vec![(*txout).clone()],
 					lock_time: AbsoluteLockTime::ZERO,
 					version: Version::TWO,
 				};
-				let txid = tx.compute_txid();
-				let txin = TxIn {
-					previous_output: OutPoint { txid, vout: 0 },
-					script_sig: ScriptBuf::new(),
-					sequence: Sequence::ZERO,
-					witness: Witness::new(),
-				};
-				let weight = Weight::ZERO;
-				(txin, tx, weight)
+
+				FundingTxInput::new_p2wpkh(prevtx, 0).unwrap()
 			})
-			.collect::<Vec<(TxIn, Transaction, Weight)>>();
+			.collect();
 		let our_contributed = 110_000;
 		let txout = TxOut { value: Amount::from_sat(10_000), script_pubkey: ScriptBuf::new() };
 		let outputs = vec![txout];

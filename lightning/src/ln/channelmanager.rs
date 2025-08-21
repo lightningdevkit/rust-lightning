@@ -30,9 +30,9 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, Sequence, SignedAmount};
 #[cfg(splicing)]
-use bitcoin::{ScriptBuf, TxIn, Weight};
+use bitcoin::ScriptBuf;
+use bitcoin::{secp256k1, Sequence, SignedAmount};
 
 use crate::blinded_path::message::MessageForwardNode;
 use crate::blinded_path::message::{AsyncPaymentsContext, OffersContext};
@@ -65,6 +65,8 @@ use crate::ln::channel::{
 	UpdateFulfillCommitFetch, WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
+#[cfg(splicing)]
+use crate::ln::funding::FundingTxInput;
 use crate::ln::inbound_payment;
 use crate::ln::interactivetxs::{HandleTxCompleteResult, InteractiveTxMessageSendResult};
 use crate::ln::msgs;
@@ -4459,7 +4461,7 @@ where
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
+		our_funding_inputs: Vec<FundingTxInput>, change_script: Option<ScriptBuf>,
 		funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let mut res = Ok(());
@@ -4480,9 +4482,8 @@ where
 	#[cfg(splicing)]
 	fn internal_splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, change_script: Option<ScriptBuf>,
-		funding_feerate_per_kw: u32, locktime: Option<u32>,
+		our_funding_contribution_satoshis: i64, our_funding_inputs: Vec<FundingTxInput>,
+		change_script: Option<ScriptBuf>, funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
