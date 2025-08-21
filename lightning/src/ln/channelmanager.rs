@@ -9006,10 +9006,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		}
 
-		if let Some(signing_session) = &mut channel.interactive_tx_signing_session {
-			if signing_session.local_inputs_count() > 0
-				&& signing_session.holder_tx_signatures().is_none()
-			{
+		if let Some(signing_session) = (!channel.is_awaiting_monitor_update())
+			.then(|| ())
+			.and_then(|_| channel.interactive_tx_signing_session.as_mut())
+			.filter(|signing_session| signing_session.holder_tx_signatures().is_none())
+		{
+			let local_inputs_count = signing_session.local_inputs_count();
+			if local_inputs_count > 0 {
 				let mut pending_events = self.pending_events.lock().unwrap();
 				let unsigned_transaction = signing_session.unsigned_tx().build_unsigned_tx();
 				let event_action = (
@@ -9027,7 +9030,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				} else {
 					pending_events.push_back(event_action);
 				}
-			} else if signing_session.local_inputs_count() == 0 && signing_session.holder_tx_signatures().is_none() {
+			} else {
+				let txid = signing_session.unsigned_tx().compute_txid();
 				match channel.funding_transaction_signed(vec![]) {
 					Ok((Some(tx_signatures), funding_tx_opt)) => {
 						if let Some(funding_tx) = funding_tx_opt {
