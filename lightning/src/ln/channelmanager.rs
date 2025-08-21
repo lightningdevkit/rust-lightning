@@ -4086,7 +4086,9 @@ where
 		Ok(temporary_channel_id)
 	}
 
-	fn list_funded_channels_with_filter<Fn: FnMut(&(&ChannelId, &Channel<SP>)) -> bool + Copy>(
+	fn list_funded_channels_with_filter<
+		Fn: FnMut(&(&InitFeatures, &ChannelId, &Channel<SP>)) -> bool + Copy,
+	>(
 		&self, f: Fn,
 	) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
@@ -4102,9 +4104,13 @@ where
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				// Only `Channels` in the `Channel::Funded` phase can be considered funded.
-				let filtered_chan_by_id =
-					peer_state.channel_by_id.iter().filter(|(_, chan)| chan.is_funded()).filter(f);
-				res.extend(filtered_chan_by_id.map(|(_channel_id, channel)| {
+				let filtered_chan_by_id = peer_state
+					.channel_by_id
+					.iter()
+					.map(|(cid, c)| (&peer_state.latest_features, cid, c))
+					.filter(|(_, _, chan)| chan.is_funded())
+					.filter(f);
+				res.extend(filtered_chan_by_id.map(|(_, _channel_id, channel)| {
 					ChannelDetails::from_channel(
 						channel,
 						best_block_height,
@@ -4156,7 +4162,7 @@ where
 		// Note we use is_live here instead of usable which leads to somewhat confused
 		// internal/external nomenclature, but that's ok cause that's probably what the user
 		// really wanted anyway.
-		self.list_funded_channels_with_filter(|&(_, ref channel)| channel.context().is_live())
+		self.list_funded_channels_with_filter(|&(_, _, ref channel)| channel.context().is_live())
 	}
 
 	/// Gets the list of channels we have with a given counterparty, in random order.
