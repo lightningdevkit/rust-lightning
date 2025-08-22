@@ -727,6 +727,9 @@ impl SentHTLCId {
 				prev_outbound_scid_alias: hop_data.prev_outbound_scid_alias,
 				htlc_id: hop_data.htlc_id,
 			},
+			HTLCSource::TrampolineForward { session_priv, .. } => {
+				Self::TrampolineForward { session_priv: session_priv.secret_bytes() }
+			},
 			HTLCSource::OutboundRoute { session_priv, .. } => {
 				Self::OutboundRoute { session_priv: session_priv.secret_bytes() }
 			},
@@ -753,6 +756,8 @@ type PerSourcePendingForward =
 type FailedHTLCForward = (HTLCSource, PaymentHash, HTLCFailReason, HTLCHandlingFailureType);
 
 mod fuzzy_channelmanager {
+	use crate::routing::router::RouteHop;
+
 	use super::*;
 
 	/// Tracks the inbound corresponding to an outbound HTLC
@@ -760,6 +765,16 @@ mod fuzzy_channelmanager {
 	#[derive(Clone, Debug, PartialEq, Eq)]
 	pub enum HTLCSource {
 		PreviousHopData(HTLCPreviousHopData),
+		TrampolineForward {
+			/// We might be forwarding an incoming payment that was received over MPP, and therefore
+			/// need to store the vector of corresponding `HTLCPreviousHopData` values.
+			previous_hop_data: Vec<HTLCPreviousHopData>,
+			incoming_trampoline_shared_secret: [u8; 32],
+			hops: Vec<RouteHop>,
+			/// In order to decode inter-Trampoline errors, we need to store the session_priv key
+			/// given we're effectively creating new outbound routes.
+			session_priv: SecretKey,
+		},
 		OutboundRoute {
 			path: Path,
 			session_priv: SecretKey,
@@ -821,6 +836,18 @@ impl core::hash::Hash for HTLCSource {
 				payment_id.hash(hasher);
 				first_hop_htlc_msat.hash(hasher);
 				bolt12_invoice.hash(hasher);
+			},
+			HTLCSource::TrampolineForward {
+				previous_hop_data,
+				incoming_trampoline_shared_secret,
+				hops,
+				session_priv,
+			} => {
+				2u8.hash(hasher);
+				previous_hop_data.hash(hasher);
+				incoming_trampoline_shared_secret.hash(hasher);
+				hops.hash(hasher);
+				session_priv[..].hash(hasher);
 			},
 		}
 	}
@@ -8803,6 +8830,7 @@ where
 					None,
 				));
 			},
+			HTLCSource::TrampolineForward { .. } => todo!(),
 		}
 	}
 
@@ -9550,6 +9578,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					},
 				);
 			},
+			HTLCSource::TrampolineForward { .. } => todo!(),
 		}
 	}
 
@@ -16481,6 +16510,24 @@ impl Readable for HTLCSource {
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
+			2 => {
+				let mut previous_hop_data = Vec::new();
+				let mut incoming_trampoline_shared_secret: crate::util::ser::RequiredWrapper<[u8; 32]> = crate::util::ser::RequiredWrapper(None);
+				let mut session_priv: crate::util::ser::RequiredWrapper<SecretKey> = crate::util::ser::RequiredWrapper(None);
+				let mut hops = Vec::new();
+				read_tlv_fields!(reader, {
+					(0, previous_hop_data, required_vec),
+					(2, incoming_trampoline_shared_secret, required),
+					(4, session_priv, required),
+					(6, hops, required_vec),
+				});
+				Ok(HTLCSource::TrampolineForward {
+					previous_hop_data,
+					incoming_trampoline_shared_secret: incoming_trampoline_shared_secret.0.unwrap(),
+					hops,
+					session_priv: session_priv.0.unwrap(),
+				})
+			},
 			_ => Err(DecodeError::UnknownRequiredFeature),
 		}
 	}
@@ -16512,6 +16559,20 @@ impl Writeable for HTLCSource {
 			HTLCSource::PreviousHopData(ref field) => {
 				1u8.write(writer)?;
 				field.write(writer)?;
+			},
+			HTLCSource::TrampolineForward {
+				ref previous_hop_data,
+				incoming_trampoline_shared_secret,
+				ref session_priv,
+				ref hops,
+			} => {
+				2u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, *previous_hop_data, required_vec),
+					(2, incoming_trampoline_shared_secret, required),
+					(4, session_priv, required),
+					(6, *hops, required_vec),
+				});
 			},
 		}
 		Ok(())
@@ -18070,6 +18131,7 @@ where
 									} else { true }
 								});
 							},
+							HTLCSource::TrampolineForward { .. } => todo!(),
 							HTLCSource::OutboundRoute {
 								payment_id,
 								session_priv,
