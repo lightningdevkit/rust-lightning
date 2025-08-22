@@ -1,8 +1,32 @@
 use lightning::util::persist::{KVStore, KVStoreSync};
 use lightning_persister::fs_store::FilesystemStore;
+use std::fs;
 use tokio::runtime::Runtime;
+use uuid::Uuid;
 
 use crate::utils::test_logger;
+
+struct TempFilesystemStore {
+	temp_path: std::path::PathBuf,
+	inner: FilesystemStore,
+}
+
+impl TempFilesystemStore {
+	fn new() -> Self {
+		let mut temp_path = std::env::temp_dir();
+		let random_folder_name = format!("fs_store_fuzz_{}", Uuid::new_v4());
+		temp_path.push(random_folder_name);
+
+		let inner = FilesystemStore::new(temp_path.clone());
+		TempFilesystemStore { inner, temp_path }
+	}
+}
+
+impl Drop for TempFilesystemStore {
+	fn drop(&mut self) {
+		_ = fs::remove_dir_all(&self.temp_path)
+	}
+}
 
 /// Actual fuzz test, method signature and name are fixed
 fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
@@ -10,7 +34,7 @@ fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	rt.block_on(do_test_internal(data, out));
 }
 
-async fn do_test_internal<Out: test_logger::Output>(data: &[u8], out: Out) {
+async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	let mut read_pos = 0;
 	macro_rules! get_slice {
 		($len: expr) => {{
@@ -23,16 +47,15 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], out: Out) {
 		}};
 	}
 
-	let mut temp_path = std::env::temp_dir();
-	temp_path.push("fs_store_fuzz");
-	let fs_store: FilesystemStore = FilesystemStore::new(temp_path);
+	let temp_fs_store = TempFilesystemStore::new();
+	let fs_store = &temp_fs_store.inner;
 
 	let primary_namespace = "primary";
 	let secondary_namespace = "secondary";
 	let key = "key";
 
 	// Remove the key in case something was left over from a previous run.
-	_ = KVStoreSync::remove(&fs_store, primary_namespace, secondary_namespace, key, false);
+	_ = KVStoreSync::remove(fs_store, primary_namespace, secondary_namespace, key, false);
 
 	let mut next_data_value = 0u64;
 	let mut get_next_data_value = || {
@@ -53,7 +76,7 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], out: Out) {
 				let data_value = get_next_data_value();
 
 				KVStoreSync::write(
-					&fs_store,
+					fs_store,
 					primary_namespace,
 					secondary_namespace,
 					key,
@@ -65,17 +88,25 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], out: Out) {
 			},
 			// Sync remove
 			0x01 => {
-				KVStoreSync::remove(&fs_store, primary_namespace, secondary_namespace, key, false)
+				KVStoreSync::remove(fs_store, primary_namespace, secondary_namespace, key, false)
 					.unwrap();
 
 				current_data = None;
 			},
-			// Async write
+			// Sync list
 			0x02 => {
+				KVStoreSync::list(fs_store, primary_namespace, secondary_namespace).unwrap();
+			},
+			// Sync read
+			0x03 => {
+				_ = KVStoreSync::read(fs_store, primary_namespace, secondary_namespace, key);
+			},
+			// Async write
+			0x04 => {
 				let data_value = get_next_data_value();
 
 				let fut = KVStore::write(
-					&fs_store,
+					fs_store,
 					primary_namespace,
 					secondary_namespace,
 					key,
@@ -111,11 +142,10 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], out: Out) {
 		// If no more writes are pending, we can reliably see if the data is consistent.
 		if futures.is_empty() {
 			let data_value =
-				KVStoreSync::read(&fs_store, primary_namespace, secondary_namespace, key).ok();
+				KVStoreSync::read(fs_store, primary_namespace, secondary_namespace, key).ok();
 			assert_eq!(data_value, current_data);
 
-			let list =
-				KVStoreSync::list(&fs_store, primary_namespace, secondary_namespace).unwrap();
+			let list = KVStoreSync::list(fs_store, primary_namespace, secondary_namespace).unwrap();
 			assert_eq!(list.is_empty(), current_data.is_none());
 
 			assert_eq!(0, fs_store.state_size());

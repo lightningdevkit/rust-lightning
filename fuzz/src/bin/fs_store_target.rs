@@ -68,10 +68,10 @@ fn run_test_cases() {
 	use lightning_fuzz::utils::test_logger::StringBuffer;
 
 	use std::sync::{atomic, Arc};
-	// {
-	// 	let data: Vec<u8> = vec![0];
-	// 	fs_store_run(data.as_ptr(), data.len());
-	// }
+	{
+		let data: Vec<u8> = vec![0];
+		fs_store_run(data.as_ptr(), data.len());
+	}
 	let mut threads = Vec::new();
 	let threads_running = Arc::new(atomic::AtomicUsize::new(0));
 	if let Ok(tests) = fs::read_dir("test_cases/fs_store") {
