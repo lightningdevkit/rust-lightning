@@ -208,27 +208,18 @@ impl FilesystemStoreInner {
 
 	fn read(&self, dest_file_path: PathBuf) -> lightning::io::Result<Vec<u8>> {
 		let mut buf = Vec::new();
-		{
-			let inner_lock_ref = self.get_inner_lock_ref(dest_file_path.clone());
-			let async_state = inner_lock_ref.read().unwrap();
 
+		let inner_lock_ref = self.get_inner_lock_ref(dest_file_path.clone());
+		self.execute_locked_read(inner_lock_ref, dest_file_path.clone(), || {
 			let mut f = fs::File::open(dest_file_path.clone())?;
 			f.read_to_end(&mut buf)?;
-
-			let more_writes_pending =
-				async_state.latest_written_version < async_state.latest_version;
-
-			// If there are no more writes pending and no arcs in use elsewhere, we can remove the map entry to prevent
-			// leaking memory. The two arcs are the one in the map and the one held here in inner_lock_ref.
-			if !more_writes_pending && Arc::strong_count(&inner_lock_ref) == 2 {
-				self.locks.lock().unwrap().remove(&dest_file_path);
-			}
-		}
+			Ok(())
+		})?;
 
 		Ok(buf)
 	}
 
-	fn execute_locked<F: FnOnce() -> Result<(), lightning::io::Error>>(
+	fn execute_locked_write<F: FnOnce() -> Result<(), lightning::io::Error>>(
 		&self, inner_lock_ref: Arc<RwLock<AsyncState>>, dest_file_path: PathBuf,
 		version: Option<u64>, callback: F,
 	) -> Result<(), lightning::io::Error> {
@@ -250,6 +241,28 @@ impl FilesystemStoreInner {
 			})
 		};
 
+		self.clean_locks(&inner_lock_ref, dest_file_path, &async_state);
+
+		res
+	}
+
+	fn execute_locked_read<F: FnOnce() -> Result<(), lightning::io::Error>>(
+		&self, inner_lock_ref: Arc<RwLock<AsyncState>>, dest_file_path: PathBuf, callback: F,
+	) -> Result<(), lightning::io::Error> {
+		let async_state = inner_lock_ref.read().unwrap();
+
+		// If the version is not stale, we execute the callback. Otherwise we can and must skip writing.
+		let res = callback();
+
+		self.clean_locks(&inner_lock_ref, dest_file_path, &async_state);
+
+		res
+	}
+
+	fn clean_locks(
+		&self, inner_lock_ref: &Arc<RwLock<AsyncState>>, dest_file_path: PathBuf,
+		async_state: &AsyncState,
+	) {
 		let more_writes_pending = async_state.latest_written_version < async_state.latest_version;
 
 		// If there are no more writes pending and no arcs in use elsewhere, we can remove the map entry to prevent
@@ -257,8 +270,6 @@ impl FilesystemStoreInner {
 		if !more_writes_pending && Arc::strong_count(&inner_lock_ref) == 2 {
 			self.locks.lock().unwrap().remove(&dest_file_path);
 		}
-
-		res
 	}
 
 	/// Writes a specific version of a key to the filesystem. If a newer version has been written already, this function
@@ -289,7 +300,7 @@ impl FilesystemStoreInner {
 			tmp_file.sync_all()?;
 		}
 
-		self.execute_locked(inner_lock_ref, dest_file_path.clone(), version, || {
+		self.execute_locked_write(inner_lock_ref, dest_file_path.clone(), version, || {
 			#[cfg(not(target_os = "windows"))]
 			{
 				fs::rename(&tmp_file_path, &dest_file_path)?;
@@ -340,7 +351,7 @@ impl FilesystemStoreInner {
 		&self, inner_lock_ref: Arc<RwLock<AsyncState>>, dest_file_path: PathBuf, lazy: bool,
 		version: Option<u64>,
 	) -> lightning::io::Result<()> {
-		self.execute_locked(inner_lock_ref, dest_file_path.clone(), version, || {
+		self.execute_locked_write(inner_lock_ref, dest_file_path.clone(), version, || {
 			if !dest_file_path.is_file() {
 				return Ok(());
 			}
