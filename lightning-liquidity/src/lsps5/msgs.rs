@@ -640,6 +640,12 @@ pub enum LSPS5Request {
 	RemoveWebhook(RemoveWebhookRequest),
 }
 
+impl LSPS5Request {
+	pub(crate) fn is_state_allocating(&self) -> bool {
+		matches!(self, LSPS5Request::SetWebhook(_))
+	}
+}
+
 /// An LSPS5 protocol response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS5Response {
