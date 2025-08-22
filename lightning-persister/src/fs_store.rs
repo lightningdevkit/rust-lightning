@@ -267,9 +267,11 @@ impl FilesystemStoreInner {
 		let more_writes_pending = async_state.latest_written_version < async_state.latest_version;
 
 		// If there are no more writes pending and no arcs in use elsewhere, we can remove the map entry to prevent
-		// leaking memory. The two arcs are the one in the map and the one held here in inner_lock_ref.
+		// leaking memory. The two arcs are the one in the map and the one held here in inner_lock_ref. The outer lock
+		// is obtained first, to avoid a new arc being cloned after we've already counted.
+		let mut outer_lock = self.locks.lock().unwrap();
 		if !more_writes_pending && Arc::strong_count(&inner_lock_ref) == 2 {
-			self.locks.lock().unwrap().remove(&dest_file_path);
+			outer_lock.remove(&dest_file_path);
 		}
 	}
 
