@@ -2669,7 +2669,7 @@ where
 	is_manual_broadcast: bool,
 	is_batch_funding: Option<()>,
 
-	counterparty_cur_commitment_point: Option<PublicKey>,
+	counterparty_next_commitment_point: Option<PublicKey>,
 	counterparty_prev_commitment_point: Option<PublicKey>,
 	counterparty_node_id: PublicKey,
 
@@ -2821,7 +2821,7 @@ where
 		let context = self.context();
 		let commitment_data = context.build_commitment_transaction(self.funding(),
 			context.counterparty_next_commitment_transaction_number,
-			&context.counterparty_cur_commitment_point.unwrap(), false, false, logger);
+			&context.counterparty_next_commitment_point.unwrap(), false, false, logger);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
@@ -3297,7 +3297,7 @@ where
 
 			is_batch_funding: None,
 
-			counterparty_cur_commitment_point: Some(open_channel_fields.first_per_commitment_point),
+			counterparty_next_commitment_point: Some(open_channel_fields.first_per_commitment_point),
 			counterparty_prev_commitment_point: None,
 			counterparty_node_id,
 
@@ -3535,7 +3535,7 @@ where
 
 			is_batch_funding: None,
 
-			counterparty_cur_commitment_point: None,
+			counterparty_next_commitment_point: None,
 			counterparty_prev_commitment_point: None,
 			counterparty_node_id,
 
@@ -3915,7 +3915,7 @@ where
 			pubkeys: counterparty_pubkeys,
 		});
 
-		self.counterparty_cur_commitment_point = Some(common_fields.first_per_commitment_point);
+		self.counterparty_next_commitment_point = Some(common_fields.first_per_commitment_point);
 		self.counterparty_shutdown_scriptpubkey = counterparty_shutdown_scriptpubkey;
 
 		self.channel_state = ChannelState::NegotiatingFunding(
@@ -5609,7 +5609,7 @@ where
 		L::Target: Logger,
 	{
 		let mut commitment_number = self.counterparty_next_commitment_transaction_number;
-		let mut commitment_point = self.counterparty_cur_commitment_point.unwrap();
+		let mut commitment_point = self.counterparty_next_commitment_point.unwrap();
 
 		// Use the previous commitment number and point when splicing since they shouldn't change.
 		if commitment_number != INITIAL_COMMITMENT_NUMBER {
@@ -5682,13 +5682,13 @@ where
 	#[cfg(all(test))]
 	pub fn get_initial_counterparty_commitment_signature_for_test<L: Deref>(
 		&mut self, funding: &mut FundingScope, logger: &L,
-		counterparty_cur_commitment_point_override: PublicKey,
+		counterparty_next_commitment_point_override: PublicKey,
 	) -> Option<Signature>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
-		self.counterparty_cur_commitment_point = Some(counterparty_cur_commitment_point_override);
+		self.counterparty_next_commitment_point = Some(counterparty_next_commitment_point_override);
 		self.get_initial_counterparty_commitment_signature(funding, logger)
 	}
 
@@ -6778,8 +6778,8 @@ where
 			let expected_point =
 				if self.context.counterparty_next_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
 					// If they haven't ever sent an updated point, the point they send should match
-					// the current one.
-					self.context.counterparty_cur_commitment_point
+					// the next one.
+					self.context.counterparty_next_commitment_point
 				} else if self.context.counterparty_next_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 2 {
 					// If we've advanced the commitment number once, the second commitment point is
 					// at `counterparty_prev_commitment_point`, which is not yet revoked.
@@ -6798,8 +6798,8 @@ where
 			return Ok(None);
 		}
 
-		self.context.counterparty_prev_commitment_point = self.context.counterparty_cur_commitment_point;
-		self.context.counterparty_cur_commitment_point = Some(msg.next_per_commitment_point);
+		self.context.counterparty_prev_commitment_point = self.context.counterparty_next_commitment_point;
+		self.context.counterparty_next_commitment_point = Some(msg.next_per_commitment_point);
 		// Clear any interactive signing session.
 		self.interactive_tx_signing_session = None;
 
@@ -7688,8 +7688,8 @@ where
 		self.context.channel_state.clear_awaiting_remote_revoke();
 		self.mark_response_received();
 		self.context.counterparty_prev_commitment_point =
-			self.context.counterparty_cur_commitment_point;
-		self.context.counterparty_cur_commitment_point = Some(msg.next_per_commitment_point);
+			self.context.counterparty_next_commitment_point;
+		self.context.counterparty_next_commitment_point = Some(msg.next_per_commitment_point);
 		self.context.counterparty_next_commitment_transaction_number -= 1;
 
 		if self.context.announcement_sigs_state == AnnouncementSigsState::Committed {
@@ -8430,7 +8430,7 @@ where
 		let funding_signed = if self.context.signer_pending_funding && !self.funding.is_outbound() {
 			let commitment_data = self.context.build_commitment_transaction(&self.funding,
 				self.context.counterparty_next_commitment_transaction_number + 1,
-				&self.context.counterparty_cur_commitment_point.unwrap(), false, false, logger);
+				&self.context.counterparty_next_commitment_point.unwrap(), false, false, logger);
 			let counterparty_initial_commitment_tx = commitment_data.tx;
 			self.context.get_funding_signed_msg(&self.funding.channel_transaction_parameters, logger, counterparty_initial_commitment_tx)
 		} else { None };
@@ -11203,7 +11203,7 @@ where
 				commitment_txid: counterparty_commitment_tx.trust().txid(),
 				htlc_outputs,
 				commitment_number: self.context.counterparty_next_commitment_transaction_number,
-				their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap(),
+				their_per_commitment_point: self.context.counterparty_next_commitment_point.unwrap(),
 				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
 				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
 				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
@@ -11260,7 +11260,7 @@ where
 	{
 		let commitment_data = self.context.build_commitment_transaction(
 			funding, self.context.counterparty_next_commitment_transaction_number,
-			&self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger,
+			&self.context.counterparty_next_commitment_point.unwrap(), false, true, logger,
 		);
 		let counterparty_commitment_tx = commitment_data.tx;
 
@@ -11311,7 +11311,7 @@ where
 
 		let commitment_data = self.context.build_commitment_transaction(
 			funding, self.context.counterparty_next_commitment_transaction_number,
-			&self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger,
+			&self.context.counterparty_next_commitment_point.unwrap(), false, true, logger,
 		);
 		let counterparty_commitment_tx = commitment_data.tx;
 
@@ -11880,7 +11880,7 @@ where
 	fn get_funding_created_msg<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
 		let commitment_data = self.context.build_commitment_transaction(&self.funding,
 			self.context.counterparty_next_commitment_transaction_number,
-			&self.context.counterparty_cur_commitment_point.unwrap(), false, false, logger);
+			&self.context.counterparty_next_commitment_point.unwrap(), false, false, logger);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		let signature = match &self.context.holder_signer {
 			// TODO (taproot|arik): move match into calling method for Taproot
@@ -13167,7 +13167,7 @@ where
 		self.funding.channel_transaction_parameters.write(writer)?;
 		self.funding.funding_transaction.write(writer)?;
 
-		self.context.counterparty_cur_commitment_point.write(writer)?;
+		self.context.counterparty_next_commitment_point.write(writer)?;
 		self.context.counterparty_prev_commitment_point.write(writer)?;
 		self.context.counterparty_node_id.write(writer)?;
 
@@ -13568,7 +13568,7 @@ where
 			ReadableArgs::<Option<u64>>::read(reader, Some(channel_value_satoshis))?;
 		let funding_transaction: Option<Transaction> = Readable::read(reader)?;
 
-		let counterparty_cur_commitment_point = Readable::read(reader)?;
+		let counterparty_next_commitment_point = Readable::read(reader)?;
 
 		let counterparty_prev_commitment_point = Readable::read(reader)?;
 		let counterparty_node_id = Readable::read(reader)?;
@@ -14025,7 +14025,7 @@ where
 
 				is_batch_funding,
 
-				counterparty_cur_commitment_point,
+				counterparty_next_commitment_point,
 				counterparty_prev_commitment_point,
 				counterparty_node_id,
 
