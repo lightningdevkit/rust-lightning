@@ -7008,10 +7008,12 @@ where
 			.and_then(|funding_negotiation| funding_negotiation.as_funding())
 			.expect("Funding must exist for negotiated pending splice");
 		let transaction_number = self.holder_commitment_point.current_transaction_number();
-		let commitment_point = self
-			.holder_commitment_point
-			.current_point()
-			.expect("current should be set after receiving the initial commitment_signed");
+		let commitment_point = self.holder_commitment_point.current_point().ok_or_else(|| {
+			debug_assert!(false);
+			ChannelError::close(
+				"current_point should be set for channels initiating splicing".to_owned(),
+			)
+		})?;
 		let (holder_commitment_tx, _) = self.context.validate_commitment_signed(
 			pending_splice_funding,
 			transaction_number,
@@ -10602,7 +10604,7 @@ where
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Channel {} cannot be spliced, commitment point needs to be advanced once",
+					"Channel {} cannot be spliced until a payment is routed",
 					self.context.channel_id(),
 				),
 			});
@@ -10710,7 +10712,7 @@ where
 		// TODO(splicing): Add check that we are the quiescence acceptor
 
 		if self.holder_commitment_point.current_point().is_none() {
-			return Err(ChannelError::Warn(format!(
+			return Err(ChannelError::WarnAndDisconnect(format!(
 				"Channel {} commitment point needs to be advanced once before spliced",
 				self.context.channel_id(),
 			)));
@@ -13874,13 +13876,28 @@ where
 		}
 
 		// If we're restoring this channel for the first time after an upgrade, then we require that the
-		// signer be available so that we can immediately populate the current commitment point. Channel
+		// signer be available so that we can immediately populate the next commitment point. Channel
 		// restoration will fail if this is not possible.
-		let holder_commitment_point =
+		let holder_commitment_point = {
+			let current_point = holder_commitment_point_current_opt.or_else(|| {
+				if holder_commitment_next_transaction_number == INITIAL_COMMITMENT_NUMBER {
+					None
+				} else {
+					// If the current point is not available then splicing can't be initiated
+					// until the next point is advanced and becomes the current point.
+					holder_signer
+						.get_per_commitment_point(
+							holder_commitment_next_transaction_number + 1,
+							&secp_ctx,
+						)
+						.ok()
+				}
+			});
+
 			match (holder_commitment_point_next_opt, holder_commitment_point_pending_next_opt) {
 				(Some(next_point), pending_next_point) => HolderCommitmentPoint {
 					next_transaction_number: holder_commitment_next_transaction_number,
-					current_point: None,
+					current_point,
 					next_point,
 					pending_next_point,
 				},
@@ -13900,12 +13917,13 @@ where
 						);
 					HolderCommitmentPoint {
 						next_transaction_number: holder_commitment_next_transaction_number,
-						current_point: holder_commitment_point_current_opt,
+						current_point,
 						next_point,
 						pending_next_point: Some(pending_next_point),
 					}
 				},
-			};
+			}
+		};
 
 		Ok(FundedChannel {
 			funding: FundingScope {
