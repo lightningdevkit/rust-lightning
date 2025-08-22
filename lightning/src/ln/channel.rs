@@ -2525,7 +2525,7 @@ where
 	// Our commitment numbers start at 2^48-1 and count down, whereas the ones used in transaction
 	// generation start at 0 and count up...this simplifies some parts of implementation at the
 	// cost of others, but should really just be changed.
-	cur_counterparty_commitment_transaction_number: u64,
+	counterparty_next_commitment_transaction_number: u64,
 	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
 	pending_outbound_htlcs: Vec<OutboundHTLCOutput>,
 	holding_cell_htlc_updates: Vec<HTLCUpdateAwaitingACK>,
@@ -2820,7 +2820,7 @@ where
 		};
 		let context = self.context();
 		let commitment_data = context.build_commitment_transaction(self.funding(),
-			context.cur_counterparty_commitment_transaction_number,
+			context.counterparty_next_commitment_transaction_number,
 			&context.counterparty_cur_commitment_point.unwrap(), false, false, logger);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
@@ -2881,7 +2881,7 @@ where
 			counterparty_initial_commitment_tx.clone(),
 		);
 
-		self.context_mut().cur_counterparty_commitment_transaction_number -= 1;
+		self.context_mut().counterparty_next_commitment_transaction_number -= 1;
 
 		Ok((channel_monitor, counterparty_initial_commitment_tx))
 	}
@@ -3246,7 +3246,7 @@ where
 			shutdown_scriptpubkey,
 			destination_script,
 
-			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+			counterparty_next_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
@@ -3482,7 +3482,7 @@ where
 			shutdown_scriptpubkey,
 			destination_script,
 
-			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+			counterparty_next_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
@@ -5558,7 +5558,7 @@ where
 		if is_splice {
 			debug_assert_eq!(
 				holder_commitment_transaction_number,
-				self.cur_counterparty_commitment_transaction_number,
+				self.counterparty_next_commitment_transaction_number,
 			);
 			// TODO(splicing) Forced error, as the use case is not complete
 			return Err(msgs::TxAbort {
@@ -5590,7 +5590,7 @@ where
 		&self, holder_commitment_transaction_number: u64, msg_name: &str,
 	) {
 		if self.commitment_secrets.get_min_seen_secret() != (1 << 48)
-			|| self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER
+			|| self.counterparty_next_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER
 			|| holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER
 		{
 			debug_assert!(
@@ -5608,7 +5608,7 @@ where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
-		let mut commitment_number = self.cur_counterparty_commitment_transaction_number;
+		let mut commitment_number = self.counterparty_next_commitment_transaction_number;
 		let mut commitment_point = self.counterparty_cur_commitment_point.unwrap();
 
 		// Use the previous commitment number and point when splicing since they shouldn't change.
@@ -6776,11 +6776,11 @@ where
 			// They probably disconnected/reconnected and re-sent the channel_ready, which is
 			// required, or they're sending a fresh SCID alias.
 			let expected_point =
-				if self.context.cur_counterparty_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
+				if self.context.counterparty_next_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
 					// If they haven't ever sent an updated point, the point they send should match
 					// the current one.
 					self.context.counterparty_cur_commitment_point
-				} else if self.context.cur_counterparty_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 2 {
+				} else if self.context.counterparty_next_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 2 {
 					// If we've advanced the commitment number once, the second commitment point is
 					// at `counterparty_prev_commitment_point`, which is not yet revoked.
 					debug_assert!(self.context.counterparty_prev_commitment_point.is_some());
@@ -7027,7 +7027,7 @@ where
 			.context
 			.build_commitment_transaction(
 				pending_splice_funding,
-				self.context.cur_counterparty_commitment_transaction_number + 1,
+				self.context.counterparty_next_commitment_transaction_number + 1,
 				&self.context.counterparty_prev_commitment_point.unwrap(),
 				false,
 				false,
@@ -7650,7 +7650,7 @@ where
 			ChannelSignerType::Ecdsa(ecdsa) => {
 				ecdsa
 					.validate_counterparty_revocation(
-						self.context.cur_counterparty_commitment_transaction_number + 1,
+						self.context.counterparty_next_commitment_transaction_number + 1,
 						&secret,
 					)
 					.map_err(|_| {
@@ -7665,7 +7665,7 @@ where
 		self.context
 			.commitment_secrets
 			.provide_secret(
-				self.context.cur_counterparty_commitment_transaction_number + 1,
+				self.context.counterparty_next_commitment_transaction_number + 1,
 				msg.per_commitment_secret,
 			)
 			.map_err(|_| {
@@ -7675,7 +7675,7 @@ where
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
 			updates: vec![ChannelMonitorUpdateStep::CommitmentSecret {
-				idx: self.context.cur_counterparty_commitment_transaction_number + 1,
+				idx: self.context.counterparty_next_commitment_transaction_number + 1,
 				secret: msg.per_commitment_secret,
 			}],
 			channel_id: Some(self.context.channel_id()),
@@ -7690,7 +7690,7 @@ where
 		self.context.counterparty_prev_commitment_point =
 			self.context.counterparty_cur_commitment_point;
 		self.context.counterparty_cur_commitment_point = Some(msg.next_per_commitment_point);
-		self.context.cur_counterparty_commitment_transaction_number -= 1;
+		self.context.counterparty_next_commitment_transaction_number -= 1;
 
 		if self.context.announcement_sigs_state == AnnouncementSigsState::Committed {
 			self.context.announcement_sigs_state = AnnouncementSigsState::PeerReceived;
@@ -8429,7 +8429,7 @@ where
 		}
 		let funding_signed = if self.context.signer_pending_funding && !self.funding.is_outbound() {
 			let commitment_data = self.context.build_commitment_transaction(&self.funding,
-				self.context.cur_counterparty_commitment_transaction_number + 1,
+				self.context.counterparty_next_commitment_transaction_number + 1,
 				&self.context.counterparty_cur_commitment_point.unwrap(), false, false, logger);
 			let counterparty_initial_commitment_tx = commitment_data.tx;
 			self.context.get_funding_signed_msg(&self.funding.channel_transaction_parameters, logger, counterparty_initial_commitment_tx)
@@ -8795,12 +8795,12 @@ where
 			)));
 		};
 
-		// We increment cur_counterparty_commitment_transaction_number only upon receipt of
+		// We increment counterparty_next_commitment_transaction_number only upon receipt of
 		// revoke_and_ack, not on sending commitment_signed, so we add one if have
 		// AwaitingRemoteRevoke set, which indicates we sent a commitment_signed but haven't gotten
 		// the corresponding revoke_and_ack back yet.
 		let is_awaiting_remote_revoke = self.context.channel_state.is_awaiting_remote_revoke();
-		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.context.cur_counterparty_commitment_transaction_number + if is_awaiting_remote_revoke { 1 } else { 0 };
+		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.context.counterparty_next_commitment_transaction_number + if is_awaiting_remote_revoke { 1 } else { 0 };
 
 		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.next_transaction_number() == 1 {
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
@@ -9631,12 +9631,12 @@ where
 	}
 
 	pub fn get_cur_counterparty_commitment_transaction_number(&self) -> u64 {
-		self.context.cur_counterparty_commitment_transaction_number + 1
+		self.context.counterparty_next_commitment_transaction_number + 1
 			- if self.context.channel_state.is_awaiting_remote_revoke() { 1 } else { 0 }
 	}
 
 	pub fn get_revoked_counterparty_commitment_transaction_number(&self) -> u64 {
-		let ret = self.context.cur_counterparty_commitment_transaction_number + 2;
+		let ret = self.context.counterparty_next_commitment_transaction_number + 2;
 		debug_assert_eq!(self.context.commitment_secrets.get_min_seen_secret(), ret);
 		ret
 	}
@@ -9754,7 +9754,7 @@ where
 			return true;
 		}
 		if self.holder_commitment_point.next_transaction_number() == INITIAL_COMMITMENT_NUMBER - 1 &&
-			self.context.cur_counterparty_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
+			self.context.counterparty_next_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
 			// If we're a 0-conf channel, we'll move beyond AwaitingChannelReady immediately even while
 			// waiting for the initial monitor persistence. Thus, we check if our commitment
 			// transaction numbers have both been iterated only exactly once (for the
@@ -10541,7 +10541,7 @@ where
 	#[rustfmt::skip]
 	fn get_channel_reestablish<L: Deref>(&mut self, logger: &L) -> msgs::ChannelReestablish where L::Target: Logger {
 		assert!(self.context.channel_state.is_peer_disconnected());
-		assert_ne!(self.context.cur_counterparty_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
+		assert_ne!(self.context.counterparty_next_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
 		// This is generally the first function which gets called on any given channel once we're
 		// up and running normally. Thus, we take this opportunity to attempt to resolve the
 		// `holder_commitment_point` to get any keys which we are currently missing.
@@ -10556,8 +10556,8 @@ where
 		// valid, and valid in fuzzing mode's arbitrary validity criteria:
 		let mut pk = [2; 33]; pk[1] = 0xff;
 		let dummy_pubkey = PublicKey::from_slice(&pk).unwrap();
-		let remote_last_secret = if self.context.cur_counterparty_commitment_transaction_number + 1 < INITIAL_COMMITMENT_NUMBER {
-			let remote_last_secret = self.context.commitment_secrets.get_secret(self.context.cur_counterparty_commitment_transaction_number + 2).unwrap();
+		let remote_last_secret = if self.context.counterparty_next_commitment_transaction_number + 1 < INITIAL_COMMITMENT_NUMBER {
+			let remote_last_secret = self.context.commitment_secrets.get_secret(self.context.counterparty_next_commitment_transaction_number + 2).unwrap();
 			log_trace!(logger, "Enough info to generate a Data Loss Protect with per_commitment_secret {} for channel {}", log_bytes!(remote_last_secret), &self.context.channel_id());
 			remote_last_secret
 		} else {
@@ -10580,10 +10580,10 @@ where
 			// receive, however we track it by the next commitment number for a remote transaction
 			// (which is one further, as they always revoke previous commitment transaction, not
 			// the one we send) so we have to decrement by 1. Note that if
-			// cur_counterparty_commitment_transaction_number is INITIAL_COMMITMENT_NUMBER we will have
+			// counterparty_next_commitment_transaction_number is INITIAL_COMMITMENT_NUMBER we will have
 			// dropped this channel on disconnect as it hasn't yet reached AwaitingChannelReady so we can't
 			// overflow here.
-			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.context.cur_counterparty_commitment_transaction_number - 1,
+			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.context.counterparty_next_commitment_transaction_number - 1,
 			your_last_per_commitment_secret: remote_last_secret,
 			my_current_per_commitment_point: dummy_pubkey,
 			next_funding_txid: self.maybe_get_next_funding_txid(),
@@ -11202,7 +11202,7 @@ where
 			ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
 				commitment_txid: counterparty_commitment_tx.trust().txid(),
 				htlc_outputs,
-				commitment_number: self.context.cur_counterparty_commitment_transaction_number,
+				commitment_number: self.context.counterparty_next_commitment_transaction_number,
 				their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap(),
 				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
 				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
@@ -11259,7 +11259,7 @@ where
 		L::Target: Logger,
 	{
 		let commitment_data = self.context.build_commitment_transaction(
-			funding, self.context.cur_counterparty_commitment_transaction_number,
+			funding, self.context.counterparty_next_commitment_transaction_number,
 			&self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger,
 		);
 		let counterparty_commitment_tx = commitment_data.tx;
@@ -11310,7 +11310,7 @@ where
 		self.build_commitment_no_state_update(funding, logger);
 
 		let commitment_data = self.context.build_commitment_transaction(
-			funding, self.context.cur_counterparty_commitment_transaction_number,
+			funding, self.context.counterparty_next_commitment_transaction_number,
 			&self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger,
 		);
 		let counterparty_commitment_tx = commitment_data.tx;
@@ -11879,7 +11879,7 @@ where
 	#[rustfmt::skip]
 	fn get_funding_created_msg<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
 		let commitment_data = self.context.build_commitment_transaction(&self.funding,
-			self.context.cur_counterparty_commitment_transaction_number,
+			self.context.counterparty_next_commitment_transaction_number,
 			&self.context.counterparty_cur_commitment_point.unwrap(), false, false, logger);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		let signature = match &self.context.holder_signer {
@@ -12910,7 +12910,7 @@ where
 		self.context.destination_script.write(writer)?;
 
 		self.holder_commitment_point.next_transaction_number().write(writer)?;
-		self.context.cur_counterparty_commitment_transaction_number.write(writer)?;
+		self.context.counterparty_next_commitment_transaction_number.write(writer)?;
 		self.funding.value_to_self_msat.write(writer)?;
 
 		let mut dropped_inbound_htlcs = 0;
@@ -13341,7 +13341,7 @@ where
 		let destination_script = Readable::read(reader)?;
 
 		let holder_commitment_next_transaction_number = Readable::read(reader)?;
-		let cur_counterparty_commitment_transaction_number = Readable::read(reader)?;
+		let counterparty_next_commitment_transaction_number = Readable::read(reader)?;
 		let value_to_self_msat = Readable::read(reader)?;
 
 		let pending_inbound_htlc_count: u64 = Readable::read(reader)?;
@@ -13973,7 +13973,7 @@ where
 				shutdown_scriptpubkey,
 				destination_script,
 
-				cur_counterparty_commitment_transaction_number,
+				counterparty_next_commitment_transaction_number,
 
 				holder_max_accepted_htlcs,
 				pending_inbound_htlcs,
