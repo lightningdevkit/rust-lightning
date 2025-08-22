@@ -2670,7 +2670,7 @@ where
 	is_batch_funding: Option<()>,
 
 	counterparty_next_commitment_point: Option<PublicKey>,
-	counterparty_prev_commitment_point: Option<PublicKey>,
+	counterparty_current_commitment_point: Option<PublicKey>,
 	counterparty_node_id: PublicKey,
 
 	counterparty_shutdown_scriptpubkey: Option<ScriptBuf>,
@@ -3298,7 +3298,7 @@ where
 			is_batch_funding: None,
 
 			counterparty_next_commitment_point: Some(open_channel_fields.first_per_commitment_point),
-			counterparty_prev_commitment_point: None,
+			counterparty_current_commitment_point: None,
 			counterparty_node_id,
 
 			counterparty_shutdown_scriptpubkey,
@@ -3536,7 +3536,7 @@ where
 			is_batch_funding: None,
 
 			counterparty_next_commitment_point: None,
-			counterparty_prev_commitment_point: None,
+			counterparty_current_commitment_point: None,
 			counterparty_node_id,
 
 			counterparty_shutdown_scriptpubkey: None,
@@ -5614,7 +5614,7 @@ where
 		// Use the previous commitment number and point when splicing since they shouldn't change.
 		if commitment_number != INITIAL_COMMITMENT_NUMBER {
 			commitment_number += 1;
-			commitment_point = self.counterparty_prev_commitment_point.unwrap();
+			commitment_point = self.counterparty_current_commitment_point.unwrap();
 		}
 
 		let commitment_data = self.build_commitment_transaction(
@@ -6782,9 +6782,9 @@ where
 					self.context.counterparty_next_commitment_point
 				} else if self.context.counterparty_next_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 2 {
 					// If we've advanced the commitment number once, the second commitment point is
-					// at `counterparty_prev_commitment_point`, which is not yet revoked.
-					debug_assert!(self.context.counterparty_prev_commitment_point.is_some());
-					self.context.counterparty_prev_commitment_point
+					// at `counterparty_current_commitment_point`, which is not yet revoked.
+					debug_assert!(self.context.counterparty_current_commitment_point.is_some());
+					self.context.counterparty_current_commitment_point
 				} else {
 					// If they have sent updated points, channel_ready is always supposed to match
 					// their "first" point, which we re-derive here.
@@ -6798,7 +6798,7 @@ where
 			return Ok(None);
 		}
 
-		self.context.counterparty_prev_commitment_point = self.context.counterparty_next_commitment_point;
+		self.context.counterparty_current_commitment_point = self.context.counterparty_next_commitment_point;
 		self.context.counterparty_next_commitment_point = Some(msg.next_per_commitment_point);
 		// Clear any interactive signing session.
 		self.interactive_tx_signing_session = None;
@@ -7028,7 +7028,7 @@ where
 			.build_commitment_transaction(
 				pending_splice_funding,
 				self.context.counterparty_next_commitment_transaction_number + 1,
-				&self.context.counterparty_prev_commitment_point.unwrap(),
+				&self.context.counterparty_current_commitment_point.unwrap(),
 				false,
 				false,
 				logger,
@@ -7615,11 +7615,11 @@ where
 			"Peer provided an invalid per_commitment_secret".to_owned()
 		);
 
-		if let Some(counterparty_prev_commitment_point) =
-			self.context.counterparty_prev_commitment_point
+		if let Some(counterparty_current_commitment_point) =
+			self.context.counterparty_current_commitment_point
 		{
 			if PublicKey::from_secret_key(&self.context.secp_ctx, &secret)
-				!= counterparty_prev_commitment_point
+				!= counterparty_current_commitment_point
 			{
 				return Err(ChannelError::close("Got a revoke commitment secret which didn't correspond to their current pubkey".to_owned()));
 			}
@@ -7687,7 +7687,7 @@ where
 		// channel based on that, but stepping stuff here should be safe either way.
 		self.context.channel_state.clear_awaiting_remote_revoke();
 		self.mark_response_received();
-		self.context.counterparty_prev_commitment_point =
+		self.context.counterparty_current_commitment_point =
 			self.context.counterparty_next_commitment_point;
 		self.context.counterparty_next_commitment_point = Some(msg.next_per_commitment_point);
 		self.context.counterparty_next_commitment_transaction_number -= 1;
@@ -13168,7 +13168,7 @@ where
 		self.funding.funding_transaction.write(writer)?;
 
 		self.context.counterparty_next_commitment_point.write(writer)?;
-		self.context.counterparty_prev_commitment_point.write(writer)?;
+		self.context.counterparty_current_commitment_point.write(writer)?;
 		self.context.counterparty_node_id.write(writer)?;
 
 		self.context.counterparty_shutdown_scriptpubkey.write(writer)?;
@@ -13570,7 +13570,7 @@ where
 
 		let counterparty_next_commitment_point = Readable::read(reader)?;
 
-		let counterparty_prev_commitment_point = Readable::read(reader)?;
+		let counterparty_current_commitment_point = Readable::read(reader)?;
 		let counterparty_node_id = Readable::read(reader)?;
 
 		let counterparty_shutdown_scriptpubkey = Readable::read(reader)?;
@@ -14026,7 +14026,7 @@ where
 				is_batch_funding,
 
 				counterparty_next_commitment_point,
-				counterparty_prev_commitment_point,
+				counterparty_current_commitment_point,
 				counterparty_node_id,
 
 				counterparty_shutdown_scriptpubkey,
