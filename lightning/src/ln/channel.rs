@@ -10759,7 +10759,9 @@ where
 		// Note on channel reserve requirement pre-check: as the splice acceptor does not contribute,
 		// it can't go below reserve, therefore no pre-check is done here.
 
-		// TODO(splicing): Early check for reserve requirement
+		if their_funding_contribution_satoshis.is_negative() {
+			self.validate_their_negative_funding_contribution(&splice_funding)?;
+		}
 
 		Ok(splice_funding)
 	}
@@ -10832,7 +10834,7 @@ where
 		})
 	}
 
-	/// Handle splice_ack
+	/// See also [`validate_splice_ack`]
 	#[cfg(splicing)]
 	pub(crate) fn splice_ack<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceAck, signer_provider: &SP, entropy_source: &ES,
@@ -10842,51 +10844,7 @@ where
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
-		let pending_splice = if let Some(ref mut pending_splice) = &mut self.pending_splice {
-			pending_splice
-		} else {
-			return Err(ChannelError::Ignore(format!("Channel is not in pending splice")));
-		};
-
-		// TODO(splicing): Add check that we are the splice (quiescence) initiator
-
-		let funding_negotiation_context = match pending_splice.funding_negotiation.take() {
-			Some(FundingNegotiation::AwaitingAck(context)) => context,
-			Some(FundingNegotiation::ConstructingTransaction(funding, constructor)) => {
-				pending_splice.funding_negotiation =
-					Some(FundingNegotiation::ConstructingTransaction(funding, constructor));
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Got unexpected splice_ack; splice negotiation already in progress"
-				)));
-			},
-			Some(FundingNegotiation::AwaitingSignatures(funding)) => {
-				pending_splice.funding_negotiation =
-					Some(FundingNegotiation::AwaitingSignatures(funding));
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Got unexpected splice_ack; splice negotiation already in progress"
-				)));
-			},
-			None => {
-				return Err(ChannelError::Ignore(format!(
-					"Got unexpected splice_ack; no splice negotiation in progress"
-				)));
-			},
-		};
-
-		let our_funding_contribution_satoshis =
-			funding_negotiation_context.our_funding_contribution_satoshis;
-		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
-
-		let splice_funding = FundingScope::for_splice(
-			&self.funding,
-			&self.context,
-			our_funding_contribution_satoshis,
-			their_funding_contribution_satoshis,
-			msg.funding_pubkey,
-		)?;
-
-		// TODO(splicing): Pre-check for reserve requirement
-		// (Note: It should also be checked later at tx_complete)
+		let splice_funding = self.validate_splice_ack(msg)?;
 
 		log_info!(
 			logger,
@@ -10895,6 +10853,17 @@ where
 			splice_funding.get_value_satoshis(),
 			self.funding.get_value_satoshis(),
 		);
+
+		let pending_splice =
+			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
+		// TODO: Good candidate for a let else statement once MSRV >= 1.65
+		let funding_negotiation_context = if let Some(FundingNegotiation::AwaitingAck(context)) =
+			pending_splice.funding_negotiation.take()
+		{
+			context
+		} else {
+			panic!("We should have returned an error earlier!");
+		};
 
 		let mut interactive_tx_constructor = funding_negotiation_context
 			.into_interactive_tx_constructor(
@@ -10919,6 +10888,89 @@ where
 		));
 
 		Ok(tx_msg_opt)
+	}
+
+	/// Checks during handling splice_ack
+	#[cfg(splicing)]
+	fn validate_splice_ack(&self, msg: &msgs::SpliceAck) -> Result<FundingScope, ChannelError> {
+		// TODO(splicing): Add check that we are the splice (quiescence) initiator
+
+		let funding_negotiation_context = match &self
+			.pending_splice
+			.as_ref()
+			.ok_or(ChannelError::Ignore(format!("Channel is not in pending splice")))?
+			.funding_negotiation
+		{
+			Some(FundingNegotiation::AwaitingAck(context)) => context,
+			Some(FundingNegotiation::ConstructingTransaction(_, _))
+			| Some(FundingNegotiation::AwaitingSignatures(_)) => {
+				return Err(ChannelError::WarnAndDisconnect(format!(
+					"Got unexpected splice_ack; splice negotiation already in progress"
+				)));
+			},
+			None => {
+				return Err(ChannelError::Ignore(format!(
+					"Got unexpected splice_ack; no splice negotiation in progress"
+				)));
+			},
+		};
+
+		let our_funding_contribution_satoshis =
+			funding_negotiation_context.our_funding_contribution_satoshis;
+		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
+
+		let splice_funding = FundingScope::for_splice(
+			&self.funding,
+			&self.context,
+			our_funding_contribution_satoshis,
+			their_funding_contribution_satoshis,
+			msg.funding_pubkey,
+		)?;
+
+		if their_funding_contribution_satoshis.is_negative() {
+			self.validate_their_negative_funding_contribution(&splice_funding)?;
+		}
+
+		Ok(splice_funding)
+	}
+
+	/// Used to validate a negative `funding_contribution_satoshis` in `splice_init` and `splice_ack` messages.
+	#[cfg(splicing)]
+	fn validate_their_negative_funding_contribution(
+		&self, spliced_funding: &FundingScope,
+	) -> Result<(), ChannelError> {
+		// Calculate the remote's new balance
+		//
+		// We only validate the remote's balance on the next *remote* commitment transaction.
+		//
+		// We don't care for a small / no to_remote output on our next *local* commitment transaction as the purpose of the
+		// channel reserve is to ensure we can punish *them* if they misbehave. See `validate_update_add_htlc` for another
+		// place where we apply the same reasoning.
+		//
+		// This comment is only relevant if they are the funder of the channel because the remote balance will be the same
+		// on both local and remote commitments if they are the fundee.
+		let spliced_commitment_stats =
+			self.context.build_commitment_stats(&spliced_funding, false, true, None, None);
+		let spliced_remote_balance_msat = if spliced_funding.is_outbound() {
+			spliced_commitment_stats.remote_balance_before_fee_msat
+		} else {
+			spliced_commitment_stats
+				.remote_balance_before_fee_msat
+				.saturating_sub(spliced_commitment_stats.commit_tx_fee_sat * 1000)
+		};
+
+		// Check if the remote's new balance is under the specified reserve
+		if spliced_remote_balance_msat
+			< spliced_funding.holder_selected_channel_reserve_satoshis * 1000
+		{
+			return Err(ChannelError::Warn(format!(
+				"Remote balance below reserve mandated by holder: {} vs {}",
+				spliced_remote_balance_msat,
+				spliced_funding.holder_selected_channel_reserve_satoshis * 1000,
+			)));
+		}
+
+		Ok(())
 	}
 
 	#[cfg(splicing)]
