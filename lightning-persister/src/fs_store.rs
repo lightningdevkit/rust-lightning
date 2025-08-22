@@ -80,8 +80,9 @@ impl FilesystemStore {
 		self.inner.data_dir.clone()
 	}
 
-	#[cfg(all(feature = "tokio", test))]
-	pub(crate) fn state_size(&self) -> usize {
+	#[cfg(any(all(feature = "tokio", test), fuzzing))]
+	/// Returns the size of the async state.
+	pub fn state_size(&self) -> usize {
 		let outer_lock = self.inner.locks.lock().unwrap();
 		outer_lock.len()
 	}
