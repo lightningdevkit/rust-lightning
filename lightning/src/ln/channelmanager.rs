@@ -759,11 +759,22 @@ pub(crate) enum SentHTLCId {
 	TrampolineForward { session_priv: [u8; SECRET_KEY_SIZE] },
 }
 impl SentHTLCId {
+	/// Creates an identifier for the [`HTLCSource`] provided. Note that for MPP trampoline payments
+	/// each outgoing HTLC will have a distinct identifier.
 	pub(crate) fn from_source(source: &HTLCSource) -> Self {
 		match source {
 			HTLCSource::PreviousHopData(hop_data) => Self::PreviousHopData {
 				prev_outbound_scid_alias: hop_data.prev_outbound_scid_alias,
 				htlc_id: hop_data.htlc_id,
+			},
+			HTLCSource::TrampolineForward {
+				ref outbound_payment,
+				..
+			} => Self::TrampolineForward {
+				session_priv: outbound_payment
+					.as_ref()
+					.map(|o| o.session_priv.secret_bytes())
+					.expect("trying to identify a trampoline payment that we have no outbound_payment tracked for"),
 			},
 			HTLCSource::OutboundRoute { session_priv, .. } => {
 				Self::OutboundRoute { session_priv: session_priv.secret_bytes() }
@@ -789,11 +800,31 @@ type FailedHTLCForward = (HTLCSource, PaymentHash, HTLCFailReason, HTLCHandlingF
 mod fuzzy_channelmanager {
 	use super::*;
 
+	/// Information about a HTLC sent as part of a (possibly MPP) payment to the next trampoline.
+	#[derive(Clone, Debug, PartialEq, Eq)]
+	pub struct TrampolineDispatch {
+		/// The payment ID used for the outbound payment.
+		pub payment_id: PaymentId,
+		/// The path used for the outbound payment.
+		pub path: Path,
+		/// The session private key used for inter-trampoline outer onions.
+		pub session_priv: SecretKey,
+	}
+
 	/// Tracks the inbound corresponding to an outbound HTLC
-	#[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
+	#[allow(clippy::derive_hash_xor_eq, dead_code)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
 	#[derive(Clone, Debug, PartialEq, Eq)]
 	pub enum HTLCSource {
 		PreviousHopData(HTLCPreviousHopData),
+		TrampolineForward {
+			/// We might be forwarding an incoming payment that was received over MPP, and therefore
+			/// need to store the vector of corresponding `HTLCPreviousHopData` values.
+			previous_hop_data: Vec<HTLCPreviousHopData>,
+			incoming_trampoline_shared_secret: [u8; 32],
+			/// Track outbound payment details once the payment has been dispatched, will be `None`
+			/// when waiting for incoming MPP to accumulate.
+			outbound_payment: Option<TrampolineDispatch>,
+		},
 		OutboundRoute {
 			path: Path,
 			session_priv: SecretKey,
@@ -855,6 +886,20 @@ impl core::hash::Hash for HTLCSource {
 				payment_id.hash(hasher);
 				first_hop_htlc_msat.hash(hasher);
 				bolt12_invoice.hash(hasher);
+			},
+			HTLCSource::TrampolineForward {
+				previous_hop_data,
+				incoming_trampoline_shared_secret,
+				outbound_payment,
+			} => {
+				2u8.hash(hasher);
+				previous_hop_data.hash(hasher);
+				incoming_trampoline_shared_secret.hash(hasher);
+				if let Some(payment) = outbound_payment {
+					payment.payment_id.hash(hasher);
+					payment.path.hash(hasher);
+					payment.session_priv[..].hash(hasher);
+				}
 			},
 		}
 	}
@@ -9029,6 +9074,7 @@ impl<
 					None,
 				));
 			},
+			HTLCSource::TrampolineForward { .. } => todo!(),
 		}
 	}
 
@@ -9783,6 +9829,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					},
 				);
 			},
+			HTLCSource::TrampolineForward { .. } => todo!(),
 		}
 	}
 
@@ -17271,6 +17318,8 @@ impl Readable for HTLCSource {
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
+			// Note: we intentionally do not read HTLCSource::TrampolineForward because we do not
+			// want to allow downgrades with in-flight trampoline forwards.
 			_ => Err(DecodeError::UnknownRequiredFeature),
 		}
 	}
@@ -17303,6 +17352,18 @@ impl Writeable for HTLCSource {
 				1u8.write(writer)?;
 				field.write(writer)?;
 			},
+			HTLCSource::TrampolineForward {
+				ref previous_hop_data,
+				incoming_trampoline_shared_secret,
+				ref outbound_payment,
+			} => {
+				2u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, *previous_hop_data, required_vec),
+					(3, incoming_trampoline_shared_secret, required),
+					(5, outbound_payment, option),
+				});
+			},
 		}
 		Ok(())
 	}
@@ -17318,6 +17379,12 @@ impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	// filled in, so we can safely unwrap it here.
 	(7, prev_channel_id, (default_value, ChannelId::v1_from_funding_outpoint(prev_funding_outpoint.0.unwrap()))),
 	(9, prev_counterparty_node_id, required),
+});
+
+impl_writeable_tlv_based!(TrampolineDispatch, {
+	(1, payment_id, required),
+	(3, path, required),
+	(5, session_priv, required),
 });
 
 impl Writeable for HTLCForwardInfo {
@@ -19176,6 +19243,7 @@ impl<
 								} else { true }
 							});
 							},
+							HTLCSource::TrampolineForward { .. } => todo!(),
 							HTLCSource::OutboundRoute {
 								payment_id,
 								session_priv,
