@@ -12728,24 +12728,23 @@ where
 	///
 	/// [`BlindedPaymentPath`]: crate::blinded_path::payment::BlindedPaymentPath
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	#[rustfmt::skip]
 	pub fn request_refund_payment(
-		&self, refund: &Refund
+		&self, refund: &Refund,
 	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
 		let secp_ctx = &self.secp_ctx;
+		let entropy = &*self.entropy_source;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let entropy = &*self.entropy_source;
 		let builder = self.flow.create_invoice_builder_from_refund(
-			&self.router, entropy, refund, self.list_usable_channels(),
+			&self.router,
+			entropy,
+			refund,
+			self.list_usable_channels(),
 			|amount_msats, relative_expiry| {
-				self.create_inbound_payment(
-					Some(amount_msats),
-					relative_expiry,
-					None
-				).map_err(|()| Bolt12SemanticError::InvalidAmount)
-			}
+				self.create_inbound_payment(Some(amount_msats), relative_expiry, None)
+					.map_err(|()| Bolt12SemanticError::InvalidAmount)
+			},
 		)?;
 
 		let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
