@@ -1305,6 +1305,11 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// found at `Self::funding`. We don't use the term "renegotiated", as the currently locked
 	// `FundingScope` could be one that was renegotiated.
 	alternative_funding_confirmed: Option<(Txid, u32)>,
+
+	/// [`ChannelMonitor`]s written by LDK prior to 0.1 need to be re-persisted after startup. To
+	/// make deciding whether to do so simple, here we track whether this monitor was last written
+	/// prior to 0.1.
+	written_by_0_1_or_later: bool,
 }
 
 // Returns a `&FundingScope` for the one we are currently observing/handling commitment transactions
@@ -1875,6 +1880,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			prev_holder_htlc_data: None,
 
 			alternative_funding_confirmed: None,
+
+			written_by_0_1_or_later: true,
 		})
 	}
 
@@ -2006,6 +2013,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
 	pub fn get_funding_txo(&self) -> OutPoint {
 		self.inner.lock().unwrap().get_funding_txo()
+	}
+
+	pub(crate) fn written_by_0_1_or_later(&self) -> bool {
+		self.inner.lock().unwrap().written_by_0_1_or_later
 	}
 
 	/// Gets the funding script of the channel this ChannelMonitor is monitoring for.
@@ -6231,6 +6242,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(32, pending_funding, optional_vec),
 			(34, alternative_funding_confirmed, option),
 		});
+		let written_by_0_1_or_later = payment_preimages_with_info.is_some();
 		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
 			if payment_preimages_with_info.len() != payment_preimages.len() {
 				return Err(DecodeError::InvalidValue);
@@ -6401,6 +6413,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			prev_holder_htlc_data,
 
 			alternative_funding_confirmed,
+
+			written_by_0_1_or_later,
 		})))
 	}
 }
