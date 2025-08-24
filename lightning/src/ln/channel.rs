@@ -288,24 +288,6 @@ struct InboundHTLCOutput {
 	state: InboundHTLCState,
 }
 
-impl InboundHTLCOutput {
-	fn is_dust(
-		&self, local: bool, feerate_per_kw: u32, broadcaster_dust_limit_sat: u64,
-		features: &ChannelTypeFeatures,
-	) -> bool {
-		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
-			second_stage_tx_fees_sat(features, feerate_per_kw);
-
-		let htlc_tx_fee_sat = if !local {
-			// This is an offered HTLC.
-			htlc_timeout_tx_fee_sat
-		} else {
-			htlc_success_tx_fee_sat
-		};
-		self.amount_msat / 1000 < broadcaster_dust_limit_sat + htlc_tx_fee_sat
-	}
-}
-
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 enum OutboundHTLCState {
 	/// Added by us and included in a commitment_signed (if we were AwaitingRemoteRevoke when we
@@ -429,24 +411,6 @@ struct OutboundHTLCOutput {
 	blinding_point: Option<PublicKey>,
 	skimmed_fee_msat: Option<u64>,
 	send_timestamp: Option<Duration>,
-}
-
-impl OutboundHTLCOutput {
-	fn is_dust(
-		&self, local: bool, feerate_per_kw: u32, broadcaster_dust_limit_sat: u64,
-		features: &ChannelTypeFeatures,
-	) -> bool {
-		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
-			second_stage_tx_fees_sat(features, feerate_per_kw);
-
-		let htlc_tx_fee_sat = if local {
-			// This is an offered HTLC.
-			htlc_timeout_tx_fee_sat
-		} else {
-			htlc_success_tx_fee_sat
-		};
-		self.amount_msat / 1000 < broadcaster_dust_limit_sat + htlc_tx_fee_sat
-	}
 }
 
 /// See AwaitingRemoteRevoke ChannelState for more info
@@ -4579,68 +4543,6 @@ where
 		}
 
 		feerate_per_kw
-	}
-
-	/// Builds stats on a potential commitment transaction build, without actually building the
-	/// commitment transaction. See `build_commitment_transaction` for further docs.
-	#[inline]
-	#[rustfmt::skip]
-	fn build_commitment_stats(&self, funding: &FundingScope, local: bool, generated_by_local: bool, feerate_per_kw: Option<u32>, fee_buffer_nondust_htlcs: Option<usize>) -> CommitmentStats {
-		let broadcaster_dust_limit_sat = if local { self.holder_dust_limit_satoshis } else { self.counterparty_dust_limit_satoshis };
-		let mut nondust_htlc_count = 0;
-		let mut remote_htlc_total_msat = 0;
-		let mut local_htlc_total_msat = 0;
-		let mut value_to_self_claimed_msat = 0;
-		let mut value_to_remote_claimed_msat = 0;
-
-		let feerate_per_kw = feerate_per_kw.unwrap_or_else(|| self.get_commitment_feerate(funding, generated_by_local));
-
-		for htlc in self.pending_inbound_htlcs.iter() {
-			if htlc.state.included_in_commitment(generated_by_local) {
-				if !htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_sat, funding.get_channel_type()) {
-					nondust_htlc_count += 1;
-				}
-				remote_htlc_total_msat += htlc.amount_msat;
-			} else {
-				if htlc.state.preimage().is_some() {
-					value_to_self_claimed_msat += htlc.amount_msat;
-				}
-			}
-		};
-
-		for htlc in self.pending_outbound_htlcs.iter() {
-			if htlc.state.included_in_commitment(generated_by_local) {
-				if !htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_sat, funding.get_channel_type()) {
-					nondust_htlc_count += 1;
-				}
-				local_htlc_total_msat += htlc.amount_msat;
-			} else {
-				if htlc.state.preimage().is_some() {
-					value_to_remote_claimed_msat += htlc.amount_msat;
-				}
-			}
-		};
-
-		// # Panics
-		//
-		// After all HTLC claims have been accounted for, the local balance MUST remain greater than or equal to 0.
-
-		let mut value_to_self_msat = (funding.value_to_self_msat + value_to_self_claimed_msat).checked_sub(value_to_remote_claimed_msat).unwrap();
-
-		let mut value_to_remote_msat = (funding.get_value_satoshis() * 1000).checked_sub(value_to_self_msat).unwrap();
-		value_to_self_msat = value_to_self_msat.checked_sub(local_htlc_total_msat).unwrap();
-		value_to_remote_msat = value_to_remote_msat.checked_sub(remote_htlc_total_msat).unwrap();
-
-		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(feerate_per_kw, nondust_htlc_count + fee_buffer_nondust_htlcs.unwrap_or(0), funding.get_channel_type());
-		// Subtract any non-HTLC outputs from the local and remote balances
-		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = SpecTxBuilder {}.subtract_non_htlc_outputs(
-			funding.is_outbound(),
-			value_to_self_msat,
-			value_to_remote_msat,
-			funding.get_channel_type(),
-		);
-
-		CommitmentStats { commit_tx_fee_sat, local_balance_before_fee_msat, remote_balance_before_fee_msat }
 	}
 
 	/// Transaction nomenclature is somewhat confusing here as there are many different cases - a
