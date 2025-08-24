@@ -3054,14 +3054,21 @@ where
 		// check if the funder's amount for the initial commitment tx is sufficient
 		// for full fee payment plus a few HTLCs to ensure the channel will be useful.
 		let funders_amount_msat = open_channel_fields.funding_satoshis * 1000 - msg_push_msat;
-		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(open_channel_fields.commitment_feerate_sat_per_1000_weight, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
-		// Subtract any non-HTLC outputs from the remote balance
-		let (_, remote_balance_before_fee_msat) = SpecTxBuilder {}.subtract_non_htlc_outputs(false, value_to_self_msat, funders_amount_msat, &channel_type);
-		if remote_balance_before_fee_msat / 1000 < commit_tx_fee_sat {
-			return Err(ChannelError::close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", funders_amount_msat / 1000, commit_tx_fee_sat)));
+		let local = false;
+		let is_outbound_from_holder = false;
+		let dust_exposure_limiting_feerate = if channel_type.supports_anchor_zero_fee_commitments() {
+			None
+		} else {
+			Some(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MaximumFeeEstimate))
+		};
+		let remote_stats = SpecTxBuilder {}.get_next_commitment_stats(local, is_outbound_from_holder, open_channel_fields.funding_satoshis, msg_push_msat, &[], MIN_AFFORDABLE_HTLC_COUNT,
+			open_channel_fields.commitment_feerate_sat_per_1000_weight, dust_exposure_limiting_feerate, open_channel_fields.dust_limit_satoshis, &channel_type);
+		let remote_balance_before_fee_msat = remote_stats.counterparty_balance_before_fee_msat.ok_or(ChannelError::close(format!("Funding amount ({} sats) can't even pay for non-HTLC outputs ie anchors.", funders_amount_msat / 1000)))?;
+		if remote_balance_before_fee_msat / 1000 < remote_stats.commit_tx_fee_sat {
+			return Err(ChannelError::close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", funders_amount_msat / 1000, remote_stats.commit_tx_fee_sat)));
 		}
 
-		let to_remote_satoshis = remote_balance_before_fee_msat / 1000 - commit_tx_fee_sat;
+		let to_remote_satoshis = remote_balance_before_fee_msat / 1000 - remote_stats.commit_tx_fee_sat;
 		// While it's reasonable for us to not meet the channel reserve initially (if they don't
 		// want to push much to us), our counterparty should always have more than our reserve.
 		if to_remote_satoshis < holder_selected_channel_reserve_satoshis {
@@ -3137,7 +3144,7 @@ where
 			channel_transaction_parameters: ChannelTransactionParameters {
 				holder_pubkeys: pubkeys,
 				holder_selected_contest_delay: config.channel_handshake_config.our_to_self_delay,
-				is_outbound_from_holder: false,
+				is_outbound_from_holder,
 				counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
 					selected_contest_delay: open_channel_fields.to_self_delay,
 					pubkeys: counterparty_pubkeys,
