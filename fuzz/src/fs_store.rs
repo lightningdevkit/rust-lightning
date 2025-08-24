@@ -54,9 +54,6 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	let secondary_namespace = "secondary";
 	let key = "key";
 
-	// Remove the key in case something was left over from a previous run.
-	_ = KVStoreSync::remove(fs_store, primary_namespace, secondary_namespace, key, false);
-
 	let mut next_data_value = 0u64;
 	let mut get_next_data_value = || {
 		let data_value = next_data_value.to_be_bytes().to_vec();

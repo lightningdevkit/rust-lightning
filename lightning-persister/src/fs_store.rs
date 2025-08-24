@@ -242,7 +242,7 @@ impl FilesystemStoreInner {
 			})
 		};
 
-		self.clean_locks(&inner_lock_ref, dest_file_path, &async_state);
+		self.clean_locks(&inner_lock_ref, dest_file_path);
 
 		res
 	}
@@ -250,27 +250,19 @@ impl FilesystemStoreInner {
 	fn execute_locked_read<F: FnOnce() -> Result<(), lightning::io::Error>>(
 		&self, inner_lock_ref: Arc<RwLock<AsyncState>>, dest_file_path: PathBuf, callback: F,
 	) -> Result<(), lightning::io::Error> {
-		let async_state = inner_lock_ref.read().unwrap();
-
-		// If the version is not stale, we execute the callback. Otherwise we can and must skip writing.
+		let _async_state = inner_lock_ref.read().unwrap();
 		let res = callback();
-
-		self.clean_locks(&inner_lock_ref, dest_file_path, &async_state);
-
+		self.clean_locks(&inner_lock_ref, dest_file_path);
 		res
 	}
 
-	fn clean_locks(
-		&self, inner_lock_ref: &Arc<RwLock<AsyncState>>, dest_file_path: PathBuf,
-		async_state: &AsyncState,
-	) {
-		let more_writes_pending = async_state.latest_written_version < async_state.latest_version;
-
-		// If there are no more writes pending and no arcs in use elsewhere, we can remove the map entry to prevent
-		// leaking memory. The two arcs are the one in the map and the one held here in inner_lock_ref. The outer lock
-		// is obtained first, to avoid a new arc being cloned after we've already counted.
+	fn clean_locks(&self, inner_lock_ref: &Arc<RwLock<AsyncState>>, dest_file_path: PathBuf) {
+		// If there no arcs in use elsewhere, this means that there are no in-flight writes. We can remove the map entry
+		// to prevent leaking memory. The two arcs that are expected are the one in the map and the one held here in
+		// inner_lock_ref. The outer lock is obtained first, to avoid a new arc being cloned after we've already
+		// counted.
 		let mut outer_lock = self.locks.lock().unwrap();
-		if !more_writes_pending && Arc::strong_count(&inner_lock_ref) == 2 {
+		if Arc::strong_count(&inner_lock_ref) == 2 {
 			outer_lock.remove(&dest_file_path);
 		}
 	}
