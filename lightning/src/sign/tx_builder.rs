@@ -145,9 +145,6 @@ pub(crate) trait TxBuilder {
 		dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
 		channel_type: &ChannelTypeFeatures,
 	) -> NextCommitmentStats;
-	fn commit_tx_fee_sat(
-		&self, feerate_per_kw: u32, nondust_htlc_count: usize, channel_type: &ChannelTypeFeatures,
-	) -> u64;
 	fn build_commitment_transaction<L: Deref>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
 		channel_parameters: &ChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>,
@@ -404,11 +401,6 @@ impl TxBuilder for SpecTxBuilder {
 			extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat,
 		}
 	}
-	fn commit_tx_fee_sat(
-		&self, feerate_per_kw: u32, nondust_htlc_count: usize, channel_type: &ChannelTypeFeatures,
-	) -> u64 {
-		commit_tx_fee_sat(feerate_per_kw, nondust_htlc_count, channel_type)
-	}
 	#[rustfmt::skip]
 	fn build_commitment_transaction<L: Deref>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
@@ -459,7 +451,7 @@ impl TxBuilder for SpecTxBuilder {
 		// The value going to each party MUST be 0 or positive, even if all HTLCs pending in the
 		// commitment clear by failure.
 
-		let commit_tx_fee_sat = self.commit_tx_fee_sat(feerate_per_kw, htlcs_in_tx.len(), &channel_parameters.channel_type_features);
+		let commit_tx_fee_sat = commit_tx_fee_sat(feerate_per_kw, htlcs_in_tx.len(), &channel_parameters.channel_type_features);
 		let value_to_self_after_htlcs_msat = value_to_self_msat.checked_sub(local_htlc_total_msat).unwrap();
 		let value_to_remote_after_htlcs_msat =
 			(channel_parameters.channel_value_satoshis * 1000).checked_sub(value_to_self_msat).unwrap().checked_sub(remote_htlc_total_msat).unwrap();
