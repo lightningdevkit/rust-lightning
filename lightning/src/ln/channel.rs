@@ -3322,16 +3322,19 @@ where
 		);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
-		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
-		// Subtract any non-HTLC outputs from the local balance
-		let (local_balance_before_fee_msat, _) = SpecTxBuilder {}.subtract_non_htlc_outputs(
-			true,
-			value_to_self_msat,
-			push_msat,
-			&channel_type,
-		);
-		if local_balance_before_fee_msat / 1000 < commit_tx_fee_sat {
-			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commit_tx_fee_sat) });
+		let local = true;
+		let is_outbound_from_holder = true;
+		let value_to_holder_msat = channel_value_msat - push_msat;
+		let dust_exposure_limiting_feerate = if channel_type.supports_anchor_zero_fee_commitments() {
+			None
+		} else {
+			Some(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MaximumFeeEstimate))
+		};
+		let local_stats = SpecTxBuilder {}.get_next_commitment_stats(local, is_outbound_from_holder, channel_value_satoshis, value_to_holder_msat, &[], MIN_AFFORDABLE_HTLC_COUNT,
+			commitment_feerate, dust_exposure_limiting_feerate, MIN_CHAN_DUST_LIMIT_SATOSHIS, &channel_type);
+		let local_balance_before_fee_msat = local_stats.holder_balance_before_fee_msat.ok_or(APIError::APIMisuseError { err: format!("Funding amount ({} sats) can't even pay for non-HTLC outputs ie anchors.", value_to_self_msat / 1000) })?;
+		if local_balance_before_fee_msat / 1000 < local_stats.commit_tx_fee_sat {
+			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, local_stats.commit_tx_fee_sat) });
 		}
 
 		let mut secp_ctx = Secp256k1::new();
@@ -3379,7 +3382,7 @@ where
 			channel_transaction_parameters: ChannelTransactionParameters {
 				holder_pubkeys: pubkeys,
 				holder_selected_contest_delay: config.channel_handshake_config.our_to_self_delay,
-				is_outbound_from_holder: true,
+				is_outbound_from_holder,
 				counterparty_parameters: None,
 				funding_outpoint: None,
 				splice_parent_funding_txid: None,
