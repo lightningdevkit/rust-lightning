@@ -148,10 +148,6 @@ pub(crate) trait TxBuilder {
 	fn commit_tx_fee_sat(
 		&self, feerate_per_kw: u32, nondust_htlc_count: usize, channel_type: &ChannelTypeFeatures,
 	) -> u64;
-	fn subtract_non_htlc_outputs(
-		&self, is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
-		value_to_remote_after_htlcs: u64, channel_type: &ChannelTypeFeatures,
-	) -> (u64, u64);
 	fn build_commitment_transaction<L: Deref>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
 		channel_parameters: &ChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>,
@@ -413,36 +409,6 @@ impl TxBuilder for SpecTxBuilder {
 	) -> u64 {
 		commit_tx_fee_sat(feerate_per_kw, nondust_htlc_count, channel_type)
 	}
-	fn subtract_non_htlc_outputs(
-		&self, is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
-		value_to_remote_after_htlcs: u64, channel_type: &ChannelTypeFeatures,
-	) -> (u64, u64) {
-		let total_anchors_sat = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			ANCHOR_OUTPUT_VALUE_SATOSHI * 2
-		} else {
-			0
-		};
-
-		let mut local_balance_before_fee_msat = value_to_self_after_htlcs;
-		let mut remote_balance_before_fee_msat = value_to_remote_after_htlcs;
-
-		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
-		// than or equal to `total_anchors_sat`.
-		//
-		// This is because when the remote party sends an `update_fee` message, we build the new
-		// commitment transaction *before* checking whether the remote party's balance is enough to
-		// cover the total anchor sum.
-
-		if is_outbound_from_holder {
-			local_balance_before_fee_msat =
-				local_balance_before_fee_msat.saturating_sub(total_anchors_sat * 1000);
-		} else {
-			remote_balance_before_fee_msat =
-				remote_balance_before_fee_msat.saturating_sub(total_anchors_sat * 1000);
-		}
-
-		(local_balance_before_fee_msat, remote_balance_before_fee_msat)
-	}
 	#[rustfmt::skip]
 	fn build_commitment_transaction<L: Deref>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
@@ -497,8 +463,10 @@ impl TxBuilder for SpecTxBuilder {
 		let value_to_self_after_htlcs_msat = value_to_self_msat.checked_sub(local_htlc_total_msat).unwrap();
 		let value_to_remote_after_htlcs_msat =
 			(channel_parameters.channel_value_satoshis * 1000).checked_sub(value_to_self_msat).unwrap().checked_sub(remote_htlc_total_msat).unwrap();
-		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) =
-			self.subtract_non_htlc_outputs(channel_parameters.is_outbound_from_holder, value_to_self_after_htlcs_msat, value_to_remote_after_htlcs_msat, &channel_parameters.channel_type_features);
+		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = subtract_addl_outputs(
+			channel_parameters.is_outbound_from_holder, Some(value_to_self_after_htlcs_msat), Some(value_to_remote_after_htlcs_msat), &channel_parameters.channel_type_features);
+		let local_balance_before_fee_msat = local_balance_before_fee_msat.unwrap_or(0);
+		let remote_balance_before_fee_msat = remote_balance_before_fee_msat.unwrap_or(0);
 
 		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
 		// than or equal to `commit_tx_fee_sat`.
