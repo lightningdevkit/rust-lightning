@@ -5963,7 +5963,7 @@ pub(super) struct FundingNegotiationContext {
 	pub shared_funding_input: Option<SharedOwnedInput>,
 	/// The funding inputs we will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited, Weight)>,
 	/// The change output script. This will be used if needed or -- if not set -- generated using
 	/// `SignerProvider::get_destination_script`.
 	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
@@ -8282,6 +8282,20 @@ where
 		self.context.channel_state.clear_monitor_update_in_progress();
 		assert_eq!(self.blocked_monitor_updates_pending(), 0);
 
+		// For channels established with V2 establishment we won't send a `tx_signatures` when we're in
+		// MonitorUpdateInProgress (and we assume the user will never directly broadcast the funding
+		// transaction and waits for us to do it).
+		let tx_signatures_ready = self.context.monitor_pending_tx_signatures;
+		self.context.monitor_pending_tx_signatures = false;
+		let tx_signatures = if tx_signatures_ready {
+			if self.context.channel_state.is_their_tx_signatures_sent() {
+				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+			} else {
+				self.context.channel_state.set_our_tx_signatures_ready();
+			}
+			self.interactive_tx_signing_session.as_ref().and_then(|session| session.holder_tx_signatures().clone())
+		} else { None };
+
 		// If we're past (or at) the AwaitingChannelReady stage on an outbound (or V2-established) channel,
 		// try to (re-)broadcast the funding transaction as we may have declined to broadcast it when we
 		// first received the funding_signed.
@@ -9744,7 +9758,7 @@ where
 	#[rustfmt::skip]
 	pub fn is_awaiting_initial_mon_persist(&self) -> bool {
 		if !self.is_awaiting_monitor_update() { return false; }
-		if matches!(
+		if self.context.channel_state.is_interactive_signing() || matches!(
 			self.context.channel_state, ChannelState::AwaitingChannelReady(flags)
 			if flags.clone().clear(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty()
 		) {
@@ -12433,7 +12447,7 @@ where
 	pub fn new_outbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
-		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>, user_id: u128, config: &UserConfig,
+		funding_inputs: Vec<(TxIn, TransactionU16LenLimited, Weight)>, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
 		logger: L,
 	) -> Result<Self, APIError>
@@ -12578,23 +12592,19 @@ where
 
 	/// Creates a new dual-funded channel from a remote side's request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	#[rustfmt::skip]
 	pub fn new_inbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
-		their_features: &InitFeatures, msg: &msgs::OpenChannelV2,
-		user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
+		their_features: &InitFeatures, msg: &msgs::OpenChannelV2, user_id: u128, config: &UserConfig,
+		current_chain_height: u32, logger: &L, our_funding_satoshis: u64,
+		our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited, Weight)>,
 	) -> Result<Self, ChannelError>
 		where ES::Target: EntropySource,
 			  F::Target: FeeEstimator,
 			  L::Target: Logger,
 	{
-		// TODO(dual_funding): Take these as input once supported
-		let our_funding_satoshis = 0u64;
-		let our_funding_inputs = Vec::new();
-
 		let channel_value_satoshis = our_funding_satoshis.saturating_add(msg.common_fields.funding_satoshis);
 		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
 			channel_value_satoshis, msg.common_fields.dust_limit_satoshis);
@@ -12652,6 +12662,31 @@ where
 			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
+		// Optionally add change output
+		let change_script = signer_provider.get_destination_script(context.channel_keys_id)
+			.map_err(|_| ChannelError::close("Error getting change destination script".to_string()))?;
+		let change_value_opt = calculate_change_output_value(
+			funding.is_outbound(), dual_funding_context.our_funding_satoshis,
+			&our_funding_inputs, None, &shared_funding_output.script_pubkey, &vec![],
+			dual_funding_context.funding_feerate_sat_per_1000_weight,
+			change_script.minimal_non_dust().to_sat(),
+		).map_err(|_| ChannelError::close("Error calculating change output value".to_string()))?;
+		let mut our_funding_outputs = vec![];
+		if let Some(change_value) = change_value_opt {
+			let mut change_output = TxOut {
+				value: Amount::from_sat(change_value),
+				script_pubkey: change_script,
+			};
+			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
+			let change_output_fee = fee_for_weight(dual_funding_context.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
+			// Check dust limit again
+			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
+				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
+				our_funding_outputs.push(change_output);
+			}
+		}
+
 		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
 			InteractiveTxConstructorArgs {
 				entropy_source,
@@ -12664,7 +12699,7 @@ where
 				inputs_to_contribute: our_funding_inputs,
 				shared_funding_input: None,
 				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_satoshis),
-				outputs_to_contribute: Vec::new(),
+				outputs_to_contribute: our_funding_outputs,
 			}
 		).map_err(|err| {
 			let reason = ClosureReason::ProcessingError { err: err.to_string() };
