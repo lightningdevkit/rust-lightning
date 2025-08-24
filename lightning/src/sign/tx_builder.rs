@@ -169,6 +169,15 @@ fn get_dust_buffer_feerate(feerate_per_kw: u32) -> u32 {
 	cmp::max(feerate_per_kw.saturating_add(2530), feerate_plus_quarter.unwrap_or(u32::MAX))
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChannelConstraints {
+	pub dust_limit_satoshis: u64,
+	pub channel_reserve_satoshis: u64,
+	pub htlc_minimum_msat: u64,
+	pub max_htlc_value_in_flight_msat: u64,
+	pub max_accepted_htlcs: u64,
+}
+
 fn get_next_commitment_stats(
 	local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
 	value_to_holder_msat: u64, next_commitment_htlcs: &[HTLCAmountDirection],
