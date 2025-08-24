@@ -159,7 +159,6 @@ impl TxBuilder for SpecTxBuilder {
 		if is_zero_fee_comm {
 			debug_assert_eq!(feerate_per_kw, 0);
 			debug_assert_eq!(excess_feerate_opt, Some(0));
-			debug_assert_eq!(addl_nondust_htlc_count, 0);
 		}
 
 		// Calculate inbound htlc count
