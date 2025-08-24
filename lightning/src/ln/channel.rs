@@ -5938,16 +5938,12 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			// We will first subtract the fee as if we were above-dust. Then, if the resulting
 			// value ends up being below dust, we have this fee available again. In that case,
 			// match the value to right-below-dust.
-			let mut capacity_minus_commitment_fee_msat: i64 = available_capacity_msat as i64 -
-				max_reserved_commit_tx_fee_msat as i64;
-			if capacity_minus_commitment_fee_msat < (real_dust_limit_timeout_sat as i64) * 1000 {
-				let one_htlc_difference_msat = max_reserved_commit_tx_fee_msat - min_reserved_commit_tx_fee_msat;
-				debug_assert!(one_htlc_difference_msat != 0);
-				capacity_minus_commitment_fee_msat += one_htlc_difference_msat as i64;
-				capacity_minus_commitment_fee_msat = cmp::min(real_dust_limit_timeout_sat as i64 * 1000 - 1, capacity_minus_commitment_fee_msat);
-				available_capacity_msat = cmp::max(0, cmp::min(capacity_minus_commitment_fee_msat, available_capacity_msat as i64)) as u64;
+			let capacity_minus_max_commitment_fee_msat = available_capacity_msat.saturating_sub(max_reserved_commit_tx_fee_msat);
+			if capacity_minus_max_commitment_fee_msat < real_dust_limit_timeout_sat * 1000 {
+				let capacity_minus_min_commitment_fee_msat = available_capacity_msat.saturating_sub(min_reserved_commit_tx_fee_msat);
+				available_capacity_msat = cmp::min(real_dust_limit_timeout_sat * 1000 - 1, capacity_minus_min_commitment_fee_msat);
 			} else {
-				available_capacity_msat = capacity_minus_commitment_fee_msat as u64;
+				available_capacity_msat = capacity_minus_max_commitment_fee_msat;
 			}
 		} else {
 			// If the channel is inbound (i.e. counterparty pays the fee), we need to make sure
