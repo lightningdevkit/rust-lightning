@@ -27,12 +27,14 @@ use alloc::collections::BTreeMap;
 
 use bitcoin::absolute::LockTime as AbsoluteLockTime;
 use bitcoin::amount::Amount;
+use bitcoin::block::Header;
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::ChainHash;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::pow::Work;
 use bitcoin::script::{self, ScriptBuf};
 use bitcoin::secp256k1::constants::{
 	COMPACT_SIGNATURE_SIZE, PUBLIC_KEY_SIZE, SCHNORR_SIGNATURE_SIZE, SECRET_KEY_SIZE,
@@ -1248,6 +1250,26 @@ impl Readable for Sha256dHash {
 	}
 }
 
+const WORK_SIZE: usize = 32;
+
+impl Writeable for Work {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_be_bytes().write(w)
+	}
+
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		WORK_SIZE
+	}
+}
+
+impl Readable for Work {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; WORK_SIZE] = Readable::read(r)?;
+		Ok(Work::from_be_bytes(buf))
+	}
+}
+
 impl Writeable for ecdsa::Signature {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.serialize_compact().write(w)
@@ -1483,6 +1505,7 @@ macro_rules! impl_consensus_ser {
 		}
 	};
 }
+impl_consensus_ser!(Header);
 impl_consensus_ser!(Transaction);
 impl_consensus_ser!(TxIn);
 impl_consensus_ser!(TxOut);

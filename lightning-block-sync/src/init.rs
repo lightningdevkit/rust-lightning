@@ -321,8 +321,8 @@ mod tests {
 			(fork_chain_3.tip().block_hash, &listener_3 as &dyn chain::Listen),
 		];
 		let mut cache = fork_chain_1.header_cache(2..=4);
-		cache.extend(fork_chain_2.header_cache(3..=4));
-		cache.extend(fork_chain_3.header_cache(4..=4));
+		cache.inner.extend(fork_chain_2.header_cache(3..=4).inner);
+		cache.inner.extend(fork_chain_3.header_cache(4..=4).inner);
 		match synchronize_listeners(&main_chain, Network::Bitcoin, &mut cache, listeners).await {
 			Ok(header) => assert_eq!(header, main_chain.tip()),
 			Err(e) => panic!("Unexpected error: {:?}", e),
@@ -364,8 +364,8 @@ mod tests {
 			(fork_chain_3.tip().block_hash, &listener_3 as &dyn chain::Listen),
 		];
 		let mut cache = fork_chain_1.header_cache(2..=4);
-		cache.extend(fork_chain_2.header_cache(3..=4));
-		cache.extend(fork_chain_3.header_cache(4..=4));
+		cache.inner.extend(fork_chain_2.header_cache(3..=4).inner);
+		cache.inner.extend(fork_chain_3.header_cache(4..=4).inner);
 		match synchronize_listeners(&main_chain, Network::Bitcoin, &mut cache, listeners).await {
 			Ok(header) => assert_eq!(header, main_chain.tip()),
 			Err(e) => panic!("Unexpected error: {:?}", e),
@@ -387,8 +387,8 @@ mod tests {
 		let mut cache = fork_chain.header_cache(2..=2);
 		match synchronize_listeners(&main_chain, Network::Bitcoin, &mut cache, listeners).await {
 			Ok(_) => {
-				assert!(cache.contains_key(&new_tip.block_hash));
-				assert!(cache.contains_key(&old_tip.block_hash));
+				assert!(cache.inner.contains_key(&new_tip.block_hash));
+				assert!(cache.inner.contains_key(&old_tip.block_hash));
 			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
