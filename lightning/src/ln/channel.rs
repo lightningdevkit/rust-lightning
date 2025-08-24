@@ -4631,21 +4631,6 @@ where
 		value_to_self_msat = value_to_self_msat.checked_sub(local_htlc_total_msat).unwrap();
 		value_to_remote_msat = value_to_remote_msat.checked_sub(remote_htlc_total_msat).unwrap();
 
-		#[cfg(debug_assertions)]
-		{
-			// Make sure that the to_self/to_remote is always either past the appropriate
-			// channel_reserve *or* it is making progress towards it.
-			let mut broadcaster_max_commitment_tx_output = if generated_by_local {
-				funding.holder_max_commitment_tx_output.lock().unwrap()
-			} else {
-				funding.counterparty_max_commitment_tx_output.lock().unwrap()
-			};
-			debug_assert!(broadcaster_max_commitment_tx_output.0 <= value_to_self_msat || value_to_self_msat / 1000 >= funding.counterparty_selected_channel_reserve_satoshis.unwrap());
-			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, value_to_self_msat);
-			debug_assert!(broadcaster_max_commitment_tx_output.1 <= value_to_remote_msat || value_to_remote_msat / 1000 >= funding.holder_selected_channel_reserve_satoshis);
-			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat);
-		}
-
 		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(feerate_per_kw, nondust_htlc_count + fee_buffer_nondust_htlcs.unwrap_or(0), funding.get_channel_type());
 		// Subtract any non-HTLC outputs from the local and remote balances
 		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = SpecTxBuilder {}.subtract_non_htlc_outputs(
@@ -4758,7 +4743,21 @@ where
 			broadcaster_dust_limit_sat,
 			logger,
 		);
-		debug_assert_eq!(stats, self.build_commitment_stats(funding, local, generated_by_local, None, None), "Caught an inconsistency between `TxBuilder::build_commitment_transaction` and the rest of the `TxBuilder` methods");
+
+		#[cfg(debug_assertions)]
+		{
+			// Make sure that the to_self/to_remote is always either past the appropriate
+			// channel_reserve *or* it is making progress towards it.
+			let mut broadcaster_max_commitment_tx_output = if generated_by_local {
+				funding.holder_max_commitment_tx_output.lock().unwrap()
+			} else {
+				funding.counterparty_max_commitment_tx_output.lock().unwrap()
+			};
+			debug_assert!(broadcaster_max_commitment_tx_output.0 <= stats.local_balance_before_fee_msat || stats.local_balance_before_fee_msat / 1000 >= funding.counterparty_selected_channel_reserve_satoshis.unwrap());
+			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, stats.local_balance_before_fee_msat);
+			debug_assert!(broadcaster_max_commitment_tx_output.1 <= stats.remote_balance_before_fee_msat || stats.remote_balance_before_fee_msat / 1000 >= funding.holder_selected_channel_reserve_satoshis);
+			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, stats.remote_balance_before_fee_msat);
+		}
 
 		// This populates the HTLC-source table with the indices from the HTLCs in the commitment
 		// transaction.
