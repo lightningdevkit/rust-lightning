@@ -415,43 +415,28 @@ impl OutboundJITChannelState {
 	}
 
 	fn payment_forwarded(
-		&mut self, skimmed_fee_msat: Option<u64>, client_trusts_lsp: bool,
+		&mut self, skimmed_fee_msat: Option<u64>,
 	) -> Result<Option<ForwardHTLCsAction>, ChannelStateError> {
 		match self {
 			OutboundJITChannelState::PendingPaymentForward {
 				payment_queue,
 				channel_id,
 				opening_fee_msat,
-			} => {
-				if !client_trusts_lsp {
-					let mut pq = core::mem::take(payment_queue);
-					let forward_htlcs = ForwardHTLCsAction(*channel_id, pq.clear());
-					*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
-					return Ok(Some(forward_htlcs));
-				}
-
-				if skimmed_fee_msat.is_none() {
-					*self = OutboundJITChannelState::PendingPaymentForward {
-						payment_queue: core::mem::take(payment_queue),
-						opening_fee_msat: *opening_fee_msat,
-						channel_id: *channel_id,
-					};
-					return Ok(None);
-				}
-
-				if skimmed_fee_msat.unwrap() >= *opening_fee_msat {
+			} => match skimmed_fee_msat {
+				Some(skimmed) if skimmed >= *opening_fee_msat => {
 					let mut pq = core::mem::take(payment_queue);
 					let forward_htlcs = ForwardHTLCsAction(*channel_id, pq.clear());
 					*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
 					Ok(Some(forward_htlcs))
-				} else {
+				},
+				Some(_) | None => {
 					*self = OutboundJITChannelState::PendingPaymentForward {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
 					};
 					Ok(None)
-				}
+				},
 			},
 			OutboundJITChannelState::PaymentForwarded { channel_id } => {
 				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
@@ -510,7 +495,7 @@ impl OutboundJITChannel {
 	fn payment_forwarded(
 		&mut self, skimmed_fee_msat: Option<u64>,
 	) -> Result<Option<ForwardHTLCsAction>, LightningError> {
-		let action = self.state.payment_forwarded(skimmed_fee_msat, self.is_client_trusts_lsp())?;
+		let action = self.state.payment_forwarded(skimmed_fee_msat)?;
 		Ok(action)
 	}
 
@@ -1016,10 +1001,10 @@ where
 	/// Will register the forwarded payment as having paid the JIT channel fee, and forward any held
 	/// and future HTLCs for the SCID of the initial invoice.
 	///
-	/// If client_trusts_lsp=true, this method will verify the `skimmed_fee_msat` in [`Event::PaymentForwarded`].
-	/// If the skimmed_fee_msat covers the opening_fee_msat, that means that the client has claimed the funds and
-	/// paid the promised fee, so the funding transaction becomes eligible for broadcast, and the
-	/// [`Event::BroadcastFundingTransaction`] is emitted.
+	/// When the reported skimmed fee equals or exceeds the promised opening fee, any HTLCs that
+	/// were being held for that JIT channel are forwarded. In a `client_trusts_lsp` flow, once
+	/// the fee has been fully paid a [`LSPS2ServiceEvent::BroadcastFundingTransaction`] will be emitted so the
+	/// caller can broadcast it.
 	///
 	/// Note that `next_channel_id` is required to be provided. Therefore, the corresponding
 	/// [`Event::PaymentForwarded`] events need to be generated and serialized by LDK versions
@@ -2005,7 +1990,7 @@ mod tests {
 		}
 		// Payment completes, queued payments get forwarded.
 		{
-			let action = state.payment_forwarded(None, false).unwrap();
+			let action = state.payment_forwarded(Some(100000000000)).unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PaymentForwarded { .. }));
 			match action {
 				Some(ForwardHTLCsAction(channel_id, htlcs)) => {
@@ -2140,7 +2125,7 @@ mod tests {
 		}
 		// Payment completes, queued payments get forwarded.
 		{
-			let action = state.payment_forwarded(None, false).unwrap();
+			let action = state.payment_forwarded(Some(10000000000)).unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PaymentForwarded { .. }));
 			match action {
 				Some(ForwardHTLCsAction(channel_id, htlcs)) => {
