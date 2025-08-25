@@ -16666,51 +16666,16 @@ where
 						);
 						match htlc_source {
 							HTLCSource::PreviousHopData(prev_hop_data) => {
-								let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
-									info.prev_funding_outpoint == prev_hop_data.outpoint
-										&& info.prev_htlc_id == prev_hop_data.htlc_id
-								};
-								// The ChannelMonitor is now responsible for this HTLC's
-								// failure/success and will let us know what its outcome is. If we
-								// still have an entry for this HTLC in `forward_htlcs` or
-								// `pending_intercepted_htlcs`, we were apparently not persisted after
-								// the monitor was when forwarding the payment.
-								decode_update_add_htlcs.retain(|scid, update_add_htlcs| {
-									update_add_htlcs.retain(|update_add_htlc| {
-										let matches = *scid == prev_hop_data.short_channel_id &&
-											update_add_htlc.htlc_id == prev_hop_data.htlc_id;
-										if matches {
-											log_info!(logger, "Removing pending to-decode HTLC with hash {} as it was forwarded to the closed channel {}",
-												&htlc.payment_hash, &monitor.channel_id());
-										}
-										!matches
-									});
-									!update_add_htlcs.is_empty()
-								});
-								forward_htlcs.retain(|_, forwards| {
-									forwards.retain(|forward| {
-										if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
-											if pending_forward_matches_htlc(&htlc_info) {
-												log_info!(logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
-													&htlc.payment_hash, &monitor.channel_id());
-												false
-											} else { true }
-										} else { true }
-									});
-									!forwards.is_empty()
-								});
-								pending_intercepted_htlcs.as_mut().unwrap().retain(|intercepted_id, htlc_info| {
-									if pending_forward_matches_htlc(&htlc_info) {
-										log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
-											&htlc.payment_hash, &monitor.channel_id());
-										pending_events_read.retain(|(event, _)| {
-											if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
-												intercepted_id != ev_id
-											} else { true }
-										});
-										false
-									} else { true }
-								});
+								channel_monitor_recovery_internal(
+									&mut forward_htlcs,
+									&mut pending_events_read,
+									&mut pending_intercepted_htlcs,
+									&mut decode_update_add_htlcs,
+									prev_hop_data,
+									&logger,
+									htlc.payment_hash,
+									monitor.channel_id(),
+								);
 							},
 							HTLCSource::TrampolineForward { .. } => todo!(),
 							HTLCSource::OutboundRoute {
@@ -17480,6 +17445,60 @@ where
 
 		Ok((best_block_hash.clone(), channel_manager))
 	}
+}
+
+fn channel_monitor_recovery_internal(
+	forward_htlcs: &mut HashMap<u64, Vec<HTLCForwardInfo>>,
+	pending_events_read: &mut VecDeque<(Event, Option<EventCompletionAction>)>,
+	pending_intercepted_htlcs: &mut Option<HashMap<InterceptId, PendingAddHTLCInfo>>,
+	decode_update_add_htlcs: &mut HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
+	prev_hop_data: HTLCPreviousHopData, logger: &impl Logger, payment_hash: PaymentHash,
+	channel_id: ChannelId,
+) {
+	let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
+		info.prev_funding_outpoint == prev_hop_data.outpoint
+			&& info.prev_htlc_id == prev_hop_data.htlc_id
+	};
+	// The ChannelMonitor is now responsible for this HTLC's
+	// failure/success and will let us know what its outcome is. If we
+	// still have an entry for this HTLC in `forward_htlcs` or
+	// `pending_intercepted_htlcs`, we were apparently not persisted after
+	// the monitor was when forwarding the payment.
+	decode_update_add_htlcs.retain(|scid, update_add_htlcs| {
+		update_add_htlcs.retain(|update_add_htlc| {
+			let matches = *scid == prev_hop_data.short_channel_id && update_add_htlc.htlc_id == prev_hop_data.htlc_id;
+			if matches {
+				log_info!(logger, "Removing pending to-decode HTLC with hash {} as it was forwarded to the closed channel {}",
+					payment_hash, channel_id);
+			}
+			!matches
+		});
+		!update_add_htlcs.is_empty()
+	});
+	forward_htlcs.retain(|_, forwards| {
+		forwards.retain(|forward| {
+			if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
+				if pending_forward_matches_htlc(&htlc_info) {
+					log_info!(logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
+						payment_hash, channel_id);
+					false
+				} else { true }
+			} else { true }
+		});
+		!forwards.is_empty()
+	});
+	pending_intercepted_htlcs.as_mut().unwrap().retain(|intercepted_id, htlc_info| {
+		if pending_forward_matches_htlc(&htlc_info) {
+			log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
+				payment_hash, channel_id);
+			pending_events_read.retain(|(event, _)| {
+				if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
+					intercepted_id != ev_id
+				} else { true }
+			});
+			false
+		} else { true }
+	});
 }
 
 #[cfg(test)]
