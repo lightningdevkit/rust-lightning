@@ -18293,7 +18293,21 @@ where
 									monitor.channel_id(),
 								);
 							},
-							HTLCSource::TrampolineForward { .. } => todo!(),
+							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+								for prev_hop_data in previous_hop_data {
+									reconcile_pending_htlcs_with_monitor(
+										&mut forward_htlcs_legacy,
+										&mut pending_events_read,
+										&mut pending_intercepted_htlcs_legacy,
+										&mut decode_update_add_htlcs,
+										&mut decode_update_add_htlcs_legacy,
+										prev_hop_data,
+										&logger,
+										htlc.payment_hash,
+										monitor.channel_id(),
+									);
+								}
+							},
 							HTLCSource::OutboundRoute {
 								payment_id,
 								session_priv,
