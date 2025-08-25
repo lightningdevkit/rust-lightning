@@ -24,8 +24,8 @@ pub enum SpliceContribution {
 		/// The amount to contribute to the splice.
 		value: Amount,
 
-		/// The inputs included in the splice's funding transaction to meet the contributed amount.
-		/// Any excess amount will be sent to a change output.
+		/// The inputs included in the splice's funding transaction to meet the contributed amount
+		/// plus fees. Any excess amount will be sent to a change output.
 		inputs: Vec<FundingTxInput>,
 
 		/// An optional change output script. This will be used if needed or, when not set,
@@ -35,7 +35,7 @@ pub enum SpliceContribution {
 	/// When funds are removed from a channel.
 	SpliceOut {
 		/// The outputs to include in the splice's funding transaction. The total value of all
-		/// outputs will be the amount that is removed.
+		/// outputs plus fees will be the amount that is removed.
 		outputs: Vec<TxOut>,
 	},
 }
