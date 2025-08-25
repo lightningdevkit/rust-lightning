@@ -8429,6 +8429,9 @@ where
 		}
 		let funding_signed = if self.context.signer_pending_funding && !self.funding.is_outbound() {
 			let commitment_data = self.context.build_commitment_transaction(&self.funding,
+				// The previous transaction number (i.e., when adding 1) is used because this field
+				// is advanced when handling funding_created, but the point is not advanced until
+				// handling channel_ready.
 				self.context.counterparty_next_commitment_transaction_number + 1,
 				&self.context.counterparty_next_commitment_point.unwrap(), false, false, logger);
 			let counterparty_initial_commitment_tx = commitment_data.tx;
