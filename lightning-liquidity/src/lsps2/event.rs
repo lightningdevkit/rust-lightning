@@ -160,4 +160,23 @@ pub enum LSPS2ServiceEvent {
 		/// The intercept short channel id to use in the route hint.
 		intercept_scid: u64,
 	},
+	/// You should broadcast the funding transaction to finalize opening the channel.
+	///
+	/// This event is emitted once both [`Event::FundingTxBroadcastSafe`] and the
+	/// corresponding payment has been successfully claimed.
+	///
+	/// Call [`LSPS2ServiceHandler::broadcast_transaction`] with the funding
+	/// transaction to publish it on-chain.
+	///
+	/// [`Event::FundingTxBroadcastSafe`]: lightning::events::Event::FundingTxBroadcastSafe
+	/// [`Event::PaymentClaimed`]: lightning::events::Event::PaymentClaimed
+	/// [`LSPS2ServiceHandler::broadcast_transaction`]: crate::lsps2::service::LSPS2ServiceHandler::broadcast_transaction
+	BroadcastFundingTransaction {
+		/// The node id of the counterparty.
+		counterparty_node_id: PublicKey,
+		/// The user channel id that was used to open the channel.
+		user_channel_id: u128,
+		/// The funding transaction to broadcast.
+		funding_tx: bitcoin::Transaction,
+	},
 }
