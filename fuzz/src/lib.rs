@@ -9,6 +9,7 @@
 
 extern crate bitcoin;
 extern crate lightning;
+extern crate lightning_persister;
 extern crate lightning_rapid_gossip_sync;
 
 #[cfg(not(fuzzing))]
@@ -45,4 +46,5 @@ pub mod router;
 pub mod static_invoice_deser;
 pub mod zbase32;
 
+pub mod fs_store;
 pub mod msg_targets;
