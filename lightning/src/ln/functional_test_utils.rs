@@ -26,6 +26,7 @@ use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
 	RAACommitmentOrder, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA,
 };
+use crate::ln::funding::FundingTxInput;
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
@@ -61,13 +62,11 @@ use bitcoin::pow::CompactTarget;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::transaction::{self, Version as TxVersion};
-use bitcoin::transaction::{Sequence, Transaction, TxIn, TxOut};
-use bitcoin::witness::Witness;
-use bitcoin::{WPubkeyHash, Weight};
+use bitcoin::transaction::{Transaction, TxIn, TxOut};
+use bitcoin::WPubkeyHash;
 
 use crate::io;
 use crate::prelude::*;
-use crate::sign::P2WPKH_WITNESS_WEIGHT;
 use crate::sync::{Arc, LockTestExt, Mutex, RwLock};
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -1440,7 +1439,7 @@ fn internal_create_funding_transaction<'a, 'b, 'c>(
 /// Return the inputs (with prev tx), and the total witness weight for these inputs
 pub fn create_dual_funding_utxos_with_prev_txs(
 	node: &Node<'_, '_, '_>, utxo_values_in_satoshis: &[u64],
-) -> Vec<(TxIn, Transaction, Weight)> {
+) -> Vec<FundingTxInput> {
 	// Ensure we have unique transactions per node by using the locktime.
 	let tx = Transaction {
 		version: TxVersion::TWO,
@@ -1460,22 +1459,12 @@ pub fn create_dual_funding_utxos_with_prev_txs(
 			.collect(),
 	};
 
-	let mut inputs = vec![];
-	for i in 0..utxo_values_in_satoshis.len() {
-		inputs.push((
-			TxIn {
-				previous_output: OutPoint { txid: tx.compute_txid(), index: i as u16 }
-					.into_bitcoin_outpoint(),
-				script_sig: ScriptBuf::new(),
-				sequence: Sequence::ZERO,
-				witness: Witness::new(),
-			},
-			tx.clone(),
-			Weight::from_wu(P2WPKH_WITNESS_WEIGHT),
-		));
-	}
-
-	inputs
+	tx.output
+		.iter()
+		.enumerate()
+		.map(|(index, _)| index as u32)
+		.map(|vout| FundingTxInput::new_p2wpkh(tx.clone(), vout).unwrap())
+		.collect()
 }
 
 pub fn sign_funding_transaction<'a, 'b, 'c>(

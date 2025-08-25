@@ -1677,63 +1677,6 @@ impl Readable for Duration {
 	}
 }
 
-/// A wrapper for a `Transaction` which can only be constructed with [`TransactionU16LenLimited::new`]
-/// if the `Transaction`'s consensus-serialized length is <= u16::MAX.
-///
-/// Use [`TransactionU16LenLimited::into_transaction`] to convert into the contained `Transaction`.
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct TransactionU16LenLimited(Transaction);
-
-impl TransactionU16LenLimited {
-	/// Constructs a new `TransactionU16LenLimited` from a `Transaction` only if it's consensus-
-	/// serialized length is <= u16::MAX.
-	pub fn new(transaction: Transaction) -> Result<Self, ()> {
-		if transaction.serialized_length() > (u16::MAX as usize) {
-			Err(())
-		} else {
-			Ok(Self(transaction))
-		}
-	}
-
-	/// Consumes this `TransactionU16LenLimited` and returns its contained `Transaction`.
-	pub fn into_transaction(self) -> Transaction {
-		self.0
-	}
-
-	/// Returns a reference to the contained `Transaction`
-	pub fn as_transaction(&self) -> &Transaction {
-		&self.0
-	}
-}
-
-impl Writeable for Option<TransactionU16LenLimited> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		match self {
-			Some(tx) => {
-				(tx.0.serialized_length() as u16).write(w)?;
-				tx.0.write(w)
-			},
-			None => 0u16.write(w),
-		}
-	}
-}
-
-impl Readable for Option<TransactionU16LenLimited> {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let len = <u16 as Readable>::read(r)?;
-		if len == 0 {
-			return Ok(None);
-		}
-		let mut tx_reader = FixedLengthReader::new(r, len as u64);
-		let tx: Transaction = Readable::read(&mut tx_reader)?;
-		if tx_reader.bytes_remain() {
-			Err(DecodeError::BadLengthDescriptor)
-		} else {
-			Ok(Some(TransactionU16LenLimited(tx)))
-		}
-	}
-}
-
 impl Writeable for ClaimId {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		self.0.write(writer)
