@@ -568,7 +568,7 @@ where
 			LSPSMessage::LSPS5(msg @ LSPS5Message::Request(..)) => {
 				match &self.lsps5_service_handler {
 					Some(lsps5_service_handler) => {
-						if let LSPS5Message::Request(_, ref req) = msg {
+						if let LSPS5Message::Request(ref req_id, ref req) = msg {
 							if req.is_state_allocating() {
 								let lsps2_has_active_requests = self
 									.lsps2_service_handler
@@ -582,19 +582,12 @@ where
 								#[cfg(not(lsps1_service))]
 								let lsps1_has_active_requests = false;
 
-								if !lsps5_service_handler.can_accept_request(
+								lsps5_service_handler.enforce_prior_activity_or_reject(
 									sender_node_id,
 									lsps2_has_active_requests,
 									lsps1_has_active_requests,
-								) {
-									return Err(LightningError {
-										err: format!(
-											"Rejecting LSPS5 request from {:?} without prior activity (requires open channel or active LSPS1 or LSPS2 flow)",
-											sender_node_id
-										),
-										action: ErrorAction::IgnoreAndLog(Level::Debug),
-									});
-								}
+									req_id.clone(),
+								)?
 							}
 						}
 

@@ -1241,11 +1241,23 @@ macro_rules! assert_lsps5_reject {
 			.expect("Request should send");
 		let request = get_lsps_message!($client_node, $service_node_id);
 
-		let result =
+		let service_result =
 			$service_node.liquidity_manager.handle_custom_message(request, $client_node_id);
-		assert!(result.is_err(), "Service should reject request without prior interaction");
+		assert!(service_result.is_err(), "Service should reject request without prior interaction");
 
-		assert!($service_node.liquidity_manager.get_and_clear_pending_msg().is_empty());
+		let req = get_lsps_message!($service_node, $client_node_id);
+		$client_node.liquidity_manager.handle_custom_message(req, $service_node_id).unwrap();
+		let event = $client_node.liquidity_manager.next_event().unwrap();
+		match event {
+			LiquidityEvent::LSPS5Client(LSPS5ClientEvent::WebhookRegistrationFailed {
+				error,
+				..
+			}) => {
+				let error_to_check = LSPS5ProtocolError::NoPriorActivityError;
+				assert_eq!(error, error_to_check.into());
+			},
+			_ => panic!("Expected WebhookRegistrationFailed event, got {:?}", event),
+		}
 	}};
 }
 
@@ -1269,7 +1281,11 @@ macro_rules! assert_lsps5_accept {
 			.liquidity_manager
 			.handle_custom_message(response, $service_node_id)
 			.expect("Client should handle response");
-		let _ = $client_node.liquidity_manager.next_event().unwrap();
+		let event = $client_node.liquidity_manager.next_event().unwrap();
+		match event {
+			LiquidityEvent::LSPS5Client(LSPS5ClientEvent::WebhookRegistered { .. }) => {},
+			_ => panic!("Expected WebhookRegistered event, got {:?}", event),
+		}
 	}};
 }
 
