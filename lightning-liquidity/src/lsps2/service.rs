@@ -1610,9 +1610,22 @@ where
 		Ok(())
 	}
 
-	/// This should be called when the event [`Event::FundingTxBroadcastSafe`] is received.
+	/// Marks that the funding transaction for the JIT channel identified by `user_channel_id`
+	/// is now safe to broadcast.
+	///
+	/// In LDK call this when you receive [`Event::FundingTxBroadcastSafe`]. In other Lightning
+	/// backends call it once the funding transaction is fully negotiated and signed (all
+	/// signatures verified), your channel state machine will now proceed assuming the funding
+	/// transaction will confirm, and you are intentionally deferring the actual broadcast so
+	/// the LSPS2 flow (when `client_trusts_lsp = true`) can first collect the opening fee from
+	/// the intercepted payment.
+	///
+	/// After this is set, in a `client_trusts_lsp` flow the handler will emit
+	/// [`LSPS2ServiceEvent::BroadcastFundingTransaction`] once the opening fee has been fully
+	/// skimmed.
 	///
 	/// [`Event::FundingTxBroadcastSafe`]: lightning::events::Event::FundingTxBroadcastSafe
+	/// [`LSPS2ServiceEvent::BroadcastFundingTransaction`]: crate::lsps2::event::LSPS2ServiceEvent::BroadcastFundingTransaction
 	pub fn set_funding_tx_broadcast_safe(
 		&self, user_channel_id: u128, counterparty_node_id: &PublicKey,
 	) -> Result<(), APIError> {
