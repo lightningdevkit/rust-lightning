@@ -8743,7 +8743,27 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				attribution_data,
 				send_timestamp,
 			),
-			HTLCSource::TrampolineForward { .. } => todo!(),
+			// TODO: This branch should be tested when Trampoline Forwarding is implemented.
+			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+				for current_previous_hop_data in previous_hop_data {
+					self.claim_funds_from_previous_hop_internal(
+						payment_preimage,
+						forwarded_htlc_value_msat,
+						skimmed_fee_msat,
+						from_onchain,
+						startup_replay,
+						next_channel_counterparty_node_id,
+						next_channel_outpoint,
+						next_channel_id,
+						next_user_channel_id,
+						current_previous_hop_data,
+						// Clone the attribution data because it is going to be updated using the
+						// current_previous_hop_data respectively.
+						attribution_data.clone(),
+						send_timestamp,
+					);
+				}
+			},
 		}
 	}
 
