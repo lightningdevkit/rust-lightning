@@ -149,6 +149,34 @@ where
 		}
 	}
 
+	/// Enforces the prior-activity requirement for state-allocating LSPS5 requests (e.g.
+	/// `lsps5.set_webhook`), rejecting and replying with `NoPriorActivityError` if not met.
+	pub(crate) fn enforce_prior_activity_or_reject(
+		&self, client_id: &PublicKey, lsps2_has_active_requests: bool, lsps1_has_activity: bool,
+		request_id: LSPSRequestId,
+	) -> Result<(), LightningError> {
+		let can_accept = self.client_has_open_channel(client_id)
+			|| lsps2_has_active_requests
+			|| lsps1_has_activity;
+
+		let mut message_queue_notifier = self.pending_messages.notifier();
+		if !can_accept {
+			let error = LSPS5ProtocolError::NoPriorActivityError;
+			let msg = LSPS5Message::Response(
+				request_id,
+				LSPS5Response::SetWebhookError(error.clone().into()),
+			)
+			.into();
+			message_queue_notifier.enqueue(&client_id, msg);
+			return Err(LightningError {
+				err: error.message().into(),
+				action: ErrorAction::IgnoreAndLog(Level::Info),
+			});
+		} else {
+			Ok(())
+		}
+	}
+
 	fn check_prune_stale_webhooks<'a>(
 		&self, outer_state_lock: &mut RwLockWriteGuard<'a, HashMap<PublicKey, PeerState>>,
 	) {
