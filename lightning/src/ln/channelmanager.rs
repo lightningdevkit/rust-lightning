@@ -8029,54 +8029,80 @@ where
 					&payment_hash,
 					onion_error
 				);
-				let failure = match blinded_failure {
-					Some(BlindedFailure::FromIntroductionNode) => {
-						let blinded_onion_error = HTLCFailReason::reason(
-							LocalHTLCFailureReason::InvalidOnionBlinding,
-							vec![0; 32],
-						);
-						let err_packet = blinded_onion_error.get_encrypted_failure_packet(
-							incoming_packet_shared_secret,
-							phantom_shared_secret,
-						);
-						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
-					},
-					Some(BlindedFailure::FromBlindedNode) => HTLCForwardInfo::FailMalformedHTLC {
-						htlc_id: *htlc_id,
-						failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
-						sha256_of_onion: [0; 32],
-					},
-					None => {
-						let err_packet = onion_error.get_encrypted_failure_packet(
-							incoming_packet_shared_secret,
-							phantom_shared_secret,
-						);
-						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
-					},
-				};
-
-				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
-				match forward_htlcs.entry(*short_channel_id) {
-					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(failure);
-					},
-					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec![failure]);
-					},
-				}
-				mem::drop(forward_htlcs);
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push_back((
-					events::Event::HTLCHandlingFailed {
-						prev_channel_id: *channel_id,
-						failure_type,
-						failure_reason: Some(onion_error.into()),
-					},
-					None,
-				));
+				let htlc_failure_reason = self.get_htlc_failure_from_blinded_failure_forward(
+					blinded_failure,
+					onion_error,
+					incoming_packet_shared_secret,
+					phantom_shared_secret,
+					htlc_id,
+				);
+				self.fail_htlc_backwards_from_forward(
+					&onion_error,
+					failure_type,
+					short_channel_id,
+					channel_id,
+					htlc_failure_reason,
+				);
 			},
 			HTLCSource::TrampolineForward { .. } => todo!(),
 		}
+	}
+
+	fn get_htlc_failure_from_blinded_failure_forward(
+		&self, blinded_failure: &Option<BlindedFailure>, onion_error: &HTLCFailReason,
+		incoming_packet_shared_secret: &[u8; 32], secondary_shared_secret: &Option<[u8; 32]>,
+		htlc_id: &u64,
+	) -> HTLCForwardInfo {
+		match blinded_failure {
+			Some(BlindedFailure::FromIntroductionNode) => {
+				let blinded_onion_error = HTLCFailReason::reason(
+					LocalHTLCFailureReason::InvalidOnionBlinding,
+					vec![0; 32],
+				);
+				let err_packet = blinded_onion_error.get_encrypted_failure_packet(
+					incoming_packet_shared_secret,
+					secondary_shared_secret,
+				);
+				HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
+			},
+			Some(BlindedFailure::FromBlindedNode) => HTLCForwardInfo::FailMalformedHTLC {
+				htlc_id: *htlc_id,
+				failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
+				sha256_of_onion: [0; 32],
+			},
+			None => {
+				let err_packet = onion_error.get_encrypted_failure_packet(
+					incoming_packet_shared_secret,
+					secondary_shared_secret,
+				);
+				HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
+			},
+		}
+	}
+
+	fn fail_htlc_backwards_from_forward(
+		&self, onion_error: &HTLCFailReason, failure_type: HTLCHandlingFailureType,
+		short_channel_id: &u64, channel_id: &ChannelId, failure: HTLCForwardInfo,
+	) {
+		let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
+		match forward_htlcs.entry(*short_channel_id) {
+			hash_map::Entry::Occupied(mut entry) => {
+				entry.get_mut().push(failure);
+			},
+			hash_map::Entry::Vacant(entry) => {
+				entry.insert(vec![failure]);
+			},
+		}
+		mem::drop(forward_htlcs);
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push_back((
+			events::Event::HTLCHandlingFailed {
+				prev_channel_id: *channel_id,
+				failure_type,
+				failure_reason: Some(onion_error.into()),
+			},
+			None,
+		));
 	}
 
 	/// Provides a payment preimage in response to [`Event::PaymentClaimable`], generating any
