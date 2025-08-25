@@ -64,12 +64,12 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 
 	let mut current_data = None;
 
-	let mut futures = Vec::new();
+	let mut handles = Vec::new();
 	loop {
 		let v = get_slice!(1)[0];
-		match v {
+		match v % 13 {
 			// Sync write
-			0x00 => {
+			0 => {
 				let data_value = get_next_data_value();
 
 				KVStoreSync::write(
@@ -84,22 +84,22 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 				current_data = Some(data_value);
 			},
 			// Sync remove
-			0x01 => {
+			1 => {
 				KVStoreSync::remove(fs_store, primary_namespace, secondary_namespace, key, false)
 					.unwrap();
 
 				current_data = None;
 			},
 			// Sync list
-			0x02 => {
+			2 => {
 				KVStoreSync::list(fs_store, primary_namespace, secondary_namespace).unwrap();
 			},
 			// Sync read
-			0x03 => {
+			3 => {
 				_ = KVStoreSync::read(fs_store, primary_namespace, secondary_namespace, key);
 			},
 			// Async write
-			0x04 => {
+			4..=9 => {
 				let data_value = get_next_data_value();
 
 				let fut = KVStore::write(
@@ -114,22 +114,33 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 				// ordering semantics.
 				current_data = Some(data_value);
 
-				// Store the future for later completion.
-				futures.push(fut);
-				if futures.len() > 10 {
-					return;
-				}
+				let handle = tokio::task::spawn(fut);
+
+				// Store the handle to later await the result.
+				handles.push(handle);
 			},
-			// Async write completion
-			0x10..=0x19 => {
-				let fut_idx = (v - 0x10) as usize;
-				if fut_idx >= futures.len() {
-					return;
+			// Async remove
+			10 | 11 => {
+				let fut = KVStore::remove(
+					fs_store,
+					primary_namespace,
+					secondary_namespace,
+					key,
+					v == 10,
+				);
+
+				// Already set the current_data, even though writing hasn't finished yet. This supports the call-time
+				// ordering semantics.
+				current_data = None;
+
+				let handle = tokio::task::spawn(fut);
+				handles.push(handle);
+			},
+			// Join tasks.
+			12 => {
+				for handle in handles.drain(..) {
+					let _ = handle.await.unwrap();
 				}
-
-				let fut = futures.remove(fut_idx);
-
-				fut.await.unwrap();
 			},
 			_ => {
 				return;
@@ -137,7 +148,7 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 		}
 
 		// If no more writes are pending, we can reliably see if the data is consistent.
-		if futures.is_empty() {
+		if handles.is_empty() {
 			let data_value =
 				KVStoreSync::read(fs_store, primary_namespace, secondary_namespace, key).ok();
 			assert_eq!(data_value, current_data);
