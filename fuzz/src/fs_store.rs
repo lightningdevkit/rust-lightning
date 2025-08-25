@@ -13,7 +13,13 @@ struct TempFilesystemStore {
 
 impl TempFilesystemStore {
 	fn new() -> Self {
-		let mut temp_path = std::env::temp_dir();
+		const SHM_PATH: &str = "/dev/shm";
+		let mut temp_path = if std::path::Path::new(SHM_PATH).exists() {
+			std::path::PathBuf::from(SHM_PATH)
+		} else {
+			std::env::temp_dir()
+		};
+
 		let random_folder_name = format!("fs_store_fuzz_{}", Uuid::new_v4());
 		temp_path.push(random_folder_name);
 
@@ -121,13 +127,8 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 			},
 			// Async remove
 			10 | 11 => {
-				let fut = KVStore::remove(
-					fs_store,
-					primary_namespace,
-					secondary_namespace,
-					key,
-					v == 10,
-				);
+				let fut =
+					KVStore::remove(fs_store, primary_namespace, secondary_namespace, key, v == 10);
 
 				// Already set the current_data, even though writing hasn't finished yet. This supports the call-time
 				// ordering semantics.
