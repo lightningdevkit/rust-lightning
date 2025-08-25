@@ -18,6 +18,7 @@ pub mod channel_keys;
 pub mod channel_state;
 pub mod channelmanager;
 mod features;
+pub mod funding;
 pub mod inbound_payment;
 pub mod msgs;
 pub mod onion_payment;
