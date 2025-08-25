@@ -1484,7 +1484,7 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		match invoice_request.verify_using_metadata(&expanded_key, &secp_ctx) {
-			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
+			Ok(invoice_request) => assert_eq!(invoice_request.offer_id(), offer.id()),
 			Err(_) => panic!("unexpected error"),
 		}
 
@@ -1565,7 +1565,7 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		match invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx) {
-			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
+			Ok(invoice_request) => assert_eq!(invoice_request.offer_id(), offer.id()),
 			Err(_) => panic!("unexpected error"),
 		}
 
