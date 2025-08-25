@@ -8044,7 +8044,48 @@ where
 					htlc_failure_reason,
 				);
 			},
-			HTLCSource::TrampolineForward { .. } => todo!(),
+			// TODO: This branch should be tested when Trampoline Forwarding is implemented.
+			HTLCSource::TrampolineForward {
+				previous_hop_data,
+				incoming_trampoline_shared_secret,
+				..
+			} => {
+				// TODO: what do we want to do with this given we do not wish to propagate it directly?
+				let _decoded_onion_failure =
+					onion_error.decode_onion_failure(&self.secp_ctx, &self.logger, &source);
+				let incoming_trampoline_shared_secret = Some(*incoming_trampoline_shared_secret);
+				for current_hop_data in previous_hop_data {
+					let incoming_packet_shared_secret =
+						&current_hop_data.incoming_packet_shared_secret;
+					let channel_id = &current_hop_data.channel_id;
+					let short_channel_id = &current_hop_data.short_channel_id;
+					let htlc_id = &current_hop_data.htlc_id;
+					let blinded_failure = &current_hop_data.blinded_failure;
+					log_trace!(
+						WithContext::from(&self.logger, None, Some(*channel_id), Some(*payment_hash)),
+						"Failing {}HTLC with payment_hash {} backwards from us following Trampoline forwarding failure: {:?}",
+						if blinded_failure.is_some() { "blinded " } else { "" }, &payment_hash, onion_error
+					);
+					let onion_error = HTLCFailReason::reason(
+						LocalHTLCFailureReason::TemporaryTrampolineFailure,
+						Vec::new(),
+					);
+					let htlc_failure_reason = self.get_htlc_failure_from_blinded_failure_forward(
+						blinded_failure,
+						&onion_error,
+						incoming_packet_shared_secret,
+						&incoming_trampoline_shared_secret,
+						htlc_id,
+					);
+					self.fail_htlc_backwards_from_forward(
+						&onion_error,
+						failure_type.clone(),
+						short_channel_id,
+						channel_id,
+						htlc_failure_reason,
+					);
+				}
+			},
 		}
 	}
 
