@@ -10,8 +10,6 @@
 // licenses.
 
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use bitcoin::secp256k1::ecdh::SharedSecret;
@@ -1831,7 +1829,7 @@ fn test_combined_trampoline_onion_creation_vectors() {
 	let amt_msat = 150_000_000;
 	let cur_height = 800_000;
 	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
-	let (bob_onion, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion_internal(&secp_ctx, &path, &session_priv, amt_msat, &recipient_onion_fields, cur_height, &associated_data, &None, None, [0; 32], Some(outer_session_key), Some(outer_onion_prng_seed)).unwrap();
+	let (bob_onion, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion_internal(&secp_ctx, &path, &outer_session_key, amt_msat, &recipient_onion_fields, cur_height, &associated_data, &None, None, outer_onion_prng_seed, Some(session_priv), Some([0; 32])).unwrap();
 
 	let outer_onion_packet_hex = bob_onion.encode().to_lower_hex_string();
 	assert_eq!(outer_onion_packet_hex, "00025fd60556c134ae97e4baedba220a644037754ee67c54fd05e93bf40c17cbb73362fb9dee96001ff229945595b6edb59437a6bc143406d3f90f749892a84d8d430c6890437d26d5bfc599d565316ef51347521075bbab87c59c57bcf20af7e63d7192b46cf171e4f73cb11f9f603915389105d91ad630224bea95d735e3988add1e24b5bf28f1d7128db64284d90a839ba340d088c74b1fb1bd21136b1809428ec5399c8649e9bdf92d2dcfc694deae5046fa5b2bdf646847aaad73f5e95275763091c90e71031cae1f9a770fdea559642c9c02f424a2a28163dd0957e3874bd28a97bec67d18c0321b0e68bc804aa8345b17cb626e2348ca06c8312a167c989521056b0f25c55559d446507d6c491d50605cb79fa87929ce64b0a9860926eeaec2c431d926a1cadb9a1186e4061cb01671a122fc1f57602cbef06d6c194ec4b715c2e3dd4120baca3172cd81900b49fef857fb6d6afd24c983b608108b0a5ac0c1c6c52011f23b8778059ffadd1bb7cd06e2525417365f485a7fd1d4a9ba3818ede7cdc9e71afee8532252d08e2531ca52538655b7e8d912f7ec6d37bbcce8d7ec690709dbf9321e92c565b78e7fe2c22edf23e0902153d1ca15a112ad32fb19695ec65ce11ddf670da7915f05ad4b86c154fb908cb567315d1124f303f75fa075ebde8ef7bb12e27737ad9e4924439097338ea6d7a6fc3721b88c9b830a34e8d55f4c582b74a3895cc848fe57f4fe29f115dabeb6b3175be15d94408ed6771109cfaf57067ae658201082eae7605d26b1449af4425ae8e8f58cdda5c6265f1fd7a386fc6cea3074e4f25b909b96175883676f7610a00fdf34df9eb6c7b9a4ae89b839c69fd1f285e38cdceb634d782cc6d81179759bc9fd47d7fd060470d0b048287764c6837963274e708314f017ac7dc26d0554d59bfcfd3136225798f65f0b0fea337c6b256ebbb63a90b994c0ab93fd8b1d6bd4c74aebe535d6110014cd3d525394027dfe8faa98b4e9b2bee7949eb1961f1b026791092f84deea63afab66603dbe9b6365a102a1fef2f6b9744bc1bb091a8da9130d34d4d39f25dbad191649cfb67e10246364b7ce0c6ec072f9690cabb459d9fda0c849e17535de4357e9907270c75953fca3c845bb613926ecf73205219c7057a4b6bb244c184362bb4e2f24279dc4e60b94a5b1ec11c34081a628428ba5646c995b9558821053ba9c84a05afbf00dabd60223723096516d2f5668f3ec7e11612b01eb7a3a0506189a2272b88e89807943adb34291a17f6cb5516ffd6f945a1c42a524b21f096d66f350b1dad4db455741ae3d0e023309fbda5ef55fb0dc74f3297041448b2be76c525141963934c6afc53d263fb7836626df502d7c2ee9e79cbbd87afd84bbb8dfbf45248af3cd61ad5fac827e7683ca4f91dfad507a8eb9c17b2c9ac5ec051fe645a4a6cb37136f6f19b611e0ea8da7960af2d779507e55f57305bc74b7568928c5dd5132990fe54c22117df91c257d8c7b61935a018a28c1c3b17bab8e4294fa699161ec21123c9fc4e71079df31f300c2822e1246561e04765d3aab333eafd026c7431ac7616debb0e022746f4538e1c6348b600c988eeb2d051fc60c468dca260a84c79ab3ab8342dc345a764672848ea234e17332bc124799daf7c5fcb2e2358514a7461357e1c19c802c5ee32deccf1776885dd825bedd5f781d459984370a6b7ae885d4483a76ddb19b30f47ed47cd56aa5a079a89793dbcad461c59f2e002067ac98dd5a534e525c9c46c2af730741bf1f8629357ec0bfc0bc9ecb31af96777e507648ff4260dc3673716e098d9111dfd245f1d7c55a6de340deb8bd7a053e5d62d760f184dc70ca8fa255b9023b9b9aedfb6e419a5b5951ba0f83b603793830ee68d442d7b88ee1bbf6bbd1bcd6f68cc1af");
@@ -2011,7 +2009,12 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 	let amt_msat = 1000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 
-	let carol_alice_trampoline_session_priv = secret_from_hex("a0f4b8d7b6c2d0ffdfaf718f76e9decaef4d9fb38a8c4addb95c4007cc3eee03");
+	// We need the session priv to compute the trampoline session priv and construct an invalid onion packet later.
+	let override_random_bytes = [3; 32];
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(override_random_bytes);
+
+	let outer_onion_session_priv = SecretKey::from_slice(&override_random_bytes[..]).unwrap();
+	let carol_alice_trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_onion_session_priv);
 	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &carol_alice_trampoline_session_priv);
 	let carol_blinded_hops = if success {
 		let payee_tlvs = UnauthenticatedReceiveTlvs {
@@ -2099,12 +2102,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 		route_params: None,
 	};
 
-	// We need the session priv to construct an invalid onion packet later.
-	let override_random_bytes = [3; 32];
-	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(override_random_bytes);
-
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
-
 	check_added_monitors!(&nodes[0], 1);
 
 	if success {
@@ -2113,9 +2111,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 	} else {
 		let replacement_onion = {
 			// create a substitute onion where the last Trampoline hop is a forward
-			let trampoline_secret_key = SecretKey::from_slice(&override_random_bytes).unwrap();
 			let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
-
 			let mut blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
 
 			// append some dummy blinded hop so the intro hop looks like a forward
@@ -2129,7 +2125,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 			// pop the last dummy hop
 			trampoline_payloads.pop();
 
-			let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &trampoline_secret_key);
+			let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &carol_alice_trampoline_session_priv);
 			let trampoline_packet = onion_utils::construct_trampoline_onion_packet(
 				trampoline_payloads,
 				trampoline_onion_keys,
@@ -2138,13 +2134,8 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 				None,
 			).unwrap();
 
-			let outer_session_priv = {
-				let session_priv_hash = Sha256::hash(&override_random_bytes).to_byte_array();
-				SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!")
-			};
-
 			let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
-			let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
+			let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_onion_session_priv);
 			let outer_packet = onion_utils::construct_onion_packet(
 				outer_payloads,
 				outer_onion_keys,
