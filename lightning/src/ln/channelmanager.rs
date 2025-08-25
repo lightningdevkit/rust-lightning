@@ -8688,141 +8688,166 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					&self.logger,
 				);
 			},
-			HTLCSource::PreviousHopData(hop_data) => {
-				let prev_channel_id = hop_data.channel_id;
-				let prev_user_channel_id = hop_data.user_channel_id;
-				let prev_node_id = hop_data.counterparty_node_id;
-				let completed_blocker =
-					RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
-
-				// Obtain hold time, if available.
-				let hold_time = hold_time_since(send_timestamp).unwrap_or(0);
-
-				// If attribution data was received from downstream, we shift it and get it ready for adding our hold
-				// time. Note that fulfilled HTLCs take a fast path to the incoming side. We don't need to wait for RAA
-				// to record the hold time like we do for failed HTLCs.
-				let attribution_data = process_fulfill_attribution_data(
-					attribution_data,
-					&hop_data.incoming_packet_shared_secret,
-					hold_time,
-				);
-
-				#[cfg(test)]
-				let claiming_chan_funding_outpoint = hop_data.outpoint;
-				self.claim_funds_from_hop(
-					hop_data,
-					payment_preimage,
-					None,
-					Some(attribution_data),
-					|htlc_claim_value_msat, definitely_duplicate| {
-						let chan_to_release = Some(EventUnblockedChannel {
-							counterparty_node_id: next_channel_counterparty_node_id,
-							funding_txo: next_channel_outpoint,
-							channel_id: next_channel_id,
-							blocking_action: completed_blocker,
-						});
-
-						if definitely_duplicate && startup_replay {
-							// On startup we may get redundant claims which are related to
-							// monitor updates still in flight. In that case, we shouldn't
-							// immediately free, but instead let that monitor update complete
-							// in the background.
-							#[cfg(test)]
-							{
-								let per_peer_state = self.per_peer_state.deadlocking_read();
-								// The channel we'd unblock should already be closed, or...
-								let channel_closed = per_peer_state
-									.get(&next_channel_counterparty_node_id)
-									.map(|lck| lck.deadlocking_lock())
-									.map(|peer| !peer.channel_by_id.contains_key(&next_channel_id))
-									.unwrap_or(true);
-								let background_events =
-									self.pending_background_events.lock().unwrap();
-								// there should be a `BackgroundEvent` pending...
-								let matching_bg_event =
-									background_events.iter().any(|ev| {
-										match ev {
-											// to apply a monitor update that blocked the claiming channel,
-											BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-												funding_txo, update, ..
-											} => {
-												if *funding_txo == claiming_chan_funding_outpoint {
-													assert!(update.updates.iter().any(|upd|
-														if let ChannelMonitorUpdateStep::PaymentPreimage {
-															payment_preimage: update_preimage, ..
-														} = upd {
-															payment_preimage == *update_preimage
-														} else { false }
-													), "{:?}", update);
-													true
-												} else { false }
-											},
-											// or the monitor update has completed and will unblock
-											// immediately once we get going.
-											BackgroundEvent::MonitorUpdatesComplete {
-												channel_id, ..
-											} =>
-												*channel_id == prev_channel_id,
-										}
-									});
-								assert!(
-									channel_closed || matching_bg_event,
-									"{:?}",
-									*background_events
-								);
-							}
-							(None, None)
-						} else if definitely_duplicate {
-							if let Some(other_chan) = chan_to_release {
-								(Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
-									downstream_counterparty_node_id: other_chan.counterparty_node_id,
-									downstream_channel_id: other_chan.channel_id,
-									blocking_action: other_chan.blocking_action,
-								}), None)
-							} else {
-								(None, None)
-							}
-						} else {
-							let total_fee_earned_msat =
-								if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
-									if let Some(claimed_htlc_value) = htlc_claim_value_msat {
-										Some(claimed_htlc_value - forwarded_htlc_value)
-									} else {
-										None
-									}
-								} else {
-									None
-								};
-							debug_assert!(
-								skimmed_fee_msat <= total_fee_earned_msat,
-								"skimmed_fee_msat must always be included in total_fee_earned_msat"
-							);
-							(
-								Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
-									event: events::Event::PaymentForwarded {
-										prev_channel_id: Some(prev_channel_id),
-										next_channel_id: Some(next_channel_id),
-										prev_user_channel_id,
-										next_user_channel_id,
-										prev_node_id,
-										next_node_id: Some(next_channel_counterparty_node_id),
-										total_fee_earned_msat,
-										skimmed_fee_msat,
-										claim_from_onchain_tx: from_onchain,
-										outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
-									},
-									downstream_counterparty_and_funding_outpoint: chan_to_release,
-								}),
-								None,
-							)
-						}
-					},
-				);
-			},
+			HTLCSource::PreviousHopData(hop_data) => self.claim_funds_from_previous_hop_internal(
+				payment_preimage,
+				forwarded_htlc_value_msat,
+				skimmed_fee_msat,
+				from_onchain,
+				startup_replay,
+				next_channel_counterparty_node_id,
+				next_channel_outpoint,
+				next_channel_id,
+				next_user_channel_id,
+				hop_data,
+				attribution_data,
+				send_timestamp,
+			),
 			HTLCSource::TrampolineForward { .. } => todo!(),
 		}
 	}
 
+	fn claim_funds_from_previous_hop_internal(
+		&self, payment_preimage: PaymentPreimage, forwarded_htlc_value_msat: Option<u64>,
+		skimmed_fee_msat: Option<u64>, from_onchain: bool, startup_replay: bool,
+		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
+		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
+		hop_data: HTLCPreviousHopData, attribution_data: Option<AttributionData>,
+		send_timestamp: Option<Duration>,
+	) {
+		let prev_channel_id = hop_data.channel_id;
+		let prev_user_channel_id = hop_data.user_channel_id;
+		let prev_node_id = hop_data.counterparty_node_id;
+		let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
+
+		// Obtain hold time, if available.
+		let hold_time = hold_time_since(send_timestamp).unwrap_or(0);
+
+		// If attribution data was received from downstream, we shift it and get it ready for adding our hold
+		// time. Note that fulfilled HTLCs take a fast path to the incoming side. We don't need to wait for RAA
+		// to record the hold time like we do for failed HTLCs.
+		let attribution_data = process_fulfill_attribution_data(
+			attribution_data,
+			&hop_data.incoming_packet_shared_secret,
+			hold_time,
+		);
+
+		#[cfg(test)]
+		let claiming_chan_funding_outpoint = hop_data.outpoint;
+		self.claim_funds_from_hop(
+			hop_data,
+			payment_preimage,
+			None,
+			Some(attribution_data),
+			|htlc_claim_value_msat, definitely_duplicate| {
+				let chan_to_release = Some(EventUnblockedChannel {
+					counterparty_node_id: next_channel_counterparty_node_id,
+					funding_txo: next_channel_outpoint,
+					channel_id: next_channel_id,
+					blocking_action: completed_blocker,
+				});
+
+				if definitely_duplicate && startup_replay {
+					// On startup we may get redundant claims which are related to
+					// monitor updates still in flight. In that case, we shouldn't
+					// immediately free, but instead let that monitor update complete
+					// in the background.
+					#[cfg(test)]
+					{
+						let per_peer_state = self.per_peer_state.deadlocking_read();
+						// The channel we'd unblock should already be closed, or...
+						let channel_closed = per_peer_state
+							.get(&next_channel_counterparty_node_id)
+							.map(|lck| lck.deadlocking_lock())
+							.map(|peer| !peer.channel_by_id.contains_key(&next_channel_id))
+							.unwrap_or(true);
+						let background_events = self.pending_background_events.lock().unwrap();
+						// there should be a `BackgroundEvent` pending...
+						let matching_bg_event =
+							background_events.iter().any(|ev| {
+								match ev {
+									// to apply a monitor update that blocked the claiming channel,
+									BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+										funding_txo,
+										update,
+										..
+									} => {
+										if *funding_txo == claiming_chan_funding_outpoint {
+											assert!(
+												update.updates.iter().any(|upd| {
+													if let ChannelMonitorUpdateStep::PaymentPreimage {
+															payment_preimage: update_preimage, ..
+														} = upd {
+															payment_preimage == *update_preimage
+														} else { false }
+												}),
+												"{:?}",
+												update
+											);
+											true
+										} else {
+											false
+										}
+									},
+									// or the monitor update has completed and will unblock
+									// immediately once we get going.
+									BackgroundEvent::MonitorUpdatesComplete {
+										channel_id, ..
+									} => *channel_id == prev_channel_id,
+								}
+							});
+						assert!(channel_closed || matching_bg_event, "{:?}", *background_events);
+					}
+					(None, None)
+				} else if definitely_duplicate {
+					if let Some(other_chan) = chan_to_release {
+						(
+							Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+								downstream_counterparty_node_id: other_chan.counterparty_node_id,
+								downstream_channel_id: other_chan.channel_id,
+								blocking_action: other_chan.blocking_action,
+							}),
+							None,
+						)
+					} else {
+						(None, None)
+					}
+				} else {
+					let total_fee_earned_msat =
+						if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
+							if let Some(claimed_htlc_value) = htlc_claim_value_msat {
+								Some(claimed_htlc_value - forwarded_htlc_value)
+							} else {
+								None
+							}
+						} else {
+							None
+						};
+					debug_assert!(
+						skimmed_fee_msat <= total_fee_earned_msat,
+						"skimmed_fee_msat must always be included in total_fee_earned_msat"
+					);
+					(
+						Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+							event: events::Event::PaymentForwarded {
+								prev_channel_id: Some(prev_channel_id),
+								next_channel_id: Some(next_channel_id),
+								prev_user_channel_id,
+								next_user_channel_id,
+								prev_node_id,
+								next_node_id: Some(next_channel_counterparty_node_id),
+								total_fee_earned_msat,
+								skimmed_fee_msat,
+								claim_from_onchain_tx: from_onchain,
+								outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
+							},
+							downstream_counterparty_and_funding_outpoint: chan_to_release,
+						}),
+						None,
+					)
+				}
+			},
+		)
+	}
 	/// Gets the node_id held by this ChannelManager
 	pub fn get_our_node_id(&self) -> PublicKey {
 		self.our_network_pubkey
