@@ -15798,7 +15798,7 @@ where
 						log_error!(logger, " The ChannelMonitor for channel {} is at counterparty commitment transaction number {} but the ChannelManager is at counterparty commitment transaction number {}.",
 							&channel.context.channel_id(), monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
 					}
-					let mut shutdown_result =
+					let shutdown_result =
 						channel.force_shutdown(ClosureReason::OutdatedChannelManager);
 					if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
 						return Err(DecodeError::InvalidValue);
@@ -15830,7 +15830,10 @@ where
 							},
 						);
 					}
-					failed_htlcs.append(&mut shutdown_result.dropped_outbound_htlcs);
+					for (source, hash, cp_id, chan_id) in shutdown_result.dropped_outbound_htlcs {
+						let reason = LocalHTLCFailureReason::ChannelClosed;
+						failed_htlcs.push((source, hash, cp_id, chan_id, reason));
+					}
 					channel_closures.push_back((
 						events::Event::ChannelClosed {
 							channel_id: channel.context.channel_id(),
@@ -15872,6 +15875,7 @@ where
 								*payment_hash,
 								channel.context.get_counterparty_node_id(),
 								channel.context.channel_id(),
+								LocalHTLCFailureReason::ChannelClosed,
 							));
 						}
 					}
@@ -16445,8 +16449,11 @@ where
 			// payments which are still in-flight via their on-chain state.
 			// We only rebuild the pending payments map if we were most recently serialized by
 			// 0.0.102+
+			//
+			// First we rebuild all pending payments, then separately re-claim and re-fail pending
+			// payments. This avoids edge-cases around MPP payments resulting in redundant actions.
 			for (channel_id, monitor) in args.channel_monitors.iter() {
-				let mut is_channel_closed = false;
+				let mut is_channel_closed = true;
 				let counterparty_node_id = monitor.get_counterparty_node_id();
 				if let Some(peer_state_mtx) = per_peer_state.get(&counterparty_node_id) {
 					let mut peer_state_lock = peer_state_mtx.lock().unwrap();
@@ -16483,6 +16490,18 @@ where
 							);
 						}
 					}
+				}
+			}
+			for (channel_id, monitor) in args.channel_monitors.iter() {
+				let mut is_channel_closed = true;
+				let counterparty_node_id = monitor.get_counterparty_node_id();
+				if let Some(peer_state_mtx) = per_peer_state.get(&counterparty_node_id) {
+					let mut peer_state_lock = peer_state_mtx.lock().unwrap();
+					let peer_state = &mut *peer_state_lock;
+					is_channel_closed = !peer_state.channel_by_id.contains_key(channel_id);
+				}
+
+				if is_channel_closed {
 					for (htlc_source, (htlc, preimage_opt)) in
 						monitor.get_all_current_outbound_htlcs()
 					{
@@ -16579,6 +16598,20 @@ where
 								}
 							},
 						}
+					}
+					for (htlc_source, payment_hash) in monitor.get_onchain_failed_outbound_htlcs() {
+						log_info!(
+							args.logger,
+							"Failing HTLC with payment hash {} as it was resolved on-chain.",
+							payment_hash
+						);
+						failed_htlcs.push((
+							htlc_source,
+							payment_hash,
+							monitor.get_counterparty_node_id(),
+							monitor.channel_id(),
+							LocalHTLCFailureReason::OnChainTimeout,
+						));
 					}
 				}
 
@@ -17260,13 +17293,10 @@ where
 			}
 		}
 
-		for htlc_source in failed_htlcs.drain(..) {
-			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
-			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(counterparty_node_id),
-				channel_id,
-			};
+		for htlc_source in failed_htlcs {
+			let (source, payment_hash, counterparty_id, channel_id, failure_reason) = htlc_source;
+			let receiver =
+				HTLCHandlingFailureType::Forward { node_id: Some(counterparty_id), channel_id };
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
 			channel_manager.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 		}
