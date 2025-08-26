@@ -48,28 +48,65 @@ pub(crate) struct NextCommitmentStats {
 	pub extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat: Option<u64>,
 }
 
-#[rustfmt::skip]
 fn excess_fees_on_counterparty_tx_dust_exposure_msat(
-	next_commitment_htlcs: &[HTLCAmountDirection], dust_buffer_feerate: u32,
-	excess_feerate: u32, counterparty_dust_limit_satoshis: u64, dust_htlc_exposure_msat: u64,
+	next_commitment_htlcs: &[HTLCAmountDirection], dust_buffer_feerate: u32, excess_feerate: u32,
+	counterparty_dust_limit_satoshis: u64, dust_htlc_exposure_msat: u64,
 	channel_type: &ChannelTypeFeatures,
 ) -> (u64, u64) {
+	let on_counterparty_tx_accepted_nondust_htlcs = next_commitment_htlcs
+		.iter()
+		.filter(|htlc| {
+			htlc.outbound
+				&& !htlc.is_dust(
+					false,
+					dust_buffer_feerate,
+					counterparty_dust_limit_satoshis,
+					channel_type,
+				)
+		})
+		.count();
+	let on_counterparty_tx_offered_nondust_htlcs = next_commitment_htlcs
+		.iter()
+		.filter(|htlc| {
+			!htlc.outbound
+				&& !htlc.is_dust(
+					false,
+					dust_buffer_feerate,
+					counterparty_dust_limit_satoshis,
+					channel_type,
+				)
+		})
+		.count();
 
-	let on_counterparty_tx_accepted_nondust_htlcs = next_commitment_htlcs.iter().filter(|htlc| htlc.outbound && !htlc.is_dust(false, dust_buffer_feerate, counterparty_dust_limit_satoshis, channel_type)).count();
-	let on_counterparty_tx_offered_nondust_htlcs = next_commitment_htlcs.iter().filter(|htlc| !htlc.outbound && !htlc.is_dust(false, dust_buffer_feerate, counterparty_dust_limit_satoshis, channel_type)).count();
+	let commitment_fee_sat = commit_tx_fee_sat(
+		excess_feerate,
+		on_counterparty_tx_accepted_nondust_htlcs + on_counterparty_tx_offered_nondust_htlcs,
+		channel_type,
+	);
+	let second_stage_fees_sat = htlc_tx_fees_sat(
+		excess_feerate,
+		on_counterparty_tx_accepted_nondust_htlcs,
+		on_counterparty_tx_offered_nondust_htlcs,
+		channel_type,
+	);
+	let on_counterparty_tx_dust_exposure_msat =
+		dust_htlc_exposure_msat + (commitment_fee_sat + second_stage_fees_sat) * 1000;
 
-	let commitment_fee_sat = commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + on_counterparty_tx_offered_nondust_htlcs, channel_type);
-	let second_stage_fees_sat = htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs, on_counterparty_tx_offered_nondust_htlcs, channel_type);
-	let on_counterparty_tx_dust_exposure_msat = dust_htlc_exposure_msat + (commitment_fee_sat + second_stage_fees_sat) * 1000;
+	let extra_htlc_commitment_fee_sat = commit_tx_fee_sat(
+		excess_feerate,
+		on_counterparty_tx_accepted_nondust_htlcs + 1 + on_counterparty_tx_offered_nondust_htlcs,
+		channel_type,
+	);
+	let extra_htlc_second_stage_fees_sat = htlc_tx_fees_sat(
+		excess_feerate,
+		on_counterparty_tx_accepted_nondust_htlcs + 1,
+		on_counterparty_tx_offered_nondust_htlcs,
+		channel_type,
+	);
+	let extra_htlc_dust_exposure_msat = dust_htlc_exposure_msat
+		+ (extra_htlc_commitment_fee_sat + extra_htlc_second_stage_fees_sat) * 1000;
 
-	let extra_htlc_commitment_fee_sat = commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1 + on_counterparty_tx_offered_nondust_htlcs, channel_type);
-	let extra_htlc_second_stage_fees_sat = htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, channel_type);
-	let extra_htlc_dust_exposure_msat = dust_htlc_exposure_msat + (extra_htlc_commitment_fee_sat + extra_htlc_second_stage_fees_sat) * 1000;
-
-	(
-		on_counterparty_tx_dust_exposure_msat,
-		extra_htlc_dust_exposure_msat,
-	)
+	(on_counterparty_tx_dust_exposure_msat, extra_htlc_dust_exposure_msat)
 }
 
 fn subtract_addl_outputs(
@@ -288,7 +325,6 @@ impl TxBuilder for SpecTxBuilder {
 
 		(local_balance_before_fee_msat, remote_balance_before_fee_msat)
 	}
-	#[rustfmt::skip]
 	fn build_commitment_transaction<L: Deref>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
 		channel_parameters: &ChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>,
@@ -326,7 +362,14 @@ impl TxBuilder for SpecTxBuilder {
 				remote_htlc_total_msat += htlc.amount_msat;
 			}
 			if is_dust(htlc.offered, htlc.amount_msat) {
-				log_trace!(logger, "   ...trimming {} HTLC with value {}sat, hash {}, due to dust limit {}", if htlc.offered == local { "outbound" } else { "inbound" }, htlc.amount_msat / 1000, htlc.payment_hash, broadcaster_dust_limit_satoshis);
+				log_trace!(
+					logger,
+					"   ...trimming {} HTLC with value {}sat, hash {}, due to dust limit {}",
+					if htlc.offered == local { "outbound" } else { "inbound" },
+					htlc.amount_msat / 1000,
+					htlc.payment_hash,
+					broadcaster_dust_limit_satoshis
+				);
 				false
 			} else {
 				true
@@ -338,12 +381,25 @@ impl TxBuilder for SpecTxBuilder {
 		// The value going to each party MUST be 0 or positive, even if all HTLCs pending in the
 		// commitment clear by failure.
 
-		let commit_tx_fee_sat = self.commit_tx_fee_sat(feerate_per_kw, htlcs_in_tx.len(), &channel_parameters.channel_type_features);
-		let value_to_self_after_htlcs_msat = value_to_self_msat.checked_sub(local_htlc_total_msat).unwrap();
-		let value_to_remote_after_htlcs_msat =
-			(channel_parameters.channel_value_satoshis * 1000).checked_sub(value_to_self_msat).unwrap().checked_sub(remote_htlc_total_msat).unwrap();
-		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) =
-			self.subtract_non_htlc_outputs(channel_parameters.is_outbound_from_holder, value_to_self_after_htlcs_msat, value_to_remote_after_htlcs_msat, &channel_parameters.channel_type_features);
+		let commit_tx_fee_sat = self.commit_tx_fee_sat(
+			feerate_per_kw,
+			htlcs_in_tx.len(),
+			&channel_parameters.channel_type_features,
+		);
+		let value_to_self_after_htlcs_msat =
+			value_to_self_msat.checked_sub(local_htlc_total_msat).unwrap();
+		let value_to_remote_after_htlcs_msat = (channel_parameters.channel_value_satoshis * 1000)
+			.checked_sub(value_to_self_msat)
+			.unwrap()
+			.checked_sub(remote_htlc_total_msat)
+			.unwrap();
+		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = self
+			.subtract_non_htlc_outputs(
+				channel_parameters.is_outbound_from_holder,
+				value_to_self_after_htlcs_msat,
+				value_to_remote_after_htlcs_msat,
+				&channel_parameters.channel_type_features,
+			);
 
 		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
 		// than or equal to `commit_tx_fee_sat`.
@@ -353,29 +409,47 @@ impl TxBuilder for SpecTxBuilder {
 		// cover the total fee.
 
 		let (value_to_self, value_to_remote) = if channel_parameters.is_outbound_from_holder {
-			((local_balance_before_fee_msat / 1000).saturating_sub(commit_tx_fee_sat), remote_balance_before_fee_msat / 1000)
+			(
+				(local_balance_before_fee_msat / 1000).saturating_sub(commit_tx_fee_sat),
+				remote_balance_before_fee_msat / 1000,
+			)
 		} else {
-			(local_balance_before_fee_msat / 1000, (remote_balance_before_fee_msat / 1000).saturating_sub(commit_tx_fee_sat))
+			(
+				local_balance_before_fee_msat / 1000,
+				(remote_balance_before_fee_msat / 1000).saturating_sub(commit_tx_fee_sat),
+			)
 		};
 
 		let mut to_broadcaster_value_sat = if local { value_to_self } else { value_to_remote };
 		let mut to_countersignatory_value_sat = if local { value_to_remote } else { value_to_self };
 
 		if to_broadcaster_value_sat >= broadcaster_dust_limit_satoshis {
-			log_trace!(logger, "   ...including {} output with value {}", if local { "to_local" } else { "to_remote" }, to_broadcaster_value_sat);
+			log_trace!(
+				logger,
+				"   ...including {} output with value {}",
+				if local { "to_local" } else { "to_remote" },
+				to_broadcaster_value_sat
+			);
 		} else {
 			to_broadcaster_value_sat = 0;
 		}
 
 		if to_countersignatory_value_sat >= broadcaster_dust_limit_satoshis {
-			log_trace!(logger, "   ...including {} output with value {}", if local { "to_remote" } else { "to_local" }, to_countersignatory_value_sat);
+			log_trace!(
+				logger,
+				"   ...including {} output with value {}",
+				if local { "to_remote" } else { "to_local" },
+				to_countersignatory_value_sat
+			);
 		} else {
 			to_countersignatory_value_sat = 0;
 		}
 
-		let directed_parameters =
-			if local { channel_parameters.as_holder_broadcastable() }
-			else { channel_parameters.as_counterparty_broadcastable() };
+		let directed_parameters = if local {
+			channel_parameters.as_holder_broadcastable()
+		} else {
+			channel_parameters.as_counterparty_broadcastable()
+		};
 		let tx = CommitmentTransaction::new(
 			commitment_number,
 			per_commitment_point,
