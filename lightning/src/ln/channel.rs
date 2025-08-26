@@ -4338,7 +4338,6 @@ where
 		ret
 	}
 
-	#[rustfmt::skip]
 	fn validate_update_add_htlc<F: Deref>(
 		&self, funding: &FundingScope, msg: &msgs::UpdateAddHTLC,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
@@ -4347,26 +4346,48 @@ where
 		F::Target: FeeEstimator,
 	{
 		if msg.amount_msat > funding.get_value_satoshis() * 1000 {
-			return Err(ChannelError::close("Remote side tried to send more than the total value of the channel".to_owned()));
+			return Err(ChannelError::close(
+				"Remote side tried to send more than the total value of the channel".to_owned(),
+			));
 		}
 
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
-			&fee_estimator, funding.get_channel_type(),
-		);
-		// Don't include outbound update_add_htlc's in the holding cell, or those which haven't yet been ACK'ed by the counterparty (ie. LocalAnnounced HTLCs)
+		let dust_exposure_limiting_feerate =
+			self.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
+		// Don't include outbound update_add_htlc's in the holding cell, or those which haven't yet been ACK'ed
+		// by the counterparty (ie. LocalAnnounced HTLCs)
 		let include_counterparty_unknown_htlcs = false;
 		// Don't include the extra fee spike buffer HTLC in calculations
 		let fee_spike_buffer_htlc = 0;
-		let next_remote_commitment_stats = self.get_next_remote_commitment_stats(funding, Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }), include_counterparty_unknown_htlcs, fee_spike_buffer_htlc, self.feerate_per_kw, dust_exposure_limiting_feerate);
+		let next_remote_commitment_stats = self.get_next_remote_commitment_stats(
+			funding,
+			Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }),
+			include_counterparty_unknown_htlcs,
+			fee_spike_buffer_htlc,
+			self.feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		);
 
-		if next_remote_commitment_stats.inbound_htlcs_count > self.holder_max_accepted_htlcs as usize {
-			return Err(ChannelError::close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.holder_max_accepted_htlcs)));
+		if next_remote_commitment_stats.inbound_htlcs_count
+			> self.holder_max_accepted_htlcs as usize
+		{
+			return Err(ChannelError::close(format!(
+				"Remote tried to push more than our max accepted HTLCs ({})",
+				self.holder_max_accepted_htlcs,
+			)));
 		}
-		if next_remote_commitment_stats.inbound_htlcs_value_msat > self.holder_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::close(format!("Remote HTLC add would put them over our max HTLC value ({})", self.holder_max_htlc_value_in_flight_msat)));
+		if next_remote_commitment_stats.inbound_htlcs_value_msat
+			> self.holder_max_htlc_value_in_flight_msat
+		{
+			return Err(ChannelError::close(format!(
+				"Remote HTLC add would put them over our max HTLC value ({})",
+				self.holder_max_htlc_value_in_flight_msat,
+			)));
 		}
 
-		let remote_balance_before_fee_msat = next_remote_commitment_stats.counterparty_balance_before_fee_msat.ok_or(ChannelError::close("Remote HTLC add would overdraw remaining funds".to_owned()))?;
+		let remote_balance_before_fee_msat =
+			next_remote_commitment_stats.counterparty_balance_before_fee_msat.ok_or(
+				ChannelError::close("Remote HTLC add would overdraw remaining funds".to_owned()),
+			)?;
 
 		// Check that the remote can afford to pay for this HTLC on-chain at the current
 		// feerate_per_kw, while maintaining their channel reserve (as required by the spec).
@@ -4384,23 +4405,46 @@ where
 		// Channel state once they will not be present in the next received commitment
 		// transaction).
 		{
-			let remote_commit_tx_fee_msat = if funding.is_outbound() { 0 } else {
+			let remote_commit_tx_fee_msat = if funding.is_outbound() {
+				0
+			} else {
 				next_remote_commitment_stats.commit_tx_fee_sat * 1000
 			};
 			if remote_balance_before_fee_msat < remote_commit_tx_fee_msat {
-				return Err(ChannelError::close("Remote HTLC add would not leave enough to pay for fees".to_owned()));
+				return Err(ChannelError::close(
+					"Remote HTLC add would not leave enough to pay for fees".to_owned(),
+				));
 			};
-			if remote_balance_before_fee_msat.saturating_sub(remote_commit_tx_fee_msat) < funding.holder_selected_channel_reserve_satoshis * 1000 {
-				return Err(ChannelError::close("Remote HTLC add would put them under remote reserve value".to_owned()));
+			if remote_balance_before_fee_msat.saturating_sub(remote_commit_tx_fee_msat)
+				< funding.holder_selected_channel_reserve_satoshis * 1000
+			{
+				return Err(ChannelError::close(
+					"Remote HTLC add would put them under remote reserve value".to_owned(),
+				));
 			}
 		}
 
 		if funding.is_outbound() {
-			let next_local_commitment_stats = self.get_next_local_commitment_stats(funding, Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }), include_counterparty_unknown_htlcs, fee_spike_buffer_htlc, self.feerate_per_kw, dust_exposure_limiting_feerate);
-			let holder_balance_msat = next_local_commitment_stats.holder_balance_before_fee_msat.expect("Adding an inbound HTLC should never exhaust the holder's balance before fees");
+			let next_local_commitment_stats = self.get_next_local_commitment_stats(
+				funding,
+				Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }),
+				include_counterparty_unknown_htlcs,
+				fee_spike_buffer_htlc,
+				self.feerate_per_kw,
+				dust_exposure_limiting_feerate,
+			);
+			let holder_balance_msat =
+				next_local_commitment_stats.holder_balance_before_fee_msat.expect(
+					"Adding an inbound HTLC should never exhaust the holder's balance before fees",
+				);
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
-			if holder_balance_msat < funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + next_local_commitment_stats.commit_tx_fee_sat * 1000 {
-				return Err(ChannelError::close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
+			if holder_balance_msat
+				< funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000
+					+ next_local_commitment_stats.commit_tx_fee_sat * 1000
+			{
+				return Err(ChannelError::close(
+					"Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()
+				));
 			}
 		}
 
