@@ -4109,9 +4109,9 @@ where
 	///
 	/// We take the conservative approach and only assume that a HTLC will
 	/// not be in the next commitment when it is guaranteed that it won't be.
-	#[rustfmt::skip]
 	fn get_next_commitment_htlcs(
-		&self, local: bool, htlc_candidate: Option<HTLCAmountDirection>, include_counterparty_unknown_htlcs: bool,
+		&self, local: bool, htlc_candidate: Option<HTLCAmountDirection>,
+		include_counterparty_unknown_htlcs: bool,
 	) -> Vec<HTLCAmountDirection> {
 		let mut commitment_htlcs = Vec::with_capacity(
 			1 + self.pending_inbound_htlcs.len()
@@ -4132,7 +4132,10 @@ where
 				(InboundHTLCState::LocalRemoved(..), true) => true,
 				(InboundHTLCState::LocalRemoved(..), false) => false,
 			})
-			.map(|&InboundHTLCOutput { amount_msat, .. }| HTLCAmountDirection { outbound: false, amount_msat });
+			.map(|&InboundHTLCOutput { amount_msat, .. }| HTLCAmountDirection {
+				outbound: false,
+				amount_msat,
+			});
 		// `RemoteRemoved` HTLCs can still be present on the next remote commitment if
 		// local produces a commitment before acknowledging the update. These HTLCs
 		// will for sure not be present on the next local commitment.
@@ -4147,7 +4150,10 @@ where
 				(OutboundHTLCState::AwaitingRemoteRevokeToRemove(..), _) => false,
 				(OutboundHTLCState::AwaitingRemovedRemoteRevoke(..), _) => false,
 			})
-			.map(|&OutboundHTLCOutput { amount_msat, .. }| HTLCAmountDirection { outbound: true, amount_msat });
+			.map(|&OutboundHTLCOutput { amount_msat, .. }| HTLCAmountDirection {
+				outbound: true,
+				amount_msat,
+			});
 
 		let holding_cell_htlcs = self.holding_cell_htlc_updates.iter().filter_map(|htlc| {
 			if let &HTLCUpdateAwaitingACK::AddHTLC { amount_msat, .. } = htlc {
@@ -4159,11 +4165,18 @@ where
 
 		if include_counterparty_unknown_htlcs {
 			commitment_htlcs.extend(
-				htlc_candidate.into_iter().chain(pending_inbound_htlcs).chain(pending_outbound_htlcs).chain(holding_cell_htlcs)
+				htlc_candidate
+					.into_iter()
+					.chain(pending_inbound_htlcs)
+					.chain(pending_outbound_htlcs)
+					.chain(holding_cell_htlcs),
 			);
 		} else {
 			commitment_htlcs.extend(
-				htlc_candidate.into_iter().chain(pending_inbound_htlcs).chain(pending_outbound_htlcs)
+				htlc_candidate
+					.into_iter()
+					.chain(pending_inbound_htlcs)
+					.chain(pending_outbound_htlcs),
 			);
 		}
 
