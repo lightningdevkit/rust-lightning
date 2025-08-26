@@ -2255,7 +2255,7 @@ impl FundingScope {
 	fn for_splice<SP: Deref>(
 		prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution: SignedAmount,
 		their_funding_contribution: SignedAmount, counterparty_funding_pubkey: PublicKey,
-	) -> Result<Self, ChannelError>
+	) -> Self
 	where
 		SP::Target: SignerProvider,
 	{
@@ -2305,7 +2305,7 @@ impl FundingScope {
 		let holder_selected_channel_reserve_satoshis =
 			get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS);
 
-		Ok(Self {
+		Self {
 			channel_transaction_parameters: post_channel_transaction_parameters,
 			value_to_self_msat: post_value_to_self_msat,
 			funding_transaction: None,
@@ -2329,7 +2329,7 @@ impl FundingScope {
 			funding_tx_confirmed_in: None,
 			minimum_depth_override: None,
 			short_channel_id: None,
-		})
+		}
 	}
 
 	/// Compute the post-splice channel value from each counterparty's contributions.
@@ -11312,7 +11312,7 @@ where
 			our_funding_contribution,
 			their_funding_contribution,
 			msg.funding_pubkey,
-		)?;
+		);
 
 		// TODO(splicing): Once splice acceptor can contribute, check that inputs are sufficient,
 		// similarly to the check in `splice_channel`.
@@ -11533,7 +11533,7 @@ where
 			our_funding_contribution,
 			their_funding_contribution,
 			msg.funding_pubkey,
-		)?;
+		);
 
 		// TODO(splicing): Pre-check for reserve requirement
 		// (Note: It should also be checked later at tx_complete)
