@@ -50,7 +50,9 @@ pub(crate) struct NextCommitmentStats {
 }
 
 impl NextCommitmentStats {
-	pub(crate) fn get_balances_including_fee_msat(&self) -> (Option<u64>, Option<u64>) {
+	pub(crate) fn get_holder_counterparty_balances_incl_fee_msat(
+		&self,
+	) -> (Option<u64>, Option<u64>) {
 		if self.is_outbound_from_holder {
 			(
 				self.holder_balance_before_fee_msat.and_then(|balance_msat| {
