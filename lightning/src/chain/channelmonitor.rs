@@ -2659,7 +2659,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					debug_assert!(htlc_input_idx_opt.is_some());
 					BitcoinOutPoint::new(*txid, htlc_input_idx_opt.unwrap_or(0))
 				} else {
-					debug_assert!(!self.channel_type_features().supports_anchors_zero_fee_htlc_tx());
+					let funding = get_confirmed_funding_scope!(self);
+					debug_assert!(!funding.channel_type_features().supports_anchors_zero_fee_htlc_tx());
 					BitcoinOutPoint::new(*txid, 0)
 				}
 			} else {
@@ -2821,8 +2822,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		}
 
 		if let Some(txid) = confirmed_txid {
+			let funding_spent = get_confirmed_funding_scope!(us);
 			let mut found_commitment_tx = false;
-			if let Some(counterparty_tx_htlcs) = us.funding.counterparty_claimable_outpoints.get(&txid) {
+			if let Some(counterparty_tx_htlcs) = funding_spent.counterparty_claimable_outpoints.get(&txid) {
 				// First look for the to_remote output back to us.
 				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 					if let Some(value) = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
@@ -2843,7 +2845,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 						// confirmation with the same height or have never met our dust amount.
 					}
 				}
-				if Some(txid) == us.funding.current_counterparty_commitment_txid || Some(txid) == us.funding.prev_counterparty_commitment_txid {
+				if Some(txid) == funding_spent.current_counterparty_commitment_txid || Some(txid) == funding_spent.prev_counterparty_commitment_txid {
 					walk_htlcs!(false, false, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
 				} else {
 					walk_htlcs!(false, true, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
@@ -2886,17 +2888,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					}
 				}
 				found_commitment_tx = true;
-			} else if txid == us.funding.current_holder_commitment_tx.trust().txid() {
+			} else if txid == funding_spent.current_holder_commitment_tx.trust().txid() {
 				walk_htlcs!(true, false, holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES));
 				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 					res.push(Balance::ClaimableAwaitingConfirmations {
-						amount_satoshis: us.funding.current_holder_commitment_tx.to_broadcaster_value_sat(),
+						amount_satoshis: funding_spent.current_holder_commitment_tx.to_broadcaster_value_sat(),
 						confirmation_height: conf_thresh,
 						source: BalanceSource::HolderForceClosed,
 					});
 				}
 				found_commitment_tx = true;
-			} else if let Some(prev_holder_commitment_tx) = &us.funding.prev_holder_commitment_tx {
+			} else if let Some(prev_holder_commitment_tx) = &funding_spent.prev_holder_commitment_tx {
 				if txid == prev_holder_commitment_tx.trust().txid() {
 					walk_htlcs!(true, false, holder_commitment_htlcs!(us, PREV_WITH_SOURCES).unwrap());
 					if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
@@ -2915,7 +2917,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					// neither us nor our counterparty misbehaved. At worst we've under-estimated
 					// the amount we can claim as we'll punish a misbehaving counterparty.
 					res.push(Balance::ClaimableAwaitingConfirmations {
-						amount_satoshis: us.funding.current_holder_commitment_tx.to_broadcaster_value_sat(),
+						amount_satoshis: funding_spent.current_holder_commitment_tx.to_broadcaster_value_sat(),
 						confirmation_height: conf_thresh,
 						source: BalanceSource::CoopClose,
 					});
@@ -2927,6 +2929,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			let mut outbound_forwarded_htlc_rounded_msat = 0;
 			let mut inbound_claiming_htlc_rounded_msat = 0;
 			let mut inbound_htlc_rounded_msat = 0;
+			// We share the same set of HTLCs across all scopes, so we don't need to check the other
+			// scopes as it'd be redundant.
 			for (htlc, source) in holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES) {
 				let rounded_value_msat = if htlc.transaction_output_index.is_none() {
 					htlc.amount_msat
@@ -2968,15 +2972,26 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					}
 				}
 			}
-			let to_self_value_sat = us.funding.current_holder_commitment_tx.to_broadcaster_value_sat();
+			// Our local balance should reflect the lowest possible balance at all times across all
+			// possible commitment transactions.
+			let lowest_balance_funding = core::iter::once(&us.funding).chain(us.pending_funding.iter())
+				.reduce(|min, funding| {
+					if funding.current_holder_commitment_tx.to_broadcaster_value_sat() < min.current_holder_commitment_tx.to_broadcaster_value_sat() {
+						funding
+					} else {
+						min
+					}
+				})
+				.expect("At least one FundingScope is always provided");
+			let to_self_value_sat = lowest_balance_funding.current_holder_commitment_tx.to_broadcaster_value_sat();
 			res.push(Balance::ClaimableOnChannelClose {
 				amount_satoshis: to_self_value_sat + claimable_inbound_htlc_value_sat,
 				// In addition to `commit_tx_fee_sat`, this can also include dust HTLCs, any elided anchors,
 				// and the total msat amount rounded down from non-dust HTLCs
 				transaction_fee_satoshis: if us.holder_pays_commitment_tx_fee.unwrap_or(true) {
-					let transaction = &us.funding.current_holder_commitment_tx.trust().built_transaction().transaction;
+					let transaction = &lowest_balance_funding.current_holder_commitment_tx.trust().built_transaction().transaction;
 					let output_value_sat: u64 = transaction.output.iter().map(|txout| txout.value.to_sat()).sum();
-					us.funding.channel_parameters.channel_value_satoshis - output_value_sat
+					lowest_balance_funding.channel_parameters.channel_value_satoshis - output_value_sat
 				} else { 0 },
 				outbound_payment_htlc_rounded_msat,
 				outbound_forwarded_htlc_rounded_msat,
