@@ -11364,7 +11364,6 @@ where
 		Ok(())
 	}
 
-	/// See also [`validate_splice_init`]
 	#[cfg(splicing)]
 	pub(crate) fn splice_init<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceInit, our_funding_contribution_satoshis: i64,
@@ -11441,7 +11440,6 @@ where
 		})
 	}
 
-	/// Handle splice_ack
 	#[cfg(splicing)]
 	pub(crate) fn splice_ack<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceAck, signer_provider: &SP, entropy_source: &ES,
@@ -11451,44 +11449,7 @@ where
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
-		// TODO(splicing): Add check that we are the splice (quiescence) initiator
-
-		let funding_negotiation_context = match &self
-			.pending_splice
-			.as_ref()
-			.ok_or(ChannelError::Ignore(format!("Channel is not in pending splice")))?
-			.funding_negotiation
-		{
-			Some(FundingNegotiation::AwaitingAck(context)) => context,
-			Some(FundingNegotiation::ConstructingTransaction(_, _))
-			| Some(FundingNegotiation::AwaitingSignatures(_)) => {
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Got unexpected splice_ack; splice negotiation already in progress"
-				)));
-			},
-			None => {
-				return Err(ChannelError::Ignore(format!(
-					"Got unexpected splice_ack; no splice negotiation in progress"
-				)));
-			},
-		};
-
-		let our_funding_contribution = funding_negotiation_context.our_funding_contribution;
-		debug_assert!(our_funding_contribution.abs() <= SignedAmount::MAX_MONEY);
-
-		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
-		self.validate_splice_contribution(their_funding_contribution)?;
-
-		let splice_funding = FundingScope::for_splice(
-			&self.funding,
-			&self.context,
-			our_funding_contribution,
-			their_funding_contribution,
-			msg.funding_pubkey,
-		)?;
-
-		// TODO(splicing): Pre-check for reserve requirement
-		// (Note: It should also be checked later at tx_complete)
+		let splice_funding = self.validate_splice_ack(msg)?;
 
 		log_info!(
 			logger,
@@ -11533,6 +11494,51 @@ where
 		));
 
 		Ok(tx_msg_opt)
+	}
+
+	/// Checks during handling splice_ack
+	#[cfg(splicing)]
+	fn validate_splice_ack(&self, msg: &msgs::SpliceAck) -> Result<FundingScope, ChannelError> {
+		// TODO(splicing): Add check that we are the splice (quiescence) initiator
+
+		let funding_negotiation_context = match &self
+			.pending_splice
+			.as_ref()
+			.ok_or(ChannelError::Ignore(format!("Channel is not in pending splice")))?
+			.funding_negotiation
+		{
+			Some(FundingNegotiation::AwaitingAck(context)) => context,
+			Some(FundingNegotiation::ConstructingTransaction(_, _))
+			| Some(FundingNegotiation::AwaitingSignatures(_)) => {
+				return Err(ChannelError::WarnAndDisconnect(format!(
+					"Got unexpected splice_ack; splice negotiation already in progress"
+				)));
+			},
+			None => {
+				return Err(ChannelError::Ignore(format!(
+					"Got unexpected splice_ack; no splice negotiation in progress"
+				)));
+			},
+		};
+
+		let our_funding_contribution = funding_negotiation_context.our_funding_contribution;
+		debug_assert!(our_funding_contribution.abs() <= SignedAmount::MAX_MONEY);
+
+		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
+		self.validate_splice_contribution(their_funding_contribution)?;
+
+		let splice_funding = FundingScope::for_splice(
+			&self.funding,
+			&self.context,
+			our_funding_contribution,
+			their_funding_contribution,
+			msg.funding_pubkey,
+		)?;
+
+		// TODO(splicing): Pre-check for reserve requirement
+		// (Note: It should also be checked later at tx_complete)
+
+		Ok(splice_funding)
 	}
 
 	#[cfg(splicing)]
