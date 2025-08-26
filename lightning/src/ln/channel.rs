@@ -4451,7 +4451,6 @@ where
 		Ok(())
 	}
 
-	#[rustfmt::skip]
 	fn validate_update_fee<F: Deref>(
 		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		msg: &msgs::UpdateFee,
@@ -4460,22 +4459,47 @@ where
 		F::Target: FeeEstimator,
 	{
 		// Check that we won't be pushed over our dust exposure limit by the feerate increase.
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
-			&fee_estimator, funding.get_channel_type(),
-		);
-		// Do not include outbound update_add_htlc's in the holding cell, or those which haven't yet been ACK'ed by the counterparty (ie. LocalAnnounced HTLCs)
+		let dust_exposure_limiting_feerate =
+			self.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
+		// Do not include outbound update_add_htlc's in the holding cell, or those which haven't yet been ACK'ed
+		// by the counterparty (ie. LocalAnnounced HTLCs)
 		let include_counterparty_unknown_htlcs = false;
-		let next_local_commitment_stats = self.get_next_local_commitment_stats(funding, None, include_counterparty_unknown_htlcs, 0, msg.feerate_per_kw, dust_exposure_limiting_feerate);
-		let next_remote_commitment_stats = self.get_next_remote_commitment_stats(funding, None, include_counterparty_unknown_htlcs, 0, msg.feerate_per_kw, dust_exposure_limiting_feerate);
+		let next_local_commitment_stats = self.get_next_local_commitment_stats(
+			funding,
+			None,
+			include_counterparty_unknown_htlcs,
+			0,
+			msg.feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		);
+		let next_remote_commitment_stats = self.get_next_remote_commitment_stats(
+			funding,
+			None,
+			include_counterparty_unknown_htlcs,
+			0,
+			msg.feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		);
 
-		let max_dust_htlc_exposure_msat = self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
+		let max_dust_htlc_exposure_msat =
+			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		if next_local_commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
-			return Err(ChannelError::close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
-				msg.feerate_per_kw, next_local_commitment_stats.dust_exposure_msat)));
+			return Err(ChannelError::close(
+				format!(
+					"Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
+					msg.feerate_per_kw,
+					next_local_commitment_stats.dust_exposure_msat,
+				)
+			));
 		}
 		if next_remote_commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
-			return Err(ChannelError::close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
-				msg.feerate_per_kw, next_remote_commitment_stats.dust_exposure_msat)));
+			return Err(ChannelError::close(
+				format!(
+					"Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
+					msg.feerate_per_kw,
+					next_remote_commitment_stats.dust_exposure_msat,
+				)
+			));
 		}
 
 		Ok(())
