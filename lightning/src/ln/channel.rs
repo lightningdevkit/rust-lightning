@@ -4589,39 +4589,69 @@ where
 		Ok((holder_commitment_tx, commitment_data.htlcs_included))
 	}
 
-	#[rustfmt::skip]
 	fn can_send_update_fee<F: Deref, L: Deref>(
-		&self, funding: &FundingScope, feerate_per_kw: u32, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		&self, funding: &FundingScope, feerate_per_kw: u32,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> bool
 	where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
 		// Before proposing a feerate update, check that we can actually afford the new fee.
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
-			&fee_estimator, funding.get_channel_type(),
-		);
-		// Include outbound update_add_htlc's in the holding cell, and those which haven't yet been ACK'ed by the counterparty (ie. LocalAnnounced HTLCs)
+		let dust_exposure_limiting_feerate =
+			self.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
+		// Include outbound update_add_htlc's in the holding cell, and those which haven't yet been ACK'ed by
+		// the counterparty (ie. LocalAnnounced HTLCs)
 		let include_counterparty_unknown_htlcs = true;
-		let next_remote_commitment_stats = self.get_next_remote_commitment_stats(funding, None, include_counterparty_unknown_htlcs, CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, feerate_per_kw, dust_exposure_limiting_feerate);
-		let holder_balance_msat = next_remote_commitment_stats.holder_balance_before_fee_msat.expect("The holder's balance before fees should never underflow.");
-		// Note that `stats.commit_tx_fee_sat` accounts for any HTLCs that transition from non-dust to dust under a higher feerate (in the case where HTLC-transactions pay endogenous fees).
-		if holder_balance_msat < next_remote_commitment_stats.commit_tx_fee_sat * 1000 + funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
+		let next_remote_commitment_stats = self.get_next_remote_commitment_stats(
+			funding,
+			None,
+			include_counterparty_unknown_htlcs,
+			CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize,
+			feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		);
+		let holder_balance_msat = next_remote_commitment_stats
+			.holder_balance_before_fee_msat
+			.expect("The holder's balance before fees should never underflow.");
+		// Note that `stats.commit_tx_fee_sat` accounts for any HTLCs that transition from non-dust to dust
+		// under a higher feerate (in the case where HTLC-transactions pay endogenous fees).
+		if holder_balance_msat
+			< next_remote_commitment_stats.commit_tx_fee_sat * 1000
+				+ funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000
+		{
 			//TODO: auto-close after a number of failures?
 			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
 			return false;
 		}
 
-		// Note, we evaluate pending htlc "preemptive" trimmed-to-dust threshold at the proposed `feerate_per_kw`.
-		let max_dust_htlc_exposure_msat = self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
+		// Note, we evaluate pending htlc "preemptive" trimmed-to-dust threshold at the proposed
+		// `feerate_per_kw`.
+		let max_dust_htlc_exposure_msat =
+			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		if next_remote_commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
-			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
+			log_debug!(
+				logger,
+				"Cannot afford to send new feerate at {} without infringing max dust htlc exposure",
+				feerate_per_kw,
+			);
 			return false;
 		}
 
-		let next_local_commitment_stats = self.get_next_local_commitment_stats(funding, None, include_counterparty_unknown_htlcs, CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, feerate_per_kw, dust_exposure_limiting_feerate);
+		let next_local_commitment_stats = self.get_next_local_commitment_stats(
+			funding,
+			None,
+			include_counterparty_unknown_htlcs,
+			CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize,
+			feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		);
 		if next_local_commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
-			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
+			log_debug!(
+				logger,
+				"Cannot afford to send new feerate at {} without infringing max dust htlc exposure",
+				feerate_per_kw,
+			);
 			return false;
 		}
 
