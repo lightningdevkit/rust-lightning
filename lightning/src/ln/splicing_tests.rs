@@ -28,6 +28,8 @@ fn test_v1_splice_in() {
 	let acceptor_node_index = 1;
 	let initiator_node = &nodes[initiator_node_index];
 	let acceptor_node = &nodes[acceptor_node_index];
+	let initiator_node_id = initiator_node.node.get_our_node_id();
+	let acceptor_node_id = acceptor_node.node.get_our_node_id();
 
 	let channel_value_sat = 100_000;
 	let channel_reserve_amnt_sat = 1_000;
@@ -87,12 +89,16 @@ fn test_v1_splice_in() {
 			None, // locktime
 		)
 		.unwrap();
+
+	let init_stfu = get_event_msg!(initiator_node, MessageSendEvent::SendStfu, acceptor_node_id);
+	acceptor_node.node.handle_stfu(initiator_node_id, &init_stfu);
+
+	let ack_stfu = get_event_msg!(acceptor_node, MessageSendEvent::SendStfu, initiator_node_id);
+	initiator_node.node.handle_stfu(acceptor_node_id, &ack_stfu);
+
 	// Extract the splice_init message
-	let splice_init_msg = get_event_msg!(
-		initiator_node,
-		MessageSendEvent::SendSpliceInit,
-		acceptor_node.node.get_our_node_id()
-	);
+	let splice_init_msg =
+		get_event_msg!(initiator_node, MessageSendEvent::SendSpliceInit, acceptor_node_id);
 	assert_eq!(splice_init_msg.funding_contribution_satoshis, splice_in_sats as i64);
 	assert_eq!(splice_init_msg.funding_feerate_per_kw, funding_feerate_per_kw);
 	assert_eq!(splice_init_msg.funding_pubkey.to_string(), expected_initiator_funding_key);

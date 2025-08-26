@@ -264,6 +264,12 @@ pub struct Utxo {
 	pub satisfaction_weight: u64,
 }
 
+impl_writeable_tlv_based!(Utxo, {
+	(1, outpoint, required),
+	(3, output, required),
+	(5, satisfaction_weight, required),
+});
+
 impl Utxo {
 	/// Returns a `Utxo` with the `satisfaction_weight` estimate for a legacy P2PKH output.
 	pub fn new_p2pkh(outpoint: OutPoint, value: Amount, pubkey_hash: &PubkeyHash) -> Self {
