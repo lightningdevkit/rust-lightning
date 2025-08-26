@@ -5982,7 +5982,7 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 fn check_splice_contribution_sufficient(
 	channel_balance: Amount, contribution: &SpliceContribution, is_initiator: bool,
 	funding_feerate: FeeRate,
-) -> Result<Amount, ChannelError> {
+) -> Result<Amount, String> {
 	let contribution_amount = contribution.value();
 	if contribution_amount < SignedAmount::ZERO {
 		let estimated_fee = Amount::from_sat(estimate_v2_funding_transaction_fee(
@@ -5996,10 +5996,10 @@ fn check_splice_contribution_sufficient(
 		if channel_balance >= contribution_amount.unsigned_abs() + estimated_fee {
 			Ok(estimated_fee)
 		} else {
-			Err(ChannelError::Warn(format!(
-				"Available channel balance {} is lower than needed for splicing out {}, considering fees of {}",
-				channel_balance, contribution_amount.unsigned_abs(), estimated_fee,
-			)))
+			Err(format!(
+				"Available channel balance {channel_balance} is lower than needed for splicing out {}, considering fees of {estimated_fee}",
+				contribution_amount.unsigned_abs(),
+			))
 		}
 	} else {
 		check_v2_funding_inputs_sufficient(
@@ -6066,7 +6066,7 @@ fn estimate_v2_funding_transaction_fee(
 fn check_v2_funding_inputs_sufficient(
 	contribution_amount: i64, funding_inputs: &[FundingTxInput], is_initiator: bool,
 	is_splice: bool, funding_feerate_sat_per_1000_weight: u32,
-) -> Result<u64, ChannelError> {
+) -> Result<u64, String> {
 	let estimated_fee = estimate_v2_funding_transaction_fee(
 		funding_inputs, &[], is_initiator, is_splice, funding_feerate_sat_per_1000_weight,
 	);
@@ -6089,10 +6089,9 @@ fn check_v2_funding_inputs_sufficient(
 
 	let minimal_input_amount_needed = contribution_amount.saturating_add(estimated_fee as i64);
 	if (total_input_sats as i64) < minimal_input_amount_needed {
-		Err(ChannelError::Warn(format!(
-			"Total input amount {} is lower than needed for contribution {}, considering fees of {}. Need more inputs.",
-			total_input_sats, contribution_amount, estimated_fee,
-		)))
+		Err(format!(
+			"Total input amount {total_input_sats} is lower than needed for contribution {contribution_amount}, considering fees of {estimated_fee}. Need more inputs.",
+		))
 	} else {
 		Ok(estimated_fee)
 	}
@@ -16205,8 +16204,8 @@ mod tests {
 				2000,
 			);
 			assert_eq!(
-				format!("{:?}", res.err().unwrap()),
-				"Warn: Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1746. Need more inputs.",
+				res.err().unwrap(),
+				"Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1746. Need more inputs.",
 			);
 		}
 
@@ -16241,8 +16240,8 @@ mod tests {
 				2200,
 			);
 			assert_eq!(
-				format!("{:?}", res.err().unwrap()),
-				"Warn: Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2522. Need more inputs.",
+				res.err().unwrap(),
+				"Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2522. Need more inputs.",
 			);
 		}
 
