@@ -11134,7 +11134,7 @@ where
 		};
 
 		let our_funding_contribution = funding_negotiation_context.our_funding_contribution;
-		debug_assert!(our_funding_contribution <= SignedAmount::MAX_MONEY);
+		debug_assert!(our_funding_contribution.abs() <= SignedAmount::MAX_MONEY);
 
 		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
 		self.validate_splice_contribution(their_funding_contribution)?;
