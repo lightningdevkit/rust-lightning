@@ -4191,30 +4191,32 @@ where
 	/// will *not* be present on the next commitment from `next_commitment_htlcs`, and
 	/// check if their outcome is successful. If it is, we add the value of this claimed
 	/// HTLC to the balance of the claimer.
-	#[rustfmt::skip]
 	fn get_next_commitment_value_to_self_msat(&self, local: bool, funding: &FundingScope) -> u64 {
-		let inbound_claimed_htlc_msat: u64 =
-			self.pending_inbound_htlcs
-				.iter()
-				.filter(|InboundHTLCOutput { state, .. }| match (state, local) {
-					(InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_, _)), true) => false,
-					(InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_, _)), false) => true,
-					_ => false,
-				})
-				.map(|InboundHTLCOutput { amount_msat, .. }| amount_msat)
-				.sum();
-		let outbound_claimed_htlc_msat: u64 =
-			self.pending_outbound_htlcs
-				.iter()
-				.filter(|OutboundHTLCOutput { state, .. }| match (state, local) {
-					(OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(_, _)), true) => true,
-					(OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(_, _)), false) => false,
-					(OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_, _)), _) => true,
-					(OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_, _)), _) => true,
-					_ => false,
-				})
-				.map(|OutboundHTLCOutput { amount_msat, .. }| amount_msat)
-				.sum();
+		use InboundHTLCRemovalReason::Fulfill;
+		use OutboundHTLCOutcome::Success;
+
+		let inbound_claimed_htlc_msat: u64 = self
+			.pending_inbound_htlcs
+			.iter()
+			.filter(|InboundHTLCOutput { state, .. }| match (state, local) {
+				(InboundHTLCState::LocalRemoved(Fulfill(_, _)), true) => false,
+				(InboundHTLCState::LocalRemoved(Fulfill(_, _)), false) => true,
+				_ => false,
+			})
+			.map(|InboundHTLCOutput { amount_msat, .. }| amount_msat)
+			.sum();
+		let outbound_claimed_htlc_msat: u64 = self
+			.pending_outbound_htlcs
+			.iter()
+			.filter(|OutboundHTLCOutput { state, .. }| match (state, local) {
+				(OutboundHTLCState::RemoteRemoved(Success(_, _)), true) => true,
+				(OutboundHTLCState::RemoteRemoved(Success(_, _)), false) => false,
+				(OutboundHTLCState::AwaitingRemoteRevokeToRemove(Success(_, _)), _) => true,
+				(OutboundHTLCState::AwaitingRemovedRemoteRevoke(Success(_, _)), _) => true,
+				_ => false,
+			})
+			.map(|OutboundHTLCOutput { amount_msat, .. }| amount_msat)
+			.sum();
 
 		funding
 			.value_to_self_msat
