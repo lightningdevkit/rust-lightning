@@ -4604,10 +4604,8 @@ where
 		return true;
 	}
 
-	#[rustfmt::skip]
 	fn can_accept_incoming_htlc<L: Deref>(
-		&self, funding: &FundingScope,
-		dust_exposure_limiting_feerate: Option<u32>, logger: &L,
+		&self, funding: &FundingScope, dust_exposure_limiting_feerate: Option<u32>, logger: &L,
 	) -> Result<(), LocalHTLCFailureReason>
 	where
 		L::Target: Logger,
@@ -4615,42 +4613,76 @@ where
 		// The fee spike buffer (an additional nondust HTLC) we keep for the remote if the channel
 		// is not zero fee. This deviates from the spec because the fee spike buffer requirement
 		// doesn't exist on the receiver's side, only on the sender's.
-		let fee_spike_buffer_htlc = if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
-			0
-		} else {
-			1
-		};
-		// Do not include outbound update_add_htlc's in the holding cell, or those which haven't yet been ACK'ed by the counterparty (ie. LocalAnnounced HTLCs)
+		let fee_spike_buffer_htlc =
+			if funding.get_channel_type().supports_anchor_zero_fee_commitments() { 0 } else { 1 };
+		// Do not include outbound update_add_htlc's in the holding cell, or those which haven't yet been ACK'ed
+		// by the counterparty (ie. LocalAnnounced HTLCs)
 		let include_counterparty_unknown_htlcs = false;
 		// A `None` `HTLCCandidate` is used as in this case because we're already accounting for
 		// the incoming HTLC as it has been fully committed by both sides.
-		let next_local_commitment_stats = self.get_next_local_commitment_stats(funding, None, include_counterparty_unknown_htlcs, fee_spike_buffer_htlc, self.feerate_per_kw, dust_exposure_limiting_feerate);
-		let next_remote_commitment_stats = self.get_next_remote_commitment_stats(funding, None, include_counterparty_unknown_htlcs, fee_spike_buffer_htlc, self.feerate_per_kw, dust_exposure_limiting_feerate);
+		let next_local_commitment_stats = self.get_next_local_commitment_stats(
+			funding,
+			None,
+			include_counterparty_unknown_htlcs,
+			fee_spike_buffer_htlc,
+			self.feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		);
+		let next_remote_commitment_stats = self.get_next_remote_commitment_stats(
+			funding,
+			None,
+			include_counterparty_unknown_htlcs,
+			fee_spike_buffer_htlc,
+			self.feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		);
 
-		let max_dust_htlc_exposure_msat = self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
+		let max_dust_htlc_exposure_msat =
+			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		if next_remote_commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
-			// Note that the total dust exposure includes both the dust HTLCs and the excess mining fees of the counterparty commitment transaction
-			log_info!(logger, "Cannot accept value that would put our total dust exposure at {} over the limit {} on counterparty commitment tx",
-			        next_remote_commitment_stats.dust_exposure_msat, max_dust_htlc_exposure_msat);
-			return Err(LocalHTLCFailureReason::DustLimitCounterparty)
+			// Note that the total dust exposure includes both the dust HTLCs and the excess mining fees of
+			// the counterparty commitment transaction
+			log_info!(
+				logger,
+				"Cannot accept value that would put our total dust exposure at {} over the limit {} on counterparty commitment tx",
+			        next_remote_commitment_stats.dust_exposure_msat,
+				max_dust_htlc_exposure_msat,
+			);
+			return Err(LocalHTLCFailureReason::DustLimitCounterparty);
 		}
 		if next_local_commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
-			log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
-				next_local_commitment_stats.dust_exposure_msat, max_dust_htlc_exposure_msat);
-			return Err(LocalHTLCFailureReason::DustLimitHolder)
+			log_info!(
+				logger,
+				"Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
+				next_local_commitment_stats.dust_exposure_msat,
+				max_dust_htlc_exposure_msat,
+			);
+			return Err(LocalHTLCFailureReason::DustLimitHolder);
 		}
 
 		if !funding.is_outbound() {
-			let mut remote_fee_incl_fee_spike_buffer_htlc_msat = next_remote_commitment_stats.commit_tx_fee_sat * 1000;
-			// Note that with anchor outputs we are no longer as sensitive to fee spikes, so we don't need to account for them.
+			let mut remote_fee_incl_fee_spike_buffer_htlc_msat =
+				next_remote_commitment_stats.commit_tx_fee_sat * 1000;
+			// Note that with anchor outputs we are no longer as sensitive to fee spikes, so we don't need
+			// to account for them.
 			if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-				remote_fee_incl_fee_spike_buffer_htlc_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
+				remote_fee_incl_fee_spike_buffer_htlc_msat *=
+					FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 			}
-			// We unwrap here; if the HTLC exhausts the counterparty's balance, we should have rejected it at `update_add_htlc`, here the HTLC is already
-			// irrevocably committed to the channel.
-			let remote_balance_before_fee_msat = next_remote_commitment_stats.counterparty_balance_before_fee_msat.expect("The counterparty's balance before fees should never underflow");
-			if remote_balance_before_fee_msat.saturating_sub(funding.holder_selected_channel_reserve_satoshis * 1000) < remote_fee_incl_fee_spike_buffer_htlc_msat {
-				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.channel_id());
+			// We unwrap here; if the HTLC exhausts the counterparty's balance, we should have rejected it
+			// at `update_add_htlc`, here the HTLC is already irrevocably committed to the channel.
+			let remote_balance_before_fee_msat = next_remote_commitment_stats
+				.counterparty_balance_before_fee_msat
+				.expect("The counterparty's balance before fees should never underflow");
+			if remote_balance_before_fee_msat
+				.saturating_sub(funding.holder_selected_channel_reserve_satoshis * 1000)
+				< remote_fee_incl_fee_spike_buffer_htlc_msat
+			{
+				log_info!(
+					logger,
+					"Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.",
+					&self.channel_id(),
+				);
 				return Err(LocalHTLCFailureReason::FeeSpikeBuffer);
 			}
 		}
