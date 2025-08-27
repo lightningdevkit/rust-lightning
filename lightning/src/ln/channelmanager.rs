@@ -5967,13 +5967,14 @@ where
 			match peer_state.channel_by_id.get_mut(channel_id) {
 				Some(channel) => match channel.as_funded_mut() {
 					Some(chan) => {
+						let txid = transaction.compute_txid();
 						let witnesses: Vec<_> = transaction
 							.input
 							.into_iter()
 							.map(|input| input.witness)
-							.filter(|witness| witness.is_empty())
+							.filter(|witness| !witness.is_empty())
 							.collect();
-						match chan.funding_transaction_signed(witnesses) {
+						match chan.funding_transaction_signed(txid, witnesses) {
 							Ok((Some(tx_signatures), funding_tx_opt)) => {
 								if let Some(funding_tx) = funding_tx_opt {
 									self.broadcast_interactive_funding(chan, &funding_tx);
@@ -9004,10 +9005,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		}
 
-		if let Some(signing_session) = &mut channel.interactive_tx_signing_session {
-			if signing_session.local_inputs_count() > 0
-				&& signing_session.holder_tx_signatures().is_none()
-			{
+		if let Some(signing_session) = (!channel.is_awaiting_monitor_update())
+			.then(|| ())
+			.and_then(|_| channel.interactive_tx_signing_session.as_mut())
+			.filter(|signing_session| signing_session.holder_tx_signatures().is_none())
+		{
+			let local_inputs_count = signing_session.local_inputs_count();
+			if local_inputs_count > 0 {
 				let mut pending_events = self.pending_events.lock().unwrap();
 				let unsigned_transaction = signing_session.unsigned_tx().build_unsigned_tx();
 				let event_action = (
@@ -9020,13 +9024,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					None,
 				);
 
-				if pending_events.contains(&event_action) {
-					debug_assert!(false, "FundingTransactionReadyForSigning should not have been queued already");
-				} else {
+				if !pending_events.contains(&event_action) {
 					pending_events.push_back(event_action);
 				}
-			} else if signing_session.local_inputs_count() == 0 && signing_session.holder_tx_signatures().is_none() {
-				match channel.funding_transaction_signed(vec![]) {
+			} else {
+				let txid = signing_session.unsigned_tx().compute_txid();
+				match channel.funding_transaction_signed(txid, vec![]) {
 					Ok((Some(tx_signatures), funding_tx_opt)) => {
 						if let Some(funding_tx) = funding_tx_opt {
 							self.broadcast_interactive_funding(channel, &funding_tx);
@@ -9039,7 +9042,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Ok((None, _)) => {
 						debug_assert!(false, "If our tx_signatures is empty, then we should send it first!");
 					},
-					Err(err) => debug_assert!(false, "We should not error here but we got: {:?}", err),
+					Err(err) => {
+						log_warn!(logger, "Failed signing interactive funding transaction: {err:?}");
+					},
 				}
 			}
 		}
@@ -10026,7 +10031,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
-						let (funding_tx_opt, tx_signatures_opt) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg), chan_entry);
+						let (tx_signatures_opt, funding_tx_opt) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg), chan_entry);
 						if let Some(tx_signatures) = tx_signatures_opt {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,

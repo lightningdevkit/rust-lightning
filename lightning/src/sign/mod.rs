@@ -1753,11 +1753,19 @@ impl EcdsaChannelSigner for InMemorySigner {
 		Ok(secp_ctx.sign_ecdsa(&msghash, &funding_key))
 	}
 
-	fn sign_splicing_funding_input(
+	fn sign_splice_shared_input(
 		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
-		input_index: usize, input_value: u64, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()> {
+		input_index: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Signature {
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+		assert_eq!(
+			tx.input[input_index].previous_output,
+			channel_parameters
+				.funding_outpoint
+				.as_ref()
+				.expect("Funding outpoint must be known prior to signing")
+				.into_bitcoin_outpoint()
+		);
 
 		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
 		let funding_pubkey = funding_key.public_key(secp_ctx);
@@ -1769,12 +1777,12 @@ impl EcdsaChannelSigner for InMemorySigner {
 			.p2wsh_signature_hash(
 				input_index,
 				&funding_redeemscript,
-				Amount::from_sat(input_value),
+				Amount::from_sat(channel_parameters.channel_value_satoshis),
 				EcdsaSighashType::All,
 			)
 			.unwrap()[..];
 		let msg = hash_to_message!(sighash);
-		Ok(sign(secp_ctx, &msg, &funding_key))
+		sign(secp_ctx, &msg, &funding_key)
 	}
 }
 

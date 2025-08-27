@@ -14,8 +14,10 @@ use bitcoin::absolute::LockTime as AbsoluteLockTime;
 use bitcoin::amount::{Amount, SignedAmount};
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
+use bitcoin::ecdsa::Signature as BitcoinSignature;
 use bitcoin::key::Secp256k1;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
+use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{Message, PublicKey};
 use bitcoin::sighash::SighashCache;
 use bitcoin::transaction::Version;
@@ -206,7 +208,7 @@ pub(crate) struct ConstructedTransaction {
 	remote_outputs_value_satoshis: u64,
 
 	lock_time: AbsoluteLockTime,
-	holder_sends_tx_signatures_first: bool,
+	shared_input_index: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -244,7 +246,7 @@ impl_writeable_tlv_based!(ConstructedTransaction, {
 	(11, remote_inputs_value_satoshis, required),
 	(13, remote_outputs_value_satoshis, required),
 	(15, lock_time, required),
-	(17, holder_sends_tx_signatures_first, required),
+	(17, shared_input_index, option),
 });
 
 impl ConstructedTransaction {
@@ -279,20 +281,18 @@ impl ConstructedTransaction {
 		let mut inputs: Vec<NegotiatedTxInput> =
 			context.inputs.into_values().map(|tx_input| tx_input.into_negotiated_input()).collect();
 		let mut outputs: Vec<InteractiveTxOutput> = context.outputs.into_values().collect();
-		// Inputs and outputs must be sorted by serial_id
 		inputs.sort_unstable_by_key(|input| input.serial_id);
 		outputs.sort_unstable_by_key(|output| output.serial_id);
 
-		// There is a strict ordering for `tx_signatures` exchange to prevent deadlocks.
-		let holder_sends_tx_signatures_first =
-			if local_inputs_value_satoshis == remote_inputs_value_satoshis {
-				// If the amounts are the same then the peer with the lowest pubkey lexicographically sends its
-				// tx_signatures first
-				context.holder_node_id.serialize() < context.counterparty_node_id.serialize()
-			} else {
-				// Otherwise the peer with the lowest contributed input value sends its tx_signatures first.
-				local_inputs_value_satoshis < remote_inputs_value_satoshis
-			};
+		let shared_input_index =
+			context.shared_funding_input.as_ref().and_then(|shared_funding_input| {
+				inputs
+					.iter()
+					.position(|input| {
+						input.txin.previous_output == shared_funding_input.input.previous_output
+					})
+					.map(|position| position as u32)
+			});
 
 		let constructed_tx = Self {
 			holder_is_initiator: context.holder_is_initiator,
@@ -307,7 +307,7 @@ impl ConstructedTransaction {
 			outputs,
 
 			lock_time: context.tx_locktime,
-			holder_sends_tx_signatures_first,
+			shared_input_index,
 		};
 
 		if constructed_tx.weight().to_wu() > MAX_STANDARD_TX_WEIGHT as u64 {
@@ -357,10 +357,14 @@ impl ConstructedTransaction {
 	fn add_local_witnesses(&mut self, witnesses: Vec<Witness>) {
 		self.inputs
 			.iter_mut()
-			.filter(|input| {
-				!is_serial_id_valid_for_counterparty(self.holder_is_initiator, input.serial_id)
+			.enumerate()
+			.filter(|(_, input)| input.is_local(self.holder_is_initiator))
+			.filter(|(index, _)| {
+				self.shared_input_index
+					.map(|shared_index| *index != shared_index as usize)
+					.unwrap_or(true)
 			})
-			.map(|input| &mut input.txin)
+			.map(|(_, input)| &mut input.txin)
 			.zip(witnesses)
 			.for_each(|(input, witness)| input.witness = witness);
 	}
@@ -371,10 +375,14 @@ impl ConstructedTransaction {
 	fn add_remote_witnesses(&mut self, witnesses: Vec<Witness>) {
 		self.inputs
 			.iter_mut()
-			.filter(|input| {
-				is_serial_id_valid_for_counterparty(self.holder_is_initiator, input.serial_id)
+			.enumerate()
+			.filter(|(_, input)| !input.is_local(self.holder_is_initiator))
+			.filter(|(index, _)| {
+				self.shared_input_index
+					.map(|shared_index| *index != shared_index as usize)
+					.unwrap_or(true)
 			})
-			.map(|input| &mut input.txin)
+			.map(|(_, input)| &mut input.txin)
 			.zip(witnesses)
 			.for_each(|(input, witness)| input.witness = witness);
 	}
@@ -382,7 +390,24 @@ impl ConstructedTransaction {
 	pub fn holder_is_initiator(&self) -> bool {
 		self.holder_is_initiator
 	}
+
+	pub fn shared_input_index(&self) -> Option<u32> {
+		self.shared_input_index
+	}
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SharedInputSignature {
+	holder_signature_first: bool,
+	witness_script: ScriptBuf,
+	counterparty_signature: Option<Signature>,
+}
+
+impl_writeable_tlv_based!(SharedInputSignature, {
+	(1, holder_signature_first, required),
+	(3, witness_script, required),
+	(5, counterparty_signature, required),
+});
 
 /// The InteractiveTxSigningSession coordinates the signing flow of interactively constructed
 /// transactions from exhange of `commitment_signed` to ensuring proper ordering of `tx_signature`
@@ -397,6 +422,7 @@ pub(crate) struct InteractiveTxSigningSession {
 	holder_sends_tx_signatures_first: bool,
 	has_received_commitment_signed: bool,
 	has_received_tx_signatures: bool,
+	shared_input_signature: Option<SharedInputSignature>,
 	holder_tx_signatures: Option<TxSignatures>,
 }
 
@@ -433,7 +459,7 @@ impl InteractiveTxSigningSession {
 	/// Returns an error if the witness count does not equal the counterparty's input count in the
 	/// unsigned transaction or if the counterparty already provided their `tx_signatures`.
 	pub fn received_tx_signatures(
-		&mut self, tx_signatures: TxSignatures,
+		&mut self, tx_signatures: &TxSignatures,
 	) -> Result<(Option<TxSignatures>, Option<Transaction>), String> {
 		if self.has_received_tx_signatures {
 			return Err("Already received a tx_signatures message".to_string());
@@ -441,7 +467,17 @@ impl InteractiveTxSigningSession {
 		if self.remote_inputs_count() != tx_signatures.witnesses.len() {
 			return Err("Witness count did not match contributed input count".to_string());
 		}
+		if self.shared_input().is_some() && tx_signatures.shared_input_signature.is_none() {
+			return Err("Missing shared input signature".to_string());
+		}
+		if self.shared_input().is_none() && tx_signatures.shared_input_signature.is_some() {
+			return Err("Unexpected shared input signature".to_string());
+		}
+
 		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses.clone());
+		if let Some(ref mut shared_input_sig) = self.shared_input_signature {
+			shared_input_sig.counterparty_signature = tx_signatures.shared_input_signature.clone();
+		}
 		self.has_received_tx_signatures = true;
 
 		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
@@ -466,30 +502,26 @@ impl InteractiveTxSigningSession {
 	///
 	/// Returns an error if the witness count does not equal the holder's input count in the
 	/// unsigned transaction.
-	pub fn provide_holder_witnesses(
-		&mut self, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, channel_id: ChannelId,
-		witnesses: Vec<Witness>,
-	) -> Result<(Option<Transaction>, Option<TxSignatures>), String> {
-		let local_inputs_count = self.local_inputs_count();
-		if local_inputs_count != witnesses.len() {
-			return Err(format!(
-				"Provided witness count of {} does not match required count for {} inputs",
-				witnesses.len(),
-				local_inputs_count
-			));
-		}
+	pub fn provide_holder_witnesses<C: bitcoin::secp256k1::Verification>(
+		&mut self, tx_signatures: TxSignatures, secp_ctx: &Secp256k1<C>,
+	) -> Result<(Option<TxSignatures>, Option<Transaction>), String> {
 		if self.holder_tx_signatures.is_some() {
 			return Err("Holder witnesses were already provided".to_string());
 		}
-		self.verify_interactive_tx_signatures(secp_ctx, &witnesses)?;
 
-		self.unsigned_tx.add_local_witnesses(witnesses.clone());
-		self.holder_tx_signatures = Some(TxSignatures {
-			channel_id,
-			witnesses,
-			tx_hash: self.unsigned_tx.compute_txid(),
-			shared_input_signature: None,
-		});
+		let local_inputs_count = self.local_inputs_count();
+		if tx_signatures.witnesses.len() != local_inputs_count {
+			return Err(format!(
+				"Provided witness count of {} does not match required count for {} non-shared inputs",
+				tx_signatures.witnesses.len(),
+				local_inputs_count
+			));
+		}
+
+		self.verify_interactive_tx_signatures(secp_ctx, &tx_signatures.witnesses)?;
+
+		self.unsigned_tx.add_local_witnesses(tx_signatures.witnesses.clone());
+		self.holder_tx_signatures = Some(tx_signatures);
 
 		let funding_tx_opt = self.has_received_tx_signatures.then(|| self.finalize_funding_tx());
 		let holder_tx_signatures =
@@ -497,18 +529,19 @@ impl InteractiveTxSigningSession {
 				debug_assert!(self.has_received_commitment_signed);
 				self.holder_tx_signatures.clone().expect("Holder tx_signatures were just provided")
 			});
-		Ok((funding_tx_opt, holder_tx_signatures))
+
+		Ok((holder_tx_signatures, funding_tx_opt))
 	}
 
 	pub fn remote_inputs_count(&self) -> usize {
+		let shared_index = self.unsigned_tx.shared_input_index.as_ref();
 		self.unsigned_tx
 			.inputs
 			.iter()
-			.filter(|input| {
-				is_serial_id_valid_for_counterparty(
-					self.unsigned_tx.holder_is_initiator,
-					input.serial_id,
-				)
+			.enumerate()
+			.filter(|(_, input)| !input.is_local(self.unsigned_tx.holder_is_initiator))
+			.filter(|(index, _)| {
+				shared_index.map(|shared_index| *index != *shared_index as usize).unwrap_or(true)
 			})
 			.count()
 	}
@@ -517,29 +550,75 @@ impl InteractiveTxSigningSession {
 		self.unsigned_tx
 			.inputs
 			.iter()
-			.filter(|input| {
-				!is_serial_id_valid_for_counterparty(
-					self.unsigned_tx.holder_is_initiator,
-					input.serial_id,
-				)
+			.enumerate()
+			.filter(|(_, input)| input.is_local(self.unsigned_tx.holder_is_initiator))
+			.filter(|(index, _)| {
+				self.unsigned_tx
+					.shared_input_index
+					.map(|shared_index| *index != shared_index as usize)
+					.unwrap_or(true)
 			})
 			.count()
 	}
 
+	pub fn shared_input(&self) -> Option<&NegotiatedTxInput> {
+		self.unsigned_tx
+			.shared_input_index
+			.and_then(|shared_input_index| self.unsigned_tx.inputs.get(shared_input_index as usize))
+	}
+
 	fn finalize_funding_tx(&mut self) -> Transaction {
 		let lock_time = self.unsigned_tx.lock_time;
-		let ConstructedTransaction { inputs, outputs, .. } = &mut self.unsigned_tx;
+		let ConstructedTransaction { inputs, outputs, shared_input_index, .. } =
+			&mut self.unsigned_tx;
 
-		Transaction {
+		let mut tx = Transaction {
 			version: Version::TWO,
 			lock_time,
 			input: inputs.iter().cloned().map(|input| input.txin).collect(),
 			output: outputs.iter().cloned().map(|output| output.into_tx_out()).collect(),
+		};
+
+		if let Some(shared_input_index) = shared_input_index {
+			if let Some(holder_shared_input_sig) = self
+				.holder_tx_signatures
+				.as_ref()
+				.and_then(|holder_tx_sigs| holder_tx_sigs.shared_input_signature)
+			{
+				if let Some(ref shared_input_sig) = self.shared_input_signature {
+					if let Some(counterparty_shared_input_sig) =
+						shared_input_sig.counterparty_signature
+					{
+						let mut witness = Witness::new();
+						witness.push(Vec::new());
+						let holder_sig = BitcoinSignature::sighash_all(holder_shared_input_sig);
+						let counterparty_sig =
+							BitcoinSignature::sighash_all(counterparty_shared_input_sig);
+						if shared_input_sig.holder_signature_first {
+							witness.push_ecdsa_signature(&holder_sig);
+							witness.push_ecdsa_signature(&counterparty_sig);
+						} else {
+							witness.push_ecdsa_signature(&counterparty_sig);
+							witness.push_ecdsa_signature(&holder_sig);
+						}
+						witness.push(&shared_input_sig.witness_script);
+						tx.input[*shared_input_index as usize].witness = witness;
+					} else {
+						debug_assert!(false);
+					}
+				} else {
+					debug_assert!(false);
+				}
+			} else {
+				debug_assert!(false);
+			}
 		}
+
+		tx
 	}
 
-	pub fn verify_interactive_tx_signatures(
-		&self, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, witnesses: &Vec<Witness>,
+	fn verify_interactive_tx_signatures<C: bitcoin::secp256k1::Verification>(
+		&self, secp_ctx: &Secp256k1<C>, witnesses: &Vec<Witness>,
 	) -> Result<(), String> {
 		let unsigned_tx = self.unsigned_tx();
 		let built_tx = unsigned_tx.build_unsigned_tx();
@@ -552,7 +631,13 @@ impl InteractiveTxSigningSession {
 		let script_pubkeys = unsigned_tx
 			.inputs()
 			.enumerate()
-			.filter(|(_, input)| input.is_local(unsigned_tx.holder_is_initiator()));
+			.filter(|(_, input)| input.is_local(unsigned_tx.holder_is_initiator()))
+			.filter(|(index, _)| {
+				unsigned_tx
+					.shared_input_index
+					.map(|shared_index| *index != shared_index as usize)
+					.unwrap_or(true)
+			});
 
 		for ((input_idx, input), witness) in script_pubkeys.zip(witnesses) {
 			if witness.is_empty() {
@@ -696,10 +781,11 @@ impl InteractiveTxSigningSession {
 
 impl_writeable_tlv_based!(InteractiveTxSigningSession, {
 	(1, unsigned_tx, required),
-	(3, holder_sends_tx_signatures_first, required),
-	(5, has_received_commitment_signed, required),
-	(7, holder_tx_signatures, required),
-	(9, has_received_tx_signatures, required),
+	(3, has_received_commitment_signed, required),
+	(5, holder_tx_signatures, required),
+	(7, has_received_tx_signatures, required),
+	(9, holder_sends_tx_signatures_first, required),
+	(11, shared_input_signature, required),
 });
 
 #[derive(Debug)]
@@ -1272,12 +1358,33 @@ macro_rules! define_state_transitions {
 		impl StateTransition<NegotiationComplete, &msgs::TxComplete> for $tx_complete_state {
 			fn transition(self, _data: &msgs::TxComplete) -> StateTransitionResult<NegotiationComplete> {
 				let context = self.into_negotiation_context();
+				let shared_input_signature = context
+					.shared_funding_input
+					.as_ref()
+					.map(|shared_input| SharedInputSignature {
+						holder_signature_first: shared_input.holder_sig_first,
+						counterparty_signature: None,
+						witness_script: shared_input.witness_script.clone(),
+					});
+				let holder_node_id = context.holder_node_id;
+				let counterparty_node_id = context.counterparty_node_id;
+
 				let tx = context.validate_tx()?;
+
+				// Strict ordering prevents deadlocks during tx_signatures exchange
+				let holder_sends_tx_signatures_first =
+					if tx.local_inputs_value_satoshis == tx.remote_inputs_value_satoshis {
+						holder_node_id.serialize() < counterparty_node_id.serialize()
+					} else {
+						tx.local_inputs_value_satoshis < tx.remote_inputs_value_satoshis
+					};
+
 				let signing_session = InteractiveTxSigningSession {
-					holder_sends_tx_signatures_first: tx.holder_sends_tx_signatures_first,
 					unsigned_tx: tx,
+					holder_sends_tx_signatures_first,
 					has_received_commitment_signed: false,
 					has_received_tx_signatures: false,
+					shared_input_signature,
 					holder_tx_signatures: None,
 				};
 				Ok(NegotiationComplete(signing_session))
@@ -1444,10 +1551,15 @@ pub(super) struct SharedOwnedInput {
 	input: TxIn,
 	prev_output: TxOut,
 	local_owned: u64,
+	holder_sig_first: bool,
+	witness_script: ScriptBuf,
 }
 
 impl SharedOwnedInput {
-	pub fn new(input: TxIn, prev_output: TxOut, local_owned: u64) -> Self {
+	pub fn new(
+		input: TxIn, prev_output: TxOut, local_owned: u64, holder_sig_first: bool,
+		witness_script: ScriptBuf,
+	) -> Self {
 		let value = prev_output.value.to_sat();
 		debug_assert!(
 			local_owned <= value,
@@ -1455,7 +1567,7 @@ impl SharedOwnedInput {
 			local_owned,
 			value,
 		);
-		Self { input, prev_output, local_owned }
+		Self { input, prev_output, local_owned, holder_sig_first, witness_script }
 	}
 
 	fn remote_owned(&self) -> u64 {
@@ -2258,6 +2370,8 @@ mod tests {
 					},
 					prev_output,
 					lo,
+					true,                             // holder_sig_first
+					generate_funding_script_pubkey(), // witness_script for test
 				)
 			}),
 			shared_funding_output: SharedOwnedOutput::new(
@@ -2295,6 +2409,8 @@ mod tests {
 					},
 					prev_output,
 					lo,
+					false,                            // holder_sig_first
+					generate_funding_script_pubkey(), // witness_script for test
 				)
 			}),
 			shared_funding_output: SharedOwnedOutput::new(
@@ -3278,7 +3394,7 @@ mod tests {
 			remote_inputs_value_satoshis: 0,  // N/A for test
 			remote_outputs_value_satoshis: 0, // N/A for test
 			lock_time: transaction.lock_time,
-			holder_sends_tx_signatures_first: false,
+			shared_input_index: None,
 		};
 
 		let secp_ctx = Secp256k1::new();
@@ -3288,6 +3404,7 @@ mod tests {
 			holder_sends_tx_signatures_first: false, // N/A for test
 			has_received_commitment_signed: false,   // N/A for test
 			has_received_tx_signatures: false,       // N/A for test
+			shared_input_signature: None,
 			holder_tx_signatures: None,
 		}
 		.verify_interactive_tx_signatures(
