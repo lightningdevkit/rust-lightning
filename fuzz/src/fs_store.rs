@@ -1,8 +1,8 @@
+use core::hash::{BuildHasher, Hasher};
 use lightning::util::persist::{KVStore, KVStoreSync};
 use lightning_persister::fs_store::FilesystemStore;
 use std::fs;
 use tokio::runtime::Runtime;
-use uuid::Uuid;
 
 use crate::utils::test_logger;
 
@@ -20,7 +20,8 @@ impl TempFilesystemStore {
 			std::env::temp_dir()
 		};
 
-		let random_folder_name = format!("fs_store_fuzz_{}", Uuid::new_v4());
+		let random_number = std::collections::hash_map::RandomState::new().build_hasher().finish();
+		let random_folder_name = format!("fs_store_fuzz_{:016x}", random_number);
 		temp_path.push(random_folder_name);
 
 		let inner = FilesystemStore::new(temp_path.clone());
@@ -46,10 +47,11 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 		($len: expr) => {{
 			let slice_len = $len as usize;
 			if data.len() < read_pos + slice_len {
-				return;
+				None
+			} else {
+				read_pos += slice_len;
+				Some(&data[read_pos - slice_len..read_pos])
 			}
-			read_pos += slice_len;
-			&data[read_pos - slice_len..read_pos]
 		}};
 	}
 
@@ -72,7 +74,10 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 
 	let mut handles = Vec::new();
 	loop {
-		let v = get_slice!(1)[0];
+		let v = match get_slice!(1) {
+			Some(b) => b[0],
+			None => break,
+		};
 		match v % 13 {
 			// Sync write
 			0 => {
@@ -104,7 +109,7 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 			3 => {
 				_ = KVStoreSync::read(fs_store, primary_namespace, secondary_namespace, key);
 			},
-			// Async write
+			// Async write. Bias writes a bit.
 			4..=9 => {
 				let data_value = get_next_data_value();
 
@@ -127,8 +132,9 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 			},
 			// Async remove
 			10 | 11 => {
+				let lazy = v == 10;
 				let fut =
-					KVStore::remove(fs_store, primary_namespace, secondary_namespace, key, v == 10);
+					KVStore::remove(fs_store, primary_namespace, secondary_namespace, key, lazy);
 
 				// Already set the current_data, even though writing hasn't finished yet. This supports the call-time
 				// ordering semantics.
@@ -143,9 +149,7 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 					let _ = handle.await.unwrap();
 				}
 			},
-			_ => {
-				return;
-			},
+			_ => unreachable!(),
 		}
 
 		// If no more writes are pending, we can reliably see if the data is consistent.
@@ -159,6 +163,12 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 
 			assert_eq!(0, fs_store.state_size());
 		}
+	}
+
+	// Always make sure that all async tasks are completed before returning. Otherwise the temporary storage dir could
+	// be removed, and then again recreated by unfinished tasks.
+	for handle in handles.drain(..) {
+		let _ = handle.await.unwrap();
 	}
 }
 

@@ -198,7 +198,7 @@ impl FilesystemStoreInner {
 		let mut buf = Vec::new();
 
 		self.execute_locked_read(dest_file_path.clone(), || {
-			let mut f = fs::File::open(dest_file_path.clone())?;
+			let mut f = fs::File::open(dest_file_path)?;
 			f.read_to_end(&mut buf)?;
 			Ok(())
 		})?;
@@ -209,19 +209,21 @@ impl FilesystemStoreInner {
 	fn execute_locked_write<F: FnOnce() -> Result<(), lightning::io::Error>>(
 		&self, inner_lock_ref: Arc<RwLock<u64>>, dest_file_path: PathBuf, version: u64, callback: F,
 	) -> Result<(), lightning::io::Error> {
-		let mut last_written_version = inner_lock_ref.write().unwrap();
+		let res = {
+			let mut last_written_version = inner_lock_ref.write().unwrap();
 
-		// Check if we already have a newer version written/removed. This is used in async contexts to realize eventual
-		// consistency.
-		let is_stale_version = version <= *last_written_version;
+			// Check if we already have a newer version written/removed. This is used in async contexts to realize eventual
+			// consistency.
+			let is_stale_version = version <= *last_written_version;
 
-		// If the version is not stale, we execute the callback. Otherwise we can and must skip writing.
-		let res = if is_stale_version {
-			Ok(())
-		} else {
-			callback().map(|_| {
-				*last_written_version = version;
-			})
+			// If the version is not stale, we execute the callback. Otherwise we can and must skip writing.
+			if is_stale_version {
+				Ok(())
+			} else {
+				callback().map(|_| {
+					*last_written_version = version;
+				})
+			}
 		};
 
 		self.clean_locks(&inner_lock_ref, dest_file_path);
@@ -233,8 +235,10 @@ impl FilesystemStoreInner {
 		&self, dest_file_path: PathBuf, callback: F,
 	) -> Result<(), lightning::io::Error> {
 		let inner_lock_ref = self.get_inner_lock_ref(dest_file_path.clone());
-		let _guard = inner_lock_ref.read().unwrap();
-		let res = callback();
+		let res = {
+			let _guard = inner_lock_ref.read().unwrap();
+			callback()
+		};
 		self.clean_locks(&inner_lock_ref, dest_file_path);
 		res
 	}
@@ -245,7 +249,11 @@ impl FilesystemStoreInner {
 		// inner_lock_ref. The outer lock is obtained first, to avoid a new arc being cloned after we've already
 		// counted.
 		let mut outer_lock = self.locks.lock().unwrap();
-		if Arc::strong_count(&inner_lock_ref) == 2 {
+
+		let strong_count = Arc::strong_count(&inner_lock_ref);
+		debug_assert!(strong_count >= 2, "Unexpected FilesystemStore strong count");
+
+		if strong_count == 2 {
 			outer_lock.remove(&dest_file_path);
 		}
 	}
