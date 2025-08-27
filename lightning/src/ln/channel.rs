@@ -11147,6 +11147,11 @@ where
 			their_funding_contribution.to_sat(),
 		);
 
+		// While we check that the remote can afford the HTLCs, anchors, and the reserve
+		// after creating the new `FundingScope` below, we MUST do a basic check here to
+		// make sure that their funding contribution doesn't completely exhaust their
+		// balance because an invariant of `FundingScope` is that `value_to_self_msat`
+		// MUST be smaller than or equal to `channel_value_satoshis * 1000`.
 		if post_channel_balance.is_none() {
 			return Err(ChannelError::WarnAndDisconnect(format!(
 				"Channel {} cannot be spliced out; their {} contribution exhausts their channel balance: {}",
@@ -11164,15 +11169,9 @@ where
 			counterparty_funding_pubkey,
 		);
 
-		// TODO(splicing): Check that channel balance does not go below the channel reserve
-
-		// Note on channel reserve requirement pre-check: as the splice acceptor does not contribute,
-		// it can't go below reserve, therefore no pre-check is done here.
-
-		// TODO(splicing): Early check for reserve requirement
-
-		// TODO(splicing): Pre-check for reserve requirement
-		// (Note: It should also be checked later at tx_complete)
+		if their_funding_contribution != SignedAmount::ZERO {
+			self.validate_their_funding_contribution_reserve(&splice_funding)?;
+		}
 
 		Ok(splice_funding)
 	}
@@ -11334,6 +11333,74 @@ where
 			their_funding_contribution,
 			msg.funding_pubkey,
 		)
+	}
+
+	/// Used to validate a negative `funding_contribution_satoshis` in `splice_init` and `splice_ack` messages.
+	#[cfg(splicing)]
+	fn validate_their_funding_contribution_reserve(
+		&self, splice_funding: &FundingScope,
+	) -> Result<(), ChannelError> {
+		// We don't care about the exact value of `dust_exposure_limiting_feerate` here as
+		// we do not validate dust exposure below, but we want to avoid triggering a debug
+		// assert.
+		//
+		// TODO: clean this up here and elsewhere.
+		let dust_exposure_limiting_feerate =
+			if splice_funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+				None
+			} else {
+				Some(self.context.feerate_per_kw)
+			};
+		// This *should* have no effect because no HTLC updates should be pending, but even if it does,
+		// the result may be a failed negotiation (and not a force-close), so we choose to include them.
+		let include_remote_unknown_htlcs = true;
+		// Make sure that that the funder of the channel can pay the transaction fees for an additional
+		// nondust HTLC on the channel.
+		let addl_nondust_htlc_count = 1;
+
+		let validate_stats = |stats: NextCommitmentStats| {
+			let (_, remote_balance_incl_fee_msat) = stats.get_balances_including_fee_msat();
+			let splice_remote_balance_msat = remote_balance_incl_fee_msat
+				.ok_or(ChannelError::WarnAndDisconnect(format!("Remote balance does not cover the sum of HTLCs, anchors, and commitment transaction fee")))?;
+
+			// Check if the remote's new balance is under the specified reserve
+			if splice_remote_balance_msat
+				< splice_funding.holder_selected_channel_reserve_satoshis * 1000
+			{
+				return Err(ChannelError::WarnAndDisconnect(format!(
+					"Remote balance below reserve mandated by holder: {} vs {}",
+					splice_remote_balance_msat,
+					splice_funding.holder_selected_channel_reserve_satoshis * 1000,
+				)));
+			}
+			Ok(())
+		};
+
+		// Reserve check on local commitment transaction
+
+		let splice_local_commitment_stats = self.context.get_next_local_commitment_stats(
+			splice_funding,
+			None, // htlc_candidate
+			include_remote_unknown_htlcs,
+			addl_nondust_htlc_count,
+			self.context.feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		);
+
+		validate_stats(splice_local_commitment_stats)?;
+
+		// Reserve check on remote commitment transaction
+
+		let splice_remote_commitment_stats = self.context.get_next_remote_commitment_stats(
+			splice_funding,
+			None, // htlc_candidate
+			include_remote_unknown_htlcs,
+			addl_nondust_htlc_count,
+			self.context.feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		);
+
+		validate_stats(splice_remote_commitment_stats)
 	}
 
 	#[cfg(splicing)]
