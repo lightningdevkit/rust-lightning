@@ -8944,19 +8944,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				msg,
 			});
 		}
-		// TODO(dual_funding): For async signing support we need to hold back `tx_signatures` until the `commitment_signed` is ready.
-		if let Some(msg) = tx_signatures {
-			pending_msg_events.push(MessageSendEvent::SendTxSignatures {
-				node_id: counterparty_node_id,
-				msg,
-			});
-		}
-		if let Some(msg) = tx_abort {
-			pending_msg_events.push(MessageSendEvent::SendTxAbort {
-				node_id: counterparty_node_id,
-				msg,
-			});
-		}
 
 		macro_rules! handle_cs { () => {
 			if let Some(update) = commitment_update {
@@ -8984,6 +8971,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				handle_raa!();
 				handle_cs!();
 			},
+		}
+
+		// TODO(dual_funding): For async signing support we need to hold back `tx_signatures` until the `commitment_signed` is ready.
+		if let Some(msg) = tx_signatures {
+			pending_msg_events.push(MessageSendEvent::SendTxSignatures {
+				node_id: counterparty_node_id,
+				msg,
+			});
+		}
+		if let Some(msg) = tx_abort {
+			pending_msg_events.push(MessageSendEvent::SendTxAbort {
+				node_id: counterparty_node_id,
+				msg,
+			});
 		}
 
 		if let Some(tx) = funding_broadcastable {
