@@ -5026,9 +5026,11 @@ where
 		// doesn't exist on the receiver's side, only on the sender's.
 		let fee_spike_buffer_htlc =
 			if funding.get_channel_type().supports_anchor_zero_fee_commitments() { 0 } else { 1 };
-		// Do not include outbound update_add_htlc's in the holding cell, or those which haven't yet been ACK'ed
-		// by the counterparty (ie. LocalAnnounced HTLCs)
-		let include_counterparty_unknown_htlcs = false;
+		// While these HTLCs may currently be unknown to our counterparty, they can
+		// end up in commitments soon. Moreover, we are considering failing a
+		// single HTLC here, not the entire channel, so we opt to be conservative
+		// in what we accept to forward.
+		let include_counterparty_unknown_htlcs = true;
 		// A `None` `HTLCCandidate` is used as in this case because we're already accounting for
 		// the incoming HTLC as it has been fully committed by both sides.
 		let next_local_commitment_stats = self
