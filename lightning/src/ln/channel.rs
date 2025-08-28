@@ -11078,11 +11078,12 @@ where
 				//       - MUST set the `announcement_signatures` bit to `1` in `retransmit_flags`.
 				//     - otherwise:
 				//       - MUST set the `announcement_signatures` bit to `0` in `retransmit_flags`.
-				if self.funding.get_funding_txid() == Some(txid)
-					&& self.context.config.announce_for_forwarding
-					&& self.context.announcement_sigs.is_none()
-				{
-					funding_locked.retransmit(msgs::FundingLockedFlags::AnnouncementSignatures);
+				if self.context.config.announce_for_forwarding {
+					if self.funding.get_funding_txid() != Some(txid)
+						|| self.context.announcement_sigs.is_none()
+					{
+						funding_locked.retransmit(msgs::FundingLockedFlags::AnnouncementSignatures);
+					}
 				}
 
 				funding_locked
