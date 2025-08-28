@@ -9242,15 +9242,6 @@ where
 
 				// TODO(splicing): Add comment for spec requirements
 				if next_funding.should_retransmit(msgs::NextFundingFlag::CommitmentSigned) {
-					// `next_counterparty_commitment_number` is guaranteed to always be the
-					// commitment number of the `commitment_signed` message we sent for this
-					// funding transaction. If they set `next_funding`, then they should not have
-					// processed our `tx_signatures` yet, which implies that our state machine is
-					// still paused and no updates can happen that would increment our
-					// `next_counterparty_commitment_number`.
-					//
-					// If they did set `next_funding` even after processing our `tx_signatures`
-					// erroneously, this may end up resulting in a force close.
 					let commitment_signed = self.context.get_initial_commitment_signed_v2(&self.funding, logger)
 						// TODO(splicing): Support async signing
 						.ok_or_else(|| {
