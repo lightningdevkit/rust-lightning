@@ -206,11 +206,8 @@ impl TxBuilder for SpecTxBuilder {
 		channel_type: &ChannelTypeFeatures,
 	) -> Result<NextCommitmentStats, ()> {
 		let excess_feerate_opt =
-			feerate_per_kw.checked_sub(dust_exposure_limiting_feerate.unwrap_or(0));
-		// Dust exposure is only decoupled from feerate for zero fee commitment channels.
-		let is_zero_fee_comm = channel_type.supports_anchor_zero_fee_commitments();
-		debug_assert_eq!(is_zero_fee_comm, dust_exposure_limiting_feerate.is_none());
-		if is_zero_fee_comm {
+			feerate_per_kw.checked_sub(dust_exposure_limiting_feerate.unwrap_or(feerate_per_kw));
+		if channel_type.supports_anchor_zero_fee_commitments() {
 			debug_assert_eq!(feerate_per_kw, 0);
 			debug_assert_eq!(excess_feerate_opt, Some(0));
 			debug_assert_eq!(addl_nondust_htlc_count, 0);

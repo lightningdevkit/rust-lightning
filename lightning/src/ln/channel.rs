@@ -11979,21 +11979,12 @@ where
 	fn get_holder_counterparty_balances_floor_incl_fee(
 		&self, funding: &FundingScope,
 	) -> Result<(Amount, Amount), String> {
-		// We don't care about the exact value of `dust_exposure_limiting_feerate` here as
-		// we do not validate dust exposure below, but we want to avoid triggering a debug
-		// assert.
-		//
-		// TODO: clean this up here and elsewhere.
-		let dust_exposure_limiting_feerate =
-			if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
-				None
-			} else {
-				Some(self.context.feerate_per_kw)
-			};
 		let include_counterparty_unknown_htlcs = true;
 		// Make sure that that the funder of the channel can pay the transaction fees for an additional
 		// nondust HTLC on the channel.
 		let addl_nondust_htlc_count = 1;
+		// We are not interested in dust exposure
+		let dust_exposure_limiting_feerate = None;
 
 		let local_commitment_stats = self
 			.context
