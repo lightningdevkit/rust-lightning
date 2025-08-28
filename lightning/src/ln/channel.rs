@@ -5031,6 +5031,9 @@ where
 		// single HTLC here, not the entire channel, so we opt to be conservative
 		// in what we accept to forward.
 		let include_counterparty_unknown_htlcs = true;
+		// Similar reasoning as above
+		let feerate =
+			cmp::max(self.feerate_per_kw, self.pending_update_fee.map(|(fee, _)| fee).unwrap_or(0));
 		// A `None` `HTLCCandidate` is used as in this case because we're already accounting for
 		// the incoming HTLC as it has been fully committed by both sides.
 		let next_local_commitment_stats = self
@@ -5039,7 +5042,7 @@ where
 				None,
 				include_counterparty_unknown_htlcs,
 				fee_spike_buffer_htlc,
-				self.feerate_per_kw,
+				feerate,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| {
@@ -5052,7 +5055,7 @@ where
 				None,
 				include_counterparty_unknown_htlcs,
 				fee_spike_buffer_htlc,
-				self.feerate_per_kw,
+				feerate,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| {
