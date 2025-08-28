@@ -9120,11 +9120,10 @@ where
 			return Err(ChannelError::close("Peer sent a loose channel_reestablish not after reconnect".to_owned()));
 		}
 
-		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
-			(msg.next_local_commitment_number == 0 && msg.next_funding.is_none()) {
-			// Note: This also covers the following case in the V2 channel establishment specification:
-			//   if `next_funding` is not set, and `next_commitment_number` is zero:
-			//     MUST immediately fail the channel and broadcast any relevant latest commitment transaction.
+		if msg.next_local_commitment_number == 0
+			|| msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER
+			|| msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER
+		{
 			return Err(ChannelError::close("Peer sent an invalid channel_reestablish to force close in a non-standard way".to_owned()));
 		}
 
