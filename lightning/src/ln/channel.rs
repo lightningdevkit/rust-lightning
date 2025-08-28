@@ -4405,6 +4405,9 @@ where
 				amount_msat,
 			});
 
+		// TODO: HTLC removals are released from the holding cell at the same time
+		// as HTLC additions, so if HTLC additions are applied here, so should HTLC removals.
+		// This would allow us to make better use of channel liquidity.
 		let holding_cell_htlcs = self.holding_cell_htlc_updates.iter().filter_map(|htlc| {
 			if let &HTLCUpdateAwaitingACK::AddHTLC { amount_msat, .. } = htlc {
 				Some(HTLCAmountDirection { outbound: true, amount_msat })
