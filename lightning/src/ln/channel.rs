@@ -9242,7 +9242,33 @@ where
 
 				// TODO(splicing): Add comment for spec requirements
 				if next_funding.should_retransmit(msgs::NextFundingFlag::CommitmentSigned) {
-					let commitment_signed = self.context.get_initial_commitment_signed_v2(&self.funding, logger)
+					#[cfg(splicing)]
+					let funding = self
+						.pending_splice
+						.as_ref()
+						.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+						.and_then(|funding_negotiation| {
+							if let FundingNegotiation::AwaitingSignatures(funding) = &funding_negotiation {
+								Some(funding)
+							} else {
+								None
+							}
+						})
+						.or_else(|| Some(&self.funding))
+						.filter(|funding| funding.get_funding_txid() == Some(next_funding.txid))
+						.ok_or_else(|| {
+							let message = "Failed to find funding for new commitment_signed".to_owned();
+							ChannelError::Close(
+								(
+									message.clone(),
+									ClosureReason::HolderForceClosed { message, broadcasted_latest_txn: Some(false) },
+								)
+							)
+						})?;
+					#[cfg(not(splicing))]
+					let funding = &self.funding;
+
+					let commitment_signed = self.context.get_initial_commitment_signed_v2(&funding, logger)
 						// TODO(splicing): Support async signing
 						.ok_or_else(|| {
 							let message = "Failed to get signatures for new commitment_signed".to_owned();
@@ -9251,7 +9277,9 @@ where
 									message.clone(),
 									ClosureReason::HolderForceClosed { message, broadcasted_latest_txn: Some(false) },
 								)
-						)})?;
+							)
+						})?;
+
 					commitment_update = Some(msgs::CommitmentUpdate {
 						commitment_signed: vec![commitment_signed],
 						update_add_htlcs: vec![],
