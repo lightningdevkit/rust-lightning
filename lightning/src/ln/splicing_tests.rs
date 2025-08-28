@@ -12,6 +12,7 @@ use crate::ln::funding::SpliceContribution;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::util::errors::APIError;
 
+use bitcoin::key::{constants::SECRET_KEY_SIZE, Keypair, Secp256k1};
 use bitcoin::Amount;
 
 /// Splicing test, simple splice-in flow. Starts with opening a V1 channel first.
@@ -63,11 +64,16 @@ fn test_v1_splice_in() {
 	let post_splice_channel_value = channel_value_sat + splice_in_sats;
 	let funding_feerate_per_kw = 1024;
 
+	let secp_ctx = Secp256k1::new();
+	let initiator_external_keypair =
+		Keypair::from_seckey_slice(&secp_ctx, &[2; SECRET_KEY_SIZE]).unwrap();
+
 	// Create additional inputs
 	let extra_splice_funding_input_sats = 35_000;
 	let funding_inputs = create_dual_funding_utxos_with_prev_txs(
 		&initiator_node,
 		&[extra_splice_funding_input_sats],
+		&initiator_external_keypair.public_key(),
 	);
 
 	let contribution = SpliceContribution::SpliceIn {
@@ -298,10 +304,17 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 	// Amount being added to the channel through the splice-in
 	let splice_in_sats = 20_000;
 
+	let secp_ctx = Secp256k1::new();
+	let initiator_external_keypair =
+		Keypair::from_seckey_slice(&secp_ctx, &[2; SECRET_KEY_SIZE]).unwrap();
+
 	// Create additional inputs, but insufficient
 	let extra_splice_funding_input_sats = splice_in_sats - 1;
-	let funding_inputs =
-		create_dual_funding_utxos_with_prev_txs(&nodes[0], &[extra_splice_funding_input_sats]);
+	let funding_inputs = create_dual_funding_utxos_with_prev_txs(
+		&nodes[0],
+		&[extra_splice_funding_input_sats],
+		&initiator_external_keypair.public_key(),
+	);
 
 	let contribution = SpliceContribution::SpliceIn {
 		value: Amount::from_sat(splice_in_sats),
