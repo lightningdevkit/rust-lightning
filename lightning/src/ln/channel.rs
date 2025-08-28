@@ -39,6 +39,8 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BestBlock;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::events::ClosureReason;
+#[cfg(splicing)]
+use crate::events::FundingInfo;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	get_commitment_transaction_number_obscure_factor, max_htlcs, second_stage_tx_fees_sat,
@@ -6408,16 +6410,35 @@ where
 
 #[cfg(splicing)]
 macro_rules! promote_splice_funding {
-	($self: expr, $funding: expr) => {
+	($self: expr, $funding: expr) => {{
+		let prev_funding_txid = $self.funding.get_funding_txid();
 		if let Some(scid) = $self.funding.short_channel_id {
 			$self.context.historical_scids.push(scid);
 		}
 		core::mem::swap(&mut $self.funding, $funding);
 		$self.interactive_tx_signing_session = None;
 		$self.pending_splice = None;
-		$self.pending_funding.clear();
 		$self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
-	};
+
+		// The swap above places the previous `FundingScope` into `pending_funding`.
+		let discarded_funding = $self
+			.pending_funding
+			.drain(..)
+			.filter(|funding| funding.get_funding_txid() != prev_funding_txid)
+			.map(|mut funding| {
+				funding
+					.funding_transaction
+					.take()
+					.map(|tx| FundingInfo::Tx { transaction: tx })
+					.unwrap_or_else(|| FundingInfo::OutPoint {
+						outpoint: funding
+							.get_funding_txo()
+							.expect("Negotiated splices must have a known funding outpoint"),
+					})
+			})
+			.collect::<Vec<_>>();
+		discarded_funding
+	}};
 }
 
 #[cfg(any(test, fuzzing))]
@@ -6500,6 +6521,7 @@ pub struct SpliceFundingPromotion {
 	pub funding_txo: OutPoint,
 	pub monitor_update: Option<ChannelMonitorUpdate>,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
+	pub discarded_funding: Vec<FundingInfo>,
 }
 
 impl<SP: Deref> FundedChannel<SP>
@@ -9006,23 +9028,25 @@ where
 		log_trace!(logger, "Regenerating latest commitment update in channel {} with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
 				&self.context.channel_id(), if update_fee.is_some() { " update_fee," } else { "" },
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
-		let commitment_signed =
-			if let Ok(update) = self.send_commitment_no_state_update(logger) {
-				if self.context.signer_pending_commitment_update {
-					log_trace!(
-						logger,
-						"Commitment update generated: clearing signer_pending_commitment_update"
-					);
-					self.context.signer_pending_commitment_update = false;
-				}
-				update
-			} else {
-				if !self.context.signer_pending_commitment_update {
-					log_trace!(logger, "Commitment update awaiting signer: setting signer_pending_commitment_update");
-					self.context.signer_pending_commitment_update = true;
-				}
-				return Err(());
-			};
+		let commitment_signed = if let Ok(update) = self.send_commitment_no_state_update(logger) {
+			if self.context.signer_pending_commitment_update {
+				log_trace!(
+					logger,
+					"Commitment update generated: clearing signer_pending_commitment_update"
+				);
+				self.context.signer_pending_commitment_update = false;
+			}
+			update
+		} else {
+			if !self.context.signer_pending_commitment_update {
+				log_trace!(
+					logger,
+					"Commitment update awaiting signer: setting signer_pending_commitment_update"
+				);
+				self.context.signer_pending_commitment_update = true;
+			}
+			return Err(());
+		};
 		Ok(msgs::CommitmentUpdate {
 			update_add_htlcs,
 			update_fulfill_htlcs,
@@ -10326,7 +10350,7 @@ where
 			&self.context.channel_id,
 		);
 
-		{
+		let discarded_funding = {
 			// Scope `funding` since it is swapped within `promote_splice_funding` and we don't want
 			// to unintentionally use it.
 			let funding = self
@@ -10334,8 +10358,8 @@ where
 				.iter_mut()
 				.find(|funding| funding.get_funding_txid() == Some(splice_txid))
 				.unwrap();
-			promote_splice_funding!(self, funding);
-		}
+			promote_splice_funding!(self, funding)
+		};
 
 		let funding_txo = self
 			.funding
@@ -10356,7 +10380,12 @@ where
 		let announcement_sigs =
 			self.get_announcement_sigs(node_signer, chain_hash, user_config, block_height, logger);
 
-		Some(SpliceFundingPromotion { funding_txo, monitor_update, announcement_sigs })
+		Some(SpliceFundingPromotion {
+			funding_txo,
+			monitor_update,
+			announcement_sigs,
+			discarded_funding,
+		})
 	}
 
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
@@ -10438,16 +10467,17 @@ where
 						&self.context.channel_id,
 					);
 
-					let (funding_txo, monitor_update, announcement_sigs) =
+					let (funding_txo, monitor_update, announcement_sigs, discarded_funding) =
 						self.maybe_promote_splice_funding(
 							node_signer, chain_hash, user_config, height, logger,
 						).map(|splice_promotion| (
 							Some(splice_promotion.funding_txo),
 							splice_promotion.monitor_update,
 							splice_promotion.announcement_sigs,
-						)).unwrap_or((None, None, None));
+							splice_promotion.discarded_funding,
+						)).unwrap_or((None, None, None, Vec::new()));
 
-					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update)), announcement_sigs));
+					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update, discarded_funding)), announcement_sigs));
 				}
 			}
 		}
@@ -10599,7 +10629,7 @@ where
 				log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
 				debug_assert!(chain_node_signer.is_some());
 
-				let (funding_txo, monitor_update, announcement_sigs) = chain_node_signer
+				let (funding_txo, monitor_update, announcement_sigs, discarded_funding) = chain_node_signer
 					.and_then(|(chain_hash, node_signer, user_config)| {
 						// We can only promote on blocks connected, which is when we expect
 						// `chain_node_signer` to be `Some`.
@@ -10609,10 +10639,11 @@ where
 						Some(splice_promotion.funding_txo),
 						splice_promotion.monitor_update,
 						splice_promotion.announcement_sigs,
+						splice_promotion.discarded_funding,
 					))
-					.unwrap_or((None, None, None));
+					.unwrap_or((None, None, None, Vec::new()));
 
-				return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update)), timed_out_htlcs, announcement_sigs));
+				return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update, discarded_funding)), timed_out_htlcs, announcement_sigs));
 			}
 		}
 

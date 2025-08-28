@@ -1502,6 +1502,10 @@ pub enum Event {
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
 	///
+	/// When splicing, users can expect to receive an event for each negotiated splice transaction
+	/// that did not become locked. The negotiated splice transaction that became locked can be
+	/// obtained via [`Event::ChannelReady::funding_txo`].
+	///
 	/// This event is not guaranteed to be generated for channels that are closed due to a restart.
 	///
 	/// # Failure Behavior and Persistence

@@ -4032,6 +4032,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	fn promote_funding(&mut self, new_funding_txid: Txid) -> Result<(), ()> {
+		let prev_funding_txid = self.funding.funding_txid();
+
 		let new_funding = self
 			.pending_funding
 			.iter_mut()
@@ -4047,9 +4049,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.funding.prev_holder_commitment_tx.clone(),
 		);
 
+		let no_further_updates_allowed = self.no_further_updates_allowed();
+
 		// The swap above places the previous `FundingScope` into `pending_funding`.
 		for funding in self.pending_funding.drain(..) {
-			self.outputs_to_watch.remove(&funding.funding_txid());
+			let funding_txid = funding.funding_txid();
+			self.outputs_to_watch.remove(&funding_txid);
+			if no_further_updates_allowed && funding_txid != prev_funding_txid {
+				self.pending_events.push(Event::DiscardFunding {
+					channel_id: self.channel_id,
+					funding_info: crate::events::FundingInfo::OutPoint {
+						outpoint: funding.funding_outpoint(),
+					},
+				});
+			}
 		}
 		if let Some((alternative_funding_txid, _)) = self.alternative_funding_confirmed.take() {
 			// In exceedingly rare cases, it's possible there was a reorg that caused a potential funding to

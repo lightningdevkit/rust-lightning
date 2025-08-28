@@ -11227,19 +11227,30 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							insert_short_channel_id!(short_to_chan_info, chan);
 						}
 
-						let mut pending_events = self.pending_events.lock().unwrap();
-						pending_events.push_back((
-							events::Event::ChannelReady {
-								channel_id: chan.context.channel_id(),
-								user_channel_id: chan.context.get_user_id(),
-								counterparty_node_id: chan.context.get_counterparty_node_id(),
-								funding_txo: Some(
-									splice_promotion.funding_txo.into_bitcoin_outpoint(),
-								),
-								channel_type: chan.funding.get_channel_type().clone(),
-							},
-							None,
-						));
+						{
+							let mut pending_events = self.pending_events.lock().unwrap();
+							pending_events.push_back((
+								events::Event::ChannelReady {
+									channel_id: chan.context.channel_id(),
+									user_channel_id: chan.context.get_user_id(),
+									counterparty_node_id: chan.context.get_counterparty_node_id(),
+									funding_txo: Some(
+										splice_promotion.funding_txo.into_bitcoin_outpoint(),
+									),
+									channel_type: chan.funding.get_channel_type().clone(),
+								},
+								None,
+							));
+							splice_promotion.discarded_funding.into_iter().for_each(
+								|funding_info| {
+									let event = Event::DiscardFunding {
+										channel_id: chan.context.channel_id(),
+										funding_info,
+									};
+									pending_events.push_back((event, None));
+								},
+							);
+						}
 
 						if let Some(announcement_sigs) = splice_promotion.announcement_sigs {
 							log_trace!(
@@ -13406,7 +13417,7 @@ where
 pub(super) enum FundingConfirmedMessage {
 	Establishment(msgs::ChannelReady),
 	#[cfg(splicing)]
-	Splice(msgs::SpliceLocked, Option<OutPoint>, Option<ChannelMonitorUpdate>),
+	Splice(msgs::SpliceLocked, Option<OutPoint>, Option<ChannelMonitorUpdate>, Vec<FundingInfo>),
 }
 
 impl<
@@ -13482,7 +13493,7 @@ where
 										}
 									},
 									#[cfg(splicing)]
-									Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update_opt)) => {
+									Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update_opt, discarded_funding)) => {
 										let counterparty_node_id = funded_channel.context.get_counterparty_node_id();
 										let channel_id = funded_channel.context.channel_id();
 
@@ -13512,6 +13523,13 @@ where
 												funding_txo: Some(funding_txo.into_bitcoin_outpoint()),
 												channel_type: funded_channel.funding.get_channel_type().clone(),
 											}, None));
+											discarded_funding.into_iter().for_each(|funding_info| {
+												let event = Event::DiscardFunding {
+													channel_id: funded_channel.context.channel_id(),
+													funding_info,
+												};
+												pending_events.push_back((event, None));
+											});
 										}
 
 										pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
