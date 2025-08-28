@@ -9129,7 +9129,7 @@ where
 			return Err(ChannelError::close("Peer sent an invalid channel_reestablish to force close in a non-standard way".to_owned()));
 		}
 
-		let our_commitment_transaction = INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.next_transaction_number() - 1;
+		let our_commitment_transaction = INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.current_transaction_number();
 		if msg.next_remote_commitment_number > 0 {
 			let expected_point = self.context.holder_signer.as_ref()
 				.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.context.secp_ctx)
