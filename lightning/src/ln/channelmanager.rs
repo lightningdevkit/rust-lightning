@@ -15265,7 +15265,7 @@ where
 				number_of_funded_channels += peer_state.channel_by_id
 					.values()
 					.filter_map(Channel::as_funded)
-					.filter(|chan| chan.context.is_funding_broadcast())
+					.filter(|chan| chan.context.can_resume_on_restart())
 					.count();
 			}
 
@@ -15277,7 +15277,7 @@ where
 				for channel in peer_state.channel_by_id
 					.values()
 					.filter_map(Channel::as_funded)
-					.filter(|channel| channel.context.is_funding_broadcast())
+					.filter(|channel| channel.context.can_resume_on_restart())
 				{
 					channel.write(writer)?;
 				}

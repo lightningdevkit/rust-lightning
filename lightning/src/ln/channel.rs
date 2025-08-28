@@ -808,11 +808,11 @@ impl ChannelState {
 		}
 	}
 
-	fn is_pre_funded_state(&self) -> bool {
+	fn can_resume_on_reconnect(&self) -> bool {
 		match self {
-			ChannelState::NegotiatingFunding(_) => true,
-			ChannelState::FundingNegotiated(flags) => !flags.is_interactive_signing(),
-			_ => false,
+			ChannelState::NegotiatingFunding(_) => false,
+			ChannelState::FundingNegotiated(flags) => flags.is_interactive_signing(),
+			_ => true,
 		}
 	}
 
@@ -4016,7 +4016,7 @@ where
 
 	// Checks whether we should emit a `ChannelPending` event.
 	pub(crate) fn should_emit_channel_pending_event(&mut self) -> bool {
-		self.is_funding_broadcast() && !self.channel_pending_event_emitted
+		self.is_funding_broadcastable() && !self.channel_pending_event_emitted
 	}
 
 	// Returns whether we already emitted a `ChannelPending` event.
@@ -4097,11 +4097,28 @@ where
 		self.is_manual_broadcast = true;
 	}
 
+	/// Returns true if this channel can be resume after a restart, implying its past the initial
+	/// funding negotiation stages (and any assocated batch channels are similarly past initial
+	/// funding negotiation).
+	///
+	/// This is equivalent to saying the channel can be persisted to disk.
+	pub fn can_resume_on_restart(&self) -> bool {
+		self.channel_state.can_resume_on_reconnect()
+			&& match self.channel_state {
+				ChannelState::AwaitingChannelReady(flags) => !flags.is_waiting_for_batch(),
+				_ => true,
+			}
+	}
+
 	/// Returns true if funding_signed was sent/received and the
 	/// funding transaction has been broadcast if necessary.
-	pub fn is_funding_broadcast(&self) -> bool {
-		!self.channel_state.is_pre_funded_state()
-			&& !matches!(self.channel_state, ChannelState::AwaitingChannelReady(flags) if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH))
+	fn is_funding_broadcastable(&self) -> bool {
+		match self.channel_state {
+			ChannelState::NegotiatingFunding(_) => false,
+			ChannelState::FundingNegotiated(flags) => !flags.is_our_tx_signatures_ready(),
+			ChannelState::AwaitingChannelReady(flags) => !flags.is_waiting_for_batch(),
+			_ => true,
+		}
 	}
 
 	#[rustfmt::skip]
@@ -5592,7 +5609,7 @@ where
 		// be delayed in being processed! See the docs for `ChannelManagerReadArgs` for more.
 		assert!(!matches!(self.channel_state, ChannelState::ShutdownComplete));
 
-		let broadcast = self.is_funding_broadcast();
+		let broadcast = self.is_funding_broadcastable();
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
 		// return them to fail the payment.
@@ -5656,15 +5673,14 @@ where
 		}
 
 		let monitor_update = if let Some(funding_txo) = funding.get_funding_txo() {
-			// If we haven't yet exchanged funding signatures (ie channel_state < AwaitingChannelReady),
-			// returning a channel monitor update here would imply a channel monitor update before
-			// we even registered the channel monitor to begin with, which is invalid.
-			// Thus, if we aren't actually at a point where we could conceivably broadcast the
-			// funding transaction, don't return a funding txo (which prevents providing the
-			// monitor update to the user, even if we return one).
-			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
-			if !self.channel_state.is_pre_funded_state() {
+			// We should only generate a closing `ChannelMonitorUpdate` if we already have a
+			// `ChannelMonitor` for the disk (i.e. `counterparty_next_commitment_transaction_number`
+			// has been decremented once, which hapens when we generate the initial
+			// `ChannelMonitor`).  Otherwise, that would imply a channel monitor update before we
+			// even registered the channel monitor to begin with, which is invalid.
+			if self.counterparty_next_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 				self.latest_monitor_update_id = self.get_latest_unblocked_monitor_update_id() + 1;
+
 				let update = ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
@@ -8545,12 +8561,12 @@ where
 	#[rustfmt::skip]
 	fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L) -> Result<(), ()> where L::Target: Logger {
 		assert!(!matches!(self.context.channel_state, ChannelState::ShutdownComplete));
-		if self.context.channel_state.is_pre_funded_state() {
+		if !self.context.channel_state.can_resume_on_reconnect() {
 			return Err(())
 		}
 
 		// We only clear `peer_disconnected` if we were able to reestablish the channel. We always
- 		// reset our awaiting response in case we failed reestablishment and are disconnecting.
+		// reset our awaiting response in case we failed reestablishment and are disconnecting.
 		self.context.sent_message_awaiting_response = None;
 
 		if self.context.channel_state.is_peer_disconnected() {
@@ -9544,13 +9560,20 @@ where
 				"Peer sent shutdown when we needed a channel_reestablish".to_owned(),
 			));
 		}
-		if self.context.channel_state.is_pre_funded_state() {
+		let mut not_broadcasted =
+			matches!(self.context.channel_state, ChannelState::NegotiatingFunding(_));
+		if let ChannelState::FundingNegotiated(flags) = &self.context.channel_state {
+			if !flags.is_our_tx_signatures_ready() {
+				// If we're a V1 channel or we haven't yet sent our `tx_signatures`, the funding tx
+				// couldn't be broadcasted yet, so just short-circuit the shutdown logic.
+				not_broadcasted = true;
+			}
+		}
+		if not_broadcasted {
 			// Spec says we should fail the connection, not the channel, but that's nonsense, there
 			// are plenty of reasons you may want to fail a channel pre-funding, and spec says you
 			// can do that via error message without getting a connection fail anyway...
-			return Err(ChannelError::close(
-				"Peer sent shutdown pre-funding generation".to_owned(),
-			));
+			return Err(ChannelError::close("Shutdown before funding was broadcasted".to_owned()));
 		}
 		for htlc in self.context.pending_inbound_htlcs.iter() {
 			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
