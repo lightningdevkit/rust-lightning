@@ -4453,9 +4453,11 @@ where
 					self.feerate_per_kw,
 					dust_exposure_limiting_feerate,
 				)
-				.expect(
-					"Adding an inbound HTLC should never exhaust the holder's balance before fees",
-				);
+				.map_err(|()| {
+					ChannelError::close(String::from(
+						"Balance after HTLCs and anchors exhausted on local commitment",
+					))
+				})?;
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
 			if next_local_commitment_stats.holder_balance_before_fee_msat
 				< funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000
@@ -4492,7 +4494,11 @@ where
 				msg.feerate_per_kw,
 				dust_exposure_limiting_feerate,
 			)
-			.expect("Updating the fee should never exhaust the balance after HTLCs and anchors");
+			.map_err(|()| {
+				ChannelError::close(String::from(
+					"Balance after HTLCs and anchors exhausted on local commitment",
+				))
+			})?;
 		let next_remote_commitment_stats = self
 			.get_next_remote_commitment_stats(
 				funding,
@@ -4502,7 +4508,11 @@ where
 				msg.feerate_per_kw,
 				dust_exposure_limiting_feerate,
 			)
-			.expect("Updating the fee should never exhaust the balance after HTLCs and anchors");
+			.map_err(|()| {
+				ChannelError::close(String::from(
+					"Balance after HTLCs and anchors exhausted on remote commitment",
+				))
+			})?;
 
 		let max_dust_htlc_exposure_msat =
 			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
@@ -4626,16 +4636,22 @@ where
 		// Include outbound update_add_htlc's in the holding cell, and those which haven't yet been ACK'ed by
 		// the counterparty (ie. LocalAnnounced HTLCs)
 		let include_counterparty_unknown_htlcs = true;
-		let next_remote_commitment_stats = self
-			.get_next_remote_commitment_stats(
-				funding,
-				None,
-				include_counterparty_unknown_htlcs,
-				CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize,
-				feerate_per_kw,
-				dust_exposure_limiting_feerate,
-			)
-			.expect("Updating the fee should never exhaust the balance after HTLCs and anchors");
+		let next_remote_commitment_stats = if let Ok(stats) = self.get_next_remote_commitment_stats(
+			funding,
+			None,
+			include_counterparty_unknown_htlcs,
+			CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize,
+			feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		) {
+			stats
+		} else {
+			log_debug!(
+				logger,
+				"Cannot afford to send new feerate due to balance after HTLCs and anchors exhausted on remote commitment",
+			);
+			return false;
+		};
 		// Note that `stats.commit_tx_fee_sat` accounts for any HTLCs that transition from non-dust to dust
 		// under a higher feerate (in the case where HTLC-transactions pay endogenous fees).
 		if next_remote_commitment_stats.holder_balance_before_fee_msat
@@ -4660,16 +4676,22 @@ where
 			return false;
 		}
 
-		let next_local_commitment_stats = self
-			.get_next_local_commitment_stats(
-				funding,
-				None,
-				include_counterparty_unknown_htlcs,
-				CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize,
-				feerate_per_kw,
-				dust_exposure_limiting_feerate,
-			)
-			.expect("Updating the fee should never exhaust the balance after HTLCs and anchors");
+		let next_local_commitment_stats = if let Ok(stats) = self.get_next_local_commitment_stats(
+			funding,
+			None,
+			include_counterparty_unknown_htlcs,
+			CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize,
+			feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		) {
+			stats
+		} else {
+			log_debug!(
+				logger,
+				"Cannot afford to send new feerate due to balance after HTLCs and anchors exhausted on local commitment",
+			);
+			return false;
+		};
 		if next_local_commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
 			log_debug!(
 				logger,
@@ -4716,7 +4738,10 @@ where
 				feerate,
 				dust_exposure_limiting_feerate,
 			)
-			.expect("Balances after HTLCs and anchors should never be exhausted at this point");
+			.map_err(|()| {
+				log_info!(logger, "Attempting to fail HTLC due to balance after HTLCs and anchors exhausted on local commitment");
+				LocalHTLCFailureReason::TemporaryChannelFailure
+			})?;
 		let next_remote_commitment_stats = self
 			.get_next_remote_commitment_stats(
 				funding,
@@ -4726,7 +4751,10 @@ where
 				feerate,
 				dust_exposure_limiting_feerate,
 			)
-			.expect("Balances after HTLCs and anchors should never be exhausted at this point");
+			.map_err(|()| {
+				log_info!(logger, "Attempting to fail HTLC due to balance after HTLCs and anchors exhausted on remote commitment");
+				LocalHTLCFailureReason::TemporaryChannelFailure
+			})?;
 
 		let max_dust_htlc_exposure_msat =
 			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
