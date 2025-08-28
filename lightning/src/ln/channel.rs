@@ -9334,10 +9334,8 @@ where
 				tx_abort,
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
-			// We've made an update so we must have exchanged `tx_signatures`, implying that
-			// `commitment_signed` was also exchanged. However, we may still need to retransmit our
-			// `tx_signatures` if the counterparty sent theirs first but didn't get to process ours.
 			debug_assert!(commitment_update.is_none());
+			debug_assert!(tx_signatures.is_none());
 
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx", &self.context.channel_id());
@@ -9351,7 +9349,7 @@ where
 					channel_ready, shutdown_msg, announcement_sigs,
 					commitment_update: None, raa: None,
 					order: self.context.resend_order.clone(),
-					tx_signatures,
+					tx_signatures: None,
 					tx_abort,
 				})
 			} else {
@@ -9375,7 +9373,7 @@ where
 					channel_ready, shutdown_msg, announcement_sigs,
 					raa, commitment_update,
 					order: self.context.resend_order.clone(),
-					tx_signatures,
+					tx_signatures: None,
 					tx_abort,
 				})
 			}
