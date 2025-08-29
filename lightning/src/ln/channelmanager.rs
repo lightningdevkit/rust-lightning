@@ -61,7 +61,7 @@ use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, FundedChannel,
 	InboundV1Channel, OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult,
-	UpdateFulfillCommitFetch, WithChannelContext,
+	StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 #[cfg(splicing)]
@@ -4494,12 +4494,19 @@ where
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let locktime = locktime.unwrap_or_else(|| self.current_best_block().height);
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let msg =
-						chan.splice_channel(contribution, funding_feerate_per_kw, locktime)?;
-					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceInit {
-						node_id: *counterparty_node_id,
-						msg,
-					});
+					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+					let msg_opt = chan.splice_channel(
+						contribution,
+						funding_feerate_per_kw,
+						locktime,
+						&&logger,
+					)?;
+					if let Some(msg) = msg_opt {
+						peer_state.pending_msg_events.push(MessageSendEvent::SendStfu {
+							node_id: *counterparty_node_id,
+							msg,
+						});
+					}
 					Ok(())
 				} else {
 					Err(APIError::ChannelUnavailable {
@@ -10880,7 +10887,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			));
 		}
 
-		let mut sent_stfu = false;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
@@ -10888,14 +10894,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), None
 					);
 
-					if let Some(stfu) = try_channel_entry!(
-						self, peer_state, chan.stfu(&msg, &&logger), chan_entry
-					) {
-						sent_stfu = true;
-						peer_state.pending_msg_events.push(MessageSendEvent::SendStfu {
-							node_id: *counterparty_node_id,
-							msg: stfu,
-						});
+					let res = chan.stfu(&msg, &&logger);
+					let resp = try_channel_entry!(self, peer_state, res, chan_entry);
+					match resp {
+						None => Ok(false),
+						Some(StfuResponse::Stfu(msg)) => {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendStfu {
+								node_id: *counterparty_node_id,
+								msg,
+							});
+							Ok(true)
+						},
+						Some(StfuResponse::SpliceInit(msg)) => {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceInit {
+								node_id: *counterparty_node_id,
+								msg,
+							});
+							Ok(true)
+						},
 					}
 				} else {
 					let msg = "Peer sent `stfu` for an unfunded channel";
@@ -10910,8 +10926,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				msg.channel_id
 			))
 		}
-
-		Ok(sent_stfu)
 	}
 
 	#[rustfmt::skip]
@@ -13896,8 +13910,8 @@ where
 			let persist = match &res {
 				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
-				Ok(sent_stfu) => {
-					if *sent_stfu {
+				Ok(responded) => {
+					if *responded {
 						NotifyOption::SkipPersistHandleEvents
 					} else {
 						NotifyOption::SkipPersistNoEvents

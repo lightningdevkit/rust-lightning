@@ -104,6 +104,12 @@ pub struct FundingTxInput {
 	pub(super) prevtx: Transaction,
 }
 
+impl_writeable_tlv_based!(FundingTxInput, {
+	(1, utxo, required),
+	(3, sequence, required),
+	(5, prevtx, required),
+});
+
 impl FundingTxInput {
 	fn new<F: FnOnce(&bitcoin::Script) -> bool>(
 		prevtx: Transaction, vout: u32, witness_weight: Weight, script_filter: F,
