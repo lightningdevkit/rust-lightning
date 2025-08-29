@@ -2298,12 +2298,12 @@ impl FundingScope {
 			.funding_pubkey = counterparty_funding_pubkey;
 
 		// New reserve values are based on the new channel value and are v2-specific
-		let counterparty_selected_channel_reserve_satoshis = Some(get_v2_channel_reserve_satoshis(
+		let counterparty_selected_channel_reserve_satoshis =
+			Some(get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS));
+		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
 			post_channel_value,
 			context.counterparty_dust_limit_satoshis,
-		));
-		let holder_selected_channel_reserve_satoshis =
-			get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+		);
 
 		Self {
 			channel_transaction_parameters: post_channel_transaction_parameters,
