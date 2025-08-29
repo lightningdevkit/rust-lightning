@@ -18,7 +18,7 @@ pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
 
-use crate::blinded_path::message::OffersContext;
+use crate::blinded_path::message::{BlindedMessagePath, OffersContext};
 use crate::blinded_path::payment::{
 	Bolt12OfferContext, Bolt12RefundContext, PaymentContext, PaymentContextRef,
 };
@@ -28,6 +28,7 @@ use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::types::ChannelId;
 use crate::ln::{msgs, LocalHTLCFailureReason};
 use crate::offers::invoice::Bolt12Invoice;
+use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
@@ -1654,6 +1655,13 @@ pub enum Event {
 		/// The invoice that should be persisted and later provided to payers when handling a future
 		/// [`Event::StaticInvoiceRequested`].
 		invoice: StaticInvoice,
+		/// The path to where invoice requests will be forwarded. If we receive an invoice
+		/// request, we'll forward it to the async recipient over this path in case the
+		/// recipient is online to provide a new invoice. This path should be persisted and
+		/// later provided to [`ChannelManager::respond_to_static_invoice_request`].
+		///
+		/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
+		invoice_request_path: BlindedMessagePath,
 		/// Useful for the recipient to replace a specific invoice stored by us as the static invoice
 		/// server.
 		///
@@ -1686,12 +1694,14 @@ pub enum Event {
 	///
 	/// If we previously persisted a [`StaticInvoice`] from an [`Event::PersistStaticInvoice`] that
 	/// matches the below `recipient_id` and `invoice_slot`, that invoice should be retrieved now
-	/// and forwarded to the payer via [`ChannelManager::send_static_invoice`].
+	/// and forwarded to the payer via [`ChannelManager::respond_to_static_invoice_request`].
+	/// The invoice request path previously persisted from [`Event::PersistStaticInvoice`] should
+	/// also be provided in [`ChannelManager::respond_to_static_invoice_request`].
 	///
 	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
 	/// [`ChannelManager::set_paths_to_static_invoice_server`]: crate::ln::channelmanager::ChannelManager::set_paths_to_static_invoice_server
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	/// [`ChannelManager::send_static_invoice`]: crate::ln::channelmanager::ChannelManager::send_static_invoice
+	/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
 	StaticInvoiceRequested {
 		/// An identifier for the recipient previously surfaced in
 		/// [`Event::PersistStaticInvoice::recipient_id`]. Useful when paired with the `invoice_slot` to
@@ -1702,10 +1712,16 @@ pub enum Event {
 		/// retrieve the [`StaticInvoice`] requested by the payer.
 		invoice_slot: u16,
 		/// The path over which the [`StaticInvoice`] will be sent to the payer, which should be
-		/// provided to [`ChannelManager::send_static_invoice`] along with the invoice.
+		/// provided to [`ChannelManager::respond_to_static_invoice_request`] along with the invoice.
 		///
-		/// [`ChannelManager::send_static_invoice`]: crate::ln::channelmanager::ChannelManager::send_static_invoice
+		/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
 		reply_path: Responder,
+		/// The invoice request that will be forwarded to the async recipient to give the
+		/// recipient a chance to provide an invoice in case it is online. It should be
+		/// provided to [`ChannelManager::respond_to_static_invoice_request`].
+		///
+		/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
+		invoice_request: InvoiceRequest,
 	},
 	/// Indicates that a channel funding transaction constructed interactively is ready to be
 	/// signed. This event will only be triggered if at least one input was contributed.
