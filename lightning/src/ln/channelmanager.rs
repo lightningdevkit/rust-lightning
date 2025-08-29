@@ -873,6 +873,16 @@ impl HTLCSource {
 			_ => None,
 		}
 	}
+
+	pub(crate) fn static_invoice(&self) -> Option<StaticInvoice> {
+		match self {
+			Self::OutboundRoute {
+				bolt12_invoice: Some(PaidBolt12Invoice::StaticInvoice(inv)),
+				..
+			} => Some(inv.clone()),
+			_ => None,
+		}
+	}
 }
 
 /// This enum is used to specify which error data to send to peers when failing back an HTLC
@@ -11011,7 +11021,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	#[rustfmt::skip]
 	fn internal_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
-		let htlcs_to_fail = {
+		let (htlcs_to_fail, static_invoices) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let mut peer_state_lock = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
@@ -11027,7 +11037,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let mon_update_blocked = self.raa_monitor_updates_held(
 							&peer_state.actions_blocking_raa_monitor_updates, msg.channel_id,
 							*counterparty_node_id);
-						let (htlcs_to_fail, monitor_update_opt) = try_channel_entry!(self, peer_state,
+						let (htlcs_to_fail, static_invoices, monitor_update_opt) = try_channel_entry!(self, peer_state,
 							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_entry);
 						if let Some(monitor_update) = monitor_update_opt {
 							let funding_txo = funding_txo_opt
@@ -11035,7 +11045,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							handle_new_monitor_update!(self, funding_txo, monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
-						htlcs_to_fail
+						(htlcs_to_fail, static_invoices)
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
 							"Got a revoke_and_ack message for an unfunded channel!".into())), chan_entry);
@@ -11045,6 +11055,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		};
 		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id, counterparty_node_id);
+		for (static_invoice, reply_path) in static_invoices {
+			let res = self.flow.enqueue_held_htlc_available(&static_invoice, HeldHtlcReplyPath::ToCounterparty { path: reply_path });
+			debug_assert!(res.is_ok(), "enqueue_held_htlc_available can only fail for non-async senders");
+		}
 		Ok(())
 	}
 
