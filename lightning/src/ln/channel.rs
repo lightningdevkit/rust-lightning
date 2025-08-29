@@ -10994,7 +10994,12 @@ where
 		};
 
 		// Make sure we can afford the contribution given our balance on the **current**
-		// funding scope
+		// funding scope.
+		//
+		// Fees for splice-out are paid from the channel balance whereas fees for splice-in
+		// are paid by the funding inputs. Therefore, in the case of splice-out, we add the
+		// fees on top of the user-specified contribution. We leave the user-specified
+		// contribution as-is for splice-ins.
 		let adjusted_funding_contribution = check_splice_contribution_sufficient(
 			balance_remaining_minus_reserve,
 			&contribution,
