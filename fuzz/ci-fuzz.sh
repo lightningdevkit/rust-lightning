@@ -38,7 +38,7 @@ for TARGET in src/bin/*.rs; do
 		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -F 64 -N1000"
 	elif [ "$FILE" = "process_network_graph_target" -o "$FILE" = "full_stack_target" -o "$FILE" = "router_target" -o "$FILE" = "lsps_message_target" ]; then
 		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N10000"
-	elif [ "$FILE" = "indexedmap_target" ]; then
+	elif [ "$FILE" = "indexedmap_target" -o "$FILE" = "fs_store_target" ]; then
 		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N100000"
 	else
 		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N1000000"

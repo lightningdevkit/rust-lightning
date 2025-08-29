@@ -22,8 +22,10 @@ lightning = { path = "../lightning", features = ["regex", "_test_utils"] }
 lightning-invoice = { path = "../lightning-invoice" }
 lightning-liquidity = { path = "../lightning-liquidity" }
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync" }
+lightning-persister = { path = "../lightning-persister", features = ["tokio"]}
 bech32 = "0.11.0"
 bitcoin = { version = "0.32.2", features = ["secp-lowmemory"] }
+tokio = { version = "~1.35", default-features = false, features = ["rt-multi-thread"] }
 
 afl = { version = "0.12", optional = true }
 honggfuzz = { version = "0.5", optional = true, default-features = false }
