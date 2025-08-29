@@ -2255,7 +2255,7 @@ impl FundingScope {
 	fn for_splice<SP: Deref>(
 		prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution: SignedAmount,
 		their_funding_contribution: SignedAmount, counterparty_funding_pubkey: PublicKey,
-	) -> Result<Self, ChannelError>
+	) -> Self
 	where
 		SP::Target: SignerProvider,
 	{
@@ -2305,7 +2305,7 @@ impl FundingScope {
 		let holder_selected_channel_reserve_satoshis =
 			get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS);
 
-		Ok(Self {
+		Self {
 			channel_transaction_parameters: post_channel_transaction_parameters,
 			value_to_self_msat: post_value_to_self_msat,
 			funding_transaction: None,
@@ -2329,7 +2329,7 @@ impl FundingScope {
 			funding_tx_confirmed_in: None,
 			minimum_depth_override: None,
 			short_channel_id: None,
-		})
+		}
 	}
 
 	/// Compute the post-splice channel value from each counterparty's contributions.
@@ -6158,7 +6158,7 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 fn check_splice_contribution_sufficient(
 	channel_balance: Amount, contribution: &SpliceContribution, is_initiator: bool,
 	funding_feerate: FeeRate,
-) -> Result<Amount, ChannelError> {
+) -> Result<SignedAmount, ChannelError> {
 	let contribution_amount = contribution.value();
 	if contribution_amount < SignedAmount::ZERO {
 		let estimated_fee = Amount::from_sat(estimate_v2_funding_transaction_fee(
@@ -6170,7 +6170,8 @@ fn check_splice_contribution_sufficient(
 		));
 
 		if channel_balance >= contribution_amount.unsigned_abs() + estimated_fee {
-			Ok(estimated_fee)
+			Ok(contribution_amount
+				- estimated_fee.to_signed().expect("fees should never exceed Amount::MAX_MONEY"))
 		} else {
 			Err(ChannelError::Warn(format!(
 				"Available channel balance {} is lower than needed for splicing out {}, considering fees of {}",
@@ -6185,7 +6186,7 @@ fn check_splice_contribution_sufficient(
 			true,
 			funding_feerate.to_sat_per_kwu() as u32,
 		)
-		.map(Amount::from_sat)
+		.map(|_| contribution_amount)
 	}
 }
 
@@ -11089,9 +11090,13 @@ where
 		// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
 		// (Cannot test for miminum required post-splice channel value)
 
-		let channel_balance = Amount::from_sat(self.funding.get_value_to_self_msat() / 1000);
-		let fees = check_splice_contribution_sufficient(
-			channel_balance,
+		// We don't expect this to error, we just use it to grab the holder's remaining balance
+		let balance_remaining_on_current_funding = self.get_holder_balance_floor(&self.funding)?;
+
+		// Make sure we can afford the contribution given our balance on the **current**
+		// funding scope
+		let adjusted_funding_contribution = check_splice_contribution_sufficient(
+			balance_remaining_on_current_funding,
 			&contribution,
 			true, // is_initiator
 			FeeRate::from_sat_per_kwu(funding_feerate_per_kw as u64),
@@ -11112,22 +11117,26 @@ where
 			}
 		})?;
 
-		// Fees for splice-out are paid from the channel balance whereas fees for splice-in are paid
-		// by the funding inputs.
-		let adjusted_funding_contribution = if our_funding_contribution < SignedAmount::ZERO {
-			let adjusted_funding_contribution = our_funding_contribution
-				- fees.to_signed().expect("fees should never exceed Amount::MAX_MONEY");
+		let counterparty_pubkey = self
+			.funding
+			.channel_transaction_parameters
+			.counterparty_parameters
+			.as_ref()
+			.expect("counterparty_parameters should be set")
+			.pubkeys
+			.funding_pubkey;
 
-			// TODO(splicing): Check that channel balance does not go below the channel reserve
-			let _post_channel_balance = AddSigned::checked_add_signed(
-				channel_balance.to_sat(),
-				adjusted_funding_contribution.to_sat(),
-			);
-
-			adjusted_funding_contribution
-		} else {
-			our_funding_contribution
-		};
+		// Create the next funding scope, assuming the counterparty does not make any
+		// +/- contributions
+		let dummy_splice_funding = FundingScope::for_splice(
+			&self.funding,
+			&self.context,
+			adjusted_funding_contribution,
+			SignedAmount::ZERO,
+			counterparty_pubkey,
+		);
+		// Make sure our balance does not underflow on the **next** funding scope
+		self.get_holder_balance_floor(&dummy_splice_funding)?;
 
 		for FundingTxInput { utxo, prevtx, .. } in contribution.inputs().iter() {
 			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
@@ -11214,6 +11223,8 @@ where
 			)));
 		}
 
+		// TODO(splicing): Once splice acceptor can contribute, check that inputs are sufficient,
+		// similarly to the check in `splice_channel`.
 		debug_assert_eq!(our_funding_contribution, SignedAmount::ZERO);
 
 		// TODO(splicing): Move this check once user-provided contributions are supported for
@@ -11235,33 +11246,25 @@ where
 		}
 
 		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
-		self.validate_splice_contribution(their_funding_contribution)?;
+		if their_funding_contribution == SignedAmount::ZERO {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} cannot be spliced; they are the initiator, and their contribution is zero",
+				self.context.channel_id(),
+			)));
+		}
 
-		// TODO(splicing): Check that channel balance does not go below the channel reserve
-
-		let splice_funding = FundingScope::for_splice(
-			&self.funding,
-			&self.context,
+		self.validate_splice_contribution(
 			our_funding_contribution,
 			their_funding_contribution,
 			msg.funding_pubkey,
-		)?;
-
-		// TODO(splicing): Once splice acceptor can contribute, check that inputs are sufficient,
-		// similarly to the check in `splice_channel`.
-
-		// Note on channel reserve requirement pre-check: as the splice acceptor does not contribute,
-		// it can't go below reserve, therefore no pre-check is done here.
-
-		// TODO(splicing): Early check for reserve requirement
-
-		Ok(splice_funding)
+		)
 	}
 
 	#[cfg(splicing)]
 	fn validate_splice_contribution(
-		&self, their_funding_contribution: SignedAmount,
-	) -> Result<(), ChannelError> {
+		&self, our_funding_contribution: SignedAmount, their_funding_contribution: SignedAmount,
+		counterparty_funding_pubkey: PublicKey,
+	) -> Result<FundingScope, ChannelError> {
 		if their_funding_contribution > SignedAmount::MAX_MONEY {
 			return Err(ChannelError::WarnAndDisconnect(format!(
 				"Channel {} cannot be spliced in; their {} contribution exceeds the total bitcoin supply",
@@ -11285,6 +11288,11 @@ where
 			their_funding_contribution.to_sat(),
 		);
 
+		// While we check that the remote can afford the HTLCs, anchors, and the reserve
+		// after creating the new `FundingScope` below, we MUST do a basic check here to
+		// make sure that their funding contribution doesn't completely exhaust their
+		// balance because an invariant of `FundingScope` is that `value_to_self_msat`
+		// MUST be smaller than or equal to `channel_value_satoshis * 1000`.
 		if post_channel_balance.is_none() {
 			return Err(ChannelError::WarnAndDisconnect(format!(
 				"Channel {} cannot be spliced out; their {} contribution exhausts their channel balance: {}",
@@ -11294,10 +11302,21 @@ where
 			)));
 		}
 
-		Ok(())
+		let splice_funding = FundingScope::for_splice(
+			&self.funding,
+			&self.context,
+			our_funding_contribution,
+			their_funding_contribution,
+			counterparty_funding_pubkey,
+		);
+
+		if their_funding_contribution != SignedAmount::ZERO {
+			self.get_counterparty_balance_floor(&splice_funding)?;
+		}
+
+		Ok(splice_funding)
 	}
 
-	/// See also [`validate_splice_init`]
 	#[cfg(splicing)]
 	pub(crate) fn splice_init<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceInit, our_funding_contribution_satoshis: i64,
@@ -11365,7 +11384,6 @@ where
 		})
 	}
 
-	/// Handle splice_ack
 	#[cfg(splicing)]
 	pub(crate) fn splice_ack<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceAck, signer_provider: &SP, entropy_source: &ES,
@@ -11375,53 +11393,7 @@ where
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
-		let pending_splice = if let Some(ref mut pending_splice) = &mut self.pending_splice {
-			pending_splice
-		} else {
-			return Err(ChannelError::Ignore(format!("Channel is not in pending splice")));
-		};
-
-		// TODO(splicing): Add check that we are the splice (quiescence) initiator
-
-		let funding_negotiation_context = match pending_splice.funding_negotiation.take() {
-			Some(FundingNegotiation::AwaitingAck(context)) => context,
-			Some(FundingNegotiation::ConstructingTransaction(funding, constructor)) => {
-				pending_splice.funding_negotiation =
-					Some(FundingNegotiation::ConstructingTransaction(funding, constructor));
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Got unexpected splice_ack; splice negotiation already in progress"
-				)));
-			},
-			Some(FundingNegotiation::AwaitingSignatures(funding)) => {
-				pending_splice.funding_negotiation =
-					Some(FundingNegotiation::AwaitingSignatures(funding));
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Got unexpected splice_ack; splice negotiation already in progress"
-				)));
-			},
-			None => {
-				return Err(ChannelError::Ignore(format!(
-					"Got unexpected splice_ack; no splice negotiation in progress"
-				)));
-			},
-		};
-
-		let our_funding_contribution = funding_negotiation_context.our_funding_contribution;
-		debug_assert!(our_funding_contribution.abs() <= SignedAmount::MAX_MONEY);
-
-		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
-		self.validate_splice_contribution(their_funding_contribution)?;
-
-		let splice_funding = FundingScope::for_splice(
-			&self.funding,
-			&self.context,
-			our_funding_contribution,
-			their_funding_contribution,
-			msg.funding_pubkey,
-		)?;
-
-		// TODO(splicing): Pre-check for reserve requirement
-		// (Note: It should also be checked later at tx_complete)
+		let splice_funding = self.validate_splice_ack(msg)?;
 
 		log_info!(
 			logger,
@@ -11430,6 +11402,17 @@ where
 			splice_funding.get_value_satoshis(),
 			self.funding.get_value_satoshis(),
 		);
+
+		let pending_splice =
+			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
+		// TODO: Good candidate for a let else statement once MSRV >= 1.65
+		let funding_negotiation_context = if let Some(FundingNegotiation::AwaitingAck(context)) =
+			pending_splice.funding_negotiation.take()
+		{
+			context
+		} else {
+			panic!("We should have returned an error earlier!");
+		};
 
 		let mut interactive_tx_constructor = funding_negotiation_context
 			.into_interactive_tx_constructor(
@@ -11449,14 +11432,150 @@ where
 
 		debug_assert!(self.interactive_tx_signing_session.is_none());
 
-		let pending_splice =
-			self.pending_splice.as_mut().expect("pending_splice should still be set");
 		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction(
 			splice_funding,
 			interactive_tx_constructor,
 		));
 
 		Ok(tx_msg_opt)
+	}
+
+	/// Checks during handling splice_ack
+	#[cfg(splicing)]
+	fn validate_splice_ack(&self, msg: &msgs::SpliceAck) -> Result<FundingScope, ChannelError> {
+		// TODO(splicing): Add check that we are the splice (quiescence) initiator
+
+		let funding_negotiation_context = match &self
+			.pending_splice
+			.as_ref()
+			.ok_or(ChannelError::Ignore(format!("Channel is not in pending splice")))?
+			.funding_negotiation
+		{
+			Some(FundingNegotiation::AwaitingAck(context)) => context,
+			Some(FundingNegotiation::ConstructingTransaction(_, _))
+			| Some(FundingNegotiation::AwaitingSignatures(_)) => {
+				return Err(ChannelError::WarnAndDisconnect(format!(
+					"Got unexpected splice_ack; splice negotiation already in progress"
+				)));
+			},
+			None => {
+				return Err(ChannelError::Ignore(format!(
+					"Got unexpected splice_ack; no splice negotiation in progress"
+				)));
+			},
+		};
+
+		let our_funding_contribution = funding_negotiation_context.our_funding_contribution;
+		debug_assert!(our_funding_contribution.abs() <= SignedAmount::MAX_MONEY);
+
+		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
+		self.validate_splice_contribution(
+			our_funding_contribution,
+			their_funding_contribution,
+			msg.funding_pubkey,
+		)
+	}
+
+	#[cfg(splicing)]
+	fn get_holder_balance_floor(&self, splice_funding: &FundingScope) -> Result<Amount, APIError> {
+		let subtract_tx_fee_and_reserve = |stats: &NextCommitmentStats| {
+			let (local_balance_incl_fee_msat, _) =
+				stats.get_holder_counterparty_balances_incl_fee_msat();
+			let splice_local_balance_msat = local_balance_incl_fee_msat
+				.ok_or(APIError::APIMisuseError {
+					err: String::from("Local balance does not cover the sum of HTLCs, anchors, and commitment transaction fee"),
+				})?;
+
+			let counterparty_selected_channel_reserve_satoshis = splice_funding
+				.counterparty_selected_channel_reserve_satoshis
+				.expect("counterparty_selected_channel_reserve_satoshis should be set");
+
+			let balance_remaining_sat = (splice_local_balance_msat / 1000)
+				.checked_sub(counterparty_selected_channel_reserve_satoshis)
+				.ok_or(APIError::APIMisuseError {
+					err: format!(
+						"Local balance below reserve mandated by counterparty: {} vs {}",
+						splice_local_balance_msat,
+						splice_funding.holder_selected_channel_reserve_satoshis * 1000,
+					),
+				})?;
+			Ok(Amount::from_sat(balance_remaining_sat))
+		};
+
+		self.get_balance_floor(splice_funding, subtract_tx_fee_and_reserve)
+	}
+
+	#[cfg(splicing)]
+	fn get_counterparty_balance_floor(
+		&self, splice_funding: &FundingScope,
+	) -> Result<Amount, ChannelError> {
+		let subtract_tx_fee_and_reserve = |stats: &NextCommitmentStats| {
+			let (_, remote_balance_incl_fee_msat) =
+				stats.get_holder_counterparty_balances_incl_fee_msat();
+			let splice_remote_balance_msat =
+				remote_balance_incl_fee_msat.ok_or(ChannelError::WarnAndDisconnect(format!(
+					"Remote balance does not cover the sum of HTLCs, anchors, and commitment transaction fee"
+				)))?;
+
+			let balance_remaining_sat = (splice_remote_balance_msat / 1000)
+				.checked_sub(splice_funding.holder_selected_channel_reserve_satoshis)
+				.ok_or(ChannelError::WarnAndDisconnect(format!(
+					"Remote balance below reserve mandated by holder: {} vs {}",
+					splice_remote_balance_msat,
+					splice_funding.holder_selected_channel_reserve_satoshis * 1000,
+				)))?;
+			Ok(Amount::from_sat(balance_remaining_sat))
+		};
+
+		self.get_balance_floor(splice_funding, subtract_tx_fee_and_reserve)
+	}
+
+	#[cfg(splicing)]
+	fn get_balance_floor<E>(
+		&self, splice_funding: &FundingScope,
+		subtract_tx_fee_and_reserve: impl Fn(&NextCommitmentStats) -> Result<Amount, E>,
+	) -> Result<Amount, E> {
+		// We don't care about the exact value of `dust_exposure_limiting_feerate` here as
+		// we do not validate dust exposure below, but we want to avoid triggering a debug
+		// assert.
+		//
+		// TODO: clean this up here and elsewhere.
+		let dust_exposure_limiting_feerate =
+			if splice_funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+				None
+			} else {
+				Some(self.context.feerate_per_kw)
+			};
+		// This *should* have no effect because no HTLC updates should be pending, but even if it does,
+		// the result may be a failed negotiation (and not a force-close), so we choose to include them.
+		let include_remote_unknown_htlcs = true;
+		// Make sure that that the funder of the channel can pay the transaction fees for an additional
+		// nondust HTLC on the channel.
+		let addl_nondust_htlc_count = 1;
+
+		let splice_local_commitment_stats = self.context.get_next_local_commitment_stats(
+			splice_funding,
+			None, // htlc_candidate
+			include_remote_unknown_htlcs,
+			addl_nondust_htlc_count,
+			self.context.feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		);
+		let on_local_tx_balance_remaining =
+			subtract_tx_fee_and_reserve(&splice_local_commitment_stats)?;
+
+		let splice_remote_commitment_stats = self.context.get_next_remote_commitment_stats(
+			splice_funding,
+			None, // htlc_candidate
+			include_remote_unknown_htlcs,
+			addl_nondust_htlc_count,
+			self.context.feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		);
+		let on_remote_tx_balance_remaining =
+			subtract_tx_fee_and_reserve(&splice_remote_commitment_stats)?;
+
+		Ok(cmp::min(on_local_tx_balance_remaining, on_remote_tx_balance_remaining))
 	}
 
 	#[cfg(splicing)]
