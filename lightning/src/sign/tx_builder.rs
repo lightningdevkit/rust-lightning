@@ -37,82 +37,66 @@ impl HTLCAmountDirection {
 pub(crate) struct NextCommitmentStats {
 	pub inbound_htlcs_count: usize,
 	pub inbound_htlcs_value_msat: u64,
-	pub holder_balance_before_fee_msat: Option<u64>,
-	pub counterparty_balance_before_fee_msat: Option<u64>,
+	pub holder_balance_before_fee_msat: u64,
+	pub counterparty_balance_before_fee_msat: u64,
 	pub nondust_htlc_count: usize,
 	pub commit_tx_fee_sat: u64,
 	pub dust_exposure_msat: u64,
-	// If the counterparty sets a feerate on the channel in excess of our dust_exposure_limiting_feerate,
-	// this should be set to the dust exposure that would result from us adding an additional nondust outbound
-	// htlc on the counterparty's commitment transaction.
-	pub extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat: Option<u64>,
+	pub extra_accepted_htlc_dust_exposure_msat: u64,
 }
 
-fn excess_fees_on_counterparty_tx_dust_exposure_msat(
-	next_commitment_htlcs: &[HTLCAmountDirection], dust_buffer_feerate: u32, excess_feerate: u32,
-	counterparty_dust_limit_satoshis: u64, dust_htlc_exposure_msat: u64,
-	channel_type: &ChannelTypeFeatures,
+fn commit_plus_htlc_tx_fees_msat(
+	local: bool, next_commitment_htlcs: &[HTLCAmountDirection], dust_buffer_feerate: u32,
+	feerate: u32, broadcaster_dust_limit_satoshis: u64, channel_type: &ChannelTypeFeatures,
 ) -> (u64, u64) {
-	let on_counterparty_tx_accepted_nondust_htlcs = next_commitment_htlcs
+	let accepted_nondust_htlcs = next_commitment_htlcs
 		.iter()
 		.filter(|htlc| {
-			htlc.outbound
+			htlc.outbound != local
 				&& !htlc.is_dust(
-					false,
+					local,
 					dust_buffer_feerate,
-					counterparty_dust_limit_satoshis,
+					broadcaster_dust_limit_satoshis,
 					channel_type,
 				)
 		})
 		.count();
-	let on_counterparty_tx_offered_nondust_htlcs = next_commitment_htlcs
+	let offered_nondust_htlcs = next_commitment_htlcs
 		.iter()
 		.filter(|htlc| {
-			!htlc.outbound
+			htlc.outbound == local
 				&& !htlc.is_dust(
-					false,
+					local,
 					dust_buffer_feerate,
-					counterparty_dust_limit_satoshis,
+					broadcaster_dust_limit_satoshis,
 					channel_type,
 				)
 		})
 		.count();
 
-	let commitment_fee_sat = commit_tx_fee_sat(
-		excess_feerate,
-		on_counterparty_tx_accepted_nondust_htlcs + on_counterparty_tx_offered_nondust_htlcs,
-		channel_type,
-	);
-	let second_stage_fees_sat = htlc_tx_fees_sat(
-		excess_feerate,
-		on_counterparty_tx_accepted_nondust_htlcs,
-		on_counterparty_tx_offered_nondust_htlcs,
-		channel_type,
-	);
-	let on_counterparty_tx_dust_exposure_msat =
-		dust_htlc_exposure_msat + (commitment_fee_sat + second_stage_fees_sat) * 1000;
+	let commitment_fee_sat =
+		commit_tx_fee_sat(feerate, accepted_nondust_htlcs + offered_nondust_htlcs, channel_type);
+	let second_stage_fees_sat =
+		htlc_tx_fees_sat(feerate, accepted_nondust_htlcs, offered_nondust_htlcs, channel_type);
+	let total_fees_msat = (commitment_fee_sat + second_stage_fees_sat) * 1000;
 
-	let extra_htlc_commitment_fee_sat = commit_tx_fee_sat(
-		excess_feerate,
-		on_counterparty_tx_accepted_nondust_htlcs + 1 + on_counterparty_tx_offered_nondust_htlcs,
+	let extra_accepted_htlc_commitment_fee_sat = commit_tx_fee_sat(
+		feerate,
+		accepted_nondust_htlcs + 1 + offered_nondust_htlcs,
 		channel_type,
 	);
-	let extra_htlc_second_stage_fees_sat = htlc_tx_fees_sat(
-		excess_feerate,
-		on_counterparty_tx_accepted_nondust_htlcs + 1,
-		on_counterparty_tx_offered_nondust_htlcs,
-		channel_type,
-	);
-	let extra_htlc_dust_exposure_msat = dust_htlc_exposure_msat
-		+ (extra_htlc_commitment_fee_sat + extra_htlc_second_stage_fees_sat) * 1000;
+	let extra_accepted_htlc_second_stage_fees_sat =
+		htlc_tx_fees_sat(feerate, accepted_nondust_htlcs + 1, offered_nondust_htlcs, channel_type);
+	let extra_accepted_htlc_total_fees_msat =
+		(extra_accepted_htlc_commitment_fee_sat + extra_accepted_htlc_second_stage_fees_sat) * 1000;
 
-	(on_counterparty_tx_dust_exposure_msat, extra_htlc_dust_exposure_msat)
+	(total_fees_msat, extra_accepted_htlc_total_fees_msat)
 }
 
 fn subtract_addl_outputs(
-	is_outbound_from_holder: bool, value_to_self_after_htlcs_msat: Option<u64>,
-	value_to_remote_after_htlcs_msat: Option<u64>, channel_type: &ChannelTypeFeatures,
-) -> (Option<u64>, Option<u64>) {
+	is_outbound_from_holder: bool, value_to_self_after_htlcs_msat: u64,
+	value_to_remote_after_htlcs_msat: u64, channel_type: &ChannelTypeFeatures,
+) -> Result<(u64, u64), ()> {
 	let total_anchors_sat = if channel_type.supports_anchors_zero_fee_htlc_tx() {
 		ANCHOR_OUTPUT_VALUE_SATOSHI * 2
 	} else {
@@ -127,20 +111,18 @@ fn subtract_addl_outputs(
 	// cover the total anchor sum.
 
 	let local_balance_before_fee_msat = if is_outbound_from_holder {
-		value_to_self_after_htlcs_msat
-			.and_then(|balance_msat| balance_msat.checked_sub(total_anchors_sat * 1000))
+		value_to_self_after_htlcs_msat.checked_sub(total_anchors_sat * 1000).ok_or(())?
 	} else {
 		value_to_self_after_htlcs_msat
 	};
 
 	let remote_balance_before_fee_msat = if !is_outbound_from_holder {
-		value_to_remote_after_htlcs_msat
-			.and_then(|balance_msat| balance_msat.checked_sub(total_anchors_sat * 1000))
+		value_to_remote_after_htlcs_msat.checked_sub(total_anchors_sat * 1000).ok_or(())?
 	} else {
 		value_to_remote_after_htlcs_msat
 	};
 
-	(local_balance_before_fee_msat, remote_balance_before_fee_msat)
+	Ok((local_balance_before_fee_msat, remote_balance_before_fee_msat))
 }
 
 fn get_dust_buffer_feerate(feerate_per_kw: u32) -> u32 {
@@ -160,7 +142,7 @@ pub(crate) trait TxBuilder {
 		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
 		dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
 		channel_type: &ChannelTypeFeatures,
-	) -> NextCommitmentStats;
+	) -> Result<NextCommitmentStats, ()>;
 	fn commit_tx_fee_sat(
 		&self, feerate_per_kw: u32, nondust_htlc_count: usize, channel_type: &ChannelTypeFeatures,
 	) -> u64;
@@ -187,15 +169,12 @@ impl TxBuilder for SpecTxBuilder {
 		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
 		dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
 		channel_type: &ChannelTypeFeatures,
-	) -> NextCommitmentStats {
-		let excess_feerate_opt =
-			feerate_per_kw.checked_sub(dust_exposure_limiting_feerate.unwrap_or(0));
-		// Dust exposure is only decoupled from feerate for zero fee commitment channels.
-		let is_zero_fee_comm = channel_type.supports_anchor_zero_fee_commitments();
-		debug_assert_eq!(is_zero_fee_comm, dust_exposure_limiting_feerate.is_none());
-		if is_zero_fee_comm {
+	) -> Result<NextCommitmentStats, ()> {
+		let excess_feerate =
+			feerate_per_kw.saturating_sub(dust_exposure_limiting_feerate.unwrap_or(feerate_per_kw));
+		if channel_type.supports_anchor_zero_fee_commitments() {
 			debug_assert_eq!(feerate_per_kw, 0);
-			debug_assert_eq!(excess_feerate_opt, Some(0));
+			debug_assert_eq!(excess_feerate, 0);
 			debug_assert_eq!(addl_nondust_htlc_count, 0);
 		}
 
@@ -204,9 +183,8 @@ impl TxBuilder for SpecTxBuilder {
 			next_commitment_htlcs.iter().filter(|htlc| !htlc.outbound).count();
 
 		// Calculate balances after htlcs
-		let value_to_counterparty_msat = (channel_value_satoshis * 1000)
-			.checked_sub(value_to_holder_msat)
-			.expect("value_to_holder_msat outgrew the value of the channel!");
+		let value_to_counterparty_msat =
+			(channel_value_satoshis * 1000).checked_sub(value_to_holder_msat).ok_or(())?;
 		let outbound_htlcs_value_msat: u64 = next_commitment_htlcs
 			.iter()
 			.filter_map(|htlc| htlc.outbound.then_some(htlc.amount_msat))
@@ -215,13 +193,10 @@ impl TxBuilder for SpecTxBuilder {
 			.iter()
 			.filter_map(|htlc| (!htlc.outbound).then_some(htlc.amount_msat))
 			.sum();
-		// Note there is no guarantee that the subtractions of the HTLC amounts don't
-		// overflow, so we do not panic. Instead, we return `None` to signal an overflow
-		// to channel, and let channel take the appropriate action.
 		let value_to_holder_after_htlcs_msat =
-			value_to_holder_msat.checked_sub(outbound_htlcs_value_msat);
+			value_to_holder_msat.checked_sub(outbound_htlcs_value_msat).ok_or(())?;
 		let value_to_counterparty_after_htlcs_msat =
-			value_to_counterparty_msat.checked_sub(inbound_htlcs_value_msat);
+			value_to_counterparty_msat.checked_sub(inbound_htlcs_value_msat).ok_or(())?;
 
 		// Subtract the anchors from the channel funder
 		let (holder_balance_before_fee_msat, counterparty_balance_before_fee_msat) =
@@ -230,7 +205,7 @@ impl TxBuilder for SpecTxBuilder {
 				value_to_holder_after_htlcs_msat,
 				value_to_counterparty_after_htlcs_msat,
 				channel_type,
-			);
+			)?;
 
 		// Increment the feerate by a buffer to calculate dust exposure
 		let dust_buffer_feerate = get_dust_buffer_feerate(feerate_per_kw);
@@ -262,24 +237,26 @@ impl TxBuilder for SpecTxBuilder {
 			})
 			.sum();
 
-		// Count the excess fees on the counterparty's transaction as dust
-		let (dust_exposure_msat, extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat) =
-			if let (Some(excess_feerate), false) = (excess_feerate_opt, local) {
-				let (dust_exposure_msat, extra_nondust_htlc_exposure_msat) =
-					excess_fees_on_counterparty_tx_dust_exposure_msat(
-						&next_commitment_htlcs,
-						dust_buffer_feerate,
-						excess_feerate,
-						broadcaster_dust_limit_satoshis,
-						dust_exposure_msat,
-						channel_type,
-					);
-				(dust_exposure_msat, Some(extra_nondust_htlc_exposure_msat))
-			} else {
-				(dust_exposure_msat, None)
-			};
+		// Add any excess fees to dust exposure on counterparty transactions
+		let (dust_exposure_msat, extra_accepted_htlc_dust_exposure_msat) = if local {
+			(dust_exposure_msat, dust_exposure_msat)
+		} else {
+			let (excess_fees_msat, extra_accepted_htlc_excess_fees_msat) =
+				commit_plus_htlc_tx_fees_msat(
+					local,
+					&next_commitment_htlcs,
+					dust_buffer_feerate,
+					excess_feerate,
+					broadcaster_dust_limit_satoshis,
+					channel_type,
+				);
+			(
+				dust_exposure_msat + excess_fees_msat,
+				dust_exposure_msat + extra_accepted_htlc_excess_fees_msat,
+			)
+		};
 
-		NextCommitmentStats {
+		Ok(NextCommitmentStats {
 			inbound_htlcs_count,
 			inbound_htlcs_value_msat,
 			holder_balance_before_fee_msat,
@@ -287,8 +264,8 @@ impl TxBuilder for SpecTxBuilder {
 			nondust_htlc_count: nondust_htlc_count + addl_nondust_htlc_count,
 			commit_tx_fee_sat,
 			dust_exposure_msat,
-			extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat,
-		}
+			extra_accepted_htlc_dust_exposure_msat,
+		})
 	}
 	fn commit_tx_fee_sat(
 		&self, feerate_per_kw: u32, nondust_htlc_count: usize, channel_type: &ChannelTypeFeatures,
