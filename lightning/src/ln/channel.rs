@@ -11302,6 +11302,13 @@ where
 		}
 
 		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
+		if their_funding_contribution == SignedAmount::ZERO {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} cannot be spliced; they are the initiator, and their contribution is zero",
+				self.context.channel_id(),
+			)));
+		}
+
 		self.validate_splice_contribution(their_funding_contribution)?;
 
 		// TODO(splicing): Check that channel balance does not go below the channel reserve
