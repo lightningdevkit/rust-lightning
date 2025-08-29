@@ -710,7 +710,13 @@ pub(crate) mod client_tests {
 
 	#[test]
 	fn connect_with_unknown_server() {
-		match HttpClient::connect(("::", 80)) {
+		// get an unused port by binding to port 0
+		let port = {
+			let t = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+			t.local_addr().unwrap().port()
+		};
+
+		match HttpClient::connect(("::", port)) {
 			#[cfg(target_os = "windows")]
 			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::AddrNotAvailable),
 			#[cfg(not(target_os = "windows"))]
