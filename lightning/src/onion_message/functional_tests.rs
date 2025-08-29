@@ -145,6 +145,9 @@ const CUSTOM_PONG_MESSAGE_TYPE: u64 = 4343;
 const CUSTOM_PING_MESSAGE_CONTENTS: [u8; 32] = [42; 32];
 const CUSTOM_PONG_MESSAGE_CONTENTS: [u8; 32] = [43; 32];
 
+/// A dummy hop count for testing purposes.
+const TEST_DUMMY_HOP_COUNT: usize = 5;
+
 impl OnionMessageContents for TestCustomMessage {
 	fn tlv_type(&self) -> u64 {
 		match self {
@@ -444,6 +447,34 @@ fn one_blinded_hop() {
 }
 
 #[test]
+fn blinded_path_with_dummy_hops() {
+	let nodes = create_nodes(2);
+	let test_msg = TestCustomMessage::Pong;
+
+	let secp_ctx = Secp256k1::new();
+	let context = MessageContext::Custom(Vec::new());
+	let entropy = &*nodes[1].entropy_source;
+	let receive_key = nodes[1].messenger.node_signer.get_receive_auth_key();
+	let blinded_path = BlindedMessagePath::new_with_dummy_hops(
+		&[],
+		nodes[1].node_id,
+		TEST_DUMMY_HOP_COUNT,
+		receive_key,
+		context,
+		entropy,
+		&secp_ctx,
+	)
+	.unwrap();
+	// Ensure that dummy hops are added to the blinded path.
+	assert_eq!(blinded_path.blinded_hops().len(), 6);
+	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
+	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Pong);
+	pass_along_path(&nodes);
+}
+
+#[test]
 fn two_unblinded_two_blinded() {
 	let nodes = create_nodes(5);
 	let test_msg = TestCustomMessage::Pong;
@@ -658,9 +689,10 @@ fn test_blinded_path_padding_for_full_length_path() {
 	let context = MessageContext::Custom(vec![0u8; 42]);
 	let entropy = &*nodes[3].entropy_source;
 	let receive_key = nodes[3].messenger.node_signer.get_receive_auth_key();
-	let blinded_path = BlindedMessagePath::new(
+	let blinded_path = BlindedMessagePath::new_with_dummy_hops(
 		&intermediate_nodes,
 		nodes[3].node_id,
+		TEST_DUMMY_HOP_COUNT,
 		receive_key,
 		context,
 		entropy,
@@ -694,9 +726,10 @@ fn test_blinded_path_no_padding_for_compact_path() {
 	let context = MessageContext::Custom(vec![0u8; 42]);
 	let entropy = &*nodes[3].entropy_source;
 	let receive_key = nodes[3].messenger.node_signer.get_receive_auth_key();
-	let blinded_path = BlindedMessagePath::new(
+	let blinded_path = BlindedMessagePath::new_with_dummy_hops(
 		&intermediate_nodes,
 		nodes[3].node_id,
+		TEST_DUMMY_HOP_COUNT,
 		receive_key,
 		context,
 		entropy,

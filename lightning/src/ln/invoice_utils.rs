@@ -195,7 +195,7 @@ where
 		},
 	};
 
-	let keys = node_signer.get_inbound_payment_key();
+	let keys = node_signer.get_expanded_key();
 	let (payment_hash, payment_secret) = if let Some(payment_hash) = payment_hash {
 		let payment_secret = create_from_hash(
 			&keys,

@@ -315,7 +315,7 @@ pub enum PendingHTLCRouting {
 		requires_blinded_error: bool,
 		/// Set if we are receiving a keysend to a blinded path, meaning we created the
 		/// [`PaymentSecret`] and should verify it using our
-		/// [`NodeSigner::get_inbound_payment_key`].
+		/// [`NodeSigner::get_expanded_key`].
 		has_recipient_created_payment_secret: bool,
 		/// The [`InvoiceRequest`] associated with the [`Offer`] corresponding to this payment.
 		invoice_request: Option<InvoiceRequest>,
@@ -3732,7 +3732,7 @@ where
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
-		let expanded_inbound_key = node_signer.get_inbound_payment_key();
+		let expanded_inbound_key = node_signer.get_expanded_key();
 		let our_network_pubkey = node_signer.get_node_id(Recipient::Node).unwrap();
 
 		let flow = OffersMessageFlow::new(
@@ -16767,7 +16767,7 @@ where
 			}
 		}
 
-		let expanded_inbound_key = args.node_signer.get_inbound_payment_key();
+		let expanded_inbound_key = args.node_signer.get_expanded_key();
 
 		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
 		if let Some(purposes) = claimable_htlc_purposes {

@@ -837,19 +837,25 @@ pub trait EntropySource {
 
 /// A trait that can handle cryptographic operations at the scope level of a node.
 pub trait NodeSigner {
-	/// Get the [`ExpandedKey`] for use in encrypting and decrypting inbound payment data.
+	/// Get the [`ExpandedKey`] which provides cryptographic material for various Lightning Network operations.
 	///
-	/// If the implementor of this trait supports [phantom node payments], then every node that is
-	/// intended to be included in the phantom invoice route hints must return the same value from
-	/// this method.
-	// This is because LDK avoids storing inbound payment data by encrypting payment data in the
-	// payment hash and/or payment secret, therefore for a payment to be receivable by multiple
-	// nodes, they must share the key that encrypts this payment data.
+	/// This key set is used for:
+	/// - Encrypting and decrypting inbound payment metadata
+	/// - Authenticating payment hashes (both LDK-provided and user-provided)
+	/// - Supporting BOLT 12 Offers functionality (key derivation and authentication)
+	/// - Authenticating spontaneous payments' metadata
 	///
 	/// This method must return the same value each time it is called.
 	///
+	/// If the implementor of this trait supports [phantom node payments], then every node that is
+	/// intended to be included in the phantom invoice route hints must return the same value from
+	/// this method. This is because LDK avoids storing inbound payment data. Instead, this key
+	/// is used to construct a payment secret which is received in the payment onion and used to
+	/// reconstruct the payment preimage. Therefore, for a payment to be receivable by multiple
+	/// nodes, they must share the same key.
+	///
 	/// [phantom node payments]: PhantomKeysManager
-	fn get_inbound_payment_key(&self) -> ExpandedKey;
+	fn get_expanded_key(&self) -> ExpandedKey;
 
 	/// Defines a method to derive a 32-byte encryption key for peer storage.
 	///
@@ -2192,7 +2198,7 @@ impl NodeSigner for KeysManager {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn get_inbound_payment_key(&self) -> ExpandedKey {
+	fn get_expanded_key(&self) -> ExpandedKey {
 		self.inbound_payment_key.clone()
 	}
 
@@ -2365,7 +2371,7 @@ impl NodeSigner for PhantomKeysManager {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn get_inbound_payment_key(&self) -> ExpandedKey {
+	fn get_expanded_key(&self) -> ExpandedKey {
 		self.inbound_payment_key.clone()
 	}
 
