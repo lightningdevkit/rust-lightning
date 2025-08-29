@@ -3870,6 +3870,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	};
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &node_b_id, err_msg).unwrap();
 	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 100000);
+	check_added_monitors(&nodes[0], 1);
 	let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_closing_tx.len(), 1);
 
