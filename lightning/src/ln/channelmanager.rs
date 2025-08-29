@@ -91,7 +91,7 @@ use crate::ln::outbound_payment::{
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
-use crate::offers::flow::{InvreqResponseInstructions, OffersMessageFlow};
+use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};
 use crate::offers::invoice::{
 	Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder, DEFAULT_RELATIVE_EXPIRY,
 };
@@ -5500,11 +5500,12 @@ where
 					);
 				}
 			} else {
-				let enqueue_held_htlc_available_res = self.flow.enqueue_held_htlc_available(
-					invoice,
+				let reply_path = HeldHtlcReplyPath::ToUs {
 					payment_id,
-					self.get_peers_for_blinded_path(),
-				);
+					peers: self.get_peers_for_blinded_path(),
+				};
+				let enqueue_held_htlc_available_res =
+					self.flow.enqueue_held_htlc_available(invoice, reply_path);
 				if enqueue_held_htlc_available_res.is_err() {
 					self.abandon_payment_with_reason(
 						payment_id,
