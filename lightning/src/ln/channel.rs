@@ -54,9 +54,10 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, FundingConfirmedMessage, HTLCFailureMsg, HTLCSource, OpenChannelMessage,
-	PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus, RAACommitmentOrder, SentHTLCId,
-	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
+	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg, HTLCSource,
+	OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus,
+	RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT,
+	MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::FundingTxInput;
 #[cfg(splicing)]
@@ -1181,13 +1182,14 @@ pub enum UpdateFulfillCommitFetch {
 pub(super) struct MonitorRestoreUpdates {
 	pub raa: Option<msgs::RevokeAndACK>,
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
-	pub order: RAACommitmentOrder,
+	pub commitment_order: RAACommitmentOrder,
 	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	pub finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 	pub pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 	pub funding_broadcastable: Option<Transaction>,
 	pub channel_ready: Option<msgs::ChannelReady>,
+	pub channel_ready_order: ChannelReadyOrder,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub tx_signatures: Option<msgs::TxSignatures>,
 }
@@ -1210,9 +1212,10 @@ pub(super) struct SignerResumeUpdates {
 /// The return value of `channel_reestablish`
 pub(super) struct ReestablishResponses {
 	pub channel_ready: Option<msgs::ChannelReady>,
+	pub channel_ready_order: ChannelReadyOrder,
 	pub raa: Option<msgs::RevokeAndACK>,
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
-	pub order: RAACommitmentOrder,
+	pub commitment_order: RAACommitmentOrder,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub shutdown_msg: Option<msgs::Shutdown>,
 	pub tx_signatures: Option<msgs::TxSignatures>,
@@ -8705,6 +8708,17 @@ where
 			}
 		}
 
+		// An active interactive signing session or an awaiting channel_ready state implies that a
+		// commitment_signed retransmission is an initial one for funding negotiation. Thus, the
+		// signatures should be sent before channel_ready.
+		let channel_ready_order = if self.interactive_tx_signing_session.is_some() {
+			ChannelReadyOrder::SignaturesFirst
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
+			ChannelReadyOrder::SignaturesFirst
+		} else {
+			ChannelReadyOrder::ChannelReadyFirst
+		};
+
 		// We will never broadcast the funding transaction when we're in MonitorUpdateInProgress
 		// (and we assume the user never directly broadcasts the funding transaction and waits for
 		// us to do it). Thus, we can only ever hit monitor_pending_channel_ready when we're
@@ -8733,9 +8747,10 @@ where
 			self.context.monitor_pending_revoke_and_ack = false;
 			self.context.monitor_pending_commitment_signed = false;
 			return MonitorRestoreUpdates {
-				raa: None, commitment_update: None, order: RAACommitmentOrder::RevokeAndACKFirst,
+				raa: None, commitment_update: None, commitment_order: RAACommitmentOrder::RevokeAndACKFirst,
 				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
-				funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None
+				funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None,
+				channel_ready_order,
 			};
 		}
 
@@ -8758,14 +8773,15 @@ where
 
 		self.context.monitor_pending_revoke_and_ack = false;
 		self.context.monitor_pending_commitment_signed = false;
-		let order = self.context.resend_order.clone();
+		let commitment_order = self.context.resend_order.clone();
 		log_debug!(logger, "Restored monitor updating in channel {} resulting in {}{} commitment update and {} RAA, with {} first",
 			&self.context.channel_id(), if funding_broadcastable.is_some() { "a funding broadcastable, " } else { "" },
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
-			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
+			match commitment_order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
-			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
-			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None
+			raa, commitment_update, commitment_order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
+			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None,
+			channel_ready_order,
 		}
 	}
 
@@ -9168,8 +9184,9 @@ where
 				// Short circuit the whole handler as there is nothing we can resend them
 				return Ok(ReestablishResponses {
 					channel_ready: None,
+					channel_ready_order: ChannelReadyOrder::ChannelReadyFirst,
 					raa: None, commitment_update: None,
-					order: RAACommitmentOrder::CommitmentFirst,
+					commitment_order: RAACommitmentOrder::CommitmentFirst,
 					shutdown_msg, announcement_sigs,
 					tx_signatures: None,
 					tx_abort: None,
@@ -9179,8 +9196,9 @@ where
 			// We have OurChannelReady set!
 			return Ok(ReestablishResponses {
 				channel_ready: self.get_channel_ready(logger),
+				channel_ready_order: ChannelReadyOrder::ChannelReadyFirst,
 				raa: None, commitment_update: None,
-				order: RAACommitmentOrder::CommitmentFirst,
+				commitment_order: RAACommitmentOrder::CommitmentFirst,
 				shutdown_msg, announcement_sigs,
 				tx_signatures: None,
 				tx_abort: None,
@@ -9306,10 +9324,13 @@ where
 			};
 
 			Ok(ReestablishResponses {
-				channel_ready, shutdown_msg, announcement_sigs,
+				channel_ready,
+				channel_ready_order: ChannelReadyOrder::SignaturesFirst,
+				shutdown_msg,
+				announcement_sigs,
 				raa: required_revoke,
 				commitment_update,
-				order: self.context.resend_order.clone(),
+				commitment_order: self.context.resend_order.clone(),
 				tx_signatures,
 				tx_abort,
 			})
@@ -9323,9 +9344,11 @@ where
 			if self.context.channel_state.is_monitor_update_in_progress() {
 				self.context.monitor_pending_commitment_signed = true;
 				Ok(ReestablishResponses {
-					channel_ready, shutdown_msg, announcement_sigs,
+					channel_ready,
+					channel_ready_order: ChannelReadyOrder::ChannelReadyFirst,
+					shutdown_msg, announcement_sigs,
 					commitment_update: None, raa: None,
-					order: self.context.resend_order.clone(),
+					commitment_order: self.context.resend_order.clone(),
 					tx_signatures: None,
 					tx_abort: None,
 				})
@@ -9347,9 +9370,11 @@ where
 					required_revoke
 				};
 				Ok(ReestablishResponses {
-					channel_ready, shutdown_msg, announcement_sigs,
+					channel_ready,
+					channel_ready_order: ChannelReadyOrder::ChannelReadyFirst,
+					shutdown_msg, announcement_sigs,
 					raa, commitment_update,
-					order: self.context.resend_order.clone(),
+					commitment_order: self.context.resend_order.clone(),
 					tx_signatures: None,
 					tx_abort: None,
 				})

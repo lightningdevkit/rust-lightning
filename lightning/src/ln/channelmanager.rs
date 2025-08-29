@@ -917,6 +917,16 @@ pub(super) enum RAACommitmentOrder {
 	RevokeAndACKFirst,
 }
 
+/// Similar to scenarios used by [`RAACommitmentOrder`], this determines whether a `channel_ready`
+/// message should be sent first (i.e., prior to a `commitment_update`) or after the initial
+/// `commitment_update` and `tx_signatures` for channel funding.
+pub(super) enum ChannelReadyOrder {
+	/// Send `channel_ready` message first.
+	ChannelReadyFirst,
+	/// Send initial `commitment_update` and `tx_signatures` first.
+	SignaturesFirst,
+}
+
 /// Information about a payment which is currently being claimed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ClaimingPayment {
@@ -3394,9 +3404,10 @@ macro_rules! handle_monitor_update_completion {
 
 		let (htlc_forwards, decode_update_add_htlcs) = $self.handle_channel_resumption(
 			&mut $peer_state.pending_msg_events, $chan, updates.raa,
-			updates.commitment_update, updates.order, updates.accepted_htlcs, updates.pending_update_adds,
-			updates.funding_broadcastable, updates.channel_ready,
-			updates.announcement_sigs, updates.tx_signatures, None);
+			updates.commitment_update, updates.commitment_order, updates.accepted_htlcs,
+			updates.pending_update_adds, updates.funding_broadcastable, updates.channel_ready,
+			updates.announcement_sigs, updates.tx_signatures, None, updates.channel_ready_order,
+		);
 		if let Some(upd) = channel_update {
 			$peer_state.pending_msg_events.push(upd);
 		}
@@ -8900,11 +8911,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	#[rustfmt::skip]
 	fn handle_channel_resumption(&self, pending_msg_events: &mut Vec<MessageSendEvent>,
 		channel: &mut FundedChannel<SP>, raa: Option<msgs::RevokeAndACK>,
-		commitment_update: Option<msgs::CommitmentUpdate>, order: RAACommitmentOrder,
+		commitment_update: Option<msgs::CommitmentUpdate>, commitment_order: RAACommitmentOrder,
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 		funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>,
 		tx_signatures: Option<msgs::TxSignatures>, tx_abort: Option<msgs::TxAbort>,
+		channel_ready_order: ChannelReadyOrder,
 	) -> (Option<(u64, PublicKey, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
 		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort",
@@ -8935,14 +8947,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			decode_update_add_htlcs = Some((short_channel_id, pending_update_adds));
 		}
 
-		if let Some(msg) = channel_ready {
-			send_channel_ready!(self, pending_msg_events, channel, msg);
-		}
-		if let Some(msg) = announcement_sigs {
-			pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
-				node_id: counterparty_node_id,
-				msg,
-			});
+		if let ChannelReadyOrder::ChannelReadyFirst = channel_ready_order {
+			if let Some(msg) = &channel_ready {
+				send_channel_ready!(self, pending_msg_events, channel, msg.clone());
+			}
+
+			if let Some(msg) = &announcement_sigs {
+				pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+					node_id: counterparty_node_id,
+					msg: msg.clone(),
+				});
+			}
 		}
 
 		macro_rules! handle_cs { () => {
@@ -8962,7 +8977,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				});
 			}
 		} }
-		match order {
+		match commitment_order {
 			RAACommitmentOrder::CommitmentFirst => {
 				handle_cs!();
 				handle_raa!();
@@ -8985,6 +9000,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				node_id: counterparty_node_id,
 				msg,
 			});
+		}
+
+		if let ChannelReadyOrder::SignaturesFirst = channel_ready_order {
+			if let Some(msg) = channel_ready {
+				send_channel_ready!(self, pending_msg_events, channel, msg);
+			}
+
+			if let Some(msg) = announcement_sigs {
+				pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+					node_id: counterparty_node_id,
+					msg,
+				});
+			}
 		}
 
 		if let Some(tx) = funding_broadcastable {
@@ -11049,9 +11077,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 						let need_lnd_workaround = chan.context.workaround_lnd_bug_4006.take();
 						let (htlc_forwards, decode_update_add_htlcs) = self.handle_channel_resumption(
-							&mut peer_state.pending_msg_events, chan, responses.raa, responses.commitment_update, responses.order,
+							&mut peer_state.pending_msg_events, chan, responses.raa, responses.commitment_update, responses.commitment_order,
 							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs,
-							responses.tx_signatures, responses.tx_abort);
+							responses.tx_signatures, responses.tx_abort, responses.channel_ready_order,
+						);
 						debug_assert!(htlc_forwards.is_none());
 						debug_assert!(decode_update_add_htlcs.is_none());
 						if let Some(upd) = channel_update {
