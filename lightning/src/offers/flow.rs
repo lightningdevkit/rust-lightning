@@ -61,6 +61,7 @@ use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey};
 
 use crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder};
 use crate::sync::{Mutex, RwLock};
+use crate::types::features::InitFeatures;
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::ser::Writeable;
 
@@ -98,6 +99,7 @@ where
 
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 	async_receive_offer_cache: Mutex<AsyncReceiveOfferCache>,
+	peers_cache: Mutex<Vec<(MessageForwardNode, bool)>>,
 
 	#[cfg(feature = "dnssec")]
 	pub(crate) hrn_resolver: OMNameResolver,
@@ -130,6 +132,7 @@ where
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
+			peers_cache: Mutex::new(Vec::with_capacity(MAX_CACHED_PEERS)),
 
 			#[cfg(feature = "dnssec")]
 			hrn_resolver: OMNameResolver::new(current_timestamp, best_block.height),
@@ -259,6 +262,10 @@ const DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration = Duration::from_secs(365 * 2
 #[cfg(test)]
 pub(crate) const TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration =
 	DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY;
+
+/// The maximum number of peers that the [`OffersMessageFlow`] will hold in their peer cache.
+/// See [`OffersMessageFlow::peer_connected`] and [`OffersMessageFlow::peer_disconnected`].
+pub const MAX_CACHED_PEERS: usize = 100;
 
 impl<MR: Deref> OffersMessageFlow<MR>
 where
@@ -1626,5 +1633,62 @@ where
 	/// Get the encoded [`AsyncReceiveOfferCache`] for persistence.
 	pub fn writeable_async_receive_offer_cache(&self) -> Vec<u8> {
 		self.async_receive_offer_cache.encode()
+	}
+
+	/// Indicates that a peer was connected to our node. Useful for the [`OffersMessageFlow`] to keep
+	/// track of which peers are connected, which allows for methods that can create blinded paths
+	/// without requiring a fresh set of [`MessageForwardNode`]s to be passed in.
+	///
+	/// MUST be called by always-online nodes that support holding HTLCs on behalf of often-offline
+	/// senders.
+	///
+	/// Errors if the peer does not support onion messages or we have more than [`MAX_CACHED_PEERS`]
+	/// connected already.
+	pub fn peer_connected(
+		&self, peer_node_id: PublicKey, features: &InitFeatures, announced_channel: bool,
+	) -> Result<(), ()> {
+		if !features.supports_onion_messages() {
+			return Err(());
+		}
+
+		let mut peers_cache = self.peers_cache.lock().unwrap();
+		let existing_peer = peers_cache.iter_mut().find(|(peer, _)| peer.node_id == peer_node_id);
+		if let Some((_, is_announced)) = existing_peer {
+			*is_announced = announced_channel;
+			return Ok(());
+		}
+
+		// Cache this peer if we have space or if they are a public node and can replace an existing
+		// peer that is potentially private, since private peers are not useful as introduction nodes
+		// for blinded paths.
+		let peer = MessageForwardNode { node_id: peer_node_id, short_channel_id: None };
+		match peers_cache.len() {
+			num_peers if num_peers >= MAX_CACHED_PEERS => {
+				if !announced_channel {
+					return Err(());
+				}
+				match peers_cache.iter().position(|(_, announced)| !announced) {
+					Some(idx) => peers_cache[idx] = (peer, announced_channel),
+					None => return Err(()),
+				}
+			},
+			_ => peers_cache.push((peer, announced_channel)),
+		}
+
+		Ok(())
+	}
+
+	/// Indicates that a peer was disconnected from our node. See [`Self::peer_connected`].
+	///
+	/// Errors if the peer is unknown.
+	pub fn peer_disconnected(&self, peer_node_id: PublicKey) -> Result<(), ()> {
+		let mut peers_cache = self.peers_cache.lock().unwrap();
+		let peer_idx = match peers_cache.iter().position(|(peer, _)| peer.node_id == peer_node_id) {
+			Some(idx) => idx,
+			None => return Err(()),
+		};
+		peers_cache.swap_remove(peer_idx);
+
+		Ok(())
 	}
 }
