@@ -2398,7 +2398,7 @@ macro_rules! expect_htlc_handling_failed_destinations {
 pub fn expect_htlc_failure_conditions(
 	events: Vec<Event>, expected_failures: &[HTLCHandlingFailureType],
 ) {
-	assert_eq!(events.len(), expected_failures.len());
+	assert_eq!(events.len(), expected_failures.len(), "{:?}", events);
 	if expected_failures.len() > 0 {
 		expect_htlc_handling_failed_destinations!(events, expected_failures)
 	}
@@ -4098,7 +4098,16 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(
 					..
 				} => {
 					assert_eq!(payment_hash, our_payment_hash);
-					assert!(payment_failed_permanently);
+					let expected_payment_failed_permanently = match expected_fail_reason {
+						PaymentFailureReason::RecipientRejected => true,
+						_ => false,
+					};
+					assert!(
+						payment_failed_permanently == expected_payment_failed_permanently,
+						"expected payment_failed_permanently of {}, got {}",
+						expected_payment_failed_permanently,
+						payment_failed_permanently
+					);
 					for (idx, hop) in expected_route.iter().enumerate() {
 						assert_eq!(hop.node.get_our_node_id(), path.hops[idx].pubkey);
 					}
@@ -4125,7 +4134,12 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(
 
 	// Ensure that fail_htlc_backwards is idempotent.
 	expected_paths[0].last().unwrap().node.fail_htlc_backwards(&our_payment_hash);
-	assert!(expected_paths[0].last().unwrap().node.get_and_clear_pending_events().is_empty());
+	let pending_events = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
+	assert!(
+		pending_events.is_empty(),
+		"expected empty pending_events on redundant call to fail_htlc_backwards, got {:?}",
+		pending_events
+	);
 	assert!(expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(expected_paths[0].last().unwrap(), 0);
 }
@@ -4348,7 +4362,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(
 	for i in 0..node_count {
 		let dedicated_entropy = DedicatedEntropy(RandomBytes::new([i as u8; 32]));
 		#[cfg(feature = "dnssec")]
-		let onion_messenger = OnionMessenger::new(
+		let onion_messenger = OnionMessenger::new_with_offline_peer_interception(
 			dedicated_entropy,
 			cfgs[i].keys_manager,
 			cfgs[i].logger,
@@ -4360,7 +4374,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(
 			IgnoringMessageHandler {},
 		);
 		#[cfg(not(feature = "dnssec"))]
-		let onion_messenger = OnionMessenger::new(
+		let onion_messenger = OnionMessenger::new_with_offline_peer_interception(
 			dedicated_entropy,
 			cfgs[i].keys_manager,
 			cfgs[i].logger,
