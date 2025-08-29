@@ -5292,10 +5292,18 @@ where
 		self.flow.static_invoice_persisted(invoice_persisted_path);
 	}
 
-	/// Forwards a [`StaticInvoice`] in response to an [`Event::StaticInvoiceRequested`].
-	pub fn send_static_invoice(
-		&self, invoice: StaticInvoice, responder: Responder,
+	/// When handling an [`Event::StaticInvoiceRequested`], this should be called to forward the
+	/// [`InvoiceRequest`] over the `invoice_request_path` to the async recipient if it is online
+	/// and it will forward the [`StaticInvoice`] to the responder.
+	pub fn send_response_static_invoice_request(
+		&self, invoice: StaticInvoice, responder: Responder, invoice_request: InvoiceRequest,
+		invoice_request_path: BlindedMessagePath,
 	) -> Result<(), Bolt12SemanticError> {
+		self.flow.enqueue_invoice_request_to_forward(
+			invoice_request,
+			invoice_request_path,
+			responder.clone(),
+		);
 		self.flow.enqueue_static_invoice(invoice, responder)
 	}
 
@@ -14455,9 +14463,9 @@ where
 
 				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
 					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
-					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot }) => {
+					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot, invoice_request }) => {
 						self.pending_events.lock().unwrap().push_back((Event::StaticInvoiceRequested {
-							recipient_id, invoice_slot, reply_path: responder
+							recipient_id, invoice_slot, reply_path: responder, invoice_request,
 						}, None));
 
 						return None
@@ -14637,6 +14645,7 @@ where
 		pending_events.push_back((
 			Event::PersistStaticInvoice {
 				invoice: message.invoice,
+				invoice_request_path: message.forward_invoice_request_path,
 				invoice_slot,
 				recipient_id,
 				invoice_persisted_path: responder,

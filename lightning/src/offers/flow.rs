@@ -406,6 +406,9 @@ pub enum InvreqResponseInstructions {
 		recipient_id: Vec<u8>,
 		/// The slot number for the specific invoice being requested by the payer.
 		invoice_slot: u16,
+		/// The invoice request that should be forwarded to the async recipient in case it is
+		/// online to respond.
+		invoice_request: InvoiceRequest,
 	},
 }
 
@@ -445,6 +448,7 @@ where
 				return Ok(InvreqResponseInstructions::SendStaticInvoice {
 					recipient_id,
 					invoice_slot,
+					invoice_request,
 				});
 			},
 			_ => return Err(()),
@@ -1115,6 +1119,28 @@ where
 		pending_offers_messages.push((message, responder.respond().into_instructions()));
 
 		Ok(())
+	}
+
+	/// Forwards an [`InvoiceRequest`] to the specified [`BlindedMessagePath`]. If we receive an
+	/// invoice request as a static invoice server on behalf of an often-offline recipient this
+	/// can be used to forward the request to the recipient to give it a chance to provide an
+	/// invoice if it is online. The reply_path [`Responder`] provided is the path to the sender
+	/// where the recipient can send the invoice.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+	/// [`Responder`]: crate::onion_message::messenger::Responder
+	pub fn enqueue_invoice_request_to_forward(
+		&self, invoice_request: InvoiceRequest, invoice_request_path: BlindedMessagePath,
+		reply_path: Responder,
+	) {
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+		let message = OffersMessage::InvoiceRequest(invoice_request);
+		let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+			destination: Destination::BlindedPath(invoice_request_path),
+			reply_path: reply_path.into_blinded_path(),
+		};
+		pending_offers_messages.push((message, instructions));
 	}
 
 	/// Enqueues `held_htlc_available` onion messages to be sent to the payee via the reply paths
