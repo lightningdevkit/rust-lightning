@@ -9335,7 +9335,10 @@ where
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
 			debug_assert!(commitment_update.is_none());
-			debug_assert!(tx_signatures.is_none());
+
+			// TODO(splicing): Assert in a test that we don't retransmit tx_signatures instead
+			#[cfg(test)]
+			assert!(tx_signatures.is_none());
 
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx", &self.context.channel_id());
