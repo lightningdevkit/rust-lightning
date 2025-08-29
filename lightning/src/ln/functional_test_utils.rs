@@ -4261,6 +4261,7 @@ pub fn test_default_channel_config() -> UserConfig {
 	// feerate of 253).
 	default_config.channel_config.max_dust_htlc_exposure =
 		MaxDustHTLCExposure::FeeRateMultiplier(50_000_000 / 253);
+	default_config.enable_htlc_hold = true;
 	default_config
 }
 
