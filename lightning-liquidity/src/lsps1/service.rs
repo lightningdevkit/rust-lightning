@@ -174,6 +174,20 @@ where
 		&self.config
 	}
 
+	/// Returns whether the peer currently has any active LSPS1 order flows.
+	///
+	/// An order is considered active only after we have validated the client's
+	/// `CreateOrder` request and replied with a `CreateOrder` response containing
+	/// an `order_id`.
+	/// Pending requests that are still awaiting our response are deliberately NOT counted.
+	pub(crate) fn has_active_requests(&self, counterparty_node_id: &PublicKey) -> bool {
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		outer_state_lock.get(counterparty_node_id).map_or(false, |inner| {
+			let peer_state = inner.lock().unwrap();
+			!peer_state.outbound_channels_by_order_id.is_empty()
+		})
+	}
+
 	fn handle_get_info_request(
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {

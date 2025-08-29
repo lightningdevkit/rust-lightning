@@ -53,6 +53,8 @@ pub const LSPS5_UNKNOWN_ERROR_CODE: i32 = 1000;
 pub const LSPS5_SERIALIZATION_ERROR_CODE: i32 = 1001;
 /// A notification was sent too frequently.
 pub const LSPS5_SLOW_DOWN_ERROR_CODE: i32 = 1002;
+/// A request was rejected because the client has no prior activity with the LSP (no open channel and no active LSPS1 or LSPS2 flow). The client should first open a channel
+pub const LSPS5_NO_PRIOR_ACTIVITY_ERROR_CODE: i32 = 1003;
 
 pub(crate) const LSPS5_SET_WEBHOOK_METHOD_NAME: &str = "lsps5.set_webhook";
 pub(crate) const LSPS5_LIST_WEBHOOKS_METHOD_NAME: &str = "lsps5.list_webhooks";
@@ -113,6 +115,10 @@ pub enum LSPS5ProtocolError {
 	///
 	/// [`NOTIFICATION_COOLDOWN_TIME`]: super::service::NOTIFICATION_COOLDOWN_TIME
 	SlowDownError,
+
+	/// Request rejected because the client has no prior activity with the LSP (no open channel and no active LSPS1 or LSPS2 flow). The client should first open a channel
+	/// or initiate an LSPS1/LSPS2 interaction before retrying.
+	NoPriorActivityError,
 }
 
 impl LSPS5ProtocolError {
@@ -129,6 +135,7 @@ impl LSPS5ProtocolError {
 			LSPS5ProtocolError::UnknownError => LSPS5_UNKNOWN_ERROR_CODE,
 			LSPS5ProtocolError::SerializationError => LSPS5_SERIALIZATION_ERROR_CODE,
 			LSPS5ProtocolError::SlowDownError => LSPS5_SLOW_DOWN_ERROR_CODE,
+			LSPS5ProtocolError::NoPriorActivityError => LSPS5_NO_PRIOR_ACTIVITY_ERROR_CODE,
 		}
 	}
 	/// The error message for the LSPS5 protocol error.
@@ -145,6 +152,9 @@ impl LSPS5ProtocolError {
 				"Error serializing LSPS5 webhook notification"
 			},
 			LSPS5ProtocolError::SlowDownError => "Notification sent too frequently",
+			LSPS5ProtocolError::NoPriorActivityError => {
+				"Request rejected due to no prior activity with the LSP"
+			},
 		}
 	}
 }
@@ -249,6 +259,9 @@ impl From<LSPSResponseError> for LSPS5ProtocolError {
 			LSPS5_UNSUPPORTED_PROTOCOL_ERROR_CODE => LSPS5ProtocolError::UnsupportedProtocol,
 			LSPS5_TOO_MANY_WEBHOOKS_ERROR_CODE => LSPS5ProtocolError::TooManyWebhooks,
 			LSPS5_APP_NAME_NOT_FOUND_ERROR_CODE => LSPS5ProtocolError::AppNameNotFound,
+			LSPS5_SERIALIZATION_ERROR_CODE => LSPS5ProtocolError::SerializationError,
+			LSPS5_SLOW_DOWN_ERROR_CODE => LSPS5ProtocolError::SlowDownError,
+			LSPS5_NO_PRIOR_ACTIVITY_ERROR_CODE => LSPS5ProtocolError::NoPriorActivityError,
 			_ => LSPS5ProtocolError::UnknownError,
 		}
 	}
@@ -638,6 +651,12 @@ pub enum LSPS5Request {
 	ListWebhooks(ListWebhooksRequest),
 	/// Remove a webhook.
 	RemoveWebhook(RemoveWebhookRequest),
+}
+
+impl LSPS5Request {
+	pub(crate) fn is_state_allocating(&self) -> bool {
+		matches!(self, LSPS5Request::SetWebhook(_))
+	}
 }
 
 /// An LSPS5 protocol response.
