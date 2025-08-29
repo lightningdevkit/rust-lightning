@@ -1557,8 +1557,7 @@ where
 			.and_then(|builder| builder.build_and_sign(secp_ctx))
 			.map_err(|_| ())?;
 
-		let nonce = Nonce::from_entropy_source(&*entropy);
-		let context = MessageContext::Offers(OffersContext::InvoiceRequest { nonce });
+		let context = MessageContext::Offers(OffersContext::InvoiceRequest { nonce: offer_nonce });
 		let forward_invoice_request_path = self
 			.create_blinded_paths(peers, context)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))?;
