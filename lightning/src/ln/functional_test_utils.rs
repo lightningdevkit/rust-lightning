@@ -866,7 +866,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				)>::read(
 					&mut io::Cursor::new(w.0),
 					ChannelManagerReadArgs {
-						config: self.node.get_current_default_configuration(),
+						config: self.node.get_current_config(),
 						entropy_source: self.keys_manager,
 						node_signer: self.keys_manager,
 						signer_provider: self.keys_manager,
@@ -1651,7 +1651,7 @@ pub fn exchange_open_accept_chan<'a, 'b, 'c>(
 		42
 	);
 	node_b.node.handle_open_channel(node_a_id, &open_channel_msg);
-	if node_b.node.get_current_default_configuration().manually_accept_inbound_channels {
+	if node_b.node.get_current_config().manually_accept_inbound_channels {
 		let events = node_b.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match &events[0] {
@@ -1830,7 +1830,7 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(
 	let node_a_id = nodes[a].node.get_our_node_id();
 	let node_b_id = nodes[b].node.get_our_node_id();
 
-	let mut no_announce_cfg = nodes[a].node.get_current_default_configuration();
+	let mut no_announce_cfg = nodes[a].node.get_current_config();
 	no_announce_cfg.channel_handshake_config.announce_for_forwarding = false;
 	nodes[a]
 		.node

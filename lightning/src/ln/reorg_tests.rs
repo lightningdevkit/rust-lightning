@@ -323,7 +323,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		let nodes_0_serialized = nodes[0].node.encode();
 		let chan_0_monitor_serialized = get_monitor!(nodes[0], chan.2).encode();
 
-		reload_node!(nodes[0], nodes[0].node.get_current_default_configuration().clone(), &nodes_0_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+		reload_node!(nodes[0], nodes[0].node.get_current_config(), &nodes_0_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 	}
 
 	if reorg_after_reload {

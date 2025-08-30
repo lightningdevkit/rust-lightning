@@ -3801,9 +3801,16 @@ where
 		}
 	}
 
-	/// Gets the current configuration applied to all new channels.
-	pub fn get_current_default_configuration(&self) -> UserConfig {
+	/// Gets the current [`UserConfig`] which controls some global behavior and includes the
+	/// default configuration applied to all new channels.
+	pub fn get_current_config(&self) -> UserConfig {
 		self.config.read().unwrap().clone()
+	}
+
+	/// Updates the current [`UserConfig`] which controls some global behavior and includes the
+	/// default configuration applied to all new channels.
+	pub fn set_current_config(&self, new_config: UserConfig) {
+		*self.config.write().unwrap() = new_config;
 	}
 
 	#[cfg(test)]

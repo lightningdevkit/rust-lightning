@@ -1776,7 +1776,7 @@ fn do_test_onion_failure_stale_channel_update(announce_for_forwarding: bool) {
 		let chan_2_monitor_serialized = get_monitor!(nodes[1], channel_to_update.0).encode();
 		reload_node!(
 			nodes[1],
-			nodes[1].node.get_current_default_configuration().clone(),
+			nodes[1].node.get_current_config(),
 			&nodes[1].node.encode(),
 			&[&chan_1_monitor_serialized, &chan_2_monitor_serialized],
 			persister,
