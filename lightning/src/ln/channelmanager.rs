@@ -1806,17 +1806,17 @@ where
 ///     network: Network::Bitcoin,
 ///     best_block,
 /// };
-/// let default_config = UserConfig::default();
+/// let config = UserConfig::default();
 /// let channel_manager = ChannelManager::new(
 ///     fee_estimator, chain_monitor, tx_broadcaster, router, message_router, logger,
-///     entropy_source, node_signer, signer_provider, default_config.clone(), params, current_timestamp,
+///     entropy_source, node_signer, signer_provider, config.clone(), params, current_timestamp,
 /// );
 ///
 /// // Restart from deserialized data
 /// let mut channel_monitors = read_channel_monitors();
 /// let args = ChannelManagerReadArgs::new(
 ///     entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster,
-///     router, message_router, logger, default_config, channel_monitors.iter().collect(),
+///     router, message_router, logger, config, channel_monitors.iter().collect(),
 /// );
 /// let (block_hash, channel_manager) =
 ///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
@@ -2519,7 +2519,7 @@ pub struct ChannelManager<
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	default_configuration: UserConfig,
+	config: RwLock<UserConfig>,
 	chain_hash: ChainHash,
 	fee_estimator: LowerBoundedFeeEstimator<F>,
 	chain_monitor: M,
@@ -3372,7 +3372,7 @@ macro_rules! handle_monitor_update_completion {
 		}
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
 		let mut updates = $chan.monitor_updating_restored(&&logger,
-			&$self.node_signer, $self.chain_hash, &$self.default_configuration,
+			&$self.node_signer, $self.chain_hash, &*$self.config.read().unwrap(),
 			$self.best_block.read().unwrap().height);
 		let counterparty_node_id = $chan.context.get_counterparty_node_id();
 		let channel_update = if updates.channel_ready.is_some() && $chan.context.is_usable() {
@@ -3742,7 +3742,7 @@ where
 		);
 
 		ChannelManager {
-			default_configuration: config.clone(),
+			config: RwLock::new(config),
 			chain_hash: ChainHash::using_genesis_block(params.network),
 			fee_estimator: LowerBoundedFeeEstimator::new(fee_est),
 			chain_monitor,
@@ -3802,8 +3802,8 @@ where
 	}
 
 	/// Gets the current configuration applied to all new channels.
-	pub fn get_current_default_configuration(&self) -> &UserConfig {
-		&self.default_configuration
+	pub fn get_current_default_configuration(&self) -> UserConfig {
+		self.config.read().unwrap().clone()
 	}
 
 	#[cfg(test)]
@@ -3898,7 +3898,12 @@ where
 		let mut channel = {
 			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 			let their_features = &peer_state.latest_features;
-			let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
+			let config = self.config.read().unwrap();
+			let config = if let Some(config) = &override_config {
+				config
+			} else {
+				&*config
+			};
 			match OutboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
 				their_features, channel_value_satoshis, push_msat, user_channel_id, config,
 				self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id, &*self.logger)
@@ -4530,7 +4535,9 @@ where
 	fn can_forward_htlc_to_outgoing_channel(
 		&self, chan: &mut FundedChannel<SP>, msg: &msgs::UpdateAddHTLC, next_packet: &NextPacketDetails
 	) -> Result<(), LocalHTLCFailureReason> {
-		if !chan.context.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
+		if !chan.context.should_announce()
+			&& !self.config.read().unwrap().accept_forwards_to_priv_channels
+		{
 			// Note that the behavior here should be identical to the above block - we
 			// should NOT reveal the existence or non-existence of a private channel if
 			// we don't allow forwards outbound over them.
@@ -4608,7 +4615,7 @@ where
 			None => {
 				// If we couldn't find the channel info for the scid, it may be a phantom or
 				// intercept forward.
-				if (self.default_configuration.accept_intercept_htlcs &&
+				if (self.config.read().unwrap().accept_intercept_htlcs &&
 					fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, outgoing_scid, &self.chain_hash)) ||
 					fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, outgoing_scid, &self.chain_hash)
 				{} else {
@@ -9202,7 +9209,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>
 	) -> Result<(), APIError> {
 
-		let mut config = self.default_configuration.clone();
+		let mut config = self.config.read().unwrap().clone();
 
 		// Apply configuration overrides.
 		if let Some(overrides) = config_overrides {
@@ -9427,7 +9434,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				 common_fields.temporary_channel_id));
 		}
 
-		if !self.default_configuration.accept_inbound_channels {
+		if !self.config.read().unwrap().accept_inbound_channels {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("No inbound channels accepted".to_owned(),
 				 common_fields.temporary_channel_id));
 		}
@@ -9454,7 +9461,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// channels per-peer we can accept channels from a peer with existing ones.
 		if peer_state.total_channel_count() == 0 &&
 			channeled_peers_without_funding >= MAX_UNFUNDED_CHANNEL_PEERS &&
-			!self.default_configuration.manually_accept_inbound_channels
+			!self.config.read().unwrap().manually_accept_inbound_channels
 		{
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(
 				"Have too many peers with unfunded channels, not accepting new ones".to_owned(),
@@ -9483,7 +9490,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, common_fields.temporary_channel_id))?;
 
 		// If we're doing manual acceptance checks on the channel, then defer creation until we're sure we want to accept.
-		if self.default_configuration.manually_accept_inbound_channels {
+		if self.config.read().unwrap().manually_accept_inbound_channels {
 			let mut pending_events = self.pending_events.lock().unwrap();
 			let is_announced = (common_fields.channel_flags & 1) == 1;
 			pending_events.push_back((events::Event::OpenChannelRequest {
@@ -9525,7 +9532,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let mut channel = InboundV1Channel::new(
 					&self.fee_estimator, &self.entropy_source, &self.signer_provider, *counterparty_node_id,
 					&self.channel_type_features(), &peer_state.latest_features, msg, user_channel_id,
-					&self.default_configuration, best_block_height, &self.logger, /*is_0conf=*/false
+					&self.config.read().unwrap(), best_block_height, &self.logger, /*is_0conf=*/false
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
 				let logger = WithChannelContext::from(&self.logger, &channel.context, None);
 				let message_send_event = channel.accept_inbound_channel(&&logger).map(|msg| {
@@ -9541,7 +9548,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 					self.get_our_node_id(), *counterparty_node_id, &self.channel_type_features(),
 					&peer_state.latest_features, msg, user_channel_id,
-					&self.default_configuration, best_block_height, &self.logger,
+					&self.config.read().unwrap(), best_block_height, &self.logger,
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
 				let message_send_event = MessageSendEvent::SendAcceptChannelV2 {
 					node_id: *counterparty_node_id,
@@ -9579,7 +9586,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				hash_map::Entry::Occupied(mut chan) => {
 					match chan.get_mut().as_unfunded_outbound_v1_mut() {
 						Some(unfunded_chan) => {
-							try_channel_entry!(self, peer_state, unfunded_chan.accept_channel(msg, &self.default_configuration.channel_handshake_limits, &peer_state.latest_features), chan);
+							let res = unfunded_chan.accept_channel(
+								msg,
+								&self.config.read().unwrap().channel_handshake_limits,
+								&peer_state.latest_features,
+							);
+							try_channel_entry!(self, peer_state, res, chan);
 							(unfunded_chan.funding.get_value_satoshis(), unfunded_chan.funding.get_funding_redeemscript().to_p2wsh(), unfunded_chan.context.get_user_id())
 						},
 						None => {
@@ -10147,8 +10159,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					let announcement_sigs_opt = try_channel_entry!(self, peer_state, chan.channel_ready(&msg, &self.node_signer,
-						self.chain_hash, &self.default_configuration, &self.best_block.read().unwrap(), &&logger), chan_entry);
+					let res = chan.channel_ready(
+						&msg,
+						&self.node_signer,
+						self.chain_hash,
+						&self.config.read().unwrap(),
+						&self.best_block.read().unwrap(),
+						&&logger
+					);
+					let announcement_sigs_opt =
+						try_channel_entry!(self, peer_state, res, chan_entry);
 					if let Some(announcement_sigs) = announcement_sigs_opt {
 						log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
 						peer_state.pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
@@ -10945,11 +10965,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it".to_owned(), action: msgs::ErrorAction::IgnoreError}));
 					}
 
+					let cur_height = self.best_block.read().unwrap().height;
+					let res = chan.announcement_signatures(
+						&self.node_signer,
+						self.chain_hash,
+						cur_height,
+						msg,
+						&self.config.read().unwrap(),
+					);
 					peer_state.pending_msg_events.push(MessageSendEvent::BroadcastChannelAnnouncement {
-						msg: try_channel_entry!(self, peer_state, chan.announcement_signatures(
-							&self.node_signer, self.chain_hash, self.best_block.read().unwrap().height,
-							msg, &self.default_configuration
-						), chan_entry),
+						msg: try_channel_entry!(self, peer_state, res, chan_entry),
 						// Note that announcement_signatures fails if the channel cannot be announced,
 						// so get_channel_update_for_broadcast will never fail by the time we get here.
 						update_msg: Some(self.get_channel_update_for_broadcast(chan).unwrap()),
@@ -11040,9 +11065,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						// disconnect, so Channel's reestablish will never hand us any holding cell
 						// freed HTLCs to fail backwards. If in the future we no longer drop pending
 						// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
-						let responses = try_channel_entry!(self, peer_state, chan.channel_reestablish(
-							msg, &&logger, &self.node_signer, self.chain_hash,
-							&self.default_configuration, &*self.best_block.read().unwrap()), chan_entry);
+						let res = chan.channel_reestablish(
+							msg,
+							&&logger,
+							&self.node_signer,
+							self.chain_hash,
+							&self.config.read().unwrap(),
+							&*self.best_block.read().unwrap(),
+						);
+						let responses = try_channel_entry!(self, peer_state, res, chan_entry);
 						let mut channel_update = None;
 						if let Some(msg) = responses.shutdown_msg {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendShutdown {
@@ -11230,7 +11261,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						msg,
 						&self.node_signer,
 						self.chain_hash,
-						&self.default_configuration,
+						&self.config.read().unwrap(),
 						self.best_block.read().unwrap().height,
 						&&logger,
 					);
@@ -12892,11 +12923,11 @@ where
 	L::Target: Logger,
 {
 	fn provided_node_features(&self) -> NodeFeatures {
-		provided_node_features(&self.default_configuration)
+		provided_node_features(&self.config.read().unwrap())
 	}
 
 	fn provided_init_features(&self, _their_init_features: PublicKey) -> InitFeatures {
-		provided_init_features(&self.default_configuration)
+		provided_init_features(&self.config.read().unwrap())
 	}
 
 	#[rustfmt::skip]
@@ -13270,7 +13301,7 @@ where
 				header.time,
 				self.chain_hash,
 				&self.node_signer,
-				&self.default_configuration,
+				&self.config.read().unwrap(),
 				&&WithChannelContext::from(&self.logger, &channel.context, None),
 			)
 		});
@@ -13311,13 +13342,13 @@ where
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self, || -> NotifyOption { NotifyOption::DoPersist });
-		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None))
+		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.chain_hash, &self.node_signer, &self.config.read().unwrap(), &&WithChannelContext::from(&self.logger, &channel.context, None))
 			.map(|(a, b)| (a, Vec::new(), b)));
 
 		let last_best_block_height = self.best_block.read().unwrap().height;
 		if height < last_best_block_height {
 			let timestamp = self.highest_seen_timestamp.load(Ordering::Acquire);
-			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None)));
+			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.chain_hash, &self.node_signer, &self.config.read().unwrap(), &&WithChannelContext::from(&self.logger, &channel.context, None)));
 		}
 	}
 
@@ -13377,7 +13408,7 @@ where
 				}
 			}
 
-			channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None))
+			channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.config.read().unwrap(), &&WithChannelContext::from(&self.logger, &channel.context, None))
 		});
 
 		macro_rules! max_time {
@@ -13581,7 +13612,7 @@ where
 									}
 									if should_announce {
 										if let Some(announcement) = funded_channel.get_signed_channel_announcement(
-											&self.node_signer, self.chain_hash, height, &self.default_configuration,
+											&self.node_signer, self.chain_hash, height, &self.config.read().unwrap(),
 										) {
 											pending_msg_events.push(MessageSendEvent::BroadcastChannelAnnouncement {
 												msg: announcement,
@@ -13735,7 +13766,7 @@ where
 	/// Fetches the set of [`NodeFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn node_features(&self) -> NodeFeatures {
-		provided_node_features(&self.default_configuration)
+		provided_node_features(&self.config.read().unwrap())
 	}
 
 	/// Fetches the set of [`Bolt11InvoiceFeatures`] flags that are provided by or required by
@@ -13745,31 +13776,31 @@ where
 	/// or not. Thus, this method is not public.
 	#[cfg(any(feature = "_test_utils", test))]
 	pub fn bolt11_invoice_features(&self) -> Bolt11InvoiceFeatures {
-		provided_bolt11_invoice_features(&self.default_configuration)
+		provided_bolt11_invoice_features(&self.config.read().unwrap())
 	}
 
 	/// Fetches the set of [`Bolt12InvoiceFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	fn bolt12_invoice_features(&self) -> Bolt12InvoiceFeatures {
-		provided_bolt12_invoice_features(&self.default_configuration)
+		provided_bolt12_invoice_features(&self.config.read().unwrap())
 	}
 
 	/// Fetches the set of [`ChannelFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn channel_features(&self) -> ChannelFeatures {
-		provided_channel_features(&self.default_configuration)
+		provided_channel_features(&self.config.read().unwrap())
 	}
 
 	/// Fetches the set of [`ChannelTypeFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn channel_type_features(&self) -> ChannelTypeFeatures {
-		provided_channel_type_features(&self.default_configuration)
+		provided_channel_type_features(&self.config.read().unwrap())
 	}
 
 	/// Fetches the set of [`InitFeatures`] flags that are provided by or required by
 	/// [`ChannelManager`].
 	pub fn init_features(&self) -> InitFeatures {
-		provided_init_features(&self.default_configuration)
+		provided_init_features(&self.config.read().unwrap())
 	}
 }
 
@@ -14209,7 +14240,7 @@ where
 				match peer_state.channel_by_id.get_mut(&msg.channel_id) {
 					Some(chan) => match chan.maybe_handle_error_without_close(
 						self.chain_hash, &self.fee_estimator, &self.logger,
-						&self.default_configuration, &peer_state.latest_features,
+						&self.config.read().unwrap(), &peer_state.latest_features,
 					) {
 						Ok(Some(OpenChannelMessage::V1(msg))) => {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendOpenChannel {
@@ -14466,7 +14497,7 @@ where
 					&self.logger, None, None, Some(invoice.payment_hash()),
 				);
 
-				if self.default_configuration.manually_handle_bolt12_invoices {
+				if self.config.read().unwrap().manually_handle_bolt12_invoices {
 					// Update the corresponding entry in `PendingOutboundPayment` for this invoice.
 					// This ensures that event generation remains idempotent in case we receive
 					// the same invoice multiple times.
@@ -15625,7 +15656,7 @@ pub struct ChannelManagerReadArgs<
 	pub logger: L,
 	/// Default settings used for new channels. Any existing channels will continue to use the
 	/// runtime settings which were stored when the ChannelManager was serialized.
-	pub default_config: UserConfig,
+	pub config: UserConfig,
 
 	/// A map from channel IDs to ChannelMonitors for those channels.
 	///
@@ -15671,7 +15702,7 @@ where
 	pub fn new(
 		entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F,
 		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
-		default_config: UserConfig,
+		config: UserConfig,
 		mut channel_monitors: Vec<&'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
 	) -> Self {
 		Self {
@@ -15684,7 +15715,7 @@ where
 			router,
 			message_router,
 			logger,
-			default_config,
+			config,
 			channel_monitors: hash_map_from_iter(
 				channel_monitors.drain(..).map(|monitor| (monitor.channel_id(), monitor)),
 			),
@@ -15789,7 +15820,7 @@ where
 				(
 					&args.entropy_source,
 					&args.signer_provider,
-					&provided_channel_type_features(&args.default_config),
+					&provided_channel_type_features(&args.config),
 				),
 			)?;
 			let logger = WithChannelContext::from(&args.logger, &channel.context, None);
@@ -17088,7 +17119,7 @@ where
 			last_days_feerates: Mutex::new(VecDeque::new()),
 
 			logger: args.logger,
-			default_configuration: args.default_config,
+			config: RwLock::new(args.config),
 
 			#[cfg(feature = "_test_utils")]
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),

@@ -866,7 +866,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				)>::read(
 					&mut io::Cursor::new(w.0),
 					ChannelManagerReadArgs {
-						default_config: self.node.get_current_default_configuration().clone(),
+						config: self.node.get_current_default_configuration(),
 						entropy_source: self.keys_manager,
 						node_signer: self.keys_manager,
 						signer_provider: self.keys_manager,
@@ -1279,7 +1279,7 @@ fn check_claimed_htlcs_match_route<'a, 'b, 'c>(
 }
 
 pub fn _reload_node<'a, 'b, 'c>(
-	node: &'a Node<'a, 'b, 'c>, default_config: UserConfig, chanman_encoded: &[u8],
+	node: &'a Node<'a, 'b, 'c>, config: UserConfig, chanman_encoded: &[u8],
 	monitors_encoded: &[&[u8]],
 ) -> TestChannelManager<'b, 'c> {
 	let mut monitors_read = Vec::with_capacity(monitors_encoded.len());
@@ -1303,7 +1303,7 @@ pub fn _reload_node<'a, 'b, 'c>(
 		<(BlockHash, TestChannelManager<'b, 'c>)>::read(
 			&mut node_read,
 			ChannelManagerReadArgs {
-				default_config,
+				config,
 				entropy_source: node.keys_manager,
 				node_signer: node.keys_manager,
 				signer_provider: node.keys_manager,
@@ -1830,7 +1830,7 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(
 	let node_a_id = nodes[a].node.get_our_node_id();
 	let node_b_id = nodes[b].node.get_our_node_id();
 
-	let mut no_announce_cfg = nodes[a].node.get_current_default_configuration().clone();
+	let mut no_announce_cfg = nodes[a].node.get_current_default_configuration();
 	no_announce_cfg.channel_handshake_config.announce_for_forwarding = false;
 	nodes[a]
 		.node

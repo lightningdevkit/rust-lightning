@@ -62,7 +62,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		funding_satoshis,
 		initiator_funding_inputs.clone(),
 		42, /* user_channel_id */
-		nodes[0].node.get_current_default_configuration(),
+		&nodes[0].node.get_current_default_configuration(),
 		nodes[0].best_block_info().1,
 		nodes[0].node.create_and_insert_outbound_scid_alias_for_test(),
 		ConfirmationTarget::NonAnchorChannelFee,
