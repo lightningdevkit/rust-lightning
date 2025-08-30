@@ -5467,6 +5467,18 @@ where
 		res
 	}
 
+	/// If we are holding an HTLC on behalf of an often-offline sender, this method allows us to
+	/// create a path for the sender to use as the reply path when they send the recipient a
+	/// [`HeldHtlcAvailable`] onion message, so the recipient's [`ReleaseHeldHtlc`] response will be
+	/// received to our node.
+	fn path_for_release_held_htlc(
+		&self, htlc_id: u64, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+	) -> BlindedMessagePath {
+		let intercept_id =
+			InterceptId::from_htlc_id_and_chan_id(htlc_id, channel_id, counterparty_node_id);
+		self.flow.path_for_release_held_htlc(intercept_id, &*self.entropy_source)
+	}
+
 	/// Signals that no further attempts for the given payment should occur. Useful if you have a
 	/// pending outbound payment with retries remaining, but wish to stop retrying the payment before
 	/// retries are exhausted.

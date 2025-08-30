@@ -32,7 +32,7 @@ use crate::prelude::*;
 
 use crate::chain::BestBlock;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{PaymentId, CLTV_FAR_FAR_AWAY};
+use crate::ln::channelmanager::{InterceptId, PaymentId, CLTV_FAR_FAR_AWAY};
 use crate::ln::inbound_payment;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::invoice::{
@@ -52,7 +52,7 @@ use crate::onion_message::async_payments::{
 	StaticInvoicePersisted,
 };
 use crate::onion_message::messenger::{
-	Destination, MessageRouter, MessageSendInstructions, Responder,
+	Destination, MessageRouter, MessageSendInstructions, Responder, PADDED_PATH_LENGTH,
 };
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::OnionMessageContents;
@@ -1161,6 +1161,33 @@ where
 		);
 
 		Ok(())
+	}
+
+	/// If we are holding an HTLC on behalf of an often-offline sender, this method allows us to
+	/// create a path for the sender to use as the reply path when they send the recipient a
+	/// [`HeldHtlcAvailable`] onion message, so the recipient's [`ReleaseHeldHtlc`] response will be
+	/// received to our node.
+	///
+	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+	pub fn path_for_release_held_htlc<ES: Deref>(
+		&self, intercept_id: InterceptId, entropy: ES,
+	) -> BlindedMessagePath
+	where
+		ES::Target: EntropySource,
+	{
+		// In the future, we should support multi-hop paths here.
+		let context =
+			MessageContext::AsyncPayments(AsyncPaymentsContext::ReleaseHeldHtlc { intercept_id });
+		let num_dummy_hops = PADDED_PATH_LENGTH.saturating_sub(1);
+		BlindedMessagePath::new_with_dummy_hops(
+			&[],
+			self.get_our_node_id(),
+			num_dummy_hops,
+			self.receive_auth_key,
+			context,
+			&*entropy,
+			&self.secp_ctx,
+		)
 	}
 
 	/// Enqueues the created [`DNSSECQuery`] to be sent to the counterparty.
