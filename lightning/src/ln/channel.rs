@@ -28,6 +28,7 @@ use bitcoin::{secp256k1, sighash, TxIn};
 #[cfg(splicing)]
 use bitcoin::{FeeRate, Sequence};
 
+use crate::blinded_path::message::BlindedMessagePath;
 use crate::chain::chaininterface::{
 	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
 };
@@ -281,6 +282,24 @@ impl InboundHTLCState {
 				Some(*preimage)
 			},
 			_ => None,
+		}
+	}
+
+	/// Whether we need to hold onto this HTLC until receipt of a corresponding [`ReleaseHeldHtlc`]
+	/// onion message.
+	///
+	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+	fn should_hold_htlc(&self) -> bool {
+		match self {
+			InboundHTLCState::RemoteAnnounced(res)
+			| InboundHTLCState::AwaitingRemoteRevokeToAnnounce(res)
+			| InboundHTLCState::AwaitingAnnouncedRemoteRevoke(res) => match res {
+				InboundHTLCResolution::Pending { update_add_htlc } => {
+					update_add_htlc.hold_htlc.is_some()
+				},
+				InboundHTLCResolution::Resolved { .. } => false,
+			},
+			InboundHTLCState::Committed | InboundHTLCState::LocalRemoved(_) => false,
 		}
 	}
 }
@@ -1606,12 +1625,12 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn signer_maybe_unblocked<L: Deref>(
-		&mut self, chain_hash: ChainHash, logger: &L,
-	) -> Option<SignerResumeUpdates> where L::Target: Logger {
+	pub fn signer_maybe_unblocked<L: Deref, CBP>(
+		&mut self, chain_hash: ChainHash, logger: &L, path_for_release_htlc: CBP
+	) -> Option<SignerResumeUpdates> where L::Target: Logger, CBP: Fn(u64) -> BlindedMessagePath {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::Funded(chan) => Some(chan.signer_maybe_unblocked(logger)),
+			ChannelPhase::Funded(chan) => Some(chan.signer_maybe_unblocked(logger, path_for_release_htlc)),
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let (open_channel, funding_created) = chan.signer_maybe_unblocked(chain_hash, logger);
 				Some(SignerResumeUpdates {
@@ -8712,13 +8731,14 @@ where
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
 	#[rustfmt::skip]
-	pub fn monitor_updating_restored<L: Deref, NS: Deref>(
+	pub fn monitor_updating_restored<L: Deref, NS: Deref, CBP>(
 		&mut self, logger: &L, node_signer: &NS, chain_hash: ChainHash,
-		user_config: &UserConfig, best_block_height: u32
+		user_config: &UserConfig, best_block_height: u32, path_for_release_htlc: CBP
 	) -> MonitorRestoreUpdates
 	where
 		L::Target: Logger,
-		NS::Target: NodeSigner
+		NS::Target: NodeSigner,
+		CBP: Fn(u64) -> BlindedMessagePath
 	{
 		assert!(self.context.channel_state.is_monitor_update_in_progress());
 		self.context.channel_state.clear_monitor_update_in_progress();
@@ -8787,7 +8807,7 @@ where
 		}
 
 		let mut raa = if self.context.monitor_pending_revoke_and_ack {
-			self.get_last_revoke_and_ack(logger)
+			self.get_last_revoke_and_ack(path_for_release_htlc, logger)
 		} else { None };
 		let mut commitment_update = if self.context.monitor_pending_commitment_signed {
 			self.get_last_commitment_update_for_send(logger).ok()
@@ -8877,7 +8897,9 @@ where
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
 	#[rustfmt::skip]
-	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> SignerResumeUpdates where L::Target: Logger {
+	pub fn signer_maybe_unblocked<L: Deref, CBP>(
+		&mut self, logger: &L, path_for_release_htlc: CBP
+	) -> SignerResumeUpdates where L::Target: Logger, CBP: Fn(u64) -> BlindedMessagePath {
 		if !self.holder_commitment_point.can_advance() {
 			log_trace!(logger, "Attempting to update holder per-commitment point...");
 			self.holder_commitment_point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
@@ -8905,7 +8927,7 @@ where
 		} else { None };
 		let mut revoke_and_ack = if self.context.signer_pending_revoke_and_ack {
 			log_trace!(logger, "Attempting to generate pending revoke and ack...");
-			self.get_last_revoke_and_ack(logger)
+			self.get_last_revoke_and_ack(path_for_release_htlc, logger)
 		} else { None };
 
 		if self.context.resend_order == RAACommitmentOrder::CommitmentFirst
@@ -8976,9 +8998,12 @@ where
 		}
 	}
 
-	fn get_last_revoke_and_ack<L: Deref>(&mut self, logger: &L) -> Option<msgs::RevokeAndACK>
+	fn get_last_revoke_and_ack<CBP, L: Deref>(
+		&mut self, path_for_release_htlc: CBP, logger: &L,
+	) -> Option<msgs::RevokeAndACK>
 	where
 		L::Target: Logger,
+		CBP: Fn(u64) -> BlindedMessagePath,
 	{
 		debug_assert!(
 			self.holder_commitment_point.next_transaction_number() <= INITIAL_COMMITMENT_NUMBER - 2
@@ -8991,6 +9016,14 @@ where
 			.ok();
 		if let Some(per_commitment_secret) = per_commitment_secret {
 			if self.holder_commitment_point.can_advance() {
+				let mut release_htlc_message_paths = Vec::new();
+				for htlc in &self.context.pending_inbound_htlcs {
+					if htlc.state.should_hold_htlc() {
+						let path = path_for_release_htlc(htlc.htlc_id);
+						release_htlc_message_paths.push((htlc.htlc_id, path));
+					}
+				}
+
 				self.context.signer_pending_revoke_and_ack = false;
 				return Some(msgs::RevokeAndACK {
 					channel_id: self.context.channel_id,
@@ -8998,7 +9031,7 @@ where
 					next_per_commitment_point: self.holder_commitment_point.next_point(),
 					#[cfg(taproot)]
 					next_local_nonce: None,
-					release_htlc_message_paths: Vec::new(),
+					release_htlc_message_paths,
 				});
 			}
 		}
@@ -9146,13 +9179,15 @@ where
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
 	#[rustfmt::skip]
-	pub fn channel_reestablish<L: Deref, NS: Deref>(
+	pub fn channel_reestablish<L: Deref, NS: Deref, CBP>(
 		&mut self, msg: &msgs::ChannelReestablish, logger: &L, node_signer: &NS,
-		chain_hash: ChainHash, user_config: &UserConfig, best_block: &BestBlock
+		chain_hash: ChainHash, user_config: &UserConfig, best_block: &BestBlock,
+		path_for_release_htlc: CBP,
 	) -> Result<ReestablishResponses, ChannelError>
 	where
 		L::Target: Logger,
-		NS::Target: NodeSigner
+		NS::Target: NodeSigner,
+		CBP: Fn(u64) -> BlindedMessagePath
 	{
 		if !self.context.channel_state.is_peer_disconnected() {
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
@@ -9371,7 +9406,7 @@ where
 				self.context.monitor_pending_revoke_and_ack = true;
 				None
 			} else {
-				self.get_last_revoke_and_ack(logger)
+				self.get_last_revoke_and_ack(path_for_release_htlc, logger)
 			}
 		} else {
 			debug_assert!(false, "All values should have been handled in the four cases above");
@@ -16635,6 +16670,7 @@ mod tests {
 			chain_hash,
 			&config,
 			0,
+			|_| unreachable!()
 		);
 
 		// Receive funding_signed, but the channel will be configured to hold sending channel_ready and
@@ -16649,6 +16685,7 @@ mod tests {
 			chain_hash,
 			&config,
 			0,
+			|_| unreachable!()
 		);
 		// Our channel_ready shouldn't be sent yet, even with trust_own_funding_0conf set,
 		// as the funding transaction depends on all channels in the batch becoming ready.

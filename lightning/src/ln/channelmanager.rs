@@ -377,7 +377,7 @@ impl PendingHTLCRouting {
 
 	/// Whether this HTLC should be held by our node until we receive a corresponding
 	/// [`ReleaseHeldHtlc`] onion message.
-	fn should_hold_htlc(&self) -> bool {
+	pub(super) fn should_hold_htlc(&self) -> bool {
 		match self {
 			Self::Forward { hold_htlc: Some(()), .. } => true,
 			_ => false,
@@ -3443,18 +3443,20 @@ macro_rules! emit_initial_channel_ready_event {
 /// set for this channel is empty!
 macro_rules! handle_monitor_update_completion {
 	($self: ident, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
+		let channel_id = $chan.context.channel_id();
+		let counterparty_node_id = $chan.context.get_counterparty_node_id();
 		#[cfg(debug_assertions)]
 		{
 			let in_flight_updates =
-				$peer_state.in_flight_monitor_updates.get(&$chan.context.channel_id());
+				$peer_state.in_flight_monitor_updates.get(&channel_id);
 			assert!(in_flight_updates.map(|(_, updates)| updates.is_empty()).unwrap_or(true));
 			assert_eq!($chan.blocked_monitor_updates_pending(), 0);
 		}
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
 		let mut updates = $chan.monitor_updating_restored(&&logger,
 			&$self.node_signer, $self.chain_hash, &*$self.config.read().unwrap(),
-			$self.best_block.read().unwrap().height);
-		let counterparty_node_id = $chan.context.get_counterparty_node_id();
+			$self.best_block.read().unwrap().height,
+			|htlc_id| $self.path_for_release_held_htlc(htlc_id, &channel_id, &counterparty_node_id));
 		let channel_update = if updates.channel_ready.is_some() && $chan.context.is_usable() {
 			// We only send a channel_update in the case where we are just now sending a
 			// channel_ready and the channel is in a usable state. We may re-send a
@@ -3470,7 +3472,7 @@ macro_rules! handle_monitor_update_completion {
 		} else { None };
 
 		let update_actions = $peer_state.monitor_update_blocked_actions
-			.remove(&$chan.context.channel_id()).unwrap_or(Vec::new());
+			.remove(&channel_id).unwrap_or(Vec::new());
 
 		let (htlc_forwards, decode_update_add_htlcs) = $self.handle_channel_resumption(
 			&mut $peer_state.pending_msg_events, $chan, updates.raa,
@@ -3482,7 +3484,6 @@ macro_rules! handle_monitor_update_completion {
 			$peer_state.pending_msg_events.push(upd);
 		}
 
-		let channel_id = $chan.context.channel_id();
 		let unbroadcasted_batch_funding_txid = $chan.context.unbroadcasted_batch_funding_txid(&$chan.funding);
 		core::mem::drop($peer_state_lock);
 		core::mem::drop($per_peer_state_lock);
@@ -11177,6 +11178,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							self.chain_hash,
 							&self.config.read().unwrap(),
 							&*self.best_block.read().unwrap(),
+							|htlc_id| self.path_for_release_held_htlc(htlc_id, &msg.channel_id, counterparty_node_id)
 						);
 						let responses = try_channel_entry!(self, peer_state, res, chan_entry);
 						let mut channel_update = None;
@@ -11652,9 +11654,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		// Returns whether we should remove this channel as it's just been closed.
 		let unblock_chan = |chan: &mut Channel<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| -> Option<ShutdownResult> {
+			let channel_id = chan.context().channel_id();
 			let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 			let node_id = chan.context().get_counterparty_node_id();
-			if let Some(msgs) = chan.signer_maybe_unblocked(self.chain_hash, &&logger) {
+			if let Some(msgs) = chan.signer_maybe_unblocked(
+				self.chain_hash, &&logger,
+				|htlc_id| self.path_for_release_held_htlc(htlc_id, &channel_id, &node_id)
+			) {
 				if let Some(msg) = msgs.open_channel {
 					pending_msg_events.push(MessageSendEvent::SendOpenChannel {
 						node_id,
@@ -11675,7 +11681,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 				let cu_msg = msgs.commitment_update.map(|updates| MessageSendEvent::UpdateHTLCs {
 					node_id,
-					channel_id: chan.context().channel_id(),
+					channel_id,
 					updates,
 				});
 				let raa_msg = msgs.revoke_and_ack.map(|msg| MessageSendEvent::SendRevokeAndACK {
