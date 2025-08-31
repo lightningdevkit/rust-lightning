@@ -26,7 +26,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::spanned::Spanned;
 use syn::{parse, ImplItemFn, Token};
-use syn::{parse_macro_input, Item};
+use syn::{parse_macro_input, DeriveInput, Item};
 
 fn add_async_method(mut parsed: ImplItemFn) -> TokenStream {
 	let output = quote! {
@@ -395,6 +395,126 @@ pub fn xtest_inventory(_input: TokenStream) -> TokenStream {
 			inventory::iter::<XTestItem>
 				.into_iter()
 				.collect()
+		}
+	};
+
+	TokenStream::from(expanded)
+}
+
+/// A derive macro that implements the `DeserializeWithUnknowns` trait for a struct.
+///
+/// Example
+/// ```ignore
+/// pub(crate) trait DeserializeWithUnknowns: Sized {
+/// 	// Deserializes a struct from a `serde_json::Value`, returning the struct
+/// 	// and a list of any unrecognized field names.
+/// 	fn deserialize_with_unknowns(
+/// 		value: serde_json::Value,
+/// 	) -> Result<(Self, Vec<String>), serde_json::Error>;
+/// }
+///
+/// #[derive(DeserializeWithUnknowns, Deserialize, Serialize)]
+/// struct MyReq { known: u32 }
+///
+/// let input = serde_json::json!({ "known": 1, "extra": { "deep": true }, "list": [ { "x": 1 } ] });
+/// let (req, unknown) = <MyReq as DeserializeWithUnknowns>::deserialize_with_unknowns(input).unwrap();
+/// assert_eq!(req.known, 1);
+/// assert_eq!(unknown, ["extra", "list[0].x"]);
+/// ```
+///
+/// Notes
+/// - Unknown fields explicitly set to `null` are ignored.
+/// - This macro expects the `DeserializeWithUnknowns` trait to be in scope where it is derived.
+/// - The type must also implement `Serialize` so that the recognized JSON can be produced.
+#[proc_macro_derive(DeserializeWithUnknowns)]
+pub fn deserialize_with_unknowns_derive(input: TokenStream) -> TokenStream {
+	let input = parse_macro_input!(input as DeriveInput);
+	let name = &input.ident;
+	let expanded = quote! {
+		impl DeserializeWithUnknowns for #name {
+			fn deserialize_with_unknowns(value: serde_json::Value) -> Result<(Self, Vec<String>), serde_json::Error> {
+				// Deserialize the input JSON into the target struct type.
+				let inner_struct: #name = ::serde_json::from_value(value.clone())?;
+				// Serialize the struct back to JSON to get exactly the recognized shape.
+				let recognized_json = ::serde_json::to_value(&inner_struct)?;
+
+				fn join_path(base_path: &str, segment: &str) -> ::alloc::string::String {
+					if base_path.is_empty() { segment.into() } else { [base_path, ".", segment].concat() }
+				}
+				fn index_path(base_path: &str, index: usize) -> ::alloc::string::String {
+					use ::alloc::string::ToString;
+					if base_path.is_empty() { ["[", &index.to_string(), "]"].concat() } else { [base_path, "[", &index.to_string(), "]"].concat() }
+				}
+				// Recursively walk input vs recognized JSON and collect unknown field paths.
+				fn collect_unknown_paths(
+					input_json: &::serde_json::Value,
+					recognized_json: &::serde_json::Value,
+					base_path: &str,
+					out_paths: &mut ::alloc::vec::Vec<::alloc::string::String>,
+				) {
+					use ::serde_json::Value::*;
+					match (input_json, recognized_json) {
+						(Object(input_map), Object(recognized_map)) => {
+							for (key, input_value) in input_map.iter() {
+								match recognized_map.get(key) {
+									// Key not present in recognized JSON -> unknown.
+									None => {
+										if !input_value.is_null() {
+											out_paths.push(join_path(base_path, key));
+										}
+									},
+									// Key known. Recurse based on the value shape.
+									Some(recognized_value) => match (input_value, recognized_value) {
+										(Object(_), Object(_)) => collect_unknown_paths(
+											input_value,
+											recognized_value,
+											&join_path(base_path, key),
+											out_paths,
+										),
+										(Array(input_array), Array(recognized_array)) => {
+											for (idx, (input_elem, recognized_elem)) in input_array
+												.iter()
+												.zip(recognized_array.iter())
+												.enumerate()
+											{
+												collect_unknown_paths(
+													input_elem,
+													recognized_elem,
+													&index_path(&join_path(base_path, key), idx),
+													out_paths,
+												);
+											}
+										},
+										_ => { /* No-op */ }
+									}
+								}
+							}
+						},
+						(Array(input_array), Array(recognized_array)) => {
+							for (idx, (input_elem, recognized_elem)) in input_array
+								.iter()
+								.zip(recognized_array.iter())
+								.enumerate()
+							{
+								collect_unknown_paths(
+									input_elem,
+									recognized_elem,
+									&index_path(base_path, idx),
+									out_paths,
+								);
+							}
+						},
+						_ => { /* No-op */ }
+					}
+				}
+
+				let mut unknown_paths = Vec::new();
+				collect_unknown_paths(&value, &recognized_json, "", &mut unknown_paths);
+
+				unknown_paths.sort();
+				unknown_paths.dedup();
+				Ok((inner_struct, unknown_paths))
+			}
 		}
 	};
 
