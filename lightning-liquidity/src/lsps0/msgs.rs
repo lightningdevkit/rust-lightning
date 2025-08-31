@@ -99,10 +99,13 @@ impl From<LSPS0Message> for LSPSMessage {
 
 #[cfg(test)]
 mod tests {
-	use lightning::util::hash_tables::new_hash_map;
-
 	use super::*;
-	use crate::lsps0::ser::LSPSMethod;
+
+	use crate::lsps0::ser::{
+		InvalidParams, LSPSMethod, LSPSResponseErrorData, JSONRPC_INVALID_PARAMS_ERROR_CODE,
+	};
+
+	use lightning::util::hash_tables::new_hash_map;
 
 	use alloc::string::ToString;
 
@@ -225,6 +228,33 @@ mod tests {
 		assert_eq!(
 			json,
 			r#"{"jsonrpc":"2.0","id":"request:id:xyz123","result":{"protocols":[1,2,3]}}"#
+		);
+	}
+
+	#[test]
+	fn deserializes_request_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps0.list_protocols",
+        "params": { "foo": "bar", "nested": { "x": 1 } }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+
+		assert_eq!(
+			msg,
+			LSPSMessage::LSPS0(LSPS0Message::Response(
+				LSPSRequestId("request:id:abc".to_string()),
+				LSPS0Response::ListProtocolsError(LSPSResponseError {
+					code: JSONRPC_INVALID_PARAMS_ERROR_CODE,
+					message: "Invalid params".to_string(),
+					data: Some(LSPSResponseErrorData::InvalidParams(InvalidParams {
+						unrecognized: vec!["foo".to_string(), "nested".to_string()]
+					})),
+				})
+			))
 		);
 	}
 }

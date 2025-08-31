@@ -25,6 +25,7 @@ use crate::message_queue::MessageQueue;
 use crate::events::EventQueue;
 use crate::lsps0::ser::{
 	LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
+	LSPSResponseErrorData,
 };
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, RwLock};
@@ -207,10 +208,10 @@ where
 			let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 				code: LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 				message: format!("Order does not match options supported by LSP server"),
-				data: Some(format!(
+				data: Some(LSPSResponseErrorData::Text(format!(
 					"Supported options are {:?}",
 					&self.config.supported_options.as_ref().unwrap()
-				)),
+				))),
 			});
 			let msg = LSPS1Message::Response(request_id, response).into();
 			message_queue_notifier.enqueue(counterparty_node_id, msg);

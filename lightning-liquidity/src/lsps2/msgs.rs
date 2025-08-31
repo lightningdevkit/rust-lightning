@@ -229,6 +229,9 @@ mod tests {
 	use super::*;
 
 	use crate::alloc::string::ToString;
+	use crate::lsps0::ser::{
+		InvalidParams, LSPSResponseErrorData, JSONRPC_INVALID_PARAMS_ERROR_CODE,
+	};
 	use crate::lsps2::utils::is_valid_opening_fee_params;
 
 	use core::str::FromStr;
@@ -447,5 +450,285 @@ mod tests {
 			"client_trusts_lsp": false
 		}"#;
 		let _buy_response: LSPS2BuyResponse = serde_json::from_str(json_str).unwrap();
+	}
+
+	#[test]
+	fn deserializes_request_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps2.buy",
+        "params": {
+			"opening_fee_params": {
+				"min_fee_msat": "546000",
+				"proportional": 1200,
+				"valid_until": "2023-02-23T08:47:30.511Z",
+				"min_lifetime": 1008,
+				"max_client_to_self_delay": 2016,
+				"min_payment_size_msat": "1000",
+				"max_payment_size_msat": "1000000",
+				"promise": "abcdefghijklmnopqrstuvwxyz",
+				"unknown_param": "unknown_value"
+			},
+			"payment_size_msat": "42000"
+		}
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+
+		let expected_err = expected_invalid_params_err(&["opening_fee_params.unknown_param"]);
+		match msg {
+			LSPSMessage::LSPS2(LSPS2Message::Response(id, LSPS2Response::BuyError(err))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_buy_request_with_top_level_unknown_param() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps2.buy",
+        "params": {
+            "opening_fee_params": {
+                "min_fee_msat": "546000",
+                "proportional": 1200,
+                "valid_until": "2023-02-23T08:47:30.511Z",
+                "min_lifetime": 1008,
+                "max_client_to_self_delay": 2016,
+                "min_payment_size_msat": "1000",
+                "max_payment_size_msat": "1000000",
+                "promise": "abcdefghijklmnopqrstuvwxyz"
+            },
+            "payment_size_msat": "42000",
+            "extra_param": "value"
+        }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["extra_param"]);
+		match msg {
+			LSPSMessage::LSPS2(LSPS2Message::Response(id, LSPS2Response::BuyError(err))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn buy_request_allows_null_optional_fields() {
+		// Ensure that known optional fields provided as null are not treated as unknown
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps2.buy",
+        "params": {
+            "opening_fee_params": {
+                "min_fee_msat": "546000",
+                "proportional": 1200,
+                "valid_until": "2023-02-23T08:47:30.511Z",
+                "min_lifetime": 1008,
+                "max_client_to_self_delay": 2016,
+                "min_payment_size_msat": "1000",
+                "max_payment_size_msat": "1000000",
+                "promise": "abcdefghijklmnopqrstuvwxyz"
+            },
+            "payment_size_msat": null
+        }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		match msg {
+			LSPSMessage::LSPS2(LSPS2Message::Request(id, LSPS2Request::Buy(_))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	fn expected_invalid_params_err(unrecognized: &[&str]) -> LSPSResponseError {
+		let data =
+			InvalidParams { unrecognized: unrecognized.iter().map(|s| s.to_string()).collect() };
+		LSPSResponseError {
+			code: JSONRPC_INVALID_PARAMS_ERROR_CODE,
+			message: "Invalid params".to_string(),
+			data: Some(LSPSResponseErrorData::InvalidParams(data)),
+		}
+	}
+
+	#[test]
+	fn deserializes_get_info_request_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps2.get_info",
+        "params": { "unknown_param": "value" }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+
+		let expected_err = expected_invalid_params_err(&["unknown_param"]);
+		match msg {
+			LSPSMessage::LSPS2(LSPS2Message::Response(id, LSPS2Response::GetInfoError(err))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_get_info_response_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "result": {
+            "opening_fee_params_menu": [
+                {
+                    "min_fee_msat": "546000",
+                    "proportional": 1200,
+                    "valid_until": "2023-02-23T08:47:30.511Z",
+                    "min_lifetime": 1008,
+                    "max_client_to_self_delay": 2016,
+                    "min_payment_size_msat": "1000",
+                    "max_payment_size_msat": "1000000",
+                    "promise": "abcdefghijklmnopqrstuvwxyz",
+                    "unknown_param": "x"
+                },
+				{
+                    "min_fee_msat": "546000",
+                    "proportional": 1200,
+                    "valid_until": "2023-02-23T08:47:30.511Z",
+                    "min_lifetime": 1008,
+                    "max_client_to_self_delay": 2016,
+                    "min_payment_size_msat": "1000",
+                    "max_payment_size_msat": "1000000",
+                    "promise": "abcdefghijklmnopqrstuvwxyz",
+                    "unknown_param2": "y",
+                    "unknown_param3": "y"
+                }
+            ]
+        }
+    }"#;
+
+		let mut request_id_to_method_map = new_hash_map();
+		request_id_to_method_map.insert(
+			LSPSRequestId("request:id:abc".to_string()),
+			crate::lsps0::ser::LSPSMethod::LSPS2GetInfo,
+		);
+
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&[
+			"opening_fee_params_menu[0].unknown_param",
+			"opening_fee_params_menu[1].unknown_param2",
+			"opening_fee_params_menu[1].unknown_param3",
+		]);
+		match msg {
+			LSPSMessage::Invalid(err) => {
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn buy_request_ignores_unknown_top_level_null_param() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps2.buy",
+        "params": {
+            "opening_fee_params": {
+                "min_fee_msat": "546000",
+                "proportional": 1200,
+                "valid_until": "2023-02-23T08:47:30.511Z",
+                "min_lifetime": 1008,
+                "max_client_to_self_delay": 2016,
+                "min_payment_size_msat": "1000",
+                "max_payment_size_msat": "1000000",
+                "promise": "abcdefghijklmnopqrstuvwxyz"
+            },
+            "payment_size_msat": "42000",
+            "extra_param": null
+        }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		match msg {
+			LSPSMessage::LSPS2(LSPS2Message::Request(id, LSPS2Request::Buy(_))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn buy_request_ignores_unknown_nested_null_param() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps2.buy",
+        "params": {
+            "opening_fee_params": {
+                "min_fee_msat": "546000",
+                "proportional": 1200,
+                "valid_until": "2023-02-23T08:47:30.511Z",
+                "min_lifetime": 1008,
+                "max_client_to_self_delay": 2016,
+                "min_payment_size_msat": "1000",
+                "max_payment_size_msat": "1000000",
+                "promise": "abcdefghijklmnopqrstuvwxyz",
+                "unknown_param": null
+            },
+            "payment_size_msat": "42000"
+        }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		match msg {
+			LSPSMessage::LSPS2(LSPS2Message::Request(id, LSPS2Request::Buy(_))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_buy_response_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "result": {
+            "jit_channel_scid": "29451x4815x1",
+            "lsp_cltv_expiry_delta" : 144,
+            "client_trusts_lsp": false,
+            "unknown_param": "value"
+        }
+    }"#;
+
+		let mut request_id_to_method_map = new_hash_map();
+		request_id_to_method_map.insert(
+			LSPSRequestId("request:id:abc".to_string()),
+			crate::lsps0::ser::LSPSMethod::LSPS2Buy,
+		);
+
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["unknown_param"]);
+		match msg {
+			LSPSMessage::Invalid(err) => {
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
 	}
 }

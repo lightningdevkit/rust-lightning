@@ -534,4 +534,215 @@ mod tests {
 		let payment_state: LSPS1PaymentState = serde_json::from_str(json_str).unwrap();
 		assert_eq!(payment_state, LSPS1PaymentState::Refunded);
 	}
+
+	#[test]
+	fn get_info_request_ignores_unknown_null_param() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps1.get_info",
+        "params": { "unknown_param": null }
+    }"#;
+
+		let mut request_id_method_map = lightning::util::hash_tables::new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		match msg {
+			LSPSMessage::LSPS1(LSPS1Message::Request(id, LSPS1Request::GetInfo(_))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	// Additional LSPS1 unknown-parameter tests
+	use crate::lsps0::ser::{
+		InvalidParams, LSPSMethod, LSPSResponseError, LSPSResponseErrorData,
+		JSONRPC_INVALID_PARAMS_ERROR_CODE,
+	};
+	use lightning::util::hash_tables::new_hash_map;
+
+	fn expected_invalid_params_err(unrecognized: &[&str]) -> LSPSResponseError {
+		let data =
+			InvalidParams { unrecognized: unrecognized.iter().map(|s| s.to_string()).collect() };
+		LSPSResponseError {
+			code: JSONRPC_INVALID_PARAMS_ERROR_CODE,
+			message: "Invalid params".to_string(),
+			data: Some(LSPSResponseErrorData::InvalidParams(data)),
+		}
+	}
+
+	#[test]
+	fn deserializes_get_info_request_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps1.get_info",
+        "params": { "unknown_param": "value" }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+
+		let expected_err = expected_invalid_params_err(&["unknown_param"]);
+		match msg {
+			LSPSMessage::LSPS1(LSPS1Message::Response(id, LSPS1Response::GetInfoError(err))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_create_order_request_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps1.create_order",
+        "params": {
+            "lsp_balance_sat": "5000000",
+            "client_balance_sat": "2000000",
+            "required_channel_confirmations" : 0,
+            "funding_confirms_within_blocks": 6,
+            "channel_expiry_blocks": 144,
+            "token": "",
+            "announce_channel": true,
+            "extra_param": "value"
+        }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["extra_param"]);
+		match msg {
+			LSPSMessage::LSPS1(LSPS1Message::Response(
+				id,
+				LSPS1Response::CreateOrderError(err),
+			)) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn create_order_request_allows_null_optional_fields() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps1.create_order",
+        "params": {
+            "lsp_balance_sat": "5000000",
+            "client_balance_sat": "2000000",
+            "required_channel_confirmations" : 0,
+            "funding_confirms_within_blocks": 6,
+            "channel_expiry_blocks": 144,
+            "token": "",
+            "announce_channel": true,
+            "refund_onchain_address": null
+        }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		match msg {
+			LSPSMessage::LSPS1(LSPS1Message::Request(id, LSPS1Request::CreateOrder(_))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_get_order_request_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps1.get_order",
+        "params": {
+            "order_id": "order-123",
+            "unknown_param": "x"
+        }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["unknown_param"]);
+		match msg {
+			LSPSMessage::LSPS1(LSPS1Message::Response(id, LSPS1Response::GetOrderError(err))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_get_info_response_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "result": {
+            "min_required_channel_confirmations": 0,
+            "min_funding_confirms_within_blocks" : 6,
+            "supports_zero_channel_reserve": true,
+            "max_channel_expiry_blocks": 20160,
+            "min_initial_client_balance_sat": "20000",
+            "max_initial_client_balance_sat": "100000000",
+            "min_initial_lsp_balance_sat": "0",
+            "max_initial_lsp_balance_sat": "100000000",
+            "min_channel_balance_sat": "50000",
+            "max_channel_balance_sat": "100000000",
+            "unknown_param": "x"
+        }
+    }"#;
+
+		let mut request_id_to_method_map = new_hash_map();
+		request_id_to_method_map
+			.insert(LSPSRequestId("request:id:abc".to_string()), LSPSMethod::LSPS1GetInfo);
+
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["unknown_param"]);
+		match msg {
+			LSPSMessage::Invalid(err) => {
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_create_order_response_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "result": {
+            "order_id": "order-123",
+            "lsp_balance_sat": "5000000",
+            "client_balance_sat": "2000000",
+            "required_channel_confirmations" : 0,
+            "funding_confirms_within_blocks": 6,
+            "channel_expiry_blocks": 144,
+            "token": "",
+            "announce_channel": true,
+            "created_at": "2025-01-01T00:00:00Z",
+            "order_state": "CREATED",
+            "payment": { "unknown_param": "x" }
+        }
+    }"#;
+
+		let mut request_id_to_method_map = new_hash_map();
+		request_id_to_method_map
+			.insert(LSPSRequestId("request:id:abc".to_string()), LSPSMethod::LSPS1CreateOrder);
+
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["payment.unknown_param"]);
+		match msg {
+			LSPSMessage::Invalid(err) => {
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
 }

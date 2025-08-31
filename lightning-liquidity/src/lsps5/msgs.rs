@@ -687,6 +687,21 @@ impl From<LSPS5Message> for LSPSMessage {
 mod tests {
 	use super::*;
 	use crate::alloc::string::ToString;
+	use crate::lsps0::ser::{
+		InvalidParams, LSPSMethod, LSPSResponseError, LSPSResponseErrorData,
+		JSONRPC_INVALID_PARAMS_ERROR_CODE,
+	};
+	use lightning::util::hash_tables::new_hash_map;
+
+	fn expected_invalid_params_err(unrecognized: &[&str]) -> LSPSResponseError {
+		let data =
+			InvalidParams { unrecognized: unrecognized.iter().map(|s| s.to_string()).collect() };
+		LSPSResponseError {
+			code: JSONRPC_INVALID_PARAMS_ERROR_CODE,
+			message: "Invalid params".to_string(),
+			data: Some(LSPSResponseErrorData::InvalidParams(data)),
+		}
+	}
 
 	#[test]
 	fn webhook_notification_serialization() {
@@ -734,6 +749,203 @@ mod tests {
 		let json_str = r#"{}"#;
 		let _list_req: LSPS5ListWebhooksRequest = serde_json::from_str(json_str).unwrap();
 		let _remove_resp: LSPS5RemoveWebhookResponse = serde_json::from_str(json_str).unwrap();
+	}
+
+	#[test]
+	fn deserializes_set_webhook_request_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps5.set_webhook",
+        "params": { "app_name": "my_app", "webhook": "https://example.com/hook", "extra_param": "x" }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["extra_param"]);
+		match msg {
+			LSPSMessage::LSPS5(LSPS5Message::Response(id, LSPS5Response::SetWebhookError(err))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_list_webhooks_request_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps5.list_webhooks",
+        "params": { "unknown_param": "x" }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["unknown_param"]);
+		match msg {
+			LSPSMessage::LSPS5(LSPS5Message::Response(
+				id,
+				LSPS5Response::ListWebhooksError(err),
+			)) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_remove_webhook_request_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps5.remove_webhook",
+        "params": { "app_name": "my_app", "unknown_param": "x" }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["unknown_param"]);
+		match msg {
+			LSPSMessage::LSPS5(LSPS5Message::Response(
+				id,
+				LSPS5Response::RemoveWebhookError(err),
+			)) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn set_webhook_request_ignores_unknown_null_param() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps5.set_webhook",
+        "params": { "app_name": "my_app", "webhook": "https://example.com/hook", "extra_param": null }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		match msg {
+			LSPSMessage::LSPS5(LSPS5Message::Request(id, LSPS5Request::SetWebhook(_))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn list_webhooks_request_ignores_unknown_null_param() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "method": "lsps5.list_webhooks",
+        "params": { "unknown_param": null }
+    }"#;
+
+		let mut request_id_method_map = new_hash_map();
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map).unwrap();
+		match msg {
+			LSPSMessage::LSPS5(LSPS5Message::Request(id, LSPS5Request::ListWebhooks(_))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn set_webhook_response_ignores_unknown_null_param() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "result": { "num_webhooks": 1, "max_webhooks": 5, "no_change": false, "unknown_param": null }
+    }"#;
+
+		let mut request_id_to_method_map = new_hash_map();
+		request_id_to_method_map
+			.insert(LSPSRequestId("request:id:abc".to_string()), LSPSMethod::LSPS5SetWebhook);
+
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
+		match msg {
+			LSPSMessage::LSPS5(LSPS5Message::Response(id, LSPS5Response::SetWebhook(res))) => {
+				assert_eq!(id, LSPSRequestId("request:id:abc".to_string()));
+				assert_eq!(res.num_webhooks, 1);
+				assert_eq!(res.max_webhooks, 5);
+				assert!(!res.no_change);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_set_webhook_response_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "result": { "num_webhooks": 1, "max_webhooks": 5, "no_change": false, "unknown_param": "x" }
+    }"#;
+
+		let mut request_id_to_method_map = new_hash_map();
+		request_id_to_method_map
+			.insert(LSPSRequestId("request:id:abc".to_string()), LSPSMethod::LSPS5SetWebhook);
+
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["unknown_param"]);
+		match msg {
+			LSPSMessage::Invalid(err) => {
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_list_webhooks_response_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "result": { "app_names": ["a"], "max_webhooks": 5, "unknown_param": "x" }
+    }"#;
+
+		let mut request_id_to_method_map = new_hash_map();
+		request_id_to_method_map
+			.insert(LSPSRequestId("request:id:abc".to_string()), LSPSMethod::LSPS5ListWebhooks);
+
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["unknown_param"]);
+		match msg {
+			LSPSMessage::Invalid(err) => {
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
+	}
+
+	#[test]
+	fn deserializes_remove_webhook_response_with_unknown_params() {
+		let json = r#"{
+        "jsonrpc": "2.0",
+        "id": "request:id:abc",
+        "result": { "extra": "x" }
+    }"#;
+
+		let mut request_id_to_method_map = new_hash_map();
+		request_id_to_method_map
+			.insert(LSPSRequestId("request:id:abc".to_string()), LSPSMethod::LSPS5RemoveWebhook);
+
+		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
+		let expected_err = expected_invalid_params_err(&["extra"]);
+		match msg {
+			LSPSMessage::Invalid(err) => {
+				assert_eq!(err, expected_err);
+			},
+			_ => panic!("Unexpected message: {:?}", msg),
+		}
 	}
 
 	#[test]
