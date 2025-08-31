@@ -469,6 +469,9 @@ impl Serialize for LSPSMessage {
 					LSPS5Response::ListWebhooks(result) => {
 						jsonrpc_object.serialize_field(JSONRPC_RESULT_FIELD_KEY, result)?
 					},
+					LSPS5Response::ListWebhooksError(error) => {
+						jsonrpc_object.serialize_field(JSONRPC_ERROR_FIELD_KEY, error)?
+					},
 					LSPS5Response::RemoveWebhook(result) => {
 						jsonrpc_object.serialize_field(JSONRPC_RESULT_FIELD_KEY, result)?
 					},

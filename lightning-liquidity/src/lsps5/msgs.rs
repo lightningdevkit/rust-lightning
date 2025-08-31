@@ -649,6 +649,8 @@ pub enum LSPS5Response {
 	SetWebhookError(LSPSResponseError),
 	/// Response to [`ListWebhooks`](LSPS5ListWebhooksRequest) request.
 	ListWebhooks(LSPS5ListWebhooksResponse),
+	/// Error response to [`ListWebhooks`](LSPS5ListWebhooksRequest) request.
+	ListWebhooksError(LSPSResponseError),
 	/// Response to [`RemoveWebhook`](LSPS5RemoveWebhookRequest) request.
 	RemoveWebhook(LSPS5RemoveWebhookResponse),
 	/// Error response to [`RemoveWebhook`](LSPS5RemoveWebhookRequest) request.
