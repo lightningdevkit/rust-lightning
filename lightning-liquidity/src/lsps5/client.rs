@@ -14,8 +14,8 @@ use crate::events::EventQueue;
 use crate::lsps0::ser::{LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId};
 use crate::lsps5::event::LSPS5ClientEvent;
 use crate::lsps5::msgs::{
-	LSPS5Message, LSPS5Request, LSPS5Response, ListWebhooksRequest, RemoveWebhookRequest,
-	SetWebhookRequest,
+	LSPS5ListWebhooksRequest, LSPS5Message, LSPS5RemoveWebhookRequest, LSPS5Request, LSPS5Response,
+	LSPS5SetWebhookRequest,
 };
 
 use crate::message_queue::MessageQueue;
@@ -208,8 +208,10 @@ where
 			);
 		});
 
-		let request =
-			LSPS5Request::SetWebhook(SetWebhookRequest { app_name, webhook: lsps_webhook_url });
+		let request = LSPS5Request::SetWebhook(LSPS5SetWebhookRequest {
+			app_name,
+			webhook: lsps_webhook_url,
+		});
 
 		let message = LSPS5Message::Request(request_id.clone(), request);
 		message_queue_notifier.enqueue(&counterparty_node_id, LSPSMessage::LSPS5(message));
@@ -241,7 +243,7 @@ where
 			peer_state.add_request(request_id.clone(), |s| &mut s.pending_list_webhooks_requests);
 		});
 
-		let request = LSPS5Request::ListWebhooks(ListWebhooksRequest {});
+		let request = LSPS5Request::ListWebhooks(LSPS5ListWebhooksRequest {});
 		let message = LSPS5Message::Request(request_id.clone(), request);
 		message_queue_notifier.enqueue(&counterparty_node_id, LSPSMessage::LSPS5(message));
 
@@ -281,7 +283,7 @@ where
 			});
 		});
 
-		let request = LSPS5Request::RemoveWebhook(RemoveWebhookRequest { app_name });
+		let request = LSPS5Request::RemoveWebhook(LSPS5RemoveWebhookRequest { app_name });
 		let message = LSPS5Message::Request(request_id.clone(), request);
 		message_queue_notifier.enqueue(&counterparty_node_id, LSPSMessage::LSPS5(message));
 
@@ -438,7 +440,10 @@ where
 mod tests {
 
 	use super::*;
-	use crate::{lsps0::ser::LSPSRequestId, lsps5::msgs::SetWebhookResponse};
+	use crate::{
+		lsps0::ser::LSPSRequestId, lsps5::msgs::LSPS5ListWebhooksResponse,
+		lsps5::msgs::LSPS5SetWebhookResponse,
+	};
 	use bitcoin::{key::Secp256k1, secp256k1::SecretKey};
 	use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -551,7 +556,7 @@ mod tests {
 			.unwrap();
 
 		let unknown_req_id = LSPSRequestId("unknown:request:id".to_string());
-		let response = LSPS5Response::SetWebhook(SetWebhookResponse {
+		let response = LSPS5Response::SetWebhook(LSPS5SetWebhookResponse {
 			num_webhooks: 1,
 			max_webhooks: 5,
 			no_change: false,
@@ -631,7 +636,7 @@ mod tests {
 			assert!(peer_state.pending_list_webhooks_requests.contains(&list_webhooks_req_id));
 		}
 
-		let set_webhook_response = LSPS5Response::SetWebhook(SetWebhookResponse {
+		let set_webhook_response = LSPS5Response::SetWebhook(LSPS5SetWebhookResponse {
 			num_webhooks: 1,
 			max_webhooks: 5,
 			no_change: false,
@@ -652,11 +657,10 @@ mod tests {
 			assert!(peer_state.pending_list_webhooks_requests.contains(&list_webhooks_req_id));
 		}
 
-		let list_webhooks_response =
-			LSPS5Response::ListWebhooks(crate::lsps5::msgs::ListWebhooksResponse {
-				app_names: vec![],
-				max_webhooks: 5,
-			});
+		let list_webhooks_response = LSPS5Response::ListWebhooks(LSPS5ListWebhooksResponse {
+			app_names: vec![],
+			max_webhooks: 5,
+		});
 		let response_msg = LSPS5Message::Response(list_webhooks_req_id, list_webhooks_response);
 
 		// now the pending request is handled, so the peer state should be removed

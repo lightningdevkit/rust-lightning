@@ -13,8 +13,9 @@ use crate::alloc::string::ToString;
 use crate::events::EventQueue;
 use crate::lsps0::ser::{LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId};
 use crate::lsps5::msgs::{
-	ListWebhooksRequest, ListWebhooksResponse, RemoveWebhookRequest, RemoveWebhookResponse,
-	SetWebhookRequest, SetWebhookResponse, WebhookNotification, WebhookNotificationMethod,
+	LSPS5ListWebhooksRequest, LSPS5ListWebhooksResponse, LSPS5RemoveWebhookRequest,
+	LSPS5RemoveWebhookResponse, LSPS5SetWebhookRequest, LSPS5SetWebhookResponse,
+	WebhookNotification, WebhookNotificationMethod,
 };
 use crate::message_queue::MessageQueue;
 use crate::prelude::*;
@@ -174,7 +175,7 @@ where
 
 	fn handle_set_webhook(
 		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
-		params: SetWebhookRequest,
+		params: LSPS5SetWebhookRequest,
 	) -> Result<(), LightningError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
@@ -245,7 +246,7 @@ where
 
 		let msg = LSPS5Message::Response(
 			request_id,
-			LSPS5Response::SetWebhook(SetWebhookResponse {
+			LSPS5Response::SetWebhook(LSPS5SetWebhookResponse {
 				num_webhooks: peer_state.webhooks_len() as u32,
 				max_webhooks: self.config.max_webhooks_per_client,
 				no_change,
@@ -258,7 +259,7 @@ where
 
 	fn handle_list_webhooks(
 		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
-		_params: ListWebhooksRequest,
+		_params: LSPS5ListWebhooksRequest,
 	) -> Result<(), LightningError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
@@ -268,7 +269,7 @@ where
 
 		let max_webhooks = self.config.max_webhooks_per_client;
 
-		let response = ListWebhooksResponse { app_names, max_webhooks };
+		let response = LSPS5ListWebhooksResponse { app_names, max_webhooks };
 		let msg = LSPS5Message::Response(request_id, LSPS5Response::ListWebhooks(response)).into();
 		message_queue_notifier.enqueue(&counterparty_node_id, msg);
 
@@ -277,7 +278,7 @@ where
 
 	fn handle_remove_webhook(
 		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
-		params: RemoveWebhookRequest,
+		params: LSPS5RemoveWebhookRequest,
 	) -> Result<(), LightningError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
@@ -285,7 +286,7 @@ where
 
 		if let Some(peer_state) = outer_state_lock.get_mut(&counterparty_node_id) {
 			if peer_state.remove_webhook(&params.app_name) {
-				let response = RemoveWebhookResponse {};
+				let response = LSPS5RemoveWebhookResponse {};
 				let msg =
 					LSPS5Message::Response(request_id, LSPS5Response::RemoveWebhook(response))
 						.into();

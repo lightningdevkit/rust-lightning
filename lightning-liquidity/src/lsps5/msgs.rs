@@ -419,7 +419,7 @@ impl From<LSPS5WebhookUrl> for String {
 
 /// Parameters for `lsps5.set_webhook` request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SetWebhookRequest {
+pub struct LSPS5SetWebhookRequest {
 	/// Human-readable name for the webhook.
 	pub app_name: LSPS5AppName,
 	/// URL of the webhook.
@@ -428,7 +428,7 @@ pub struct SetWebhookRequest {
 
 /// Response for `lsps5.set_webhook`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SetWebhookResponse {
+pub struct LSPS5SetWebhookResponse {
 	/// Current number of webhooks registered for this client.
 	pub num_webhooks: u32,
 	/// Maximum number of webhooks allowed by LSP.
@@ -439,11 +439,11 @@ pub struct SetWebhookResponse {
 
 /// Parameters for `lsps5.list_webhooks` request.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub struct ListWebhooksRequest {}
+pub struct LSPS5ListWebhooksRequest {}
 
 /// Response for `lsps5.list_webhooks`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ListWebhooksResponse {
+pub struct LSPS5ListWebhooksResponse {
 	/// List of app_names with registered webhooks.
 	pub app_names: Vec<LSPS5AppName>,
 	/// Maximum number of webhooks allowed by LSP.
@@ -452,14 +452,14 @@ pub struct ListWebhooksResponse {
 
 /// Parameters for `lsps5.remove_webhook` request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RemoveWebhookRequest {
+pub struct LSPS5RemoveWebhookRequest {
 	/// App name identifying the webhook to remove.
 	pub app_name: LSPS5AppName,
 }
 
 /// Response for `lsps5.remove_webhook`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub struct RemoveWebhookResponse {}
+pub struct LSPS5RemoveWebhookResponse {}
 
 /// Webhook notification methods defined in LSPS5.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -633,25 +633,25 @@ impl<'de> Deserialize<'de> for WebhookNotification {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS5Request {
 	/// Register or update a webhook.
-	SetWebhook(SetWebhookRequest),
+	SetWebhook(LSPS5SetWebhookRequest),
 	/// List all registered webhooks.
-	ListWebhooks(ListWebhooksRequest),
+	ListWebhooks(LSPS5ListWebhooksRequest),
 	/// Remove a webhook.
-	RemoveWebhook(RemoveWebhookRequest),
+	RemoveWebhook(LSPS5RemoveWebhookRequest),
 }
 
 /// An LSPS5 protocol response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS5Response {
-	/// Response to [`SetWebhook`](SetWebhookRequest) request.
-	SetWebhook(SetWebhookResponse),
-	/// Error response to [`SetWebhook`](SetWebhookRequest) request.
+	/// Response to [`SetWebhook`](LSPS5SetWebhookRequest) request.
+	SetWebhook(LSPS5SetWebhookResponse),
+	/// Error response to [`SetWebhook`](LSPS5SetWebhookRequest) request.
 	SetWebhookError(LSPSResponseError),
-	/// Response to [`ListWebhooks`](ListWebhooksRequest) request.
-	ListWebhooks(ListWebhooksResponse),
-	/// Response to [`RemoveWebhook`](RemoveWebhookRequest) request.
-	RemoveWebhook(RemoveWebhookResponse),
-	/// Error response to [`RemoveWebhook`](RemoveWebhookRequest) request.
+	/// Response to [`ListWebhooks`](LSPS5ListWebhooksRequest) request.
+	ListWebhooks(LSPS5ListWebhooksResponse),
+	/// Response to [`RemoveWebhook`](LSPS5RemoveWebhookRequest) request.
+	RemoveWebhook(LSPS5RemoveWebhookResponse),
+	/// Error response to [`RemoveWebhook`](LSPS5RemoveWebhookRequest) request.
 	RemoveWebhookError(LSPSResponseError),
 }
 
@@ -700,7 +700,7 @@ mod tests {
 	#[test]
 	fn parse_set_webhook_request() {
 		let json_str = r#"{"app_name":"my_app","webhook":"https://example.com/webhook"}"#;
-		let request: SetWebhookRequest = serde_json::from_str(json_str).unwrap();
+		let request: LSPS5SetWebhookRequest = serde_json::from_str(json_str).unwrap();
 		assert_eq!(request.app_name, LSPS5AppName::new("my_app".to_string()).unwrap());
 		assert_eq!(
 			request.webhook,
@@ -711,7 +711,7 @@ mod tests {
 	#[test]
 	fn parse_set_webhook_response() {
 		let json_str = r#"{"num_webhooks":1,"max_webhooks":5,"no_change":false}"#;
-		let response: SetWebhookResponse = serde_json::from_str(json_str).unwrap();
+		let response: LSPS5SetWebhookResponse = serde_json::from_str(json_str).unwrap();
 		assert_eq!(response.num_webhooks, 1);
 		assert_eq!(response.max_webhooks, 5);
 		assert_eq!(response.no_change, false);
@@ -720,7 +720,7 @@ mod tests {
 	#[test]
 	fn parse_list_webhooks_response() {
 		let json_str = r#"{"app_names":["app1","app2"],"max_webhooks":5}"#;
-		let response: ListWebhooksResponse = serde_json::from_str(json_str).unwrap();
+		let response: LSPS5ListWebhooksResponse = serde_json::from_str(json_str).unwrap();
 		let app1 = LSPS5AppName::new("app1".to_string()).unwrap();
 		let app2 = LSPS5AppName::new("app2".to_string()).unwrap();
 		assert_eq!(response.app_names, vec![app1, app2]);
@@ -730,14 +730,14 @@ mod tests {
 	#[test]
 	fn parse_empty_requests_responses() {
 		let json_str = r#"{}"#;
-		let _list_req: ListWebhooksRequest = serde_json::from_str(json_str).unwrap();
-		let _remove_resp: RemoveWebhookResponse = serde_json::from_str(json_str).unwrap();
+		let _list_req: LSPS5ListWebhooksRequest = serde_json::from_str(json_str).unwrap();
+		let _remove_resp: LSPS5RemoveWebhookResponse = serde_json::from_str(json_str).unwrap();
 	}
 
 	#[test]
 	fn spec_example_set_webhook_request() {
 		let json_str = r#"{"app_name":"My LSPS-Compliant Lightning Client","webhook":"https://www.example.org/push?l=1234567890abcdefghijklmnopqrstuv&c=best"}"#;
-		let request: SetWebhookRequest = serde_json::from_str(json_str).unwrap();
+		let request: LSPS5SetWebhookRequest = serde_json::from_str(json_str).unwrap();
 		assert_eq!(
 			request.app_name,
 			LSPS5AppName::new("My LSPS-Compliant Lightning Client".to_string()).unwrap()
@@ -755,7 +755,7 @@ mod tests {
 	#[test]
 	fn spec_example_set_webhook_response() {
 		let json_str = r#"{"num_webhooks":2,"max_webhooks":4,"no_change":false}"#;
-		let response: SetWebhookResponse = serde_json::from_str(json_str).unwrap();
+		let response: LSPS5SetWebhookResponse = serde_json::from_str(json_str).unwrap();
 		assert_eq!(response.num_webhooks, 2);
 		assert_eq!(response.max_webhooks, 4);
 		assert_eq!(response.no_change, false);
@@ -764,7 +764,7 @@ mod tests {
 	#[test]
 	fn spec_example_list_webhooks_response() {
 		let json_str = r#"{"app_names":["My LSPS-Compliant Lightning Wallet","Another Wallet With The Same Signing Device"],"max_webhooks":42}"#;
-		let response: ListWebhooksResponse = serde_json::from_str(json_str).unwrap();
+		let response: LSPS5ListWebhooksResponse = serde_json::from_str(json_str).unwrap();
 		let app1 = LSPS5AppName::new("My LSPS-Compliant Lightning Wallet".to_string()).unwrap();
 		let app2 =
 			LSPS5AppName::new("Another Wallet With The Same Signing Device".to_string()).unwrap();
@@ -775,7 +775,7 @@ mod tests {
 	#[test]
 	fn spec_example_remove_webhook_request() {
 		let json_str = r#"{"app_name":"Another Wallet With The Same Signig Device"}"#;
-		let request: RemoveWebhookRequest = serde_json::from_str(json_str).unwrap();
+		let request: LSPS5RemoveWebhookRequest = serde_json::from_str(json_str).unwrap();
 		assert_eq!(
 			request.app_name,
 			LSPS5AppName::new("Another Wallet With The Same Signig Device".to_string()).unwrap()
