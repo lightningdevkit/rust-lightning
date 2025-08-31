@@ -9,10 +9,9 @@
 
 //! LSPS5 message formats for webhook registration
 
-use crate::alloc::string::ToString;
-use crate::lsps0::ser::LSPSMessage;
-use crate::lsps0::ser::LSPSRequestId;
-use crate::lsps0::ser::LSPSResponseError;
+use crate::prelude::*;
+
+use crate::lsps0::ser::{DeserializeWithUnknowns, LSPSMessage, LSPSRequestId, LSPSResponseError};
 
 use super::url_utils::LSPSUrl;
 
@@ -25,6 +24,7 @@ use serde::Serializer;
 use serde::{Deserialize, Serialize};
 
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use core::fmt;
@@ -418,7 +418,7 @@ impl From<LSPS5WebhookUrl> for String {
 }
 
 /// Parameters for `lsps5.set_webhook` request.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(DeserializeWithUnknowns, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LSPS5SetWebhookRequest {
 	/// Human-readable name for the webhook.
 	pub app_name: LSPS5AppName,
@@ -427,7 +427,7 @@ pub struct LSPS5SetWebhookRequest {
 }
 
 /// Response for `lsps5.set_webhook`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(DeserializeWithUnknowns, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LSPS5SetWebhookResponse {
 	/// Current number of webhooks registered for this client.
 	pub num_webhooks: u32,
@@ -438,11 +438,11 @@ pub struct LSPS5SetWebhookResponse {
 }
 
 /// Parameters for `lsps5.list_webhooks` request.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(DeserializeWithUnknowns, Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct LSPS5ListWebhooksRequest {}
 
 /// Response for `lsps5.list_webhooks`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(DeserializeWithUnknowns, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LSPS5ListWebhooksResponse {
 	/// List of app_names with registered webhooks.
 	pub app_names: Vec<LSPS5AppName>,
@@ -451,14 +451,14 @@ pub struct LSPS5ListWebhooksResponse {
 }
 
 /// Parameters for `lsps5.remove_webhook` request.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(DeserializeWithUnknowns, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LSPS5RemoveWebhookRequest {
 	/// App name identifying the webhook to remove.
 	pub app_name: LSPS5AppName,
 }
 
 /// Response for `lsps5.remove_webhook`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(DeserializeWithUnknowns, Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct LSPS5RemoveWebhookResponse {}
 
 /// Webhook notification methods defined in LSPS5.

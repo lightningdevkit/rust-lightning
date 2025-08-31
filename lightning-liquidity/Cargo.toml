@@ -23,6 +23,7 @@ backtrace = ["dep:backtrace"]
 lightning = { version = "0.2.0", path = "../lightning", default-features = false }
 lightning-types = { version = "0.3.0", path = "../lightning-types", default-features = false }
 lightning-invoice = { version = "0.34.0", path = "../lightning-invoice", default-features = false, features = ["serde"] }
+lightning-macros = { version = "0.2", path = "../lightning-macros" }
 
 bitcoin = { version = "0.32.2", default-features = false, features = ["serde"] }
 

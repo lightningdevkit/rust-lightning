@@ -9,13 +9,15 @@
 
 //! Message, request, and other primitive types used to implement bLIP-51 / LSPS1.
 
+use crate::prelude::*;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use core::convert::TryFrom;
 
 use crate::lsps0::ser::{
 	string_amount, string_offer, u32_fee_rate, unchecked_address, unchecked_address_option,
-	LSPSDateTime, LSPSMessage, LSPSRequestId, LSPSResponseError,
+	DeserializeWithUnknowns, LSPSDateTime, LSPSMessage, LSPSRequestId, LSPSResponseError,
 };
 
 use bitcoin::{Address, FeeRate, OutPoint};
@@ -42,7 +44,7 @@ pub struct LSPS1OrderId(pub String);
 /// Please refer to the [bLIP-51 / LSPS1
 /// specification](https://github.com/lightning/blips/blob/master/blip-0051.md#1-lsps1get_info) for
 /// more information.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct LSPS1GetInfoRequest {}
 
@@ -78,7 +80,7 @@ pub struct LSPS1Options {
 }
 
 /// A response to a [`LSPS1GetInfoRequest`].
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS1GetInfoResponse {
 	/// All options supported by the LSP.
 	#[serde(flatten)]
@@ -90,7 +92,7 @@ pub struct LSPS1GetInfoResponse {
 /// Please refer to the [bLIP-51 / LSPS1
 /// specification](https://github.com/lightning/blips/blob/master/blip-0051.md#2-lsps1create_order)
 /// for more information.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS1CreateOrderRequest {
 	/// The order made.
 	#[serde(flatten)]
@@ -127,7 +129,7 @@ pub struct LSPS1OrderParams {
 }
 
 /// A response to a [`LSPS1CreateOrderRequest`].
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS1CreateOrderResponse {
 	/// The id of the channel order.
 	pub order_id: LSPS1OrderId,
@@ -277,7 +279,7 @@ pub struct LSPS1ChannelInfo {
 /// Please refer to the [bLIP-51 / LSPS1
 /// specification](https://github.com/lightning/blips/blob/master/blip-0051.md#21-lsps1get_order)
 /// for more information.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS1GetOrderRequest {
 	/// The id of the order.
 	pub order_id: LSPS1OrderId,

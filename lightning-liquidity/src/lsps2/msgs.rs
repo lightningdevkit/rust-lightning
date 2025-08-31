@@ -9,6 +9,8 @@
 
 //! Message, request, and other primitive types used to implement bLIP-52 / LSPS2.
 
+use crate::prelude::*;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -22,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use lightning::util::scid_utils;
 
 use crate::lsps0::ser::{
-	string_amount, string_amount_option, LSPSDateTime, LSPSMessage, LSPSRequestId,
-	LSPSResponseError,
+	string_amount, string_amount_option, DeserializeWithUnknowns, LSPSDateTime, LSPSMessage,
+	LSPSRequestId, LSPSResponseError,
 };
 use crate::utils;
 
@@ -36,7 +38,7 @@ pub(crate) const LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE: i32 = 
 pub(crate) const LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE: i32 = 202;
 pub(crate) const LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE: i32 = 203;
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 /// A request made to an LSP to learn their current channel fees and parameters.
 pub struct LSPS2GetInfoRequest {
 	/// An optional token to provide to the LSP.
@@ -91,7 +93,7 @@ impl LSPS2RawOpeningFeeParams {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 /// Fees and parameters for a JIT Channel including the promise.
 ///
 /// The promise is an HMAC calculated using a secret known to the LSP and the rest of the fields as input.
@@ -120,14 +122,14 @@ pub struct LSPS2OpeningFeeParams {
 }
 
 /// A response to a [`LSPS2GetInfoRequest`]
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS2GetInfoResponse {
 	/// A set of opening fee parameters.
 	pub opening_fee_params_menu: Vec<LSPS2OpeningFeeParams>,
 }
 
 /// A request to buy a JIT channel.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS2BuyRequest {
 	/// The fee parameters you would like to use.
 	pub opening_fee_params: LSPS2OpeningFeeParams,
@@ -162,7 +164,7 @@ impl LSPS2InterceptScid {
 /// A response to a [`LSPS2BuyRequest`].
 ///
 /// Includes information needed to construct an invoice.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS2BuyResponse {
 	/// The intercept short channel id used by LSP to identify need to open channel.
 	pub jit_channel_scid: LSPS2InterceptScid,

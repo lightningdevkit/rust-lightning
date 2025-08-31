@@ -1,9 +1,12 @@
 //! Message, request, and other primitive types used to implement LSPS0.
 
+use crate::prelude::*;
+
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::convert::TryFrom;
 
-use crate::lsps0::ser::{LSPSMessage, LSPSRequestId, LSPSResponseError};
+use crate::lsps0::ser::{DeserializeWithUnknowns, LSPSMessage, LSPSRequestId, LSPSResponseError};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +17,7 @@ pub(crate) const LSPS0_LISTPROTOCOLS_METHOD_NAME: &str = "lsps0.list_protocols";
 /// Please refer to the [bLIP-50 / LSPS0
 /// specification](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 /// for more information.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct LSPS0ListProtocolsRequest {}
 
 /// A response to a `list_protocols` request.
@@ -22,7 +25,7 @@ pub struct LSPS0ListProtocolsRequest {}
 /// Please refer to the [bLIP-50 / LSPS0
 /// specification](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 /// for more information.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(DeserializeWithUnknowns, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS0ListProtocolsResponse {
 	/// A list of supported protocols.
 	pub protocols: Vec<u16>,

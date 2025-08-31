@@ -5,6 +5,8 @@
 //! information.
 
 use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 use core::fmt::{self, Display};
 use core::str::FromStr;
@@ -278,6 +280,15 @@ pub struct LSPSResponseError {
 	pub message: String,
 	/// A primitive or structured value that contains additional information about the error.
 	pub data: Option<String>,
+}
+
+/// A trait for deserializing from a `serde_json::Value` while capturing unknown fields.
+pub(crate) trait DeserializeWithUnknowns: Sized {
+	/// Deserializes a struct from a `serde_json::Value`, returning the struct
+	/// and a list of any unrecognized field names.
+	fn deserialize_with_unknowns(
+		value: serde_json::Value,
+	) -> Result<(Self, Vec<String>), serde_json::Error>;
 }
 
 /// A (de-)serializable LSPS message allowing to be sent over the wire.

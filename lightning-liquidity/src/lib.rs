@@ -56,6 +56,7 @@ extern crate alloc;
 
 mod prelude {
 	pub(crate) use lightning::util::hash_tables::*;
+	pub(crate) use lightning_macros::DeserializeWithUnknowns;
 }
 
 pub mod events;
