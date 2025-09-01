@@ -3728,7 +3728,10 @@ where
 		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
 		entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
 		params: ChainParameters, current_timestamp: u32,
-	) -> Self {
+	) -> Self
+	where
+		L: Clone,
+	{
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
@@ -15610,7 +15613,7 @@ pub struct ChannelManagerReadArgs<
 	F: Deref,
 	R: Deref,
 	MR: Deref,
-	L: Deref,
+	L: Deref + Clone,
 > where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -15690,7 +15693,7 @@ impl<
 		F: Deref,
 		R: Deref,
 		MR: Deref,
-		L: Deref,
+		L: Deref + Clone,
 	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
@@ -15742,7 +15745,7 @@ impl<
 		F: Deref,
 		R: Deref,
 		MR: Deref,
-		L: Deref,
+		L: Deref + Clone,
 	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
 	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
 where
@@ -15775,7 +15778,7 @@ impl<
 		F: Deref,
 		R: Deref,
 		MR: Deref,
-		L: Deref,
+		L: Deref + Clone,
 	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
 	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
 where
