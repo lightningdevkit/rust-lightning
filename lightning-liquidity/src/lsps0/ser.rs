@@ -1086,3 +1086,98 @@ pub(crate) mod u32_fee_rate {
 		Ok(FeeRate::from_sat_per_kwu(fee_rate_sat_kwu as u64))
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::DeserializeWithUnknowns;
+	use serde::ser::SerializeSeq;
+	use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+	#[derive(Debug, Clone, PartialEq, Eq)]
+	struct TruncVec<T>(Vec<T>);
+
+	impl<T> TruncVec<T> {
+		fn new(v: Vec<T>) -> Self {
+			Self(v)
+		}
+	}
+
+	impl<T: Serialize> Serialize for TruncVec<T> {
+		fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+			let n = if self.0.is_empty() { 0 } else { 1 };
+			let mut seq = serializer.serialize_seq(Some(n))?;
+			if n == 1 {
+				seq.serialize_element(&self.0[0])?;
+			}
+			seq.end()
+		}
+	}
+
+	impl<'de, T: Deserialize<'de>> Deserialize<'de> for TruncVec<T> {
+		fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+			let v = Vec::<T>::deserialize(deserializer)?;
+			Ok(Self(v))
+		}
+	}
+
+	#[derive(Debug, Clone, PartialEq, Eq)]
+	struct AsStringAny;
+
+	impl Serialize for AsStringAny {
+		fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+			serializer.serialize_str("constant")
+		}
+	}
+
+	impl<'de> Deserialize<'de> for AsStringAny {
+		fn deserialize<D: Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
+			Ok(AsStringAny)
+		}
+	}
+
+	#[derive(
+		crate::prelude::DeserializeWithUnknowns, Deserialize, Serialize, Debug, PartialEq, Eq,
+	)]
+	struct TopArray(TruncVec<u8>);
+
+	#[derive(
+		crate::prelude::DeserializeWithUnknowns, Deserialize, Serialize, Debug, PartialEq, Eq,
+	)]
+	struct NestedArray {
+		list: TruncVec<u8>,
+	}
+
+	#[derive(
+		crate::prelude::DeserializeWithUnknowns, Deserialize, Serialize, Debug, PartialEq, Eq,
+	)]
+	struct MismatchNested {
+		key: AsStringAny,
+	}
+
+	#[test]
+	fn array_extras_top_level_are_reported() {
+		let input = serde_json::json!([1, 2, 3]);
+		let (val, unknown) =
+			<TopArray as DeserializeWithUnknowns>::deserialize_with_unknowns(input).unwrap();
+		assert_eq!(val, TopArray(TruncVec::new(vec![1, 2, 3])));
+		assert_eq!(unknown, vec!("[1]", "[2]"));
+	}
+
+	#[test]
+	fn array_extras_nested_are_reported() {
+		let input = serde_json::json!({"list": [10, 20, 30]});
+		let (val, unknown) =
+			<NestedArray as DeserializeWithUnknowns>::deserialize_with_unknowns(input).unwrap();
+		assert_eq!(val, NestedArray { list: TruncVec::new(vec![10, 20, 30]) });
+		assert_eq!(unknown, vec!("list[1]", "list[2]"));
+	}
+
+	#[test]
+	fn object_vs_nonobject_mismatch_reports_children() {
+		let input = serde_json::json!({"key": {"unknown": 1, "also_unknown": "x"}});
+		let (_val, mut unknown) =
+			<MismatchNested as DeserializeWithUnknowns>::deserialize_with_unknowns(input).unwrap();
+		unknown.sort();
+		assert_eq!(unknown, vec!("key.also_unknown", "key.unknown"));
+	}
+}

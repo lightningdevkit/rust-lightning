@@ -445,6 +445,45 @@ pub fn deserialize_with_unknowns_derive(input: TokenStream) -> TokenStream {
 					use ::alloc::string::ToString;
 					if base_path.is_empty() { ["[", &index.to_string(), "]"].concat() } else { [base_path, "[", &index.to_string(), "]"].concat() }
 				}
+				// Records unknowns for mismatched shapes by enumerating immediate children.
+				fn record_mismatch_unknowns(
+					input_json: &::serde_json::Value,
+					base_path: &str,
+					out_paths: &mut ::alloc::vec::Vec<::alloc::string::String>,
+				) {
+					use ::serde_json::Value::*;
+					match input_json {
+						Object(map) => {
+							for (k, v) in map.iter() {
+								if !v.is_null() {
+									out_paths.push(join_path(base_path, k));
+								}
+							}
+						},
+						Array(arr) => {
+							for (idx, v) in arr.iter().enumerate() {
+								if !v.is_null() {
+									out_paths.push(index_path(base_path, idx));
+								}
+							}
+						},
+						_ => { /* No-op */ }
+					}
+				}
+
+				// Marks extra non-null input array elements beyond recognized length as unknown.
+				fn record_extra_array_items(
+					input_array: &::alloc::vec::Vec<::serde_json::Value>,
+					recognized_len: usize,
+					base_path: &str,
+					out_paths: &mut ::alloc::vec::Vec<::alloc::string::String>,
+				) {
+					for idx in recognized_len..input_array.len() {
+						if !input_array[idx].is_null() {
+							out_paths.push(index_path(base_path, idx));
+						}
+					}
+				}
 				// Recursively walk input vs recognized JSON and collect unknown field paths.
 				fn collect_unknown_paths(
 					input_json: &::serde_json::Value,
@@ -463,29 +502,30 @@ pub fn deserialize_with_unknowns_derive(input: TokenStream) -> TokenStream {
 											out_paths.push(join_path(base_path, key));
 										}
 									},
-									// Key known. Recurse based on the value shape.
-									Some(recognized_value) => match (input_value, recognized_value) {
-										(Object(_), Object(_)) => collect_unknown_paths(
-											input_value,
-											recognized_value,
-											&join_path(base_path, key),
-											out_paths,
-										),
-										(Array(input_array), Array(recognized_array)) => {
-											for (idx, (input_elem, recognized_elem)) in input_array
-												.iter()
-												.zip(recognized_array.iter())
-												.enumerate()
-											{
-												collect_unknown_paths(
-													input_elem,
-													recognized_elem,
-													&index_path(&join_path(base_path, key), idx),
-													out_paths,
-												);
-											}
-										},
-										_ => { /* No-op */ }
+									// Key known. Recurse or record mismatch.
+									Some(recognized_value) => {
+										let child_base = join_path(base_path, key);
+										match (input_value, recognized_value) {
+											(Object(_), Object(_)) => collect_unknown_paths(
+												input_value, recognized_value, &child_base, out_paths,
+											),
+											(Array(input_array), Array(recognized_array)) => {
+												for (idx, (input_elem, recognized_elem)) in input_array
+														.iter()
+														.zip(recognized_array.iter())
+														.enumerate()
+												{
+													collect_unknown_paths(
+														input_elem,
+														recognized_elem,
+														&index_path(&child_base, idx),
+														out_paths,
+													);
+												}
+												record_extra_array_items(input_array, recognized_array.len(), &child_base, out_paths);
+											},
+											_ => record_mismatch_unknowns(input_value, &child_base, out_paths),
+										}
 									}
 								}
 							}
@@ -503,8 +543,17 @@ pub fn deserialize_with_unknowns_derive(input: TokenStream) -> TokenStream {
 									out_paths,
 								);
 							}
+							// If the input array is longer than the recognized array,
+							// mark the extra elements as unknown.
+							if input_array.len() > recognized_array.len() {
+								for idx in recognized_array.len()..input_array.len() {
+									if !input_array[idx].is_null() {
+										out_paths.push(index_path(base_path, idx));
+									}
+								}
+							}
 						},
-						_ => { /* No-op */ }
+						_ => record_mismatch_unknowns(input_json, base_path, out_paths),
 					}
 				}
 
