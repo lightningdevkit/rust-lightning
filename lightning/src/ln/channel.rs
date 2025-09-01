@@ -2470,7 +2470,6 @@ pub(crate) struct SpliceInstructions {
 	change_script: Option<ScriptBuf>,
 	funding_feerate_per_kw: u32,
 	locktime: u32,
-	original_funding_txo: OutPoint,
 }
 
 impl_writeable_tlv_based!(SpliceInstructions, {
@@ -2480,7 +2479,6 @@ impl_writeable_tlv_based!(SpliceInstructions, {
 	(7, change_script, option),
 	(9, funding_feerate_per_kw, required),
 	(11, locktime, required),
-	(13, original_funding_txo, required),
 });
 
 pub(crate) enum QuiescentAction {
@@ -11184,11 +11182,6 @@ where
 			}
 		}
 
-		let original_funding_txo = self.funding.get_funding_txo().ok_or_else(|| {
-			debug_assert!(false);
-			APIError::APIMisuseError { err: "Channel isn't yet fully funded".to_owned() }
-		})?;
-
 		let (our_funding_inputs, our_funding_outputs, change_script) = contribution.into_tx_parts();
 
 		let action = QuiescentAction::Splice(SpliceInstructions {
@@ -11198,7 +11191,6 @@ where
 			change_script,
 			funding_feerate_per_kw,
 			locktime,
-			original_funding_txo,
 		});
 		self.propose_quiescence(logger, action)
 			.map_err(|e| APIError::APIMisuseError { err: e.to_owned() })
@@ -11215,7 +11207,6 @@ where
 			change_script,
 			funding_feerate_per_kw,
 			locktime,
-			original_funding_txo,
 		} = instructions;
 
 		// Check if a splice has been initiated already.
