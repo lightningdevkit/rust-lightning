@@ -771,7 +771,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			router: &router,
 			message_router: &router,
 			logger,
-			default_config: config,
+			config,
 			channel_monitors: monitor_refs,
 		};
 
