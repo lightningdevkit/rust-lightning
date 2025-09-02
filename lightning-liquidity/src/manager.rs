@@ -568,6 +568,29 @@ where
 			LSPSMessage::LSPS5(msg @ LSPS5Message::Request(..)) => {
 				match &self.lsps5_service_handler {
 					Some(lsps5_service_handler) => {
+						if let LSPS5Message::Request(ref req_id, ref req) = msg {
+							if req.is_state_allocating() {
+								let lsps2_has_active_requests = self
+									.lsps2_service_handler
+									.as_ref()
+									.map_or(false, |h| h.has_active_requests(sender_node_id));
+								#[cfg(lsps1_service)]
+								let lsps1_has_active_requests = self
+									.lsps1_service_handler
+									.as_ref()
+									.map_or(false, |h| h.has_active_requests(sender_node_id));
+								#[cfg(not(lsps1_service))]
+								let lsps1_has_active_requests = false;
+
+								lsps5_service_handler.enforce_prior_activity_or_reject(
+									sender_node_id,
+									lsps2_has_active_requests,
+									lsps1_has_active_requests,
+									req_id.clone(),
+								)?
+							}
+						}
+
 						lsps5_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
