@@ -948,7 +948,7 @@ fn client_trusts_lsp_end_to_end_test() {
 	// 9. The client will see the PaymentClaimable event
 	// 10. Assert that the service has not broadcasted the funding transaction yet, because the client has not claimed the HTLC yet
 	// 11. Make the client claim the HTLC
-	// 12. Assert that the service has now received the BroadcastTransaction event, and we broadcast it
+	// 12. Assert that the service has broadcasted the funding tx
 	// 13. Assert that the payer received the PaymentSent event
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);

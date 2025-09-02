@@ -1018,7 +1018,7 @@ where
 	///
 	/// Note that `next_channel_id` and `skimmed_fee_msat` are required to be provided. Therefore, the corresponding
 	/// [`Event::PaymentForwarded`] events need to be generated and serialized by LDK versions
-	/// greater or equal to 0.0.107.
+	/// greater or equal to 0.0.122.
 	///
 	/// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
 	pub fn payment_forwarded(
@@ -1552,7 +1552,8 @@ where
 	}
 
 	/// Checks if the JIT channel with the given `user_channel_id` needs manual broadcast.
-	/// Will be true if client_trusts_lsp is set to true
+	///
+	/// Will be `true` if `client_trusts_lsp` is set to `true`.
 	pub fn channel_needs_manual_broadcast(
 		&self, user_channel_id: u128, counterparty_node_id: &PublicKey,
 	) -> Result<bool, APIError> {
@@ -1584,8 +1585,9 @@ where
 		Ok(jit_channel.is_client_trusts_lsp())
 	}
 
-	/// Called to store the funding transaction for a JIT channel.
-	/// This should be called when the funding transaction is created but before it's broadcast.
+	/// Stores the funding transaction for a JIT channel.
+	///
+	/// Call this when the funding transaction is created.
 	pub fn store_funding_transaction(
 		&self, user_channel_id: u128, counterparty_node_id: &PublicKey, funding_tx: Transaction,
 	) -> Result<(), APIError> {
