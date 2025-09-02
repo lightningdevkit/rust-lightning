@@ -272,7 +272,7 @@ where
 /// ];
 /// let context = MessageContext::Custom(Vec::new());
 /// let receive_key = keys_manager.get_receive_auth_key();
-/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, receive_key, context, &keys_manager, &secp_ctx).unwrap();
+/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, receive_key, context, &keys_manager, &secp_ctx);
 ///
 /// // Send a custom onion message to a blinded path.
 /// let destination = Destination::BlindedPath(blinded_path);
@@ -627,16 +627,14 @@ where
 			.into_iter()
 			.map(|(peer, _, _)| build_path(&[peer]))
 			.take(MAX_PATHS)
-			.collect::<Result<Vec<_>, _>>()
-			.ok()
-			.filter(|paths| !paths.is_empty())
-			.or_else(|| {
-				is_recipient_announced
-					.then(|| build_path(&[]))
-					.and_then(|result| result.ok())
-					.map(|path| vec![path])
-			})
-			.ok_or(())?;
+			.collect::<Vec<_>>();
+		if paths.is_empty() {
+			if is_recipient_announced {
+				paths = vec![build_path(&[])];
+			} else {
+				return Err(());
+			}
+		}
 
 		// Sanity check: Ones the paths are created for the non-compact case, ensure
 		// each of them are of the length `PADDED_PATH_LENGTH`.
@@ -2464,8 +2462,7 @@ fn packet_payloads_and_keys<
 				mu,
 			});
 		},
-	)
-	.map_err(|e| SendError::Secp256k1(e))?;
+	);
 
 	if let Some(control_tlvs) = final_control_tlvs {
 		payloads.push((

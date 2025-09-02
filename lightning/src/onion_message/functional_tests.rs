@@ -437,8 +437,7 @@ fn one_blinded_hop() {
 	let entropy = &*nodes[1].entropy_source;
 	let receive_key = nodes[1].messenger.node_signer.get_receive_auth_key();
 	let blinded_path =
-		BlindedMessagePath::new(&[], nodes[1].node_id, receive_key, context, entropy, &secp_ctx)
-			.unwrap();
+		BlindedMessagePath::new(&[], nodes[1].node_id, receive_key, context, entropy, &secp_ctx);
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
@@ -463,8 +462,7 @@ fn blinded_path_with_dummy_hops() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	// Ensure that dummy hops are added to the blinded path.
 	assert_eq!(blinded_path.blinded_hops().len(), 6);
 	let destination = Destination::BlindedPath(blinded_path);
@@ -492,8 +490,7 @@ fn two_unblinded_two_blinded() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![nodes[1].node_id, nodes[2].node_id],
 		destination: Destination::BlindedPath(blinded_path),
@@ -525,8 +522,7 @@ fn three_blinded_hops() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
@@ -553,8 +549,7 @@ fn async_response_over_one_blinded_hop() {
 	let entropy = &*nodes[1].entropy_source;
 	let receive_key = nodes[1].messenger.node_signer.get_receive_auth_key();
 	let reply_path =
-		BlindedMessagePath::new(&[], nodes[1].node_id, receive_key, context, entropy, &secp_ctx)
-			.unwrap();
+		BlindedMessagePath::new(&[], nodes[1].node_id, receive_key, context, entropy, &secp_ctx);
 
 	// 4. Create a responder using the reply path for Alice.
 	let responder = Some(Responder::new(reply_path));
@@ -595,8 +590,7 @@ fn async_response_with_reply_path_succeeds() {
 	let entropy = &*bob.entropy_source;
 	let receive_key = bob.messenger.node_signer.get_receive_auth_key();
 	let reply_path =
-		BlindedMessagePath::new(&[], bob.node_id, receive_key, context, entropy, &secp_ctx)
-			.unwrap();
+		BlindedMessagePath::new(&[], bob.node_id, receive_key, context, entropy, &secp_ctx);
 
 	// Alice asynchronously responds to Bob, expecting a response back from him.
 	let responder = Responder::new(reply_path);
@@ -638,8 +632,7 @@ fn async_response_with_reply_path_fails() {
 	let entropy = &*bob.entropy_source;
 	let receive_key = bob.messenger.node_signer.get_receive_auth_key();
 	let reply_path =
-		BlindedMessagePath::new(&[], bob.node_id, receive_key, context, entropy, &secp_ctx)
-			.unwrap();
+		BlindedMessagePath::new(&[], bob.node_id, receive_key, context, entropy, &secp_ctx);
 
 	// Alice tries to asynchronously respond to Bob, but fails because the nodes are unannounced and
 	// disconnected. Thus, a reply path could no be created for the response.
@@ -697,8 +690,7 @@ fn test_blinded_path_padding_for_full_length_path() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 
 	assert!(is_padded(&blinded_path.blinded_hops(), MESSAGE_PADDING_ROUND_OFF));
 
@@ -734,8 +726,7 @@ fn test_blinded_path_no_padding_for_compact_path() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 
 	assert!(!is_padded(&blinded_path.blinded_hops(), MESSAGE_PADDING_ROUND_OFF));
 }
@@ -762,8 +753,7 @@ fn we_are_intro_node() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
@@ -784,8 +774,7 @@ fn we_are_intro_node() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
@@ -814,8 +803,7 @@ fn invalid_blinded_path_error() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	blinded_path.clear_blinded_hops();
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
@@ -850,8 +838,7 @@ fn reply_path() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	nodes[0]
 		.messenger
 		.send_onion_message_using_path(path, test_msg.clone(), Some(reply_path))
@@ -878,8 +865,7 @@ fn reply_path() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	let destination = Destination::BlindedPath(blinded_path);
 	let intermediate_nodes = [
 		MessageForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
@@ -895,8 +881,7 @@ fn reply_path() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	let instructions = MessageSendInstructions::WithSpecifiedReplyPath { destination, reply_path };
 
 	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
@@ -1000,8 +985,7 @@ fn requests_peer_connection_for_buffered_messages() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
@@ -1049,8 +1033,7 @@ fn drops_buffered_messages_waiting_for_peer_connection() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
@@ -1114,8 +1097,7 @@ fn intercept_offline_peer_oms() {
 		context,
 		entropy,
 		&secp_ctx,
-	)
-	.unwrap();
+	);
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 

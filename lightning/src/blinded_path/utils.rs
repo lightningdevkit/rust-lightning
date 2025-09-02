@@ -51,10 +51,8 @@ macro_rules! build_keys_helper {
 						hmac.input(encrypted_data_ss.as_ref());
 						Hmac::from_engine(hmac).to_byte_array()
 					};
-					pk.mul_tweak(
-						$secp_ctx,
-						&Scalar::from_be_bytes(hop_pk_blinding_factor).unwrap(),
-					)?
+					pk.mul_tweak($secp_ctx, &Scalar::from_be_bytes(hop_pk_blinding_factor).unwrap())
+						.expect("RNG is busted")
 				};
 				let onion_packet_ss = SharedSecret::new(&blinded_hop_pk, &onion_packet_pubkey_priv);
 
@@ -84,9 +82,9 @@ macro_rules! build_keys_helper {
 					Sha256::from_engine(sha).to_byte_array()
 				};
 
-				msg_blinding_point_priv = msg_blinding_point_priv.mul_tweak(
-					&Scalar::from_be_bytes(msg_blinding_point_blinding_factor).unwrap(),
-				)?;
+				msg_blinding_point_priv = msg_blinding_point_priv
+					.mul_tweak(&Scalar::from_be_bytes(msg_blinding_point_blinding_factor).unwrap())
+					.expect("RNG is busted");
 				msg_blinding_point =
 					PublicKey::from_secret_key($secp_ctx, &msg_blinding_point_priv);
 
@@ -96,9 +94,9 @@ macro_rules! build_keys_helper {
 					sha.input(onion_packet_ss.as_ref());
 					Sha256::from_engine(sha).to_byte_array()
 				};
-				onion_packet_pubkey_priv = onion_packet_pubkey_priv.mul_tweak(
-					&Scalar::from_be_bytes(onion_packet_pubkey_blinding_factor).unwrap(),
-				)?;
+				onion_packet_pubkey_priv = onion_packet_pubkey_priv
+					.mul_tweak(&Scalar::from_be_bytes(onion_packet_pubkey_blinding_factor).unwrap())
+					.expect("RNG is busted");
 				onion_packet_pubkey =
 					PublicKey::from_secret_key($secp_ctx, &onion_packet_pubkey_priv);
 			};
@@ -109,8 +107,7 @@ macro_rules! build_keys_helper {
 pub(crate) fn construct_keys_for_onion_message<'a, T, I, F>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: I, destination: Destination, session_priv: &SecretKey,
 	mut callback: F,
-) -> Result<(), secp256k1::Error>
-where
+) where
 	T: secp256k1::Signing + secp256k1::Verification,
 	I: Iterator<Item = PublicKey>,
 	F: FnMut(SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>),
@@ -134,13 +131,11 @@ where
 			}
 		},
 	}
-	Ok(())
 }
 
 fn construct_keys_for_blinded_path<'a, T, I, F, H>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: I, session_priv: &SecretKey, mut callback: F,
-) -> Result<(), secp256k1::Error>
-where
+) where
 	T: secp256k1::Signing + secp256k1::Verification,
 	H: Borrow<PublicKey>,
 	I: Iterator<Item = H>,
@@ -151,7 +146,6 @@ where
 	for pk in unblinded_path {
 		build_keys_in_loop!(pk, false, None);
 	}
-	Ok(())
 }
 
 struct PublicKeyWithTlvs<W: Writeable> {
@@ -168,7 +162,7 @@ impl<W: Writeable> Borrow<PublicKey> for PublicKeyWithTlvs<W> {
 
 pub(crate) fn construct_blinded_hops<'a, T, I, W>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: I, session_priv: &SecretKey,
-) -> Result<Vec<BlindedHop>, secp256k1::Error>
+) -> Vec<BlindedHop>
 where
 	T: secp256k1::Signing + secp256k1::Verification,
 	I: Iterator<Item = ((PublicKey, Option<ReceiveAuthKey>), W)>,
@@ -194,8 +188,8 @@ where
 				),
 			});
 		},
-	)?;
-	Ok(blinded_hops)
+	);
+	blinded_hops
 }
 
 /// Encrypt TLV payload to be used as a [`crate::blinded_path::BlindedHop::encrypted_payload`].

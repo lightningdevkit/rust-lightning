@@ -239,8 +239,7 @@ mod test {
 				context,
 				&keys,
 				secp_ctx,
-			)
-			.unwrap()])
+			)])
 		}
 	}
 	impl Deref for DirectlyConnectedRouter {
@@ -349,8 +348,7 @@ mod test {
 			query_context,
 			&*payer_keys,
 			&secp_ctx,
-		)
-		.unwrap();
+		);
 		payer.pending_messages.lock().unwrap().push((
 			DNSResolverMessage::DNSSECQuery(msg),
 			MessageSendInstructions::WithSpecifiedReplyPath {
