@@ -16,6 +16,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 bitcoin = "0.32.2"
 lightning = { version = "0.2.0", path = "../lightning" }
+tokio = { version = "1.35", optional = true, default-features = false, features = ["rt-multi-thread"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.48.0", default-features = false, features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
@@ -26,6 +27,7 @@ criterion = { version = "0.4", optional = true, default-features = false }
 [dev-dependencies]
 lightning = { version = "0.2.0", path = "../lightning", features = ["_test_utils"] }
 bitcoin = { version = "0.32.2", default-features = false }
+tokio = { version = "1.35", default-features = false, features = ["macros"] }
 
 [lints]
 workspace = true
