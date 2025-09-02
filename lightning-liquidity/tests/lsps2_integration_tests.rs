@@ -192,7 +192,11 @@ fn invoice_generation_flow() {
 			assert_eq!(request_id, get_info_request_id);
 			assert_eq!(counterparty_node_id, service_node_id);
 			let opening_fee_params = opening_fee_params_menu.first().unwrap().clone();
-			assert!(is_valid_opening_fee_params(&opening_fee_params, &promise_secret));
+			assert!(is_valid_opening_fee_params(
+				&opening_fee_params,
+				&promise_secret,
+				&client_node_id
+			));
 			opening_fee_params
 		},
 		_ => panic!("Unexpected event"),

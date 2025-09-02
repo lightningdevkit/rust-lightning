@@ -17,6 +17,8 @@ use core::convert::TryFrom;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::secp256k1::PublicKey;
+
 use serde::{Deserialize, Serialize};
 
 use lightning::util::scid_utils;
@@ -66,9 +68,10 @@ pub struct LSPS2RawOpeningFeeParams {
 
 impl LSPS2RawOpeningFeeParams {
 	pub(crate) fn into_opening_fee_params(
-		self, promise_secret: &[u8; 32],
+		self, promise_secret: &[u8; 32], counterparty_node_id: &PublicKey,
 	) -> LSPS2OpeningFeeParams {
 		let mut hmac = HmacEngine::<Sha256>::new(promise_secret);
+		hmac.input(&counterparty_node_id.serialize());
 		hmac.input(&self.min_fee_msat.to_be_bytes());
 		hmac.input(&self.proportional.to_be_bytes());
 		hmac.input(self.valid_until.to_rfc3339().as_bytes());
@@ -229,6 +232,8 @@ mod tests {
 	use crate::alloc::string::ToString;
 	use crate::lsps2::utils::is_valid_opening_fee_params;
 
+	use bitcoin::secp256k1::{Secp256k1, SecretKey};
+
 	use core::str::FromStr;
 
 	#[test]
@@ -252,8 +257,12 @@ mod tests {
 		};
 
 		let promise_secret = [1u8; 32];
+		let client_node_id = PublicKey::from_secret_key(
+			&Secp256k1::new(),
+			&SecretKey::from_slice(&[0xcd; 32]).unwrap(),
+		);
 
-		let opening_fee_params = raw.into_opening_fee_params(&promise_secret);
+		let opening_fee_params = raw.into_opening_fee_params(&promise_secret, &client_node_id);
 
 		assert_eq!(opening_fee_params.min_fee_msat, min_fee_msat);
 		assert_eq!(opening_fee_params.proportional, proportional);
@@ -263,7 +272,7 @@ mod tests {
 		assert_eq!(opening_fee_params.min_payment_size_msat, min_payment_size_msat);
 		assert_eq!(opening_fee_params.max_payment_size_msat, max_payment_size_msat);
 
-		assert!(is_valid_opening_fee_params(&opening_fee_params, &promise_secret));
+		assert!(is_valid_opening_fee_params(&opening_fee_params, &promise_secret, &client_node_id));
 	}
 
 	#[test]
@@ -287,10 +296,18 @@ mod tests {
 		};
 
 		let promise_secret = [1u8; 32];
+		let client_node_id = PublicKey::from_secret_key(
+			&Secp256k1::new(),
+			&SecretKey::from_slice(&[0xcd; 32]).unwrap(),
+		);
 
-		let mut opening_fee_params = raw.into_opening_fee_params(&promise_secret);
+		let mut opening_fee_params = raw.into_opening_fee_params(&promise_secret, &client_node_id);
 		opening_fee_params.min_fee_msat = min_fee_msat + 1;
-		assert!(!is_valid_opening_fee_params(&opening_fee_params, &promise_secret));
+		assert!(!is_valid_opening_fee_params(
+			&opening_fee_params,
+			&promise_secret,
+			&client_node_id
+		));
 	}
 
 	#[test]
@@ -316,8 +333,54 @@ mod tests {
 		let promise_secret = [1u8; 32];
 		let other_secret = [2u8; 32];
 
-		let opening_fee_params = raw.into_opening_fee_params(&promise_secret);
-		assert!(!is_valid_opening_fee_params(&opening_fee_params, &other_secret));
+		let client_node_id = PublicKey::from_secret_key(
+			&Secp256k1::new(),
+			&SecretKey::from_slice(&[0xcd; 32]).unwrap(),
+		);
+
+		let opening_fee_params = raw.into_opening_fee_params(&promise_secret, &client_node_id);
+		assert!(!is_valid_opening_fee_params(&opening_fee_params, &other_secret, &client_node_id));
+	}
+
+	#[test]
+	fn client_mismatch_produced_invalid_params() {
+		let min_fee_msat = 100;
+		let proportional = 21;
+		let valid_until = LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap();
+		let min_lifetime = 144;
+		let max_client_to_self_delay = 128;
+		let min_payment_size_msat = 1;
+		let max_payment_size_msat = 100_000_000;
+
+		let raw = LSPS2RawOpeningFeeParams {
+			min_fee_msat,
+			proportional,
+			valid_until,
+			min_lifetime,
+			max_client_to_self_delay,
+			min_payment_size_msat,
+			max_payment_size_msat,
+		};
+
+		let promise_secret = [1u8; 32];
+
+		let client_node_id = PublicKey::from_secret_key(
+			&Secp256k1::new(),
+			&SecretKey::from_slice(&[0xcd; 32]).unwrap(),
+		);
+
+		let other_public_key = PublicKey::from_secret_key(
+			&Secp256k1::new(),
+			&SecretKey::from_slice(&[0xcf; 32]).unwrap(),
+		);
+
+		let opening_fee_params = raw.into_opening_fee_params(&promise_secret, &client_node_id);
+		assert!(is_valid_opening_fee_params(&opening_fee_params, &promise_secret, &client_node_id));
+		assert!(!is_valid_opening_fee_params(
+			&opening_fee_params,
+			&promise_secret,
+			&other_public_key
+		));
 	}
 
 	#[test]
@@ -343,9 +406,17 @@ mod tests {
 		};
 
 		let promise_secret = [1u8; 32];
+		let client_node_id = PublicKey::from_secret_key(
+			&Secp256k1::new(),
+			&SecretKey::from_slice(&[0xcd; 32]).unwrap(),
+		);
 
-		let opening_fee_params = raw.into_opening_fee_params(&promise_secret);
-		assert!(!is_valid_opening_fee_params(&opening_fee_params, &promise_secret));
+		let opening_fee_params = raw.into_opening_fee_params(&promise_secret, &client_node_id);
+		assert!(!is_valid_opening_fee_params(
+			&opening_fee_params,
+			&promise_secret,
+			&client_node_id
+		));
 	}
 
 	#[test]
@@ -369,16 +440,21 @@ mod tests {
 		};
 
 		let promise_secret = [1u8; 32];
+		let client_node_id = PublicKey::from_secret_key(
+			&Secp256k1::new(),
+			&SecretKey::from_slice(&[0xcd; 32]).unwrap(),
+		);
 
-		let opening_fee_params = raw.into_opening_fee_params(&promise_secret);
-		let json_str = r#"{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"1134a5c51e3ba2e8f4259610d5e12c1bf4c50ddcd3f8af563e0a00d1fff41dea","proportional":21,"valid_until":"2023-05-20T08:30:45Z"}"#;
+		let opening_fee_params = raw.into_opening_fee_params(&promise_secret, &client_node_id);
+		println!("SERIALIZATION: {}", serde_json::json!(opening_fee_params).to_string());
+		let json_str = r#"{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"75eb57db4c37dc092a37f1d2e0026c5ff36a7834a717ea97c41d91a8d5b50ce8","proportional":21,"valid_until":"2023-05-20T08:30:45Z"}"#;
 		assert_eq!(json_str, serde_json::json!(opening_fee_params).to_string());
 		assert_eq!(opening_fee_params, serde_json::from_str(json_str).unwrap());
 
 		let payment_size_msat = Some(1234);
 		let buy_request_fixed =
 			LSPS2BuyRequest { opening_fee_params: opening_fee_params.clone(), payment_size_msat };
-		let json_str = r#"{"opening_fee_params":{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"1134a5c51e3ba2e8f4259610d5e12c1bf4c50ddcd3f8af563e0a00d1fff41dea","proportional":21,"valid_until":"2023-05-20T08:30:45Z"},"payment_size_msat":"1234"}"#;
+		let json_str = r#"{"opening_fee_params":{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"75eb57db4c37dc092a37f1d2e0026c5ff36a7834a717ea97c41d91a8d5b50ce8","proportional":21,"valid_until":"2023-05-20T08:30:45Z"},"payment_size_msat":"1234"}"#;
 		assert_eq!(json_str, serde_json::json!(buy_request_fixed).to_string());
 		assert_eq!(buy_request_fixed, serde_json::from_str(json_str).unwrap());
 
@@ -386,12 +462,12 @@ mod tests {
 		let buy_request_variable = LSPS2BuyRequest { opening_fee_params, payment_size_msat };
 
 		// Check we skip serialization if payment_size_msat is None.
-		let json_str = r#"{"opening_fee_params":{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"1134a5c51e3ba2e8f4259610d5e12c1bf4c50ddcd3f8af563e0a00d1fff41dea","proportional":21,"valid_until":"2023-05-20T08:30:45Z"}}"#;
+		let json_str = r#"{"opening_fee_params":{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"75eb57db4c37dc092a37f1d2e0026c5ff36a7834a717ea97c41d91a8d5b50ce8","proportional":21,"valid_until":"2023-05-20T08:30:45Z"}}"#;
 		assert_eq!(json_str, serde_json::json!(buy_request_variable).to_string());
 		assert_eq!(buy_request_variable, serde_json::from_str(json_str).unwrap());
 
 		// Check we still deserialize correctly if payment_size_msat is 'null'.
-		let json_str = r#"{"opening_fee_params":{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"1134a5c51e3ba2e8f4259610d5e12c1bf4c50ddcd3f8af563e0a00d1fff41dea","proportional":21,"valid_until":"2023-05-20T08:30:45Z"},"payment_size_msat":null}"#;
+		let json_str = r#"{"opening_fee_params":{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"75eb57db4c37dc092a37f1d2e0026c5ff36a7834a717ea97c41d91a8d5b50ce8","proportional":21,"valid_until":"2023-05-20T08:30:45Z"},"payment_size_msat":null}"#;
 		assert_eq!(buy_request_variable, serde_json::from_str(json_str).unwrap());
 	}
 
