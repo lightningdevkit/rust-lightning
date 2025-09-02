@@ -8,11 +8,10 @@ use common::{
 };
 
 use lightning::check_added_monitors;
-use lightning::events::Event;
+use lightning::events::{ClosureReason, Event};
 use lightning::get_event_msg;
 use lightning::ln::channelmanager::PaymentId;
 use lightning::ln::channelmanager::Retry;
-use lightning::ln::functional_test_utils::create_chan_between_nodes_with_value;
 use lightning::ln::functional_test_utils::create_funding_transaction;
 use lightning::ln::functional_test_utils::do_commitment_signed_dance;
 use lightning::ln::functional_test_utils::expect_channel_pending_event;
@@ -20,6 +19,7 @@ use lightning::ln::functional_test_utils::expect_channel_ready_event;
 use lightning::ln::functional_test_utils::expect_payment_sent;
 use lightning::ln::functional_test_utils::test_default_channel_config;
 use lightning::ln::functional_test_utils::SendEvent;
+use lightning::ln::functional_test_utils::{connect_blocks, create_chan_between_nodes_with_value};
 use lightning::ln::msgs::BaseMessageHandler;
 use lightning::ln::msgs::ChannelMessageHandler;
 use lightning::ln::msgs::MessageSendEvent;
@@ -1115,8 +1115,9 @@ fn client_trusts_lsp_end_to_end_test() {
 	};
 
 	// Check that before the client claims, the service node has not broadcasted anything
-	let events = service_node.liquidity_manager.get_and_clear_pending_events();
-	assert!(events.is_empty(), "Expected no events from service node, got: {:?}", events);
+	let broadcasted = service_node.inner.tx_broadcaster.txn_broadcasted.lock().unwrap();
+	assert!(broadcasted.is_empty(), "There should be no broadcasted txs yet");
+	drop(broadcasted);
 
 	client_node.inner.node.claim_funds(preimage.unwrap());
 
@@ -1728,10 +1729,56 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 	let partial_skim_msat = fee_base_msat - 1; // less than promised fee
 	service_handler.payment_forwarded(channel_id, partial_skim_msat).unwrap();
 
-	let events_after_partial = service_node.liquidity_manager.get_and_clear_pending_events();
+	let broadcasted = service_node.inner.tx_broadcaster.txn_broadcasted.lock().unwrap();
+	assert!(broadcasted.is_empty(), "There should be no broadcasted txs yet");
+	drop(broadcasted);
+
+	// before mining blocks, service node should have 2 channels
+	{
+		let chans = service_node.inner.node.list_channels();
+		assert_eq!(chans.len(), 2);
+		assert!(chans.iter().any(|cd| cd.counterparty.node_id == payer_node_id));
+		assert!(chans.iter().any(|cd| cd.counterparty.node_id == client_node_id));
+	}
+
+	const SOME_EXTRA_BLOCKS: u32 = 3;
+	let client_htlc_cltv_expiry = pay_event.msgs[0].cltv_expiry;
+	let target_height = client_htlc_cltv_expiry.saturating_add(SOME_EXTRA_BLOCKS);
+	let cur_height = service_node.inner.best_block_info().1;
+	let d = target_height - cur_height;
+	connect_blocks(&service_node.inner, d);
+	connect_blocks(&client_node.inner, d);
+	connect_blocks(&payer_node, d);
+
+	service_node.inner.node.process_pending_htlc_forwards();
+	client_node.inner.node.process_pending_htlc_forwards();
+
+	let svc_events = service_node.inner.node.get_and_clear_pending_events();
+	let _ = client_node.inner.node.get_and_clear_pending_events();
+	let closed_on_service = svc_events.iter().any(|ev| {
+		matches!(ev, Event::ChannelClosed { reason: ClosureReason::HTLCsTimedOut { .. }, .. })
+	});
 	assert!(
-		events_after_partial.is_empty(),
-		"Funding tx broadcast event emitted prematurely: {:?}",
-		events_after_partial
+		closed_on_service,
+		"Expected service->client channel to be force-closed due to HTLC timeout. svc_events = {:?}",
+		svc_events
 	);
+
+	// now check the service->payer channel
+	{
+		let chans = service_node.inner.node.list_channels();
+		assert!(chans.len() == 1);
+		assert!(
+			chans.iter().any(|cd| cd.counterparty.node_id == payer_node_id && cd.is_channel_ready),
+			"Expected payer->service channel to remain open. channels: {:?}",
+			chans
+		);
+	}
+
+	service_node.inner.node.get_and_clear_pending_msg_events();
+	client_node.inner.node.get_and_clear_pending_msg_events();
+	payer_node.node.get_and_clear_pending_msg_events();
+	service_node.inner.chain_monitor.added_monitors.lock().unwrap().clear();
+	client_node.inner.chain_monitor.added_monitors.lock().unwrap().clear();
+	payer_node.chain_monitor.added_monitors.lock().unwrap().clear();
 }
