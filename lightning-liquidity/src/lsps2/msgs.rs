@@ -446,7 +446,6 @@ mod tests {
 		);
 
 		let opening_fee_params = raw.into_opening_fee_params(&promise_secret, &client_node_id);
-		println!("SERIALIZATION: {}", serde_json::json!(opening_fee_params).to_string());
 		let json_str = r#"{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"75eb57db4c37dc092a37f1d2e0026c5ff36a7834a717ea97c41d91a8d5b50ce8","proportional":21,"valid_until":"2023-05-20T08:30:45Z"}"#;
 		assert_eq!(json_str, serde_json::json!(opening_fee_params).to_string());
 		assert_eq!(opening_fee_params, serde_json::from_str(json_str).unwrap());
