@@ -477,9 +477,7 @@ impl KVStore for FilesystemStore {
 		};
 
 		Box::pin(async move {
-			tokio::task::spawn_blocking(move || this.read(path)).await.unwrap_or_else(|e| {
-				Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
-			})
+			tokio::task::spawn_blocking(move || this.read(path)).await
 		})
 	}
 
@@ -503,7 +501,6 @@ impl KVStore for FilesystemStore {
 				this.write_version(inner_lock_ref, path, buf, version)
 			})
 			.await
-			.unwrap_or_else(|e| Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e)))
 		})
 	}
 
@@ -527,7 +524,6 @@ impl KVStore for FilesystemStore {
 				this.remove_version(inner_lock_ref, path, lazy, version)
 			})
 			.await
-			.unwrap_or_else(|e| Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e)))
 		})
 	}
 
@@ -547,9 +543,7 @@ impl KVStore for FilesystemStore {
 		};
 
 		Box::pin(async move {
-			tokio::task::spawn_blocking(move || this.list(path)).await.unwrap_or_else(|e| {
-				Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
-			})
+			tokio::task::spawn_blocking(move || this.list(path)).await
 		})
 	}
 }
