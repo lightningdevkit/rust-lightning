@@ -630,7 +630,10 @@ where
 							opening_fee_params_menu
 								.into_iter()
 								.map(|param| {
-									param.into_opening_fee_params(&self.config.promise_secret)
+									param.into_opening_fee_params(
+										&self.config.promise_secret,
+										counterparty_node_id,
+									)
 								})
 								.collect();
 						opening_fee_params_menu.sort_by(|a, b| {
@@ -1252,7 +1255,11 @@ where
 		}
 
 		// TODO: if payment_size_msat is specified, make sure our node has sufficient incoming liquidity from public network to receive it.
-		if !is_valid_opening_fee_params(&params.opening_fee_params, &self.config.promise_secret) {
+		if !is_valid_opening_fee_params(
+			&params.opening_fee_params,
+			&self.config.promise_secret,
+			counterparty_node_id,
+		) {
 			let response = LSPS2Response::BuyError(LSPSResponseError {
 				code: LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
 				message: "valid_until is already past OR the promise did not match the provided parameters".to_string(),
