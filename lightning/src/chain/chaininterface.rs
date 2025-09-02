@@ -49,11 +49,14 @@ pub trait BroadcasterInterface {
 /// estimation.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum ConfirmationTarget {
-	/// The most aggressive (i.e. highest) feerate estimate available.
+	/// The most aggressive feerate estimate which we think is reasonable.
 	///
 	/// This is used to sanity-check our counterparty's feerates and should be as conservative as
 	/// possible to ensure that we don't confuse a peer using a very conservative estimator for one
-	/// trying to burn channel balance to dust.
+	/// trying to burn channel balance to dust. To ensure that this is never lower than an honest
+	/// counterparty's feerate estimate you may wish to use a value which is higher than your
+	/// maximum feerate estimate, for example by adding a constant few-hundred or few-thousand
+	/// sats-per-kW.
 	MaximumFeeEstimate,
 	/// We have some funds available on chain which we need to spend prior to some expiry time at
 	/// which point our counterparty may be able to steal them.
