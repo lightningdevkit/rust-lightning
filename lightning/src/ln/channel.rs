@@ -9289,6 +9289,9 @@ where
 							if session.holder_tx_signatures().is_none() {
 								log_debug!(logger, "Waiting for funding transaction signatures to be provided");
 								None
+							} else if self.context.channel_state.is_monitor_update_in_progress() {
+								log_debug!(logger, "Waiting for monitor update before providing funding transaction signatures");
+								None
 							} else {
 								session.holder_tx_signatures().clone()
 							}
