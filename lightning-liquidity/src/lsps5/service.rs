@@ -17,6 +17,9 @@ use crate::lsps5::msgs::{
 	SetWebhookRequest, SetWebhookResponse, WebhookNotification, WebhookNotificationMethod,
 };
 use crate::message_queue::MessageQueue;
+use crate::persist::{
+	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+};
 use crate::prelude::*;
 use crate::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use crate::utils::time::TimeProvider;
@@ -28,10 +31,15 @@ use lightning::ln::channelmanager::AChannelManager;
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::sign::NodeSigner;
 use lightning::util::logger::Level;
+use lightning::util::persist::KVStore;
+use lightning::util::ser::Writeable;
 
+use core::future::Future;
 use core::ops::Deref;
+use core::pin::Pin;
 use core::time::Duration;
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -118,10 +126,11 @@ impl Default for LSPS5ServiceConfig {
 /// [`LSPS5ServiceEvent::SendWebhookNotification`]: super::event::LSPS5ServiceEvent::SendWebhookNotification
 /// [`app_name`]: super::msgs::LSPS5AppName
 /// [`lsps5.webhook_registered`]: super::msgs::WebhookNotificationMethod::LSPS5WebhookRegistered
-pub struct LSPS5ServiceHandler<CM: Deref, NS: Deref, TP: Deref>
+pub struct LSPS5ServiceHandler<CM: Deref, NS: Deref, K: Deref + Clone, TP: Deref>
 where
 	CM::Target: AChannelManager,
 	NS::Target: NodeSigner,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	config: LSPS5ServiceConfig,
@@ -131,19 +140,21 @@ where
 	time_provider: TP,
 	channel_manager: CM,
 	node_signer: NS,
+	kv_store: K,
 	last_pruning: Mutex<Option<LSPSDateTime>>,
 }
 
-impl<CM: Deref, NS: Deref, TP: Deref> LSPS5ServiceHandler<CM, NS, TP>
+impl<CM: Deref, NS: Deref, K: Deref + Clone, TP: Deref> LSPS5ServiceHandler<CM, NS, K, TP>
 where
 	CM::Target: AChannelManager,
 	NS::Target: NodeSigner,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	/// Constructs a `LSPS5ServiceHandler` using the given time provider.
 	pub(crate) fn new_with_time_provider(
 		event_queue: Arc<EventQueue>, pending_messages: Arc<MessageQueue>, channel_manager: CM,
-		node_signer: NS, config: LSPS5ServiceConfig, time_provider: TP,
+		kv_store: K, node_signer: NS, config: LSPS5ServiceConfig, time_provider: TP,
 	) -> Self {
 		assert!(config.max_webhooks_per_client > 0, "`max_webhooks_per_client` must be > 0");
 		Self {
@@ -154,6 +165,7 @@ where
 			time_provider,
 			channel_manager,
 			node_signer,
+			kv_store,
 			last_pruning: Mutex::new(None),
 		}
 	}
@@ -184,6 +196,44 @@ where
 		} else {
 			Ok(())
 		}
+	}
+
+	fn persist_peer_state(
+		&self, counterparty_node_id: PublicKey, peer_state: &PeerState,
+	) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + Send>> {
+		let key = counterparty_node_id.to_string();
+		let encoded = peer_state.encode();
+		self.kv_store.write(
+			LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key,
+			encoded,
+		)
+	}
+
+	pub(crate) fn persist(
+		&self,
+	) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + Send>> {
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		let mut futures = Vec::new();
+		for (counterparty_node_id, peer_state) in outer_state_lock.iter() {
+			let fut = self.persist_peer_state(*counterparty_node_id, peer_state);
+			futures.push(fut);
+		}
+
+		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
+		// introduce some batching to upper-bound the number of requests inflight at any given
+		// time.
+		Box::pin(async move {
+			let mut ret = Ok(());
+			for fut in futures {
+				let res = fut.await;
+				if res.is_err() {
+					ret = res;
+				}
+			}
+			ret
+		})
 	}
 
 	fn check_prune_stale_webhooks<'a>(
@@ -549,10 +599,12 @@ where
 	}
 }
 
-impl<CM: Deref, NS: Deref, TP: Deref> LSPSProtocolMessageHandler for LSPS5ServiceHandler<CM, NS, TP>
+impl<CM: Deref, NS: Deref, K: Deref + Clone, TP: Deref> LSPSProtocolMessageHandler
+	for LSPS5ServiceHandler<CM, NS, K, TP>
 where
 	CM::Target: AChannelManager,
 	NS::Target: NodeSigner,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	type ProtocolMessage = LSPS5Message;
