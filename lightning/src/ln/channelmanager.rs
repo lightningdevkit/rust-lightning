@@ -6420,6 +6420,32 @@ where
 					});
 				let shared_secret = next_hop.shared_secret().secret_bytes();
 
+				// Nodes shouldn't expect us to hold HTLCs for them if we don't advertise htlc_hold feature
+				// support.
+				//
+				// If we wanted to pretend to be a node that didn't understand the feature at all here, the
+				// correct behavior would've been to disconnect the sender when we first received the
+				// update_add message. However, this would make the `UserConfig::enable_htlc_hold` option
+				// unsafe -- if our node switched the config option from on to off just after the sender
+				// enqueued their update_add + CS, the sender would continue retransmitting those messages
+				// and we would keep disconnecting them until the HTLC timed out.
+				if update_add_htlc.hold_htlc.is_some()
+					&& !BaseMessageHandler::provided_node_features(self).supports_htlc_hold()
+				{
+					let reason = LocalHTLCFailureReason::TemporaryNodeFailure;
+					let htlc_fail = self.htlc_failure_from_update_add_err(
+						&update_add_htlc,
+						&incoming_counterparty_node_id,
+						reason,
+						is_intro_node_blinded_forward,
+						&shared_secret,
+					);
+					let failure_type =
+						get_htlc_failure_type(outgoing_scid_opt, update_add_htlc.payment_hash);
+					htlc_fails.push((htlc_fail, failure_type, reason.into()));
+					continue;
+				}
+
 				// Process the HTLC on the incoming channel.
 				match self.do_funded_channel_callback(
 					incoming_scid,
@@ -14845,6 +14871,13 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	#[cfg(test)]
 	if config.channel_handshake_config.negotiate_anchor_zero_fee_commitments {
 		features.set_anchor_zero_fee_commitments_optional();
+	}
+
+	// If we are configured to be an announced node, we are expected to be always-online and can
+	// advertise the htlc_hold feature.
+	#[cfg(test)]
+	if config.enable_htlc_hold {
+		features.set_htlc_hold_optional();
 	}
 
 	features
