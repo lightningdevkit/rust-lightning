@@ -10664,6 +10664,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						prev_user_channel_id,
 						forward_info,
 					};
+					let mut fail_intercepted_htlc = || {
+						let htlc_source =
+							HTLCSource::PreviousHopData(pending_add.htlc_previous_hop_data());
+						let reason = HTLCFailReason::from_failure_code(
+							LocalHTLCFailureReason::UnknownNextPeer,
+						);
+						let failure_type = HTLCHandlingFailureType::InvalidForward {
+							requested_forward_scid: scid,
+						};
+						failed_intercept_forwards.push((
+							htlc_source,
+							payment_hash,
+							reason,
+							failure_type,
+						));
+					};
 					match forward_htlcs.entry(scid) {
 						hash_map::Entry::Occupied(mut entry) => {
 							entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
@@ -10713,22 +10729,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
 											scid
 										);
-										let htlc_source = HTLCSource::PreviousHopData(
-											pending_add.htlc_previous_hop_data(),
-										);
-										let reason = HTLCFailReason::from_failure_code(
-											LocalHTLCFailureReason::UnknownNextPeer,
-										);
-										let failure_type =
-											HTLCHandlingFailureType::InvalidForward {
-												requested_forward_scid: scid,
-											};
-										failed_intercept_forwards.push((
-											htlc_source,
-											payment_hash,
-											reason,
-											failure_type,
-										));
+										fail_intercepted_htlc();
 									},
 								}
 							} else {
