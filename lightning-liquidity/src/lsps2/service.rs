@@ -524,6 +524,13 @@ impl OutboundJITChannel {
 		))
 	}
 
+	fn get_channel_id(&self) -> Option<ChannelId> {
+		match self.state {
+			OutboundJITChannelState::PaymentForwarded { channel_id } => Some(channel_id),
+			_ => None,
+		}
+	}
+
 	fn get_funding_tx(&self) -> Option<Transaction> {
 		self.trust_model.get_funding_tx()
 	}
@@ -1671,12 +1678,33 @@ where
 	}
 
 	fn broadcast_funding_transaction_if_applies(&self, jit_channel: &OutboundJITChannel) {
-		if jit_channel.should_broadcast_funding_transaction() {
-			let funding_tx = jit_channel.get_funding_tx();
+		if !jit_channel.should_broadcast_funding_transaction() {
+			return;
+		}
 
-			if let Some(funding_tx) = funding_tx {
-				self.tx_broadcaster.broadcast_transactions(&[&funding_tx]);
+		// Broadcast the funding transaction only if the LDK channel is still usable. In
+		// the `client_trusts_lsp` flow we delay funding broadcast until the opening fee is
+		// collected. Before that happens, LDK may force-close the not‑yet‑funded channel
+		// (for example when a forwarded HTLC nears expiry). Broadcasting funding after a
+		// close could then confirm the commitment and trigger unintended on‑chain handling.
+		// To avoid this, we check ChannelManager’s view (`is_usable`) before broadcasting.
+		let channel_id_opt = jit_channel.get_channel_id();
+		if let Some(ch_id) = channel_id_opt {
+			let is_usable = self
+				.channel_manager
+				.get_cm()
+				.list_channels()
+				.into_iter()
+				.any(|cd| cd.channel_id == ch_id && cd.is_usable);
+			if !is_usable {
+				return;
 			}
+		} else {
+			return;
+		}
+
+		if let Some(funding_tx) = jit_channel.get_funding_tx() {
+			self.tx_broadcaster.broadcast_transactions(&[&funding_tx]);
 		}
 	}
 }
