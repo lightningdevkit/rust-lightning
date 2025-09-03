@@ -18,3 +18,8 @@ pub const LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE: &str = "lightning_liq
 ///
 /// [`LSPS2ServiceHandler`]: crate::lsps2::service::LSPS2ServiceHandler
 pub const LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE: &str = "lsps2_service";
+
+/// The secondary namespace under which the [`LSPS5ServiceHandler`] data will be persisted.
+///
+/// [`LSPS5ServiceHandler`]: crate::lsps5::service::LSPS5ServiceHandler
+pub const LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE: &str = "lsps5_service";
