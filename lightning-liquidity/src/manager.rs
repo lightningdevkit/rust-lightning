@@ -303,7 +303,7 @@ pub struct LiquidityManager<
 	lsps1_client_handler: Option<LSPS1ClientHandler<ES>>,
 	lsps2_service_handler: Option<LSPS2ServiceHandler<CM, K>>,
 	lsps2_client_handler: Option<LSPS2ClientHandler<ES>>,
-	lsps5_service_handler: Option<LSPS5ServiceHandler<CM, NS, TP>>,
+	lsps5_service_handler: Option<LSPS5ServiceHandler<CM, NS, K, TP>>,
 	lsps5_client_handler: Option<LSPS5ClientHandler<ES>>,
 	service_config: Option<LiquidityServiceConfig>,
 	_client_config: Option<LiquidityClientConfig>,
@@ -423,7 +423,7 @@ where
 		let lsps5_service_handler = service_config.as_ref().and_then(|config| {
 			config.lsps5_service_config.as_ref().map(|config| {
 				if let Some(number) =
-					<LSPS5ServiceHandler<CM, NS, TP> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
+					<LSPS5ServiceHandler<CM, NS, K, TP> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
 				{
 					supported_protocols.push(number);
 				}
@@ -432,6 +432,7 @@ where
 					Arc::clone(&pending_events),
 					Arc::clone(&pending_messages),
 					channel_manager.clone(),
+					kv_store.clone(),
 					node_signer,
 					config.clone(),
 					time_provider,
@@ -552,7 +553,7 @@ where
 	/// Returns a reference to the LSPS5 server-side handler.
 	///
 	/// The returned handler allows to initiate the LSPS5 service-side flow.
-	pub fn lsps5_service_handler(&self) -> Option<&LSPS5ServiceHandler<CM, NS, TP>> {
+	pub fn lsps5_service_handler(&self) -> Option<&LSPS5ServiceHandler<CM, NS, K, TP>> {
 		self.lsps5_service_handler.as_ref()
 	}
 
@@ -621,6 +622,10 @@ where
 		// TODO: We should eventually persist in parallel.
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
 			lsps2_service_handler.persist().await?;
+		}
+
+		if let Some(lsps5_service_handler) = self.lsps5_service_handler.as_ref() {
+			lsps5_service_handler.persist().await?;
 		}
 
 		Ok(())
@@ -1142,7 +1147,9 @@ where
 	/// Returns a reference to the LSPS5 server-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps5_service_handler`].
-	pub fn lsps5_service_handler(&self) -> Option<&LSPS5ServiceHandler<CM, NS, TP>> {
+	pub fn lsps5_service_handler(
+		&self,
+	) -> Option<&LSPS5ServiceHandler<CM, NS, Arc<KVStoreSyncWrapper<KS>>, TP>> {
 		self.inner.lsps5_service_handler()
 	}
 
