@@ -935,6 +935,18 @@ pub struct UserConfig {
 	///
 	/// Default value: `false`
 	pub enable_dual_funded_channels: bool,
+	/// LDK supports a feature for always-online nodes such that these nodes can hold onto an HTLC
+	/// from an often-offline channel peer until the often-offline payment recipient sends an onion
+	/// message telling the always-online node to release the HTLC. If this is set to `true`, our node
+	/// will carry out this feature for channel peers that request it.
+	///
+	/// This should only be set to `true` for nodes which expect to be online reliably.
+	///
+	/// Setting this to `true` may break backwards compatibility with LDK versions < 0.2.
+	///
+	/// Default value: `false`
+	#[cfg(test)]
+	pub enable_htlc_hold: bool,
 }
 
 impl Default for UserConfig {
@@ -949,6 +961,8 @@ impl Default for UserConfig {
 			accept_intercept_htlcs: false,
 			manually_handle_bolt12_invoices: false,
 			enable_dual_funded_channels: false,
+			#[cfg(test)]
+			enable_htlc_hold: false,
 		}
 	}
 }
