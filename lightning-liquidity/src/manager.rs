@@ -384,6 +384,7 @@ where
 					Arc::clone(&pending_events),
 					Arc::clone(&pending_messages),
 					channel_manager.clone(),
+					Arc::clone(&kv_store),
 					node_signer,
 					config.clone(),
 					time_provider,
@@ -575,6 +576,10 @@ where
 		let mut futures = Vec::new();
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
 			futures.push(lsps2_service_handler.persist());
+		}
+
+		if let Some(lsps5_service_handler) = self.lsps5_service_handler.as_ref() {
+			futures.push(lsps5_service_handler.persist());
 		}
 
 		// TODO: We should eventually persist in parallel.
