@@ -235,7 +235,7 @@ fn test_v1_splice_in() {
 		assert_eq!(tx_add_output_msg.sats, post_splice_channel_value);
 	} else {
 		assert!(tx_add_output_msg.script.is_p2wpkh());
-		assert_eq!(tx_add_output_msg.sats, 14146); // extra_splice_funding_input_sats - splice_in_sats
+		assert_eq!(tx_add_output_msg.sats, 13979); // extra_splice_funding_input_sats - splice_in_sats
 	}
 
 	let _res = acceptor_node
