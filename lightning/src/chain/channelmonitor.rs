@@ -3399,26 +3399,35 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		// Prune HTLCs from the previous counterparty commitment tx so we don't generate failure/fulfill
 		// events for now-revoked/fulfilled HTLCs.
-		if let Some(txid) = self.funding.prev_counterparty_commitment_txid.take() {
-			if self.funding.current_counterparty_commitment_txid.unwrap() != txid {
-				let cur_claimables = self.funding.counterparty_claimable_outpoints.get(
-					&self.funding.current_counterparty_commitment_txid.unwrap()).unwrap();
-				for (_, ref source_opt) in self.funding.counterparty_claimable_outpoints.get(&txid).unwrap() {
-					if let Some(source) = source_opt {
-						if !cur_claimables.iter()
-							.any(|(_, cur_source_opt)| cur_source_opt == source_opt)
-						{
-							self.counterparty_fulfilled_htlcs.remove(&SentHTLCId::from_source(source));
+		let mut removed_fulfilled_htlcs = false;
+		let prune_htlc_sources = |funding: &mut FundingScope| {
+			if let Some(txid) = funding.prev_counterparty_commitment_txid.take() {
+				if funding.current_counterparty_commitment_txid.unwrap() != txid {
+					let cur_claimables = funding.counterparty_claimable_outpoints.get(
+						&funding.current_counterparty_commitment_txid.unwrap()).unwrap();
+					// We only need to remove fulfilled HTLCs once for the first `FundingScope` we
+					// come across since all `FundingScope`s share the same set of HTLC sources.
+					if !removed_fulfilled_htlcs {
+						for (_, ref source_opt) in funding.counterparty_claimable_outpoints.get(&txid).unwrap() {
+							if let Some(source) = source_opt {
+								if !cur_claimables.iter()
+									.any(|(_, cur_source_opt)| cur_source_opt == source_opt)
+								{
+									self.counterparty_fulfilled_htlcs.remove(&SentHTLCId::from_source(source));
+								}
+							}
 						}
+						removed_fulfilled_htlcs = true;
 					}
+					for &mut (_, ref mut source_opt) in funding.counterparty_claimable_outpoints.get_mut(&txid).unwrap() {
+						*source_opt = None;
+					}
+				} else {
+					assert!(cfg!(fuzzing), "Commitment txids are unique outside of fuzzing, where hashes can collide");
 				}
-				for &mut (_, ref mut source_opt) in self.funding.counterparty_claimable_outpoints.get_mut(&txid).unwrap() {
-					*source_opt = None;
-				}
-			} else {
-				assert!(cfg!(fuzzing), "Commitment txids are unique outside of fuzzing, where hashes can collide");
 			}
-		}
+		};
+		core::iter::once(&mut self.funding).chain(&mut self.pending_funding).for_each(prune_htlc_sources);
 
 		if !self.payment_preimages.is_empty() {
 			let min_idx = self.get_min_seen_secret();
