@@ -57,23 +57,19 @@ impl BlindedMessagePath {
 	pub fn one_hop<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		recipient_node_id: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>,
-	) -> Result<Self, ()>
+	) -> Self
 	where
 		ES::Target: EntropySource,
 	{
 		Self::new(&[], recipient_node_id, local_node_receive_key, context, entropy_source, secp_ctx)
 	}
 
-	/// Create a path for an onion message, to be forwarded along `node_pks`. The last node
-	/// pubkey in `node_pks` will be the destination node.
-	///
-	/// Errors if no hops are provided or if `node_pk`(s) are invalid.
-	//  TODO: make all payloads the same size with padding + add dummy hops
+	/// Create a path for an onion message, to be forwarded along `node_pks`.
 	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
 		local_node_receive_key: ReceiveAuthKey, context: MessageContext, entropy_source: ES,
 		secp_ctx: &Secp256k1<T>,
-	) -> Result<Self, ()>
+	) -> Self
 	where
 		ES::Target: EntropySource,
 	{
@@ -96,7 +92,7 @@ impl BlindedMessagePath {
 		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
 		dummy_hop_count: usize, local_node_receive_key: ReceiveAuthKey, context: MessageContext,
 		entropy_source: ES, secp_ctx: &Secp256k1<T>,
-	) -> Result<Self, ()>
+	) -> Self
 	where
 		ES::Target: EntropySource,
 	{
@@ -107,7 +103,7 @@ impl BlindedMessagePath {
 		let blinding_secret =
 			SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 
-		Ok(Self(BlindedPath {
+		Self(BlindedPath {
 			introduction_node,
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: blinded_hops(
@@ -118,9 +114,8 @@ impl BlindedMessagePath {
 				context,
 				&blinding_secret,
 				local_node_receive_key,
-			)
-			.map_err(|_| ())?,
-		}))
+			),
+		})
 	}
 
 	/// Attempts to a use a compact representation for the [`IntroductionNode`] by using a directed
@@ -669,7 +664,7 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[MessageForwardNode],
 	recipient_node_id: PublicKey, dummy_hop_count: usize, context: MessageContext,
 	session_priv: &SecretKey, local_node_receive_key: ReceiveAuthKey,
-) -> Result<Vec<BlindedHop>, secp256k1::Error> {
+) -> Vec<BlindedHop> {
 	let dummy_count = cmp::min(dummy_hop_count, MAX_DUMMY_HOPS_COUNT);
 	let pks = intermediate_nodes
 		.iter()

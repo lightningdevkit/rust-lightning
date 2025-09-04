@@ -116,7 +116,6 @@ impl BlindedPaymentPath {
 	/// Create a blinded path for a payment, to be forwarded along `intermediate_nodes`.
 	///
 	/// Errors if:
-	/// * a provided node id is invalid
 	/// * [`BlindedPayInfo`] calculation results in an integer overflow
 	/// * any unknown features are required in the provided [`ForwardTlvs`]
 	//  TODO: make all payloads the same size with padding + add dummy hops
@@ -151,8 +150,7 @@ impl BlindedPaymentPath {
 					payee_node_id,
 					payee_tlvs,
 					&blinding_secret,
-				)
-				.map_err(|_| ())?,
+				),
 			},
 			payinfo: blinded_payinfo,
 		})
@@ -663,7 +661,7 @@ pub(crate) const PAYMENT_PADDING_ROUND_OFF: usize = 30;
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
 	payee_tlvs: ReceiveTlvs, session_priv: &SecretKey,
-) -> Result<Vec<BlindedHop>, secp256k1::Error> {
+) -> Vec<BlindedHop> {
 	let pks = intermediate_nodes
 		.iter()
 		.map(|node| (node.node_id, None))
