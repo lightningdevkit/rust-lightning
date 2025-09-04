@@ -63,11 +63,8 @@ pub(crate) enum Message<T: core::fmt::Debug + Type + TestEq> {
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
 	Stfu(msgs::Stfu),
-	#[cfg(splicing)]
 	SpliceInit(msgs::SpliceInit),
-	#[cfg(splicing)]
 	SpliceAck(msgs::SpliceAck),
-	#[cfg(splicing)]
 	SpliceLocked(msgs::SpliceLocked),
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),
@@ -128,11 +125,8 @@ impl<T: core::fmt::Debug + Type + TestEq> Writeable for Message<T> {
 			&Message::FundingCreated(ref msg) => msg.write(writer),
 			&Message::FundingSigned(ref msg) => msg.write(writer),
 			&Message::Stfu(ref msg) => msg.write(writer),
-			#[cfg(splicing)]
 			&Message::SpliceInit(ref msg) => msg.write(writer),
-			#[cfg(splicing)]
 			&Message::SpliceAck(ref msg) => msg.write(writer),
-			#[cfg(splicing)]
 			&Message::SpliceLocked(ref msg) => msg.write(writer),
 			&Message::TxAddInput(ref msg) => msg.write(writer),
 			&Message::TxAddOutput(ref msg) => msg.write(writer),
@@ -193,11 +187,8 @@ impl<T: core::fmt::Debug + Type + TestEq> Type for Message<T> {
 			&Message::FundingCreated(ref msg) => msg.type_id(),
 			&Message::FundingSigned(ref msg) => msg.type_id(),
 			&Message::Stfu(ref msg) => msg.type_id(),
-			#[cfg(splicing)]
 			&Message::SpliceInit(ref msg) => msg.type_id(),
-			#[cfg(splicing)]
 			&Message::SpliceAck(ref msg) => msg.type_id(),
-			#[cfg(splicing)]
 			&Message::SpliceLocked(ref msg) => msg.type_id(),
 			&Message::TxAddInput(ref msg) => msg.type_id(),
 			&Message::TxAddOutput(ref msg) => msg.type_id(),
@@ -311,18 +302,15 @@ where
 		msgs::FundingSigned::TYPE => {
 			Ok(Message::FundingSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		#[cfg(splicing)]
 		msgs::SpliceInit::TYPE => {
 			Ok(Message::SpliceInit(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::Stfu::TYPE => {
 			Ok(Message::Stfu(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		#[cfg(splicing)]
 		msgs::SpliceAck::TYPE => {
 			Ok(Message::SpliceAck(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		#[cfg(splicing)]
 		msgs::SpliceLocked::TYPE => {
 			Ok(Message::SpliceLocked(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},

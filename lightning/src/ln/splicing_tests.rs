@@ -55,7 +55,7 @@ fn test_v1_splice_in() {
 	// ==== Channel is now ready for normal operation
 
 	// Expected balances
-	let mut exp_balance1 = 1000 * channel_value_sat;
+	let exp_balance1 = 1000 * channel_value_sat;
 	let mut _exp_balance2 = 0;
 
 	// === Start of Splicing

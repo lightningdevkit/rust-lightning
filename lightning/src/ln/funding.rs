@@ -9,15 +9,14 @@
 
 //! Types pertaining to funding channels.
 
-#[cfg(splicing)]
 use bitcoin::{Amount, ScriptBuf, SignedAmount, TxOut};
 use bitcoin::{Script, Sequence, Transaction, Weight};
 
 use crate::events::bump_transaction::{Utxo, EMPTY_SCRIPT_SIG_WEIGHT};
+use crate::prelude::Vec;
 use crate::sign::{P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 
 /// The components of a splice's funding transaction that are contributed by one party.
-#[cfg(splicing)]
 pub enum SpliceContribution {
 	/// When funds are added to a channel.
 	SpliceIn {
@@ -30,6 +29,8 @@ pub enum SpliceContribution {
 
 		/// An optional change output script. This will be used if needed or, when not set,
 		/// generated using [`SignerProvider::get_destination_script`].
+		///
+		/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
 		change_script: Option<ScriptBuf>,
 	},
 	/// When funds are removed from a channel.
@@ -40,7 +41,6 @@ pub enum SpliceContribution {
 	},
 }
 
-#[cfg(splicing)]
 impl SpliceContribution {
 	pub(super) fn value(&self) -> SignedAmount {
 		match self {
