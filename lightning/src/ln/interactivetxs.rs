@@ -89,7 +89,7 @@ impl SerialIdExt for SerialId {
 	}
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum AbortReason {
 	InvalidStateTransition,
 	UnexpectedCounterpartyMessage,
@@ -1852,22 +1852,7 @@ impl InteractiveTxMessageSend {
 	}
 }
 
-pub(super) struct InteractiveTxMessageSendResult(
-	pub Result<InteractiveTxMessageSend, msgs::TxAbort>,
-);
-
-impl InteractiveTxMessageSendResult {
-	pub fn into_msg_send_event(self, counterparty_node_id: PublicKey) -> MessageSendEvent {
-		match self.0 {
-			Ok(interactive_tx_msg_send) => {
-				interactive_tx_msg_send.into_msg_send_event(counterparty_node_id)
-			},
-			Err(tx_abort_msg) => {
-				MessageSendEvent::SendTxAbort { node_id: counterparty_node_id, msg: tx_abort_msg }
-			},
-		}
-	}
-}
+pub(super) type InteractiveTxMessageSendResult = Result<InteractiveTxMessageSend, AbortReason>;
 
 // This macro executes a state machine transition based on a provided action.
 macro_rules! do_state_transition {

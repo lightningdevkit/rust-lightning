@@ -9866,7 +9866,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	fn internal_tx_msg<HandleTxMsgFn: Fn(&mut Channel<SP>) -> Option<MessageSendEvent>>(
+	fn internal_tx_msg<
+		HandleTxMsgFn: Fn(&mut Channel<SP>) -> Option<InteractiveTxMessageSendResult>,
+	>(
 		&self, counterparty_node_id: &PublicKey, channel_id: ChannelId,
 		tx_msg_handler: HandleTxMsgFn,
 	) -> Result<(), MsgHandleErrInternal> {
@@ -9884,10 +9886,25 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let channel = chan_entry.get_mut();
 				let msg_send_event = match tx_msg_handler(channel) {
-					Some(msg_send_event) => msg_send_event,
+					Some(Ok(msg_send)) => msg_send.into_msg_send_event(*counterparty_node_id),
+					Some(Err(abort_reason)) => {
+						let msg = channel.fail_interactive_tx_negotiation(abort_reason, &self.logger);
+						MessageSendEvent::SendTxAbort {
+							node_id: *counterparty_node_id,
+							msg,
+						}
+					},
 					None => {
-						let err = ChannelError::Warn("Received unexpected interactive transaction negotiation message".to_owned());
-						return Err(MsgHandleErrInternal::from_chan_no_close(err, channel_id))
+						let logger = WithChannelContext::from(&self.logger, &channel.context(), None);
+						let msg = "Received unexpected interactive transaction negotiation message";
+						log_info!(logger, "{msg}");
+						MessageSendEvent::SendTxAbort {
+							node_id: *counterparty_node_id,
+							msg: msgs::TxAbort {
+								channel_id,
+								data: msg.as_bytes().to_vec(),
+							},
+						}
 					},
 				};
 				peer_state.pending_msg_events.push(msg_send_event);
@@ -9906,15 +9923,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			Some(
-				InteractiveTxMessageSendResult(
-					channel
-						.interactive_tx_constructor_mut()?
-						.handle_tx_add_input(msg)
-						.map_err(|reason| reason.into_tx_abort_msg(msg.channel_id)),
-				)
-				.into_msg_send_event(counterparty_node_id),
-			)
+			Some(channel.interactive_tx_constructor_mut()?.handle_tx_add_input(msg))
 		})
 	}
 
@@ -9922,15 +9931,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			Some(
-				InteractiveTxMessageSendResult(
-					channel
-						.interactive_tx_constructor_mut()?
-						.handle_tx_add_output(msg)
-						.map_err(|reason| reason.into_tx_abort_msg(msg.channel_id)),
-				)
-				.into_msg_send_event(counterparty_node_id),
-			)
+			Some(channel.interactive_tx_constructor_mut()?.handle_tx_add_output(msg))
 		})
 	}
 
@@ -9938,15 +9939,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			Some(
-				InteractiveTxMessageSendResult(
-					channel
-						.interactive_tx_constructor_mut()?
-						.handle_tx_remove_input(msg)
-						.map_err(|reason| reason.into_tx_abort_msg(msg.channel_id)),
-				)
-				.into_msg_send_event(counterparty_node_id),
-			)
+			Some(channel.interactive_tx_constructor_mut()?.handle_tx_remove_input(msg))
 		})
 	}
 
@@ -9954,15 +9947,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			Some(
-				InteractiveTxMessageSendResult(
-					channel
-						.interactive_tx_constructor_mut()?
-						.handle_tx_remove_output(msg)
-						.map_err(|reason| reason.into_tx_abort_msg(msg.channel_id)),
-				)
-				.into_msg_send_event(counterparty_node_id),
-			)
+			Some(channel.interactive_tx_constructor_mut()?.handle_tx_remove_output(msg))
 		})
 	}
 
@@ -9980,12 +9965,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				let (msg_send_event_opt, negotiation_complete) = match chan_entry.get_mut().interactive_tx_constructor_mut() {
+				let chan = chan_entry.get_mut();
+				let (msg_send_event_opt, negotiation_complete) = match chan
+					.interactive_tx_constructor_mut()
+				{
 					Some(interactive_tx_constructor) => {
 						HandleTxCompleteResult(
 							interactive_tx_constructor
 								.handle_tx_complete(msg)
-								.map_err(|reason| reason.into_tx_abort_msg(msg.channel_id)),
+								.map_err(|reason| chan.fail_interactive_tx_negotiation(reason, &self.logger)),
 						)
 						.into_msg_send_event(counterparty_node_id)
 					},
@@ -10003,17 +9991,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						.funding_tx_constructed(&self.logger)
 					{
 						Ok(commitment_signed) => commitment_signed,
-						Err(tx_abort) => {
+						Err(abort_reason) => {
 							if chan_entry.get().is_funded() {
+								let msg = chan_entry.get_mut().fail_interactive_tx_negotiation(abort_reason, &self.logger);
 								peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
 									node_id: counterparty_node_id,
-									msg: tx_abort,
+									msg,
 								});
 								return Ok(());
 							} else {
-								let msg = String::from_utf8(tx_abort.data)
-									.expect("tx_abort data should contain valid UTF-8");
-								let reason = ClosureReason::ProcessingError { err: msg.clone() };
+								let msg = abort_reason.to_string();
+								let reason = ClosureReason::ProcessingError { err: abort_reason.to_string() };
 								let err = ChannelError::Close((msg, reason));
 								try_channel_entry!(self, peer_state, Err(err), chan_entry)
 							}
@@ -10102,41 +10090,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				let tx_constructor = match chan_entry.get_mut().as_unfunded_v2_mut() {
-					Some(chan) => &mut chan.interactive_tx_constructor,
-					None => if chan_entry.get().is_funded() {
-						// TODO(splicing)/TODO(RBF): We'll also be doing interactive tx construction
-						// for a "Channel::Funded" when we want to bump the fee on an interactively
-						// constructed funding tx or during splicing. For now we send an error as we would
-						// never ack an RBF attempt or a splice for now:
-						try_channel_entry!(self, peer_state, Err(ChannelError::Warn(
-							"Got an unexpected tx_abort message: After initial funding transaction is signed, \
-							splicing and RBF attempts of interactive funding transactions are not supported yet so \
-							we don't have any negotiation in progress".into(),
-						)), chan_entry)
-					} else {
-						try_channel_entry!(self, peer_state, Err(ChannelError::Warn(
-							"Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel \
-							establishment".into(),
-						)), chan_entry)
-					},
-				};
-				// This checks for and resets the interactive negotiation state by `take()`ing it from the channel.
-				// The existence of the `tx_constructor` indicates that we have not moved into the signing
-				// phase for this interactively constructed transaction and hence we have not exchanged
-				// `tx_signatures`. Either way, we never close the channel upon receiving a `tx_abort`:
-				//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L574-L576
-				if tx_constructor.take().is_some() {
-					let msg = msgs::TxAbort {
-						channel_id: msg.channel_id,
-						data: "Acknowledged tx_abort".to_string().into_bytes(),
-					};
-					// NOTE: Since at this point we have not sent a `tx_abort` message for this negotiation
-					// previously (tx_constructor was `Some`), we need to echo back a tx_abort message according
-					// to the spec:
-					//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
-					// For rationale why we echo back `tx_abort`:
-					//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
+				let res = chan_entry.get_mut().tx_abort(msg, &self.logger);
+				if let Some(msg) = try_channel_entry!(self, peer_state, res, chan_entry) {
 					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
 						node_id: *counterparty_node_id,
 						msg,
