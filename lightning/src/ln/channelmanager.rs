@@ -9034,8 +9034,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.and_then(|_| channel.interactive_tx_signing_session.as_mut())
 			.filter(|signing_session| signing_session.holder_tx_signatures().is_none())
 		{
-			let local_inputs_count = signing_session.local_inputs_count();
-			if local_inputs_count > 0 {
+			if signing_session.has_local_contribution() {
 				let mut pending_events = self.pending_events.lock().unwrap();
 				let unsigned_transaction = signing_session.unsigned_tx().build_unsigned_tx();
 				let event_action = (
