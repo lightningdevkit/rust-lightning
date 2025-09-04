@@ -15583,9 +15583,13 @@ impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 ///    This is important if you have replayed a nontrivial number of blocks in step (4), allowing
 ///    you to avoid having to replay the same blocks if you shut down quickly after startup. It is
 ///    otherwise not required.
+///
 ///    Note that if you're using a [`ChainMonitor`] for your [`chain::Watch`] implementation, you
 ///    will likely accomplish this as a side-effect of calling [`chain::Watch::watch_channel`] in
 ///    the next step.
+///
+///    If you wish to avoid this for performance reasons, use
+///    [`ChainMonitor::load_existing_monitor`].
 /// 7) Move the [`ChannelMonitor`]s into your local [`chain::Watch`]. If you're using a
 ///    [`ChainMonitor`], this is done by calling [`chain::Watch::watch_channel`].
 ///
@@ -15600,6 +15604,7 @@ impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 /// which you've already broadcasted the transaction.
 ///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
+/// [`ChainMonitor::load_existing_monitor`]: crate::chain::chainmonitor::ChainMonitor::load_existing_monitor
 pub struct ChannelManagerReadArgs<
 	'a,
 	M: Deref,

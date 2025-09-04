@@ -903,6 +903,53 @@ where
 
 		self.pending_send_only_events.lock().unwrap().push(send_peer_storage_event)
 	}
+
+	/// Loads a [`ChannelMonitor`] which already exists on disk after startup.
+	///
+	/// Using this over [`chain::Watch::watch_channel`] avoids re-persisting a [`ChannelMonitor`]
+	/// that hasn't changed, slowing down startup.
+	///
+	/// Note that this method *can* be used if additional blocks were replayed against the
+	/// [`ChannelMonitor`] or if a [`ChannelMonitorUpdate`] loaded from disk was replayed such that
+	/// it will replayed on startup, and in general can only *not* be used if you directly accessed
+	/// the [`ChannelMonitor`] and changed its state in some way that will not be replayed again on
+	/// a restart. Such direct access should generally never occur for most LDK-based nodes.
+	///
+	/// For [`ChannelMonitor`]s which were last serialized by an LDK version prior to 0.1 this will
+	/// fall back to calling [`chain::Watch::watch_channel`] and persisting the [`ChannelMonitor`].
+	/// See the release notes for LDK 0.1 for more information on this requirement.
+	///
+	/// [`ChannelMonitor`]s which do not need to be persisted (i.e. were last written by LDK 0.1 or
+	/// later) will be loaded without persistence and this method will return
+	/// [`ChannelMonitorUpdateStatus::Completed`].
+	pub fn load_existing_monitor(
+		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
+	) -> Result<ChannelMonitorUpdateStatus, ()> {
+		if !monitor.written_by_0_1_or_later() {
+			return chain::Watch::watch_channel(self, channel_id, monitor);
+		}
+
+		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
+		let mut monitors = self.monitors.write().unwrap();
+		let entry = match monitors.entry(channel_id) {
+			hash_map::Entry::Occupied(_) => {
+				log_error!(logger, "Failed to add new channel data: channel monitor for given channel ID is already present");
+				return Err(());
+			},
+			hash_map::Entry::Vacant(e) => e,
+		};
+		log_trace!(
+			logger,
+			"Loaded existing ChannelMonitor for channel {}",
+			log_funding_info!(monitor)
+		);
+		if let Some(ref chain_source) = self.chain_source {
+			monitor.load_outputs_to_watch(chain_source, &self.logger);
+		}
+		entry.insert(MonitorHolder { monitor, pending_monitor_updates: Mutex::new(Vec::new()) });
+
+		Ok(ChannelMonitorUpdateStatus::Completed)
+	}
 }
 
 impl<
