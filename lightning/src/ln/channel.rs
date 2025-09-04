@@ -1937,6 +1937,18 @@ where
 		let logger = WithChannelContext::from(logger, self.context(), None);
 		match &mut self.phase {
 			ChannelPhase::UnfundedV2(chan) => {
+				debug_assert_eq!(
+					chan.context.channel_state,
+					ChannelState::NegotiatingFunding(
+						NegotiatingFundingFlags::OUR_INIT_SENT
+							| NegotiatingFundingFlags::THEIR_INIT_SENT
+					),
+				);
+
+				chan.context.channel_state =
+					ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
+				chan.context.channel_state.set_interactive_signing();
+
 				let mut signing_session = chan
 					.interactive_tx_constructor
 					.take()
@@ -6000,9 +6012,6 @@ where
 		funding
 			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 
-		self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
-		self.channel_state.set_interactive_signing();
-
 		if is_splice {
 			debug_assert_eq!(
 				holder_commitment_transaction_number,
@@ -6050,6 +6059,12 @@ where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
+		let is_quiescent = matches!(
+			self.channel_state,
+			ChannelState::ChannelReady(f) if f.is_set(ChannelReadyFlags::QUIESCENT)
+		);
+		debug_assert!(self.channel_state.is_interactive_signing() || is_quiescent);
+
 		let mut commitment_number = self.counterparty_next_commitment_transaction_number;
 		let mut commitment_point = self.counterparty_next_commitment_point.unwrap();
 
@@ -6096,10 +6111,6 @@ where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
-		assert!(
-			matches!(self.channel_state, ChannelState::FundingNegotiated(flags) if flags.is_interactive_signing())
-		);
-
 		let signature = self.get_initial_counterparty_commitment_signature(funding, logger);
 		if let Some(signature) = signature {
 			log_info!(
@@ -6130,6 +6141,8 @@ where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
+		self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
+		self.channel_state.set_interactive_signing();
 		self.counterparty_next_commitment_point = Some(counterparty_next_commitment_point_override);
 		self.get_initial_counterparty_commitment_signature(funding, logger)
 	}
@@ -8510,6 +8523,10 @@ where
 				format!("Channel {} not expecting funding signatures", self.context.channel_id);
 			return Err(APIError::APIMisuseError { err });
 		}
+		debug_assert_eq!(
+			self.has_pending_splice_awaiting_signatures(),
+			matches!(self.context.channel_state, ChannelState::ChannelReady(f) if f.is_set(ChannelReadyFlags::QUIESCENT))
+		);
 
 		let signing_session =
 			if let Some(signing_session) = self.interactive_tx_signing_session.as_mut() {
@@ -8560,9 +8577,25 @@ where
 			.map_err(|err| APIError::APIMisuseError { err })?;
 
 		if funding_tx_opt.is_some() {
-			self.funding.funding_transaction = funding_tx_opt.clone();
-			self.context.channel_state =
-				ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+			debug_assert!(tx_signatures_opt.is_some());
+			debug_assert!(!self.context.channel_state.is_monitor_update_in_progress());
+			debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
+
+			if let Some(pending_splice) = self.pending_splice.as_mut() {
+				if let Some(FundingNegotiation::AwaitingSignatures(mut funding)) =
+					pending_splice.funding_negotiation.take()
+				{
+					funding.funding_transaction = funding_tx_opt.clone();
+					self.pending_funding.push(funding);
+				} else {
+					debug_assert!(false, "We checked we were in the right state above");
+				}
+				self.context.channel_state.clear_quiescent();
+			} else {
+				self.funding.funding_transaction = funding_tx_opt.clone();
+				self.context.channel_state =
+					ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+			}
 		}
 
 		Ok((tx_signatures_opt, funding_tx_opt))
@@ -8575,6 +8608,10 @@ where
 		{
 			return Err(ChannelError::Ignore("Ignoring unexpected tx_signatures".to_owned()));
 		}
+		debug_assert_eq!(
+			self.has_pending_splice_awaiting_signatures(),
+			matches!(self.context.channel_state, ChannelState::ChannelReady(f) if f.is_set(ChannelReadyFlags::QUIESCENT))
+		);
 
 		let signing_session = if let Some(signing_session) = self.interactive_tx_signing_session.as_mut() {
 			if signing_session.has_received_tx_signatures() {
@@ -8607,12 +8644,24 @@ where
 			.map_err(|msg| ChannelError::Warn(msg))?;
 
 		if funding_tx_opt.is_some() {
-			// TODO(splicing): Transition back to `ChannelReady` and not `AwaitingChannelReady`
-			// We will also need to use the pending `FundingScope` in the splicing case.
-			//
-			// We have a finalized funding transaction, so we can set the funding transaction.
-			self.funding.funding_transaction = funding_tx_opt.clone();
-			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+			debug_assert!(!self.context.channel_state.is_monitor_update_in_progress());
+			debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
+
+			if let Some(pending_splice) = self.pending_splice.as_mut() {
+				if let Some(FundingNegotiation::AwaitingSignatures(mut funding)) =
+					pending_splice.funding_negotiation.take()
+				{
+					funding.funding_transaction = funding_tx_opt.clone();
+					self.pending_funding.push(funding);
+				} else {
+					debug_assert!(false, "We checked we were in the right state above");
+				}
+				self.context.channel_state.clear_quiescent();
+			} else {
+				self.funding.funding_transaction = funding_tx_opt.clone();
+				self.context.channel_state =
+					ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+			}
 		}
 
 		Ok((holder_tx_signatures_opt, funding_tx_opt))
