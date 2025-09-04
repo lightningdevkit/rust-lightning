@@ -1639,7 +1639,10 @@ impl InputOwned {
 	fn estimate_input_weight(&self) -> Weight {
 		match self {
 			InputOwned::Single(single) => estimate_input_weight(&single.prev_output),
-			InputOwned::Shared(shared) => estimate_input_weight(&shared.prev_output),
+			// TODO(taproot): Needs to consider different weights based on channel type
+			InputOwned::Shared(_) => Weight::from_wu(
+				BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
+			),
 		}
 	}
 
@@ -2156,6 +2159,8 @@ pub(super) fn calculate_change_output_value(
 		weight = weight.saturating_add(TX_COMMON_FIELDS_WEIGHT);
 		if is_splice {
 			// TODO(taproot): Needs to consider different weights based on channel type
+			weight = weight.saturating_add(BASE_INPUT_WEIGHT);
+			weight = weight.saturating_add(EMPTY_SCRIPT_SIG_WEIGHT);
 			weight = weight.saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT);
 		}
 	}
@@ -3147,7 +3152,7 @@ mod tests {
 		// Provide and expect a shared input
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Provide and expect a shared input",
-			inputs_a: generate_inputs(&[TestOutput::P2WPKH(50_000)]),
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(100_000)]),
 			a_shared_input: Some(generate_shared_input(&prev_funding_tx_1, 0, 60_000)),
 			shared_output_a: generate_funding_txout(108_000, 108_000),
 			outputs_a: vec![],
