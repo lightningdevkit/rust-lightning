@@ -699,9 +699,9 @@ enum ChannelState {
 	/// `AwaitingChannelReady`. Note that this is nonsense for an inbound channel as we immediately generate
 	/// `funding_signed` upon receipt of `funding_created`, so simply skip this state.
 	///
-	/// For inbound and outbound interactively funded channels (dual-funding/splicing), this flag indicates
+	/// For inbound and outbound interactively funded channels (dual-funding/splicing), this state indicates
 	/// that interactive transaction construction has been completed and we are now interactively signing
-	/// the funding/splice transaction.
+	/// the initial funding transaction.
 	FundingNegotiated(FundingNegotiatedFlags),
 	/// We've received/sent `funding_created` and `funding_signed` and are thus now waiting on the
 	/// funding transaction to confirm.
@@ -1913,6 +1913,14 @@ where
 		let logger = WithChannelContext::from(logger, self.context(), None);
 		match &mut self.phase {
 			ChannelPhase::UnfundedV2(chan) => {
+				debug_assert_eq!(
+					chan.context.channel_state,
+					ChannelState::NegotiatingFunding(
+						NegotiatingFundingFlags::OUR_INIT_SENT
+							| NegotiatingFundingFlags::THEIR_INIT_SENT
+					),
+				);
+
 				let signing_session = chan
 					.interactive_tx_constructor
 					.take()
@@ -6068,7 +6076,6 @@ where
 		funding
 			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 		self.interactive_tx_signing_session = Some(signing_session);
-		self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 
 		if is_splice {
 			debug_assert_eq!(
@@ -6079,6 +6086,7 @@ where
 			return Err(AbortReason::InternalError("Splicing not yet supported"));
 		} else {
 			self.assert_no_commitment_advancement(holder_commitment_transaction_number, "initial commitment_signed");
+			self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 		}
 
 		let commitment_signed = self.get_initial_commitment_signed_v2(&funding, logger);
@@ -6163,9 +6171,7 @@ where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
-		assert!(
-			matches!(self.channel_state, ChannelState::FundingNegotiated(_) if self.interactive_tx_signing_session.is_some())
-		);
+		debug_assert!(self.interactive_tx_signing_session.is_some());
 
 		let signature = self.get_initial_counterparty_commitment_signature(funding, logger);
 		if let Some(signature) = signature {
@@ -8538,6 +8544,27 @@ where
 		}
 	}
 
+	fn on_tx_signatures_exchange(&mut self, funding_tx: Transaction) {
+		debug_assert!(!self.context.channel_state.is_monitor_update_in_progress());
+		debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
+
+		if let Some(pending_splice) = self.pending_splice.as_mut() {
+			if let Some(FundingNegotiation::AwaitingSignatures(mut funding)) =
+				pending_splice.funding_negotiation.take()
+			{
+				funding.funding_transaction = Some(funding_tx);
+				self.pending_funding.push(funding);
+			} else {
+				debug_assert!(false, "We checked we were in the right state above");
+			}
+			self.context.channel_state.clear_quiescent();
+		} else {
+			self.funding.funding_transaction = Some(funding_tx);
+			self.context.channel_state =
+				ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+		}
+	}
+
 	pub fn funding_transaction_signed(
 		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>,
 	) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), APIError> {
@@ -8585,10 +8612,9 @@ where
 			.provide_holder_witnesses(tx_signatures, &self.context.secp_ctx)
 			.map_err(|err| APIError::APIMisuseError { err })?;
 
-		if funding_tx_opt.is_some() {
-			self.funding.funding_transaction = funding_tx_opt.clone();
-			self.context.channel_state =
-				ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+		if let Some(funding_tx) = funding_tx_opt.clone() {
+			debug_assert!(tx_signatures_opt.is_some());
+			self.on_tx_signatures_exchange(funding_tx);
 		}
 
 		Ok((tx_signatures_opt, funding_tx_opt))
@@ -8625,13 +8651,8 @@ where
 		let (holder_tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg)
 			.map_err(|msg| ChannelError::Warn(msg))?;
 
-		if funding_tx_opt.is_some() {
-			// TODO(splicing): Transition back to `ChannelReady` and not `AwaitingChannelReady`
-			// We will also need to use the pending `FundingScope` in the splicing case.
-			//
-			// We have a finalized funding transaction, so we can set the funding transaction.
-			self.funding.funding_transaction = funding_tx_opt.clone();
-			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+		if let Some(funding_tx) = funding_tx_opt.clone() {
+			self.on_tx_signatures_exchange(funding_tx);
 		}
 
 		Ok((holder_tx_signatures_opt, funding_tx_opt))
