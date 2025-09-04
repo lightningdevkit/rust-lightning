@@ -64,7 +64,6 @@ use crate::ln::channel::{
 	StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
-#[cfg(splicing)]
 use crate::ln::funding::SpliceContribution;
 use crate::ln::inbound_payment;
 use crate::ln::interactivetxs::{HandleTxCompleteResult, InteractiveTxMessageSendResult};
@@ -4461,7 +4460,6 @@ where
 	/// - `our_funding_inputs`: the funding inputs provided by us. If our contribution is positive, our funding inputs must cover at least that amount.
 	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
 	/// - `locktime`: Optional locktime for the new funding transaction. If None, set to the current block height.
-	#[cfg(splicing)]
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
@@ -4482,7 +4480,6 @@ where
 	}
 
 	/// See [`splice_channel`]
-	#[cfg(splicing)]
 	fn internal_splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 		contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: Option<u32>,
@@ -11111,7 +11108,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	/// Handle incoming splice request, transition channel to splice-pending (unless some check fails).
-	#[cfg(splicing)]
 	#[rustfmt::skip]
 	fn internal_splice_init(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceInit) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -11152,7 +11148,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	/// Handle incoming splice request ack, transition channel to splice-pending (unless some check fails).
-	#[cfg(splicing)]
 	#[rustfmt::skip]
 	fn internal_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -11188,7 +11183,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	#[cfg(splicing)]
 	fn internal_splice_locked(
 		&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceLocked,
 	) -> Result<(), MsgHandleErrInternal> {
@@ -13422,7 +13416,6 @@ where
 
 pub(super) enum FundingConfirmedMessage {
 	Establishment(msgs::ChannelReady),
-	#[cfg(splicing)]
 	Splice(msgs::SpliceLocked, Option<OutPoint>, Option<ChannelMonitorUpdate>, Vec<FundingInfo>),
 }
 
@@ -13460,7 +13453,6 @@ where
 
 		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
-		#[cfg(splicing)]
 		let mut to_process_monitor_update_actions = Vec::new();
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -13498,7 +13490,6 @@ where
 											log_trace!(logger, "Sending channel_ready WITHOUT channel_update for {}", channel_id);
 										}
 									},
-									#[cfg(splicing)]
 									Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update_opt, discarded_funding)) => {
 										let counterparty_node_id = funded_channel.context.get_counterparty_node_id();
 										let channel_id = funded_channel.context.channel_id();
@@ -13629,7 +13620,6 @@ where
 			}
 		}
 
-		#[cfg(splicing)]
 		for (counterparty_node_id, channel_id) in to_process_monitor_update_actions {
 			self.channel_monitor_updated(&channel_id, None, &counterparty_node_id);
 		}
@@ -13915,7 +13905,6 @@ where
 		});
 	}
 
-	#[cfg(splicing)]
 	fn handle_splice_init(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceInit) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_splice_init(&counterparty_node_id, msg);
@@ -13929,7 +13918,6 @@ where
 		});
 	}
 
-	#[cfg(splicing)]
 	fn handle_splice_ack(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceAck) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_splice_ack(&counterparty_node_id, msg);
@@ -13943,7 +13931,6 @@ where
 		});
 	}
 
-	#[cfg(splicing)]
 	#[rustfmt::skip]
 	fn handle_splice_locked(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceLocked) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
