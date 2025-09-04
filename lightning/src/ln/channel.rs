@@ -11537,13 +11537,15 @@ where
 	pub fn validate_splice_init(
 		&self, msg: &msgs::SpliceInit, our_funding_contribution: SignedAmount,
 	) -> Result<FundingScope, ChannelError> {
-		// TODO(splicing): Add check that we are the quiescence acceptor
-
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(ChannelError::WarnAndDisconnect(format!(
 				"Channel {} commitment point needs to be advanced once before spliced",
 				self.context.channel_id(),
 			)));
+		}
+
+		if !self.context.channel_state.is_quiescent() {
+			return Err(ChannelError::WarnAndDisconnect("Quiescence needed to splice".to_owned()));
 		}
 
 		// Check if a splice has been initiated already.
@@ -11686,10 +11688,6 @@ where
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
-		if !self.context.channel_state.is_quiescent() {
-			return Err(ChannelError::WarnAndDisconnect("Quiescence needed to splice".to_owned()));
-		}
-
 		let our_funding_contribution = SignedAmount::from_sat(our_funding_contribution_satoshis);
 		let splice_funding = self.validate_splice_init(msg, our_funding_contribution)?;
 
