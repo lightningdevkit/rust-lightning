@@ -561,6 +561,24 @@ impl InteractiveTxSigningSession {
 			.count()
 	}
 
+	fn local_outputs_count(&self) -> usize {
+		self.unsigned_tx
+			.outputs
+			.iter()
+			.enumerate()
+			.filter(|(_, output)| {
+				!is_serial_id_valid_for_counterparty(
+					self.unsigned_tx.holder_is_initiator,
+					output.serial_id,
+				)
+			})
+			.count()
+	}
+
+	pub fn has_local_contribution(&self) -> bool {
+		self.local_inputs_count() > 0 || self.local_outputs_count() > 0
+	}
+
 	pub fn shared_input(&self) -> Option<&NegotiatedTxInput> {
 		self.unsigned_tx
 			.shared_input_index
