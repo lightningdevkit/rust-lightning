@@ -524,8 +524,8 @@ impl<'a> TestChainMonitor<'a> {
 			blocker.recv().unwrap();
 		}
 
-		// At every point where we get a monitor update, we should be able to send a useful monitor
-		// to a watchtower and disk...
+		// Test that a monitor survives a round-trip, and use the round-tripped monitor in the
+		// underlying `ChainMonitor`.
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
@@ -536,7 +536,8 @@ impl<'a> TestChainMonitor<'a> {
 		.1;
 		// Note that a ChannelMonitor might not round-trip exactly here as we have tests that were
 		// serialized prior to LDK 0.1 and re-serializing them will flip the "written after LDK
-		// 0.1" flag.
+		// 0.1" flag. Thus, unlike the code in `watch_channel` below, we do not assert that the
+		// monitor is the same after a serialization round-trip.
 		self.latest_monitor_update_id
 			.lock()
 			.unwrap()
@@ -555,7 +556,8 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		}
 
 		// At every point where we get a monitor update, we should be able to send a useful monitor
-		// to a watchtower and disk...
+		// to a watchtower and disk. At a minimum, this means we should be able to round-trip the
+		// monitor to a serialized copy and get he same one back.
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
