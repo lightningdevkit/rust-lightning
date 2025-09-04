@@ -439,6 +439,10 @@ impl InteractiveTxSigningSession {
 		self.has_received_commitment_signed
 	}
 
+	pub fn has_received_tx_signatures(&self) -> bool {
+		self.has_received_tx_signatures
+	}
+
 	pub fn holder_tx_signatures(&self) -> &Option<TxSignatures> {
 		&self.holder_tx_signatures
 	}

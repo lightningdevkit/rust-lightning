@@ -495,7 +495,7 @@ enum HTLCUpdateAwaitingACK {
 }
 
 macro_rules! define_state_flags {
-	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr, $get: ident, $set: ident, $clear: ident)),+], $extra_flags: expr) => {
+	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr, $get: ident, $set: ident, $clear: ident)),*], $extra_flags: expr) => {
 		#[doc = $flag_type_doc]
 		#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq)]
 		struct $flag_type(u32);
@@ -620,9 +620,6 @@ mod state_flags {
 	pub const LOCAL_STFU_SENT: u32 = 1 << 15;
 	pub const REMOTE_STFU_SENT: u32 = 1 << 16;
 	pub const QUIESCENT: u32 = 1 << 17;
-	pub const INTERACTIVE_SIGNING: u32 = 1 << 18;
-	pub const OUR_TX_SIGNATURES_READY: u32 = 1 << 19;
-	pub const THEIR_TX_SIGNATURES_SENT: u32 = 1 << 20;
 }
 
 define_state_flags!(
@@ -657,17 +654,9 @@ define_state_flags!(
 
 define_state_flags!(
 	"Flags that only apply to [`ChannelState::FundingNegotiated`].",
-	FUNDED_STATE, FundingNegotiatedFlags, [
-		("Indicates we have an active interactive signing session for an interactive transaction",
-			INTERACTIVE_SIGNING, state_flags::INTERACTIVE_SIGNING,
-			is_interactive_signing, set_interactive_signing, clear_interactive_signing),
-		("Indicates they sent us a `tx_signatures` message.",
-			THEIR_TX_SIGNATURES_SENT, state_flags::THEIR_TX_SIGNATURES_SENT,
-			is_their_tx_signatures_sent, set_their_tx_signatures_sent, clear_their_tx_signatures_sent),
-		("Indicates we are ready to send them a `tx_signatures` message and it has been queued to send.",
-			OUR_TX_SIGNATURES_READY, state_flags::OUR_TX_SIGNATURES_READY,
-			is_our_tx_signatures_ready, set_our_tx_signatures_ready, clear_our_tx_signatures_ready)
-	]
+	FUNDED_STATE,
+	FundingNegotiatedFlags,
+	[]
 );
 
 define_state_flags!(
@@ -818,14 +807,6 @@ impl ChannelState {
 		}
 	}
 
-	fn can_resume_on_reconnect(&self) -> bool {
-		match self {
-			ChannelState::NegotiatingFunding(_) => false,
-			ChannelState::FundingNegotiated(flags) => flags.is_interactive_signing(),
-			_ => true,
-		}
-	}
-
 	fn is_both_sides_shutdown(&self) -> bool {
 		self.is_local_shutdown_sent() && self.is_remote_shutdown_sent()
 	}
@@ -881,24 +862,6 @@ impl ChannelState {
 		set_remote_shutdown_sent,
 		clear_remote_shutdown_sent,
 		FUNDED_STATES
-	);
-	impl_state_flag!(
-		is_interactive_signing,
-		set_interactive_signing,
-		clear_interactive_signing,
-		FundingNegotiated
-	);
-	impl_state_flag!(
-		is_our_tx_signatures_ready,
-		set_our_tx_signatures_ready,
-		clear_our_tx_signatures_ready,
-		FundingNegotiated
-	);
-	impl_state_flag!(
-		is_their_tx_signatures_sent,
-		set_their_tx_signatures_sent,
-		clear_their_tx_signatures_sent,
-		FundingNegotiated
 	);
 	impl_state_flag!(
 		is_our_channel_ready,
@@ -2992,9 +2955,8 @@ where
 
 	/// The signing session for the current interactive tx construction, if any.
 	///
-	/// This is populated when the interactive tx construction phase completes
-	/// (i.e., upon receiving a consecutive `tx_complete`) and the channel enters
-	/// the signing phase (`FundingNegotiated` state with the `INTERACTIVE_SIGNING` flag set).
+	/// This is populated when the interactive tx construction phase completes (i.e., upon receiving
+	/// a consecutive `tx_complete`) and the channel enters the signing phase.
 	///
 	/// This field is cleared once our counterparty sends a `channel_ready` or upon splice funding
 	/// promotion.
@@ -4328,13 +4290,21 @@ where
 		self.is_manual_broadcast = true;
 	}
 
+	fn can_resume_on_reconnect(&self) -> bool {
+		match self.channel_state {
+			ChannelState::NegotiatingFunding(_) => false,
+			ChannelState::FundingNegotiated(_) => self.interactive_tx_signing_session.is_some(),
+			_ => true,
+		}
+	}
+
 	/// Returns true if this channel can be resume after a restart, implying its past the initial
 	/// funding negotiation stages (and any assocated batch channels are similarly past initial
 	/// funding negotiation).
 	///
 	/// This is equivalent to saying the channel can be persisted to disk.
 	pub fn can_resume_on_restart(&self) -> bool {
-		self.channel_state.can_resume_on_reconnect()
+		self.can_resume_on_reconnect()
 			&& match self.channel_state {
 				ChannelState::AwaitingChannelReady(flags) => !flags.is_waiting_for_batch(),
 				_ => true,
@@ -4346,7 +4316,11 @@ where
 	fn is_funding_broadcastable(&self) -> bool {
 		match self.channel_state {
 			ChannelState::NegotiatingFunding(_) => false,
-			ChannelState::FundingNegotiated(flags) => !flags.is_our_tx_signatures_ready(),
+			ChannelState::FundingNegotiated(_) => self
+				.interactive_tx_signing_session
+				.as_ref()
+				.map(|signing_session| signing_session.holder_tx_signatures().is_some())
+				.unwrap_or(false),
 			ChannelState::AwaitingChannelReady(flags) => !flags.is_waiting_for_batch(),
 			_ => true,
 		}
@@ -4354,10 +4328,6 @@ where
 
 	#[rustfmt::skip]
 	fn unset_funding_info(&mut self, funding: &mut FundingScope) {
-		debug_assert!(
-			matches!(self.channel_state, ChannelState::FundingNegotiated(flags) if !flags.is_their_tx_signatures_sent() && !flags.is_our_tx_signatures_ready())
-				|| matches!(self.channel_state, ChannelState::AwaitingChannelReady(_))
-		);
 		funding.channel_transaction_parameters.funding_outpoint = None;
 		self.channel_id = self.temporary_channel_id.expect(
 			"temporary_channel_id should be set since unset_funding_info is only called on funded \
@@ -6147,7 +6117,6 @@ where
 			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 		self.interactive_tx_signing_session = Some(signing_session);
 		self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
-		self.channel_state.set_interactive_signing();
 
 		if is_splice {
 			debug_assert_eq!(
@@ -6243,7 +6212,7 @@ where
 		L::Target: Logger,
 	{
 		assert!(
-			matches!(self.channel_state, ChannelState::FundingNegotiated(flags) if flags.is_interactive_signing())
+			matches!(self.channel_state, ChannelState::FundingNegotiated(_) if self.interactive_tx_signing_session.is_some())
 		);
 
 		let signature = self.get_initial_counterparty_commitment_signature(funding, logger);
@@ -7322,13 +7291,28 @@ where
 		self.context.channel_state.clear_waiting_for_batch();
 	}
 
-	/// Unsets the existing funding information.
+	/// Unsets the existing funding information for V1 funded channels.
 	///
 	/// This must only be used if the channel has not yet completed funding and has not been used.
 	///
 	/// Further, the channel must be immediately shut down after this with a call to
 	/// [`ChannelContext::force_shutdown`].
 	pub fn unset_funding_info(&mut self) {
+		let sent_or_received_tx_signatures = self
+			.context
+			.interactive_tx_signing_session
+			.as_ref()
+			.map(|signing_session| {
+				signing_session.holder_tx_signatures().is_some()
+					|| signing_session.has_received_tx_signatures()
+			})
+			.unwrap_or(false);
+		debug_assert!(
+			matches!(
+				self.context.channel_state,
+				ChannelState::FundingNegotiated(_) if !sent_or_received_tx_signatures
+			) || matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_))
+		);
 		self.context.unset_funding_info(&mut self.funding);
 	}
 
@@ -7558,13 +7542,17 @@ where
 	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError>
 	where L::Target: Logger
 	{
-		if !self.context.channel_state.is_interactive_signing()
-			|| self.context.channel_state.is_their_tx_signatures_sent()
-		{
-			let msg = "Received initial commitment_signed before funding transaction constructed or after peer's tx_signatures received!";
+		if let Some(signing_session) = self.context.interactive_tx_signing_session.as_ref() {
+			if signing_session.has_received_tx_signatures() {
+				let msg = "Received initial commitment_signed after peer's tx_signatures received!";
+				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+				return Err(ChannelError::Close((msg.to_owned(), reason)));
+			}
+		} else {
+			let msg = "Received initial commitment_signed before funding transaction constructed!";
 			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
 			return Err(ChannelError::Close((msg.to_owned(), reason)));
-		}
+		};
 
 		let holder_commitment_point = &mut self.holder_commitment_point.clone();
 		self.context.assert_no_commitment_advancement(holder_commitment_point.next_transaction_number(), "initial commitment_signed");
@@ -7592,19 +7580,18 @@ where
 	/// Note that our `commitment_signed` send did not include a monitor update. This is due to:
 	///   1. Updates cannot be made since the state machine is paused until `tx_signatures`.
 	///   2. We're still able to abort negotiation until `tx_signatures`.
-	pub fn splice_initial_commitment_signed<L: Deref>(
+	fn splice_initial_commitment_signed<L: Deref>(
 		&mut self, msg: &msgs::CommitmentSigned, logger: &L,
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
 	where
 		L::Target: Logger,
 	{
-		if !self.context.channel_state.is_interactive_signing()
-			|| self.context.channel_state.is_their_tx_signatures_sent()
-		{
-			return Err(ChannelError::close(
-				"Received splice initial commitment_signed during invalid state".to_owned(),
-			));
-		}
+		debug_assert!(self
+			.context
+			.interactive_tx_signing_session
+			.as_ref()
+			.map(|signing_session| !signing_session.has_received_tx_signatures())
+			.unwrap_or(false));
 
 		let pending_splice_funding = self
 			.pending_splice
@@ -7615,6 +7602,7 @@ where
 			})
 			.and_then(|funding_negotiation| funding_negotiation.as_funding())
 			.expect("Funding must exist for negotiated pending splice");
+
 		let transaction_number = self.holder_commitment_point.current_transaction_number();
 		let commitment_point = self.holder_commitment_point.current_point().ok_or_else(|| {
 			debug_assert!(false);
@@ -8588,85 +8576,49 @@ where
 	pub fn funding_transaction_signed(
 		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>,
 	) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), APIError> {
-		if !self.context.channel_state.is_interactive_signing() {
-			let err =
-				format!("Channel {} not expecting funding signatures", self.context.channel_id);
-			return Err(APIError::APIMisuseError { err });
-		}
-		if self.context.channel_state.is_our_tx_signatures_ready() {
-			let err =
-				format!("Channel {} already received funding signatures", self.context.channel_id);
-			return Err(APIError::APIMisuseError { err });
-		}
-		if let Some(pending_splice) = self.pending_splice.as_ref() {
-			if !pending_splice
-				.funding_negotiation
-				.as_ref()
-				.map(|funding_negotiation| {
-					matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. })
-				})
-				.unwrap_or(false)
-			{
-				debug_assert!(false);
-				let err = format!(
-					"Channel {} with pending splice is not expecting funding signatures yet",
-					self.context.channel_id
-				);
-				return Err(APIError::APIMisuseError { err });
-			}
-		}
-
-		let (tx_signatures_opt, funding_tx_opt) = self
-			.context
-			.interactive_tx_signing_session
-			.as_mut()
-			.ok_or_else(|| APIError::APIMisuseError {
-				err: format!(
-					"Channel {} not expecting funding signatures",
-					self.context.channel_id
-				),
-			})
-			.and_then(|signing_session| {
-				let tx = signing_session.unsigned_tx().build_unsigned_tx();
-				if funding_txid_signed != tx.compute_txid() {
-					return Err(APIError::APIMisuseError {
-						err: "Transaction was malleated prior to signing".to_owned(),
-					});
-				}
-
-				let shared_input_signature = if let Some(splice_input_index) =
-					signing_session.unsigned_tx().shared_input_index()
-				{
-					let sig = match &self.context.holder_signer {
-						ChannelSignerType::Ecdsa(signer) => signer.sign_splice_shared_input(
-							&self.funding.channel_transaction_parameters,
-							&tx,
-							splice_input_index as usize,
-							&self.context.secp_ctx,
-						),
-						#[cfg(taproot)]
-						ChannelSignerType::Taproot(_) => todo!(),
-					};
-					Some(sig)
-				} else {
-					None
-				};
-				debug_assert_eq!(self.pending_splice.is_some(), shared_input_signature.is_some());
-
-				let tx_signatures = msgs::TxSignatures {
-					channel_id: self.context.channel_id,
-					tx_hash: funding_txid_signed,
-					witnesses,
-					shared_input_signature,
-				};
+		let signing_session =
+			if let Some(signing_session) = self.context.interactive_tx_signing_session.as_mut() {
 				signing_session
-					.provide_holder_witnesses(tx_signatures, &self.context.secp_ctx)
-					.map_err(|err| APIError::APIMisuseError { err })
-			})?;
+			} else {
+				let err =
+					format!("Channel {} not expecting funding signatures", self.context.channel_id);
+				return Err(APIError::APIMisuseError { err });
+			};
 
-		if tx_signatures_opt.is_some() {
-			self.context.channel_state.set_our_tx_signatures_ready();
+		let tx = signing_session.unsigned_tx().build_unsigned_tx();
+		if funding_txid_signed != tx.compute_txid() {
+			return Err(APIError::APIMisuseError {
+				err: "Transaction was malleated prior to signing".to_owned(),
+			});
 		}
+
+		let shared_input_signature =
+			if let Some(splice_input_index) = signing_session.unsigned_tx().shared_input_index() {
+				let sig = match &self.context.holder_signer {
+					ChannelSignerType::Ecdsa(signer) => signer.sign_splice_shared_input(
+						&self.funding.channel_transaction_parameters,
+						&tx,
+						splice_input_index as usize,
+						&self.context.secp_ctx,
+					),
+					#[cfg(taproot)]
+					ChannelSignerType::Taproot(_) => todo!(),
+				};
+				Some(sig)
+			} else {
+				None
+			};
+		debug_assert_eq!(self.pending_splice.is_some(), shared_input_signature.is_some());
+
+		let tx_signatures = msgs::TxSignatures {
+			channel_id: self.context.channel_id,
+			tx_hash: funding_txid_signed,
+			witnesses,
+			shared_input_signature,
+		};
+		let (tx_signatures_opt, funding_tx_opt) = signing_session
+			.provide_holder_witnesses(tx_signatures, &self.context.secp_ctx)
+			.map_err(|err| APIError::APIMisuseError { err })?;
 
 		if funding_tx_opt.is_some() {
 			self.funding.funding_transaction = funding_tx_opt.clone();
@@ -8679,57 +8631,45 @@ where
 
 	#[rustfmt::skip]
 	pub fn tx_signatures(&mut self, msg: &msgs::TxSignatures) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), ChannelError> {
-		if !self.context.channel_state.is_interactive_signing()
-			|| self.context.channel_state.is_their_tx_signatures_sent()
-		{
-			return Err(ChannelError::Ignore("Ignoring tx_signatures received outside of interactive signing".to_owned()));
-		}
-
-		if let Some(ref mut signing_session) = self.context.interactive_tx_signing_session {
-			if msg.tx_hash != signing_session.unsigned_tx().compute_txid() {
-				let msg = "The txid for the transaction does not match";
-				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-				return Err(ChannelError::Close((msg.to_owned(), reason)));
+		let signing_session = if let Some(signing_session) = self.context.interactive_tx_signing_session.as_mut() {
+			if signing_session.has_received_tx_signatures() {
+				return Err(ChannelError::Ignore("Ignoring duplicate tx_signatures".to_owned()));
 			}
-
-			// We need to close the channel if our peer hasn't sent their commitment signed already.
-			// Technically we'd wait on having an initial monitor persisted, so we shouldn't be broadcasting
-			// the transaction, but this may risk losing funds for a manual broadcast if we continue.
 			if !signing_session.has_received_commitment_signed() {
-				let msg = "Received tx_signatures before initial commitment_signed";
-				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-				return Err(ChannelError::Close((msg.to_owned(), reason)));
+				return Err(ChannelError::close("Received tx_signatures before initial commitment_signed".to_owned()));
 			}
-
-			for witness in &msg.witnesses {
-				if witness.is_empty() {
-					let msg = "Unexpected empty witness in tx_signatures received";
-					let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-					return Err(ChannelError::Close((msg.to_owned(), reason)));
-				}
-			}
-
-			let (holder_tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg)
-				.map_err(|msg| ChannelError::Warn(msg))?;
-
-			// Set `THEIR_TX_SIGNATURES_SENT` flag after all potential errors.
-			self.context.channel_state.set_their_tx_signatures_sent();
-
-			if funding_tx_opt.is_some() {
-				// TODO(splicing): Transition back to `ChannelReady` and not `AwaitingChannelReady`
-				// We will also need to use the pending `FundingScope` in the splicing case.
-				//
-				// We have a finalized funding transaction, so we can set the funding transaction.
-				self.funding.funding_transaction = funding_tx_opt.clone();
-				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
-			}
-
-			Ok((holder_tx_signatures_opt, funding_tx_opt))
+			signing_session
 		} else {
-			let msg = "Unexpected tx_signatures. No funding transaction awaiting signatures";
+			return Err(ChannelError::Ignore("Ignoring unexpected tx_signatures".to_owned()));
+		};
+
+		if msg.tx_hash != signing_session.unsigned_tx().compute_txid() {
+			let msg = "The txid for the transaction does not match";
 			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
 			return Err(ChannelError::Close((msg.to_owned(), reason)));
 		}
+
+		for witness in &msg.witnesses {
+			if witness.is_empty() {
+				let msg = "Unexpected empty witness in tx_signatures received";
+				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+				return Err(ChannelError::Close((msg.to_owned(), reason)));
+			}
+		}
+
+		let (holder_tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg)
+			.map_err(|msg| ChannelError::Warn(msg))?;
+
+		if funding_tx_opt.is_some() {
+			// TODO(splicing): Transition back to `ChannelReady` and not `AwaitingChannelReady`
+			// We will also need to use the pending `FundingScope` in the splicing case.
+			//
+			// We have a finalized funding transaction, so we can set the funding transaction.
+			self.funding.funding_transaction = funding_tx_opt.clone();
+			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+		}
+
+		Ok((holder_tx_signatures_opt, funding_tx_opt))
 	}
 
 	/// Queues up an outbound update fee by placing it in the holding cell. You should call
@@ -8810,7 +8750,7 @@ where
 	#[rustfmt::skip]
 	fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L) -> Result<(), ()> where L::Target: Logger {
 		assert!(!matches!(self.context.channel_state, ChannelState::ShutdownComplete));
-		if !self.context.channel_state.can_resume_on_reconnect() {
+		if !self.context.can_resume_on_reconnect() {
 			return Err(())
 		}
 
@@ -9532,7 +9472,7 @@ where
 				// - if it has already received `tx_signatures` for that funding transaction:
 				//   - MUST send its `tx_signatures` for that funding transaction.
 				if (session.has_received_commitment_signed() && session.holder_sends_tx_signatures_first())
-					|| self.context.channel_state.is_their_tx_signatures_sent()
+					|| session.has_received_tx_signatures()
 				{
 					// If `holder_tx_signatures` is `None` here, the `tx_signatures` message will be sent
 					// when the holder provides their witnesses as this will queue a `tx_signatures` if the
@@ -9920,16 +9860,19 @@ where
 				"Peer sent shutdown when we needed a channel_reestablish".to_owned(),
 			));
 		}
-		let mut not_broadcasted =
+		let mut not_broadcasted_initial_funding =
 			matches!(self.context.channel_state, ChannelState::NegotiatingFunding(_));
-		if let ChannelState::FundingNegotiated(flags) = &self.context.channel_state {
-			if !flags.is_our_tx_signatures_ready() {
-				// If we're a V1 channel or we haven't yet sent our `tx_signatures`, the funding tx
-				// couldn't be broadcasted yet, so just short-circuit the shutdown logic.
-				not_broadcasted = true;
+		if matches!(self.context.channel_state, ChannelState::FundingNegotiated(_)) {
+			if let Some(signing_session) = self.context.interactive_tx_signing_session.as_ref() {
+				if signing_session.holder_tx_signatures().is_none() {
+					// If we're a V1 channel or we haven't yet sent our `tx_signatures` for a dual
+					// funded channel, the funding tx couldn't be broadcasted yet, so just short-circuit
+					// the shutdown logic.
+					not_broadcasted_initial_funding = true;
+				}
 			}
 		}
-		if not_broadcasted {
+		if not_broadcasted_initial_funding {
 			// Spec says we should fail the connection, not the channel, but that's nonsense, there
 			// are plenty of reasons you may want to fail a channel pre-funding, and spec says you
 			// can do that via error message without getting a connection fail anyway...
@@ -11314,38 +11257,27 @@ where
 		self.sign_channel_announcement(node_signer, announcement).ok()
 	}
 
-	#[rustfmt::skip]
 	fn maybe_get_next_funding(&self) -> Option<msgs::NextFunding> {
 		// If we've sent `commtiment_signed` for an interactively constructed transaction
 		// during a signing session, but have not received `tx_signatures` we MUST set `next_funding`
 		// to the txid of that interactive transaction, else we MUST NOT set it.
-		if self.context.channel_state.is_interactive_signing() {
-			// Since we have a signing_session, this implies we've sent an initial `commitment_signed`...
-			if !self.context.channel_state.is_their_tx_signatures_sent() {
-				// ...but we didn't receive a `tx_signatures` from the counterparty yet.
-				self.context.interactive_tx_signing_session
-					.as_ref()
-					.map(|signing_session| {
-						let mut next_funding = msgs::NextFunding {
-							txid: signing_session.unsigned_tx().compute_txid(),
-							retransmit_flags: 0,
-						};
+		self.context
+			.interactive_tx_signing_session
+			.as_ref()
+			.filter(|session| !session.has_received_tx_signatures())
+			.map(|signing_session| {
+				let mut next_funding = msgs::NextFunding {
+					txid: signing_session.unsigned_tx().compute_txid(),
+					retransmit_flags: 0,
+				};
 
-						// TODO(splicing): Add comment for spec requirements
-						if !signing_session.has_received_commitment_signed() {
-							next_funding.retransmit(msgs::NextFundingFlag::CommitmentSigned);
-						}
+				// TODO(splicing): Add comment for spec requirements
+				if !signing_session.has_received_commitment_signed() {
+					next_funding.retransmit(msgs::NextFundingFlag::CommitmentSigned);
+				}
 
-						next_funding
-					})
-			} else {
-				// ...and we received a `tx_signatures` from the counterparty.
-				None
-			}
-		} else {
-			// We don't have an active signing session.
-			None
-		}
+				next_funding
+			})
 	}
 
 	fn maybe_get_my_current_funding_locked(&self) -> Option<msgs::FundingLocked> {
@@ -13174,6 +13106,10 @@ where
 	/// The channel must be immediately shut down after this with a call to
 	/// [`ChannelContext::force_shutdown`].
 	pub fn unset_funding_info(&mut self) {
+		debug_assert!(matches!(
+			self.context.channel_state,
+			ChannelState::FundingNegotiated(_) if self.context.interactive_tx_signing_session.is_none()
+		));
 		self.context.unset_funding_info(&mut self.funding);
 	}
 }
@@ -13928,7 +13864,8 @@ where
 					channel_state.clear_remote_stfu_sent();
 					channel_state.clear_quiescent();
 				},
-				ChannelState::FundingNegotiated(flags) if flags.is_interactive_signing() => {},
+				ChannelState::FundingNegotiated(_)
+					if self.context.interactive_tx_signing_session.is_some() => {},
 				_ => debug_assert!(false, "Pre-funded/shutdown channels should not be written"),
 			}
 			channel_state.set_peer_disconnected();
