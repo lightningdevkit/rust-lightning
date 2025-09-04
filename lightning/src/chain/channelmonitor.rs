@@ -5164,6 +5164,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			let txid = tx.compute_txid();
 			log_trace!(logger, "Transaction {} confirmed in block {}", txid , block_hash);
 			// If a transaction has already been confirmed, ensure we don't bother processing it duplicatively.
+			if self.alternative_funding_confirmed.map(|(alternative_funding_txid, _)| alternative_funding_txid == txid).unwrap_or(false) {
+				log_debug!(logger, "Skipping redundant processing of funding-spend tx {} as it was previously confirmed", txid);
+				continue 'tx_iter;
+			}
 			if Some(txid) == self.funding_spend_confirmed {
 				log_debug!(logger, "Skipping redundant processing of funding-spend tx {} as it was previously confirmed", txid);
 				continue 'tx_iter;
