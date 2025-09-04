@@ -7,6 +7,9 @@ use lightning::sign::EntropySource;
 
 use crate::lsps0::ser::LSPSRequestId;
 
+#[allow(dead_code)]
+#[allow(unused_imports)]
+pub(crate) mod async_poll;
 pub mod time;
 
 /// Converts a human-readable string representation of a short channel ID (SCID)
