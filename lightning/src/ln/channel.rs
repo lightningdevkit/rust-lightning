@@ -6130,8 +6130,6 @@ where
 				holder_commitment_transaction_number,
 				self.counterparty_next_commitment_transaction_number,
 			);
-			// TODO(splicing) Forced error, as the use case is not complete
-			return Err(AbortReason::InternalError("Splicing not yet supported"));
 		} else {
 			self.assert_no_commitment_advancement(holder_commitment_transaction_number, "initial commitment_signed");
 			self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
