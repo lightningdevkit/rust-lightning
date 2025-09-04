@@ -4049,6 +4049,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		mem::swap(&mut self.funding, &mut new_funding);
 		self.onchain_tx_handler.update_after_renegotiated_funding_locked(
+			self.funding.channel_parameters.clone(),
 			self.funding.current_holder_commitment_tx.clone(),
 			self.funding.prev_holder_commitment_tx.clone(),
 		);
