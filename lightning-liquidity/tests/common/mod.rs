@@ -38,7 +38,8 @@ pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
 		Some(service_config),
 		None,
 		Arc::clone(&time_provider),
-	);
+	)
+	.unwrap();
 
 	let client_kv_store = Arc::new(TestStore::new(false));
 	let client_lm = LiquidityManagerSync::new_with_custom_time_provider(
@@ -51,7 +52,8 @@ pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
 		None,
 		Some(client_config),
 		time_provider,
-	);
+	)
+	.unwrap();
 
 	let mut iter = nodes.into_iter();
 	let service_node = LiquidityNode::new(iter.next().unwrap(), service_lm);

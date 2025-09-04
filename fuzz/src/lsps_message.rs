@@ -86,7 +86,7 @@ pub fn do_test(data: &[u8]) {
 		kv_store,
 		None,
 		None,
-	));
+	).unwrap());
 	let mut reader = data;
 	if let Ok(Some(msg)) = liquidity_manager.read(LSPS_MESSAGE_TYPE_ID, &mut reader) {
 		let secp = Secp256k1::signing_only();

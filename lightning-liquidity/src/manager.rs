@@ -24,6 +24,7 @@ use crate::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
 use crate::lsps5::msgs::LSPS5Message;
 use crate::lsps5::service::{LSPS5ServiceConfig, LSPS5ServiceHandler};
 use crate::message_queue::MessageQueue;
+use crate::persist::read_lsps2_service_peer_states;
 
 use crate::lsps1::client::{LSPS1ClientConfig, LSPS1ClientHandler};
 use crate::lsps1::msgs::LSPS1Message;
@@ -35,6 +36,7 @@ use crate::lsps2::msgs::LSPS2Message;
 use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler};
 use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
+use crate::utils::async_poll::dummy_waker;
 #[cfg(feature = "time")]
 use crate::utils::time::DefaultTimeProvider;
 use crate::utils::time::TimeProvider;
@@ -57,6 +59,7 @@ use bitcoin::secp256k1::PublicKey;
 use core::future::Future as StdFuture;
 use core::ops::Deref;
 use core::pin::Pin;
+use core::task;
 
 const LSPS_FEATURE_BIT: usize = 729;
 
@@ -281,12 +284,14 @@ where
 	C::Target: Filter,
 {
 	/// Constructor for the [`LiquidityManager`] using the default system clock
-	pub fn new(
+	///
+	/// Will read persisted service states from the given [`KVStore`].
+	pub async fn new(
 		entropy_source: ES, node_signer: NS, channel_manager: CM, chain_source: Option<C>,
 		chain_params: Option<ChainParameters>, kv_store: Arc<dyn KVStore + Send + Sync>,
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>,
-	) -> Self {
+	) -> Result<Self, lightning::io::Error> {
 		let time_provider = Arc::new(DefaultTimeProvider);
 		Self::new_with_custom_time_provider(
 			entropy_source,
@@ -299,6 +304,7 @@ where
 			client_config,
 			time_provider,
 		)
+		.await
 	}
 }
 
@@ -318,16 +324,18 @@ where
 {
 	/// Constructor for the [`LiquidityManager`] with a custom time provider.
 	///
+	/// Will read persisted service states from the given [`KVStore`].
+	///
 	/// This should be used on non-std platforms where access to the system time is not
 	/// available.
 	/// Sets up the required protocol message handlers based on the given
 	/// [`LiquidityClientConfig`] and [`LiquidityServiceConfig`].
-	pub fn new_with_custom_time_provider(
+	pub async fn new_with_custom_time_provider(
 		entropy_source: ES, node_signer: NS, channel_manager: CM, chain_source: Option<C>,
 		chain_params: Option<ChainParameters>, kv_store: Arc<dyn KVStore + Send + Sync>,
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
-	) -> Self {
+	) -> Result<Self, lightning::io::Error> {
 		let pending_messages = Arc::new(MessageQueue::new());
 		let pending_events = Arc::new(EventQueue::new(Arc::clone(&kv_store)));
 		let ignored_peers = RwLock::new(new_hash_set());
@@ -344,22 +352,30 @@ where
 				)
 			})
 		});
-		let lsps2_service_handler = service_config.as_ref().and_then(|config| {
-			config.lsps2_service_config.as_ref().map(|config| {
+
+		let lsps2_service_handler = if let Some(service_config) = service_config.as_ref() {
+			if let Some(lsps2_service_config) = service_config.lsps2_service_config.as_ref() {
 				if let Some(number) =
 					<LSPS2ServiceHandler<CM> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
 				{
 					supported_protocols.push(number);
 				}
-				LSPS2ServiceHandler::new(
+
+				let peer_states = read_lsps2_service_peer_states(Arc::clone(&kv_store)).await?;
+				Some(LSPS2ServiceHandler::new(
+					peer_states,
 					Arc::clone(&pending_messages),
 					Arc::clone(&pending_events),
 					channel_manager.clone(),
 					Arc::clone(&kv_store),
-					config.clone(),
-				)
-			})
-		});
+					lsps2_service_config.clone(),
+				))
+			} else {
+				None
+			}
+		} else {
+			None
+		};
 
 		let lsps5_client_handler = client_config.as_ref().and_then(|config| {
 			config.lsps5_client_config.as_ref().map(|config| {
@@ -434,7 +450,7 @@ where
 			None
 		};
 
-		Self {
+		Ok(Self {
 			pending_messages,
 			pending_events,
 			request_id_to_method_map: Mutex::new(new_hash_map()),
@@ -452,7 +468,7 @@ where
 			_client_config: client_config,
 			best_block: RwLock::new(chain_params.map(|chain_params| chain_params.best_block)),
 			_chain_source: chain_source,
-		}
+		})
 	}
 
 	/// Returns a reference to the LSPS0 client-side handler.
@@ -990,9 +1006,10 @@ where
 		chain_params: Option<ChainParameters>, kv_store_sync: Arc<dyn KVStoreSync + Send + Sync>,
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>,
-	) -> Self {
+	) -> Result<Self, lightning::io::Error> {
 		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store_sync));
-		let inner = Arc::new(LiquidityManager::new(
+
+		let mut fut = Box::pin(LiquidityManager::new(
 			entropy_source,
 			node_signer,
 			channel_manager,
@@ -1002,7 +1019,17 @@ where
 			service_config,
 			client_config,
 		));
-		Self { inner }
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		let inner = match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("LiquidityManager::new should not be pending in a sync context");
+			},
+		}?;
+		Ok(Self { inner: Arc::new(inner) })
 	}
 }
 
@@ -1028,9 +1055,9 @@ where
 		chain_params: Option<ChainParameters>, kv_store_sync: Arc<dyn KVStoreSync + Send + Sync>,
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
-	) -> Self {
+	) -> Result<Self, lightning::io::Error> {
 		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store_sync));
-		let inner = Arc::new(LiquidityManager::new_with_custom_time_provider(
+		let mut fut = Box::pin(LiquidityManager::new_with_custom_time_provider(
 			entropy_source,
 			node_signer,
 			channel_manager,
@@ -1041,7 +1068,17 @@ where
 			client_config,
 			time_provider,
 		));
-		Self { inner }
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		let inner = match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("LiquidityManager::new should not be pending in a sync context");
+			},
+		}?;
+		Ok(Self { inner: Arc::new(inner) })
 	}
 
 	/// Returns a reference to the LSPS0 client-side handler.
