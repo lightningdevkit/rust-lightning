@@ -16,6 +16,7 @@ use crate::events::bump_transaction::{Utxo, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::sign::{P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 
 /// The components of a splice's funding transaction that are contributed by one party.
+#[derive(Debug, Clone)]
 pub enum SpliceContribution {
 	/// When funds are added to a channel.
 	SpliceIn {
@@ -82,7 +83,7 @@ impl SpliceContribution {
 
 /// An input to contribute to a channel's funding transaction either when using the v2 channel
 /// establishment protocol or when splicing.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct FundingTxInput {
 	/// The unspent [`TxOut`] that the input spends.
 	///
