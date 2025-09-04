@@ -89,7 +89,7 @@ impl SerialIdExt for SerialId {
 	}
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum AbortReason {
 	InvalidStateTransition,
 	UnexpectedCounterpartyMessage,
@@ -1852,23 +1852,6 @@ impl InteractiveTxMessageSend {
 	}
 }
 
-pub(super) struct InteractiveTxMessageSendResult(
-	pub Result<InteractiveTxMessageSend, msgs::TxAbort>,
-);
-
-impl InteractiveTxMessageSendResult {
-	pub fn into_msg_send_event(self, counterparty_node_id: PublicKey) -> MessageSendEvent {
-		match self.0 {
-			Ok(interactive_tx_msg_send) => {
-				interactive_tx_msg_send.into_msg_send_event(counterparty_node_id)
-			},
-			Err(tx_abort_msg) => {
-				MessageSendEvent::SendTxAbort { node_id: counterparty_node_id, msg: tx_abort_msg }
-			},
-		}
-	}
-}
-
 // This macro executes a state machine transition based on a provided action.
 macro_rules! do_state_transition {
 	($self: ident, $transition: ident, $msg: expr) => {{
@@ -1899,43 +1882,6 @@ pub(super) enum HandleTxCompleteValue {
 	SendTxMessage(InteractiveTxMessageSend),
 	SendTxComplete(InteractiveTxMessageSend, bool),
 	NegotiationComplete,
-}
-
-impl HandleTxCompleteValue {
-	pub fn into_msg_send_event(
-		self, counterparty_node_id: PublicKey,
-	) -> (Option<MessageSendEvent>, bool) {
-		match self {
-			HandleTxCompleteValue::SendTxMessage(msg) => {
-				(Some(msg.into_msg_send_event(counterparty_node_id)), false)
-			},
-			HandleTxCompleteValue::SendTxComplete(msg, negotiation_complete) => {
-				(Some(msg.into_msg_send_event(counterparty_node_id)), negotiation_complete)
-			},
-			HandleTxCompleteValue::NegotiationComplete => (None, true),
-		}
-	}
-}
-
-pub(super) struct HandleTxCompleteResult(pub Result<HandleTxCompleteValue, msgs::TxAbort>);
-
-impl HandleTxCompleteResult {
-	pub fn into_msg_send_event(
-		self, counterparty_node_id: PublicKey,
-	) -> (Option<MessageSendEvent>, bool) {
-		match self.0 {
-			Ok(interactive_tx_msg_send) => {
-				interactive_tx_msg_send.into_msg_send_event(counterparty_node_id)
-			},
-			Err(tx_abort_msg) => (
-				Some(MessageSendEvent::SendTxAbort {
-					node_id: counterparty_node_id,
-					msg: tx_abort_msg,
-				}),
-				false,
-			),
-		}
-	}
 }
 
 pub(super) struct InteractiveTxConstructorArgs<'a, ES: Deref>

@@ -63,12 +63,11 @@ use crate::ln::funding::FundingTxInput;
 #[cfg(splicing)]
 use crate::ln::funding::SpliceContribution;
 #[cfg(splicing)]
+use crate::ln::interactivetxs::calculate_change_output_value;
 use crate::ln::interactivetxs::{
-	calculate_change_output_value, AbortReason, InteractiveTxMessageSend,
-};
-use crate::ln::interactivetxs::{
-	get_output_weight, InteractiveTxConstructor, InteractiveTxConstructorArgs,
-	InteractiveTxSigningSession, SharedOwnedInput, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
+	get_output_weight, AbortReason, HandleTxCompleteValue, InteractiveTxConstructor,
+	InteractiveTxConstructorArgs, InteractiveTxMessageSend, InteractiveTxSigningSession,
+	SharedOwnedInput, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
@@ -1597,14 +1596,6 @@ where
 		}
 	}
 
-	pub fn as_unfunded_v2_mut(&mut self) -> Option<&mut PendingV2Channel<SP>> {
-		if let ChannelPhase::UnfundedV2(channel) = &mut self.phase {
-			Some(channel)
-		} else {
-			None
-		}
-	}
-
 	#[rustfmt::skip]
 	pub fn signer_maybe_unblocked<L: Deref>(
 		&mut self, chain_hash: ChainHash, logger: &L,
@@ -1739,13 +1730,202 @@ where
 		}
 	}
 
-	pub fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
+	fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
 		match &mut self.phase {
 			ChannelPhase::UnfundedV2(chan) => chan.interactive_tx_constructor.as_mut(),
 			#[cfg(splicing)]
 			ChannelPhase::Funded(chan) => chan.interactive_tx_constructor_mut(),
 			_ => None,
 		}
+	}
+
+	fn fail_interactive_tx_negotiation<L: Deref>(
+		&mut self, reason: AbortReason, logger: &L,
+	) -> msgs::TxAbort
+	where
+		L::Target: Logger,
+	{
+		let logger = WithChannelContext::from(logger, &self.context(), None);
+		log_info!(logger, "Failed interactive transaction negotiation: {reason}");
+
+		let _interactive_tx_constructor = match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => None,
+			ChannelPhase::UnfundedV2(pending_v2_channel) => {
+				pending_v2_channel.interactive_tx_constructor.take()
+			},
+			#[cfg(not(splicing))]
+			ChannelPhase::Funded(_) => unreachable!(),
+			#[cfg(splicing)]
+			ChannelPhase::Funded(funded_channel) => funded_channel
+				.pending_splice
+				.as_mut()
+				.and_then(|pending_splice| pending_splice.funding_negotiation.take())
+				.and_then(|funding_negotiation| {
+					if let FundingNegotiation::ConstructingTransaction(
+						_,
+						interactive_tx_constructor,
+					) = funding_negotiation
+					{
+						Some(interactive_tx_constructor)
+					} else {
+						None
+					}
+				}),
+		};
+
+		reason.into_tx_abort_msg(self.context().channel_id)
+	}
+
+	pub fn tx_add_input<L: Deref>(
+		&mut self, msg: &msgs::TxAddInput, logger: &L,
+	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	where
+		L::Target: Logger,
+	{
+		match self.interactive_tx_constructor_mut() {
+			Some(interactive_tx_constructor) => interactive_tx_constructor.handle_tx_add_input(msg),
+			None => Err(AbortReason::InternalError(
+				"Received unexpected interactive transaction negotiation message",
+			)),
+		}
+		.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))
+	}
+
+	pub fn tx_add_output<L: Deref>(
+		&mut self, msg: &msgs::TxAddOutput, logger: &L,
+	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	where
+		L::Target: Logger,
+	{
+		match self.interactive_tx_constructor_mut() {
+			Some(interactive_tx_constructor) => {
+				interactive_tx_constructor.handle_tx_add_output(msg)
+			},
+			None => Err(AbortReason::InternalError(
+				"Received unexpected interactive transaction negotiation message",
+			)),
+		}
+		.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))
+	}
+
+	pub fn tx_remove_input<L: Deref>(
+		&mut self, msg: &msgs::TxRemoveInput, logger: &L,
+	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	where
+		L::Target: Logger,
+	{
+		match self.interactive_tx_constructor_mut() {
+			Some(interactive_tx_constructor) => {
+				interactive_tx_constructor.handle_tx_remove_input(msg)
+			},
+			None => Err(AbortReason::InternalError(
+				"Received unexpected interactive transaction negotiation message",
+			)),
+		}
+		.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))
+	}
+
+	pub fn tx_remove_output<L: Deref>(
+		&mut self, msg: &msgs::TxRemoveOutput, logger: &L,
+	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	where
+		L::Target: Logger,
+	{
+		match self.interactive_tx_constructor_mut() {
+			Some(interactive_tx_constructor) => {
+				interactive_tx_constructor.handle_tx_remove_output(msg)
+			},
+			None => Err(AbortReason::InternalError(
+				"Received unexpected interactive transaction negotiation message",
+			)),
+		}
+		.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))
+	}
+
+	pub fn tx_complete<L: Deref>(
+		&mut self, msg: &msgs::TxComplete, logger: &L,
+	) -> Result<(Option<InteractiveTxMessageSend>, Option<msgs::CommitmentSigned>), msgs::TxAbort>
+	where
+		L::Target: Logger,
+	{
+		let tx_complete_action = match self.interactive_tx_constructor_mut() {
+			Some(interactive_tx_constructor) => interactive_tx_constructor.handle_tx_complete(msg),
+			None => Err(AbortReason::InternalError(
+				"Received unexpected interactive transaction negotiation message",
+			)),
+		}
+		.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))?;
+
+		let (interactive_tx_msg_send, negotiation_complete) = match tx_complete_action {
+			HandleTxCompleteValue::SendTxMessage(interactive_tx_msg_send) => {
+				(Some(interactive_tx_msg_send), false)
+			},
+			HandleTxCompleteValue::SendTxComplete(
+				interactive_tx_msg_send,
+				negotiation_complete,
+			) => (Some(interactive_tx_msg_send), negotiation_complete),
+			HandleTxCompleteValue::NegotiationComplete => (None, true),
+		};
+		if !negotiation_complete {
+			return Ok((interactive_tx_msg_send, None));
+		}
+
+		let commitment_signed = self
+			.funding_tx_constructed(logger)
+			.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))?;
+		Ok((interactive_tx_msg_send, Some(commitment_signed)))
+	}
+
+	pub fn tx_abort<L: Deref>(
+		&mut self, msg: &msgs::TxAbort, logger: &L,
+	) -> Result<Option<msgs::TxAbort>, ChannelError>
+	where
+		L::Target: Logger,
+	{
+		// This checks for and resets the interactive negotiation state by `take()`ing it from the channel.
+		// The existence of the `tx_constructor` indicates that we have not moved into the signing
+		// phase for this interactively constructed transaction and hence we have not exchanged
+		// `tx_signatures`. Either way, we never close the channel upon receiving a `tx_abort`:
+		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L574-L576
+		let should_ack = match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
+				let err = "Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel establishment";
+				return Err(ChannelError::Warn(err.into()));
+			},
+			ChannelPhase::UnfundedV2(pending_v2_channel) => {
+				pending_v2_channel.interactive_tx_constructor.take().is_some()
+			},
+			#[cfg(not(splicing))]
+			ChannelPhase::Funded(_) => {
+				let err = "Got an unexpected tx_abort message: This is an funded channel and splicing is not supported";
+				return Err(ChannelError::Warn(err.into()));
+			},
+			#[cfg(splicing)]
+			ChannelPhase::Funded(funded_channel) => funded_channel
+				.pending_splice
+				.as_mut()
+				.and_then(|pending_splice| pending_splice.funding_negotiation.take())
+				.is_some(),
+		};
+
+		// NOTE: Since at this point we have not sent a `tx_abort` message for this negotiation
+		// previously (tx_constructor was `Some`), we need to echo back a tx_abort message according
+		// to the spec:
+		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
+		// For rationale why we echo back `tx_abort`:
+		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
+		Ok(should_ack.then(|| {
+			let logger = WithChannelContext::from(logger, &self.context(), None);
+			let reason =
+				types::string::UntrustedString(String::from_utf8_lossy(&msg.data).to_string());
+			log_info!(logger, "Counterparty failed interactive transaction negotiation: {reason}");
+			msgs::TxAbort {
+				channel_id: msg.channel_id,
+				data: "Acknowledged tx_abort".to_string().into_bytes(),
+			}
+		}))
 	}
 
 	#[rustfmt::skip]
@@ -1780,9 +1960,9 @@ where
 		result.map(|monitor| (self.as_funded_mut().expect("Channel should be funded"), monitor))
 	}
 
-	pub fn funding_tx_constructed<L: Deref>(
+	fn funding_tx_constructed<L: Deref>(
 		&mut self, logger: &L,
-	) -> Result<msgs::CommitmentSigned, msgs::TxAbort>
+	) -> Result<msgs::CommitmentSigned, AbortReason>
 	where
 		L::Target: Logger,
 	{
@@ -1837,17 +2017,15 @@ where
 					}
 				}
 
-				return Err(msgs::TxAbort {
-					channel_id: chan.context.channel_id(),
-					data: "Got a tx_complete message in an invalid state".to_owned().into_bytes(),
-				});
+				return Err(AbortReason::InternalError(
+					"Got a tx_complete message in an invalid state",
+				));
 			},
 			_ => {
 				debug_assert!(false);
-				return Err(msgs::TxAbort {
-					channel_id: self.context().channel_id(),
-					data: "Got a tx_complete message in an invalid phase".to_owned().into_bytes(),
-				});
+				return Err(AbortReason::InternalError(
+					"Got a tx_complete message in an invalid phase",
+				));
 			},
 		}
 	}
@@ -5855,7 +6033,7 @@ where
 	fn funding_tx_constructed<L: Deref>(
 		&mut self, funding: &mut FundingScope, signing_session: &mut InteractiveTxSigningSession,
 		is_splice: bool, holder_commitment_transaction_number: u64, logger: &L
-	) -> Result<msgs::CommitmentSigned, msgs::TxAbort>
+	) -> Result<msgs::CommitmentSigned, AbortReason>
 	where
 		L::Target: Logger
 	{
@@ -5864,10 +6042,7 @@ where
 		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
 			if outp.script_pubkey() == &expected_spk && outp.value() == funding.get_value_satoshis() {
 				if output_index.is_some() {
-					return Err(msgs::TxAbort {
-						channel_id: self.channel_id(),
-						data: "Multiple outputs matched the expected script and value".to_owned().into_bytes(),
-					});
+					return Err(AbortReason::DuplicateFundingOutput);
 				}
 				output_index = Some(idx as u16);
 			}
@@ -5875,10 +6050,7 @@ where
 		let outpoint = if let Some(output_index) = output_index {
 			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
 		} else {
-			return Err(msgs::TxAbort {
-				channel_id: self.channel_id(),
-				data: "No output matched the funding script_pubkey".to_owned().into_bytes(),
-			});
+			return Err(AbortReason::MissingFundingOutput);
 		};
 		funding
 			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
@@ -5892,10 +6064,7 @@ where
 				self.counterparty_next_commitment_transaction_number,
 			);
 			// TODO(splicing) Forced error, as the use case is not complete
-			return Err(msgs::TxAbort {
-				channel_id: self.channel_id(),
-				data: "Splicing not yet supported".to_owned().into_bytes(),
-			});
+			return Err(AbortReason::InternalError("Splicing not yet supported"));
 		} else {
 			self.assert_no_commitment_advancement(holder_commitment_transaction_number, "initial commitment_signed");
 		}
@@ -5906,10 +6075,7 @@ where
 			// TODO(splicing): Support async signing
 			None => {
 				funding.channel_transaction_parameters.funding_outpoint = None;
-				return Err(msgs::TxAbort {
-					channel_id: self.channel_id(),
-					data: "Failed to get signature for commitment_signed".to_owned().into_bytes(),
-				});
+				return Err(AbortReason::InternalError("Failed to compute commitment_signed signatures"));
 			},
 		};
 

@@ -278,14 +278,10 @@ fn test_v1_splice_in() {
 		.node
 		.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
 	let events = initiator_node.node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), 1);
 	match events[0] {
-		MessageSendEvent::SendTxComplete { .. } => {},
-		_ => panic!("Unexpected event {:?}", events[0]),
-	}
-	match events[1] {
 		MessageSendEvent::SendTxAbort { .. } => {},
-		_ => panic!("Unexpected event {:?}", events[1]),
+		_ => panic!("Unexpected event {:?}", events[0]),
 	}
 
 	// TODO(splicing): Continue with commitment flow, new tx confirmation, and shutdown
