@@ -1464,7 +1464,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 			let chan_type = &channel_parameters.channel_type_features;
 			let htlc_tx = chan_utils::build_htlc_transaction(
 				&commitment_txid,
-				commitment_tx.feerate_per_kw(),
+				commitment_tx.negotiated_feerate_per_kw(),
 				holder_selected_contest_delay,
 				htlc,
 				chan_type,

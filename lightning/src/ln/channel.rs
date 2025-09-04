@@ -4611,7 +4611,7 @@ where
 		#[cfg(any(test, fuzzing))]
 		{
 			let PredictedNextFee { predicted_feerate, predicted_nondust_htlc_count, predicted_fee_sat } = *funding.next_local_fee.lock().unwrap();
-			if predicted_feerate == commitment_data.tx.feerate_per_kw() && predicted_nondust_htlc_count == commitment_data.tx.nondust_htlcs().len() {
+			if predicted_feerate == commitment_data.tx.negotiated_feerate_per_kw() && predicted_nondust_htlc_count == commitment_data.tx.nondust_htlcs().len() {
 				assert_eq!(predicted_fee_sat, commitment_data.stats.commit_tx_fee_sat);
 			}
 		}
@@ -4623,7 +4623,7 @@ where
 		let holder_keys = commitment_data.tx.trust().keys();
 		for (htlc, counterparty_sig) in commitment_data.tx.nondust_htlcs().iter().zip(msg.htlc_signatures.iter()) {
 			assert!(htlc.transaction_output_index.is_some());
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_data.tx.feerate_per_kw(),
+			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_data.tx.negotiated_feerate_per_kw(),
 				funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, funding.get_channel_type(),
 				&holder_keys.broadcaster_delayed_payment_key, &holder_keys.revocation_key);
 
@@ -11875,7 +11875,7 @@ where
 				htlc_outputs,
 				commitment_number: self.context.counterparty_next_commitment_transaction_number,
 				their_per_commitment_point: self.context.counterparty_next_commitment_point.unwrap(),
-				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
+				feerate_per_kw: Some(counterparty_commitment_tx.negotiated_feerate_per_kw()),
 				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
 				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
 			}
@@ -11938,7 +11938,7 @@ where
 		#[cfg(any(test, fuzzing))]
 		{
 			let PredictedNextFee { predicted_feerate, predicted_nondust_htlc_count, predicted_fee_sat } = *funding.next_remote_fee.lock().unwrap();
-			if predicted_feerate == counterparty_commitment_tx.feerate_per_kw() && predicted_nondust_htlc_count == counterparty_commitment_tx.nondust_htlcs().len() {
+			if predicted_feerate == counterparty_commitment_tx.negotiated_feerate_per_kw() && predicted_nondust_htlc_count == counterparty_commitment_tx.nondust_htlcs().len() {
 				assert_eq!(predicted_fee_sat, commitment_data.stats.commit_tx_fee_sat);
 			}
 		}
@@ -12002,7 +12002,7 @@ where
 					debug_assert_eq!(htlc_signatures.len(), trusted_tx.nondust_htlcs().len());
 					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(trusted_tx.nondust_htlcs()) {
 						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
-							encode::serialize_hex(&chan_utils::build_htlc_transaction(&trusted_tx.txid(), trusted_tx.feerate_per_kw(), funding.get_holder_selected_contest_delay(), htlc, funding.get_channel_type(), &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
+							encode::serialize_hex(&chan_utils::build_htlc_transaction(&trusted_tx.txid(), trusted_tx.negotiated_feerate_per_kw(), funding.get_holder_selected_contest_delay(), htlc, funding.get_channel_type(), &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
 							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, funding.get_channel_type(), &counterparty_keys)),
 							log_bytes!(counterparty_keys.broadcaster_htlc_key.to_public_key().serialize()),
 							log_bytes!(htlc_sig.serialize_compact()[..]), &self.context.channel_id());
@@ -15784,7 +15784,7 @@ mod tests {
 						commitment_txid: trusted_tx.txid(),
 						per_commitment_number: trusted_tx.commitment_number(),
 						per_commitment_point: trusted_tx.per_commitment_point(),
-						feerate_per_kw: trusted_tx.feerate_per_kw(),
+						feerate_per_kw: trusted_tx.negotiated_feerate_per_kw(),
 						htlc: htlc.clone(),
 						preimage: preimage.clone(),
 						counterparty_sig: *htlc_counterparty_sig,

@@ -1980,8 +1980,11 @@ impl CommitmentTransaction {
 		self.to_countersignatory_value_sat.to_sat()
 	}
 
-	/// The feerate paid per 1000-weight-unit in this commitment transaction.
-	pub fn feerate_per_kw(&self) -> u32 {
+	/// The feerate paid per 1000-weight-unit we negotiated with our
+	/// peer for this commitment transaction. Note that the actual
+	/// feerate of the commitment transaction may be higher than the
+	/// negotiated feerate.
+	pub fn negotiated_feerate_per_kw(&self) -> u32 {
 		self.feerate_per_kw
 	}
 
