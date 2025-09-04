@@ -24,7 +24,7 @@ use crate::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
 use crate::lsps5::msgs::LSPS5Message;
 use crate::lsps5::service::{LSPS5ServiceConfig, LSPS5ServiceHandler};
 use crate::message_queue::MessageQueue;
-use crate::persist::read_lsps2_service_peer_states;
+use crate::persist::{read_lsps2_service_peer_states, read_lsps5_service_peer_states};
 
 use crate::lsps1::client::{LSPS1ClientConfig, LSPS1ClientHandler};
 use crate::lsps1::msgs::LSPS1Message;
@@ -434,25 +434,31 @@ where
 			})
 		});
 
-		let lsps5_service_handler = service_config.as_ref().and_then(|config| {
-			config.lsps5_service_config.as_ref().map(|config| {
+		let lsps5_service_handler = if let Some(service_config) = service_config.as_ref() {
+			if let Some(lsps5_service_config) = service_config.lsps5_service_config.as_ref() {
 				if let Some(number) =
 					<LSPS5ServiceHandler<CM, NS, K, TP> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
 				{
 					supported_protocols.push(number);
 				}
 
-				LSPS5ServiceHandler::new_with_time_provider(
+				let peer_states = read_lsps5_service_peer_states(kv_store.clone()).await?;
+				Some(LSPS5ServiceHandler::new_with_time_provider(
+					peer_states,
 					Arc::clone(&pending_events),
 					Arc::clone(&pending_messages),
 					channel_manager.clone(),
 					kv_store.clone(),
 					node_signer,
-					config.clone(),
+					lsps5_service_config.clone(),
 					time_provider,
-				)
-			})
-		});
+				))
+			} else {
+				None
+			}
+		} else {
+			None
+		};
 
 		let lsps1_client_handler = client_config.as_ref().and_then(|config| {
 			config.lsps1_client_config.as_ref().map(|config| {

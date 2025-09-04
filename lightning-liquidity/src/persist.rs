@@ -10,6 +10,7 @@
 //! Types and utils for persistence.
 
 use crate::lsps2::service::PeerState as LSPS2ServicePeerState;
+use crate::lsps5::service::PeerState as LSPS5ServicePeerState;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::Mutex;
 
@@ -87,6 +88,50 @@ where
 		})?;
 
 		res.insert(key, Mutex::new(peer_state));
+	}
+	Ok(res)
+}
+
+pub(crate) async fn read_lsps5_service_peer_states<K: Deref>(
+	kv_store: K,
+) -> Result<HashMap<PublicKey, LSPS5ServicePeerState>, lightning::io::Error>
+where
+	K::Target: KVStore,
+{
+	let mut res = new_hash_map();
+
+	for stored_key in kv_store
+		.list(
+			LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+		)
+		.await?
+	{
+		let mut reader = Cursor::new(
+			kv_store
+				.read(
+					LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+					LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+					&stored_key,
+				)
+				.await?,
+		);
+
+		let peer_state = LSPS5ServicePeerState::read(&mut reader).map_err(|_| {
+			lightning::io::Error::new(
+				lightning::io::ErrorKind::InvalidData,
+				"Failed to deserialize LSPS5 peer state",
+			)
+		})?;
+
+		let key = PublicKey::from_str(&stored_key).map_err(|_| {
+			lightning::io::Error::new(
+				lightning::io::ErrorKind::InvalidData,
+				"Failed to deserialize stored key entry",
+			)
+		})?;
+
+		res.insert(key, peer_state);
 	}
 	Ok(res)
 }

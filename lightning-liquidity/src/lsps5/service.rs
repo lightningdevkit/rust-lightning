@@ -150,13 +150,15 @@ where
 {
 	/// Constructs a `LSPS5ServiceHandler` using the given time provider.
 	pub(crate) fn new_with_time_provider(
-		event_queue: Arc<EventQueue<K>>, pending_messages: Arc<MessageQueue>, channel_manager: CM,
-		kv_store: K, node_signer: NS, config: LSPS5ServiceConfig, time_provider: TP,
+		peer_states: HashMap<PublicKey, PeerState>, event_queue: Arc<EventQueue<K>>,
+		pending_messages: Arc<MessageQueue>, channel_manager: CM, kv_store: K, node_signer: NS,
+		config: LSPS5ServiceConfig, time_provider: TP,
 	) -> Self {
 		assert!(config.max_webhooks_per_client > 0, "`max_webhooks_per_client` must be > 0");
+		let per_peer_state = RwLock::new(peer_states);
 		Self {
 			config,
-			per_peer_state: RwLock::new(new_hash_map()),
+			per_peer_state,
 			event_queue,
 			pending_messages,
 			time_provider,
@@ -648,7 +650,7 @@ where
 }
 
 #[derive(Debug, Default)]
-struct PeerState {
+pub(crate) struct PeerState {
 	webhooks: Vec<(LSPS5AppName, Webhook)>,
 }
 
