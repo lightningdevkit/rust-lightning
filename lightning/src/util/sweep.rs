@@ -574,12 +574,18 @@ where
 				let cur_height = sweeper_state.best_block.height;
 				let cur_hash = sweeper_state.best_block.block_hash;
 
-				let respend_descriptors: Vec<&SpendableOutputDescriptor> = sweeper_state
+				let respend_descriptors_set: HashSet<&SpendableOutputDescriptor> = sweeper_state
 					.outputs
 					.iter()
 					.filter(|o| filter_fn(*o, cur_height))
 					.map(|o| &o.descriptor)
 					.collect();
+
+				// we first collect into a set to avoid duplicates and to "randomize" the order
+				// in which outputs are spent. Then we collect into a vec as that is what
+				// `spend_outputs` requires.
+				let respend_descriptors: Vec<&SpendableOutputDescriptor> =
+					respend_descriptors_set.into_iter().collect();
 
 				// Generate the spending transaction and broadcast it.
 				if !respend_descriptors.is_empty() {
