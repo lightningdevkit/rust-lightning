@@ -24,7 +24,9 @@ use crate::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
 use crate::lsps5::msgs::LSPS5Message;
 use crate::lsps5::service::{LSPS5ServiceConfig, LSPS5ServiceHandler};
 use crate::message_queue::MessageQueue;
-use crate::persist::{read_lsps2_service_peer_states, read_lsps5_service_peer_states};
+use crate::persist::{
+	read_event_queue, read_lsps2_service_peer_states, read_lsps5_service_peer_states,
+};
 
 use crate::lsps1::client::{LSPS1ClientConfig, LSPS1ClientHandler};
 use crate::lsps1::msgs::LSPS1Message;
@@ -383,7 +385,8 @@ where
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
 	) -> Result<Self, lightning::io::Error> {
 		let pending_messages = Arc::new(MessageQueue::new());
-		let pending_events = Arc::new(EventQueue::new(kv_store.clone()));
+		let persisted_queue = read_event_queue(kv_store.clone()).await?.unwrap_or_default();
+		let pending_events = Arc::new(EventQueue::new(persisted_queue, kv_store.clone()));
 		let ignored_peers = RwLock::new(new_hash_set());
 
 		let mut supported_protocols = Vec::new();
