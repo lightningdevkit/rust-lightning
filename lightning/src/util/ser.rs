@@ -1085,6 +1085,7 @@ impl_for_vec!(SerialId);
 impl_for_vec!(NegotiatedTxInput);
 impl_for_vec!(InteractiveTxOutput);
 impl_for_vec!(crate::ln::our_peer_storage::PeerStorageMonitorHolder);
+impl_for_vec!(crate::blinded_path::message::BlindedMessagePath);
 impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
 impl_readable_for_vec!(crate::routing::router::BlindedTail);
 impl_for_vec!(crate::routing::router::TrampolineHop);
