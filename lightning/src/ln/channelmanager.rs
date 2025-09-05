@@ -15137,7 +15137,6 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 
 	// If we are configured to be an announced node, we are expected to be always-online and can
 	// advertise the htlc_hold feature.
-	#[cfg(test)]
 	if config.enable_htlc_hold {
 		features.set_htlc_hold_optional();
 	}
