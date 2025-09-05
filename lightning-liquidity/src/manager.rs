@@ -329,7 +329,7 @@ where
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
 	) -> Self {
 		let pending_messages = Arc::new(MessageQueue::new());
-		let pending_events = Arc::new(EventQueue::new());
+		let pending_events = Arc::new(EventQueue::new(Arc::clone(&kv_store)));
 		let ignored_peers = RwLock::new(new_hash_set());
 
 		let mut supported_protocols = Vec::new();
@@ -574,6 +574,9 @@ where
 		&self,
 	) -> Pin<Box<dyn StdFuture<Output = Result<(), lightning::io::Error>> + Send>> {
 		let mut futures = Vec::new();
+
+		futures.push(self.pending_events.persist());
+
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
 			futures.push(lsps2_service_handler.persist());
 		}
