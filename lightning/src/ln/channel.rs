@@ -4671,7 +4671,9 @@ where
 
 			let htlc_redeemscript =
 				chan_utils::get_htlc_redeemscript(&htlc, funding.get_channel_type(), &holder_keys);
-			let htlc_sighashtype = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx()
+			let channel_type = funding.get_channel_type();
+			let htlc_sighashtype = if channel_type.supports_anchors_zero_fee_htlc_tx()
+				|| channel_type.supports_anchor_zero_fee_commitments()
 			{
 				EcdsaSighashType::SinglePlusAnyoneCanPay
 			} else {

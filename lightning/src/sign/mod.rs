@@ -1472,7 +1472,9 @@ impl EcdsaChannelSigner for InMemorySigner {
 				&keys.revocation_key,
 			);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, chan_type, &keys);
-			let htlc_sighashtype = if chan_type.supports_anchors_zero_fee_htlc_tx() {
+			let htlc_sighashtype = if chan_type.supports_anchors_zero_fee_htlc_tx()
+				|| chan_type.supports_anchor_zero_fee_commitments()
+			{
 				EcdsaSighashType::SinglePlusAnyoneCanPay
 			} else {
 				EcdsaSighashType::All
