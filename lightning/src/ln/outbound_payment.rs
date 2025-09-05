@@ -17,7 +17,9 @@ use lightning_invoice::Bolt11Invoice;
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
 use crate::events::{self, PaidBolt12Invoice, PaymentFailureReason};
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{EventCompletionAction, HTLCSource, PaymentId};
+use crate::ln::channelmanager::{
+	EventCompletionAction, HTLCSource, PaymentCompleteUpdate, PaymentId,
+};
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::{Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder};
@@ -2209,7 +2211,7 @@ impl OutboundPayments {
 	#[rustfmt::skip]
 	pub(super) fn claim_htlc<L: Deref>(
 		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, bolt12_invoice: Option<PaidBolt12Invoice>,
-		session_priv: SecretKey, path: Path, from_onchain: bool, ev_completion_action: EventCompletionAction,
+		session_priv: SecretKey, path: Path, from_onchain: bool, ev_completion_action: &mut Option<EventCompletionAction>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &L,
 	) where L::Target: Logger {
@@ -2230,7 +2232,7 @@ impl OutboundPayments {
 					amount_msat,
 					fee_paid_msat,
 					bolt12_invoice: bolt12_invoice,
-				}, Some(ev_completion_action.clone())));
+				}, ev_completion_action.take()));
 				payment.get_mut().mark_fulfilled();
 			}
 
@@ -2248,7 +2250,7 @@ impl OutboundPayments {
 						payment_hash,
 						path,
 						hold_times: Vec::new(),
-					}, Some(ev_completion_action)));
+					}, ev_completion_action.take()));
 				}
 			}
 		} else {
@@ -2377,7 +2379,7 @@ impl OutboundPayments {
 		path: &Path, session_priv: &SecretKey, payment_id: &PaymentId,
 		probing_cookie_secret: [u8; 32], secp_ctx: &Secp256k1<secp256k1::All>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
-		logger: &L,
+		logger: &L, completion_action: &mut Option<PaymentCompleteUpdate>,
 	) where
 		L::Target: Logger,
 	{
@@ -2528,9 +2530,14 @@ impl OutboundPayments {
 			}
 		};
 		let mut pending_events = pending_events.lock().unwrap();
-		pending_events.push_back((path_failure, None));
+		let completion_action = completion_action
+			.take()
+			.map(|act| EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(act));
 		if let Some(ev) = full_failure_ev {
-			pending_events.push_back((ev, None));
+			pending_events.push_back((path_failure, None));
+			pending_events.push_back((ev, completion_action));
+		} else {
+			pending_events.push_back((path_failure, completion_action));
 		}
 	}
 

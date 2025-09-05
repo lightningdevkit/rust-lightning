@@ -2818,6 +2818,9 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 	expected_fee_msat_opt: Option<Option<u64>>, expect_per_path_claims: bool,
 	expect_post_ev_mon_update: bool,
 ) -> (Option<PaidBolt12Invoice>, Vec<Event>) {
+	if expect_post_ev_mon_update {
+		check_added_monitors(node, 0);
+	}
 	let events = node.node().get_and_clear_pending_events();
 	let expected_payment_hash = PaymentHash(
 		bitcoin::hashes::sha256::Hash::hash(&expected_payment_preimage.0).to_byte_array(),
@@ -3067,6 +3070,7 @@ pub struct PaymentFailedConditions<'a> {
 	pub(crate) expected_blamed_chan_closed: Option<bool>,
 	pub(crate) expected_mpp_parts_remain: bool,
 	pub(crate) retry_expected: bool,
+	pub(crate) from_mon_update: bool,
 }
 
 impl<'a> PaymentFailedConditions<'a> {
@@ -3077,6 +3081,7 @@ impl<'a> PaymentFailedConditions<'a> {
 			expected_blamed_chan_closed: None,
 			expected_mpp_parts_remain: false,
 			retry_expected: false,
+			from_mon_update: false,
 		}
 	}
 	pub fn mpp_parts_remain(mut self) -> Self {
@@ -3099,6 +3104,10 @@ impl<'a> PaymentFailedConditions<'a> {
 	}
 	pub fn retry_expected(mut self) -> Self {
 		self.retry_expected = true;
+		self
+	}
+	pub fn from_mon_update(mut self) -> Self {
+		self.from_mon_update = true;
 		self
 	}
 }
@@ -3210,7 +3219,13 @@ pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
 	node: &'a Node<'b, 'c, 'd>, expected_payment_hash: PaymentHash,
 	expected_payment_failed_permanently: bool, conditions: PaymentFailedConditions<'e>,
 ) {
+	if conditions.from_mon_update {
+		check_added_monitors(node, 0);
+	}
 	let events = node.node.get_and_clear_pending_events();
+	if conditions.from_mon_update {
+		check_added_monitors(node, 1);
+	}
 	expect_payment_failed_conditions_event(
 		events,
 		expected_payment_hash,
