@@ -62,6 +62,7 @@ use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey};
 use crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder};
 use crate::sync::{Mutex, RwLock};
 use crate::types::payment::{PaymentHash, PaymentSecret};
+use crate::util::logger::Logger;
 use crate::util::ser::Writeable;
 
 #[cfg(feature = "dnssec")]
@@ -75,9 +76,10 @@ use {
 ///
 /// [`OffersMessageFlow`] is parameterized by a [`MessageRouter`], which is responsible
 /// for finding message paths when initiating and retrying onion messages.
-pub struct OffersMessageFlow<MR: Deref>
+pub struct OffersMessageFlow<MR: Deref, L: Deref>
 where
 	MR::Target: MessageRouter,
+	L::Target: Logger,
 {
 	chain_hash: ChainHash,
 	best_block: RwLock<BestBlock>,
@@ -103,17 +105,21 @@ where
 	pub(crate) hrn_resolver: OMNameResolver,
 	#[cfg(feature = "dnssec")]
 	pending_dns_onion_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
+
+	logger: L,
 }
 
-impl<MR: Deref> OffersMessageFlow<MR>
+impl<MR: Deref, L: Deref> OffersMessageFlow<MR, L>
 where
 	MR::Target: MessageRouter,
+	L::Target: Logger,
 {
 	/// Creates a new [`OffersMessageFlow`]
 	pub fn new(
 		chain_hash: ChainHash, best_block: BestBlock, our_network_pubkey: PublicKey,
 		current_timestamp: u32, inbound_payment_key: inbound_payment::ExpandedKey,
 		receive_auth_key: ReceiveAuthKey, secp_ctx: Secp256k1<secp256k1::All>, message_router: MR,
+		logger: L,
 	) -> Self {
 		Self {
 			chain_hash,
@@ -137,6 +143,8 @@ where
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
 
 			async_receive_offer_cache: Mutex::new(AsyncReceiveOfferCache::new()),
+
+			logger,
 		}
 	}
 
@@ -260,9 +268,10 @@ const DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration = Duration::from_secs(365 * 2
 pub(crate) const TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration =
 	DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY;
 
-impl<MR: Deref> OffersMessageFlow<MR>
+impl<MR: Deref, L: Deref> OffersMessageFlow<MR, L>
 where
 	MR::Target: MessageRouter,
+	L::Target: Logger,
 {
 	/// [`BlindedMessagePath`]s for an async recipient to communicate with this node and interactively
 	/// build [`Offer`]s and [`StaticInvoice`]s for receiving async payments.
@@ -278,6 +287,7 @@ where
 		peers: Vec<MessageForwardNode>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		if recipient_id.len() > 1024 {
+			log_trace!(self.logger, "Async recipient ID exceeds 1024 bytes");
 			return Err(());
 		}
 
@@ -409,9 +419,10 @@ pub enum InvreqResponseInstructions {
 	},
 }
 
-impl<MR: Deref> OffersMessageFlow<MR>
+impl<MR: Deref, L: Deref> OffersMessageFlow<MR, L>
 where
 	MR::Target: MessageRouter,
+	L::Target: Logger,
 {
 	/// Verifies an [`InvoiceRequest`] using the provided [`OffersContext`] or the [`InvoiceRequest::metadata`].
 	///
@@ -439,6 +450,7 @@ where
 				path_absolute_expiry,
 			}) => {
 				if path_absolute_expiry < self.duration_since_epoch() {
+					log_trace!(self.logger, "Static invoice request has expired");
 					return Err(());
 				}
 
@@ -1281,6 +1293,10 @@ where
 		let reply_paths = match self.create_blinded_paths(peers, context) {
 			Ok(paths) => paths,
 			Err(()) => {
+				log_error!(
+					self.logger,
+					"Failed to create blinded paths for OfferPathsRequest message"
+				);
 				return Err(());
 			},
 		};
@@ -1399,7 +1415,13 @@ where
 
 			match self.create_blinded_paths(peers, context) {
 				Ok(paths) => (paths, path_absolute_expiry),
-				Err(()) => return None,
+				Err(()) => {
+					log_error!(
+						self.logger,
+						"Failed to create blinded paths for OfferPaths message"
+					);
+					return None;
+				},
 			}
 		};
 
@@ -1473,6 +1495,7 @@ where
 		let (offer_id, offer) = match offer_builder.build() {
 			Ok(offer) => (offer.id(), offer),
 			Err(_) => {
+				log_error!(self.logger, "Failed to build async receive offer");
 				debug_assert!(false);
 				return None;
 			},
@@ -1487,7 +1510,10 @@ where
 			router,
 		) {
 			Ok(res) => res,
-			Err(()) => return None,
+			Err(()) => {
+				log_error!(self.logger, "Failed to create static invoice for server");
+				return None;
+			},
 		};
 
 		if let Err(()) = self.async_receive_offer_cache.lock().unwrap().cache_pending_offer(
@@ -1498,6 +1524,7 @@ where
 			duration_since_epoch,
 			invoice_slot,
 		) {
+			log_error!(self.logger, "Failed to cache pending offer");
 			return None;
 		}
 
@@ -1581,6 +1608,7 @@ where
 		&self, message: &ServeStaticInvoice, context: AsyncPaymentsContext,
 	) -> Result<(Vec<u8>, u16), ()> {
 		if message.invoice.is_expired_no_std(self.duration_since_epoch()) {
+			log_trace!(self.logger, "Received expired StaticInvoice");
 			return Err(());
 		}
 		if message.invoice.serialized_length() > MAX_STATIC_INVOICE_SIZE_BYTES {
@@ -1593,6 +1621,7 @@ where
 				path_absolute_expiry,
 			} => {
 				if self.duration_since_epoch() > path_absolute_expiry {
+					log_trace!(self.logger, "Received expired StaticInvoice path");
 					return Err(());
 				}
 
