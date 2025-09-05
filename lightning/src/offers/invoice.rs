@@ -2014,6 +2014,11 @@ mod tests {
 					issuer: None,
 					quantity_max: None,
 					issuer_id: Some(&recipient_pubkey()),
+					recurrence_compulsory: None,
+					recurrence_optional: None,
+					recurrence_base: None,
+					recurrence_paywindow: None,
+					recurrence_limit: None,
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
@@ -2117,6 +2122,11 @@ mod tests {
 					issuer: None,
 					quantity_max: None,
 					issuer_id: None,
+					recurrence_compulsory: None,
+					recurrence_optional: None,
+					recurrence_base: None,
+					recurrence_paywindow: None,
+					recurrence_limit: None,
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
