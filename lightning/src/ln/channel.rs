@@ -54,9 +54,10 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, FundingConfirmedMessage, HTLCFailureMsg, HTLCSource, OpenChannelMessage,
-	PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus, RAACommitmentOrder, SentHTLCId,
-	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
+	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg, HTLCSource,
+	OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus,
+	RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT,
+	MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::FundingTxInput;
 #[cfg(splicing)]
@@ -1181,13 +1182,14 @@ pub enum UpdateFulfillCommitFetch {
 pub(super) struct MonitorRestoreUpdates {
 	pub raa: Option<msgs::RevokeAndACK>,
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
-	pub order: RAACommitmentOrder,
+	pub commitment_order: RAACommitmentOrder,
 	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	pub finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 	pub pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 	pub funding_broadcastable: Option<Transaction>,
 	pub channel_ready: Option<msgs::ChannelReady>,
+	pub channel_ready_order: ChannelReadyOrder,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub tx_signatures: Option<msgs::TxSignatures>,
 }
@@ -1210,13 +1212,15 @@ pub(super) struct SignerResumeUpdates {
 /// The return value of `channel_reestablish`
 pub(super) struct ReestablishResponses {
 	pub channel_ready: Option<msgs::ChannelReady>,
+	pub channel_ready_order: ChannelReadyOrder,
 	pub raa: Option<msgs::RevokeAndACK>,
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
-	pub order: RAACommitmentOrder,
+	pub commitment_order: RAACommitmentOrder,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub shutdown_msg: Option<msgs::Shutdown>,
 	pub tx_signatures: Option<msgs::TxSignatures>,
 	pub tx_abort: Option<msgs::TxAbort>,
+	pub inferred_splice_locked: Option<msgs::SpliceLocked>,
 }
 
 /// The first message we send to our peer after connection
@@ -6464,6 +6468,7 @@ macro_rules! promote_splice_funding {
 		core::mem::swap(&mut $self.funding, $funding);
 		$self.interactive_tx_signing_session = None;
 		$self.pending_splice = None;
+		$self.context.announcement_sigs = None;
 		$self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
 
 		// The swap above places the previous `FundingScope` into `pending_funding`.
@@ -8735,6 +8740,17 @@ where
 			}
 		}
 
+		// An active interactive signing session or an awaiting channel_ready state implies that a
+		// commitment_signed retransmission is an initial one for funding negotiation. Thus, the
+		// signatures should be sent before channel_ready.
+		let channel_ready_order = if self.interactive_tx_signing_session.is_some() {
+			ChannelReadyOrder::SignaturesFirst
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
+			ChannelReadyOrder::SignaturesFirst
+		} else {
+			ChannelReadyOrder::ChannelReadyFirst
+		};
+
 		// We will never broadcast the funding transaction when we're in MonitorUpdateInProgress
 		// (and we assume the user never directly broadcasts the funding transaction and waits for
 		// us to do it). Thus, we can only ever hit monitor_pending_channel_ready when we're
@@ -8763,9 +8779,10 @@ where
 			self.context.monitor_pending_revoke_and_ack = false;
 			self.context.monitor_pending_commitment_signed = false;
 			return MonitorRestoreUpdates {
-				raa: None, commitment_update: None, order: RAACommitmentOrder::RevokeAndACKFirst,
+				raa: None, commitment_update: None, commitment_order: RAACommitmentOrder::RevokeAndACKFirst,
 				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
-				funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None
+				funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None,
+				channel_ready_order,
 			};
 		}
 
@@ -8788,14 +8805,15 @@ where
 
 		self.context.monitor_pending_revoke_and_ack = false;
 		self.context.monitor_pending_commitment_signed = false;
-		let order = self.context.resend_order.clone();
+		let commitment_order = self.context.resend_order.clone();
 		log_debug!(logger, "Restored monitor updating in channel {} resulting in {}{} commitment update and {} RAA, with {} first",
 			&self.context.channel_id(), if funding_broadcastable.is_some() { "a funding broadcastable, " } else { "" },
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
-			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
+			match commitment_order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
-			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
-			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None
+			raa, commitment_update, commitment_order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
+			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None,
+			channel_ready_order,
 		}
 	}
 
@@ -9141,15 +9159,14 @@ where
 			return Err(ChannelError::close("Peer sent a loose channel_reestablish not after reconnect".to_owned()));
 		}
 
-		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
-			(msg.next_local_commitment_number == 0 && msg.next_funding_txid.is_none()) {
-			// Note: This also covers the following case in the V2 channel establishment specification:
-			//   if `next_funding_txid` is not set, and `next_commitment_number` is zero:
-			//     MUST immediately fail the channel and broadcast any relevant latest commitment transaction.
+		if msg.next_local_commitment_number == 0
+			|| msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER
+			|| msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER
+		{
 			return Err(ChannelError::close("Peer sent an invalid channel_reestablish to force close in a non-standard way".to_owned()));
 		}
 
-		let our_commitment_transaction = INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.next_transaction_number() - 1;
+		let our_commitment_transaction = INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.current_transaction_number();
 		if msg.next_remote_commitment_number > 0 {
 			let expected_point = self.context.holder_signer.as_ref()
 				.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.context.secp_ctx)
@@ -9193,7 +9210,122 @@ where
 
 		let shutdown_msg = self.get_outbound_shutdown();
 
+		// A receiving node:
+		//   - if `my_current_funding_locked` is included with the `announcement_signatures` bit
+		//     set in the `retransmit_flags`:
+		//     - if `announce_channel` is set for this channel and the receiving node is ready
+		//       to send `announcement_signatures` for the corresponding splice transaction:
+		//       - MUST retransmit `announcement_signatures`.
+		if let Some(funding_locked) = &msg.my_current_funding_locked {
+			if funding_locked.should_retransmit(msgs::FundingLockedFlags::AnnouncementSignatures) {
+				if self.funding.get_funding_txid() == Some(funding_locked.txid) {
+					self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
+				}
+			}
+		}
+
 		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger);
+
+		let mut commitment_update = None;
+		let mut tx_signatures = None;
+		let mut tx_abort = None;
+
+		// if next_funding is set:
+		if let Some(next_funding) = &msg.next_funding {
+			// - if `next_funding` matches the latest interactive funding transaction
+			//   or the current channel funding transaction:
+			if let Some(session) = &self.interactive_tx_signing_session {
+				let our_next_funding_txid = session.unsigned_tx().compute_txid();
+				if our_next_funding_txid != next_funding.txid {
+					return Err(ChannelError::close(format!(
+						"Unexpected next_funding txid: {}; expected: {}",
+						next_funding.txid, our_next_funding_txid,
+					)));
+				}
+
+				if !session.has_received_commitment_signed() {
+					self.context.expecting_peer_commitment_signed = true;
+				}
+
+				// TODO(splicing): Add comment for spec requirements
+				if next_funding.should_retransmit(msgs::NextFundingFlag::CommitmentSigned) {
+					#[cfg(splicing)]
+					let funding = self
+						.pending_splice
+						.as_ref()
+						.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+						.and_then(|funding_negotiation| {
+							if let FundingNegotiation::AwaitingSignatures(funding) = &funding_negotiation {
+								Some(funding)
+							} else {
+								None
+							}
+						})
+						.or_else(|| Some(&self.funding))
+						.filter(|funding| funding.get_funding_txid() == Some(next_funding.txid))
+						.ok_or_else(|| {
+							let message = "Failed to find funding for new commitment_signed".to_owned();
+							ChannelError::Close(
+								(
+									message.clone(),
+									ClosureReason::HolderForceClosed { message, broadcasted_latest_txn: Some(false) },
+								)
+							)
+						})?;
+					#[cfg(not(splicing))]
+					let funding = &self.funding;
+
+					let commitment_signed = self.context.get_initial_commitment_signed_v2(&funding, logger)
+						// TODO(splicing): Support async signing
+						.ok_or_else(|| {
+							let message = "Failed to get signatures for new commitment_signed".to_owned();
+							ChannelError::Close(
+								(
+									message.clone(),
+									ClosureReason::HolderForceClosed { message, broadcasted_latest_txn: Some(false) },
+								)
+							)
+						})?;
+
+					commitment_update = Some(msgs::CommitmentUpdate {
+						commitment_signed: vec![commitment_signed],
+						update_add_htlcs: vec![],
+						update_fulfill_htlcs: vec![],
+						update_fail_htlcs: vec![],
+						update_fail_malformed_htlcs: vec![],
+						update_fee: None,
+					});
+				}
+
+				// - if it has already received `commitment_signed` and it should sign first
+				//   - MUST send its `tx_signatures` for that funding transaction.
+				//
+				// - if it has already received `tx_signatures` for that funding transaction:
+				//   - MUST send its `tx_signatures` for that funding transaction.
+				if (session.has_received_commitment_signed() && session.holder_sends_tx_signatures_first())
+					|| self.context.channel_state.is_their_tx_signatures_sent()
+				{
+					// If `holder_tx_signatures` is `None` here, the `tx_signatures` message will be sent
+					// when the holder provides their witnesses as this will queue a `tx_signatures` if the
+					// holder must send one.
+					if session.holder_tx_signatures().is_none() {
+						log_debug!(logger, "Waiting for funding transaction signatures to be provided");
+					} else if self.context.channel_state.is_monitor_update_in_progress() {
+						log_debug!(logger, "Waiting for monitor update before providing funding transaction signatures");
+					} else {
+						tx_signatures = session.holder_tx_signatures().clone();
+					}
+				}
+			} else {
+				// We'll just send a `tx_abort` here if we don't have a signing session for this channel
+				// on reestablish and tell our peer to just forget about it.
+				// Our peer is doing something strange, but it doesn't warrant closing the channel.
+				tx_abort = Some(msgs::TxAbort {
+					channel_id: self.context.channel_id(),
+					data:
+						"No active signing session. The associated funding transaction may have already been broadcast.".as_bytes().to_vec() });
+			}
+		}
 
 		if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
 			// If we're waiting on a monitor update, we shouldn't re-send any channel_ready's.
@@ -9202,25 +9334,29 @@ where
 				if msg.next_remote_commitment_number != 0 {
 					return Err(ChannelError::close("Peer claimed they saw a revoke_and_ack but we haven't sent channel_ready yet".to_owned()));
 				}
-				// Short circuit the whole handler as there is nothing we can resend them
+
 				return Ok(ReestablishResponses {
 					channel_ready: None,
-					raa: None, commitment_update: None,
-					order: RAACommitmentOrder::CommitmentFirst,
+					channel_ready_order: ChannelReadyOrder::SignaturesFirst,
+					raa: None, commitment_update,
+					commitment_order: self.context.resend_order.clone(),
 					shutdown_msg, announcement_sigs,
-					tx_signatures: None,
+					tx_signatures,
 					tx_abort: None,
+					inferred_splice_locked: None,
 				});
 			}
 
 			// We have OurChannelReady set!
 			return Ok(ReestablishResponses {
 				channel_ready: self.get_channel_ready(logger),
-				raa: None, commitment_update: None,
-				order: RAACommitmentOrder::CommitmentFirst,
+				channel_ready_order: ChannelReadyOrder::SignaturesFirst,
+				raa: None, commitment_update,
+				commitment_order: self.context.resend_order.clone(),
 				shutdown_msg, announcement_sigs,
-				tx_signatures: None,
-				tx_abort: None,
+				tx_signatures,
+				tx_abort,
+				inferred_splice_locked: None,
 			});
 		}
 
@@ -9256,6 +9392,30 @@ where
 			self.get_channel_ready(logger)
 		} else { None };
 
+		// A receiving node:
+		//   - if splice transactions are pending and `my_current_funding_locked` matches one of
+		//     those splice transactions, for which it hasn't received `splice_locked` yet:
+		//     - MUST process `my_current_funding_locked` as if it was receiving `splice_locked`
+		//       for this `txid`.
+		#[cfg(splicing)]
+		let inferred_splice_locked = msg.my_current_funding_locked.as_ref().and_then(|funding_locked| {
+			self.pending_funding
+				.iter()
+				.find(|funding| funding.get_funding_txid() == Some(funding_locked.txid))
+				.and_then(|_| {
+					self.pending_splice.as_ref().and_then(|pending_splice| {
+						(Some(funding_locked.txid) != pending_splice.received_funding_txid)
+							.then(|| funding_locked.txid)
+					})
+				})
+				.map(|splice_txid| msgs::SpliceLocked {
+					channel_id: self.context.channel_id,
+					splice_txid,
+				})
+		});
+		#[cfg(not(splicing))]
+		let inferred_splice_locked = None;
+
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected channel {} with only lost outbound RAA", &self.context.channel_id());
@@ -9263,94 +9423,25 @@ where
 				log_debug!(logger, "Reconnected channel {} with no loss", &self.context.channel_id());
 			}
 
-			// if next_funding_txid is set:
-			let (commitment_update, tx_signatures, tx_abort) = if let Some(next_funding_txid) = msg.next_funding_txid {
-				if let Some(session) = &self.interactive_tx_signing_session {
-					// if next_funding_txid matches the latest interactive funding transaction:
-					let our_next_funding_txid = session.unsigned_tx().compute_txid();
-					if our_next_funding_txid == next_funding_txid {
-						debug_assert_eq!(session.unsigned_tx().compute_txid(), self.maybe_get_next_funding_txid().unwrap());
-
-						let commitment_update = if !self.context.channel_state.is_their_tx_signatures_sent() && msg.next_local_commitment_number == 0 {
-							// if it has not received tx_signatures for that funding transaction AND
-							// if next_commitment_number is zero:
-							//   MUST retransmit its commitment_signed for that funding transaction.
-							let commitment_signed = self.context.get_initial_commitment_signed_v2(&self.funding, logger)
-								// TODO(splicing): Support async signing
-								.ok_or_else(|| {
-									let message = "Failed to get signatures for new commitment_signed".to_owned();
-									ChannelError::Close(
-										(
-											message.clone(),
-											ClosureReason::HolderForceClosed { message, broadcasted_latest_txn: Some(false) },
-										)
-								)})?;
-							Some(msgs::CommitmentUpdate {
-								commitment_signed: vec![commitment_signed],
-								update_add_htlcs: vec![],
-								update_fulfill_htlcs: vec![],
-								update_fail_htlcs: vec![],
-								update_fail_malformed_htlcs: vec![],
-								update_fee: None,
-							})
-						} else { None };
-						let tx_signatures = if (
-							// if it has not received tx_signatures for that funding transaction AND
-							// if it has already received commitment_signed AND it should sign first, as specified in the tx_signatures requirements:
-							//   MUST send its tx_signatures for that funding transaction.
-							!self.context.channel_state.is_their_tx_signatures_sent() && session.has_received_commitment_signed() && session.holder_sends_tx_signatures_first()
-							// else if it has already received tx_signatures for that funding transaction:
-							//   MUST send its tx_signatures for that funding transaction.
-						) || self.context.channel_state.is_their_tx_signatures_sent() {
-							// If `holder_tx_signatures` is `None` here, the `tx_signatures` message will be sent
-							// when the holder provides their witnesses as this will queue a `tx_signatures` if the
-							// holder must send one.
-							if session.holder_tx_signatures().is_none() {
-								log_debug!(logger, "Waiting for funding transaction signatures to be provided");
-								None
-							} else {
-								session.holder_tx_signatures().clone()
-							}
-						} else {
-							None
-						};
-						if !session.has_received_commitment_signed() {
-							self.context.expecting_peer_commitment_signed = true;
-						}
-						(commitment_update, tx_signatures, None)
-					} else {
-						// The `next_funding_txid` does not match the latest interactive funding transaction so we
-						// MUST send tx_abort to let the remote  know that they can forget this funding transaction.
-						(None, None, Some(msgs::TxAbort {
-							channel_id: self.context.channel_id(),
-							data: format!(
-								"next_funding_txid {} does match our latest interactive funding txid {}",
-								next_funding_txid, our_next_funding_txid,
-							).into_bytes() }))
-					}
-				} else {
-					// We'll just send a `tx_abort` here if we don't have a signing session for this channel
-					// on reestablish and tell our peer to just forget about it.
-					// Our peer is doing something strange, but it doesn't warrant closing the channel.
-					(None, None, Some(msgs::TxAbort {
-						channel_id: self.context.channel_id(),
-						data:
-							"No active signing session. The associated funding transaction may have already been broadcast.".as_bytes().to_vec() }))
-				}
-			} else {
-				// Don't send anything related to interactive signing if `next_funding_txid` is not set.
-				(None, None, None)
-			};
-
 			Ok(ReestablishResponses {
-				channel_ready, shutdown_msg, announcement_sigs,
+				channel_ready,
+				channel_ready_order: ChannelReadyOrder::SignaturesFirst,
+				shutdown_msg,
+				announcement_sigs,
 				raa: required_revoke,
 				commitment_update,
-				order: self.context.resend_order.clone(),
+				commitment_order: self.context.resend_order.clone(),
 				tx_signatures,
 				tx_abort,
+				inferred_splice_locked,
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
+			debug_assert!(commitment_update.is_none());
+
+			// TODO(splicing): Assert in a test that we don't retransmit tx_signatures instead
+			#[cfg(test)]
+			assert!(tx_signatures.is_none());
+
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx", &self.context.channel_id());
 			} else {
@@ -9360,11 +9451,14 @@ where
 			if self.context.channel_state.is_monitor_update_in_progress() {
 				self.context.monitor_pending_commitment_signed = true;
 				Ok(ReestablishResponses {
-					channel_ready, shutdown_msg, announcement_sigs,
+					channel_ready,
+					channel_ready_order: ChannelReadyOrder::ChannelReadyFirst,
+					shutdown_msg, announcement_sigs,
 					commitment_update: None, raa: None,
-					order: self.context.resend_order.clone(),
+					commitment_order: self.context.resend_order.clone(),
 					tx_signatures: None,
-					tx_abort: None,
+					tx_abort,
+					inferred_splice_locked,
 				})
 			} else {
 				let commitment_update = if self.context.resend_order == RAACommitmentOrder::RevokeAndACKFirst
@@ -9384,11 +9478,14 @@ where
 					required_revoke
 				};
 				Ok(ReestablishResponses {
-					channel_ready, shutdown_msg, announcement_sigs,
+					channel_ready,
+					channel_ready_order: ChannelReadyOrder::ChannelReadyFirst,
+					shutdown_msg, announcement_sigs,
 					raa, commitment_update,
-					order: self.context.resend_order.clone(),
+					commitment_order: self.context.resend_order.clone(),
 					tx_signatures: None,
-					tx_abort: None,
+					tx_abort,
+					inferred_splice_locked,
 				})
 			}
 		} else if msg.next_local_commitment_number < next_counterparty_commitment_number {
@@ -10979,15 +11076,29 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn maybe_get_next_funding_txid(&self) -> Option<Txid> {
+	fn maybe_get_next_funding(&self) -> Option<msgs::NextFunding> {
 		// If we've sent `commtiment_signed` for an interactively constructed transaction
-		// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
+		// during a signing session, but have not received `tx_signatures` we MUST set `next_funding`
 		// to the txid of that interactive transaction, else we MUST NOT set it.
 		if self.context.channel_state.is_interactive_signing() {
 			// Since we have a signing_session, this implies we've sent an initial `commitment_signed`...
 			if !self.context.channel_state.is_their_tx_signatures_sent() {
 				// ...but we didn't receive a `tx_signatures` from the counterparty yet.
-				self.interactive_tx_signing_session.as_ref().map(|signing_session| signing_session.unsigned_tx().compute_txid())
+				self.interactive_tx_signing_session
+					.as_ref()
+					.map(|signing_session| {
+						let mut next_funding = msgs::NextFunding {
+							txid: signing_session.unsigned_tx().compute_txid(),
+							retransmit_flags: 0,
+						};
+
+						// TODO(splicing): Add comment for spec requirements
+						if !signing_session.has_received_commitment_signed() {
+							next_funding.retransmit(msgs::NextFundingFlag::CommitmentSigned);
+						}
+
+						next_funding
+					})
 			} else {
 				// ...and we received a `tx_signatures` from the counterparty.
 				None
@@ -10996,6 +11107,40 @@ where
 			// We don't have an active signing session.
 			None
 		}
+	}
+
+	#[cfg(splicing)]
+	fn maybe_get_my_current_funding_locked(&self) -> Option<msgs::FundingLocked> {
+		self.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.sent_funding_txid)
+			.or_else(|| {
+				self.is_our_channel_ready().then(|| self.funding.get_funding_txid()).flatten()
+			})
+			.map(|txid| {
+				let mut funding_locked = msgs::FundingLocked { txid, retransmit_flags: 0 };
+
+				// - if `my_current_funding_locked` is included:
+				//   - if `announce_channel` is set for this channel:
+				//     - if it has not received `announcement_signatures` for that transaction:
+				//       - MUST set the `announcement_signatures` bit to `1` in `retransmit_flags`.
+				//     - otherwise:
+				//       - MUST set the `announcement_signatures` bit to `0` in `retransmit_flags`.
+				if self.context.config.announce_for_forwarding {
+					if self.funding.get_funding_txid() != Some(txid)
+						|| self.context.announcement_sigs.is_none()
+					{
+						funding_locked.retransmit(msgs::FundingLockedFlags::AnnouncementSignatures);
+					}
+				}
+
+				funding_locked
+			})
+	}
+
+	#[cfg(not(splicing))]
+	fn maybe_get_my_current_funding_locked(&self) -> Option<msgs::FundingLocked> {
+		None
 	}
 
 	/// May panic if called on a channel that wasn't immediately-previously
@@ -11048,7 +11193,8 @@ where
 			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.context.counterparty_next_commitment_transaction_number - 1,
 			your_last_per_commitment_secret: remote_last_secret,
 			my_current_per_commitment_point: dummy_pubkey,
-			next_funding_txid: self.maybe_get_next_funding_txid(),
+			next_funding: self.maybe_get_next_funding(),
+			my_current_funding_locked: self.maybe_get_my_current_funding_locked(),
 		}
 	}
 
