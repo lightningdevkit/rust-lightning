@@ -32,7 +32,7 @@ use crate::prelude::*;
 
 use crate::chain::BestBlock;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{PaymentId, CLTV_FAR_FAR_AWAY};
+use crate::ln::channelmanager::{InterceptId, PaymentId, CLTV_FAR_FAR_AWAY};
 use crate::ln::inbound_payment;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::invoice::{
@@ -52,7 +52,7 @@ use crate::onion_message::async_payments::{
 	StaticInvoicePersisted,
 };
 use crate::onion_message::messenger::{
-	Destination, MessageRouter, MessageSendInstructions, Responder,
+	Destination, MessageRouter, MessageSendInstructions, Responder, PADDED_PATH_LENGTH,
 };
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::OnionMessageContents;
@@ -61,6 +61,7 @@ use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey};
 
 use crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder};
 use crate::sync::{Mutex, RwLock};
+use crate::types::features::InitFeatures;
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::ser::Writeable;
 
@@ -98,6 +99,7 @@ where
 
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 	async_receive_offer_cache: Mutex<AsyncReceiveOfferCache>,
+	peers_cache: Mutex<Vec<MessageForwardNode>>,
 
 	#[cfg(feature = "dnssec")]
 	pub(crate) hrn_resolver: OMNameResolver,
@@ -130,6 +132,7 @@ where
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
+			peers_cache: Mutex::new(Vec::new()),
 
 			#[cfg(feature = "dnssec")]
 			hrn_resolver: OMNameResolver::new(current_timestamp, best_block.height),
@@ -406,6 +409,26 @@ pub enum InvreqResponseInstructions {
 		recipient_id: Vec<u8>,
 		/// The slot number for the specific invoice being requested by the payer.
 		invoice_slot: u16,
+	},
+}
+
+/// Parameters for the reply path to a [`HeldHtlcAvailable`] onion message.
+pub enum HeldHtlcReplyPath {
+	/// The reply path to the [`HeldHtlcAvailable`] message should terminate at our node.
+	ToUs {
+		/// The id of the payment.
+		payment_id: PaymentId,
+		/// The peers to use when creating this reply path.
+		peers: Vec<MessageForwardNode>,
+	},
+	/// The reply path to the [`HeldHtlcAvailable`] message should terminate at our next-hop channel
+	/// counterparty, as they are holding our HTLC until they receive the corresponding
+	/// [`ReleaseHeldHtlc`] message.
+	///
+	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+	ToCounterparty {
+		/// The blinded path provided to us by our counterparty.
+		path: BlindedMessagePath,
 	},
 }
 
@@ -1128,14 +1151,19 @@ where
 	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
 	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 	pub fn enqueue_held_htlc_available(
-		&self, invoice: &StaticInvoice, payment_id: PaymentId, peers: Vec<MessageForwardNode>,
+		&self, invoice: &StaticInvoice, reply_path_params: HeldHtlcReplyPath,
 	) -> Result<(), Bolt12SemanticError> {
-		let context =
-			MessageContext::AsyncPayments(AsyncPaymentsContext::OutboundPayment { payment_id });
-
-		let reply_paths = self
-			.create_blinded_paths(peers, context)
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let reply_paths = match reply_path_params {
+			HeldHtlcReplyPath::ToUs { payment_id, peers } => {
+				let context =
+					MessageContext::AsyncPayments(AsyncPaymentsContext::OutboundPayment {
+						payment_id,
+					});
+				self.create_blinded_paths(peers, context)
+					.map_err(|_| Bolt12SemanticError::MissingPaths)?
+			},
+			HeldHtlcReplyPath::ToCounterparty { path } => vec![path],
+		};
 
 		let mut pending_async_payments_messages =
 			self.pending_async_payments_messages.lock().unwrap();
@@ -1149,6 +1177,41 @@ where
 		);
 
 		Ok(())
+	}
+
+	/// If we are holding an HTLC on behalf of an often-offline sender, this method allows us to
+	/// create a path for the sender to use as the reply path when they send the recipient a
+	/// [`HeldHtlcAvailable`] onion message, so the recipient's [`ReleaseHeldHtlc`] response will be
+	/// received to our node.
+	///
+	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+	pub fn path_for_release_held_htlc<ES: Deref>(
+		&self, intercept_id: InterceptId, entropy: ES,
+	) -> BlindedMessagePath
+	where
+		ES::Target: EntropySource,
+	{
+		let peers = self.peers_cache.lock().unwrap().clone();
+		let context =
+			MessageContext::AsyncPayments(AsyncPaymentsContext::ReleaseHeldHtlc { intercept_id });
+		if let Ok(mut paths) = self.create_blinded_paths(peers, context.clone()) {
+			if let Some(path) = paths.pop() {
+				return path;
+			}
+		}
+
+		// If the `MessageRouter` fails on blinded path creation, fall back to creating a 1-hop blinded
+		// path.
+		let num_dummy_hops = PADDED_PATH_LENGTH.saturating_sub(1);
+		BlindedMessagePath::new_with_dummy_hops(
+			&[],
+			self.get_our_node_id(),
+			num_dummy_hops,
+			self.receive_auth_key,
+			context,
+			&*entropy,
+			&self.secp_ctx,
+		)
 	}
 
 	/// Enqueues the created [`DNSSECQuery`] to be sent to the counterparty.
@@ -1626,5 +1689,41 @@ where
 	/// Get the encoded [`AsyncReceiveOfferCache`] for persistence.
 	pub fn writeable_async_receive_offer_cache(&self) -> Vec<u8> {
 		self.async_receive_offer_cache.encode()
+	}
+
+	/// Indicates that a peer was connected to our node. Useful for the [`OffersMessageFlow`] to keep
+	/// track of which peers are connected, which allows for methods that can create blinded paths
+	/// without requiring a fresh set of [`MessageForwardNode`]s to be passed in.
+	///
+	/// MUST be called by always-online nodes that support holding HTLCs on behalf of often-offline
+	/// senders.
+	///
+	/// Errors if the peer does not support onion messages.
+	pub fn peer_connected(
+		&self, peer_node_id: PublicKey, features: &InitFeatures,
+	) -> Result<(), ()> {
+		if !features.supports_onion_messages() {
+			return Err(());
+		}
+
+		let mut peers_cache = self.peers_cache.lock().unwrap();
+		let peer = MessageForwardNode { node_id: peer_node_id, short_channel_id: None };
+		peers_cache.push(peer);
+
+		Ok(())
+	}
+
+	/// Indicates that a peer was disconnected from our node. See [`Self::peer_connected`].
+	///
+	/// Errors if the peer is unknown.
+	pub fn peer_disconnected(&self, peer_node_id: PublicKey) -> Result<(), ()> {
+		let mut peers_cache = self.peers_cache.lock().unwrap();
+		let peer_idx = match peers_cache.iter().position(|peer| peer.node_id == peer_node_id) {
+			Some(idx) => idx,
+			None => return Err(()),
+		};
+		peers_cache.swap_remove(peer_idx);
+
+		Ok(())
 	}
 }
