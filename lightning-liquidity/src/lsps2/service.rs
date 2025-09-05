@@ -577,7 +577,7 @@ where
 	channel_manager: CM,
 	kv_store: K,
 	pending_messages: Arc<MessageQueue>,
-	pending_events: Arc<EventQueue>,
+	pending_events: Arc<EventQueue<K>>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 	peer_by_intercept_scid: RwLock<HashMap<u64, PublicKey>>,
 	peer_by_channel_id: RwLock<HashMap<ChannelId, PublicKey>>,
@@ -592,8 +592,8 @@ where
 {
 	/// Constructs a `LSPS2ServiceHandler`.
 	pub(crate) fn new(
-		pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>, channel_manager: CM,
-		kv_store: K, config: LSPS2ServiceConfig,
+		pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue<K>>,
+		channel_manager: CM, kv_store: K, config: LSPS2ServiceConfig,
 	) -> Self {
 		Self {
 			pending_messages,

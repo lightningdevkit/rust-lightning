@@ -14,6 +14,16 @@
 /// [`LiquidityManager`]: crate::LiquidityManager
 pub const LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE: &str = "lightning_liquidity_state";
 
+/// The secondary namespace under which the [`LiquidityManager`] event queue will be persisted.
+///
+/// [`LiquidityManager`]: crate::LiquidityManager
+pub const LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
+
+/// The key under which the [`LiquidityManager`] event queue will be persisted.
+///
+/// [`LiquidityManager`]: crate::LiquidityManager
+pub const LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_KEY: &str = "event_queue";
+
 /// The secondary namespace under which the [`LSPS2ServiceHandler`] data will be persisted.
 ///
 /// [`LSPS2ServiceHandler`]: crate::lsps2::service::LSPS2ServiceHandler

@@ -25,6 +25,8 @@ pub enum LSPS1ClientEvent {
 	/// You must check whether LSP supports the parameters the client wants and then call
 	/// [`LSPS1ClientHandler::create_order`] to place an order.
 	///
+	/// **Note: ** This event will *not* be persisted across restarts.
+	///
 	/// [`LSPS1ClientHandler::request_supported_options`]: crate::lsps1::client::LSPS1ClientHandler::request_supported_options
 	/// [`LSPS1ClientHandler::create_order`]: crate::lsps1::client::LSPS1ClientHandler::create_order
 	SupportedOptionsReady {
@@ -42,6 +44,8 @@ pub enum LSPS1ClientEvent {
 	},
 	/// A request previously issued via [`LSPS1ClientHandler::request_supported_options`]
 	/// failed as the LSP returned an error response.
+	///
+	/// **Note: ** This event will *not* be persisted across restarts.
 	///
 	/// [`LSPS1ClientHandler::request_supported_options`]: crate::lsps1::client::LSPS1ClientHandler::request_supported_options
 	SupportedOptionsRequestFailed {
@@ -65,6 +69,8 @@ pub enum LSPS1ClientEvent {
 	/// You must pay the invoice or onchain address if you want to continue and then
 	/// call [`LSPS1ClientHandler::check_order_status`] with the order id
 	/// to get information from LSP about progress of the order.
+	///
+	/// **Note: ** This event will *not* be persisted across restarts.
 	///
 	/// [`LSPS1ClientHandler::check_order_status`]: crate::lsps1::client::LSPS1ClientHandler::check_order_status
 	OrderCreated {
@@ -90,6 +96,8 @@ pub enum LSPS1ClientEvent {
 	///
 	/// Will be emitted in response to calling [`LSPS1ClientHandler::check_order_status`].
 	///
+	/// **Note: ** This event will *not* be persisted across restarts.
+	///
 	/// [`LSPS1ClientHandler::check_order_status`]: crate::lsps1::client::LSPS1ClientHandler::check_order_status
 	OrderStatus {
 		/// The identifier of the issued bLIP-51 / LSPS1 `get_order` request, as returned by
@@ -112,6 +120,8 @@ pub enum LSPS1ClientEvent {
 	},
 	/// A request previously issued via [`LSPS1ClientHandler::create_order`] or [`LSPS1ClientHandler::check_order_status`].
 	/// failed as the LSP returned an error response.
+	///
+	/// **Note: ** This event will *not* be persisted across restarts.
 	///
 	/// [`LSPS1ClientHandler::create_order`]: crate::lsps1::client::LSPS1ClientHandler::create_order
 	/// [`LSPS1ClientHandler::check_order_status`]: crate::lsps1::client::LSPS1ClientHandler::check_order_status
@@ -142,6 +152,8 @@ pub enum LSPS1ServiceEvent {
 	/// send order parameters including the details regarding the
 	/// payment and order id for this order for the client.
 	///
+	/// **Note: ** This event will *not* be persisted across restarts.
+	///
 	/// [`LSPS1ServiceHandler::send_payment_details`]: crate::lsps1::service::LSPS1ServiceHandler::send_payment_details
 	RequestForPaymentDetails {
 		/// An identifier that must be passed to [`LSPS1ServiceHandler::send_payment_details`].
@@ -160,6 +172,8 @@ pub enum LSPS1ServiceEvent {
 	/// You must call [`LSPS1ServiceHandler::update_order_status`] to update the client
 	/// regarding the status of the payment and order.
 	///
+	/// **Note: ** This event will *not* be persisted across restarts.
+	///
 	/// [`LSPS1ServiceHandler::update_order_status`]: crate::lsps1::service::LSPS1ServiceHandler::update_order_status
 	CheckPaymentConfirmation {
 		/// An identifier that must be passed to [`LSPS1ServiceHandler::update_order_status`].
@@ -172,6 +186,8 @@ pub enum LSPS1ServiceEvent {
 		order_id: LSPS1OrderId,
 	},
 	/// If error is encountered, refund the amount if paid by the client.
+	///
+	/// **Note: ** This event will *not* be persisted across restarts.
 	Refund {
 		/// An identifier.
 		request_id: LSPSRequestId,

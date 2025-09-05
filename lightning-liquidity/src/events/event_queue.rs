@@ -1,24 +1,45 @@
 use super::LiquidityEvent;
+
+use crate::lsps2::event::LSPS2ServiceEvent;
+use crate::persist::{
+	LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_KEY,
+	LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_SECONDARY_NAMESPACE,
+	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+};
 use crate::sync::{Arc, Mutex};
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use core::future::Future;
+use core::ops::Deref;
 use core::task::{Poll, Waker};
+
+use lightning::ln::msgs::DecodeError;
+use lightning::util::persist::KVStore;
+use lightning::util::ser::{
+	BigSize, CollectionLength, FixedLengthReader, Readable, Writeable, Writer,
+};
 
 /// The maximum queue size we allow before starting to drop events.
 pub const MAX_EVENT_QUEUE_SIZE: usize = 1000;
 
-pub(crate) struct EventQueue {
+pub(crate) struct EventQueue<K: Deref + Clone>
+where
+	K::Target: KVStore,
+{
 	queue: Arc<Mutex<VecDeque<LiquidityEvent>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 	#[cfg(feature = "std")]
 	condvar: Arc<crate::sync::Condvar>,
+	kv_store: K,
 }
 
-impl EventQueue {
-	pub fn new() -> Self {
+impl<K: Deref + Clone> EventQueue<K>
+where
+	K::Target: KVStore,
+{
+	pub fn new(kv_store: K) -> Self {
 		let queue = Arc::new(Mutex::new(VecDeque::new()));
 		let waker = Arc::new(Mutex::new(None));
 		Self {
@@ -26,6 +47,7 @@ impl EventQueue {
 			waker,
 			#[cfg(feature = "std")]
 			condvar: Arc::new(crate::sync::Condvar::new()),
+			kv_store,
 		}
 	}
 
@@ -67,16 +89,35 @@ impl EventQueue {
 	}
 
 	// Returns an [`EventQueueNotifierGuard`] that will notify about new event when dropped.
-	pub fn notifier(&self) -> EventQueueNotifierGuard<'_> {
+	pub fn notifier(&self) -> EventQueueNotifierGuard<'_, K> {
 		EventQueueNotifierGuard(self)
+	}
+
+	pub async fn persist(&self) -> Result<(), lightning::io::Error> {
+		let queue = self.queue.lock().unwrap();
+		let encoded = EventQueueSerWrapper(&queue).encode();
+
+		self.kv_store
+			.write(
+				LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+				LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_SECONDARY_NAMESPACE,
+				LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_KEY,
+				encoded,
+			)
+			.await
 	}
 }
 
 // A guard type that will notify about new events when dropped.
 #[must_use]
-pub(crate) struct EventQueueNotifierGuard<'a>(&'a EventQueue);
+pub(crate) struct EventQueueNotifierGuard<'a, K: Deref + Clone>(&'a EventQueue<K>)
+where
+	K::Target: KVStore;
 
-impl<'a> EventQueueNotifierGuard<'a> {
+impl<'a, K: Deref + Clone> EventQueueNotifierGuard<'a, K>
+where
+	K::Target: KVStore,
+{
 	pub fn enqueue<E: Into<LiquidityEvent>>(&self, event: E) {
 		let mut queue = self.0.queue.lock().unwrap();
 		if queue.len() < MAX_EVENT_QUEUE_SIZE {
@@ -87,7 +128,10 @@ impl<'a> EventQueueNotifierGuard<'a> {
 	}
 }
 
-impl<'a> Drop for EventQueueNotifierGuard<'a> {
+impl<'a, K: Deref + Clone> Drop for EventQueueNotifierGuard<'a, K>
+where
+	K::Target: KVStore,
+{
 	fn drop(&mut self) {
 		let should_notify = !self.0.queue.lock().unwrap().is_empty();
 
@@ -122,6 +166,91 @@ impl Future for EventFuture {
 	}
 }
 
+pub(crate) struct EventQueueDeserWrapper(pub VecDeque<LiquidityEvent>);
+
+impl Readable for EventQueueDeserWrapper {
+	fn read<R: lightning::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let len: CollectionLength = Readable::read(reader)?;
+		let mut queue = VecDeque::with_capacity(len.0 as usize);
+		for _ in 0..len.0 {
+			let event = match Readable::read(reader)? {
+				0u8 => {
+					let ev = Readable::read(reader)?;
+					LiquidityEvent::LSPS2Service(ev)
+				},
+				2u8 => {
+					let ev = Readable::read(reader)?;
+					LiquidityEvent::LSPS5Service(ev)
+				},
+				x if x % 2 == 1 => {
+					// If the event is of unknown type, assume it was written with `write_tlv_fields`,
+					// which prefixes the whole thing with a length BigSize. Because the event is
+					// odd-type unknown, we should treat it as `Ok(None)` even if it has some TLV
+					// fields that are even. Thus, we avoid using `read_tlv_fields` and simply read
+					// exactly the number of bytes specified, ignoring them entirely.
+					let tlv_len: BigSize = Readable::read(reader)?;
+					FixedLengthReader::new(reader, tlv_len.0)
+						.eat_remaining()
+						.map_err(|_| DecodeError::ShortRead)?;
+					continue;
+				},
+				_ => return Err(DecodeError::InvalidValue),
+			};
+			queue.push_back(event);
+		}
+		Ok(Self(queue))
+	}
+}
+
+struct EventQueueSerWrapper<'a>(&'a VecDeque<LiquidityEvent>);
+
+impl Writeable for EventQueueSerWrapper<'_> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), lightning::io::Error> {
+		let maybe_process_event = |event: &LiquidityEvent,
+		                           writer: Option<&mut W>|
+		 -> Result<bool, lightning::io::Error> {
+			match event {
+				LiquidityEvent::LSPS2Service(event) => {
+					if matches!(event, LSPS2ServiceEvent::GetInfo { .. })
+						|| matches!(event, LSPS2ServiceEvent::BuyRequest { .. })
+					{
+						// Skip persisting GetInfoRequest and BuyRequest events as we prune the pending
+						// request state currently anyways.
+						Ok(false)
+					} else {
+						if let Some(writer) = writer {
+							0u8.write(writer)?;
+							event.write(writer)?;
+						}
+						Ok(true)
+					}
+				},
+				LiquidityEvent::LSPS5Service(event) => {
+					if let Some(writer) = writer {
+						2u8.write(writer)?;
+						event.write(writer)?;
+					}
+					Ok(true)
+				},
+				_ => Ok(false),
+			}
+		};
+
+		let mut persisted_events_len = 0;
+		for e in self.0.iter() {
+			if maybe_process_event(e, None)? {
+				persisted_events_len += 1;
+			}
+		}
+
+		CollectionLength(persisted_events_len).write(writer)?;
+		for e in self.0.iter() {
+			maybe_process_event(e, Some(writer))?;
+		}
+		Ok(())
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	#[tokio::test]
@@ -131,10 +260,13 @@ mod tests {
 		use crate::lsps0::event::LSPS0ClientEvent;
 		use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 		use core::sync::atomic::{AtomicU16, Ordering};
+		use lightning::util::persist::KVStoreSyncWrapper;
+		use lightning::util::test_utils::TestStore;
 		use std::sync::Arc;
 		use std::time::Duration;
 
-		let event_queue = Arc::new(EventQueue::new());
+		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
+		let event_queue = Arc::new(EventQueue::new(kv_store));
 		assert_eq!(event_queue.next_event(), None);
 
 		let secp_ctx = Secp256k1::new();

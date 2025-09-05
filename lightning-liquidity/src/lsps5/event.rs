@@ -13,6 +13,8 @@ use crate::lsps0::ser::LSPSRequestId;
 use alloc::string::String;
 use alloc::vec::Vec;
 use bitcoin::secp256k1::PublicKey;
+
+use lightning::impl_writeable_tlv_based_enum;
 use lightning::util::hash_tables::HashMap;
 
 use super::msgs::LSPS5AppName;
@@ -36,6 +38,8 @@ pub enum LSPS5ServiceEvent {
 	/// The notification is signed using the LSP's node ID to ensure authenticity
 	/// when received by the client. The client verifies this signature using
 	/// [`validate`], which guards against replay attacks and tampering.
+	///
+	/// **Note: ** This event will be persisted across restarts.
 	///
 	/// [`validate`]: super::validator::LSPS5Validator::validate
 	/// [`url`]: super::msgs::LSPS5WebhookUrl
@@ -70,6 +74,16 @@ pub enum LSPS5ServiceEvent {
 	},
 }
 
+impl_writeable_tlv_based_enum!(LSPS5ServiceEvent,
+	(0, SendWebhookNotification) => {
+		(0, counterparty_node_id, required),
+		(2, app_name, required),
+		(4, url, required),
+		(6, notification, required),
+		(8, headers, required),
+	}
+);
+
 /// An event which an LSPS5 client should take some action in response to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LSPS5ClientEvent {
@@ -81,6 +95,8 @@ pub enum LSPS5ClientEvent {
 	/// If `no_change` is `false` (indicating the registered webhook is a new registration),
 	/// the LSP will also emit a [`SendWebhookNotification`] event with a [`webhook_registered`] notification
 	/// to notify the client about this registration.
+	///
+	/// **Note: ** This event will *not* be persisted across restarts.
 	///
 	/// [`lsps5.set_webhook`]: super::msgs::LSPS5Request::SetWebhook
 	/// [`SendWebhookNotification`]: super::event::LSPS5ServiceEvent::SendWebhookNotification
@@ -116,6 +132,8 @@ pub enum LSPS5ClientEvent {
 	/// - The [`url`] uses an unsupported protocol. HTTPS is required (error [`UnsupportedProtocol`]).
 	/// - Maximum number of webhooks per client has been reached (error [`TooManyWebhooks`]). Remove a webhook before
 	///  registering a new one.
+	///
+	/// **Note: ** This event will *not* be persisted across restarts.
 	///
 	/// [`lsps5.set_webhook`]: super::msgs::LSPS5Request::SetWebhook
 	/// [`app_name`]: super::msgs::LSPS5AppName
@@ -170,6 +188,8 @@ pub enum LSPS5ClientEvent {
 	/// After this event, the app_name is free to be reused for a new webhook
 	/// registration if desired.
 	///
+	/// **Note: ** This event will *not* be persisted across restarts.
+	///
 	/// [`lsps5.remove_webhook`]: super::msgs::LSPS5Request::RemoveWebhook
 	WebhookRemoved {
 		/// The node id of the LSP that confirmed the removal.
@@ -190,6 +210,8 @@ pub enum LSPS5ClientEvent {
 	/// The most common error is [`LSPS5ProtocolError::AppNameNotFound`]
 	/// (error code [`LSPS5_APP_NAME_NOT_FOUND_ERROR_CODE`]), which indicates
 	/// the given [`app_name`] was not found in the LSP's registration database.
+	///
+	/// **Note: ** This event will *not* be persisted across restarts.
 	///
 	/// [`lsps5.remove_webhook`]: super::msgs::LSPS5Request::RemoveWebhook
 	/// [`AppNameNotFound`]: super::msgs::LSPS5ProtocolError::AppNameNotFound

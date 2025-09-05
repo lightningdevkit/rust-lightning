@@ -18,28 +18,31 @@ use crate::utils;
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::sign::EntropySource;
 use lightning::util::logger::Level;
+use lightning::util::persist::KVStore;
 
 use bitcoin::secp256k1::PublicKey;
 
 use core::ops::Deref;
 
 /// A message handler capable of sending and handling bLIP-50 / LSPS0 messages.
-pub struct LSPS0ClientHandler<ES: Deref>
+pub struct LSPS0ClientHandler<ES: Deref, K: Deref + Clone>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	entropy_source: ES,
 	pending_messages: Arc<MessageQueue>,
-	pending_events: Arc<EventQueue>,
+	pending_events: Arc<EventQueue<K>>,
 }
 
-impl<ES: Deref> LSPS0ClientHandler<ES>
+impl<ES: Deref, K: Deref + Clone> LSPS0ClientHandler<ES, K>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	/// Returns a new instance of [`LSPS0ClientHandler`].
 	pub(crate) fn new(
-		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>,
+		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue<K>>,
 	) -> Self {
 		Self { entropy_source, pending_messages, pending_events }
 	}
@@ -86,9 +89,10 @@ where
 	}
 }
 
-impl<ES: Deref> LSPSProtocolMessageHandler for LSPS0ClientHandler<ES>
+impl<ES: Deref, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS0ClientHandler<ES, K>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS0Message;
 	const PROTOCOL_NUMBER: Option<u16> = None;
@@ -113,9 +117,11 @@ where
 
 #[cfg(test)]
 mod tests {
-
 	use alloc::string::ToString;
 	use alloc::sync::Arc;
+
+	use lightning::util::persist::KVStoreSyncWrapper;
+	use lightning::util::test_utils::TestStore;
 
 	use crate::lsps0::ser::{LSPSMessage, LSPSRequestId};
 	use crate::tests::utils::{self, TestEntropy};
@@ -126,7 +132,8 @@ mod tests {
 	fn test_list_protocols() {
 		let pending_messages = Arc::new(MessageQueue::new());
 		let entropy_source = Arc::new(TestEntropy {});
-		let event_queue = Arc::new(EventQueue::new());
+		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
+		let event_queue = Arc::new(EventQueue::new(kv_store));
 
 		let lsps0_handler = Arc::new(LSPS0ClientHandler::new(
 			entropy_source,
