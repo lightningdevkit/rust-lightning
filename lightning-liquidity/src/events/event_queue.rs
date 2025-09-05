@@ -1,24 +1,43 @@
 use super::LiquidityEvent;
+
+use crate::persist::{
+	LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_KEY,
+	LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_SECONDARY_NAMESPACE,
+	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+};
 use crate::sync::{Arc, Mutex};
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use core::future::Future;
+use core::ops::Deref;
+use core::pin::Pin;
 use core::task::{Poll, Waker};
+
+use lightning::util::persist::KVStore;
+use lightning::util::ser::{CollectionLength, MaybeReadable, Readable, Writeable, Writer};
 
 /// The maximum queue size we allow before starting to drop events.
 pub const MAX_EVENT_QUEUE_SIZE: usize = 1000;
 
-pub(crate) struct EventQueue {
+pub(crate) struct EventQueue<K: Deref + Clone>
+where
+	K::Target: KVStore,
+{
 	queue: Arc<Mutex<VecDeque<LiquidityEvent>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 	#[cfg(feature = "std")]
 	condvar: Arc<crate::sync::Condvar>,
+	kv_store: K,
 }
 
-impl EventQueue {
-	pub fn new() -> Self {
+impl<K: Deref + Clone> EventQueue<K>
+where
+	K::Target: KVStore,
+{
+	pub fn new(kv_store: K) -> Self {
 		let queue = Arc::new(Mutex::new(VecDeque::new()));
 		let waker = Arc::new(Mutex::new(None));
 		Self {
@@ -26,6 +45,7 @@ impl EventQueue {
 			waker,
 			#[cfg(feature = "std")]
 			condvar: Arc::new(crate::sync::Condvar::new()),
+			kv_store,
 		}
 	}
 
@@ -67,16 +87,35 @@ impl EventQueue {
 	}
 
 	// Returns an [`EventQueueNotifierGuard`] that will notify about new event when dropped.
-	pub fn notifier(&self) -> EventQueueNotifierGuard<'_> {
+	pub fn notifier(&self) -> EventQueueNotifierGuard<'_, K> {
 		EventQueueNotifierGuard(self)
+	}
+
+	pub fn persist(
+		&self,
+	) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + Send>> {
+		let queue = self.queue.lock().unwrap();
+		let encoded = EventQueueSerWrapper(&queue).encode();
+
+		self.kv_store.write(
+			LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_SECONDARY_NAMESPACE,
+			LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_KEY,
+			encoded,
+		)
 	}
 }
 
 // A guard type that will notify about new events when dropped.
 #[must_use]
-pub(crate) struct EventQueueNotifierGuard<'a>(&'a EventQueue);
+pub(crate) struct EventQueueNotifierGuard<'a, K: Deref + Clone>(&'a EventQueue<K>)
+where
+	K::Target: KVStore;
 
-impl<'a> EventQueueNotifierGuard<'a> {
+impl<'a, K: Deref + Clone> EventQueueNotifierGuard<'a, K>
+where
+	K::Target: KVStore,
+{
 	pub fn enqueue<E: Into<LiquidityEvent>>(&self, event: E) {
 		let mut queue = self.0.queue.lock().unwrap();
 		if queue.len() < MAX_EVENT_QUEUE_SIZE {
@@ -87,7 +126,10 @@ impl<'a> EventQueueNotifierGuard<'a> {
 	}
 }
 
-impl<'a> Drop for EventQueueNotifierGuard<'a> {
+impl<'a, K: Deref + Clone> Drop for EventQueueNotifierGuard<'a, K>
+where
+	K::Target: KVStore,
+{
 	fn drop(&mut self) {
 		let should_notify = !self.0.queue.lock().unwrap().is_empty();
 
@@ -122,6 +164,35 @@ impl Future for EventFuture {
 	}
 }
 
+pub(crate) struct EventQueueDeserWrapper(pub VecDeque<LiquidityEvent>);
+
+impl Readable for EventQueueDeserWrapper {
+	fn read<R: lightning::io::Read>(
+		reader: &mut R,
+	) -> Result<Self, lightning::ln::msgs::DecodeError> {
+		let len: CollectionLength = Readable::read(reader)?;
+		let mut queue = VecDeque::with_capacity(len.0 as usize);
+		for _ in 0..len.0 {
+			if let Some(event) = MaybeReadable::read(reader)? {
+				queue.push_back(event);
+			}
+		}
+		Ok(Self(queue))
+	}
+}
+
+struct EventQueueSerWrapper<'a>(&'a VecDeque<LiquidityEvent>);
+
+impl Writeable for EventQueueSerWrapper<'_> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), lightning::io::Error> {
+		CollectionLength(self.0.len() as u64).write(writer)?;
+		for e in self.0.iter() {
+			e.write(writer)?;
+		}
+		Ok(())
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	#[tokio::test]
@@ -131,10 +202,13 @@ mod tests {
 		use crate::lsps0::event::LSPS0ClientEvent;
 		use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 		use core::sync::atomic::{AtomicU16, Ordering};
+		use lightning::util::persist::KVStoreSyncWrapper;
+		use lightning::util::test_utils::TestStore;
 		use std::sync::Arc;
 		use std::time::Duration;
 
-		let event_queue = Arc::new(EventQueue::new());
+		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
+		let event_queue = Arc::new(EventQueue::new(kv_store));
 		assert_eq!(event_queue.next_event(), None);
 
 		let secp_ctx = Secp256k1::new();
