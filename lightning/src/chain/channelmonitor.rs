@@ -2308,14 +2308,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// Determines if the disconnected block contained any transactions of interest and updates
 	/// appropriately.
-	#[rustfmt::skip]
-	pub fn block_disconnected<B: Deref, F: Deref, L: Deref>(
-		&self,
-		header: &Header,
-		height: u32,
-		broadcaster: B,
-		fee_estimator: F,
-		logger: &L,
+	pub fn blocks_disconnected<B: Deref, F: Deref, L: Deref>(
+		&self, fork_point: BestBlock, broadcaster: B, fee_estimator: F, logger: &L,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -2323,8 +2317,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
-		inner.block_disconnected(
-			header, height, broadcaster, fee_estimator, &logger)
+		inner.blocks_disconnected(fork_point, broadcaster, fee_estimator, &logger)
 	}
 
 	/// Processes transactions confirmed in a block with the given header and height, returning new
@@ -2358,10 +2351,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// Processes a transaction that was reorganized out of the chain.
 	///
-	/// Used instead of [`block_disconnected`] by clients that are notified of transactions rather
+	/// Used instead of [`blocks_disconnected`] by clients that are notified of transactions rather
 	/// than blocks. See [`chain::Confirm`] for calling expectations.
 	///
-	/// [`block_disconnected`]: Self::block_disconnected
+	/// [`blocks_disconnected`]: Self::blocks_disconnected
 	#[rustfmt::skip]
 	pub fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref>(
 		&self,
@@ -5124,8 +5117,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			log_trace!(logger, "Best block re-orged, replaced with new block {} at height {}", block_hash, height);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
 			let conf_target = self.closure_conf_target();
-			self.onchain_tx_handler.block_disconnected(
-				height + 1, &broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
+			self.onchain_tx_handler.blocks_disconnected(
+				height, &broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
 			);
 			Vec::new()
 		} else { Vec::new() }
@@ -5452,12 +5445,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							!unmatured_htlcs.contains(&source),
 							"An unmature HTLC transaction conflicts with a maturing one; failed to \
 							 call either transaction_unconfirmed for the conflicting transaction \
-							 or block_disconnected for a block containing it.");
+							 or blocks_disconnected for a block before it.");
 						debug_assert!(
 							!matured_htlcs.contains(&source),
 							"A matured HTLC transaction conflicts with a maturing one; failed to \
 							 call either transaction_unconfirmed for the conflicting transaction \
-							 or block_disconnected for a block containing it.");
+							 or blocks_disconnected for a block before it.");
 						matured_htlcs.push(source.clone());
 					}
 
@@ -5605,23 +5598,26 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	#[rustfmt::skip]
-	fn block_disconnected<B: Deref, F: Deref, L: Deref>(
-		&mut self, header: &Header, height: u32, broadcaster: B, fee_estimator: F, logger: &WithChannelMonitor<L>
+	fn blocks_disconnected<B: Deref, F: Deref, L: Deref>(
+		&mut self, fork_point: BestBlock, broadcaster: B, fee_estimator: F, logger: &WithChannelMonitor<L>
 	) where B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		log_trace!(logger, "Block {} at height {} disconnected", header.block_hash(), height);
+		let new_height = fork_point.height;
+		log_trace!(logger, "Block(s) disconnected to height {}", new_height);
+		assert!(self.best_block.height > fork_point.height,
+			"Blocks disconnected must indicate disconnection from the current best height, i.e. the new chain tip must be lower than the previous best height");
 
 		//We may discard:
 		//- htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
 		//- maturing spendable output has transaction paying us has been disconnected
-		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height < height);
+		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= new_height);
 
 		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
 		let mut should_broadcast_commitment = false;
 		if let Some((_, conf_height)) = self.alternative_funding_confirmed.as_ref() {
-			if *conf_height == height {
+			if *conf_height > new_height {
 				self.alternative_funding_confirmed.take();
 				if self.holder_tx_signed || self.funding_spend_seen {
 					// Cancel any previous claims that are no longer valid as they stemmed from a
@@ -5637,8 +5633,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let conf_target = self.closure_conf_target();
-		self.onchain_tx_handler.block_disconnected(
-			height, &broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator, logger
+		self.onchain_tx_handler.blocks_disconnected(
+			new_height, &broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator, logger
 		);
 
 		// Only attempt to broadcast the new commitment after the `block_disconnected` call above so that
@@ -5647,7 +5643,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, &bounded_fee_estimator, logger);
 		}
 
-		self.best_block = BestBlock::new(header.prev_blockhash, height - 1);
+		self.best_block = fork_point;
 	}
 
 	#[rustfmt::skip]
@@ -6121,8 +6117,8 @@ where
 		self.0.block_connected(header, txdata, height, &*self.1, &*self.2, &self.3);
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
-		self.0.block_disconnected(header, height, &*self.1, &*self.2, &self.3);
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		self.0.blocks_disconnected(fork_point, &*self.1, &*self.2, &self.3);
 	}
 }
 

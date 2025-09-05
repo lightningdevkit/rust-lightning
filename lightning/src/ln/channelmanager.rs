@@ -3737,12 +3737,12 @@ where
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	///
 	/// Users need to notify the new `ChannelManager` when a new block is connected or
-	/// disconnected using its [`block_connected`] and [`block_disconnected`] methods, starting
+	/// disconnected using its [`block_connected`] and [`blocks_disconnected`] methods, starting
 	/// from after [`params.best_block.block_hash`]. See [`chain::Listen`] and [`chain::Confirm`] for
 	/// more details.
 	///
 	/// [`block_connected`]: chain::Listen::block_connected
-	/// [`block_disconnected`]: chain::Listen::block_disconnected
+	/// [`blocks_disconnected`]: chain::Listen::blocks_disconnected
 	/// [`params.best_block.block_hash`]: chain::BestBlock::block_hash
 	#[rustfmt::skip]
 	pub fn new(
@@ -13229,26 +13229,23 @@ where
 		self.best_block_updated(header, height);
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self,
 				|| -> NotifyOption { NotifyOption::DoPersist },
 			);
-		let new_height = height - 1;
 		{
 			let mut best_block = self.best_block.write().unwrap();
-			assert_eq!(best_block.block_hash, header.block_hash(),
-				"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
-			assert_eq!(best_block.height, height,
-				"Blocks must be disconnected in chain-order - the disconnected block must have the correct height");
-			*best_block = BestBlock::new(header.prev_blockhash, new_height)
+			assert!(best_block.height > fork_point.height,
+				"Blocks disconnected must indicate disconnection from the current best height, i.e. the new chain tip must be lower than the previous best height");
+			*best_block = fork_point;
 		}
 
-		self.do_chain_event(Some(new_height), |channel| {
+		self.do_chain_event(Some(fork_point.height), |channel| {
 			channel.best_block_updated(
-				new_height,
-				header.time,
+				fork_point.height,
+				None,
 				self.chain_hash,
 				&self.node_signer,
 				&self.config.read().unwrap(),
@@ -13298,7 +13295,17 @@ where
 		let last_best_block_height = self.best_block.read().unwrap().height;
 		if height < last_best_block_height {
 			let timestamp = self.highest_seen_timestamp.load(Ordering::Acquire);
-			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.chain_hash, &self.node_signer, &self.config.read().unwrap(), &&WithChannelContext::from(&self.logger, &channel.context, None)));
+			let do_update = |channel: &mut FundedChannel<SP>| {
+				channel.best_block_updated(
+					last_best_block_height,
+					Some(timestamp as u32),
+					self.chain_hash,
+					&self.node_signer,
+					&self.config.read().unwrap(),
+					&&WithChannelContext::from(&self.logger, &channel.context, None),
+				)
+			};
+			self.do_chain_event(Some(last_best_block_height), do_update);
 		}
 	}
 
@@ -13358,7 +13365,14 @@ where
 				}
 			}
 
-			channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.config.read().unwrap(), &&WithChannelContext::from(&self.logger, &channel.context, None))
+			channel.best_block_updated(
+				height,
+				Some(header.time),
+				self.chain_hash,
+				&self.node_signer,
+				&self.config.read().unwrap(),
+				&&WithChannelContext::from(&self.logger, &channel.context, None),
+			)
 		});
 
 		macro_rules! max_time {

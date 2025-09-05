@@ -281,16 +281,6 @@ impl OutputSpendStatus {
 		}
 	}
 
-	fn confirmation_hash(&self) -> Option<BlockHash> {
-		match self {
-			Self::PendingInitialBroadcast { .. } => None,
-			Self::PendingFirstConfirmation { .. } => None,
-			Self::PendingThresholdConfirmations { confirmation_hash, .. } => {
-				Some(*confirmation_hash)
-			},
-		}
-	}
-
 	fn latest_spending_tx(&self) -> Option<&Transaction> {
 		match self {
 			Self::PendingInitialBroadcast { .. } => None,
@@ -765,21 +755,15 @@ where
 		self.best_block_updated_internal(&mut state_lock, header, height);
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
 
-		let new_height = height - 1;
-		let block_hash = header.block_hash();
-
-		assert_eq!(state_lock.best_block.block_hash, block_hash,
-		"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
-		assert_eq!(state_lock.best_block.height, height,
-			"Blocks must be disconnected in chain-order - the disconnected block must have the correct height");
-		state_lock.best_block = BestBlock::new(header.prev_blockhash, new_height);
+		assert!(state_lock.best_block.height > fork_point.height,
+			"Blocks disconnected must indicate disconnection from the current best height, i.e. the new chain tip must be lower than the previous best height");
+		state_lock.best_block = fork_point;
 
 		for output_info in state_lock.outputs.iter_mut() {
-			if output_info.status.confirmation_hash() == Some(block_hash) {
-				debug_assert_eq!(output_info.status.confirmation_height(), Some(height));
+			if output_info.status.confirmation_height() > Some(fork_point.height) {
 				output_info.status.unconfirmed();
 			}
 		}

@@ -10557,8 +10557,8 @@ where
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
 	pub fn best_block_updated<NS: Deref, L: Deref>(
-		&mut self, height: u32, highest_header_time: u32, chain_hash: ChainHash, node_signer: &NS,
-		user_config: &UserConfig, logger: &L,
+		&mut self, height: u32, highest_header_time: Option<u32>, chain_hash: ChainHash,
+		node_signer: &NS, user_config: &UserConfig, logger: &L,
 	) -> Result<BestBlockUpdatedRes, ClosureReason>
 	where
 		NS::Target: NodeSigner,
@@ -10574,7 +10574,7 @@ where
 
 	#[rustfmt::skip]
 	fn do_best_block_updated<NS: Deref, L: Deref>(
-		&mut self, height: u32, highest_header_time: u32,
+		&mut self, height: u32, highest_header_time: Option<u32>,
 		chain_node_signer: Option<(ChainHash, &NS, &UserConfig)>, logger: &L
 	) -> Result<(Option<FundingConfirmedMessage>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
@@ -10598,7 +10598,9 @@ where
 			}
 		});
 
-		self.context.update_time_counter = cmp::max(self.context.update_time_counter, highest_header_time);
+		if let Some(time) = highest_header_time {
+			self.context.update_time_counter = cmp::max(self.context.update_time_counter, time);
+		}
 
 		// Check if the funding transaction was unconfirmed
 		let funding_tx_confirmations = self.funding.get_funding_tx_confirmations(height);
@@ -10754,12 +10756,9 @@ where
 				// We handle the funding disconnection by calling best_block_updated with a height one
 				// below where our funding was connected, implying a reorg back to conf_height - 1.
 				let reorg_height = funding.funding_tx_confirmation_height - 1;
-				// We use the time field to bump the current time we set on channel updates if its
-				// larger. If we don't know that time has moved forward, we can just set it to the last
-				// time we saw and it will be ignored.
-				let best_time = self.context.update_time_counter;
 
-				match self.do_best_block_updated(reorg_height, best_time, None::<(ChainHash, &&dyn NodeSigner, &UserConfig)>, logger) {
+				let signer_config = None::<(ChainHash, &&dyn NodeSigner, &UserConfig)>;
+				match self.do_best_block_updated(reorg_height, None, signer_config, logger) {
 					Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
 						assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
 						assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");

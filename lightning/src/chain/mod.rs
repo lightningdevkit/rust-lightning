@@ -73,6 +73,24 @@ impl_writeable_tlv_based!(BestBlock, {
 /// By using [`Listen::filtered_block_connected`] this interface supports clients fetching the
 /// entire header chain and only blocks with matching transaction data using BIP 157 filters or
 /// other similar filtering.
+///
+/// # Requirements
+///
+/// Each block must be connected in chain order with one call to either
+/// [`Listen::block_connected`] or [`Listen::filtered_block_connected`]. If a call to the
+/// [`Filter`] interface was made during block processing and further transaction(s) from the same
+/// block now match the filter, a second call to [`Listen::filtered_block_connected`] should be
+/// made immediately for the same block (prior to any other calls to the [`Listen`] interface).
+///
+/// In case of a reorg, you must call [`Listen::blocks_disconnected`] once with information on the
+/// "fork point" block, i.e. the highest block that is in both forks. You may call
+/// [`Listen::blocks_disconnected`] multiple times as you walk the chain backwards, but each must
+/// include a fork point block that is before the last.
+///
+/// # Object Birthday
+///
+/// Note that most implementations take a [`BestBlock`] on construction and blocks only need to be
+/// applied starting from that point.
 pub trait Listen {
 	/// Notifies the listener that a block was added at the given height, with the transaction data
 	/// possibly filtered.
@@ -84,8 +102,13 @@ pub trait Listen {
 		self.filtered_block_connected(&block.header, &txdata, height);
 	}
 
-	/// Notifies the listener that a block was removed at the given height.
-	fn block_disconnected(&self, header: &Header, height: u32);
+	/// Notifies the listener that one or more blocks were removed in anticipation of a reorg.
+	///
+	/// The provided [`BestBlock`] is the new best block after disconnecting blocks in the reorg
+	/// but before connecting new ones (i.e. the "fork point" block). For backwards compatibility,
+	/// you may instead walk the chain backwards, calling `blocks_disconnected` for each block
+	/// that is disconnected in a reorg.
+	fn blocks_disconnected(&self, fork_point_block: BestBlock);
 }
 
 /// The `Confirm` trait is used to notify LDK when relevant transactions have been confirmed on
@@ -272,7 +295,7 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	///
 	/// Implementations are responsible for watching the chain for the funding transaction along
 	/// with any spends of outputs returned by [`get_outputs_to_watch`]. In practice, this means
-	/// calling [`block_connected`] and [`block_disconnected`] on the monitor.
+	/// calling [`block_connected`] and [`blocks_disconnected`] on the monitor.
 	///
 	/// A return of `Err(())` indicates that the channel should immediately be force-closed without
 	/// broadcasting the funding transaction.
@@ -282,7 +305,7 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	///
 	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor::ChannelMonitor::block_connected
-	/// [`block_disconnected`]: channelmonitor::ChannelMonitor::block_disconnected
+	/// [`blocks_disconnected`]: channelmonitor::ChannelMonitor::blocks_disconnected
 	fn watch_channel(
 		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
 	) -> Result<ChannelMonitorUpdateStatus, ()>;
@@ -393,8 +416,8 @@ impl<T: Listen> Listen for dyn core::ops::Deref<Target = T> {
 		(**self).filtered_block_connected(header, txdata, height);
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
-		(**self).block_disconnected(header, height);
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		(**self).blocks_disconnected(fork_point);
 	}
 }
 
@@ -408,9 +431,9 @@ where
 		self.1.filtered_block_connected(header, txdata, height);
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
-		self.0.block_disconnected(header, height);
-		self.1.block_disconnected(header, height);
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		self.0.blocks_disconnected(fork_point);
+		self.1.blocks_disconnected(fork_point);
 	}
 }
 

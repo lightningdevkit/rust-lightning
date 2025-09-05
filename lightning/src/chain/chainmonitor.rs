@@ -35,7 +35,7 @@ use crate::chain::channelmonitor::{
 	WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
+use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::ln::channel_state::ChannelDetails;
 #[cfg(peer_storage)]
@@ -1055,18 +1055,17 @@ where
 		self.event_notifier.notify();
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
 		let monitor_states = self.monitors.read().unwrap();
 		log_debug!(
 			self.logger,
-			"Latest block {} at height {} removed via block_disconnected",
-			header.block_hash(),
-			height
+			"Block(s) removed to height {} via blocks_disconnected. New best block is {}",
+			fork_point.height,
+			fork_point.block_hash,
 		);
 		for monitor_state in monitor_states.values() {
-			monitor_state.monitor.block_disconnected(
-				header,
-				height,
+			monitor_state.monitor.blocks_disconnected(
+				fork_point,
 				&*self.broadcaster,
 				&*self.fee_estimator,
 				&self.logger,

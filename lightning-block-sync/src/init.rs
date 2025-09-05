@@ -9,6 +9,7 @@ use bitcoin::hash_types::BlockHash;
 use bitcoin::network::Network;
 
 use lightning::chain;
+use lightning::chain::BestBlock;
 
 use std::ops::Deref;
 
@@ -230,8 +231,8 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L
 		unreachable!()
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
-		self.0.block_disconnected(header, height)
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		self.0.blocks_disconnected(fork_point)
 	}
 }
 
@@ -257,7 +258,7 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for ChainListenerSet<'a, L> {
 		}
 	}
 
-	fn block_disconnected(&self, _header: &Header, _height: u32) {
+	fn blocks_disconnected(&self, _fork_point: BestBlock) {
 		unreachable!()
 	}
 }
@@ -300,19 +301,16 @@ mod tests {
 		let fork_chain_3 = main_chain.fork_at_height(3);
 
 		let listener_1 = MockChainListener::new()
-			.expect_block_disconnected(*fork_chain_1.at_height(4))
-			.expect_block_disconnected(*fork_chain_1.at_height(3))
-			.expect_block_disconnected(*fork_chain_1.at_height(2))
+			.expect_blocks_disconnected(*fork_chain_1.at_height(1))
 			.expect_block_connected(*main_chain.at_height(2))
 			.expect_block_connected(*main_chain.at_height(3))
 			.expect_block_connected(*main_chain.at_height(4));
 		let listener_2 = MockChainListener::new()
-			.expect_block_disconnected(*fork_chain_2.at_height(4))
-			.expect_block_disconnected(*fork_chain_2.at_height(3))
+			.expect_blocks_disconnected(*fork_chain_2.at_height(2))
 			.expect_block_connected(*main_chain.at_height(3))
 			.expect_block_connected(*main_chain.at_height(4));
 		let listener_3 = MockChainListener::new()
-			.expect_block_disconnected(*fork_chain_3.at_height(4))
+			.expect_blocks_disconnected(*fork_chain_3.at_height(3))
 			.expect_block_connected(*main_chain.at_height(4));
 
 		let listeners = vec![
@@ -337,23 +335,17 @@ mod tests {
 		let fork_chain_3 = fork_chain_2.fork_at_height(3);
 
 		let listener_1 = MockChainListener::new()
-			.expect_block_disconnected(*fork_chain_1.at_height(4))
-			.expect_block_disconnected(*fork_chain_1.at_height(3))
-			.expect_block_disconnected(*fork_chain_1.at_height(2))
+			.expect_blocks_disconnected(*fork_chain_1.at_height(1))
 			.expect_block_connected(*main_chain.at_height(2))
 			.expect_block_connected(*main_chain.at_height(3))
 			.expect_block_connected(*main_chain.at_height(4));
 		let listener_2 = MockChainListener::new()
-			.expect_block_disconnected(*fork_chain_2.at_height(4))
-			.expect_block_disconnected(*fork_chain_2.at_height(3))
-			.expect_block_disconnected(*fork_chain_2.at_height(2))
+			.expect_blocks_disconnected(*fork_chain_2.at_height(1))
 			.expect_block_connected(*main_chain.at_height(2))
 			.expect_block_connected(*main_chain.at_height(3))
 			.expect_block_connected(*main_chain.at_height(4));
 		let listener_3 = MockChainListener::new()
-			.expect_block_disconnected(*fork_chain_3.at_height(4))
-			.expect_block_disconnected(*fork_chain_3.at_height(3))
-			.expect_block_disconnected(*fork_chain_3.at_height(2))
+			.expect_blocks_disconnected(*fork_chain_3.at_height(1))
 			.expect_block_connected(*main_chain.at_height(2))
 			.expect_block_connected(*main_chain.at_height(3))
 			.expect_block_connected(*main_chain.at_height(4));
@@ -380,7 +372,7 @@ mod tests {
 		let old_tip = fork_chain.tip();
 
 		let listener = MockChainListener::new()
-			.expect_block_disconnected(*old_tip)
+			.expect_blocks_disconnected(*fork_chain.at_height(1))
 			.expect_block_connected(*new_tip);
 
 		let listeners = vec![(old_tip.block_hash, &listener as &dyn chain::Listen)];

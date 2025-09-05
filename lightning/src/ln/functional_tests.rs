@@ -2328,11 +2328,15 @@ pub fn test_htlc_ignore_latest_remote_commitment() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	if *nodes[1].connect_style.borrow() == ConnectStyle::FullBlockViaListen {
-		// We rely on the ability to connect a block redundantly, which isn't allowed via
-		// `chain::Listen`, so we never run the test if we randomly get assigned that
-		// connect_style.
-		return;
+	match *nodes[1].connect_style.borrow() {
+		ConnectStyle::FullBlockViaListen
+		| ConnectStyle::FullBlockDisconnectionsSkippingViaListen => {
+			// We rely on the ability to connect a block redundantly, which isn't allowed via
+			// `chain::Listen`, so we never run the test if we randomly get assigned that
+			// connect_style.
+			return;
+		},
+		_ => {},
 	}
 	let funding_tx = create_announced_chan_between_nodes(&nodes, 0, 1).3;
 	let message = "Channel force-closed".to_owned();
