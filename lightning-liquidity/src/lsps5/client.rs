@@ -33,6 +33,7 @@ use lightning::util::logger::Level;
 
 use alloc::collections::VecDeque;
 use alloc::string::String;
+use lightning::util::persist::KVStore;
 
 use core::ops::Deref;
 
@@ -124,25 +125,27 @@ impl PeerState {
 /// [`lsps5.list_webhooks`]: super::msgs::LSPS5Request::ListWebhooks
 /// [`lsps5.remove_webhook`]: super::msgs::LSPS5Request::RemoveWebhook
 /// [`LSPS5Validator`]: super::validator::LSPS5Validator
-pub struct LSPS5ClientHandler<ES: Deref>
+pub struct LSPS5ClientHandler<ES: Deref, K: Deref + Clone>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	pending_messages: Arc<MessageQueue>,
-	pending_events: Arc<EventQueue>,
+	pending_events: Arc<EventQueue<K>>,
 	entropy_source: ES,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 	_config: LSPS5ClientConfig,
 }
 
-impl<ES: Deref> LSPS5ClientHandler<ES>
+impl<ES: Deref, K: Deref + Clone> LSPS5ClientHandler<ES, K>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	/// Constructs an `LSPS5ClientHandler`.
 	pub(crate) fn new(
-		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>,
-		_config: LSPS5ClientConfig,
+		entropy_source: ES, pending_messages: Arc<MessageQueue>,
+		pending_events: Arc<EventQueue<K>>, _config: LSPS5ClientConfig,
 	) -> Self {
 		Self {
 			pending_messages,
@@ -423,9 +426,10 @@ where
 	}
 }
 
-impl<ES: Deref> LSPSProtocolMessageHandler for LSPS5ClientHandler<ES>
+impl<ES: Deref, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS5ClientHandler<ES, K>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS5Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(5);
@@ -444,6 +448,8 @@ mod tests {
 	use crate::{lsps0::ser::LSPSRequestId, lsps5::msgs::SetWebhookResponse};
 	use bitcoin::{key::Secp256k1, secp256k1::SecretKey};
 	use core::sync::atomic::{AtomicU64, Ordering};
+	use lightning::util::persist::KVStoreSyncWrapper;
+	use lightning::util::test_utils::TestStore;
 
 	struct UniqueTestEntropy {
 		counter: AtomicU64,
@@ -459,15 +465,17 @@ mod tests {
 	}
 
 	fn setup_test_client() -> (
-		LSPS5ClientHandler<Arc<UniqueTestEntropy>>,
+		LSPS5ClientHandler<Arc<UniqueTestEntropy>, Arc<KVStoreSyncWrapper<Arc<TestStore>>>>,
 		Arc<MessageQueue>,
-		Arc<EventQueue>,
+		Arc<EventQueue<Arc<KVStoreSyncWrapper<Arc<TestStore>>>>>,
 		PublicKey,
 		PublicKey,
 	) {
 		let test_entropy_source = Arc::new(UniqueTestEntropy { counter: AtomicU64::new(2) });
 		let message_queue = Arc::new(MessageQueue::new());
-		let event_queue = Arc::new(EventQueue::new());
+
+		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
+		let event_queue = Arc::new(EventQueue::new(kv_store));
 		let client = LSPS5ClientHandler::new(
 			test_entropy_source,
 			Arc::clone(&message_queue),

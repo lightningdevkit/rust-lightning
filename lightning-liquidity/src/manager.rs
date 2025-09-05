@@ -292,19 +292,19 @@ pub struct LiquidityManager<
 	TP::Target: TimeProvider,
 {
 	pending_messages: Arc<MessageQueue>,
-	pending_events: Arc<EventQueue>,
+	pending_events: Arc<EventQueue<K>>,
 	request_id_to_method_map: Mutex<HashMap<LSPSRequestId, LSPSMethod>>,
 	// We ignore peers if they send us bogus data.
 	ignored_peers: RwLock<HashSet<PublicKey>>,
-	lsps0_client_handler: LSPS0ClientHandler<ES>,
+	lsps0_client_handler: LSPS0ClientHandler<ES, K>,
 	lsps0_service_handler: Option<LSPS0ServiceHandler>,
 	#[cfg(lsps1_service)]
-	lsps1_service_handler: Option<LSPS1ServiceHandler<ES, CM, C>>,
-	lsps1_client_handler: Option<LSPS1ClientHandler<ES>>,
+	lsps1_service_handler: Option<LSPS1ServiceHandler<ES, CM, C, K>>,
+	lsps1_client_handler: Option<LSPS1ClientHandler<ES, K>>,
 	lsps2_service_handler: Option<LSPS2ServiceHandler<CM, K>>,
-	lsps2_client_handler: Option<LSPS2ClientHandler<ES>>,
+	lsps2_client_handler: Option<LSPS2ClientHandler<ES, K>>,
 	lsps5_service_handler: Option<LSPS5ServiceHandler<CM, NS, K, TP>>,
-	lsps5_client_handler: Option<LSPS5ClientHandler<ES>>,
+	lsps5_client_handler: Option<LSPS5ClientHandler<ES, K>>,
 	service_config: Option<LiquidityServiceConfig>,
 	_client_config: Option<LiquidityClientConfig>,
 	best_block: RwLock<Option<BestBlock>>,
@@ -377,7 +377,7 @@ where
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
 	) -> Self {
 		let pending_messages = Arc::new(MessageQueue::new());
-		let pending_events = Arc::new(EventQueue::new());
+		let pending_events = Arc::new(EventQueue::new(kv_store.clone()));
 		let ignored_peers = RwLock::new(new_hash_set());
 
 		let mut supported_protocols = Vec::new();
@@ -454,7 +454,7 @@ where
 		#[cfg(lsps1_service)]
 		let lsps1_service_handler = service_config.as_ref().and_then(|config| {
 			if let Some(number) =
-				<LSPS1ServiceHandler<ES, CM, C> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
+				<LSPS1ServiceHandler<ES, CM, C, K> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
 			{
 				supported_protocols.push(number);
 			}
@@ -504,7 +504,7 @@ where
 	}
 
 	/// Returns a reference to the LSPS0 client-side handler.
-	pub fn lsps0_client_handler(&self) -> &LSPS0ClientHandler<ES> {
+	pub fn lsps0_client_handler(&self) -> &LSPS0ClientHandler<ES, K> {
 		&self.lsps0_client_handler
 	}
 
@@ -517,13 +517,13 @@ where
 	///
 	/// The returned handler allows to initiate the LSPS1 client-side flow, i.e., allows to request
 	/// channels from the configured LSP.
-	pub fn lsps1_client_handler(&self) -> Option<&LSPS1ClientHandler<ES>> {
+	pub fn lsps1_client_handler(&self) -> Option<&LSPS1ClientHandler<ES, K>> {
 		self.lsps1_client_handler.as_ref()
 	}
 
 	/// Returns a reference to the LSPS1 server-side handler.
 	#[cfg(lsps1_service)]
-	pub fn lsps1_service_handler(&self) -> Option<&LSPS1ServiceHandler<ES, CM, C>> {
+	pub fn lsps1_service_handler(&self) -> Option<&LSPS1ServiceHandler<ES, CM, C, K>> {
 		self.lsps1_service_handler.as_ref()
 	}
 
@@ -532,7 +532,7 @@ where
 	/// The returned handler allows to initiate the LSPS2 client-side flow. That is, it allows to
 	/// retrieve all necessary data to create 'just-in-time' invoices that, when paid, will have
 	/// the configured LSP open a 'just-in-time' channel.
-	pub fn lsps2_client_handler(&self) -> Option<&LSPS2ClientHandler<ES>> {
+	pub fn lsps2_client_handler(&self) -> Option<&LSPS2ClientHandler<ES, K>> {
 		self.lsps2_client_handler.as_ref()
 	}
 
@@ -546,7 +546,7 @@ where
 	/// Returns a reference to the LSPS5 client-side handler.
 	///
 	/// The returned handler allows to initiate the LSPS5 client-side flow. That is, it allows to
-	pub fn lsps5_client_handler(&self) -> Option<&LSPS5ClientHandler<ES>> {
+	pub fn lsps5_client_handler(&self) -> Option<&LSPS5ClientHandler<ES, K>> {
 		self.lsps5_client_handler.as_ref()
 	}
 
@@ -620,6 +620,8 @@ where
 	/// be called manually if it's not utilized.
 	pub async fn persist(&self) -> Result<(), lightning::io::Error> {
 		// TODO: We should eventually persist in parallel.
+		self.pending_events.persist().await?;
+
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
 			lsps2_service_handler.persist().await?;
 		}
@@ -1095,7 +1097,7 @@ where
 	/// Returns a reference to the LSPS0 client-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps0_client_handler`].
-	pub fn lsps0_client_handler(&self) -> &LSPS0ClientHandler<ES> {
+	pub fn lsps0_client_handler(&self) -> &LSPS0ClientHandler<ES, Arc<KVStoreSyncWrapper<KS>>> {
 		self.inner.lsps0_client_handler()
 	}
 
@@ -1109,7 +1111,9 @@ where
 	/// Returns a reference to the LSPS1 client-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps1_client_handler`].
-	pub fn lsps1_client_handler(&self) -> Option<&LSPS1ClientHandler<ES>> {
+	pub fn lsps1_client_handler(
+		&self,
+	) -> Option<&LSPS1ClientHandler<ES, Arc<KVStoreSyncWrapper<KS>>>> {
 		self.inner.lsps1_client_handler()
 	}
 
@@ -1117,14 +1121,18 @@ where
 	///
 	/// Wraps [`LiquidityManager::lsps1_service_handler`].
 	#[cfg(lsps1_service)]
-	pub fn lsps1_service_handler(&self) -> Option<&LSPS1ServiceHandler<ES, CM, C>> {
+	pub fn lsps1_service_handler(
+		&self,
+	) -> Option<&LSPS1ServiceHandler<ES, CM, C, Arc<KVStoreSyncWrapper<KS>>>> {
 		self.inner.lsps1_service_handler()
 	}
 
 	/// Returns a reference to the LSPS2 client-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps2_client_handler`].
-	pub fn lsps2_client_handler(&self) -> Option<&LSPS2ClientHandler<ES>> {
+	pub fn lsps2_client_handler(
+		&self,
+	) -> Option<&LSPS2ClientHandler<ES, Arc<KVStoreSyncWrapper<KS>>>> {
 		self.inner.lsps2_client_handler()
 	}
 
@@ -1140,7 +1148,9 @@ where
 	/// Returns a reference to the LSPS5 client-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps5_client_handler`].
-	pub fn lsps5_client_handler(&self) -> Option<&LSPS5ClientHandler<ES>> {
+	pub fn lsps5_client_handler(
+		&self,
+	) -> Option<&LSPS5ClientHandler<ES, Arc<KVStoreSyncWrapper<KS>>>> {
 		self.inner.lsps5_client_handler()
 	}
 

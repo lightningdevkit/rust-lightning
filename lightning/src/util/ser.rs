@@ -553,7 +553,7 @@ impl Readable for BigSize {
 /// To ensure we only have one valid encoding per value, we add 0xffff to values written as eight
 /// bytes. Thus, 0xfffe is serialized as 0xfffe, whereas 0xffff is serialized as
 /// 0xffff0000000000000000 (i.e. read-eight-bytes then zero).
-struct CollectionLength(pub u64);
+pub struct CollectionLength(pub u64);
 impl Writeable for CollectionLength {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
