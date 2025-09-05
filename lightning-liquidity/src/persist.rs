@@ -9,6 +9,7 @@
 
 //! Types and utils for persistence.
 
+use crate::events::{EventQueueDeserWrapper, LiquidityEvent};
 use crate::lsps2::service::PeerState as LSPS2ServicePeerState;
 use crate::lsps5::service::PeerState as LSPS5ServicePeerState;
 use crate::prelude::{new_hash_map, HashMap};
@@ -19,6 +20,8 @@ use lightning::util::persist::KVStore;
 use lightning::util::ser::Readable;
 
 use bitcoin::secp256k1::PublicKey;
+
+use alloc::collections::VecDeque;
 
 use core::ops::Deref;
 use core::str::FromStr;
@@ -47,6 +50,40 @@ pub const LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE: &str = "lsps2_service";
 ///
 /// [`LSPS5ServiceHandler`]: crate::lsps5::service::LSPS5ServiceHandler
 pub const LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE: &str = "lsps5_service";
+
+pub(crate) async fn read_event_queue<K: Deref>(
+	kv_store: K,
+) -> Result<Option<VecDeque<LiquidityEvent>>, lightning::io::Error>
+where
+	K::Target: KVStore,
+{
+	let read_fut = kv_store.read(
+		LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+		LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_SECONDARY_NAMESPACE,
+		LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_KEY,
+	);
+
+	let mut reader = match read_fut.await {
+		Ok(r) => Cursor::new(r),
+		Err(e) => {
+			if e.kind() == lightning::io::ErrorKind::NotFound {
+				// Key wasn't found, no error but first time running.
+				return Ok(None);
+			} else {
+				return Err(e);
+			}
+		},
+	};
+
+	let queue: EventQueueDeserWrapper = Readable::read(&mut reader).map_err(|_| {
+		lightning::io::Error::new(
+			lightning::io::ErrorKind::InvalidData,
+			"Failed to deserialize liquidity event queue",
+		)
+	})?;
+
+	Ok(Some(queue.0))
+}
 
 pub(crate) async fn read_lsps2_service_peer_states<K: Deref>(
 	kv_store: K,

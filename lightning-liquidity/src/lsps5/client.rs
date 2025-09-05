@@ -475,7 +475,7 @@ mod tests {
 		let message_queue = Arc::new(MessageQueue::new());
 
 		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
-		let event_queue = Arc::new(EventQueue::new(kv_store));
+		let event_queue = Arc::new(EventQueue::new(VecDeque::new(), kv_store));
 		let client = LSPS5ClientHandler::new(
 			test_entropy_source,
 			Arc::clone(&message_queue),

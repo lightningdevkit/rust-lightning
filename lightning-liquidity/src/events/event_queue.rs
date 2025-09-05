@@ -39,8 +39,8 @@ impl<K: Deref + Clone> EventQueue<K>
 where
 	K::Target: KVStore,
 {
-	pub fn new(kv_store: K) -> Self {
-		let queue = Arc::new(Mutex::new(VecDeque::new()));
+	pub fn new(queue: VecDeque<LiquidityEvent>, kv_store: K) -> Self {
+		let queue = Arc::new(Mutex::new(queue));
 		let waker = Arc::new(Mutex::new(None));
 		Self {
 			queue,
@@ -266,7 +266,7 @@ mod tests {
 		use std::time::Duration;
 
 		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
-		let event_queue = Arc::new(EventQueue::new(kv_store));
+		let event_queue = Arc::new(EventQueue::new(VecDeque::new(), kv_store));
 		assert_eq!(event_queue.next_event(), None);
 
 		let secp_ctx = Secp256k1::new();

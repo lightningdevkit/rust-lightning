@@ -17,8 +17,8 @@
 
 mod event_queue;
 
-pub(crate) use event_queue::EventQueue;
 pub use event_queue::MAX_EVENT_QUEUE_SIZE;
+pub(crate) use event_queue::{EventQueue, EventQueueDeserWrapper};
 
 use crate::lsps0;
 use crate::lsps1;
