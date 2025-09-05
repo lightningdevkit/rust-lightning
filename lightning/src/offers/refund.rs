@@ -789,6 +789,11 @@ impl RefundContents {
 			issuer: self.issuer.as_ref(),
 			quantity_max: None,
 			issuer_id: None,
+			recurrence_compulsory: None,
+			recurrence_optional: None,
+			recurrence_base: None,
+			recurrence_paywindow: None,
+			recurrence_limit: None,
 		};
 
 		let features = {
@@ -918,6 +923,11 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 				issuer,
 				quantity_max,
 				issuer_id,
+				recurrence_compulsory,
+				recurrence_optional,
+				recurrence_base,
+				recurrence_paywindow,
+				recurrence_limit,
 			},
 			InvoiceRequestTlvStream {
 				chain,
@@ -977,6 +987,15 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 
 		if issuer_id.is_some() {
 			return Err(Bolt12SemanticError::UnexpectedIssuerSigningPubkey);
+		}
+
+		if recurrence_compulsory.is_some()
+			|| recurrence_optional.is_some()
+			|| recurrence_base.is_some()
+			|| recurrence_paywindow.is_some()
+			|| recurrence_limit.is_some()
+		{
+			return Err(Bolt12SemanticError::UnexpectedRecurrence);
 		}
 
 		if offer_from_hrn.is_some() {
@@ -1108,6 +1127,11 @@ mod tests {
 					issuer: None,
 					quantity_max: None,
 					issuer_id: None,
+					recurrence_compulsory: None,
+					recurrence_optional: None,
+					recurrence_base: None,
+					recurrence_paywindow: None,
+					recurrence_limit: None,
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
