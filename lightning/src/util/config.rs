@@ -945,7 +945,6 @@ pub struct UserConfig {
 	/// Setting this to `true` may break backwards compatibility with LDK versions < 0.2.
 	///
 	/// Default value: `false`
-	#[cfg(test)]
 	pub enable_htlc_hold: bool,
 	/// If this is set to true, then if we as an often-offline payer receive a [`StaticInvoice`] to
 	/// pay, we will attempt to hold the corresponding outbound HTLCs with our next-hop channel
@@ -973,7 +972,6 @@ impl Default for UserConfig {
 			accept_intercept_htlcs: false,
 			manually_handle_bolt12_invoices: false,
 			enable_dual_funded_channels: false,
-			#[cfg(test)]
 			enable_htlc_hold: false,
 			hold_outbound_htlcs_at_next_hop: true,
 		}
@@ -997,6 +995,7 @@ impl Readable for UserConfig {
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
 			enable_dual_funded_channels: Readable::read(reader)?,
 			hold_outbound_htlcs_at_next_hop: Readable::read(reader)?,
+			enable_htlc_hold: Readable::read(reader)?,
 		})
 	}
 }
