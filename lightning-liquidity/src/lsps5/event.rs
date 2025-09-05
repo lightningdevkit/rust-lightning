@@ -13,6 +13,8 @@ use crate::lsps0::ser::LSPSRequestId;
 use alloc::string::String;
 use alloc::vec::Vec;
 use bitcoin::secp256k1::PublicKey;
+
+use lightning::impl_writeable_tlv_based_enum;
 use lightning::util::hash_tables::HashMap;
 
 use super::msgs::LSPS5AppName;
@@ -69,6 +71,16 @@ pub enum LSPS5ServiceEvent {
 		headers: HashMap<String, String>,
 	},
 }
+
+impl_writeable_tlv_based_enum!(LSPS5ServiceEvent,
+	(0, SendWebhookNotification) => {
+		(0, counterparty_node_id, required),
+		(2, app_name, required),
+		(4, url, required),
+		(6, notification, required),
+		(8, headers, required),
+	}
+);
 
 /// An event which an LSPS5 client should take some action in response to.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -16,6 +16,8 @@ use alloc::vec::Vec;
 
 use bitcoin::secp256k1::PublicKey;
 
+use lightning::impl_writeable_tlv_based_enum;
+
 /// An event which an LSPS2 client should take some action in response to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS2ClientEvent {
@@ -161,3 +163,24 @@ pub enum LSPS2ServiceEvent {
 		intercept_scid: u64,
 	},
 }
+
+impl_writeable_tlv_based_enum!(LSPS2ServiceEvent,
+	(0, GetInfo) => {
+		(0, request_id, required),
+		(2, counterparty_node_id, required),
+		(4, token, option),
+	},
+	(2, BuyRequest) => {
+		(0, request_id, required),
+		(2, counterparty_node_id, required),
+		(4, opening_fee_params, required),
+		(6, payment_size_msat, option),
+	},
+	(4, OpenChannel) => {
+		(0, their_network_key, required),
+		(2, amt_to_forward_msat, required),
+		(4, opening_fee_msat, required),
+		(6, user_channel_id, required),
+		(8, intercept_scid, required),
+	}
+);
