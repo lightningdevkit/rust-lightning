@@ -1236,11 +1236,14 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		self.prev_holder_commitment = Some(replace(&mut self.holder_commitment, tx));
 	}
 
-	/// Replaces the current/prev holder commitment transactions spending the currently confirmed
-	/// funding outpoint with those spending the new funding outpoint.
+	/// Replaces all the data pertaining to the currently locked funding transaction after a new
+	/// funding transaction has been renegotiated and locked.
 	pub(crate) fn update_after_renegotiated_funding_locked(
-		&mut self, current: HolderCommitmentTransaction, prev: Option<HolderCommitmentTransaction>,
+		&mut self, channel_parameters: ChannelTransactionParameters,
+		current: HolderCommitmentTransaction, prev: Option<HolderCommitmentTransaction>,
 	) {
+		self.channel_value_satoshis = channel_parameters.channel_value_satoshis;
+		self.channel_transaction_parameters = channel_parameters;
 		self.holder_commitment = current;
 		self.prev_holder_commitment = prev;
 	}

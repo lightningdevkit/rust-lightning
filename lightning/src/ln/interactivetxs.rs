@@ -89,7 +89,7 @@ impl SerialIdExt for SerialId {
 	}
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum AbortReason {
 	InvalidStateTransition,
 	UnexpectedCounterpartyMessage,
@@ -559,6 +559,24 @@ impl InteractiveTxSigningSession {
 					.unwrap_or(true)
 			})
 			.count()
+	}
+
+	fn local_outputs_count(&self) -> usize {
+		self.unsigned_tx
+			.outputs
+			.iter()
+			.enumerate()
+			.filter(|(_, output)| {
+				!is_serial_id_valid_for_counterparty(
+					self.unsigned_tx.holder_is_initiator,
+					output.serial_id,
+				)
+			})
+			.count()
+	}
+
+	pub fn has_local_contribution(&self) -> bool {
+		self.local_inputs_count() > 0 || self.local_outputs_count() > 0
 	}
 
 	pub fn shared_input(&self) -> Option<&NegotiatedTxInput> {
@@ -1639,7 +1657,10 @@ impl InputOwned {
 	fn estimate_input_weight(&self) -> Weight {
 		match self {
 			InputOwned::Single(single) => estimate_input_weight(&single.prev_output),
-			InputOwned::Shared(shared) => estimate_input_weight(&shared.prev_output),
+			// TODO(taproot): Needs to consider different weights based on channel type
+			InputOwned::Shared(_) => Weight::from_wu(
+				BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
+			),
 		}
 	}
 
@@ -1852,23 +1873,6 @@ impl InteractiveTxMessageSend {
 	}
 }
 
-pub(super) struct InteractiveTxMessageSendResult(
-	pub Result<InteractiveTxMessageSend, msgs::TxAbort>,
-);
-
-impl InteractiveTxMessageSendResult {
-	pub fn into_msg_send_event(self, counterparty_node_id: PublicKey) -> MessageSendEvent {
-		match self.0 {
-			Ok(interactive_tx_msg_send) => {
-				interactive_tx_msg_send.into_msg_send_event(counterparty_node_id)
-			},
-			Err(tx_abort_msg) => {
-				MessageSendEvent::SendTxAbort { node_id: counterparty_node_id, msg: tx_abort_msg }
-			},
-		}
-	}
-}
-
 // This macro executes a state machine transition based on a provided action.
 macro_rules! do_state_transition {
 	($self: ident, $transition: ident, $msg: expr) => {{
@@ -1899,43 +1903,6 @@ pub(super) enum HandleTxCompleteValue {
 	SendTxMessage(InteractiveTxMessageSend),
 	SendTxComplete(InteractiveTxMessageSend, bool),
 	NegotiationComplete,
-}
-
-impl HandleTxCompleteValue {
-	pub fn into_msg_send_event(
-		self, counterparty_node_id: PublicKey,
-	) -> (Option<MessageSendEvent>, bool) {
-		match self {
-			HandleTxCompleteValue::SendTxMessage(msg) => {
-				(Some(msg.into_msg_send_event(counterparty_node_id)), false)
-			},
-			HandleTxCompleteValue::SendTxComplete(msg, negotiation_complete) => {
-				(Some(msg.into_msg_send_event(counterparty_node_id)), negotiation_complete)
-			},
-			HandleTxCompleteValue::NegotiationComplete => (None, true),
-		}
-	}
-}
-
-pub(super) struct HandleTxCompleteResult(pub Result<HandleTxCompleteValue, msgs::TxAbort>);
-
-impl HandleTxCompleteResult {
-	pub fn into_msg_send_event(
-		self, counterparty_node_id: PublicKey,
-	) -> (Option<MessageSendEvent>, bool) {
-		match self.0 {
-			Ok(interactive_tx_msg_send) => {
-				interactive_tx_msg_send.into_msg_send_event(counterparty_node_id)
-			},
-			Err(tx_abort_msg) => (
-				Some(MessageSendEvent::SendTxAbort {
-					node_id: counterparty_node_id,
-					msg: tx_abort_msg,
-				}),
-				false,
-			),
-		}
-	}
 }
 
 pub(super) struct InteractiveTxConstructorArgs<'a, ES: Deref>
@@ -2210,6 +2177,8 @@ pub(super) fn calculate_change_output_value(
 		weight = weight.saturating_add(TX_COMMON_FIELDS_WEIGHT);
 		if is_splice {
 			// TODO(taproot): Needs to consider different weights based on channel type
+			weight = weight.saturating_add(BASE_INPUT_WEIGHT);
+			weight = weight.saturating_add(EMPTY_SCRIPT_SIG_WEIGHT);
 			weight = weight.saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT);
 		}
 	}
@@ -3201,7 +3170,7 @@ mod tests {
 		// Provide and expect a shared input
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Provide and expect a shared input",
-			inputs_a: generate_inputs(&[TestOutput::P2WPKH(50_000)]),
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(100_000)]),
 			a_shared_input: Some(generate_shared_input(&prev_funding_tx_1, 0, 60_000)),
 			shared_output_a: generate_funding_txout(108_000, 108_000),
 			outputs_a: vec![],
