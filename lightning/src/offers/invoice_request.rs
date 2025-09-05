@@ -581,12 +581,19 @@ impl AsRef<TaggedHash> for UnsignedInvoiceRequest {
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 /// [`Offer`]: crate::offers::offer::Offer
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
 pub struct InvoiceRequest {
 	pub(super) bytes: Vec<u8>,
 	pub(super) contents: InvoiceRequestContents,
 	signature: Signature,
 }
+
+impl PartialEq for InvoiceRequest {
+	fn eq(&self, other: &Self) -> bool {
+		self.bytes.eq(&other.bytes)
+	}
+}
+
+impl Eq for InvoiceRequest {}
 
 /// An [`InvoiceRequest`] that has been verified by [`InvoiceRequest::verify_using_metadata`] or
 /// [`InvoiceRequest::verify_using_recipient_data`] and exposes different ways to respond depending
