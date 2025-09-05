@@ -9,7 +9,8 @@
 
 //! Some utilities to make working with the standard library's [`Future`]s easier
 
-use crate::prelude::*;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::future::Future;
 use core::marker::Unpin;
 use core::pin::Pin;

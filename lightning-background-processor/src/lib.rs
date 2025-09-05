@@ -68,7 +68,7 @@ use lightning::util::sweep::OutputSweeperSync;
 use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
 
-use lightning_liquidity::ALiquidityManager;
+use lightning_liquidity::{ALiquidityManager, ALiquidityManagerSync};
 
 use core::ops::Deref;
 use core::time::Duration;
@@ -1350,7 +1350,7 @@ impl BackgroundProcessor {
 		CM::Target: AChannelManager,
 		OM::Target: AOnionMessenger,
 		PM::Target: APeerManager,
-		LM::Target: ALiquidityManager,
+		LM::Target: ALiquidityManagerSync,
 		D::Target: ChangeDestinationSourceSync,
 		O::Target: 'static + OutputSpender,
 		K::Target: 'static + KVStoreSync,
@@ -1693,7 +1693,7 @@ mod tests {
 	use lightning::util::test_utils;
 	use lightning::{get_event, get_event_msg};
 	use lightning_liquidity::utils::time::DefaultTimeProvider;
-	use lightning_liquidity::LiquidityManager;
+	use lightning_liquidity::{ALiquidityManagerSync, LiquidityManagerSync};
 	use lightning_persister::fs_store::FilesystemStore;
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use std::collections::VecDeque;
@@ -1790,7 +1790,7 @@ mod tests {
 		IgnoringMessageHandler,
 	>;
 
-	type LM = LiquidityManager<
+	type LM = LiquidityManagerSync<
 		Arc<KeysManager>,
 		Arc<KeysManager>,
 		Arc<ChannelManager>,
@@ -2242,15 +2242,19 @@ mod tests {
 				Arc::clone(&logger),
 				Arc::clone(&keys_manager),
 			));
-			let liquidity_manager = Arc::new(LiquidityManager::new(
-				Arc::clone(&keys_manager),
-				Arc::clone(&keys_manager),
-				Arc::clone(&manager),
-				None,
-				None,
-				None,
-				None,
-			));
+			let liquidity_manager = Arc::new(
+				LiquidityManagerSync::new(
+					Arc::clone(&keys_manager),
+					Arc::clone(&keys_manager),
+					Arc::clone(&manager),
+					None,
+					None,
+					Arc::clone(&kv_store) as Arc<dyn KVStoreSync + Sync + Send>,
+					None,
+					None,
+				)
+				.unwrap(),
+			);
 			let node = Node {
 				node: manager,
 				p2p_gossip_sync,
@@ -2627,7 +2631,7 @@ mod tests {
 			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].rapid_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
+			Some(nodes[0].liquidity_manager.get_lm_async()),
 			Some(nodes[0].sweeper.sweeper_async()),
 			Arc::clone(&nodes[0].logger),
 			Some(Arc::clone(&nodes[0].scorer)),
@@ -3136,7 +3140,7 @@ mod tests {
 			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].rapid_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
+			Some(nodes[0].liquidity_manager.get_lm_async()),
 			Some(nodes[0].sweeper.sweeper_async()),
 			Arc::clone(&nodes[0].logger),
 			Some(Arc::clone(&nodes[0].scorer)),
@@ -3351,7 +3355,7 @@ mod tests {
 			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
+			Some(nodes[0].liquidity_manager.get_lm_async()),
 			Some(nodes[0].sweeper.sweeper_async()),
 			Arc::clone(&nodes[0].logger),
 			Some(Arc::clone(&nodes[0].scorer)),

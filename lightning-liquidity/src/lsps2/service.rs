@@ -9,11 +9,15 @@
 
 //! Contains the main bLIP-52 / LSPS2 server-side object, [`LSPS2ServiceHandler`].
 
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use lightning::util::persist::KVStore;
 
 use core::cmp::Ordering as CmpOrdering;
+use core::future::Future;
 use core::ops::Deref;
+use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::events::EventQueue;
@@ -28,6 +32,9 @@ use crate::lsps2::utils::{
 	compute_opening_fee, is_expired_opening_fee_params, is_valid_opening_fee_params,
 };
 use crate::message_queue::{MessageQueue, MessageQueueNotifierGuard};
+use crate::persist::{
+	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+};
 use crate::prelude::hash_map::Entry;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -38,6 +45,8 @@ use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::types::ChannelId;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
+use lightning::util::ser::Writeable;
+use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
 
 use lightning_types::payment::PaymentHash;
 
@@ -372,12 +381,42 @@ impl OutboundJITChannelState {
 	}
 }
 
+impl_writeable_tlv_based_enum!(OutboundJITChannelState,
+	(0, PendingInitialPayment) => {
+		(0, payment_queue, required),
+	},
+	(2, PendingChannelOpen) => {
+		(0, payment_queue, required),
+		(2, opening_fee_msat, required),
+	},
+	(4, PendingPaymentForward) => {
+		(0, payment_queue, required),
+		(2, opening_fee_msat, required),
+		(4, channel_id, required),
+	},
+	(6, PendingPayment) => {
+		(0, payment_queue, required),
+		(2, opening_fee_msat, required),
+		(4, channel_id, required),
+	},
+	(8, PaymentForwarded) => {
+		(0, channel_id, required),
+	},
+);
+
 struct OutboundJITChannel {
 	state: OutboundJITChannelState,
 	user_channel_id: u128,
 	opening_fee_params: LSPS2OpeningFeeParams,
 	payment_size_msat: Option<u64>,
 }
+
+impl_writeable_tlv_based!(OutboundJITChannel, {
+	(0, state, required),
+	(2, user_channel_id, required),
+	(4, opening_fee_params, required),
+	(6, payment_size_msat, option),
+});
 
 impl OutboundJITChannel {
 	fn new(
@@ -429,7 +468,7 @@ impl OutboundJITChannel {
 	}
 }
 
-struct PeerState {
+pub(crate) struct PeerState {
 	outbound_channels_by_intercept_scid: HashMap<u64, OutboundJITChannel>,
 	intercept_scid_by_user_channel_id: HashMap<u128, u64>,
 	intercept_scid_by_channel_id: HashMap<ChannelId, u64>,
@@ -492,6 +531,13 @@ impl PeerState {
 	}
 }
 
+impl_writeable_tlv_based!(PeerState, {
+	(0, outbound_channels_by_intercept_scid, required),
+	(2, intercept_scid_by_user_channel_id, required),
+	(4, intercept_scid_by_channel_id, required),
+	(_unused, pending_requests, (static_value, new_hash_map())),
+});
+
 macro_rules! get_or_insert_peer_state_entry {
 	($self: ident, $outer_state_lock: expr, $message_queue_notifier: expr, $counterparty_node_id: expr) => {{
 		// Return an internal error and abort if we hit the maximum allowed number of total peers.
@@ -531,6 +577,7 @@ where
 	CM::Target: AChannelManager,
 {
 	channel_manager: CM,
+	kv_store: Arc<dyn KVStore + Send + Sync>,
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
@@ -546,17 +593,38 @@ where
 {
 	/// Constructs a `LSPS2ServiceHandler`.
 	pub(crate) fn new(
-		pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>, channel_manager: CM,
-		config: LSPS2ServiceConfig,
+		peer_states: Vec<(PublicKey, PeerState)>, pending_messages: Arc<MessageQueue>,
+		pending_events: Arc<EventQueue>, channel_manager: CM,
+		kv_store: Arc<dyn KVStore + Send + Sync>, config: LSPS2ServiceConfig,
 	) -> Self {
+		let mut peer_by_intercept_scid = new_hash_map();
+		let mut peer_by_channel_id = new_hash_map();
+		for (node_id, peer_state) in peer_states.iter() {
+			for (intercept_scid, _) in peer_state.outbound_channels_by_intercept_scid.iter() {
+				let res = peer_by_intercept_scid.insert(*intercept_scid, *node_id);
+				debug_assert!(res.is_none(), "Intercept SCIDs should never collide");
+			}
+
+			for (channel_id, _) in peer_state.intercept_scid_by_channel_id.iter() {
+				let res = peer_by_channel_id.insert(*channel_id, *node_id);
+				debug_assert!(res.is_none(), "Channel IDs should never collide");
+			}
+		}
+
+		let per_peer_state = peer_states
+			.into_iter()
+			.map(|(k, v)| (k, Mutex::new(v)))
+			.collect::<HashMap<PublicKey, Mutex<PeerState>>>();
+
 		Self {
 			pending_messages,
 			pending_events,
-			per_peer_state: RwLock::new(new_hash_map()),
-			peer_by_intercept_scid: RwLock::new(new_hash_map()),
-			peer_by_channel_id: RwLock::new(new_hash_map()),
+			per_peer_state: RwLock::new(per_peer_state),
+			peer_by_intercept_scid: RwLock::new(peer_by_intercept_scid),
+			peer_by_channel_id: RwLock::new(peer_by_channel_id),
 			total_pending_requests: AtomicUsize::new(0),
 			channel_manager,
+			kv_store,
 			config,
 		}
 	}
@@ -1402,6 +1470,45 @@ where
 			self.total_pending_requests.load(Ordering::Relaxed),
 			"total_pending_requests counter out-of-sync! This should never happen!"
 		);
+	}
+
+	fn persist_peer_state(
+		&self, counterparty_node_id: PublicKey, peer_state: &PeerState,
+	) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + Send>> {
+		let key = counterparty_node_id.to_string();
+		let encoded = peer_state.encode();
+		self.kv_store.write(
+			LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key,
+			encoded,
+		)
+	}
+
+	pub(crate) fn persist(
+		&self,
+	) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + Send>> {
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		let mut futures = Vec::new();
+		for (counterparty_node_id, inner_state_lock) in outer_state_lock.iter() {
+			let peer_state_lock = inner_state_lock.lock().unwrap();
+			let fut = self.persist_peer_state(*counterparty_node_id, &*peer_state_lock);
+			futures.push(fut);
+		}
+
+		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
+		// introduce some batching to upper-bound the number of requests inflight at any given
+		// time.
+		Box::pin(async move {
+			let mut ret = Ok(());
+			for fut in futures {
+				let res = fut.await;
+				if res.is_err() {
+					ret = res;
+				}
+			}
+			ret
+		})
 	}
 
 	pub(crate) fn peer_disconnected(&self, counterparty_node_id: PublicKey) {

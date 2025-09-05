@@ -113,9 +113,12 @@ where
 
 #[cfg(test)]
 mod tests {
-
+	use alloc::collections::VecDeque;
 	use alloc::string::ToString;
 	use alloc::sync::Arc;
+
+	use lightning::util::persist::KVStoreSyncWrapper;
+	use lightning::util::test_utils::TestStore;
 
 	use crate::lsps0::ser::{LSPSMessage, LSPSRequestId};
 	use crate::tests::utils::{self, TestEntropy};
@@ -126,7 +129,8 @@ mod tests {
 	fn test_list_protocols() {
 		let pending_messages = Arc::new(MessageQueue::new());
 		let entropy_source = Arc::new(TestEntropy {});
-		let event_queue = Arc::new(EventQueue::new());
+		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
+		let event_queue = Arc::new(EventQueue::new(VecDeque::new(), kv_store));
 
 		let lsps0_handler = Arc::new(LSPS0ClientHandler::new(
 			entropy_source,

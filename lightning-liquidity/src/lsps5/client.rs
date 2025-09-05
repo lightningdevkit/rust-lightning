@@ -444,6 +444,8 @@ mod tests {
 	use crate::{lsps0::ser::LSPSRequestId, lsps5::msgs::SetWebhookResponse};
 	use bitcoin::{key::Secp256k1, secp256k1::SecretKey};
 	use core::sync::atomic::{AtomicU64, Ordering};
+	use lightning::util::persist::KVStoreSyncWrapper;
+	use lightning::util::test_utils::TestStore;
 
 	struct UniqueTestEntropy {
 		counter: AtomicU64,
@@ -467,7 +469,9 @@ mod tests {
 	) {
 		let test_entropy_source = Arc::new(UniqueTestEntropy { counter: AtomicU64::new(2) });
 		let message_queue = Arc::new(MessageQueue::new());
-		let event_queue = Arc::new(EventQueue::new());
+
+		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
+		let event_queue = Arc::new(EventQueue::new(VecDeque::new(), kv_store));
 		let client = LSPS5ClientHandler::new(
 			test_entropy_source,
 			Arc::clone(&message_queue),
