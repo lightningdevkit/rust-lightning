@@ -904,6 +904,9 @@ impl Readable for RecurrencePaywindow {
 /// - If `recurrence_base` is set, counting starts from that basetime.
 /// - If it is not set, counting starts from the time the first invoice is created.
 ///
+/// This value is a count, not a zero-based index. For example, `RecurrenceLimit(5)` permits
+/// period indices `0..=4` and rejects period index `5`.
+///
 /// After this limit is reached, further payments MUST NOT be accepted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecurrenceLimit(pub u32);
