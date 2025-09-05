@@ -25,6 +25,12 @@ use crate::lsps1;
 use crate::lsps2;
 use crate::lsps5;
 
+use lightning::io;
+use lightning::ln::msgs::DecodeError;
+use lightning::util::ser::{
+	BigSize, FixedLengthReader, MaybeReadable, Readable, Writeable, Writer,
+};
+
 /// An event which you should probably take some action in response to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiquidityEvent {
@@ -85,5 +91,55 @@ impl From<lsps5::event::LSPS5ClientEvent> for LiquidityEvent {
 impl From<lsps5::event::LSPS5ServiceEvent> for LiquidityEvent {
 	fn from(event: lsps5::event::LSPS5ServiceEvent) -> Self {
 		Self::LSPS5Service(event)
+	}
+}
+
+impl Writeable for LiquidityEvent {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		match self {
+			Self::LSPS0Client(_) => {},
+			Self::LSPS1Client(_) => {},
+			#[cfg(lsps1_service)]
+			Self::LSPS1Service(_) => {},
+			Self::LSPS2Client(_) => {},
+			Self::LSPS2Service(event) => {
+				0u8.write(writer)?;
+				event.write(writer)?;
+			},
+			Self::LSPS5Client(_) => {},
+			Self::LSPS5Service(event) => {
+				2u8.write(writer)?;
+				event.write(writer)?;
+			},
+		}
+		Ok(())
+	}
+}
+
+impl MaybeReadable for LiquidityEvent {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+		match Readable::read(reader)? {
+			0u8 => {
+				let event = Readable::read(reader)?;
+				Ok(Some(LiquidityEvent::LSPS2Service(event)))
+			},
+			2u8 => {
+				let event = Readable::read(reader)?;
+				Ok(Some(LiquidityEvent::LSPS5Service(event)))
+			},
+			x if x % 2 == 1 => {
+				// If the event is of unknown type, assume it was written with `write_tlv_fields`,
+				// which prefixes the whole thing with a length BigSize. Because the event is
+				// odd-type unknown, we should treat it as `Ok(None)` even if it has some TLV
+				// fields that are even. Thus, we avoid using `read_tlv_fields` and simply read
+				// exactly the number of bytes specified, ignoring them entirely.
+				let tlv_len: BigSize = Readable::read(reader)?;
+				FixedLengthReader::new(reader, tlv_len.0)
+					.eat_remaining()
+					.map_err(|_| DecodeError::ShortRead)?;
+				Ok(None)
+			},
+			_ => Err(DecodeError::InvalidValue),
+		}
 	}
 }
