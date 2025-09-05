@@ -1,10 +1,7 @@
 //! Functional tests testing channel feerate handling.
 
 use crate::events::{ClosureReason, Event};
-use crate::ln::chan_utils::{
-	self, commitment_tx_base_weight, CommitmentTransaction, HTLCOutputInCommitment,
-	COMMITMENT_TX_WEIGHT_PER_HTLC,
-};
+use crate::ln::chan_utils::{self, commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use crate::ln::channel::{
 	get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI,
 	CONCURRENT_INBOUND_HTLC_FEE_BUFFER, MIN_AFFORDABLE_HTLC_COUNT,
@@ -15,14 +12,11 @@ use crate::ln::msgs::{
 	self, BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent,
 };
 use crate::ln::outbound_payment::RecipientOnionFields;
-use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
 
 use lightning_macros::xtest;
-
-use bitcoin::secp256k1::Secp256k1;
 
 #[xtest(feature = "_externalize_tests")]
 pub fn test_async_inbound_update_fee() {
@@ -412,7 +406,6 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 		push_sats * 1000,
 	);
 	let channel_id = chan.2;
-	let secp_ctx = Secp256k1::new();
 	let bs_channel_reserve_sats =
 		get_holder_selected_channel_reserve_satoshis(channel_value, &default_config);
 	let (anchor_outputs_value_sats, outputs_num_no_htlcs) =
@@ -468,64 +461,11 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	nodes[0].logger.assert_log("lightning::ln::channel", err, 1);
 	check_added_monitors(&nodes[0], 0);
 
-	const INITIAL_COMMITMENT_NUMBER: u64 = 281474976710654;
-
-	let remote_point = {
-		let mut per_peer_lock;
-		let mut peer_state_lock;
-
-		let channel = get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan.2);
-		let chan_signer = channel.as_funded().unwrap().get_signer();
-		let point_number = INITIAL_COMMITMENT_NUMBER - 1;
-		chan_signer.as_ref().get_per_commitment_point(point_number, &secp_ctx).unwrap()
-	};
-
-	let res = {
-		let mut per_peer_lock;
-		let mut peer_state_lock;
-
-		let local_chan =
-			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan.2);
-		let local_chan_signer = local_chan.as_funded().unwrap().get_signer();
-
-		let nondust_htlcs: Vec<HTLCOutputInCommitment> = vec![];
-		let commitment_tx = CommitmentTransaction::new(
-			INITIAL_COMMITMENT_NUMBER - 1,
-			&remote_point,
-			push_sats,
-			channel_value
-				- push_sats - anchor_outputs_value_sats
-				- commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features) / 1000,
-			non_buffer_feerate + 4,
-			nondust_htlcs,
-			&local_chan.funding().channel_transaction_parameters.as_counterparty_broadcastable(),
-			&secp_ctx,
-		);
-		let params = &local_chan.funding().channel_transaction_parameters;
-		local_chan_signer
-			.as_ecdsa()
-			.unwrap()
-			.sign_counterparty_commitment(params, &commitment_tx, Vec::new(), Vec::new(), &secp_ctx)
-			.unwrap()
-	};
-
-	let commit_signed_msg = msgs::CommitmentSigned {
-		channel_id: chan.2,
-		signature: res.0,
-		htlc_signatures: res.1,
-		funding_txid: None,
-		#[cfg(taproot)]
-		partial_signature_with_nonce: None,
-	};
-
 	let update_fee = msgs::UpdateFee { channel_id: chan.2, feerate_per_kw: non_buffer_feerate + 4 };
 
+	// Check to see if the funder, who sent the update_fee request, can afford the new fee (funder_balance >= fee+channel_reserve)
+	// Should produce and error.
 	nodes[1].node.handle_update_fee(node_a_id, &update_fee);
-
-	//While producing the commitment_signed response after handling a received update_fee request the
-	//check to see if the funder, who sent the update_fee request, can afford the new fee (funder_balance >= fee+channel_reserve)
-	//Should produce and error.
-	nodes[1].node.handle_commitment_signed(node_a_id, &commit_signed_msg);
 	let err = "Funding remote cannot afford proposed new fee";
 	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", err, 3);
 	check_added_monitors(&nodes[1], 1);
@@ -549,7 +489,6 @@ pub fn test_update_fee_that_saturates_subs() {
 	// and force close the channel.
 
 	let mut default_config = test_default_channel_config();
-	let secp_ctx = Secp256k1::new();
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -568,62 +507,10 @@ pub fn test_update_fee_that_saturates_subs() {
 	let total_fee_sat = chan_utils::commit_tx_fee_sat(FEERATE, 0, &ChannelTypeFeatures::empty());
 	assert!(total_fee_sat > 1500);
 
-	const INITIAL_COMMITMENT_NUMBER: u64 = 281474976710654;
-
-	// We build a commitment transcation here only to pass node 1's check of node 0's signature
-	// in `commitment_signed`.
-
-	let remote_point = {
-		let mut per_peer_lock;
-		let mut peer_state_lock;
-
-		let channel = get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan_id);
-		let chan_signer = channel.as_funded().unwrap().get_signer();
-		chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, &secp_ctx).unwrap()
-	};
-
-	let res = {
-		let mut per_peer_lock;
-		let mut peer_state_lock;
-
-		let local_chan =
-			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_id);
-		let local_chan_signer = local_chan.as_funded().unwrap().get_signer();
-		let nondust_htlcs: Vec<HTLCOutputInCommitment> = vec![];
-		let commitment_tx = CommitmentTransaction::new(
-			INITIAL_COMMITMENT_NUMBER,
-			&remote_point,
-			8500,
-			// Set a zero balance here: this is the transaction that node 1 will expect a signature for, as
-			// he will do a saturating subtraction of the total fees from node 0's balance.
-			0,
-			FEERATE,
-			nondust_htlcs,
-			&local_chan.funding().channel_transaction_parameters.as_counterparty_broadcastable(),
-			&secp_ctx,
-		);
-		let params = &local_chan.funding().channel_transaction_parameters;
-		local_chan_signer
-			.as_ecdsa()
-			.unwrap()
-			.sign_counterparty_commitment(params, &commitment_tx, Vec::new(), Vec::new(), &secp_ctx)
-			.unwrap()
-	};
-
-	let commit_signed_msg = msgs::CommitmentSigned {
-		channel_id: chan_id,
-		signature: res.0,
-		htlc_signatures: res.1,
-		funding_txid: None,
-		#[cfg(taproot)]
-		partial_signature_with_nonce: None,
-	};
-
 	let update_fee = msgs::UpdateFee { channel_id: chan_id, feerate_per_kw: FEERATE };
 
 	nodes[1].node.handle_update_fee(node_a_id, &update_fee);
 
-	nodes[1].node.handle_commitment_signed(node_a_id, &commit_signed_msg);
 	let err = "Funding remote cannot afford proposed new fee";
 	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", err, 3);
 	check_added_monitors(&nodes[1], 1);
