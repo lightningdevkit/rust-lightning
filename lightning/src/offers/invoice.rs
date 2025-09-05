@@ -422,6 +422,7 @@ macro_rules! invoice_builder_methods {
 				fallbacks: None,
 				features: Bolt12InvoiceFeatures::empty(),
 				signing_pubkey,
+				invoice_recurrence_basetime: None,
 				#[cfg(test)]
 				experimental_baz: None,
 			}
@@ -437,6 +438,29 @@ macro_rules! invoice_builder_methods {
 			}
 
 			Ok(Self { invreq_bytes, invoice: contents, signing_pubkey_strategy })
+		}
+
+		/// Sets the `invoice_recurrence_basetime` inside the invoice contents.
+		///
+		/// This anchors the recurrence schedule for invoices produced in a
+		/// recurring-offer flow. Must be identical across all invoices in the
+		/// same recurrence session.
+		#[allow(dead_code)]
+		pub(crate) fn set_invoice_recurrence_basetime(
+			&mut $self,
+			basetime: u64
+		) {
+			match &mut $self.invoice {
+				InvoiceContents::ForOffer { fields, .. } => {
+					fields.invoice_recurrence_basetime = Some(basetime);
+				},
+				InvoiceContents::ForRefund { .. } => {
+					debug_assert!(
+						false,
+						"set_invoice_recurrence_basetime called on refund invoice"
+					);
+				}
+			}
 		}
 	};
 }
@@ -773,6 +797,36 @@ struct InvoiceFields {
 	fallbacks: Option<Vec<FallbackAddress>>,
 	features: Bolt12InvoiceFeatures,
 	signing_pubkey: PublicKey,
+	/// The recurrence anchor time (UNIX timestamp) for this invoice.
+	///
+	/// Semantics:
+	/// - If the offer specifies an explicit `recurrence_base`, this MUST equal it.
+	/// - If the offer does not specify a base, this MUST be the creation time
+	///   of the *first* invoice in the recurrence sequence.
+	///
+	/// Requirements:
+	/// - The payee must remember the basetime from the first invoice and reuse it
+	///   for all subsequent invoices in the recurrence.
+	/// - The payer must verify that the basetime in each invoice matches the
+	///   basetime of previously paid periods, ensuring a stable schedule.
+	///
+	/// Practical effect:
+	/// This timestamp anchors the recurrence period calculation for the entire
+	/// recurring-payment flow.
+	///
+	/// Spec Commentary:
+	/// The spec currently requires this field even when the offer already includes
+	/// its own `recurrence_base`. Since invoices are always prsent alongside their
+	/// offer, the basetime is already known. Duplicating it across offer → invoice
+	/// adds redundant equivalence checks without providing new information.
+	///
+	/// Possible simplification:
+	/// - Include `invoice_recurrence_basetime` **only when** the offer did *not* define one.
+	/// - Omit it otherwise and treat the offer as the single source of truth.
+	///
+	/// This avoids redundant duplication and simplifies validation while preserving
+	/// all necessary semantics.
+	invoice_recurrence_basetime: Option<u64>,
 	#[cfg(test)]
 	experimental_baz: Option<u64>,
 }
@@ -1402,6 +1456,7 @@ impl InvoiceFields {
 				features,
 				node_id: Some(&self.signing_pubkey),
 				message_paths: None,
+				invoice_recurrence_basetime: self.invoice_recurrence_basetime,
 			},
 			ExperimentalInvoiceTlvStreamRef {
 				#[cfg(test)]
@@ -1483,6 +1538,7 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef<'a>, INVOICE_TYPES, {
 	(172, fallbacks: (Vec<FallbackAddress>, WithoutLength)),
 	(174, features: (Bolt12InvoiceFeatures, WithoutLength)),
 	(176, node_id: PublicKey),
+	(177, invoice_recurrence_basetime: (u64, HighZeroBytesDroppedBigSize)),
 	// Only present in `StaticInvoice`s.
 	(236, message_paths: (Vec<BlindedMessagePath>, WithoutLength)),
 });
@@ -1674,6 +1730,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 				features,
 				node_id,
 				message_paths,
+				invoice_recurrence_basetime,
 			},
 			experimental_offer_tlv_stream,
 			experimental_invoice_request_tlv_stream,
@@ -1713,6 +1770,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			fallbacks,
 			features,
 			signing_pubkey,
+			invoice_recurrence_basetime,
 			#[cfg(test)]
 			experimental_baz,
 		};
@@ -1720,6 +1778,11 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		check_invoice_signing_pubkey(&fields.signing_pubkey, &offer_tlv_stream)?;
 
 		if offer_tlv_stream.issuer_id.is_none() && offer_tlv_stream.paths.is_none() {
+			// Recurrence should not be present in Refund.
+			if fields.invoice_recurrence_basetime.is_some() {
+				return Err(Bolt12SemanticError::InvalidAmount);
+			}
+
 			let refund = RefundContents::try_from((
 				payer_tlv_stream,
 				offer_tlv_stream,
@@ -1741,6 +1804,61 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 				experimental_offer_tlv_stream,
 				experimental_invoice_request_tlv_stream,
 			))?;
+
+			// Recurrence checks
+			if let Some(offer_recurrence) = invoice_request.inner.offer.recurrence_fields() {
+				// 1. MUST have basetime whenever offer has recurrence (optional or compulsory).
+				let invoice_basetime = match fields.invoice_recurrence_basetime {
+					Some(ts) => ts,
+					None => {
+						return Err(Bolt12SemanticError::InvalidMetadata);
+					},
+				};
+
+				let offer_base = offer_recurrence.recurrence_base;
+				let counter = invoice_request.recurrence_counter();
+
+				match counter {
+					// ----------------------------------------------------------------------
+					// Case A: No counter (payer does NOT support recurrence)
+					// Treat as single-payment invoice.
+					// Basetime MUST still match presence rules (spec), but nothing else here.
+					// ----------------------------------------------------------------------
+					None => {
+						// Nothing else to validate.
+						// This invoice is not part of a recurrence sequence.
+					},
+					// ------------------------------------------------------------------
+					// Case B: First recurrence invoice (counter = 0)
+					// ------------------------------------------------------------------
+					Some(0) => {
+						match offer_base {
+							// Offer defines explicit basetime → MUST match exactly
+							Some(base) => {
+								if invoice_basetime != base.basetime {
+									return Err(Bolt12SemanticError::InvalidMetadata);
+								}
+							},
+
+							// Offer has no basetime → MUST match invoice.created_at
+							None => {
+								if invoice_basetime != fields.created_at.as_secs() {
+									return Err(Bolt12SemanticError::InvalidMetadata);
+								}
+							},
+						}
+					},
+					// ------------------------------------------------------------------
+					// Case C: Successive recurrence invoices (counter > 0)
+					// ------------------------------------------------------------------
+					Some(_counter_gt_0) => {
+						// Spec says SHOULD check equality with previous invoice basetime.
+						// We cannot enforce that here. MUST be done upstream.
+						//
+						// TODO: Enforce SHOULD: invoice_basetime == previous_invoice_basetime
+					},
+				}
+			}
 
 			if let Some(requested_amount_msats) = invoice_request.amount_msats() {
 				if amount_msats != requested_amount_msats {
@@ -2019,6 +2137,7 @@ mod tests {
 					features: None,
 					node_id: Some(&recipient_pubkey()),
 					message_paths: None,
+					invoice_recurrence_basetime: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
@@ -2130,6 +2249,7 @@ mod tests {
 					features: None,
 					node_id: Some(&recipient_pubkey()),
 					message_paths: None,
+					invoice_recurrence_basetime: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
