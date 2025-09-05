@@ -120,8 +120,7 @@ mod reorg_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod shutdown_tests;
-#[cfg(all(test, splicing))]
-#[allow(unused_mut)]
+#[cfg(test)]
 mod splicing_tests;
 #[cfg(any(test, feature = "_externalize_tests"))]
 #[allow(unused_mut)]
