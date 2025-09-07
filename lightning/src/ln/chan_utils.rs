@@ -810,18 +810,30 @@ pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u
 ///
 /// Panics if htlc.transaction_output_index.is_none() (as such HTLCs do not appear in the
 /// commitment transaction).
-#[rustfmt::skip]
-pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey) -> Transaction {
-	let txins= vec![build_htlc_input(commitment_txid, htlc, channel_type_features)];
+pub fn build_htlc_transaction(
+	commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment,
+	channel_type_features: &ChannelTypeFeatures,
+	broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey,
+) -> Transaction {
+	let txins = vec![build_htlc_input(commitment_txid, htlc, channel_type_features)];
 
-	let mut txouts: Vec<TxOut> = Vec::new();
-	txouts.push(build_htlc_output(
-		feerate_per_kw, contest_delay, htlc, channel_type_features,
-		broadcaster_delayed_payment_key, revocation_key
-	));
+	let txouts: Vec<TxOut> = vec![build_htlc_output(
+		feerate_per_kw,
+		contest_delay,
+		htlc,
+		channel_type_features,
+		broadcaster_delayed_payment_key,
+		revocation_key,
+	)];
+
+	let version = if channel_type_features.supports_anchor_zero_fee_commitments() {
+		Version::non_standard(3)
+	} else {
+		Version::TWO
+	};
 
 	Transaction {
-		version: Version::TWO,
+		version,
 		lock_time: LockTime::from_consensus(if htlc.offered { htlc.cltv_expiry } else { 0 }),
 		input: txins,
 		output: txouts,
