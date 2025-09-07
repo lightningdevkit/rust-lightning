@@ -796,6 +796,7 @@ where
 		const LEGACY_CLOSED_CHANNEL_UPDATE_ID: u64 = u64::MAX;
 		if let Some(update) = update {
 			let persist_update = update.update_id != LEGACY_CLOSED_CHANNEL_UPDATE_ID
+				&& self.maximum_pending_updates != 0
 				&& update.update_id % self.maximum_pending_updates != 0;
 			if persist_update {
 				let monitor_key = monitor_name.to_string();
@@ -1188,12 +1189,9 @@ mod tests {
 	}
 
 	// Exercise the `MonitorUpdatingPersister` with real channels and payments.
-	#[test]
-	fn persister_with_real_monitors() {
-		// This value is used later to limit how many iterations we perform.
-		let persister_0_max_pending_updates = 7;
-		// Intentionally set this to a smaller value to test a different alignment.
-		let persister_1_max_pending_updates = 3;
+	fn do_persister_with_real_monitors(persisters_max_pending_updates: (u64, u64)) {
+		let persister_0_max_pending_updates = persisters_max_pending_updates.0;
+		let persister_1_max_pending_updates = persisters_max_pending_updates.1;
 		let chanmon_cfgs = create_chanmon_cfgs(4);
 		let persister_0 = MonitorUpdatingPersister {
 			kv_store: &TestStore::new(false),
@@ -1256,6 +1254,11 @@ mod tests {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
 
 					let monitor_name = mon.persistence_key();
+					let expected_updates = if persister_0_max_pending_updates == 0 {
+						0
+					} else {
+						mon.get_latest_update_id() % persister_0_max_pending_updates
+					};
 					assert_eq!(
 						persister_0
 							.kv_store
@@ -1265,7 +1268,7 @@ mod tests {
 							)
 							.unwrap()
 							.len() as u64,
-						mon.get_latest_update_id() % persister_0_max_pending_updates,
+						expected_updates,
 						"Wrong number of updates stored in persister 0",
 					);
 				}
@@ -1275,6 +1278,11 @@ mod tests {
 				for (_, mon) in persisted_chan_data_1.iter() {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
 					let monitor_name = mon.persistence_key();
+					let expected_updates = if persister_1_max_pending_updates == 0 {
+						0
+					} else {
+						mon.get_latest_update_id() % persister_1_max_pending_updates
+					};
 					assert_eq!(
 						persister_1
 							.kv_store
@@ -1284,7 +1292,7 @@ mod tests {
 							)
 							.unwrap()
 							.len() as u64,
-						mon.get_latest_update_id() % persister_1_max_pending_updates,
+						expected_updates,
 						"Wrong number of updates stored in persister 1",
 					);
 				}
@@ -1348,8 +1356,16 @@ mod tests {
 
 		// Make sure everything is persisted as expected after close.
 		check_persisted_data!(
-			persister_0_max_pending_updates * 2 * EXPECTED_UPDATES_PER_PAYMENT + 1
+			cmp::max(2, persister_0_max_pending_updates * 2) * EXPECTED_UPDATES_PER_PAYMENT + 1
 		);
+	}
+
+	#[test]
+	fn persister_with_real_monitors() {
+		// Test various alignments
+		do_persister_with_real_monitors((7, 3));
+		do_persister_with_real_monitors((0, 1));
+		do_persister_with_real_monitors((4, 2));
 	}
 
 	// Test that if the `MonitorUpdatingPersister`'s can't actually write, trying to persist a
