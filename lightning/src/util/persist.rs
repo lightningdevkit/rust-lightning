@@ -1112,7 +1112,7 @@ mod tests {
 	use crate::ln::msgs::BaseMessageHandler;
 	use crate::sync::Arc;
 	use crate::util::test_channel_signer::TestChannelSigner;
-	use crate::util::test_utils::{self, TestLogger, TestStore};
+	use crate::util::test_utils::{self, TestStore};
 	use crate::{check_added_monitors, check_closed_broadcast};
 	use bitcoin::hashes::hex::FromHex;
 
@@ -1193,24 +1193,26 @@ mod tests {
 		let persister_0_max_pending_updates = persisters_max_pending_updates.0;
 		let persister_1_max_pending_updates = persisters_max_pending_updates.1;
 		let chanmon_cfgs = create_chanmon_cfgs(4);
-		let persister_0 = MonitorUpdatingPersister {
-			kv_store: &TestStore::new(false),
-			logger: &TestLogger::new(),
-			maximum_pending_updates: persister_0_max_pending_updates,
-			entropy_source: &chanmon_cfgs[0].keys_manager,
-			signer_provider: &chanmon_cfgs[0].keys_manager,
-			broadcaster: &chanmon_cfgs[0].tx_broadcaster,
-			fee_estimator: &chanmon_cfgs[0].fee_estimator,
-		};
-		let persister_1 = MonitorUpdatingPersister {
-			kv_store: &TestStore::new(false),
-			logger: &TestLogger::new(),
-			maximum_pending_updates: persister_1_max_pending_updates,
-			entropy_source: &chanmon_cfgs[1].keys_manager,
-			signer_provider: &chanmon_cfgs[1].keys_manager,
-			broadcaster: &chanmon_cfgs[1].tx_broadcaster,
-			fee_estimator: &chanmon_cfgs[1].fee_estimator,
-		};
+		let kv_store_0 = TestStore::new(false);
+		let persister_0 = MonitorUpdatingPersister::new(
+			&kv_store_0,
+			&chanmon_cfgs[0].logger,
+			persister_0_max_pending_updates,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let kv_store_1 = TestStore::new(false);
+		let persister_1 = MonitorUpdatingPersister::new(
+			&kv_store_1,
+			&chanmon_cfgs[1].logger,
+			persister_1_max_pending_updates,
+			&chanmon_cfgs[1].keys_manager,
+			&chanmon_cfgs[1].keys_manager,
+			&chanmon_cfgs[1].tx_broadcaster,
+			&chanmon_cfgs[1].fee_estimator,
+		);
 		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let chain_mon_0 = test_utils::TestChainMonitor::new(
 			Some(&chanmon_cfgs[0].chain_source),
@@ -1260,8 +1262,7 @@ mod tests {
 						mon.get_latest_update_id() % persister_0_max_pending_updates
 					};
 					assert_eq!(
-						persister_0
-							.kv_store
+						kv_store_0
 							.list(
 								CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 								&monitor_name.to_string()
@@ -1284,8 +1285,7 @@ mod tests {
 						mon.get_latest_update_id() % persister_1_max_pending_updates
 					};
 					assert_eq!(
-						persister_1
-							.kv_store
+						kv_store_1
 							.list(
 								CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 								&monitor_name.to_string()
@@ -1395,15 +1395,16 @@ mod tests {
 			let cmu_map = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
 			let cmu = &cmu_map.get(&added_monitors[0].1.channel_id()).unwrap()[0];
 
-			let ro_persister = MonitorUpdatingPersister {
-				kv_store: &TestStore::new(true),
-				logger: &TestLogger::new(),
-				maximum_pending_updates: 11,
-				entropy_source: node_cfgs[0].keys_manager,
-				signer_provider: node_cfgs[0].keys_manager,
-				broadcaster: node_cfgs[0].tx_broadcaster,
-				fee_estimator: node_cfgs[0].fee_estimator,
-			};
+			let store = TestStore::new(true);
+			let ro_persister = MonitorUpdatingPersister::new(
+				&store,
+				node_cfgs[0].logger,
+				11,
+				node_cfgs[0].keys_manager,
+				node_cfgs[0].keys_manager,
+				node_cfgs[0].tx_broadcaster,
+				node_cfgs[0].fee_estimator,
+			);
 			let monitor_name = added_monitors[0].1.persistence_key();
 			match ro_persister.persist_new_channel(monitor_name, &added_monitors[0].1) {
 				ChannelMonitorUpdateStatus::UnrecoverableError => {
@@ -1441,24 +1442,26 @@ mod tests {
 	fn clean_stale_updates_works() {
 		let test_max_pending_updates = 7;
 		let chanmon_cfgs = create_chanmon_cfgs(3);
-		let persister_0 = MonitorUpdatingPersister {
-			kv_store: &TestStore::new(false),
-			logger: &TestLogger::new(),
-			maximum_pending_updates: test_max_pending_updates,
-			entropy_source: &chanmon_cfgs[0].keys_manager,
-			signer_provider: &chanmon_cfgs[0].keys_manager,
-			broadcaster: &chanmon_cfgs[0].tx_broadcaster,
-			fee_estimator: &chanmon_cfgs[0].fee_estimator,
-		};
-		let persister_1 = MonitorUpdatingPersister {
-			kv_store: &TestStore::new(false),
-			logger: &TestLogger::new(),
-			maximum_pending_updates: test_max_pending_updates,
-			entropy_source: &chanmon_cfgs[1].keys_manager,
-			signer_provider: &chanmon_cfgs[1].keys_manager,
-			broadcaster: &chanmon_cfgs[1].tx_broadcaster,
-			fee_estimator: &chanmon_cfgs[1].fee_estimator,
-		};
+		let kv_store_0 = TestStore::new(false);
+		let persister_0 = MonitorUpdatingPersister::new(
+			&kv_store_0,
+			&chanmon_cfgs[0].logger,
+			test_max_pending_updates,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let kv_store_1 = TestStore::new(false);
+		let persister_1 = MonitorUpdatingPersister::new(
+			&kv_store_1,
+			&chanmon_cfgs[1].logger,
+			test_max_pending_updates,
+			&chanmon_cfgs[1].keys_manager,
+			&chanmon_cfgs[1].keys_manager,
+			&chanmon_cfgs[1].tx_broadcaster,
+			&chanmon_cfgs[1].fee_estimator,
+		);
 		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let chain_mon_0 = test_utils::TestChainMonitor::new(
 			Some(&chanmon_cfgs[0].chain_source),
@@ -1497,22 +1500,20 @@ mod tests {
 		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates().unwrap();
 		let (_, monitor) = &persisted_chan_data[0];
 		let monitor_name = monitor.persistence_key();
-		persister_0
-			.kv_store
-			.write(
-				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-				&monitor_name.to_string(),
-				UpdateName::from(1).as_str(),
-				vec![0u8; 1],
-			)
-			.unwrap();
+		KVStoreSync::write(
+			&kv_store_0,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_name.to_string(),
+			UpdateName::from(1).as_str(),
+			vec![0u8; 1],
+		)
+		.unwrap();
 
 		// Do the stale update cleanup
 		persister_0.cleanup_stale_updates(false).unwrap();
 
 		// Confirm the stale update is unreadable/gone
-		assert!(persister_0
-			.kv_store
+		assert!(kv_store_0
 			.read(
 				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 				&monitor_name.to_string(),
