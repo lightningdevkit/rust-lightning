@@ -11487,9 +11487,9 @@ where
 		//   MUST send a warning and close the connection or send an error
 		//   and fail the channel.
 		if !self.context.is_live() {
-			return Err(ChannelError::WarnAndDisconnect(format!(
-				"Splicing requested on a channel that is not live"
-			)));
+			return Err(ChannelError::WarnAndDisconnect(
+				"Splicing requested on a channel that is not live".to_owned(),
+			));
 		}
 
 		// TODO(splicing): Once splice acceptor can contribute, check that inputs are sufficient,
@@ -11737,20 +11737,20 @@ where
 		let funding_negotiation_context = match &self
 			.pending_splice
 			.as_ref()
-			.ok_or(ChannelError::Ignore(format!("Channel is not in pending splice")))?
+			.ok_or(ChannelError::Ignore("Channel is not in pending splice".to_owned()))?
 			.funding_negotiation
 		{
 			Some(FundingNegotiation::AwaitingAck(context)) => context,
 			Some(FundingNegotiation::ConstructingTransaction(_, _))
 			| Some(FundingNegotiation::AwaitingSignatures(_)) => {
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Got unexpected splice_ack; splice negotiation already in progress"
-				)));
+				return Err(ChannelError::WarnAndDisconnect(
+					"Got unexpected splice_ack; splice negotiation already in progress".to_owned(),
+				));
 			},
 			None => {
-				return Err(ChannelError::Ignore(format!(
-					"Got unexpected splice_ack; no splice negotiation in progress"
-				)));
+				return Err(ChannelError::Ignore(
+					"Got unexpected splice_ack; no splice negotiation in progress".to_owned(),
+				));
 			},
 		};
 
@@ -11847,7 +11847,7 @@ where
 		let pending_splice = match self.pending_splice.as_mut() {
 			Some(pending_splice) => pending_splice,
 			None => {
-				return Err(ChannelError::Ignore(format!("Channel is not in pending splice")));
+				return Err(ChannelError::Ignore("Channel is not in pending splice".to_owned()));
 			},
 		};
 
