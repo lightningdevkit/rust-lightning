@@ -15,7 +15,7 @@
 
 use core::{cmp, ops::Deref};
 
-use crate::prelude::*;
+use crate::{ln::types::ChannelId, prelude::*, sync::{Arc, Mutex}, util::logger::Logger};
 
 use bitcoin::transaction::Transaction;
 
@@ -43,6 +43,40 @@ pub trait BroadcasterInterface {
 	/// Bitcoin transaction packages are defined in BIP 331 and here:
 	/// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>
 	fn broadcast_transactions(&self, txs: &[&Transaction]);
+}
+
+/// Transaction broadcaster that does not broadcast transactions, but accumulates
+/// them in a Vec instead. This could be used to delay broadcasts until the system
+/// is ready.
+pub struct VecBroadcaster {
+    channel_id: ChannelId,
+    transactions: Mutex<Vec<Transaction>>,
+}
+
+impl VecBroadcaster {
+    /// Create a new broadcaster for a channel
+    pub fn new(channel_id: ChannelId) -> Self {
+        Self {
+            channel_id,
+            transactions: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Used to actually broadcast stored transactions to the network.
+    pub fn release_transactions<L: Deref>(&self, broadcaster: Arc<dyn BroadcasterInterface>, logger: &L) where L::Target: Logger {
+        let transactions = self.transactions.lock().unwrap();
+        log_info!(logger, "Releasing transactions for channel_id={}, len={}", self.channel_id, transactions.len());
+        broadcaster.broadcast_transactions(&transactions.iter().collect::<Vec<&Transaction>>())
+    }
+}
+
+impl BroadcasterInterface for VecBroadcaster {
+    fn broadcast_transactions(&self, txs: &[&Transaction]) {
+        let mut tx_storage = self.transactions.lock().unwrap();
+        for tx in txs {
+            tx_storage.push((*tx).to_owned())
+        }
+    }
 }
 
 /// An enum that represents the priority at which we want a transaction to confirm used for feerate
