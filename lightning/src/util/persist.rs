@@ -534,6 +534,10 @@ where
 	/// less frequent "waves."
 	///   - [`MonitorUpdatingPersister`] will potentially have more listing to do if you need to run
 	/// [`MonitorUpdatingPersister::cleanup_stale_updates`].
+	///
+	/// Note that you can disable the update-writing entirely by setting `maximum_pending_updates`
+	/// to zero, causing this [`Persist`] implementation to behave like the blanket [`Persist`]
+	/// implementation for all [`KVStoreSync`]s.
 	pub fn new(
 		kv_store: K, logger: L, maximum_pending_updates: u64, entropy_source: ES,
 		signer_provider: SP, broadcaster: BI, fee_estimator: FE,
@@ -757,7 +761,12 @@ where
 		let mut monitor_bytes = Vec::with_capacity(
 			MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() + monitor.serialized_length(),
 		);
-		monitor_bytes.extend_from_slice(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL);
+		// If `maximum_pending_updates` is zero, we aren't actually writing monitor updates at all.
+		// Thus, there's no need to add the sentinel prefix as the monitor can be read directly
+		// from disk without issue.
+		if self.maximum_pending_updates != 0 {
+			monitor_bytes.extend_from_slice(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL);
+		}
 		monitor.write(&mut monitor_bytes).unwrap();
 		match self.kv_store.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
