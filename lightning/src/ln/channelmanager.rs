@@ -13236,6 +13236,13 @@ where
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
+		#[cfg(not(feature = "std"))]
+		let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
+		#[cfg(feature = "std")]
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
 		let builder = self.flow.create_invoice_builder_from_refund(
 			&self.router,
 			entropy,
@@ -13245,6 +13252,7 @@ where
 				self.create_inbound_payment(Some(amount_msats), relative_expiry, None)
 					.map_err(|()| Bolt12SemanticError::InvalidAmount)
 			},
+			created_at,
 		)?;
 
 		let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
@@ -15407,6 +15415,13 @@ where
 					Err(_) => return None,
 				};
 
+				#[cfg(not(feature = "std"))]
+				let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
+				#[cfg(feature = "std")]
+				let created_at = std::time::SystemTime::now()
+					.duration_since(std::time::SystemTime::UNIX_EPOCH)
+					.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
 				let get_payment_info = |amount_msats, relative_expiry| {
 					self.create_inbound_payment(
 						Some(amount_msats),
@@ -15422,6 +15437,7 @@ where
 							&request,
 							self.list_usable_channels(),
 							get_payment_info,
+							created_at
 						);
 
 						match result {
@@ -15446,6 +15462,7 @@ where
 							&request,
 							self.list_usable_channels(),
 							get_payment_info,
+							created_at
 						);
 
 						match result {

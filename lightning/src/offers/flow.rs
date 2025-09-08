@@ -932,7 +932,7 @@ where
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	pub fn create_invoice_builder_from_refund<'a, ES: Deref, R: Deref, F>(
 		&'a self, router: &R, entropy_source: ES, refund: &'a Refund,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		usable_channels: Vec<ChannelDetails>, get_payment_info: F, created_at: Duration,
 	) -> Result<InvoiceBuilder<'a, DerivedSigningPubkey>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
@@ -963,18 +963,7 @@ where
 			)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		#[cfg(feature = "std")]
 		let builder = refund.respond_using_derived_keys(
-			payment_paths,
-			payment_hash,
-			expanded_key,
-			entropy,
-		)?;
-
-		#[cfg(not(feature = "std"))]
-		let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
-		#[cfg(not(feature = "std"))]
-		let builder = refund.respond_using_derived_keys_no_std(
 			payment_paths,
 			payment_hash,
 			created_at,
@@ -1001,7 +990,7 @@ where
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
 	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, R: Deref, F>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		usable_channels: Vec<ChannelDetails>, get_payment_info: F, created_at: Duration,
 	) -> Result<(InvoiceBuilder<'a, DerivedSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		R::Target: Router,
@@ -1030,15 +1019,9 @@ where
 			)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		#[cfg(feature = "std")]
-		let builder = invoice_request.respond_using_derived_keys(payment_paths, payment_hash);
-		#[cfg(not(feature = "std"))]
-		let builder = invoice_request.respond_using_derived_keys_no_std(
-			payment_paths,
-			payment_hash,
-			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
-		);
-		let builder = builder.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
+		let builder = invoice_request
+			.respond_using_derived_keys(payment_paths, payment_hash, created_at)
+			.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
 
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
@@ -1061,7 +1044,7 @@ where
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
 	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, R: Deref, F>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<ExplicitSigningPubkey>,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		usable_channels: Vec<ChannelDetails>, get_payment_info: F, created_at: Duration,
 	) -> Result<(InvoiceBuilder<'a, ExplicitSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		R::Target: Router,
@@ -1090,16 +1073,9 @@ where
 			)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		#[cfg(feature = "std")]
-		let builder = invoice_request.respond_with(payment_paths, payment_hash);
-		#[cfg(not(feature = "std"))]
-		let builder = invoice_request.respond_with_no_std(
-			payment_paths,
-			payment_hash,
-			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
-		);
-
-		let builder = builder.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
+		let builder = invoice_request
+			.respond_with(payment_paths, payment_hash, created_at)
+			.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
 
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 

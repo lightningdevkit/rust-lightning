@@ -559,27 +559,6 @@ impl Refund {
 }
 
 macro_rules! respond_with_explicit_signing_pubkey_methods { ($self: ident, $builder: ty) => {
-	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields and using the
-	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
-	///
-	/// See [`Refund::respond_with_no_std`] for further details where the aforementioned creation
-	/// time is used for the `created_at` parameter.
-	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
-	/// [`Duration`]: core::time::Duration
-	#[cfg(feature = "std")]
-	pub fn respond_with(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
-		signing_pubkey: PublicKey,
-	) -> Result<$builder, Bolt12SemanticError> {
-		let created_at = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
-			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
-
-		$self.respond_with_no_std(payment_paths, payment_hash, signing_pubkey, created_at)
-	}
-
 	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
@@ -602,7 +581,7 @@ macro_rules! respond_with_explicit_signing_pubkey_methods { ($self: ident, $buil
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
-	pub fn respond_with_no_std(
+	pub fn respond_with(
 		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey, created_at: Duration
 	) -> Result<$builder, Bolt12SemanticError> {
@@ -623,32 +602,7 @@ macro_rules! respond_with_derived_signing_pubkey_methods { ($self: ident, $build
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	#[cfg(feature = "std")]
 	pub fn respond_using_derived_keys<ES: Deref>(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
-		expanded_key: &ExpandedKey, entropy_source: ES
-	) -> Result<$builder, Bolt12SemanticError>
-	where
-		ES::Target: EntropySource,
-	{
-		let created_at = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
-			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
-
-		$self.respond_using_derived_keys_no_std(
-			payment_paths, payment_hash, created_at, expanded_key, entropy_source
-		)
-	}
-
-	/// Creates an [`InvoiceBuilder`] for the refund using the given required fields and that uses
-	/// derived signing keys to sign the [`Bolt12Invoice`].
-	///
-	/// See [`Refund::respond_with_no_std`] for further details.
-	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
-	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn respond_using_derived_keys_no_std<ES: Deref>(
 		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		created_at: core::time::Duration, expanded_key: &ExpandedKey, entropy_source: ES
 	) -> Result<$builder, Bolt12SemanticError>
@@ -1201,7 +1155,7 @@ mod tests {
 
 		// Fails verification with altered fields
 		let invoice = refund
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.experimental_baz(42)
 			.build()
@@ -1224,7 +1178,7 @@ mod tests {
 
 		let invoice = Refund::try_from(encoded_refund)
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.build()
 			.unwrap()
@@ -1242,7 +1196,7 @@ mod tests {
 
 		let invoice = Refund::try_from(encoded_refund)
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.build()
 			.unwrap()
@@ -1286,7 +1240,7 @@ mod tests {
 		assert_ne!(refund.payer_signing_pubkey(), node_id);
 
 		let invoice = refund
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.experimental_baz(42)
 			.build()
@@ -1307,7 +1261,7 @@ mod tests {
 
 		let invoice = Refund::try_from(encoded_refund)
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.build()
 			.unwrap()
@@ -1327,7 +1281,7 @@ mod tests {
 
 		let invoice = Refund::try_from(encoded_refund)
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.build()
 			.unwrap()
@@ -1512,7 +1466,7 @@ mod tests {
 			.features_unchecked(InvoiceRequestFeatures::unknown())
 			.build()
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnknownRequiredFeatures),
