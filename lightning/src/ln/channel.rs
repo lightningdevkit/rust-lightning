@@ -4292,18 +4292,20 @@ where
 					predicted_fee_sat: ret.commit_tx_fee_sat,
 				};
 			} else {
-				let predicted_stats = SpecTxBuilder {}.get_next_commitment_stats(
-					true,
-					funding.is_outbound(),
-					funding.get_value_satoshis(),
-					next_value_to_self_msat,
-					&next_commitment_htlcs,
-					0,
-					feerate_per_kw,
-					dust_exposure_limiting_feerate,
-					self.holder_dust_limit_satoshis,
-					funding.get_channel_type(),
-				)?;
+				let predicted_stats = SpecTxBuilder {}
+					.get_next_commitment_stats(
+						true,
+						funding.is_outbound(),
+						funding.get_value_satoshis(),
+						next_value_to_self_msat,
+						&next_commitment_htlcs,
+						0,
+						feerate_per_kw,
+						dust_exposure_limiting_feerate,
+						self.holder_dust_limit_satoshis,
+						funding.get_channel_type(),
+					)
+					.expect("Balance after HTLCs and anchors exhausted on local commitment");
 				*funding.next_local_fee.lock().unwrap() = PredictedNextFee {
 					predicted_feerate: feerate_per_kw,
 					predicted_nondust_htlc_count: predicted_stats.nondust_htlc_count,
@@ -4349,18 +4351,20 @@ where
 					predicted_fee_sat: ret.commit_tx_fee_sat,
 				};
 			} else {
-				let predicted_stats = SpecTxBuilder {}.get_next_commitment_stats(
-					false,
-					funding.is_outbound(),
-					funding.get_value_satoshis(),
-					next_value_to_self_msat,
-					&next_commitment_htlcs,
-					0,
-					feerate_per_kw,
-					dust_exposure_limiting_feerate,
-					self.counterparty_dust_limit_satoshis,
-					funding.get_channel_type(),
-				)?;
+				let predicted_stats = SpecTxBuilder {}
+					.get_next_commitment_stats(
+						false,
+						funding.is_outbound(),
+						funding.get_value_satoshis(),
+						next_value_to_self_msat,
+						&next_commitment_htlcs,
+						0,
+						feerate_per_kw,
+						dust_exposure_limiting_feerate,
+						self.counterparty_dust_limit_satoshis,
+						funding.get_channel_type(),
+					)
+					.expect("Balance after HTLCs and anchors exhausted on remote commitment");
 				*funding.next_remote_fee.lock().unwrap() = PredictedNextFee {
 					predicted_feerate: feerate_per_kw,
 					predicted_nondust_htlc_count: predicted_stats.nondust_htlc_count,
