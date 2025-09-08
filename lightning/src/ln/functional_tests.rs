@@ -7281,9 +7281,12 @@ pub fn test_update_err_monitor_lockdown() {
 			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_1.2);
 		if let Some(channel) = chan_ref.as_funded_mut() {
 			assert_eq!(updates.commitment_signed.len(), 1);
-			if let Ok(Some(update)) =
-				channel.commitment_signed(&updates.commitment_signed[0], &node_cfgs[0].logger)
-			{
+			let feeest = LowerBoundedFeeEstimator::new(&chanmon_cfgs[0].fee_estimator);
+			if let Ok(Some(update)) = channel.commitment_signed(
+				&updates.commitment_signed[0],
+				&feeest,
+				&node_cfgs[0].logger,
+			) {
 				assert_eq!(
 					watchtower.chain_monitor.update_channel(chan_1.2, &update),
 					ChannelMonitorUpdateStatus::InProgress
@@ -7434,9 +7437,12 @@ pub fn test_concurrent_monitor_claim() {
 			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_1.2);
 		if let Some(channel) = chan_ref.as_funded_mut() {
 			assert_eq!(updates.commitment_signed.len(), 1);
-			if let Ok(Some(update)) =
-				channel.commitment_signed(&updates.commitment_signed[0], &node_cfgs[0].logger)
-			{
+			let feeest = LowerBoundedFeeEstimator::new(&chanmon_cfgs[0].fee_estimator);
+			if let Ok(Some(update)) = channel.commitment_signed(
+				&updates.commitment_signed[0],
+				&feeest,
+				&node_cfgs[0].logger,
+			) {
 				// Watchtower Alice should already have seen the block and reject the update
 				assert_eq!(
 					watchtower_alice.chain_monitor.update_channel(chan_1.2, &update),

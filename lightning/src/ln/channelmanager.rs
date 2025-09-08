@@ -10783,7 +10783,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 				let funding_txo = chan.funding().get_funding_txo();
 				let (monitor_opt, monitor_update_opt) = try_channel_entry!(
-					self, peer_state, chan.commitment_signed(msg, best_block, &self.signer_provider, &&logger),
+					self, peer_state, chan.commitment_signed(msg, best_block, &self.signer_provider, &self.fee_estimator, &&logger),
 					chan_entry);
 
 				if let Some(chan) = chan.as_funded_mut() {
@@ -10828,7 +10828,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let funding_txo = chan.funding().get_funding_txo();
 				if let Some(chan) = chan.as_funded_mut() {
 					let monitor_update_opt = try_channel_entry!(
-						self, peer_state, chan.commitment_signed_batch(batch, &&logger), chan_entry
+						self, peer_state, chan.commitment_signed_batch(batch, &self.fee_estimator, &&logger), chan_entry
 					);
 
 					if let Some(monitor_update) = monitor_update_opt {
