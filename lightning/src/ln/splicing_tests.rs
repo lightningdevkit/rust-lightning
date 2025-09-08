@@ -79,7 +79,7 @@ fn test_v1_splice_in() {
 	};
 
 	// Initiate splice-in
-	let _res = initiator_node
+	initiator_node
 		.node
 		.splice_channel(
 			&channel_id,
@@ -104,9 +104,7 @@ fn test_v1_splice_in() {
 	assert_eq!(splice_init_msg.funding_pubkey.to_string(), expected_initiator_funding_key);
 	assert!(splice_init_msg.require_confirmed_inputs.is_none());
 
-	let _res = acceptor_node
-		.node
-		.handle_splice_init(initiator_node.node.get_our_node_id(), &splice_init_msg);
+	acceptor_node.node.handle_splice_init(initiator_node.node.get_our_node_id(), &splice_init_msg);
 	// Extract the splice_ack message
 	let splice_ack_msg = get_event_msg!(
 		acceptor_node,
@@ -130,9 +128,7 @@ fn test_v1_splice_in() {
 		assert!(channel.confirmations.unwrap() > 0);
 	}
 
-	let _res = initiator_node
-		.node
-		.handle_splice_ack(acceptor_node.node.get_our_node_id(), &splice_ack_msg);
+	initiator_node.node.handle_splice_ack(acceptor_node.node.get_our_node_id(), &splice_ack_msg);
 
 	// still pre-splice channel: capacity not updated, channel usable, and funding tx set
 	assert_eq!(initiator_node.node.list_channels().len(), 1);
@@ -176,7 +172,7 @@ fn test_v1_splice_in() {
 		assert_eq!(tx_add_input_msg.shared_input_txid, None);
 	}
 
-	let _res = acceptor_node
+	acceptor_node
 		.node
 		.handle_tx_add_input(initiator_node.node.get_our_node_id(), &tx_add_input_msg);
 	let tx_complete_msg = get_event_msg!(
@@ -185,9 +181,7 @@ fn test_v1_splice_in() {
 		initiator_node.node.get_our_node_id()
 	);
 
-	let _res = initiator_node
-		.node
-		.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+	initiator_node.node.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
 	// Second input
 	let tx_add_input2_msg = get_event_msg!(
 		&initiator_node,
@@ -211,7 +205,7 @@ fn test_v1_splice_in() {
 		);
 	}
 
-	let _res = acceptor_node
+	acceptor_node
 		.node
 		.handle_tx_add_input(initiator_node.node.get_our_node_id(), &tx_add_input2_msg);
 	let tx_complete_msg = get_event_msg!(
@@ -220,9 +214,7 @@ fn test_v1_splice_in() {
 		initiator_node.node.get_our_node_id()
 	);
 
-	let _res = initiator_node
-		.node
-		.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+	initiator_node.node.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
 
 	// TxAddOutput for the change output
 	let tx_add_output_msg = get_event_msg!(
@@ -238,7 +230,7 @@ fn test_v1_splice_in() {
 		assert_eq!(tx_add_output_msg.sats, 13979); // extra_splice_funding_input_sats - splice_in_sats
 	}
 
-	let _res = acceptor_node
+	acceptor_node
 		.node
 		.handle_tx_add_output(initiator_node.node.get_our_node_id(), &tx_add_output_msg);
 	let tx_complete_msg = get_event_msg!(
@@ -247,9 +239,7 @@ fn test_v1_splice_in() {
 		initiator_node.node.get_our_node_id()
 	);
 
-	let _res = initiator_node
-		.node
-		.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+	initiator_node.node.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
 	// TxAddOutput for the splice funding
 	let tx_add_output2_msg = get_event_msg!(
 		&initiator_node,
@@ -264,7 +254,7 @@ fn test_v1_splice_in() {
 		assert_eq!(tx_add_output2_msg.sats, post_splice_channel_value);
 	}
 
-	let _res = acceptor_node
+	acceptor_node
 		.node
 		.handle_tx_add_output(initiator_node.node.get_our_node_id(), &tx_add_output2_msg);
 	let _tx_complete_msg = get_event_msg!(
@@ -274,9 +264,7 @@ fn test_v1_splice_in() {
 	);
 
 	// TODO(splicing) This is the last tx_complete, which triggers the commitment flow, which is not yet fully implemented
-	let _res = initiator_node
-		.node
-		.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+	initiator_node.node.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
 	let events = initiator_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
