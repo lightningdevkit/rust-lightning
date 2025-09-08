@@ -68,7 +68,9 @@ use lightning::util::sweep::OutputSweeperSync;
 use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
 
-use lightning_liquidity::{ALiquidityManager, ALiquidityManagerSync};
+use lightning_liquidity::ALiquidityManager;
+#[cfg(feature = "std")]
+use lightning_liquidity::ALiquidityManagerSync;
 
 use core::ops::Deref;
 use core::time::Duration;
