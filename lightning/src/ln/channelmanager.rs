@@ -5834,6 +5834,22 @@ where
 	/// Call this in response to a [`Event::FundingGenerationReady`] event, only in a context where you want to manually
 	/// control the broadcast of the funding transaction.
 	///
+	/// The associated [`ChannelMonitor`] likewise avoids broadcasting holder commitment or CPFP
+	/// transactions until the funding has been observed on chain. This
+	/// prevents attempting to broadcast unconfirmable commitment transactions before the channel's
+	/// funding exists in a block.
+	///
+	/// If HTLCs would otherwise approach timeout while the funding transaction has not yet appeared
+	/// on chain, the monitor avoids broadcasting force-close transactions in manual-broadcast
+	/// mode until the funding is seen. It may still close the channel off-chain (emitting a
+	/// `ChannelClosed` event) to avoid accepting further updates. Ensure your application either
+	/// broadcasts the funding transaction in a timely manner or avoids forwarding HTLCs that could
+	/// approach timeout during this interim state.
+	///
+	/// See also [`ChannelMonitor::broadcast_latest_holder_commitment_txn`]. For channels using
+	/// manual-broadcast, calling that method has no effect until the funding has been observed
+	/// on-chain.
+	///
 	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
 	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
 	pub fn funding_transaction_generated_manual_broadcast(
