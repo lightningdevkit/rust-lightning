@@ -707,6 +707,7 @@ where
 /// directly by the [`ChainMonitor`] via [`ChainMonitor::new_async_beta`].
 ///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
+/// [`ChainMonitor::new_async_beta`]: crate::chain::chainmonitor::ChainMonitor::new_async_beta
 pub struct MonitorUpdatingPersisterAsync<
 	K: Deref,
 	S: FutureSpawner,
