@@ -373,6 +373,26 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 			false, // Different features than set in InvoiceBuilder
 			true, // Some unknown fields
 		),
+		(
+			"lnbc1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq9qrsgq357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap2r09nt4ndd0unm3z9u5t48y6ucv4r5sg7lk98c77ctvjczkspk5qprc90gx".to_owned(),
+			InvoiceBuilder::new(Currency::Bitcoin)
+				.duration_since_epoch(Duration::from_secs(1496314658))
+				.payment_secret(PaymentSecret([0x11; 32]))
+				.payment_hash(sha256::Hash::from_str(
+					"0001020304050607080900010203040506070809000102030405060708090102"
+				).unwrap())
+				.description("Please consider supporting this project".to_owned())
+				.build_raw()
+				.unwrap()
+				.sign(|_| {
+					RecoverableSignature::from_compact(
+						&<Vec<u8>>::from_hex("8d3ce9e28357337f62da0162d9454df827f83cfe499aeb1c1db349d4d8112742a1bcb35d66d6bf93dc445e51753935cc32a3a411efd8a7c7bd85b25815a01b50").unwrap(),
+						RecoveryId::from_i32(1).unwrap()
+					)
+				}).unwrap(),
+			false, // Different features than set in InvoiceBuilder
+			false, // Some unknown fields
+		),
 
 	]
 }
