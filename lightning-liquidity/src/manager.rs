@@ -1187,8 +1187,8 @@ where
 		self.inner.filtered_block_connected(header, txdata, height)
 	}
 
-	fn block_disconnected(&self, header: &bitcoin::block::Header, height: u32) {
-		self.inner.block_disconnected(header, height)
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		self.inner.blocks_disconnected(fork_point);
 	}
 }
 
