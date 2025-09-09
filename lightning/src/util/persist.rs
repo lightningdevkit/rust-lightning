@@ -704,7 +704,7 @@ where
 /// Note that async monitor updating is considered beta, and bugs may be triggered by its use.
 ///
 /// Unlike [`MonitorUpdatingPersister`], this does not implement [`Persist`], but is instead used
-/// directly by the [`ChainMonitor`].
+/// directly by the [`ChainMonitor`] via [`ChainMonitor::new_async_beta`].
 ///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 pub struct MonitorUpdatingPersisterAsync<
@@ -741,6 +741,7 @@ struct MonitorUpdatingPersisterAsyncInner<
 	FE::Target: FeeEstimator,
 {
 	kv_store: K,
+	async_completed_updates: Mutex<Vec<(ChannelId, u64)>>,
 	future_spawner: S,
 	logger: L,
 	maximum_pending_updates: u64,
@@ -769,6 +770,7 @@ where
 	) -> Self {
 		MonitorUpdatingPersisterAsync(Arc::new(MonitorUpdatingPersisterAsyncInner {
 			kv_store,
+			async_completed_updates: Mutex::new(Vec::new()),
 			future_spawner,
 			logger,
 			maximum_pending_updates,
@@ -863,9 +865,10 @@ where
 		let inner = Arc::clone(&self.0);
 		let future = inner.persist_new_channel(monitor_name, monitor);
 		let channel_id = monitor.channel_id();
+		let completion = (monitor.channel_id(), monitor.get_latest_update_id());
 		self.0.future_spawner.spawn(async move {
 			match future.await {
-				Ok(()) => {}, // TODO: expose completions
+				Ok(()) => inner.async_completed_updates.lock().unwrap().push(completion),
 				Err(e) => {
 					log_error!(
 						inner.logger,
@@ -883,10 +886,17 @@ where
 		let inner = Arc::clone(&self.0);
 		let future = inner.update_persisted_channel(monitor_name, update, monitor);
 		let channel_id = monitor.channel_id();
+		let completion = if let Some(update) = update {
+			Some((monitor.channel_id(), update.update_id))
+		} else {
+			None
+		};
 		let inner = Arc::clone(&self.0);
 		self.0.future_spawner.spawn(async move {
 			match future.await {
-				Ok(()) => {}, // TODO: expose completions
+				Ok(()) => if let Some(completion) = completion {
+					inner.async_completed_updates.lock().unwrap().push(completion);
+				},
 				Err(e) => {
 					log_error!(
 						inner.logger,
@@ -902,6 +912,10 @@ where
 		self.0.future_spawner.spawn(async move {
 			inner.archive_persisted_channel(monitor_name).await;
 		});
+	}
+
+	pub(crate) fn get_and_clear_completed_updates(&self) -> Vec<(ChannelId, u64)> {
+		mem::take(&mut *self.0.async_completed_updates.lock().unwrap())
 	}
 }
 
