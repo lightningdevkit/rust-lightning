@@ -33,8 +33,8 @@ use crate::ln::channel::{
 	MIN_CHAN_DUST_LIMIT_SATOSHIS, UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
 };
 use crate::ln::channelmanager::{
-	PaymentId, RAACommitmentOrder, RecipientOnionFields, BREAKDOWN_TIMEOUT, DISABLE_GOSSIP_TICKS,
-	ENABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA,
+	PaymentId, RAACommitmentOrder, RecipientOnionFields, Retry, BREAKDOWN_TIMEOUT,
+	DISABLE_GOSSIP_TICKS, ENABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{
@@ -9702,4 +9702,148 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 pub fn test_multi_post_event_actions() {
 	do_test_multi_post_event_actions(true);
 	do_test_multi_post_event_actions(false);
+}
+
+#[xtest(feature = "_externalize_tests")]
+fn test_stale_force_close_with_identical_htlcs() {
+	// Test that when two identical HTLCs are relayed and force-closes
+	// with a stale state, that we fail both HTLCs back immediately.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let chan_a_b = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let _chan_b_c = create_announced_chan_between_nodes(&nodes, 1, 2);
+	let _chan_d_b = create_announced_chan_between_nodes(&nodes, 3, 1);
+
+	let (_payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
+
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 100);
+	let scorer = test_utils::TestScorer::new();
+	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 1_000_000);
+
+	let route = get_route(
+		&nodes[0].node.get_our_node_id(),
+		&route_params,
+		&nodes[0].network_graph.read_only(),
+		None,
+		nodes[0].logger,
+		&scorer,
+		&Default::default(),
+		&random_seed_bytes,
+	)
+	.unwrap();
+
+	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
+	nodes[0]
+		.node
+		.send_payment(
+			payment_hash,
+			RecipientOnionFields::secret_only(payment_secret),
+			PaymentId([1; 32]),
+			route_params.clone(),
+			Retry::Attempts(0),
+		)
+		.unwrap();
+
+	let ev1 = remove_first_msg_event_to_node(
+		&nodes[1].node.get_our_node_id(),
+		&mut nodes[0].node.get_and_clear_pending_msg_events(),
+	);
+	let mut send_ev1 = SendEvent::from_event(ev1);
+
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_ev1.msgs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(
+		nodes[0].node.get_our_node_id(),
+		&send_ev1.commitment_msg,
+	);
+
+	let mut b_events = nodes[1].node.get_and_clear_pending_msg_events();
+	for ev in b_events.drain(..) {
+		match ev {
+			MessageSendEvent::SendRevokeAndACK { node_id, msg } => {
+				assert_eq!(node_id, nodes[0].node.get_our_node_id());
+				nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &msg);
+			},
+			MessageSendEvent::UpdateHTLCs { node_id, updates, .. } => {
+				assert_eq!(node_id, nodes[0].node.get_our_node_id());
+				nodes[0].node.handle_commitment_signed_batch_test(
+					nodes[1].node.get_our_node_id(),
+					&updates.commitment_signed,
+				);
+				let mut a_events = nodes[0].node.get_and_clear_pending_msg_events();
+				for a_ev in a_events.drain(..) {
+					if let MessageSendEvent::SendRevokeAndACK { node_id, msg } = a_ev {
+						assert_eq!(node_id, nodes[1].node.get_our_node_id());
+						nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &msg);
+					}
+				}
+			},
+			_ => {},
+		}
+	}
+
+	nodes[1].node.process_pending_htlc_forwards();
+	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+
+	let stale_commitment_tx = get_local_commitment_txn!(nodes[0], chan_a_b.2)[0].clone();
+
+	*nodes[0].network_payment_count.borrow_mut() -= 1;
+	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
+	nodes[0]
+		.node
+		.send_payment(
+			payment_hash,
+			RecipientOnionFields::secret_only(payment_secret),
+			PaymentId([2; 32]),
+			route_params.clone(),
+			Retry::Attempts(0),
+		)
+		.unwrap();
+
+	let ev2 = remove_first_msg_event_to_node(
+		&nodes[1].node.get_our_node_id(),
+		&mut nodes[0].node.get_and_clear_pending_msg_events(),
+	);
+	let mut send_ev2 = SendEvent::from_event(ev2);
+
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_ev2.msgs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(
+		nodes[0].node.get_our_node_id(),
+		&send_ev2.commitment_msg,
+	);
+
+	let mut b2_events = nodes[1].node.get_and_clear_pending_msg_events();
+	for ev in b2_events.drain(..) {
+		match ev {
+			MessageSendEvent::SendRevokeAndACK { node_id, msg } => {
+				assert_eq!(node_id, nodes[0].node.get_our_node_id());
+				nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &msg);
+			},
+			MessageSendEvent::UpdateHTLCs { node_id, updates, .. } => {
+				assert_eq!(node_id, nodes[0].node.get_our_node_id());
+				nodes[0].node.handle_commitment_signed_batch_test(
+					nodes[1].node.get_our_node_id(),
+					&updates.commitment_signed,
+				);
+			},
+			_ => {},
+		}
+	}
+
+	nodes[1].node.process_pending_htlc_forwards();
+	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+
+	mine_transaction(&nodes[1], &stale_commitment_tx);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	let failed_count =
+		events.iter().filter(|e| matches!(e, Event::HTLCHandlingFailed { .. })).count();
+	assert_eq!(failed_count, 2);
+
+	check_added_monitors!(&nodes[1], 1);
+	nodes[1].node.get_and_clear_pending_msg_events();
 }

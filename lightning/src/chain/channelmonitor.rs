@@ -1356,7 +1356,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// a downstream channel force-close remaining unconfirmed by the time the upstream timeout
 	/// expires. This is used to tell us we already generated an event to fail this HTLC back
 	/// during a previous block scan.
-	failed_back_htlc_ids: HashSet<SentHTLCId>,
+	failed_back_htlc_ids: HashMap<SentHTLCId, u64>,
 
 	// The auxiliary HTLC data associated with a holder commitment transaction. This includes
 	// non-dust HTLC sources, along with dust HTLCs and their sources. Note that this assumes any
@@ -1956,7 +1956,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			initial_counterparty_commitment_tx: None,
 			balances_empty_height: None,
 
-			failed_back_htlc_ids: new_hash_set(),
+			failed_back_htlc_ids: new_hash_map(),
 
 			// There are never any HTLCs in the initial commitment transaction
 			current_holder_htlc_data: CommitmentHTLCData::new(),
@@ -5523,7 +5523,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut matured_htlcs = Vec::new();
 
 		// Produce actionable events from on-chain events having reached their threshold.
-		for entry in onchain_events_reaching_threshold_conf {
+		for entry in onchain_events_reaching_threshold_conf.clone() {
 			match entry.event {
 				OnchainEvent::HTLCUpdate { source, payment_hash, htlc_value_satoshis, commitment_tx_output_idx } => {
 					// Check for duplicate HTLC resolutions.
@@ -5587,6 +5587,85 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							});
 						}
 					}
+
+					// Only act on stale force-closes where the confirmed funding spend is the
+					// previous counterparty commitment transaction.
+					let prev_txid = match self.funding.prev_counterparty_commitment_txid {
+						Some(txid) => {
+							if txid != entry.txid { continue; }
+							txid
+						},
+						None => { continue; }
+					};
+
+					// Process only HTLCs from that previous counterparty commitment.
+					let prev_outputs = if let Some(outputs) =
+						self.funding.counterparty_claimable_outpoints.get(&prev_txid) {
+						outputs
+					} else { continue; };
+
+					// Build the set of HTLC ids present in the stale (previous) commitment.
+					let mut prev_ids: HashSet<SentHTLCId> = new_hash_set();
+					for &(_, ref source_opt) in prev_outputs.iter() {
+						if let Some(source) = source_opt.as_ref() {
+							prev_ids.insert(SentHTLCId::from_source(&**source));
+						}
+					}
+
+                    // Avoid duplicate fail-back if an HTLCUpdate for this source has already been
+                    // generated (either matured or still awaiting maturity).
+                    let mut seen_monitor_htlc_ids: HashSet<SentHTLCId> = new_hash_set();
+                    for e in onchain_events_reaching_threshold_conf.iter() {
+                        if let OnchainEvent::HTLCUpdate { source, .. } = &e.event {
+                            seen_monitor_htlc_ids.insert(SentHTLCId::from_source(source));
+                        }
+                    }
+                    for e in self.onchain_events_awaiting_threshold_conf.iter() {
+                        if let OnchainEvent::HTLCUpdate { source, .. } = &e.event {
+                            seen_monitor_htlc_ids.insert(SentHTLCId::from_source(source));
+                        }
+                    }
+
+					// Consider current live HTLCs (holder + current counterparty) with sources,
+					// and fail back only those NOT present in the stale (previous) commitment.
+                    let current_counterparty_iter = if let Some(txid) = self.funding.current_counterparty_commitment_txid {
+                        if let Some(htlc_outputs) = self.funding.counterparty_claimable_outpoints.get(&txid) {
+                            Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+                        } else { None }
+                    } else { None }.into_iter().flatten();
+                    let current_htlcs = holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES)
+                        .chain(current_counterparty_iter);
+
+                    // Count expected duplicates per id from the current view to bound emissions.
+                    let mut expected_current_counts: HashMap<SentHTLCId, u64> = new_hash_map();
+                    for (_, source_opt) in current_htlcs.clone() {
+                        if let Some(source) = source_opt { *expected_current_counts.entry(SentHTLCId::from_source(source)).or_default() += 1; }
+                    }
+
+					for (htlc, source_opt) in current_htlcs {
+						if let Some(source) = source_opt {
+
+							let sent_id = SentHTLCId::from_source(source);
+							if prev_ids.contains(&sent_id) { continue; }
+							if seen_monitor_htlc_ids.contains(&sent_id) { continue; }
+
+							let already_emitted_count = *self.failed_back_htlc_ids.get(&sent_id).unwrap_or(&0);
+							let expected_count = *expected_current_counts.get(&sent_id).unwrap_or(&0);
+
+							if already_emitted_count < expected_count {
+								log_info!(logger,
+									"Detected stale force-close. Failing back all HTLCs for hash {}.",
+									&htlc.payment_hash);
+								self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+									source: source.clone(),
+									payment_preimage: None,
+									payment_hash: htlc.payment_hash,
+									htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+								}));
+								*self.failed_back_htlc_ids.entry(sent_id).or_default() += 1;
+							}
+						}
+					}
 				},
 				OnchainEvent::AlternativeFundingConfirmation {} => {
 					// An alternative funding transaction has irrevocably confirmed and we're no
@@ -5646,7 +5725,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				if duplicate_event {
 					continue;
 				}
-				if !self.failed_back_htlc_ids.insert(SentHTLCId::from_source(source)) {
+				let htlc_id = SentHTLCId::from_source(source);
+				if *self.failed_back_htlc_ids.get(&htlc_id).unwrap_or(&0) > 0 {
 					continue;
 				}
 				if !duplicate_event {
@@ -5659,6 +5739,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_hash: htlc.payment_hash,
 						htlc_value_satoshis: Some(htlc.amount_msat / 1000),
 					}));
+					*self.failed_back_htlc_ids.entry(htlc_id).or_default() += 1;
 				}
 			}
 		}
@@ -6650,7 +6731,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			initial_counterparty_commitment_info,
 			initial_counterparty_commitment_tx,
 			balances_empty_height,
-			failed_back_htlc_ids: new_hash_set(),
+			failed_back_htlc_ids: new_hash_map(),
 
 			current_holder_htlc_data,
 			prev_holder_htlc_data,
