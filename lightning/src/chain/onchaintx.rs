@@ -1398,7 +1398,7 @@ mod tests {
 						commitment_txid: holder_commit_txid,
 						per_commitment_number: holder_commit.commitment_number(),
 						per_commitment_point: holder_commit.per_commitment_point(),
-						feerate_per_kw: holder_commit.feerate_per_kw(),
+						feerate_per_kw: holder_commit.negotiated_feerate_per_kw(),
 						htlc: htlc.clone(),
 						preimage: None,
 						counterparty_sig: *counterparty_sig,

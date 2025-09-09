@@ -367,7 +367,7 @@ fn write_legacy_holder_commitment_data<W: Writer>(
 
 	let txid = trusted_tx.txid();
 	let to_self_value_sat = commitment_tx.to_broadcaster_value_sat();
-	let feerate_per_kw = trusted_tx.feerate_per_kw();
+	let feerate_per_kw = trusted_tx.negotiated_feerate_per_kw();
 	let revocation_key = &tx_keys.revocation_key;
 	let a_htlc_key = &tx_keys.broadcaster_htlc_key;
 	let b_htlc_key = &tx_keys.countersignatory_htlc_key;
@@ -3468,7 +3468,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	) {
 		// We populate this field for downgrades
 		self.initial_counterparty_commitment_info = Some((commitment_tx.per_commitment_point(),
-			commitment_tx.feerate_per_kw(), commitment_tx.to_broadcaster_value_sat(), commitment_tx.to_countersignatory_value_sat()));
+			commitment_tx.negotiated_feerate_per_kw(), commitment_tx.to_broadcaster_value_sat(), commitment_tx.to_countersignatory_value_sat()));
 
 		#[cfg(debug_assertions)] {
 			let rebuilt_commitment_tx = self.initial_counterparty_commitment_tx().unwrap();
@@ -3674,7 +3674,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				{
 					return Err("Per-commitment-point mismatch");
 				}
-				if commitment_tx.feerate_per_kw() != other_commitment_tx.feerate_per_kw() {
+				if commitment_tx.negotiated_feerate_per_kw()
+					!= other_commitment_tx.negotiated_feerate_per_kw()
+				{
 					return Err("Commitment fee rate mismatch");
 				}
 				let nondust_htlcs = commitment_tx.nondust_htlcs();
@@ -4837,7 +4839,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				commitment_txid: tx.txid(),
 				per_commitment_number: tx.commitment_number(),
 				per_commitment_point: tx.per_commitment_point(),
-				feerate_per_kw: tx.feerate_per_kw(),
+				feerate_per_kw: tx.negotiated_feerate_per_kw(),
 				htlc: htlc.clone(),
 				preimage,
 				counterparty_sig: *counterparty_sig,

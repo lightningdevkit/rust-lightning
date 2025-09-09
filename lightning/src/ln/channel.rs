@@ -4710,18 +4710,25 @@ where
 		Ok(())
 	}
 
-	#[rustfmt::skip]
 	fn validate_commitment_signed<L: Deref>(
 		&self, funding: &FundingScope, transaction_number: u64, commitment_point: PublicKey,
 		msg: &msgs::CommitmentSigned, logger: &L,
-	) -> Result<(HolderCommitmentTransaction, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>), ChannelError>
+	) -> Result<
+		(HolderCommitmentTransaction, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>),
+		ChannelError,
+	>
 	where
 		L::Target: Logger,
 	{
 		let funding_script = funding.get_funding_redeemscript();
 
 		let commitment_data = self.build_commitment_transaction(
-			funding, transaction_number, &commitment_point, true, false, logger,
+			funding,
+			transaction_number,
+			&commitment_point,
+			true,
+			false,
+			logger,
 		);
 		let commitment_txid = {
 			let trusted_tx = commitment_data.tx.trust();
@@ -4730,10 +4737,19 @@ where
 
 			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
 				log_bytes!(msg.signature.serialize_compact()[..]),
-				log_bytes!(funding.counterparty_funding_pubkey().serialize()), encode::serialize_hex(&bitcoin_tx.transaction),
-				log_bytes!(sighash[..]), encode::serialize_hex(&funding_script), &self.channel_id());
-			if let Err(_) = self.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &funding.counterparty_funding_pubkey()) {
-				return Err(ChannelError::close("Invalid commitment tx signature from peer".to_owned()));
+				log_bytes!(funding.counterparty_funding_pubkey().serialize()),
+				encode::serialize_hex(&bitcoin_tx.transaction),
+				log_bytes!(sighash[..]), encode::serialize_hex(&funding_script),
+				&self.channel_id(),
+			);
+			if let Err(_) = self.secp_ctx.verify_ecdsa(
+				&sighash,
+				&msg.signature,
+				&funding.counterparty_funding_pubkey(),
+			) {
+				return Err(ChannelError::close(
+					"Invalid commitment tx signature from peer".to_owned(),
+				));
 			}
 			bitcoin_tx.txid
 		};
@@ -4742,40 +4758,92 @@ where
 		// they can actually afford the new fee now.
 		let update_fee = if let Some((_, update_state)) = self.pending_update_fee {
 			update_state == FeeUpdateState::RemoteAnnounced
-		} else { false };
+		} else {
+			false
+		};
 		if update_fee {
 			debug_assert!(!funding.is_outbound());
-			let counterparty_reserve_we_require_msat = funding.holder_selected_channel_reserve_satoshis * 1000;
-			if commitment_data.stats.remote_balance_before_fee_msat < commitment_data.stats.commit_tx_fee_sat * 1000 + counterparty_reserve_we_require_msat {
-				return Err(ChannelError::close("Funding remote cannot afford proposed new fee".to_owned()));
+			let counterparty_reserve_we_require_msat =
+				funding.holder_selected_channel_reserve_satoshis * 1000;
+			if commitment_data.stats.remote_balance_before_fee_msat
+				< commitment_data.stats.commit_tx_fee_sat * 1000
+					+ counterparty_reserve_we_require_msat
+			{
+				return Err(ChannelError::close(
+					"Funding remote cannot afford proposed new fee".to_owned(),
+				));
 			}
 		}
 		#[cfg(any(test, fuzzing))]
 		{
-			let PredictedNextFee { predicted_feerate, predicted_nondust_htlc_count, predicted_fee_sat } = *funding.next_local_fee.lock().unwrap();
-			if predicted_feerate == commitment_data.tx.feerate_per_kw() && predicted_nondust_htlc_count == commitment_data.tx.nondust_htlcs().len() {
+			let PredictedNextFee {
+				predicted_feerate,
+				predicted_nondust_htlc_count,
+				predicted_fee_sat,
+			} = *funding.next_local_fee.lock().unwrap();
+			if predicted_feerate == commitment_data.tx.negotiated_feerate_per_kw()
+				&& predicted_nondust_htlc_count == commitment_data.tx.nondust_htlcs().len()
+			{
 				assert_eq!(predicted_fee_sat, commitment_data.stats.commit_tx_fee_sat);
 			}
 		}
 
 		if msg.htlc_signatures.len() != commitment_data.tx.nondust_htlcs().len() {
-			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_data.tx.nondust_htlcs().len())));
+			return Err(ChannelError::close(format!(
+				"Got wrong number of HTLC signatures ({}) from remote. It must be {}",
+				msg.htlc_signatures.len(),
+				commitment_data.tx.nondust_htlcs().len()
+			)));
 		}
 
 		let holder_keys = commitment_data.tx.trust().keys();
-		for (htlc, counterparty_sig) in commitment_data.tx.nondust_htlcs().iter().zip(msg.htlc_signatures.iter()) {
+		for (htlc, counterparty_sig) in
+			commitment_data.tx.nondust_htlcs().iter().zip(msg.htlc_signatures.iter())
+		{
 			assert!(htlc.transaction_output_index.is_some());
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_data.tx.feerate_per_kw(),
-				funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, funding.get_channel_type(),
-				&holder_keys.broadcaster_delayed_payment_key, &holder_keys.revocation_key);
+			let htlc_tx = chan_utils::build_htlc_transaction(
+				&commitment_txid,
+				commitment_data.tx.negotiated_feerate_per_kw(),
+				funding.get_counterparty_selected_contest_delay().unwrap(),
+				&htlc,
+				funding.get_channel_type(),
+				&holder_keys.broadcaster_delayed_payment_key,
+				&holder_keys.revocation_key,
+			);
 
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, funding.get_channel_type(), &holder_keys);
-			let htlc_sighashtype = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
-			let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap()[..]);
+			let htlc_redeemscript =
+				chan_utils::get_htlc_redeemscript(&htlc, funding.get_channel_type(), &holder_keys);
+			let channel_type = funding.get_channel_type();
+			let htlc_sighashtype = if channel_type.supports_anchors_zero_fee_htlc_tx()
+				|| channel_type.supports_anchor_zero_fee_commitments()
+			{
+				EcdsaSighashType::SinglePlusAnyoneCanPay
+			} else {
+				EcdsaSighashType::All
+			};
+			let htlc_sighash = hash_to_message!(
+				&sighash::SighashCache::new(&htlc_tx)
+					.p2wsh_signature_hash(
+						0,
+						&htlc_redeemscript,
+						htlc.to_bitcoin_amount(),
+						htlc_sighashtype
+					)
+					.unwrap()[..]
+			);
 			log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
-				log_bytes!(counterparty_sig.serialize_compact()[..]), log_bytes!(holder_keys.countersignatory_htlc_key.to_public_key().serialize()),
-				encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript), &self.channel_id());
-			if let Err(_) = self.secp_ctx.verify_ecdsa(&htlc_sighash, &counterparty_sig, &holder_keys.countersignatory_htlc_key.to_public_key()) {
+				log_bytes!(counterparty_sig.serialize_compact()[..]),
+				log_bytes!(holder_keys.countersignatory_htlc_key.to_public_key().serialize()),
+				encode::serialize_hex(&htlc_tx),
+				log_bytes!(htlc_sighash[..]),
+				encode::serialize_hex(&htlc_redeemscript),
+				&self.channel_id(),
+			);
+			if let Err(_) = self.secp_ctx.verify_ecdsa(
+				&htlc_sighash,
+				&counterparty_sig,
+				&holder_keys.countersignatory_htlc_key.to_public_key(),
+			) {
 				return Err(ChannelError::close("Invalid HTLC tx signature from peer".to_owned()));
 			}
 		}
@@ -4785,10 +4853,15 @@ where
 			msg.signature,
 			msg.htlc_signatures.clone(),
 			&funding.get_holder_pubkeys().funding_pubkey,
-			funding.counterparty_funding_pubkey()
+			funding.counterparty_funding_pubkey(),
 		);
 
-		self.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_data.outbound_htlc_preimages)
+		self.holder_signer
+			.as_ref()
+			.validate_holder_commitment(
+				&holder_commitment_tx,
+				commitment_data.outbound_htlc_preimages,
+			)
 			.map_err(|_| ChannelError::close("Failed to validate our commitment".to_owned()))?;
 
 		Ok((holder_commitment_tx, commitment_data.htlcs_included))
@@ -12111,7 +12184,7 @@ where
 				htlc_outputs,
 				commitment_number: self.context.counterparty_next_commitment_transaction_number,
 				their_per_commitment_point: self.context.counterparty_next_commitment_point.unwrap(),
-				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
+				feerate_per_kw: Some(counterparty_commitment_tx.negotiated_feerate_per_kw()),
 				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
 				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
 			}
@@ -12174,7 +12247,7 @@ where
 		#[cfg(any(test, fuzzing))]
 		{
 			let PredictedNextFee { predicted_feerate, predicted_nondust_htlc_count, predicted_fee_sat } = *funding.next_remote_fee.lock().unwrap();
-			if predicted_feerate == counterparty_commitment_tx.feerate_per_kw() && predicted_nondust_htlc_count == counterparty_commitment_tx.nondust_htlcs().len() {
+			if predicted_feerate == counterparty_commitment_tx.negotiated_feerate_per_kw() && predicted_nondust_htlc_count == counterparty_commitment_tx.nondust_htlcs().len() {
 				assert_eq!(predicted_fee_sat, commitment_data.stats.commit_tx_fee_sat);
 			}
 		}
@@ -12238,7 +12311,7 @@ where
 					debug_assert_eq!(htlc_signatures.len(), trusted_tx.nondust_htlcs().len());
 					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(trusted_tx.nondust_htlcs()) {
 						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
-							encode::serialize_hex(&chan_utils::build_htlc_transaction(&trusted_tx.txid(), trusted_tx.feerate_per_kw(), funding.get_holder_selected_contest_delay(), htlc, funding.get_channel_type(), &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
+							encode::serialize_hex(&chan_utils::build_htlc_transaction(&trusted_tx.txid(), trusted_tx.negotiated_feerate_per_kw(), funding.get_holder_selected_contest_delay(), htlc, funding.get_channel_type(), &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
 							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, funding.get_channel_type(), &counterparty_keys)),
 							log_bytes!(counterparty_keys.broadcaster_htlc_key.to_public_key().serialize()),
 							log_bytes!(htlc_sig.serialize_compact()[..]), &self.context.channel_id());
@@ -16012,7 +16085,7 @@ mod tests {
 						commitment_txid: trusted_tx.txid(),
 						per_commitment_number: trusted_tx.commitment_number(),
 						per_commitment_point: trusted_tx.per_commitment_point(),
-						feerate_per_kw: trusted_tx.feerate_per_kw(),
+						feerate_per_kw: trusted_tx.negotiated_feerate_per_kw(),
 						htlc: htlc.clone(),
 						preimage: preimage.clone(),
 						counterparty_sig: *htlc_counterparty_sig,

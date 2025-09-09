@@ -89,6 +89,12 @@ pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 114;
 #[cfg(not(feature = "grind_signatures"))]
 pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 115;
 
+/// The P2A scriptpubkey
+pub const P2A_SCRIPT: &[u8] = &[0x51, 0x02, 0x4e, 0x73];
+
+/// The maximum value of the P2A anchor
+pub const P2A_MAX_VALUE: u64 = 240;
+
 /// The upper bound weight of an HTLC timeout input from a commitment transaction with anchor
 /// outputs.
 pub const HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT: u64 = 288;
@@ -804,18 +810,30 @@ pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u
 ///
 /// Panics if htlc.transaction_output_index.is_none() (as such HTLCs do not appear in the
 /// commitment transaction).
-#[rustfmt::skip]
-pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey) -> Transaction {
-	let txins= vec![build_htlc_input(commitment_txid, htlc, channel_type_features)];
+pub fn build_htlc_transaction(
+	commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment,
+	channel_type_features: &ChannelTypeFeatures,
+	broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey,
+) -> Transaction {
+	let txins = vec![build_htlc_input(commitment_txid, htlc, channel_type_features)];
 
-	let mut txouts: Vec<TxOut> = Vec::new();
-	txouts.push(build_htlc_output(
-		feerate_per_kw, contest_delay, htlc, channel_type_features,
-		broadcaster_delayed_payment_key, revocation_key
-	));
+	let txouts: Vec<TxOut> = vec![build_htlc_output(
+		feerate_per_kw,
+		contest_delay,
+		htlc,
+		channel_type_features,
+		broadcaster_delayed_payment_key,
+		revocation_key,
+	)];
+
+	let version = if channel_type_features.supports_anchor_zero_fee_commitments() {
+		Version::non_standard(3)
+	} else {
+		Version::TWO
+	};
 
 	Transaction {
-		version: Version::TWO,
+		version,
 		lock_time: LockTime::from_consensus(if htlc.offered { htlc.cltv_expiry } else { 0 }),
 		input: txins,
 		output: txouts,
@@ -859,12 +877,13 @@ pub(crate) fn build_htlc_output(
 }
 
 /// Returns the witness required to satisfy and spend a HTLC input.
-#[rustfmt::skip]
 pub fn build_htlc_input_witness(
 	local_sig: &Signature, remote_sig: &Signature, preimage: &Option<PaymentPreimage>,
 	redeem_script: &Script, channel_type_features: &ChannelTypeFeatures,
 ) -> Witness {
-	let remote_sighash_type = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+	let remote_sighash_type = if channel_type_features.supports_anchors_zero_fee_htlc_tx()
+		|| channel_type_features.supports_anchor_zero_fee_commitments()
+	{
 		EcdsaSighashType::SinglePlusAnyoneCanPay
 	} else {
 		EcdsaSighashType::All
@@ -873,7 +892,10 @@ pub fn build_htlc_input_witness(
 	let mut witness = Witness::new();
 	// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 	witness.push(vec![]);
-	witness.push_ecdsa_signature(&BitcoinSignature { signature: *remote_sig, sighash_type: remote_sighash_type });
+	witness.push_ecdsa_signature(&BitcoinSignature {
+		signature: *remote_sig,
+		sighash_type: remote_sighash_type,
+	});
 	witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(*local_sig));
 	if let Some(preimage) = preimage {
 		witness.push(preimage.0.to_vec());
@@ -1231,6 +1253,11 @@ impl<'a> DirectedChannelTransactionParameters<'a> {
 	/// The type of channel these parameters are for
 	pub fn channel_type_features(&self) -> &'a ChannelTypeFeatures {
 		&self.inner.channel_type_features
+	}
+
+	/// The value locked in the channel, denominated in satoshis.
+	pub fn channel_value_satoshis(&self) -> u64 {
+		self.inner.channel_value_satoshis
 	}
 }
 
@@ -1637,7 +1664,7 @@ impl CommitmentTransaction {
 		let outputs = Self::build_outputs_and_htlcs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, &mut nondust_htlcs, channel_parameters);
 
 		let (obscured_commitment_transaction_number, txins) = Self::build_inputs(commitment_number, channel_parameters);
-		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
+		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs, channel_parameters);
 		let txid = transaction.compute_txid();
 		CommitmentTransaction {
 			commitment_number,
@@ -1691,6 +1718,8 @@ impl CommitmentTransaction {
 		// First rebuild the htlc outputs, note that `outputs` is now the same length as `self.nondust_htlcs`
 		let mut outputs = Self::build_htlc_outputs(keys, &self.nondust_htlcs, channel_parameters.channel_type_features());
 
+		let nondust_htlcs_value_sum_sat = self.nondust_htlcs.iter().map(|htlc| htlc.to_bitcoin_amount()).sum();
+
 		// Check that the HTLC outputs are sorted by value, script pubkey, and cltv expiry.
 		// Note that this only iterates if the length of `outputs` and `self.nondust_htlcs` is >= 2.
 		if (1..outputs.len()).into_iter().any(|i| Self::is_left_greater(i, &outputs, &self.nondust_htlcs)) {
@@ -1713,11 +1742,11 @@ impl CommitmentTransaction {
 			self.to_broadcaster_value_sat,
 			self.to_countersignatory_value_sat,
 			channel_parameters,
-			!self.nondust_htlcs.is_empty(),
+			nondust_htlcs_value_sum_sat,
 			insert_non_htlc_output
 		);
 
-		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
+		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs, channel_parameters);
 		let txid = transaction.compute_txid();
 		let built_transaction = BuiltCommitmentTransaction {
 			transaction,
@@ -1727,9 +1756,14 @@ impl CommitmentTransaction {
 	}
 
 	#[rustfmt::skip]
-	fn make_transaction(obscured_commitment_transaction_number: u64, txins: Vec<TxIn>, outputs: Vec<TxOut>) -> Transaction {
+	fn make_transaction(obscured_commitment_transaction_number: u64, txins: Vec<TxIn>, outputs: Vec<TxOut>, channel_parameters: &DirectedChannelTransactionParameters) -> Transaction {
+		let version = if channel_parameters.channel_type_features().supports_anchor_zero_fee_commitments() {
+			Version::non_standard(3)
+		} else {
+			Version::TWO
+		};
 		Transaction {
-			version: Version::TWO,
+			version,
 			lock_time: LockTime::from_consensus(((0x20 as u32) << 8 * 3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32)),
 			input: txins,
 			output: outputs,
@@ -1747,7 +1781,8 @@ impl CommitmentTransaction {
 		// First build and sort the HTLC outputs.
 		// Also sort the HTLC output data in `nondust_htlcs` in the same order.
 		let mut outputs = Self::build_sorted_htlc_outputs(keys, nondust_htlcs, channel_parameters.channel_type_features());
-		let tx_has_htlc_outputs = !outputs.is_empty();
+
+		let nondust_htlcs_value_sum_sat = nondust_htlcs.iter().map(|htlc| htlc.to_bitcoin_amount()).sum();
 
 		// Initialize the transaction output indices; we will update them below when we
 		// add the non-htlc transaction outputs.
@@ -1784,7 +1819,7 @@ impl CommitmentTransaction {
 			to_broadcaster_value_sat,
 			to_countersignatory_value_sat,
 			channel_parameters,
-			tx_has_htlc_outputs,
+			nondust_htlcs_value_sum_sat,
 			insert_non_htlc_output
 		);
 
@@ -1797,7 +1832,7 @@ impl CommitmentTransaction {
 		to_broadcaster_value_sat: Amount,
 		to_countersignatory_value_sat: Amount,
 		channel_parameters: &DirectedChannelTransactionParameters,
-		tx_has_htlc_outputs: bool,
+		nondust_htlcs_value_sum_sat: Amount,
 		mut insert_non_htlc_output: F,
 	) where
 		F: FnMut(TxOut),
@@ -1807,6 +1842,7 @@ impl CommitmentTransaction {
 		let broadcaster_funding_key = &channel_parameters.broadcaster_pubkeys().funding_pubkey;
 		let channel_type = channel_parameters.channel_type_features();
 		let contest_delay = channel_parameters.contest_delay();
+		let tx_has_htlc_outputs = nondust_htlcs_value_sum_sat != Amount::ZERO;
 
 		if to_countersignatory_value_sat > Amount::ZERO {
 			let script = if channel_type.supports_anchors_zero_fee_htlc_tx() {
@@ -1848,6 +1884,16 @@ impl CommitmentTransaction {
 					value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
 				});
 			}
+		}
+
+		if channel_type.supports_anchor_zero_fee_commitments() {
+				let channel_value_satoshis = Amount::from_sat(channel_parameters.channel_value_satoshis());
+				// These subtractions panic on underflow, but this should never happen
+				let trimmed_sum_sat = channel_value_satoshis - nondust_htlcs_value_sum_sat - to_broadcaster_value_sat - to_countersignatory_value_sat;
+				insert_non_htlc_output(TxOut {
+					script_pubkey: ScriptBuf::from_bytes(P2A_SCRIPT.to_vec()),
+					value: cmp::min(Amount::from_sat(P2A_MAX_VALUE), trimmed_sum_sat),
+				});
 		}
 	}
 
@@ -1950,8 +1996,11 @@ impl CommitmentTransaction {
 		self.to_countersignatory_value_sat.to_sat()
 	}
 
-	/// The feerate paid per 1000-weight-unit in this commitment transaction.
-	pub fn feerate_per_kw(&self) -> u32 {
+	/// The feerate paid per 1000-weight-unit we negotiated with our
+	/// peer for this commitment transaction. Note that the actual
+	/// feerate of the commitment transaction may be higher than the
+	/// negotiated feerate.
+	pub fn negotiated_feerate_per_kw(&self) -> u32 {
 		self.feerate_per_kw
 	}
 
