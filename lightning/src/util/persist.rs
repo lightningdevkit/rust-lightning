@@ -16,7 +16,6 @@ use alloc::sync::Arc;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::{BlockHash, Txid};
 
-use core::cmp;
 use core::future::Future;
 use core::ops::Deref;
 use core::pin::Pin;
@@ -938,14 +937,22 @@ where
 		for monitor_key in monitor_keys {
 			let monitor_name = MonitorName::from_str(&monitor_key)?;
 			let (_, current_monitor) = self.read_monitor(&monitor_name, &monitor_key).await?;
-			let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
-			let updates = self.kv_store.list(primary, monitor_key.as_str()).await?;
-			for update in updates {
-				let update_name = UpdateName::new(update)?;
-				// if the update_id is lower than the stored monitor, delete
-				if update_name.0 <= current_monitor.get_latest_update_id() {
-					self.kv_store.remove(primary, &monitor_key, update_name.as_str(), lazy).await?;
-				}
+			let latest_update_id = current_monitor.get_latest_update_id();
+			self.cleanup_stale_updates_for_monitor_to(&monitor_key, latest_update_id, lazy).await;
+		}
+		Ok(())
+	}
+
+	async fn cleanup_stale_updates_for_monitor_to(
+		&self, monitor_key: &str, latest_update_id: u64, lazy: bool,
+	) -> Result<(), io::Error> {
+		let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+		let updates = self.kv_store.list(primary, monitor_key).await?;
+		for update in updates {
+			let update_name = UpdateName::new(update)?;
+			// if the update_id is lower than the stored monitor, delete
+			if update_name.0 <= latest_update_id {
+				self.kv_store.remove(primary, monitor_key, update_name.as_str(), lazy).await?;
 			}
 		}
 		Ok(())
@@ -989,40 +996,24 @@ where
 					.write(primary, &monitor_key, update_name.as_str(), update.encode())
 					.await
 			} else {
-				// In case of channel-close monitor update, we need to read old monitor before persisting
-				// the new one in order to determine the cleanup range.
-				let maybe_old_monitor = match monitor.get_latest_update_id() {
-					LEGACY_CLOSED_CHANNEL_UPDATE_ID => {
-						let monitor_key = monitor_name.to_string();
-						self.read_monitor(&monitor_name, &monitor_key).await.ok()
-					},
-					_ => None,
-				};
-
 				// We could write this update, but it meets criteria of our design that calls for a full monitor write.
 				let write_status = self.persist_new_channel(monitor_name, monitor).await;
 
 				if let Ok(()) = write_status {
 					let channel_closed_legacy =
 						monitor.get_latest_update_id() == LEGACY_CLOSED_CHANNEL_UPDATE_ID;
-					let cleanup_range = if channel_closed_legacy {
-						// If there is an error while reading old monitor, we skip clean up.
-						maybe_old_monitor.map(|(_, ref old_monitor)| {
-							let start = old_monitor.get_latest_update_id();
-							// We never persist an update with the legacy closed update_id
-							let end = cmp::min(
-								start.saturating_add(self.maximum_pending_updates),
-								LEGACY_CLOSED_CHANNEL_UPDATE_ID - 1,
-							);
-							(start, end)
-						})
+					let latest_update_id = monitor.get_latest_update_id();
+					if channel_closed_legacy {
+						let monitor_key = monitor_name.to_string();
+						self.cleanup_stale_updates_for_monitor_to(
+							&monitor_key,
+							latest_update_id,
+							true,
+						)
+						.await;
 					} else {
-						let end = monitor.get_latest_update_id();
+						let end = latest_update_id;
 						let start = end.saturating_sub(self.maximum_pending_updates);
-						Some((start, end))
-					};
-
-					if let Some((start, end)) = cleanup_range {
 						self.cleanup_in_range(monitor_name, start, end).await;
 					}
 				}
@@ -1263,6 +1254,7 @@ mod tests {
 	use crate::util::test_utils::{self, TestStore};
 	use crate::{check_added_monitors, check_closed_broadcast};
 	use bitcoin::hashes::hex::FromHex;
+	use core::cmp;
 
 	const EXPECTED_UPDATES_PER_PAYMENT: u64 = 5;
 
