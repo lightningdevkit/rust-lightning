@@ -1094,11 +1094,19 @@ where
 				let monitor_key = monitor_name.to_string();
 				let update_name = UpdateName::from(update.update_id);
 				let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+				// Note that this is NOT an async function, but rather calls the *sync* KVStore
+				// write method, allowing it to do its queueing immediately, and then return a
+				// future for the completion of the write. This ensures monitor persistence
+				// ordering is preserved.
 				res_a = Some(self.kv_store
 					.write(primary, &monitor_key, update_name.as_str(), update.encode())
 				);
 			} else {
 				// We could write this update, but it meets criteria of our design that calls for a full monitor write.
+				// Note that this is NOT an async function, but rather calls the *sync* KVStore
+				// write method, allowing it to do its queueing immediately, and then return a
+				// future for the completion of the write. This ensures monitor persistence
+				// ordering is preserved. This, thus, must happen before any await we do below.
 				let write_fut = self.persist_new_channel(monitor_name, monitor);
 				let latest_update_id = monitor.get_latest_update_id();
 
@@ -1126,6 +1134,9 @@ where
 			res_c = Some(self.persist_new_channel(monitor_name, monitor));
 		}
 		async move {
+			// Complete any pending future(s). Note that to keep one return type we have to end
+			// with a single async move block that we return, rather than trying to return the
+			// individual futures themselves.
 			if let Some(a) = res_a {
 				a.await?;
 			}
