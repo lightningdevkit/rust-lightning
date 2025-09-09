@@ -2593,6 +2593,9 @@ where
 				self.update_gossip_backlogged();
 			},
 			wire::Message::ChannelUpdate(msg) => {
+				let chan_handler = &self.message_handler.chan_handler;
+				chan_handler.handle_channel_update(their_node_id, &msg);
+
 				let route_handler = &self.message_handler.route_handler;
 				if route_handler
 					.handle_channel_update(Some(their_node_id), &msg)
