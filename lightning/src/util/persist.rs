@@ -863,6 +863,8 @@ where
 		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
 	) {
 		let inner = Arc::clone(&self.0);
+		// Note that `persist_new_channel` is a sync method which calls all the way through to the
+		// sync KVStore::write method (which returns a future) to ensure writes are well-ordered.
 		let future = inner.persist_new_channel(monitor_name, monitor);
 		let channel_id = monitor.channel_id();
 		let completion = (monitor.channel_id(), monitor.get_latest_update_id());
@@ -884,6 +886,8 @@ where
 		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
 	) {
 		let inner = Arc::clone(&self.0);
+		// Note that `update_persisted_channel` is a sync method which calls all the way through to
+		// the sync KVStore::write method (which returns a future) to ensure writes are well-ordered
 		let future = inner.update_persisted_channel(monitor_name, update, monitor);
 		let channel_id = monitor.channel_id();
 		let completion = if let Some(update) = update {
