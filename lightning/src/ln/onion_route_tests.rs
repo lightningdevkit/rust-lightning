@@ -2392,6 +2392,7 @@ macro_rules! get_phantom_route {
 			])])
 			.unwrap();
 		let scorer = test_utils::TestScorer::new();
+		let first_hops = $nodes[0].node.list_usable_channels();
 		let network_graph = $nodes[0].network_graph.read_only();
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, $amt);
 		(
@@ -2399,7 +2400,7 @@ macro_rules! get_phantom_route {
 				&$nodes[0].node.get_our_node_id(),
 				&route_params,
 				&network_graph,
-				Some(&$nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
+				Some(&first_hops.iter().collect::<Vec<_>>()),
 				$nodes[0].logger,
 				&scorer,
 				&Default::default(),
