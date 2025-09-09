@@ -2058,13 +2058,10 @@ pub trait ChannelMessageHandler: BaseMessageHandler {
 
 	// Splicing
 	/// Handle an incoming `splice_init` message from the given peer.
-	#[cfg(splicing)]
 	fn handle_splice_init(&self, their_node_id: PublicKey, msg: &SpliceInit);
 	/// Handle an incoming `splice_ack` message from the given peer.
-	#[cfg(splicing)]
 	fn handle_splice_ack(&self, their_node_id: PublicKey, msg: &SpliceAck);
 	/// Handle an incoming `splice_locked` message from the given peer.
-	#[cfg(splicing)]
 	fn handle_splice_locked(&self, their_node_id: PublicKey, msg: &SpliceLocked);
 
 	// Interactive channel construction

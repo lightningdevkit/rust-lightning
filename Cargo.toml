@@ -65,7 +65,6 @@ check-cfg = [
     "cfg(ldk_test_vectors)",
     "cfg(taproot)",
     "cfg(require_route_graph_test)",
-    "cfg(splicing)",
     "cfg(simple_close)",
     "cfg(peer_storage)",
 ]

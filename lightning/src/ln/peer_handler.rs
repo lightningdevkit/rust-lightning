@@ -448,15 +448,12 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_stfu(&self, their_node_id: PublicKey, msg: &msgs::Stfu) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
-	#[cfg(splicing)]
 	fn handle_splice_init(&self, their_node_id: PublicKey, msg: &msgs::SpliceInit) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
-	#[cfg(splicing)]
 	fn handle_splice_ack(&self, their_node_id: PublicKey, msg: &msgs::SpliceAck) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
-	#[cfg(splicing)]
 	fn handle_splice_locked(&self, their_node_id: PublicKey, msg: &msgs::SpliceLocked) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
@@ -2481,16 +2478,13 @@ where
 				self.message_handler.chan_handler.handle_stfu(their_node_id, &msg);
 			},
 
-			#[cfg(splicing)]
 			// Splicing messages:
 			wire::Message::SpliceInit(msg) => {
 				self.message_handler.chan_handler.handle_splice_init(their_node_id, &msg);
 			},
-			#[cfg(splicing)]
 			wire::Message::SpliceAck(msg) => {
 				self.message_handler.chan_handler.handle_splice_ack(their_node_id, &msg);
 			},
-			#[cfg(splicing)]
 			wire::Message::SpliceLocked(msg) => {
 				self.message_handler.chan_handler.handle_splice_locked(their_node_id, &msg);
 			},
