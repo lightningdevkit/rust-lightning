@@ -772,9 +772,6 @@ impl Display for Bolt11ParseError {
 			Bolt11ParseError::InvalidScriptHashLength => {
 				f.write_str("fallback script hash has a length unequal 32 bytes")
 			},
-			Bolt11ParseError::InvalidRecoveryId => {
-				f.write_str("recovery id is out of range (should be in [0,3])")
-			},
 			Bolt11ParseError::Skip => f.write_str(
 				"the tagged field has to be skipped because of an unexpected, but allowed property",
 			),

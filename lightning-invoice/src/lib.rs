@@ -106,7 +106,6 @@ pub enum Bolt11ParseError {
 	InvalidSegWitProgramLength,
 	InvalidPubKeyHashLength,
 	InvalidScriptHashLength,
-	InvalidRecoveryId,
 	// Invalid length, with actual length, expected length, and name of the element
 	InvalidSliceLength(usize, usize, &'static str),
 
@@ -1011,31 +1010,19 @@ impl SignedRawBolt11Invoice {
 	}
 
 	/// Checks if the signature is valid for the included payee public key or if none exists if it's
-	/// valid for the recovered signature (which should always be true?).
+	/// possible to recover the public key from the signature.
 	pub fn check_signature(&self) -> bool {
-		let included_pub_key = self.raw_invoice.payee_pub_key();
+		match self.raw_invoice.payee_pub_key() {
+			Some(pk) => {
+				let hash = Message::from_digest(self.hash);
 
-		let mut recovered_pub_key = Option::None;
-		if recovered_pub_key.is_none() {
-			let recovered = match self.recover_payee_pub_key() {
-				Ok(pk) => pk,
-				Err(_) => return false,
-			};
-			recovered_pub_key = Some(recovered);
-		}
+				let secp_context = Secp256k1::new();
+				let verification_result =
+					secp_context.verify_ecdsa(&hash, &self.signature.to_standard(), pk);
 
-		let pub_key =
-			included_pub_key.or(recovered_pub_key.as_ref()).expect("One is always present");
-
-		let hash = Message::from_digest(self.hash);
-
-		let secp_context = Secp256k1::new();
-		let verification_result =
-			secp_context.verify_ecdsa(&hash, &self.signature.to_standard(), pub_key);
-
-		match verification_result {
-			Ok(()) => true,
-			Err(_) => false,
+				verification_result.is_ok()
+			},
+			None => self.recover_payee_pub_key().is_ok(),
 		}
 	}
 }
@@ -1410,19 +1397,8 @@ impl Bolt11Invoice {
 		}
 	}
 
-	/// Check that the invoice is signed correctly and that key recovery works
+	/// Check that the invoice is signed correctly
 	pub fn check_signature(&self) -> Result<(), Bolt11SemanticError> {
-		match self.signed_invoice.recover_payee_pub_key() {
-			Err(bitcoin::secp256k1::Error::InvalidRecoveryId) => {
-				return Err(Bolt11SemanticError::InvalidRecoveryId)
-			},
-			Err(bitcoin::secp256k1::Error::InvalidSignature) => {
-				return Err(Bolt11SemanticError::InvalidSignature)
-			},
-			Err(e) => panic!("no other error may occur, got {:?}", e),
-			Ok(_) => {},
-		}
-
 		if !self.signed_invoice.check_signature() {
 			return Err(Bolt11SemanticError::InvalidSignature);
 		}
@@ -1873,9 +1849,6 @@ pub enum Bolt11SemanticError {
 	/// The invoice's features are invalid
 	InvalidFeatures,
 
-	/// The recovery id doesn't fit the signature/pub key
-	InvalidRecoveryId,
-
 	/// The invoice's signature is invalid
 	InvalidSignature,
 
@@ -1893,7 +1866,6 @@ impl Display for Bolt11SemanticError {
 			Bolt11SemanticError::NoPaymentSecret => f.write_str("The invoice is missing the mandatory payment secret"),
 			Bolt11SemanticError::MultiplePaymentSecrets => f.write_str("The invoice contains multiple payment secrets"),
 			Bolt11SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
-			Bolt11SemanticError::InvalidRecoveryId => f.write_str("The recovery id doesn't fit the signature/pub key"),
 			Bolt11SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
 			Bolt11SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis"),
 		}
