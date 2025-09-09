@@ -1453,11 +1453,12 @@ fn get_ldk_payment_preimage() {
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let first_hops = nodes[0].node.list_usable_channels();
 	let route = get_route(
 		&node_a_id,
 		&route_params,
 		&nodes[0].network_graph.read_only(),
-		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
+		Some(&first_hops.iter().collect::<Vec<_>>()),
 		nodes[0].logger,
 		&scorer,
 		&Default::default(),
