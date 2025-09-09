@@ -2715,6 +2715,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				} else {
 					let funding = get_confirmed_funding_scope!(self);
 					debug_assert!(!funding.channel_type_features().supports_anchors_zero_fee_htlc_tx());
+					debug_assert!(!funding.channel_type_features().supports_anchor_zero_fee_commitments());
 					BitcoinOutPoint::new(*txid, 0)
 				}
 			} else {
