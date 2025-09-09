@@ -5502,6 +5502,67 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
+		// Immediate fail-back on stale force-close, regardless of expiry or whether we're allowed to send further updates.
+		let current_counterparty_htlcs = if let Some(txid) = self.funding.current_counterparty_commitment_txid {
+			if let Some(htlc_outputs) = self.funding.counterparty_claimable_outpoints.get(&txid) {
+				Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+			} else { None }
+		} else { None }.into_iter().flatten();
+
+		let prev_counterparty_htlcs = if let Some(txid) = self.funding.prev_counterparty_commitment_txid {
+			if let Some(htlc_outputs) = self.funding.counterparty_claimable_outpoints.get(&txid) {
+				Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+			} else { None }
+		} else { None }.into_iter().flatten();
+
+		let htlcs = holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES)
+			.chain(current_counterparty_htlcs)
+			.chain(prev_counterparty_htlcs);
+
+		// Group by payment hash so we fail back all identical HTLCs together
+		let mut htlcs_by_hash: HashMap<PaymentHash, Vec<(&HTLCOutputInCommitment, &HTLCSource)>> = new_hash_map();
+		for (htlc, source_opt) in htlcs {
+			if let Some(source) = source_opt {
+				htlcs_by_hash.entry(htlc.payment_hash).or_default().push((htlc, source));
+			}
+		}
+
+		let monitor_htlc_sources: HashSet<&HTLCSource> = self
+			.onchain_events_awaiting_threshold_conf
+			.iter()
+			.filter_map(|event_entry| match event_entry.event {
+				OnchainEvent::HTLCUpdate { ref source, .. } => Some(source),
+				_ => None,
+			})
+			.collect();
+
+		for (payment_hash, htlc_group) in htlcs_by_hash {
+			let is_any_htlc_missing = htlc_group
+				.iter()
+				.any(|(_, source)| !monitor_htlc_sources.contains(source));
+			if is_any_htlc_missing {
+				log_info!(logger,
+					"Detected stale force-close. Failing back related HTLCs for hash {}.",
+					&payment_hash);
+				for (htlc, source) in htlc_group {
+					if self
+						.failed_back_htlc_ids
+						.insert(SentHTLCId::from_source(source))
+					{
+						log_error!(logger,
+							"Failing back HTLC for payment {} due to stale close.",
+							log_bytes!(payment_hash.0));
+						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+							source: source.clone(),
+							payment_preimage: None,
+							payment_hash,
+							htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+						}));
+					}
+				}
+			}
+		}
+
 		if self.no_further_updates_allowed() {
 			// Fail back HTLCs on backwards channels if they expire within
 			// `LATENCY_GRACE_PERIOD_BLOCKS` blocks and the channel is closed (i.e. we're at a

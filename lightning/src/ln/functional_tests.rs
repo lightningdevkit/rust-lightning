@@ -32,8 +32,8 @@ use crate::ln::channel::{
 	MIN_CHAN_DUST_LIMIT_SATOSHIS, UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
 };
 use crate::ln::channelmanager::{
-	PaymentId, RAACommitmentOrder, RecipientOnionFields, BREAKDOWN_TIMEOUT, DISABLE_GOSSIP_TICKS,
-	ENABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA,
+	PaymentId, RAACommitmentOrder, RecipientOnionFields, Retry, BREAKDOWN_TIMEOUT,
+	DISABLE_GOSSIP_TICKS, ENABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{
@@ -9679,4 +9679,83 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 pub fn test_multi_post_event_actions() {
 	do_test_multi_post_event_actions(true);
 	do_test_multi_post_event_actions(false);
+}
+
+#[xtest(feature = "_externalize_tests")]
+fn test_stale_force_close_with_identical_htlcs() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_a_b = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let _chan_b_c = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let stale_tx = get_local_commitment_txn!(nodes[0], chan_a_b.2)[0].clone();
+
+	let (_payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
+
+	let make_event = |pid: PaymentId| {
+		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42);
+		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 10_000);
+		nodes[0]
+			.node
+			.send_payment(
+				payment_hash,
+				RecipientOnionFields::secret_only(payment_secret),
+				pid,
+				route_params,
+				Retry::Attempts(0),
+			)
+			.unwrap();
+		check_added_monitors!(&nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events)
+	};
+
+	let first_event = make_event(PaymentId([1; 32]));
+	do_pass_along_path(
+		PassAlongPathArgs::new(
+			&nodes[0],
+			&[&nodes[1], &nodes[2]],
+			10_000,
+			payment_hash,
+			first_event,
+		)
+		.with_payment_secret(payment_secret)
+		.without_clearing_recipient_events()
+		.without_claimable_event(),
+	);
+
+	let second_event = make_event(PaymentId([2; 32]));
+	do_pass_along_path(
+		PassAlongPathArgs::new(
+			&nodes[0],
+			&[&nodes[1], &nodes[2]],
+			10_000,
+			payment_hash,
+			second_event,
+		)
+		.with_payment_secret(payment_secret)
+		.without_clearing_recipient_events()
+		.without_claimable_event(),
+	);
+
+	mine_transaction(&nodes[1], &stale_tx);
+	check_added_monitors(&nodes[1], 1);
+	nodes[1].node.process_pending_htlc_forwards();
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	let failed = events
+		.iter()
+		.filter(|e| matches!(e, crate::events::Event::HTLCHandlingFailed { .. }))
+		.count();
+	assert_eq!(
+		failed, 2,
+		"ChannelMonitor should immediately surface two HTLC failures after stale close"
+	);
+
+	nodes[1].node.get_and_clear_pending_msg_events();
+	nodes[2].node.get_and_clear_pending_events();
+	nodes[2].node.get_and_clear_pending_msg_events();
 }
