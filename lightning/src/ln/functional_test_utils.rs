@@ -2647,11 +2647,12 @@ pub fn get_route(send_node: &Node, route_params: &RouteParameters) -> Result<Rou
 	let scorer = TestScorer::new();
 	let keys_manager = TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
+	let first_hops = send_node.node.list_usable_channels();
 	router::get_route(
 		&send_node.node.get_our_node_id(),
 		route_params,
 		&send_node.network_graph.read_only(),
-		Some(&send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
+		Some(&first_hops.iter().collect::<Vec<_>>()),
 		send_node.logger,
 		&scorer,
 		&Default::default(),
