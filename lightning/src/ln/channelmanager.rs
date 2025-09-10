@@ -2506,8 +2506,8 @@ where
 // `total_consistency_lock`
 //  |
 //  |__`forward_htlcs`
-//  |   |
-//  |   |__`pending_intercepted_htlcs`
+//  |
+//  |__`pending_intercepted_htlcs`
 //  |
 //  |__`decode_update_add_htlcs`
 //  |
@@ -10696,77 +10696,76 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						prev_user_channel_id,
 						forward_info,
 					};
-					match forward_htlcs.entry(scid) {
-						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
-						},
-						hash_map::Entry::Vacant(entry) => {
-							if !is_our_scid
-								&& pending_add.forward_info.incoming_amt_msat.is_some()
-								&& fake_scid::is_valid_intercept(
-									&self.fake_scid_rand_bytes,
-									scid,
-									&self.chain_hash,
-								) {
-								let intercept_id = InterceptId(
-									Sha256::hash(&pending_add.forward_info.incoming_shared_secret)
-										.to_byte_array(),
-								);
-								let mut pending_intercepts =
-									self.pending_intercepted_htlcs.lock().unwrap();
-								match pending_intercepts.entry(intercept_id) {
-									hash_map::Entry::Vacant(entry) => {
-										new_intercept_events.push_back((
-											events::Event::HTLCIntercepted {
-												requested_next_hop_scid: scid,
-												payment_hash,
-												inbound_amount_msat: pending_add
-													.forward_info
-													.incoming_amt_msat
-													.unwrap(),
-												expected_outbound_amount_msat: pending_add
-													.forward_info
-													.outgoing_amt_msat,
-												intercept_id,
-											},
-											None,
-										));
-										entry.insert(pending_add);
+
+					if !is_our_scid
+						&& pending_add.forward_info.incoming_amt_msat.is_some()
+						&& fake_scid::is_valid_intercept(
+							&self.fake_scid_rand_bytes,
+							scid,
+							&self.chain_hash,
+						) {
+						let intercept_id = InterceptId(
+							Sha256::hash(&pending_add.forward_info.incoming_shared_secret)
+								.to_byte_array(),
+						);
+						let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
+						match pending_intercepts.entry(intercept_id) {
+							hash_map::Entry::Vacant(entry) => {
+								new_intercept_events.push_back((
+									events::Event::HTLCIntercepted {
+										requested_next_hop_scid: scid,
+										payment_hash,
+										inbound_amount_msat: pending_add
+											.forward_info
+											.incoming_amt_msat
+											.unwrap(),
+										expected_outbound_amount_msat: pending_add
+											.forward_info
+											.outgoing_amt_msat,
+										intercept_id,
 									},
-									hash_map::Entry::Occupied(_) => {
-										let logger = WithContext::from(
-											&self.logger,
-											None,
-											Some(prev_channel_id),
-											Some(payment_hash),
-										);
-										log_info!(
+									None,
+								));
+								entry.insert(pending_add);
+							},
+							hash_map::Entry::Occupied(_) => {
+								let logger = WithContext::from(
+									&self.logger,
+									None,
+									Some(prev_channel_id),
+									Some(payment_hash),
+								);
+								log_info!(
 											logger,
 											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
 											scid
 										);
-										let htlc_source = HTLCSource::PreviousHopData(
-											pending_add.htlc_previous_hop_data(),
-										);
-										let reason = HTLCFailReason::from_failure_code(
-											LocalHTLCFailureReason::UnknownNextPeer,
-										);
-										let failure_type =
-											HTLCHandlingFailureType::InvalidForward {
-												requested_forward_scid: scid,
-											};
-										failed_intercept_forwards.push((
-											htlc_source,
-											payment_hash,
-											reason,
-											failure_type,
-										));
-									},
-								}
-							} else {
+								let htlc_source = HTLCSource::PreviousHopData(
+									pending_add.htlc_previous_hop_data(),
+								);
+								let reason = HTLCFailReason::from_failure_code(
+									LocalHTLCFailureReason::UnknownNextPeer,
+								);
+								let failure_type = HTLCHandlingFailureType::InvalidForward {
+									requested_forward_scid: scid,
+								};
+								failed_intercept_forwards.push((
+									htlc_source,
+									payment_hash,
+									reason,
+									failure_type,
+								));
+							},
+						}
+					} else {
+						match forward_htlcs.entry(scid) {
+							hash_map::Entry::Occupied(mut entry) => {
+								entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
+							},
+							hash_map::Entry::Vacant(entry) => {
 								entry.insert(vec![HTLCForwardInfo::AddHTLC(pending_add)]);
-							}
-						},
+							},
+						}
 					}
 				}
 			}
