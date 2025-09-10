@@ -1214,9 +1214,14 @@ where
 	where
 		ES::Target: EntropySource,
 	{
-		// In the future, we should support multi-hop paths here.
 		let context =
 			MessageContext::AsyncPayments(AsyncPaymentsContext::ReleaseHeldHtlc { intercept_id });
+		if let Ok(mut paths) = self.create_blinded_paths(context.clone()) {
+			if let Some(path) = paths.pop() {
+				return path;
+			}
+		}
+
 		let num_dummy_hops = PADDED_PATH_LENGTH.saturating_sub(1);
 		BlindedMessagePath::new_with_dummy_hops(
 			&[],

@@ -334,6 +334,9 @@ pub enum TestMessageRouterInternal<'a> {
 pub struct TestMessageRouter<'a> {
 	pub inner: TestMessageRouterInternal<'a>,
 	pub peers_override: Mutex<Vec<PublicKey>>,
+	// An override result for Self::create_blinded_paths, plus a tracker for how many times the
+	// overridden result has been returned.
+	pub create_blinded_paths_res_override: Mutex<(u8, Option<Result<Vec<BlindedMessagePath>, ()>>)>,
 }
 
 impl<'a> TestMessageRouter<'a> {
@@ -346,6 +349,7 @@ impl<'a> TestMessageRouter<'a> {
 				entropy_source,
 			)),
 			peers_override: Mutex::new(Vec::new()),
+			create_blinded_paths_res_override: Mutex::new((0, None)),
 		}
 	}
 
@@ -358,6 +362,7 @@ impl<'a> TestMessageRouter<'a> {
 				entropy_source,
 			)),
 			peers_override: Mutex::new(Vec::new()),
+			create_blinded_paths_res_override: Mutex::new((0, None)),
 		}
 	}
 }
@@ -385,6 +390,15 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
+		{
+			let mut res_override = self.create_blinded_paths_res_override.lock().unwrap();
+			if let Some(res) = &res_override.1 {
+				let res = res.clone();
+				res_override.0 += 1;
+				return res;
+			}
+		}
+
 		let mut peers = peers;
 		{
 			let peers_override = self.peers_override.lock().unwrap();
