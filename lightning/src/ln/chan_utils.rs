@@ -89,7 +89,10 @@ pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 114;
 #[cfg(not(feature = "grind_signatures"))]
 pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 115;
 
-/// The maximum value of the P2A anchor
+/// The weight of a P2A anchor witness.
+pub const P2A_ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 1;
+
+/// The maximum value of a P2A anchor.
 pub const P2A_MAX_VALUE: u64 = 240;
 
 /// The upper bound weight of an HTLC timeout input from a commitment transaction with anchor
