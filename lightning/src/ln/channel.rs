@@ -6660,42 +6660,6 @@ where
 	quiescent_action: Option<QuiescentAction>,
 }
 
-macro_rules! promote_splice_funding {
-	($self: expr, $pending_splice: expr, $funding: expr) => {{
-		let prev_funding_txid = $self.funding.get_funding_txid();
-		if let Some(scid) = $self.funding.short_channel_id {
-			$self.context.historical_scids.push(scid);
-		}
-
-		core::mem::swap(&mut $self.funding, $funding);
-
-		// The swap above places the previous `FundingScope` into `pending_funding`.
-		let discarded_funding = $pending_splice
-			.negotiated_candidates
-			.drain(..)
-			.filter(|funding| funding.get_funding_txid() != prev_funding_txid)
-			.map(|mut funding| {
-				funding
-					.funding_transaction
-					.take()
-					.map(|tx| FundingInfo::Tx { transaction: tx })
-					.unwrap_or_else(|| FundingInfo::OutPoint {
-						outpoint: funding
-							.get_funding_txo()
-							.expect("Negotiated splices must have a known funding outpoint"),
-					})
-			})
-			.collect::<Vec<_>>();
-
-		$self.interactive_tx_signing_session = None;
-		$self.pending_splice = None;
-		$self.context.announcement_sigs = None;
-		$self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
-
-		discarded_funding
-	}};
-}
-
 #[cfg(any(test, fuzzing))]
 #[derive(Clone, Copy, Default)]
 struct PredictedNextFee {
@@ -10718,15 +10682,43 @@ where
 		);
 
 		let discarded_funding = {
-			// Scope `funding` since it is swapped within `promote_splice_funding` and we don't want
-			// to unintentionally use it.
+			// Scope `funding` to avoid unintentionally using it later since it is swapped below.
 			let funding = pending_splice
 				.negotiated_candidates
 				.iter_mut()
 				.find(|funding| funding.get_funding_txid() == Some(splice_txid))
 				.unwrap();
-			promote_splice_funding!(self, pending_splice, funding)
+			let prev_funding_txid = self.funding.get_funding_txid();
+
+			if let Some(scid) = self.funding.short_channel_id {
+				self.context.historical_scids.push(scid);
+			}
+
+			core::mem::swap(&mut self.funding, funding);
+
+			// The swap above places the previous `FundingScope` into `pending_funding`.
+			pending_splice
+				.negotiated_candidates
+				.drain(..)
+				.filter(|funding| funding.get_funding_txid() != prev_funding_txid)
+				.map(|mut funding| {
+					funding
+						.funding_transaction
+						.take()
+						.map(|tx| FundingInfo::Tx { transaction: tx })
+						.unwrap_or_else(|| FundingInfo::OutPoint {
+							outpoint: funding
+								.get_funding_txo()
+								.expect("Negotiated splices must have a known funding outpoint"),
+						})
+				})
+				.collect::<Vec<_>>()
 		};
+
+		self.interactive_tx_signing_session = None;
+		self.pending_splice = None;
+		self.context.announcement_sigs = None;
+		self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
 
 		let funding_txo = self
 			.funding
