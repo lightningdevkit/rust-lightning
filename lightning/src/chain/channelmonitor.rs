@@ -3950,10 +3950,18 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// new channel updates.
 		self.holder_tx_signed = true;
 		let mut watch_outputs = Vec::new();
-		// We can't broadcast our HTLC transactions while the commitment transaction is
-		// unconfirmed. We'll delay doing so until we detect the confirmed commitment in
-		// `transactions_confirmed`.
-		if !funding.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+		// In CSV anchor channels, we can't broadcast our HTLC transactions while the commitment transaction is
+		// unconfirmed.
+		// We'll delay doing so until we detect the confirmed commitment in `transactions_confirmed`.
+		//
+		// TODO: For now in 0FC channels, we also delay broadcasting any HTLC transactions until the commitment
+		// transaction gets confirmed. It is nonetheless possible to add HTLC spends to the P2A spend
+		// transaction while the commitment transaction is still unconfirmed.
+		let zero_fee_htlcs =
+			self.channel_type_features().supports_anchors_zero_fee_htlc_tx();
+		let zero_fee_commitments =
+			self.channel_type_features().supports_anchor_zero_fee_commitments();
+		if !zero_fee_htlcs && !zero_fee_commitments {
 			// Because we're broadcasting a commitment transaction, we should construct the package
 			// assuming it gets confirmed in the next block. Sadly, we have code which considers
 			// "not yet confirmed" things as discardable, so we cannot do that here.
