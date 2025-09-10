@@ -10687,6 +10687,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 					let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
 					let payment_hash = forward_info.payment_hash;
+					let logger = WithContext::from(
+						&self.logger,
+						None,
+						Some(prev_channel_id),
+						Some(payment_hash),
+					);
 					let pending_add = PendingAddHTLCInfo {
 						prev_short_channel_id,
 						prev_counterparty_node_id,
@@ -10695,6 +10701,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						prev_htlc_id,
 						prev_user_channel_id,
 						forward_info,
+					};
+					let mut fail_intercepted_htlc = |pending_add: PendingAddHTLCInfo| {
+						let htlc_source =
+							HTLCSource::PreviousHopData(pending_add.htlc_previous_hop_data());
+						let reason = HTLCFailReason::from_failure_code(
+							LocalHTLCFailureReason::UnknownNextPeer,
+						);
+						let failure_type = HTLCHandlingFailureType::InvalidForward {
+							requested_forward_scid: scid,
+						};
+						failed_intercept_forwards.push((
+							htlc_source,
+							payment_hash,
+							reason,
+							failure_type,
+						));
 					};
 
 					if !is_our_scid
@@ -10729,32 +10751,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								entry.insert(pending_add);
 							},
 							hash_map::Entry::Occupied(_) => {
-								let logger = WithContext::from(
-									&self.logger,
-									None,
-									Some(prev_channel_id),
-									Some(payment_hash),
-								);
 								log_info!(
 											logger,
 											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
 											scid
 										);
-								let htlc_source = HTLCSource::PreviousHopData(
-									pending_add.htlc_previous_hop_data(),
-								);
-								let reason = HTLCFailReason::from_failure_code(
-									LocalHTLCFailureReason::UnknownNextPeer,
-								);
-								let failure_type = HTLCHandlingFailureType::InvalidForward {
-									requested_forward_scid: scid,
-								};
-								failed_intercept_forwards.push((
-									htlc_source,
-									payment_hash,
-									reason,
-									failure_type,
-								));
+								fail_intercepted_htlc(pending_add);
 							},
 						}
 					} else {
