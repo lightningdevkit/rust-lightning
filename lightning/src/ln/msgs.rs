@@ -1255,12 +1255,10 @@ impl std::net::ToSocketAddrs for SocketAddress {
 			SocketAddress::Hostname { ref hostname, port } => {
 				(hostname.as_str(), *port).to_socket_addrs()
 			},
-			SocketAddress::OnionV2(..) => Err(std::io::Error::new(
-				std::io::ErrorKind::Other,
+			SocketAddress::OnionV2(..) => Err(std::io::Error::other(
 				"Resolution of OnionV2 addresses is currently unsupported.",
 			)),
-			SocketAddress::OnionV3 { .. } => Err(std::io::Error::new(
-				std::io::ErrorKind::Other,
+			SocketAddress::OnionV3 { .. } => Err(std::io::Error::other(
 				"Resolution of OnionV3 addresses is currently unsupported.",
 			)),
 		}

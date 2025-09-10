@@ -46,7 +46,7 @@ impl Alphabet {
 		// / 5 divides the data length by the number of bits per chunk (5),
 		// * 8 multiplies the result by the number of characters per chunk (8).
 		// + 4 rounds up to the nearest character.
-		let output_length = (data.len() * 8 + 4) / 5;
+		let output_length = (data.len() * 8).div_ceil(5);
 		let mut ret = match self {
 			Self::RFC4648 { padding } => {
 				let mut ret = Self::encode_data(data, RFC4648_ALPHABET);
@@ -105,7 +105,7 @@ impl Alphabet {
 		// / 5 divides the data length by the number of bits per chunk (5),
 		// * 8 multiplies the result by the number of characters per chunk (8).
 		// + 4 rounds up to the nearest character.
-		let cap = (data.len() + 4) / 5 * 8;
+		let cap = data.len().div_ceil(5) * 8;
 		let mut ret = Vec::with_capacity(cap);
 		for chunk in data.chunks(5) {
 			let mut buf = [0u8; 5];
@@ -132,7 +132,7 @@ impl Alphabet {
 		// / 8 divides the data length by the number of characters per chunk (8),
 		// * 5 multiplies the result by the number of bits per chunk (5),
 		// + 7 rounds up to the nearest byte.
-		let cap = (data.len() + 7) / 8 * 5;
+		let cap = data.len().div_ceil(8) * 5;
 		let mut ret = Vec::with_capacity(cap);
 		for chunk in data.chunks(8) {
 			let mut buf = [0u8; 8];

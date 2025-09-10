@@ -596,7 +596,7 @@ where
 		// (other than lsps5.webhook_registered) close in time.
 		if notification.method != WebhookNotificationMethod::LSPS5WebhookRegistered {
 			let rate_limit_applies = peer_state.webhooks().iter().any(|(_, webhook)| {
-				webhook.last_notification_sent.as_ref().map_or(false, |last_sent| {
+				webhook.last_notification_sent.as_ref().is_some_and(|last_sent| {
 					now.duration_since(&last_sent) < NOTIFICATION_COOLDOWN_TIME
 				})
 			});

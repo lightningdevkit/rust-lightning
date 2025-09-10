@@ -2004,7 +2004,7 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 	// 0FC commitment transactions will have their fee bumped by a child, so don't require that
 	// they meet the 1sat/vB minimum.
 	} else if !has_p2a_output {
-		let min_fee = (tx.weight().to_wu() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
+		let min_fee = (tx.weight().to_wu() as u64).div_ceil(4); // One sat per vbyte (ie per weight/4, rounded up)
 		assert!(total_value_out + min_fee <= total_value_in);
 	}
 	tx.verify(get_output).unwrap();

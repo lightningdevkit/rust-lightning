@@ -3303,15 +3303,12 @@ where
 		// This will return false if `counterparty_parameters` is `None`, but for a `FundedChannel`, it
 		// should never be `None`.
 		debug_assert!(channel_parameters.counterparty_parameters.is_some());
-		channel_parameters.counterparty_parameters.as_ref().map_or(
-			false,
-			|counterparty_parameters| {
-				self.context().channel_id().is_v2_channel_id(
-					&channel_parameters.holder_pubkeys.revocation_basepoint,
-					&counterparty_parameters.pubkeys.revocation_basepoint,
-				)
-			},
-		)
+		channel_parameters.counterparty_parameters.as_ref().is_some_and(|counterparty_parameters| {
+			self.context().channel_id().is_v2_channel_id(
+				&channel_parameters.holder_pubkeys.revocation_basepoint,
+				&counterparty_parameters.pubkeys.revocation_basepoint,
+			)
+		})
 	}
 }
 
@@ -10178,7 +10175,7 @@ where
 				proposed_max_feerate as u64 * tx_weight / 1000,
 			)
 		} else {
-			self.funding.get_value_satoshis() - (self.funding.value_to_self_msat + 999) / 1000
+			self.funding.get_value_satoshis() - self.funding.value_to_self_msat.div_ceil(1000)
 		};
 
 		self.context.closing_fee_limits =
@@ -10686,7 +10683,7 @@ where
 				debug_assert_eq!(
 					our_max_fee,
 					self.funding.get_value_satoshis()
-						- (self.funding.value_to_self_msat + 999) / 1000
+						- self.funding.value_to_self_msat.div_ceil(1000)
 				);
 				propose_fee!(cmp::min(max_fee_satoshis, our_max_fee));
 			} else {

@@ -205,7 +205,7 @@ impl StaticPaymentOutputDescriptor {
 	/// value of at least 1.
 	pub fn needs_csv_1_for_spend(&self) -> bool {
 		let chan_params = self.channel_transaction_parameters.as_ref();
-		chan_params.map_or(false, |p| p.channel_type_features.supports_anchors_zero_fee_htlc_tx())
+		chan_params.is_some_and(|p| p.channel_type_features.supports_anchors_zero_fee_htlc_tx())
 	}
 }
 impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {

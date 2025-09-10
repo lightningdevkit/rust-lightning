@@ -2,40 +2,20 @@
 #shellcheck disable=SC2002,SC2207
 set -eox pipefail
 
-RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
+# Currently unused as we don't have to pin anything for MSRV:
+#RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
 
 # Some crates require pinning to meet our MSRV even for our downstream users,
 # which we do here.
 # Further crates which appear only as dev-dependencies are pinned further down.
 function PIN_RELEASE_DEPS {
-	# Starting with version 1.39.0, the `tokio` crate has an MSRV of rustc 1.70.0
-	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio --precise "1.38.1" --verbose
-
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
 
 PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 
-# Starting with version 1.10.0, the `regex` crate has an MSRV of rustc 1.65.0.
-[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
-
-# The addr2line v0.21 crate (a dependency of `backtrace` starting with 0.3.69) relies on rustc 1.65
-[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p backtrace --precise "0.3.68" --verbose
-
-# The once_cell v1.21.0 crate (a dependency of `proptest`) relies on rustc 1.70
-[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p once_cell --precise "1.20.3" --verbose
-
-# proptest 1.3.0 requires rustc 1.64.0
-[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p proptest --precise "1.2.0" --verbose
-
-# parking_lot 0.12.4 requires rustc 1.64.0
-[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p parking_lot --precise "0.12.3" --verbose
-
-# parking_lot_core 0.9.11 requires rustc 1.64.0
-[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p parking_lot_core --precise "0.9.10" --verbose
-
-# lock_api 0.4.13 requires rustc 1.64.0
-[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p lock_api --precise "0.4.12" --verbose
+# The backtrace v0.3.75 crate relies on rustc 1.82
+[ "$RUSTC_MINOR_VERSION" -lt 82 ] && cargo update -p backtrace --precise "0.3.74" --verbose
 
 export RUST_BACKTRACE=1
 
@@ -49,7 +29,6 @@ cargo test --verbose --color always
 
 echo -e "\n\nTesting upgrade from prior versions of LDK"
 pushd lightning-tests
-[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
 cargo test
 popd
 
