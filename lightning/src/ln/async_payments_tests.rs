@@ -2588,6 +2588,131 @@ fn held_htlc_timeout() {
 }
 
 #[test]
+fn fallback_to_one_hop_release_htlc_path() {
+	// Check that if the sender's LSP's message router fails to find a blinded path when creating a
+	// path for the release_held_htlc message, they will fall back to manually creating a 1-hop
+	// blinded path.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+
+	let (sender_cfg, recipient_cfg) = (often_offline_node_cfg(), often_offline_node_cfg());
+	let mut sender_lsp_cfg = test_default_channel_config();
+	sender_lsp_cfg.enable_htlc_hold = true;
+	let mut invoice_server_cfg = test_default_channel_config();
+	invoice_server_cfg.accept_forwards_to_priv_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		4,
+		&node_cfgs,
+		&[Some(sender_cfg), Some(sender_lsp_cfg), Some(invoice_server_cfg), Some(recipient_cfg)],
+	);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+	// Make sure all nodes are at the same block height
+	let node_max_height =
+		nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
+	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], node_max_height - nodes[3].best_block_info().1);
+	let sender = &nodes[0];
+	let sender_lsp = &nodes[1];
+	let invoice_server = &nodes[2];
+	let recipient = &nodes[3];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		invoice_server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(recipient, &[sender, sender_lsp, invoice_server]);
+	let invoice =
+		pass_static_invoice_server_messages(invoice_server, recipient, recipient_id.clone())
+			.invoice;
+
+	let offer = recipient.node.get_async_receive_offer().unwrap();
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	let params = RouteParametersConfig::default();
+	sender
+		.node
+		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(1), params)
+		.unwrap();
+
+	// Forward invreq to server, pass static invoice back, check that htlc was locked in/monitor was
+	// added
+	let (peer_id, invreq_om) = extract_invoice_request_om(sender, &[sender_lsp, invoice_server]);
+	invoice_server.onion_messenger.handle_onion_message(peer_id, &invreq_om);
+
+	let mut events = invoice_server.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let reply_path = match events.pop().unwrap() {
+		Event::StaticInvoiceRequested { recipient_id: ev_id, invoice_slot: _, reply_path } => {
+			assert_eq!(recipient_id, ev_id);
+			reply_path
+		},
+		_ => panic!(),
+	};
+
+	invoice_server.node.send_static_invoice(invoice.clone(), reply_path).unwrap();
+	let (peer_node_id, static_invoice_om, _) =
+		extract_static_invoice_om(invoice_server, &[sender_lsp, sender, recipient]);
+
+	// The sender should lock in the held HTLC with their LSP right after receiving the static invoice.
+	sender.onion_messenger.handle_onion_message(peer_node_id, &static_invoice_om);
+	check_added_monitors(sender, 1);
+	let commitment_update = get_htlc_update_msgs!(sender, sender_lsp.node.get_our_node_id());
+	let update_add = commitment_update.update_add_htlcs[0].clone();
+	let payment_hash = update_add.payment_hash;
+	assert!(update_add.hold_htlc.is_some());
+
+	// Force the sender_lsp's call to MessageRouter::create_blinded_paths to fail so it has to fall
+	// back to a 1-hop blinded path when creating the paths for its revoke_and_ack message.
+	sender_lsp.message_router.create_blinded_paths_res_override.lock().unwrap().1 = Some(Err(()));
+
+	sender_lsp.node.handle_update_add_htlc(sender.node.get_our_node_id(), &update_add);
+	commitment_signed_dance!(sender_lsp, sender, &commitment_update.commitment_signed, false, true);
+
+	// Check that we actually had to fall back to a 1-hop path.
+	assert!(sender_lsp.message_router.create_blinded_paths_res_override.lock().unwrap().0 > 0);
+	sender_lsp.message_router.create_blinded_paths_res_override.lock().unwrap().1 = None;
+
+	sender_lsp.node.process_pending_htlc_forwards();
+	let (peer_id, held_htlc_om) =
+		extract_held_htlc_available_oms(sender, &[sender_lsp, invoice_server, recipient])
+			.pop()
+			.unwrap();
+	recipient.onion_messenger.handle_onion_message(peer_id, &held_htlc_om);
+
+	// The release_htlc OM should go straight to the sender's LSP since they created a 1-hop blinded
+	// path to themselves for receiving it.
+	let release_htlc_om = recipient
+		.onion_messenger
+		.next_onion_message_for_peer(sender_lsp.node.get_our_node_id())
+		.unwrap();
+	sender_lsp
+		.onion_messenger
+		.handle_onion_message(recipient.node.get_our_node_id(), &release_htlc_om);
+
+	sender_lsp.node.process_pending_htlc_forwards();
+	let mut events = sender_lsp.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&invoice_server.node.get_our_node_id(), &mut events);
+	check_added_monitors!(sender_lsp, 1);
+
+	let path: &[&Node] = &[invoice_server, recipient];
+	let args = PassAlongPathArgs::new(sender_lsp, path, amt_msat, payment_hash, ev);
+	let claimable_ev = do_pass_along_path(args).unwrap();
+
+	let route: &[&[&Node]] = &[&[sender_lsp, invoice_server, recipient]];
+	let keysend_preimage = extract_payment_preimage(&claimable_ev);
+	let (res, _) =
+		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
+	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(invoice)));
+}
+
+#[test]
 fn intercepted_hold_htlc() {
 	// Test a payment `sender --> LSP --> recipient` such that the HTLC is both a hold htlc and an
 	// intercept htlc, i.e. the HTLC needs be held until the recipient comes online *and* the LSP
