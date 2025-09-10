@@ -61,7 +61,6 @@ use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey};
 
 use crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder};
 use crate::sync::{Mutex, RwLock};
-use crate::types::features::InitFeatures;
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::logger::Logger;
 use crate::util::ser::Writeable;
@@ -1712,42 +1711,12 @@ where
 		self.async_receive_offer_cache.encode()
 	}
 
-	/// Indicates that a peer was connected to our node. Useful for the [`OffersMessageFlow`] to keep
-	/// track of which peers are connected, which allows for methods that can create blinded paths
-	/// without requiring a fresh set of [`MessageForwardNode`]s to be passed in.
+	/// Provides a set of peers of this node that can be used in [`BlindedMessagePath`]s created by
+	/// the [`OffersMessageFlow`].
 	///
-	/// `live_channel` should be set if we have an open, usable channel with this peer that has at
-	/// least six onchain confirmations.
-	///
-	/// MUST be called by always-online nodes that support holding HTLCs on behalf of often-offline
-	/// senders.
-	///
-	/// Errors if the peer does not support onion messages or we don't have a channel with them.
-	pub fn peer_connected(
-		&self, peer_node_id: PublicKey, features: &InitFeatures, live_channel: bool,
-	) -> Result<(), ()> {
-		if !features.supports_onion_messages() || !live_channel {
-			return Err(());
-		}
-
+	/// All provided peers MUST advertise support for onion messages in their [`InitFeatures`].
+	pub fn set_peers(&self, mut peers: Vec<MessageForwardNode>) {
 		let mut peers_cache = self.peers_cache.lock().unwrap();
-		let peer = MessageForwardNode { node_id: peer_node_id, short_channel_id: None };
-		peers_cache.push(peer);
-
-		Ok(())
-	}
-
-	/// Indicates that a peer was disconnected from our node. See [`Self::peer_connected`].
-	///
-	/// Errors if the peer is unknown.
-	pub fn peer_disconnected(&self, peer_node_id: PublicKey) -> Result<(), ()> {
-		let mut peers_cache = self.peers_cache.lock().unwrap();
-		let peer_idx = match peers_cache.iter().position(|peer| peer.node_id == peer_node_id) {
-			Some(idx) => idx,
-			None => return Err(()),
-		};
-		peers_cache.swap_remove(peer_idx);
-
-		Ok(())
+		core::mem::swap(&mut *peers_cache, &mut peers);
 	}
 }
