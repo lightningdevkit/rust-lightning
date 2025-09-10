@@ -100,6 +100,7 @@ where
 
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 	async_receive_offer_cache: Mutex<AsyncReceiveOfferCache>,
+	peers_cache: Mutex<Vec<MessageForwardNode>>,
 
 	#[cfg(feature = "dnssec")]
 	pub(crate) hrn_resolver: OMNameResolver,
@@ -136,6 +137,7 @@ where
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
+			peers_cache: Mutex::new(Vec::new()),
 
 			#[cfg(feature = "dnssec")]
 			hrn_resolver: OMNameResolver::new(current_timestamp, best_block.height),
@@ -1738,5 +1740,16 @@ where
 	/// Get the encoded [`AsyncReceiveOfferCache`] for persistence.
 	pub fn writeable_async_receive_offer_cache(&self) -> Vec<u8> {
 		self.async_receive_offer_cache.encode()
+	}
+
+	/// Provides a set of connected peers of this node that can be used in [`BlindedMessagePath`]s
+	/// created by the [`OffersMessageFlow`].
+	///
+	/// All provided peers MUST advertise support for onion messages in their [`InitFeatures`].
+	///
+	/// [`InitFeatures`]: crate::types::features::InitFeatures
+	pub fn set_peers(&self, mut peers: Vec<MessageForwardNode>) {
+		let mut peers_cache = self.peers_cache.lock().unwrap();
+		core::mem::swap(&mut *peers_cache, &mut peers);
 	}
 }

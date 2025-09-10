@@ -8077,6 +8077,8 @@ where
 
 			should_persist
 		});
+
+		self.flow.set_peers(self.get_peers_for_blinded_path());
 	}
 
 	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect
@@ -10427,16 +10429,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						emit_initial_channel_ready_event!(pending_events, chan);
 					}
 
-					Ok(())
 				} else {
 					try_channel_entry!(self, peer_state, Err(ChannelError::close(
 						"Got a channel_ready message for an unfunded channel!".into())), chan_entry)
 				}
 			},
 			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		}
+		core::mem::drop(peer_state_lock);
+		core::mem::drop(per_peer_state);
+
+		self.flow.set_peers(self.get_peers_for_blinded_path());
+		Ok(())
 	}
 
 	fn internal_shutdown(
@@ -10530,6 +10536,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			self.fail_htlc_backwards_internal(&source, &hash, &reason, receiver, None);
 		}
 
+		self.flow.set_peers(self.get_peers_for_blinded_path());
 		Ok(())
 	}
 
@@ -13391,6 +13398,8 @@ where
 		for (err, counterparty_node_id) in failed_channels.drain(..) {
 			let _ = handle_error!(self, err, counterparty_node_id);
 		}
+
+		self.flow.set_peers(self.get_peers_for_blinded_path());
 	}
 
 	#[rustfmt::skip]
@@ -13503,6 +13512,7 @@ where
 		// until we have some peer connection(s) to receive onion messages over, so as a minor optimization
 		// refresh the cache when a peer connects.
 		self.check_refresh_async_receive_offer_cache(false);
+		self.flow.set_peers(self.get_peers_for_blinded_path());
 		res
 	}
 
