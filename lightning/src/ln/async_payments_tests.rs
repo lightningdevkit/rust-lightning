@@ -302,7 +302,6 @@ fn create_static_invoice_builder<'a>(
 			payment_secret,
 			relative_expiry_secs,
 			recipient.node.list_usable_channels(),
-			recipient.node.test_get_peers_for_blinded_path(),
 		)
 		.unwrap()
 }

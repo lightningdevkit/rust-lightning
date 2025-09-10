@@ -173,7 +173,6 @@ where
 	/// client, or when the paths change, e.g. if the paths are set to expire at a particular time.
 	pub fn set_paths_to_static_invoice_server(
 		&self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
-		peers: Vec<MessageForwardNode>,
 	) -> Result<(), ()> {
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
 		cache.set_paths_to_static_invoice_server(paths_to_static_invoice_server.clone())?;
@@ -181,7 +180,7 @@ where
 
 		// We'll only fail here if no peers are connected yet for us to create reply paths to outbound
 		// offer_paths_requests, so ignore the error.
-		let _ = self.check_refresh_async_offers(peers, false);
+		let _ = self.check_refresh_async_offers(false);
 
 		Ok(())
 	}
@@ -286,7 +285,6 @@ where
 	/// Errors if blinded path creation fails or the provided `recipient_id` is larger than 1KiB.
 	pub fn blinded_paths_for_async_recipient(
 		&self, recipient_id: Vec<u8>, relative_expiry: Option<Duration>,
-		peers: Vec<MessageForwardNode>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		if recipient_id.len() > 1024 {
 			log_trace!(self.logger, "Async recipient ID exceeds 1024 bytes");
@@ -300,19 +298,18 @@ where
 			recipient_id,
 			path_absolute_expiry,
 		});
-		self.create_blinded_paths(peers, context)
+		self.create_blinded_paths(context)
 	}
 
 	/// Creates a collection of blinded paths by delegating to
 	/// [`MessageRouter::create_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors.
-	fn create_blinded_paths(
-		&self, peers: Vec<MessageForwardNode>, context: MessageContext,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
+	fn create_blinded_paths(&self, context: MessageContext) -> Result<Vec<BlindedMessagePath>, ()> {
 		let recipient = self.get_our_node_id();
 		let receive_key = self.get_receive_auth_key();
 		let secp_ctx = &self.secp_ctx;
+		let peers = self.peers_cache.lock().unwrap().clone();
 
 		self.message_router
 			.create_blinded_paths(recipient, receive_key, context, peers, secp_ctx)
@@ -431,8 +428,6 @@ pub enum HeldHtlcReplyPath {
 	ToUs {
 		/// The id of the payment.
 		payment_id: PaymentId,
-		/// The peers to use when creating this reply path.
-		peers: Vec<MessageForwardNode>,
 	},
 	/// The reply path to the [`HeldHtlcAvailable`] message should terminate at our next-hop channel
 	/// counterparty, as they are holding our HTLC until they receive the corresponding
@@ -603,13 +598,13 @@ where
 	///
 	/// [`DefaultMessageRouter`]: crate::onion_message::messenger::DefaultMessageRouter
 	pub fn create_offer_builder<ES: Deref>(
-		&self, entropy_source: ES, peers: Vec<MessageForwardNode>,
+		&self, entropy_source: ES,
 	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
 		self.create_offer_builder_intern(&*entropy_source, |_, context, _| {
-			self.create_blinded_paths(peers, context)
+			self.create_blinded_paths(context)
 				.map(|paths| paths.into_iter().take(1))
 				.map_err(|_| Bolt12SemanticError::MissingPaths)
 		})
@@ -624,13 +619,14 @@ where
 	///
 	/// See [`Self::create_offer_builder`] for more details on usage.
 	pub fn create_offer_builder_using_router<ME: Deref, ES: Deref>(
-		&self, router: ME, entropy_source: ES, peers: Vec<MessageForwardNode>,
+		&self, router: ME, entropy_source: ES,
 	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
 	where
 		ME::Target: MessageRouter,
 		ES::Target: EntropySource,
 	{
 		let receive_key = self.get_receive_auth_key();
+		let peers = self.peers_cache.lock().unwrap().clone();
 		self.create_offer_builder_intern(&*entropy_source, |node_id, context, secp_ctx| {
 			router
 				.create_blinded_paths(node_id, receive_key, context, peers, secp_ctx)
@@ -734,7 +730,7 @@ where
 	/// [`RouteParameters::from_payment_params_and_value`]: crate::routing::router::RouteParameters::from_payment_params_and_value
 	pub fn create_refund_builder<ES: Deref>(
 		&self, entropy_source: ES, amount_msats: u64, absolute_expiry: Duration,
-		payment_id: PaymentId, peers: Vec<MessageForwardNode>,
+		payment_id: PaymentId,
 	) -> Result<RefundBuilder<'_, secp256k1::All>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
@@ -742,7 +738,7 @@ where
 		self.create_refund_builder_intern(
 			&*entropy_source,
 			|_, context, _| {
-				self.create_blinded_paths(peers, context)
+				self.create_blinded_paths(context)
 					.map(|paths| paths.into_iter().take(1))
 					.map_err(|_| Bolt12SemanticError::MissingPaths)
 			},
@@ -773,13 +769,14 @@ where
 	/// [`RouteParameters::from_payment_params_and_value`]: crate::routing::router::RouteParameters::from_payment_params_and_value
 	pub fn create_refund_builder_using_router<ES: Deref, ME: Deref>(
 		&self, router: ME, entropy_source: ES, amount_msats: u64, absolute_expiry: Duration,
-		payment_id: PaymentId, peers: Vec<MessageForwardNode>,
+		payment_id: PaymentId,
 	) -> Result<RefundBuilder<'_, secp256k1::All>, Bolt12SemanticError>
 	where
 		ME::Target: MessageRouter,
 		ES::Target: EntropySource,
 	{
 		let receive_key = self.get_receive_auth_key();
+		let peers = self.peers_cache.lock().unwrap().clone();
 		self.create_refund_builder_intern(
 			&*entropy_source,
 			|node_id, context, secp_ctx| {
@@ -819,7 +816,7 @@ where
 	pub fn create_static_invoice_builder<'a, ES: Deref, R: Deref>(
 		&self, router: &R, entropy_source: ES, offer: &'a Offer, offer_nonce: Nonce,
 		payment_secret: PaymentSecret, relative_expiry_secs: u32,
-		usable_channels: Vec<ChannelDetails>, peers: Vec<MessageForwardNode>,
+		usable_channels: Vec<ChannelDetails>,
 	) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
@@ -860,9 +857,8 @@ where
 			path_absolute_expiry,
 		});
 
-		let async_receive_message_paths = self
-			.create_blinded_paths(peers, context)
-			.map_err(|()| Bolt12SemanticError::MissingPaths)?;
+		let async_receive_message_paths =
+			self.create_blinded_paths(context).map_err(|()| Bolt12SemanticError::MissingPaths)?;
 
 		StaticInvoiceBuilder::for_offer_using_derived_keys(
 			offer,
@@ -1048,21 +1044,13 @@ where
 	///
 	/// See [`OffersMessageFlow::create_invoice_request_builder`] for more details.
 	///
-	/// # Peers
-	///
-	/// The user must provide a list of [`MessageForwardNode`] that will be used to generate
-	/// valid reply paths for the counterparty to send back the corresponding [`Bolt12Invoice`]
-	/// or [`InvoiceError`].
-	///
 	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 	pub fn enqueue_invoice_request(
 		&self, invoice_request: InvoiceRequest, payment_id: PaymentId, nonce: Nonce,
-		peers: Vec<MessageForwardNode>,
 	) -> Result<(), Bolt12SemanticError> {
 		let context = MessageContext::Offers(OffersContext::OutboundPayment { payment_id, nonce });
-		let reply_paths = self
-			.create_blinded_paths(peers, context)
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let reply_paths =
+			self.create_blinded_paths(context).map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 		if !invoice_request.paths().is_empty() {
@@ -1093,23 +1081,16 @@ where
 	/// Enqueues the created [`Bolt12Invoice`] corresponding to a [`Refund`] to be sent
 	/// to the counterparty.
 	///
-	/// # Peers
-	///
-	/// The user must provide a list of [`MessageForwardNode`] that will be used to generate valid
-	/// reply paths for the counterparty to send back the corresponding [`InvoiceError`] if we fail
-	/// to create blinded reply paths
-	///
 	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 	pub fn enqueue_invoice(
-		&self, invoice: Bolt12Invoice, refund: &Refund, peers: Vec<MessageForwardNode>,
+		&self, invoice: Bolt12Invoice, refund: &Refund,
 	) -> Result<(), Bolt12SemanticError> {
 		let payment_hash = invoice.payment_hash();
 
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
-		let reply_paths = self
-			.create_blinded_paths(peers, context)
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let reply_paths =
+			self.create_blinded_paths(context).map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 
@@ -1190,16 +1171,15 @@ where
 			matches!(reply_path_params, HeldHtlcReplyPath::ToUs { .. });
 
 		let reply_paths = match reply_path_params {
-			HeldHtlcReplyPath::ToUs { payment_id, peers } => {
+			HeldHtlcReplyPath::ToUs { payment_id } => {
 				let context =
 					MessageContext::AsyncPayments(AsyncPaymentsContext::OutboundPayment {
 						payment_id,
 					});
-				self.create_blinded_paths(peers, context)
-					.map_err(|_| {
-						log_trace!(self.logger, "Failed to create blinded paths when enqueueing held_htlc_available message");
-						Bolt12SemanticError::MissingPaths
-					})?
+				self.create_blinded_paths(context).map_err(|_| {
+					log_trace!(self.logger, "Failed to create blinded paths when enqueueing held_htlc_available message");
+					Bolt12SemanticError::MissingPaths
+				})?
 			},
 			HeldHtlcReplyPath::ToCounterparty { path } => vec![path],
 		};
@@ -1250,21 +1230,12 @@ where
 	}
 
 	/// Enqueues the created [`DNSSECQuery`] to be sent to the counterparty.
-	///
-	/// # Peers
-	///
-	/// The user must provide a list of [`MessageForwardNode`] that will be used to generate
-	/// valid reply paths for the counterparty to send back the corresponding response for
-	/// the [`DNSSECQuery`] message.
-	///
-	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 	#[cfg(feature = "dnssec")]
 	pub fn enqueue_dns_onion_message(
 		&self, message: DNSSECQuery, context: DNSResolverContext, dns_resolvers: Vec<Destination>,
-		peers: Vec<MessageForwardNode>,
 	) -> Result<(), Bolt12SemanticError> {
 		let reply_paths = self
-			.create_blinded_paths(peers, MessageContext::DNSResolver(context))
+			.create_blinded_paths(MessageContext::DNSResolver(context))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		let message_params = dns_resolvers
@@ -1332,8 +1303,8 @@ where
 	///
 	/// Errors if we failed to create blinded reply paths when sending an [`OfferPathsRequest`] message.
 	pub fn check_refresh_async_receive_offer_cache<ES: Deref, R: Deref>(
-		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
-		router: R, timer_tick_occurred: bool,
+		&self, usable_channels: Vec<ChannelDetails>, entropy: ES, router: R,
+		timer_tick_occurred: bool,
 	) -> Result<(), ()>
 	where
 		ES::Target: EntropySource,
@@ -1347,18 +1318,16 @@ where
 			}
 		}
 
-		self.check_refresh_async_offers(peers.clone(), timer_tick_occurred)?;
+		self.check_refresh_async_offers(timer_tick_occurred)?;
 
 		if timer_tick_occurred {
-			self.check_refresh_static_invoices(peers, usable_channels, entropy, router);
+			self.check_refresh_static_invoices(usable_channels, entropy, router);
 		}
 
 		Ok(())
 	}
 
-	fn check_refresh_async_offers(
-		&self, peers: Vec<MessageForwardNode>, timer_tick_occurred: bool,
-	) -> Result<(), ()> {
+	fn check_refresh_async_offers(&self, timer_tick_occurred: bool) -> Result<(), ()> {
 		let duration_since_epoch = self.duration_since_epoch();
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
 
@@ -1376,7 +1345,7 @@ where
 				.saturating_add(TEMP_REPLY_PATH_RELATIVE_EXPIRY),
 			invoice_slot: needs_new_offer_slot,
 		});
-		let reply_paths = match self.create_blinded_paths(peers, context) {
+		let reply_paths = match self.create_blinded_paths(context) {
 			Ok(paths) => paths,
 			Err(()) => {
 				log_error!(
@@ -1408,8 +1377,7 @@ where
 	/// Enqueue onion messages that will used to request invoice refresh from the static invoice
 	/// server, based on the offers provided by the cache.
 	fn check_refresh_static_invoices<ES: Deref, R: Deref>(
-		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
-		router: R,
+		&self, usable_channels: Vec<ChannelDetails>, entropy: ES, router: R,
 	) where
 		ES::Target: EntropySource,
 		R::Target: Router,
@@ -1424,7 +1392,6 @@ where
 				let (invoice, forward_invreq_path) = match self.create_static_invoice_for_server(
 					offer,
 					offer_nonce,
-					peers.clone(),
 					usable_channels.clone(),
 					&*entropy,
 					&*router,
@@ -1455,7 +1422,7 @@ where
 		// Enqueue the new serve_static_invoice messages in a separate loop to avoid holding the offer
 		// cache lock and the pending_async_payments_messages lock at the same time.
 		for (serve_invoice_msg, serve_invoice_path, reply_path_ctx) in serve_static_invoice_msgs {
-			let reply_paths = match self.create_blinded_paths(peers.clone(), reply_path_ctx) {
+			let reply_paths = match self.create_blinded_paths(reply_path_ctx) {
 				Ok(paths) => paths,
 				Err(()) => continue,
 			};
@@ -1475,7 +1442,6 @@ where
 	/// Sends out [`OfferPaths`] onion messages in response.
 	pub fn handle_offer_paths_request(
 		&self, request: &OfferPathsRequest, context: AsyncPaymentsContext,
-		peers: Vec<MessageForwardNode>,
 	) -> Option<(OfferPaths, MessageContext)> {
 		let duration_since_epoch = self.duration_since_epoch();
 
@@ -1499,7 +1465,7 @@ where
 				invoice_slot: request.invoice_slot,
 			});
 
-			match self.create_blinded_paths(peers, context) {
+			match self.create_blinded_paths(context) {
 				Ok(paths) => (paths, path_absolute_expiry),
 				Err(()) => {
 					log_error!(
@@ -1537,8 +1503,7 @@ where
 	/// fail to create blinded paths.
 	pub fn handle_offer_paths<ES: Deref, R: Deref>(
 		&self, message: OfferPaths, context: AsyncPaymentsContext, responder: Responder,
-		peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
-		router: R,
+		usable_channels: Vec<ChannelDetails>, entropy: ES, router: R,
 	) -> Option<(ServeStaticInvoice, MessageContext)>
 	where
 		ES::Target: EntropySource,
@@ -1590,7 +1555,6 @@ where
 		let (invoice, forward_invoice_request_path) = match self.create_static_invoice_for_server(
 			&offer,
 			offer_nonce,
-			peers,
 			usable_channels,
 			&*entropy,
 			router,
@@ -1628,8 +1592,8 @@ where
 	/// Creates a [`StaticInvoice`] and a blinded path for the server to forward invoice requests from
 	/// payers to our node.
 	fn create_static_invoice_for_server<ES: Deref, R: Deref>(
-		&self, offer: &Offer, offer_nonce: Nonce, peers: Vec<MessageForwardNode>,
-		usable_channels: Vec<ChannelDetails>, entropy: ES, router: R,
+		&self, offer: &Offer, offer_nonce: Nonce, usable_channels: Vec<ChannelDetails>,
+		entropy: ES, router: R,
 	) -> Result<(StaticInvoice, BlindedMessagePath), ()>
 	where
 		ES::Target: EntropySource,
@@ -1665,14 +1629,13 @@ where
 				payment_secret,
 				offer_relative_expiry,
 				usable_channels,
-				peers.clone(),
 			)
 			.and_then(|builder| builder.build_and_sign(secp_ctx))
 			.map_err(|_| ())?;
 
 		let context = MessageContext::Offers(OffersContext::InvoiceRequest { nonce: offer_nonce });
 		let forward_invoice_request_path = self
-			.create_blinded_paths(peers, context)
+			.create_blinded_paths(context)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))?;
 
 		Ok((invoice, forward_invoice_request_path))
