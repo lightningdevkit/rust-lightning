@@ -1373,17 +1373,20 @@ where
 			short_channel_id = route_hop.short_channel_id()
 		}
 
-		// If next hop is from a trampoline we are already inside the trampoline
-		// route. If we found a permanent failure inside the trampoline route, we
-		// fail the payment permanently.
-		let is_next_hop_from_trampoline =
+		// If next hop is from a trampoline and there is only one trampoline hop
+		// in the trampoline route, means that the trampoline hop is also a
+		// final non-blinded node.
+		let is_next_hop_trampoline =
 			matches!(next_hop, Some((_, (Some(ErrorHop::TrampolineHop(..)), _))));
+		if is_next_hop_trampoline {
+			is_from_final_non_blinded_node =
+				path.blinded_tail.as_ref().map_or(0, |bt| bt.trampoline_hops.len()) == 1
+		}
 
 		res = Some(FailureLearnings {
 			network_update,
 			short_channel_id,
-			payment_failed_permanently: error_code.is_permanent()
-				&& (is_from_final_non_blinded_node || is_next_hop_from_trampoline),
+			payment_failed_permanently: error_code.is_permanent() && is_from_final_non_blinded_node,
 			failed_within_blinded_path: false,
 		});
 

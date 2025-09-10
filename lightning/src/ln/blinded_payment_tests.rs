@@ -2958,6 +2958,6 @@ fn test_trampoline_forward_rejection() {
 		// Expect UnknownNextPeer error while we are unable to route forwarding Trampoline payments.
 		let payment_failed_conditions = PaymentFailedConditions::new()
 			.expected_htlc_error_data(LocalHTLCFailureReason::UnknownNextPeer, &[0; 0]);
-		expect_payment_failed_conditions(&nodes[0], payment_hash, true, payment_failed_conditions);
+		expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
 	}
 }
