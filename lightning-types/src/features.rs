@@ -688,7 +688,7 @@ mod sealed {
 	);
 	// By default, allocate enough bytes to cover up to Splice. Update this as new features are
 	// added which we expect to appear commonly across contexts.
-	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = (63 + 7) / 8;
+	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = 63_usize.div_ceil(8);
 	define_feature!(
 		259,
 		DnsResolver,
