@@ -712,6 +712,8 @@ where
 ///
 /// Unlike [`MonitorUpdatingPersister`], this does not implement [`Persist`], but is instead used
 /// directly by the [`ChainMonitor`].
+///
+/// [`ChainMonitor`]: lightning::chain::chainmonitor::ChainMonitor
 pub struct MonitorUpdatingPersisterAsync<
 	K: Deref,
 	S: FutureSpawner,
