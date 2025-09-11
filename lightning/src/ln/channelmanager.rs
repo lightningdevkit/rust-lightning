@@ -12919,11 +12919,11 @@ where
 					let mut peer_state = per_peer_state
 						.get(&counterparty_node_id)
 						.map(|state| state.lock().unwrap())
-						.expect("Channels originating a preimage must have peer state");
+						.expect("Channels originating a payment resolution must have peer state");
 					let update_id = peer_state
 						.closed_channel_monitor_update_ids
 						.get_mut(&channel_id)
-						.expect("Channels originating a preimage must have a monitor");
+						.expect("Channels originating a payment resolution must have a monitor");
 					*update_id += 1;
 
 					let update = ChannelMonitorUpdate {
