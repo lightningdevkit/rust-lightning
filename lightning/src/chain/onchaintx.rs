@@ -30,7 +30,8 @@ use crate::chain::package::{PackageSolvingData, PackageTemplate};
 use crate::chain::transaction::MaybeSignedTransaction;
 use crate::chain::ClaimId;
 use crate::ln::chan_utils::{
-	self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction,
+	get_keyed_anchor_redeemscript, shared_anchor_script_pubkey, ChannelTransactionParameters,
+	HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::msgs::DecodeError;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, HTLCDescriptor, SignerProvider};
@@ -677,7 +678,16 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					let channel_parameters = output.channel_parameters.as_ref()
 						.unwrap_or(self.channel_parameters());
 					let funding_pubkey = &channel_parameters.holder_pubkeys.funding_pubkey;
-					match chan_utils::get_keyed_anchor_output(&tx, funding_pubkey) {
+					let script_pubkey = if channel_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+						get_keyed_anchor_redeemscript(funding_pubkey).to_p2wsh()
+					} else {
+						debug_assert!(channel_parameters.channel_type_features.supports_anchor_zero_fee_commitments());
+						shared_anchor_script_pubkey()
+					};
+					let anchor_output = tx.output.iter().enumerate()
+						.find(|(_, txout)| txout.script_pubkey == script_pubkey)
+						.map(|(idx, txout)| (idx as u32, txout));
+					match anchor_output {
 						// An anchor output was found, so we should yield a funding event externally.
 						Some((idx, _)) => {
 							// TODO: Use a lower confirmation target when both our and the

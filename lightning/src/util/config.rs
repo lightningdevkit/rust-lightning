@@ -219,7 +219,6 @@ pub struct ChannelHandshakeConfig {
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
-	#[cfg(test)]
 	pub negotiate_anchor_zero_fee_commitments: bool,
 
 	/// The maximum number of HTLCs in-flight from our counterparty towards us at the same time.
@@ -251,7 +250,6 @@ impl Default for ChannelHandshakeConfig {
 			commit_upfront_shutdown_pubkey: true,
 			their_channel_reserve_proportional_millionths: 10_000,
 			negotiate_anchors_zero_fee_htlc_tx: false,
-			#[cfg(test)]
 			negotiate_anchor_zero_fee_commitments: false,
 			our_max_accepted_htlcs: 50,
 		}
@@ -274,7 +272,6 @@ impl Readable for ChannelHandshakeConfig {
 			commit_upfront_shutdown_pubkey: Readable::read(reader)?,
 			their_channel_reserve_proportional_millionths: Readable::read(reader)?,
 			negotiate_anchors_zero_fee_htlc_tx: Readable::read(reader)?,
-			#[cfg(test)]
 			negotiate_anchor_zero_fee_commitments: Readable::read(reader)?,
 			our_max_accepted_htlcs: Readable::read(reader)?,
 		})

@@ -89,9 +89,6 @@ pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 114;
 #[cfg(not(feature = "grind_signatures"))]
 pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 115;
 
-/// The P2A scriptpubkey
-pub const P2A_SCRIPT: &[u8] = &[0x51, 0x02, 0x4e, 0x73];
-
 /// The maximum value of the P2A anchor
 pub const P2A_MAX_VALUE: u64 = 240;
 
@@ -976,16 +973,6 @@ pub fn get_keyed_anchor_redeemscript(funding_pubkey: &PublicKey) -> ScriptBuf {
 		.push_opcode(opcodes::all::OP_CSV)
 		.push_opcode(opcodes::all::OP_ENDIF)
 		.into_script()
-}
-
-/// Locates the output with a keyed anchor (non-zero-fee-commitments) script paying to
-/// `funding_pubkey` within `commitment_tx`.
-#[rustfmt::skip]
-pub(crate) fn get_keyed_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubkey: &PublicKey) -> Option<(u32, &'a TxOut)> {
-	let anchor_script = get_keyed_anchor_redeemscript(funding_pubkey).to_p2wsh();
-	commitment_tx.output.iter().enumerate()
-		.find(|(_, txout)| txout.script_pubkey == anchor_script)
-		.map(|(idx, txout)| (idx as u32, txout))
 }
 
 /// Returns the witness required to satisfy and spend a keyed anchor (non-zero-fee-commitments)
@@ -1891,7 +1878,7 @@ impl CommitmentTransaction {
 				// These subtractions panic on underflow, but this should never happen
 				let trimmed_sum_sat = channel_value_satoshis - nondust_htlcs_value_sum_sat - to_broadcaster_value_sat - to_countersignatory_value_sat;
 				insert_non_htlc_output(TxOut {
-					script_pubkey: ScriptBuf::from_bytes(P2A_SCRIPT.to_vec()),
+					script_pubkey: shared_anchor_script_pubkey(),
 					value: cmp::min(Amount::from_sat(P2A_MAX_VALUE), trimmed_sum_sat),
 				});
 		}
