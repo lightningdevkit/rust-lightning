@@ -123,6 +123,7 @@ mod tests {
 
 	use lightning::util::persist::KVStoreSyncWrapper;
 	use lightning::util::test_utils::TestStore;
+	use lightning::util::wakers::Notifier;
 
 	use crate::lsps0::ser::{LSPSMessage, LSPSRequestId};
 	use crate::tests::utils::{self, TestEntropy};
@@ -131,7 +132,8 @@ mod tests {
 
 	#[test]
 	fn test_list_protocols() {
-		let pending_messages = Arc::new(MessageQueue::new());
+		let notifier = Arc::new(Notifier::new());
+		let pending_messages = Arc::new(MessageQueue::new(notifier));
 		let entropy_source = Arc::new(TestEntropy {});
 		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
 		let event_queue = Arc::new(EventQueue::new(VecDeque::new(), kv_store));

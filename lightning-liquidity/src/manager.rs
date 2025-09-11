@@ -52,7 +52,7 @@ use lightning::sign::{EntropySource, NodeSigner};
 use lightning::util::logger::Level;
 use lightning::util::persist::{KVStore, KVStoreSync, KVStoreSyncWrapper};
 use lightning::util::ser::{LengthLimitedRead, LengthReadable};
-use lightning::util::wakers::Future;
+use lightning::util::wakers::{Future, Notifier};
 
 use lightning_types::features::{InitFeatures, NodeFeatures};
 
@@ -312,6 +312,7 @@ pub struct LiquidityManager<
 	_client_config: Option<LiquidityClientConfig>,
 	best_block: RwLock<Option<BestBlock>>,
 	_chain_source: Option<C>,
+	pending_msgs_or_needs_persist_notifier: Arc<Notifier>,
 }
 
 #[cfg(feature = "time")]
@@ -384,7 +385,9 @@ where
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
 	) -> Result<Self, lightning::io::Error> {
-		let pending_messages = Arc::new(MessageQueue::new());
+		let pending_msgs_or_needs_persist_notifier = Arc::new(Notifier::new());
+		let pending_messages =
+			Arc::new(MessageQueue::new(Arc::clone(&pending_msgs_or_needs_persist_notifier)));
 		let persisted_queue = read_event_queue(kv_store.clone()).await?.unwrap_or_default();
 		let pending_events = Arc::new(EventQueue::new(persisted_queue, kv_store.clone()));
 		let ignored_peers = RwLock::new(new_hash_set());
@@ -523,6 +526,7 @@ where
 			_client_config: client_config,
 			best_block: RwLock::new(chain_params.map(|chain_params| chain_params.best_block)),
 			_chain_source: chain_source,
+			pending_msgs_or_needs_persist_notifier,
 		})
 	}
 
@@ -581,12 +585,12 @@ where
 	}
 
 	/// Returns a [`Future`] that will complete when the next batch of pending messages is ready to
-	/// be processed.
+	/// be processed *or* we need to be repersisted.
 	///
 	/// Note that callbacks registered on the [`Future`] MUST NOT call back into this
 	/// [`LiquidityManager`] and should instead register actions to be taken later.
-	pub fn get_pending_msgs_future(&self) -> Future {
-		self.pending_messages.get_pending_msgs_future()
+	pub fn get_pending_msgs_or_needs_persist_future(&self) -> Future {
+		self.pending_msgs_or_needs_persist_notifier.get_future()
 	}
 
 	/// Blocks the current thread until next event is ready and returns it.
@@ -1208,11 +1212,11 @@ where
 	}
 
 	/// Returns a [`Future`] that will complete when the next batch of pending messages is ready to
-	/// be processed.
+	/// be processed *or* we need to be repersisted.
 	///
-	/// Wraps [`LiquidityManager::get_pending_msgs_future`].
-	pub fn get_pending_msgs_future(&self) -> Future {
-		self.inner.get_pending_msgs_future()
+	/// Wraps [`LiquidityManager::get_pending_msgs_or_needs_persist_future`].
+	pub fn get_pending_msgs_or_needs_persist_future(&self) -> Future {
+		self.inner.get_pending_msgs_or_needs_persist_future()
 	}
 
 	/// Blocks the current thread until next event is ready and returns it.

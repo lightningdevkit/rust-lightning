@@ -878,7 +878,7 @@ where
 			OptionalSelector { optional_future: None }
 		};
 		let lm_fut = if let Some(lm) = liquidity_manager.as_ref() {
-			let fut = lm.get_lm().get_pending_msgs_future();
+			let fut = lm.get_lm().get_pending_msgs_or_needs_persist_future();
 			OptionalSelector { optional_future: Some(fut) }
 		} else {
 			OptionalSelector { optional_future: None }
@@ -958,6 +958,13 @@ where
 			}
 
 			log_trace!(logger, "Done persisting ChannelManager.");
+		}
+
+		if let Some(liquidity_manager) = liquidity_manager.as_ref() {
+			log_trace!(logger, "Persisting LiquidityManager...");
+			let _ = liquidity_manager.get_lm().persist().await.map_err(|e| {
+				log_error!(logger, "Persisting LiquidityManager failed: {}", e);
+			});
 		}
 
 		// Note that we want to run a graph prune once not long after startup before
@@ -1437,7 +1444,7 @@ impl BackgroundProcessor {
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 						&chain_monitor.get_update_future(),
 						&om.get_om().get_update_future(),
-						&lm.get_lm().get_pending_msgs_future(),
+						&lm.get_lm().get_pending_msgs_or_needs_persist_future(),
 					),
 					(Some(om), None) => Sleeper::from_three_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
@@ -1447,7 +1454,7 @@ impl BackgroundProcessor {
 					(None, Some(lm)) => Sleeper::from_three_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 						&chain_monitor.get_update_future(),
-						&lm.get_lm().get_pending_msgs_future(),
+						&lm.get_lm().get_pending_msgs_or_needs_persist_future(),
 					),
 					(None, None) => Sleeper::from_two_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
@@ -1479,6 +1486,13 @@ impl BackgroundProcessor {
 						channel_manager.get_cm().encode(),
 					))?;
 					log_trace!(logger, "Done persisting ChannelManager.");
+				}
+
+				if let Some(liquidity_manager) = liquidity_manager.as_ref() {
+					log_trace!(logger, "Persisting LiquidityManager...");
+					let _ = liquidity_manager.get_lm().persist().map_err(|e| {
+						log_error!(logger, "Persisting LiquidityManager failed: {}", e);
+					});
 				}
 
 				// Note that we want to run a graph prune once not long after startup before
