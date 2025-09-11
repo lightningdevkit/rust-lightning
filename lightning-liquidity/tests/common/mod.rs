@@ -67,6 +67,7 @@ pub(crate) struct LiquidityNode<'a, 'b, 'c> {
 		&'c TestKeysInterface,
 		&'a TestChannelManager<'b, 'c>,
 		Arc<dyn Filter + Send + Sync>,
+		Arc<TestStore>,
 		Arc<dyn TimeProvider + Send + Sync>,
 	>,
 }
@@ -79,6 +80,7 @@ impl<'a, 'b, 'c> LiquidityNode<'a, 'b, 'c> {
 			&'c TestKeysInterface,
 			&'a TestChannelManager<'b, 'c>,
 			Arc<dyn Filter + Send + Sync>,
+			Arc<TestStore>,
 			Arc<dyn TimeProvider + Send + Sync>,
 		>,
 	) -> Self {
