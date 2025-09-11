@@ -1484,7 +1484,7 @@ where
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
 		for (channel_id, update_id) in self.persister.get_and_clear_completed_updates() {
-			self.channel_monitor_updated(channel_id, update_id);
+			let _ = self.channel_monitor_updated(channel_id, update_id);
 		}
 		let mut pending_monitor_events = self.pending_monitor_events.lock().unwrap().split_off(0);
 		for monitor_state in self.monitors.read().unwrap().values() {
