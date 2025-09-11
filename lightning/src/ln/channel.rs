@@ -1749,10 +1749,10 @@ where
 				.as_mut()
 				.and_then(|pending_splice| pending_splice.funding_negotiation.take())
 				.and_then(|funding_negotiation| {
-					if let FundingNegotiation::ConstructingTransaction(
-						_,
+					if let FundingNegotiation::ConstructingTransaction {
 						interactive_tx_constructor,
-					) = funding_negotiation
+						..
+					} = funding_negotiation
 					{
 						Some(interactive_tx_constructor)
 					} else {
@@ -1970,10 +1970,10 @@ where
 			ChannelPhase::Funded(chan) => {
 				if let Some(pending_splice) = chan.pending_splice.as_mut() {
 					if let Some(funding_negotiation) = pending_splice.funding_negotiation.take() {
-						if let FundingNegotiation::ConstructingTransaction(
+						if let FundingNegotiation::ConstructingTransaction {
 							mut funding,
 							interactive_tx_constructor,
-						) = funding_negotiation
+						} = funding_negotiation
 						{
 							let mut signing_session =
 								interactive_tx_constructor.into_signing_session();
@@ -1987,7 +1987,7 @@ where
 
 							chan.interactive_tx_signing_session = Some(signing_session);
 							pending_splice.funding_negotiation =
-								Some(FundingNegotiation::AwaitingSignatures(funding));
+								Some(FundingNegotiation::AwaitingSignatures { funding });
 
 							return Ok(commitment_signed);
 						} else {
@@ -2058,7 +2058,7 @@ where
 				let has_negotiated_pending_splice = funded_channel.pending_splice.as_ref()
 					.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
 					.filter(|funding_negotiation| {
-						matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures(_))
+						matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. })
 					})
 					.map(|funding_negotiation| funding_negotiation.as_funding().is_some())
 					.unwrap_or(false);
@@ -2564,17 +2564,24 @@ struct PendingFunding {
 }
 
 enum FundingNegotiation {
-	AwaitingAck(FundingNegotiationContext),
-	ConstructingTransaction(FundingScope, InteractiveTxConstructor),
-	AwaitingSignatures(FundingScope),
+	AwaitingAck {
+		context: FundingNegotiationContext,
+	},
+	ConstructingTransaction {
+		funding: FundingScope,
+		interactive_tx_constructor: InteractiveTxConstructor,
+	},
+	AwaitingSignatures {
+		funding: FundingScope,
+	},
 }
 
 impl FundingNegotiation {
 	fn as_funding(&self) -> Option<&FundingScope> {
 		match self {
-			FundingNegotiation::AwaitingAck(_) => None,
-			FundingNegotiation::ConstructingTransaction(funding, _) => Some(funding),
-			FundingNegotiation::AwaitingSignatures(funding) => Some(funding),
+			FundingNegotiation::AwaitingAck { .. } => None,
+			FundingNegotiation::ConstructingTransaction { funding, .. } => Some(funding),
+			FundingNegotiation::AwaitingSignatures { funding } => Some(funding),
 		}
 	}
 }
@@ -6760,8 +6767,10 @@ where
 			.as_mut()
 			.and_then(|pending_splice| pending_splice.funding_negotiation.as_mut())
 			.and_then(|funding_negotiation| {
-				if let FundingNegotiation::ConstructingTransaction(_, interactive_tx_constructor) =
-					funding_negotiation
+				if let FundingNegotiation::ConstructingTransaction {
+					interactive_tx_constructor,
+					..
+				} = funding_negotiation
 				{
 					Some(interactive_tx_constructor)
 				} else {
@@ -7580,7 +7589,7 @@ where
 			.as_ref()
 			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
 			.filter(|funding_negotiation| {
-				matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures(_))
+				matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. })
 			})
 			.and_then(|funding_negotiation| funding_negotiation.as_funding())
 			.expect("Funding must exist for negotiated pending splice");
@@ -8571,7 +8580,7 @@ where
 				.funding_negotiation
 				.as_ref()
 				.map(|funding_negotiation| {
-					matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures(_))
+					matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. })
 				})
 				.unwrap_or(false)
 			{
@@ -9435,7 +9444,7 @@ where
 						.as_ref()
 						.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
 						.and_then(|funding_negotiation| {
-							if let FundingNegotiation::AwaitingSignatures(funding) = &funding_negotiation {
+							if let FundingNegotiation::AwaitingSignatures { funding } = &funding_negotiation {
 								Some(funding)
 							} else {
 								None
@@ -11515,7 +11524,7 @@ where
 		}
 
 		let prev_funding_input = self.funding.to_splice_funding_input();
-		let funding_negotiation_context = FundingNegotiationContext {
+		let context = FundingNegotiationContext {
 			is_initiator: true,
 			our_funding_contribution: adjusted_funding_contribution,
 			funding_tx_locktime: LockTime::from_consensus(locktime),
@@ -11527,7 +11536,7 @@ where
 		};
 
 		self.pending_splice = Some(PendingFunding {
-			funding_negotiation: Some(FundingNegotiation::AwaitingAck(funding_negotiation_context)),
+			funding_negotiation: Some(FundingNegotiation::AwaitingAck { context }),
 			negotiated_candidates: vec![],
 			sent_funding_txid: None,
 			received_funding_txid: None,
@@ -11747,10 +11756,10 @@ where
 		let funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
 
 		self.pending_splice = Some(PendingFunding {
-			funding_negotiation: Some(FundingNegotiation::ConstructingTransaction(
-				splice_funding,
+			funding_negotiation: Some(FundingNegotiation::ConstructingTransaction {
+				funding: splice_funding,
 				interactive_tx_constructor,
-			)),
+			}),
 			negotiated_candidates: Vec::new(),
 			received_funding_txid: None,
 			sent_funding_txid: None,
@@ -11785,7 +11794,7 @@ where
 		let pending_splice =
 			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
 		// TODO: Good candidate for a let else statement once MSRV >= 1.65
-		let funding_negotiation_context = if let Some(FundingNegotiation::AwaitingAck(context)) =
+		let funding_negotiation_context = if let Some(FundingNegotiation::AwaitingAck { context }) =
 			pending_splice.funding_negotiation.take()
 		{
 			context
@@ -11811,10 +11820,10 @@ where
 
 		debug_assert!(self.interactive_tx_signing_session.is_none());
 
-		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction(
-			splice_funding,
+		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction {
+			funding: splice_funding,
 			interactive_tx_constructor,
-		));
+		});
 
 		Ok(tx_msg_opt)
 	}
@@ -11828,9 +11837,9 @@ where
 			.ok_or(ChannelError::Ignore("Channel is not in pending splice".to_owned()))?
 			.funding_negotiation
 		{
-			Some(FundingNegotiation::AwaitingAck(context)) => context,
-			Some(FundingNegotiation::ConstructingTransaction(_, _))
-			| Some(FundingNegotiation::AwaitingSignatures(_)) => {
+			Some(FundingNegotiation::AwaitingAck { context }) => context,
+			Some(FundingNegotiation::ConstructingTransaction { .. })
+			| Some(FundingNegotiation::AwaitingSignatures { .. }) => {
 				return Err(ChannelError::WarnAndDisconnect(
 					"Got unexpected splice_ack; splice negotiation already in progress".to_owned(),
 				));
