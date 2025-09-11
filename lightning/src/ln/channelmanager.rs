@@ -12332,7 +12332,7 @@ where
 	/// pay the actual [`Bolt12Invoice`] once it is received.
 	///
 	/// This method is identical to [`Self::pay_for_offer`] with the one exception that it allows
-	/// you to specify the [`InvoiceRequest::quantity`]. We expect this to be rather seldom used,
+	/// you to specify the [`InvoiceRequest::quantity`]. We expect this to be rather seldomly used,
 	/// as the "quantity" feature of offers doesn't line up with common payment flows today.
 	///
 	/// This method is otherwise identical to [`Self::pay_for_offer`] but will additionally fail if
