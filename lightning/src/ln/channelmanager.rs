@@ -1268,6 +1268,9 @@ pub(crate) enum EventCompletionAction {
 		channel_id: ChannelId,
 	},
 
+	/// When a payment's resolution is communicated to the downstream logic via
+	/// [`Event::PaymentSent`] or [`Event::PaymentFailed`] we may want to mark the payment as
+	/// fully-resolved in the [`ChannelMonitor`], which we do via this action.
 	/// Note that this action will be dropped on downgrade to LDK prior to 0.2!
 	ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate),
 }
