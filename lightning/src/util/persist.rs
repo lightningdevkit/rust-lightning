@@ -771,10 +771,9 @@ where
 		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
 		io::Error,
 	> {
-		let monitor_list = self.0.kv_store.list(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-		).await?;
+		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
 		let mut res = Vec::with_capacity(monitor_list.len());
 		// TODO: Parallelize this loop
 		for monitor_key in monitor_list {
@@ -874,11 +873,10 @@ where
 		&self, monitor_name: &MonitorName, monitor_key: &str,
 	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	{
-		let mut monitor_cursor = io::Cursor::new(self.kv_store.read(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key,
-		).await?);
+		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let monitor_bytes = self.kv_store.read(primary, secondary, monitor_key).await?;
+		let mut monitor_cursor = io::Cursor::new(monitor_bytes);
 		// Discard the sentinel bytes if found.
 		if monitor_cursor.get_ref().starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL) {
 			monitor_cursor.set_position(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() as u64);
@@ -918,12 +916,9 @@ where
 	async fn read_monitor_update(
 		&self, monitor_key: &str, update_name: &UpdateName,
 	) -> Result<ChannelMonitorUpdate, io::Error> {
-		let update_bytes = self.kv_store.read(
-			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-			monitor_key,
-			update_name.as_str(),
-		).await?;
-		ChannelMonitorUpdate::read(&mut io::Cursor::new(update_bytes)).map_err(|e| {
+		let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+		let update_bytes = self.kv_store.read(primary, monitor_key, update_name.as_str()).await?;
+		ChannelMonitorUpdate::read(&mut &update_bytes[..]).map_err(|e| {
 			log_error!(
 				self.logger,
 				"Failed to read ChannelMonitorUpdate {}/{}/{}, reason: {}",
@@ -937,27 +932,19 @@ where
 	}
 
 	async fn cleanup_stale_updates(&self, lazy: bool) -> Result<(), io::Error> {
-		let monitor_keys = self.kv_store.list(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-		).await?;
+		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let monitor_keys = self.kv_store.list(primary, secondary).await?;
 		for monitor_key in monitor_keys {
 			let monitor_name = MonitorName::from_str(&monitor_key)?;
 			let (_, current_monitor) = self.read_monitor(&monitor_name, &monitor_key).await?;
-			let updates = self
-				.kv_store
-				.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key.as_str())
-				.await?;
+			let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+			let updates = self.kv_store.list(primary, monitor_key.as_str()).await?;
 			for update in updates {
 				let update_name = UpdateName::new(update)?;
 				// if the update_id is lower than the stored monitor, delete
 				if update_name.0 <= current_monitor.get_latest_update_id() {
-					self.kv_store.remove(
-						CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-						monitor_key.as_str(),
-						update_name.as_str(),
-						lazy,
-					).await?;
+					self.kv_store.remove(primary, &monitor_key, update_name.as_str(), lazy).await?;
 				}
 			}
 		}
@@ -980,12 +967,9 @@ where
 			monitor_bytes.extend_from_slice(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL);
 		}
 		monitor.write(&mut monitor_bytes).unwrap();
-		self.kv_store.write(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key.as_str(),
-			monitor_bytes,
-		).await
+		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		self.kv_store.write(primary, secondary, monitor_key.as_str(), monitor_bytes).await
 	}
 
 	async fn update_persisted_channel<ChannelSigner: EcdsaChannelSigner>(
@@ -1000,12 +984,10 @@ where
 			if persist_update {
 				let monitor_key = monitor_name.to_string();
 				let update_name = UpdateName::from(update.update_id);
-				self.kv_store.write(
-					CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-					monitor_key.as_str(),
-					update_name.as_str(),
-					update.encode(),
-				).await
+				let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+				self.kv_store
+					.write(primary, &monitor_key, update_name.as_str(), update.encode())
+					.await
 			} else {
 				// In case of channel-close monitor update, we need to read old monitor before persisting
 				// the new one in order to determine the cleanup range.
@@ -1059,21 +1041,15 @@ where
 			Ok((_block_hash, monitor)) => monitor,
 			Err(_) => return,
 		};
-		match self.kv_store.write(
-			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key.as_str(),
-			monitor.encode(),
-		).await {
+		let primary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		match self.kv_store.write(primary, secondary, &monitor_key, monitor.encode()).await {
 			Ok(()) => {},
 			Err(_e) => return,
 		};
-		let _ = self.kv_store.remove(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key.as_str(),
-			true,
-		).await;
+		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let _ = self.kv_store.remove(primary, secondary, &monitor_key, true).await;
 	}
 
 	// Cleans up monitor updates for given monitor in range `start..=end`.
@@ -1081,12 +1057,9 @@ where
 		let monitor_key = monitor_name.to_string();
 		for update_id in start..=end {
 			let update_name = UpdateName::from(update_id);
-			if let Err(e) = self.kv_store.remove(
-				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-				monitor_key.as_str(),
-				update_name.as_str(),
-				true,
-			).await {
+			let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+			let res = self.kv_store.remove(primary, &monitor_key, update_name.as_str(), true).await;
+			if let Err(e) = res {
 				log_error!(
 					self.logger,
 					"Failed to clean up channel monitor updates for monitor {}, reason: {}",
