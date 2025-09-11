@@ -561,6 +561,9 @@ where
 		kv_store: K, logger: L, maximum_pending_updates: u64, entropy_source: ES,
 		signer_provider: SP, broadcaster: BI, fee_estimator: FE,
 	) -> Self {
+		// Note that calling the spawner only happens in the `pub(crate)` `spawn_*` methods defined
+		// with additional bounds on `MonitorUpdatingPersisterAsync`. Thus its safe to provide a
+		// dummy always-panic implementation here.
 		MonitorUpdatingPersister(MonitorUpdatingPersisterAsync::new(
 			KVStoreSyncWrapper(kv_store),
 			PanicingSpawner,
