@@ -19,7 +19,7 @@ use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode, 
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::io;
 use crate::io::Cursor;
-use crate::ln::channelmanager::PaymentId;
+use crate::ln::channelmanager::{InterceptId, PaymentId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::offers::nonce::Nonce;
@@ -556,7 +556,7 @@ pub enum AsyncPaymentsContext {
 	},
 	/// Context contained within the reply [`BlindedMessagePath`] we put in outbound
 	/// [`HeldHtlcAvailable`] messages, provided back to us in corresponding [`ReleaseHeldHtlc`]
-	/// messages.
+	/// messages if we are an always-online sender paying an async recipient.
 	///
 	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
 	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
@@ -576,6 +576,17 @@ pub enum AsyncPaymentsContext {
 		/// it should be ignored. Without this, anyone with the path corresponding to this context is
 		/// able to trivially ask if we're online forever.
 		path_absolute_expiry: core::time::Duration,
+	},
+	/// Context contained within the reply [`BlindedMessagePath`] put in outbound
+	/// [`HeldHtlcAvailable`] messages, provided back to the async sender's always-online counterparty
+	/// in corresponding [`ReleaseHeldHtlc`] messages.
+	///
+	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+	ReleaseHeldHtlc {
+		/// An identifier for the HTLC that should be released by us as the sender's always-online
+		/// channel counterparty to the often-offline recipient.
+		intercept_id: InterceptId,
 	},
 }
 
@@ -631,6 +642,9 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 		(0, recipient_id, required),
 		(2, invoice_slot, required),
 		(4, path_absolute_expiry, required),
+	},
+	(6, ReleaseHeldHtlc) => {
+		(0, intercept_id, required),
 	},
 );
 

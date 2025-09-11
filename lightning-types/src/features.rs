@@ -82,6 +82,8 @@
 //!   (see [BOLT PR #1228](https://github.com/lightning/bolts/pull/1228) for more info).
 //! - `Splice` - Allows replacing the currently-locked funding transaction with a new one
 //!   (see [BOLT PR #1160](https://github.com/lightning/bolts/pull/1160) for more information).
+//! - `HtlcHold` - requires/supports holding HTLCs and forwarding on receipt of an onion message
+//!   (see [BOLT-2](https://github.com/lightning/bolts/pull/989/files) for more information).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -166,6 +168,10 @@ mod sealed {
 			ZeroConf,
 			// Byte 7
 			Trampoline | SimpleClose | Splice,
+			// Byte 8 - 130
+			,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+			// Byte 131
+			HtlcHold,
 		]
 	);
 	define_context!(
@@ -191,6 +197,10 @@ mod sealed {
 			,,,,,,,,,,,,,,,,,,,,,,,,
 			// Byte 32
 			DnsResolver,
+			// Byte 33 - 130
+			,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+			// Byte 131
+			HtlcHold,
 		]
 	);
 	define_context!(ChannelContext, []);
@@ -699,6 +709,17 @@ mod sealed {
 		clear_dns_resolution,
 		supports_dns_resolution,
 		requires_dns_resolution
+	);
+	define_feature!(
+		1053, // The BOLTs PR uses feature bit 52/53, so add +1000 for the experimental bit
+		HtlcHold,
+		[InitContext, NodeContext],
+		"Feature flags for holding HTLCs and forwarding on receipt of an onion message",
+		set_htlc_hold_optional,
+		set_htlc_hold_required,
+		clear_htlc_hold,
+		supports_htlc_hold,
+		requires_htlc_hold
 	);
 
 	// Note: update the module-level docs when a new feature bit is added!

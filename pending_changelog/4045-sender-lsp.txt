@@ -1,0 +1,4 @@
+## Backwards Compat
+
+* Downgrading to prior versions of LDK after setting `UserConfig::enable_htlc_hold` may cause
+	`ChannelManager` deserialization to fail or HTLCs to time out (#4045, #4046)

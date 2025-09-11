@@ -228,6 +228,9 @@ pub enum PendingHTLCRouting {
 		blinded: Option<BlindedForward>,
 		/// The absolute CLTV of the inbound HTLC
 		incoming_cltv_expiry: Option<u32>,
+		/// Whether this HTLC should be held by our node until we receive a corresponding
+		/// [`ReleaseHeldHtlc`] onion message.
+		hold_htlc: Option<()>,
 	},
 	/// An HTLC which should be forwarded on to another Trampoline node.
 	TrampolineForward {
@@ -368,6 +371,15 @@ impl PendingHTLCRouting {
 			Self::TrampolineForward { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
 			Self::Receive { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
 			Self::ReceiveKeysend { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
+		}
+	}
+
+	/// Whether this HTLC should be held by our node until we receive a corresponding
+	/// [`ReleaseHeldHtlc`] onion message.
+	pub(super) fn should_hold_htlc(&self) -> bool {
+		match self {
+			Self::Forward { hold_htlc: Some(()), .. } => true,
+			_ => false,
 		}
 	}
 }
@@ -637,8 +649,39 @@ impl Readable for PaymentId {
 /// An identifier used to uniquely identify an intercepted HTLC to LDK.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Hash, Copy, Clone, PartialEq, Eq)]
 pub struct InterceptId(pub [u8; 32]);
+
+impl InterceptId {
+	/// This intercept id corresponds to an HTLC that will be forwarded on
+	/// [`ChannelManager::forward_intercepted_htlc`].
+	fn from_incoming_shared_secret(ss: &[u8; 32]) -> Self {
+		Self(Sha256::hash(ss).to_byte_array())
+	}
+
+	/// This intercept id corresponds to an HTLC that will be forwarded on receipt of a
+	/// [`ReleaseHeldHtlc`] onion message.
+	fn from_htlc_id_and_chan_id(
+		htlc_id: u64, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+	) -> Self {
+		let mut sha = Sha256::engine();
+		sha.input(&htlc_id.to_be_bytes());
+		sha.input(&channel_id.0);
+		sha.input(&counterparty_node_id.serialize());
+		Self(Sha256::from_engine(sha).to_byte_array())
+	}
+}
+
+impl Borrow<[u8]> for InterceptId {
+	fn borrow(&self) -> &[u8] {
+		&self.0[..]
+	}
+}
+impl_fmt_traits! {
+	impl fmt_traits for InterceptId {
+		const LENGTH: usize = 32;
+	}
+}
 
 impl Writeable for InterceptId {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -2505,8 +2548,8 @@ where
 // `total_consistency_lock`
 //  |
 //  |__`forward_htlcs`
-//  |   |
-//  |   |__`pending_intercepted_htlcs`
+//  |
+//  |__`pending_intercepted_htlcs`
 //  |
 //  |__`decode_update_add_htlcs`
 //  |
@@ -2597,8 +2640,14 @@ pub struct ChannelManager<
 	pub(super) forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
 	#[cfg(not(test))]
 	forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
-	/// Storage for HTLCs that have been intercepted and bubbled up to the user. We hold them here
-	/// until the user tells us what we should do with them.
+	/// Storage for HTLCs that have been intercepted.
+	///
+	/// These HTLCs fall into two categories:
+	/// 1. HTLCs that are bubbled up to the user and held until the invocation of
+	///    [`ChannelManager::forward_intercepted_htlc`] or [`ChannelManager::fail_intercepted_htlc`]
+	///    (or timeout)
+	/// 2. HTLCs that are being held on behalf of an often-offline sender until receipt of a
+	///    [`ReleaseHeldHtlc`] onion message from an often-offline recipient
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
@@ -3393,18 +3442,20 @@ macro_rules! emit_initial_channel_ready_event {
 /// set for this channel is empty!
 macro_rules! handle_monitor_update_completion {
 	($self: ident, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
+		let channel_id = $chan.context.channel_id();
+		let counterparty_node_id = $chan.context.get_counterparty_node_id();
 		#[cfg(debug_assertions)]
 		{
 			let in_flight_updates =
-				$peer_state.in_flight_monitor_updates.get(&$chan.context.channel_id());
+				$peer_state.in_flight_monitor_updates.get(&channel_id);
 			assert!(in_flight_updates.map(|(_, updates)| updates.is_empty()).unwrap_or(true));
 			assert_eq!($chan.blocked_monitor_updates_pending(), 0);
 		}
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
 		let mut updates = $chan.monitor_updating_restored(&&logger,
 			&$self.node_signer, $self.chain_hash, &*$self.config.read().unwrap(),
-			$self.best_block.read().unwrap().height);
-		let counterparty_node_id = $chan.context.get_counterparty_node_id();
+			$self.best_block.read().unwrap().height,
+			|htlc_id| $self.path_for_release_held_htlc(htlc_id, &channel_id, &counterparty_node_id));
 		let channel_update = if updates.channel_ready.is_some() && $chan.context.is_usable() {
 			// We only send a channel_update in the case where we are just now sending a
 			// channel_ready and the channel is in a usable state. We may re-send a
@@ -3420,7 +3471,7 @@ macro_rules! handle_monitor_update_completion {
 		} else { None };
 
 		let update_actions = $peer_state.monitor_update_blocked_actions
-			.remove(&$chan.context.channel_id()).unwrap_or(Vec::new());
+			.remove(&channel_id).unwrap_or(Vec::new());
 
 		let (htlc_forwards, decode_update_add_htlcs) = $self.handle_channel_resumption(
 			&mut $peer_state.pending_msg_events, $chan, updates.raa,
@@ -3432,7 +3483,6 @@ macro_rules! handle_monitor_update_completion {
 			$peer_state.pending_msg_events.push(upd);
 		}
 
-		let channel_id = $chan.context.channel_id();
 		let unbroadcasted_batch_funding_txid = $chan.context.unbroadcasted_batch_funding_txid(&$chan.funding);
 		core::mem::drop($peer_state_lock);
 		core::mem::drop($per_peer_state_lock);
@@ -5414,6 +5464,18 @@ where
 		res
 	}
 
+	/// If we are holding an HTLC on behalf of an often-offline sender, this method allows us to
+	/// create a path for the sender to use as the reply path when they send the recipient a
+	/// [`HeldHtlcAvailable`] onion message, so the recipient's [`ReleaseHeldHtlc`] response will be
+	/// received to our node.
+	fn path_for_release_held_htlc(
+		&self, htlc_id: u64, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+	) -> BlindedMessagePath {
+		let intercept_id =
+			InterceptId::from_htlc_id_and_chan_id(htlc_id, channel_id, counterparty_node_id);
+		self.flow.path_for_release_held_htlc(intercept_id, &*self.entropy_source)
+	}
+
 	/// Signals that no further attempts for the given payment should occur. Useful if you have a
 	/// pending outbound payment with retries remaining, but wish to stop retrying the payment before
 	/// retries are exhausted.
@@ -6278,11 +6340,19 @@ where
 			})?;
 
 		let routing = match payment.forward_info.routing {
-			PendingHTLCRouting::Forward { onion_packet, blinded, incoming_cltv_expiry, .. } => {
+			PendingHTLCRouting::Forward {
+				onion_packet,
+				blinded,
+				incoming_cltv_expiry,
+				hold_htlc,
+				..
+			} => {
+				debug_assert!(hold_htlc.is_none(), "Held intercept HTLCs should not be surfaced in an event until the recipient comes online");
 				PendingHTLCRouting::Forward {
 					onion_packet,
 					blinded,
 					incoming_cltv_expiry,
+					hold_htlc,
 					short_channel_id: next_hop_scid,
 				}
 			},
@@ -6415,6 +6485,32 @@ where
 						HopConnector::Trampoline(_) => None,
 					});
 				let shared_secret = next_hop.shared_secret().secret_bytes();
+
+				// Nodes shouldn't expect us to hold HTLCs for them if we don't advertise htlc_hold feature
+				// support.
+				//
+				// If we wanted to pretend to be a node that didn't understand the feature at all here, the
+				// correct behavior would've been to disconnect the sender when we first received the
+				// update_add message. However, this would make the `UserConfig::enable_htlc_hold` option
+				// unsafe -- if our node switched the config option from on to off just after the sender
+				// enqueued their update_add + CS, the sender would continue retransmitting those messages
+				// and we would keep disconnecting them until the HTLC timed out.
+				if update_add_htlc.hold_htlc.is_some()
+					&& !BaseMessageHandler::provided_node_features(self).supports_htlc_hold()
+				{
+					let reason = LocalHTLCFailureReason::TemporaryNodeFailure;
+					let htlc_fail = self.htlc_failure_from_update_add_err(
+						&update_add_htlc,
+						&incoming_counterparty_node_id,
+						reason,
+						is_intro_node_blinded_forward,
+						&shared_secret,
+					);
+					let failure_type =
+						get_htlc_failure_type(outgoing_scid_opt, update_add_htlc.payment_hash);
+					htlc_fails.push((htlc_fail, failure_type, reason.into()));
+					continue;
+				}
 
 				// Process the HTLC on the incoming channel.
 				match self.do_funded_channel_callback(
@@ -10572,6 +10668,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 					let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
 					let payment_hash = forward_info.payment_hash;
+					let logger = WithContext::from(
+						&self.logger,
+						None,
+						Some(prev_channel_id),
+						Some(payment_hash),
+					);
 					let pending_add = PendingAddHTLCInfo {
 						prev_short_channel_id,
 						prev_counterparty_node_id,
@@ -10581,77 +10683,99 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						prev_user_channel_id,
 						forward_info,
 					};
-					match forward_htlcs.entry(scid) {
-						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
-						},
-						hash_map::Entry::Vacant(entry) => {
-							if !is_our_scid
-								&& pending_add.forward_info.incoming_amt_msat.is_some()
-								&& fake_scid::is_valid_intercept(
-									&self.fake_scid_rand_bytes,
-									scid,
-									&self.chain_hash,
-								) {
-								let intercept_id = InterceptId(
-									Sha256::hash(&pending_add.forward_info.incoming_shared_secret)
-										.to_byte_array(),
+					let mut fail_intercepted_htlc = |pending_add: PendingAddHTLCInfo| {
+						let htlc_source =
+							HTLCSource::PreviousHopData(pending_add.htlc_previous_hop_data());
+						let reason = HTLCFailReason::from_failure_code(
+							LocalHTLCFailureReason::UnknownNextPeer,
+						);
+						let failure_type = HTLCHandlingFailureType::InvalidForward {
+							requested_forward_scid: scid,
+						};
+						failed_intercept_forwards.push((
+							htlc_source,
+							payment_hash,
+							reason,
+							failure_type,
+						));
+					};
+
+					// In the case that we have an HTLC that we're supposed to hold onto until the
+					// recipient comes online *and* the outbound scid is encoded as
+					// `fake_scid::is_valid_intercept`, we should first wait for the recipient to come
+					// online before generating an `HTLCIntercepted` event, since the event cannot be
+					// acted on until the recipient is online to cooperatively open the JIT channel. Once
+					// we receive the `ReleaseHeldHtlc` message from the recipient, we will circle back
+					// here and resume generating the event below.
+					if pending_add.forward_info.routing.should_hold_htlc() {
+						let intercept_id = InterceptId::from_htlc_id_and_chan_id(
+							prev_htlc_id,
+							&prev_channel_id,
+							&prev_counterparty_node_id,
+						);
+						let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
+						match held_htlcs.entry(intercept_id) {
+							hash_map::Entry::Vacant(entry) => {
+								log_trace!(
+									logger,
+									"Intercepted held HTLC with id {}, holding until the recipient is online",
+									intercept_id
 								);
-								let mut pending_intercepts =
-									self.pending_intercepted_htlcs.lock().unwrap();
-								match pending_intercepts.entry(intercept_id) {
-									hash_map::Entry::Vacant(entry) => {
-										new_intercept_events.push_back((
-											events::Event::HTLCIntercepted {
-												requested_next_hop_scid: scid,
-												payment_hash,
-												inbound_amount_msat: pending_add
-													.forward_info
-													.incoming_amt_msat
-													.unwrap(),
-												expected_outbound_amount_msat: pending_add
-													.forward_info
-													.outgoing_amt_msat,
-												intercept_id,
-											},
-											None,
-										));
-										entry.insert(pending_add);
+								entry.insert(pending_add);
+							},
+							hash_map::Entry::Occupied(_) => {
+								debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
+								fail_intercepted_htlc(pending_add);
+							},
+						}
+					} else if !is_our_scid
+						&& pending_add.forward_info.incoming_amt_msat.is_some()
+						&& fake_scid::is_valid_intercept(
+							&self.fake_scid_rand_bytes,
+							scid,
+							&self.chain_hash,
+						) {
+						let intercept_id = InterceptId::from_incoming_shared_secret(
+							&pending_add.forward_info.incoming_shared_secret,
+						);
+						let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
+						match pending_intercepts.entry(intercept_id) {
+							hash_map::Entry::Vacant(entry) => {
+								new_intercept_events.push_back((
+									events::Event::HTLCIntercepted {
+										requested_next_hop_scid: scid,
+										payment_hash,
+										inbound_amount_msat: pending_add
+											.forward_info
+											.incoming_amt_msat
+											.unwrap(),
+										expected_outbound_amount_msat: pending_add
+											.forward_info
+											.outgoing_amt_msat,
+										intercept_id,
 									},
-									hash_map::Entry::Occupied(_) => {
-										let logger = WithContext::from(
-											&self.logger,
-											None,
-											Some(prev_channel_id),
-											Some(payment_hash),
-										);
-										log_info!(
+									None,
+								));
+								entry.insert(pending_add);
+							},
+							hash_map::Entry::Occupied(_) => {
+								log_info!(
 											logger,
 											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
 											scid
 										);
-										let htlc_source = HTLCSource::PreviousHopData(
-											pending_add.htlc_previous_hop_data(),
-										);
-										let reason = HTLCFailReason::from_failure_code(
-											LocalHTLCFailureReason::UnknownNextPeer,
-										);
-										let failure_type =
-											HTLCHandlingFailureType::InvalidForward {
-												requested_forward_scid: scid,
-											};
-										failed_intercept_forwards.push((
-											htlc_source,
-											payment_hash,
-											reason,
-											failure_type,
-										));
-									},
-								}
-							} else {
+								fail_intercepted_htlc(pending_add);
+							},
+						}
+					} else {
+						match forward_htlcs.entry(scid) {
+							hash_map::Entry::Occupied(mut entry) => {
+								entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
+							},
+							hash_map::Entry::Vacant(entry) => {
 								entry.insert(vec![HTLCForwardInfo::AddHTLC(pending_add)]);
-							}
-						},
+							},
+						}
 					}
 				}
 			}
@@ -10965,6 +11089,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							self.chain_hash,
 							&self.config.read().unwrap(),
 							&*self.best_block.read().unwrap(),
+							|htlc_id| self.path_for_release_held_htlc(htlc_id, &msg.channel_id, counterparty_node_id)
 						);
 						let responses = try_channel_entry!(self, peer_state, res, chan_entry);
 						let mut channel_update = None;
@@ -11434,9 +11559,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		// Returns whether we should remove this channel as it's just been closed.
 		let unblock_chan = |chan: &mut Channel<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| -> Option<ShutdownResult> {
+			let channel_id = chan.context().channel_id();
 			let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 			let node_id = chan.context().get_counterparty_node_id();
-			if let Some(msgs) = chan.signer_maybe_unblocked(self.chain_hash, &&logger) {
+			if let Some(msgs) = chan.signer_maybe_unblocked(
+				self.chain_hash, &&logger,
+				|htlc_id| self.path_for_release_held_htlc(htlc_id, &channel_id, &node_id)
+			) {
 				if let Some(msg) = msgs.open_channel {
 					pending_msg_events.push(MessageSendEvent::SendOpenChannel {
 						node_id,
@@ -11457,7 +11586,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 				let cu_msg = msgs.commitment_update.map(|updates| MessageSendEvent::UpdateHTLCs {
 					node_id,
-					channel_id: chan.context().channel_id(),
+					channel_id,
 					updates,
 				});
 				let raa_msg = msgs.revoke_and_ack.map(|msg| MessageSendEvent::SendRevokeAndACK {
@@ -14550,18 +14679,64 @@ where
 	}
 
 	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, context: AsyncPaymentsContext) {
-		let payment_id = match context {
-			AsyncPaymentsContext::OutboundPayment { payment_id } => payment_id,
-			_ => return,
-		};
+		match context {
+			AsyncPaymentsContext::OutboundPayment { payment_id } => {
+				if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
+					log_trace!(
+						self.logger,
+						"Failed to release held HTLC with payment id {}: {:?}",
+						payment_id,
+						e
+					);
+				}
+			},
+			AsyncPaymentsContext::ReleaseHeldHtlc { intercept_id } => {
+				let mut htlc = {
+					let mut pending_intercept_htlcs =
+						self.pending_intercepted_htlcs.lock().unwrap();
+					match pending_intercept_htlcs.remove(&intercept_id) {
+						Some(htlc) => htlc,
+						None => {
+							log_trace!(
+								self.logger,
+								"Failed to release HTLC with intercept_id {}: HTLC not found",
+								intercept_id
+							);
+							return;
+						},
+					}
+				};
+				match htlc.forward_info.routing {
+					PendingHTLCRouting::Forward { ref mut hold_htlc, .. } => {
+						debug_assert!(hold_htlc.is_some());
+						*hold_htlc = None;
+					},
+					_ => {
+						debug_assert!(false, "HTLC intercepts can only be forwards");
+						return;
+					},
+				}
 
-		if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
-			log_trace!(
-				self.logger,
-				"Failed to release held HTLC with payment id {}: {:?}",
-				payment_id,
-				e
-			);
+				let logger = WithContext::from(
+					&self.logger,
+					Some(htlc.prev_counterparty_node_id),
+					Some(htlc.prev_channel_id),
+					Some(htlc.forward_info.payment_hash),
+				);
+				log_trace!(logger, "Releasing held htlc with intercept_id {}", intercept_id);
+
+				let mut per_source_pending_forward = [(
+					htlc.prev_short_channel_id,
+					htlc.prev_counterparty_node_id,
+					htlc.prev_funding_outpoint,
+					htlc.prev_channel_id,
+					htlc.prev_user_channel_id,
+					vec![(htlc.forward_info, htlc.prev_htlc_id)],
+				)];
+				self.forward_htlcs(&mut per_source_pending_forward);
+				PersistenceNotifierGuard::notify_on_drop(self);
+			},
+			_ => return,
 		}
 	}
 
@@ -14745,6 +14920,13 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 		features.set_anchor_zero_fee_commitments_optional();
 	}
 
+	// If we are configured to be an announced node, we are expected to be always-online and can
+	// advertise the htlc_hold feature.
+	#[cfg(test)]
+	if config.enable_htlc_hold {
+		features.set_htlc_hold_optional();
+	}
+
 	features
 }
 
@@ -14769,6 +14951,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(1, blinded, option),
 		(2, short_channel_id, required),
 		(3, incoming_cltv_expiry, option),
+		(4, hold_htlc, option),
 	},
 	(1, Receive) => {
 		(0, payment_data, required),
