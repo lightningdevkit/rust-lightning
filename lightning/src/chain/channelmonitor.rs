@@ -2256,11 +2256,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// may be to contact the other node operator out-of-band to coordinate other options available
 	/// to you.
 	///
-	/// Note: For channels where the funding transaction is being manually managed (see
-	/// [`crate::ln::channelmanager::ChannelManager::funding_transaction_generated_manual_broadcast`]), this call will be
-	/// ignored until the funding transaction has been observed on-chain.
-	/// This prevents unconfirmable commitment transactions from being broadcast before funding is
-	/// visible.
+	/// Note: For channels using manual funding broadcast (see
+	/// [`crate::ln::channelmanager::ChannelManager::funding_transaction_generated_manual_broadcast`]),
+	/// automatic broadcasts are suppressed until the funding transaction has been observed on-chain.
+	/// Calling this method overrides that suppression and queues the latest holder commitment
+	/// transaction for broadcast even if the funding has not yet been seen on-chain. This is unsafe
+	/// and may result in unconfirmable transactions.
 	#[rustfmt::skip]
 	pub fn broadcast_latest_holder_commitment_txn<B: Deref, F: Deref, L: Deref>(
 		&self, broadcaster: &B, fee_estimator: &F, logger: &L
@@ -2273,7 +2274,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let fee_estimator = LowerBoundedFeeEstimator::new(&**fee_estimator);
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
-		inner.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &fee_estimator, &logger);
+		inner.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &fee_estimator, &logger, false);
 	}
 
 	/// Unsafe test-only version of `broadcast_latest_holder_commitment_txn` used by our test framework
@@ -3918,15 +3919,24 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	#[rustfmt::skip]
+	/// Note: For channels where the funding transaction is being manually managed (see
+	/// [`crate::ln::channelmanager::ChannelManager::funding_transaction_generated_manual_broadcast`]),
+	/// this method returns without queuing any transactions until the funding transaction has been
+	/// observed on-chain, unless `require_funding_seen` is `false`. This prevents attempting to
+	/// broadcast unconfirmable holder commitment transactions before the funding is visible.
+	/// See also
+	/// [`crate::chain::channelmonitor::ChannelMonitor::broadcast_latest_holder_commitment_txn`].
 	pub(crate) fn queue_latest_holder_commitment_txn_for_broadcast<B: Deref, F: Deref, L: Deref>(
-		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>
+		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>, require_funding_seen: bool,
 	)
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		if self.is_manual_broadcast && !self.funding_seen_onchain {
+		// In manual-broadcast mode, if `require_funding_seen` is true and we have not yet observed
+		// the funding transaction on-chain, do not queue any transactions.
+		if require_funding_seen && self.is_manual_broadcast && !self.funding_seen_onchain {
 			log_info!(logger, "Not broadcasting holder commitment for manual-broadcast channel before funding appears on-chain");
 			return;
 		}
@@ -4248,7 +4258,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
 							continue;
 						}
-						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger);
+						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger, true);
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
 						log_error!(logger, "    in channel monitor for channel {}!", &self.channel_id());
@@ -5414,11 +5424,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		if should_broadcast_commitment {
             // Avoid broadcasting in manual-broadcast mode until funding is seen on-chain.
-            if !self.is_manual_broadcast || self.funding_seen_onchain {
-                let (mut claimables, mut outputs) =
-                    self.generate_claimable_outpoints_and_watch_outputs(None);
-                claimable_outpoints.append(&mut claimables);
-                watch_outputs.append(&mut outputs);
+			if !self.is_manual_broadcast || self.funding_seen_onchain {
+				let (mut claimables, mut outputs) =
+					self.generate_claimable_outpoints_and_watch_outputs(None);
+				claimable_outpoints.append(&mut claimables);
+				watch_outputs.append(&mut outputs);
 			}
 		}
 
@@ -5457,7 +5467,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if let Some(payment_hash) = should_broadcast {
 			let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 			if self.is_manual_broadcast && !self.funding_seen_onchain {
-                let _ = self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
+				let _ = self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
 			} else {
 				let (mut new_outpoints, mut new_outputs) =
 				self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
@@ -5690,7 +5700,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// Only attempt to broadcast the new commitment after the `block_disconnected` call above so that
 		// it doesn't get removed from the set of pending claims.
 		if should_broadcast_commitment {
-			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, &bounded_fee_estimator, logger);
+			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, &bounded_fee_estimator, logger, true);
 		}
 
 		self.best_block = fork_point;
@@ -5725,12 +5735,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 
 		debug_assert!(!self.onchain_events_awaiting_threshold_conf.iter().any(|ref entry| entry.txid == *txid));
-		if *txid == self.funding.funding_txid() ||
-			self.pending_funding.iter().any(|f| f.funding_txid() == *txid)
-		{
-			log_trace!(logger, "transaction_unconfirmed removed observed funding. resetting funding_seen_onchain");
-			self.funding_seen_onchain = false;
-		}
 
 		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
 		let mut should_broadcast_commitment = false;
@@ -5757,7 +5761,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// Only attempt to broadcast the new commitment after the `transaction_unconfirmed` call above so
 		//  that it doesn't get removed from the set of pending claims.
 		if should_broadcast_commitment {
-			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, fee_estimator, logger);
+			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, fee_estimator, logger, true);
 		}
 	}
 
@@ -6556,7 +6560,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			},
 			pending_funding: pending_funding.unwrap_or(vec![]),
 			is_manual_broadcast: is_manual_broadcast.unwrap_or(false),
-			funding_seen_onchain: funding_seen_onchain.unwrap_or(false),
+			// Assume "seen" when absent to prevent gating holder broadcasts after upgrade.
+			funding_seen_onchain: funding_seen_onchain.unwrap_or(true),
 
 			latest_update_id,
 			commitment_transaction_number_obscure_factor,
