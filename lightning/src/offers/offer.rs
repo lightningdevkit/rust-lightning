@@ -824,7 +824,7 @@ impl OfferFromHrn {
 		self,
 		self.offer,
 		InvoiceRequestBuilder<'a, 'b, T>,
-		Some(self.hrn.clone())
+		Some(self.hrn)
 	);
 }
 
