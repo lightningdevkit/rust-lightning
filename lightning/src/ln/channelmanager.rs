@@ -9132,7 +9132,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		if let Some(signing_session) = (!channel.is_awaiting_monitor_update())
 			.then(|| ())
-			.and_then(|_| channel.interactive_tx_signing_session.as_mut())
+			.and_then(|_| channel.context.interactive_tx_signing_session.as_mut())
 			.filter(|signing_session| signing_session.holder_tx_signatures().is_none())
 		{
 			if signing_session.has_local_contribution() {

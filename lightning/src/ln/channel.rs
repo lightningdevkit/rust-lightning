@@ -1969,20 +1969,18 @@ where
 		let logger = WithChannelContext::from(logger, self.context(), None);
 		match &mut self.phase {
 			ChannelPhase::UnfundedV2(chan) => {
-				let mut signing_session = chan
+				let signing_session = chan
 					.interactive_tx_constructor
 					.take()
 					.expect("PendingV2Channel::interactive_tx_constructor should be set")
 					.into_signing_session();
 				let commitment_signed = chan.context.funding_tx_constructed(
 					&mut chan.funding,
-					&mut signing_session,
+					signing_session,
 					false,
 					chan.unfunded_context.transaction_number(),
 					&&logger,
 				)?;
-
-				chan.interactive_tx_signing_session = Some(signing_session);
 
 				return Ok(commitment_signed);
 			},
@@ -1994,17 +1992,15 @@ where
 							interactive_tx_constructor,
 						} = funding_negotiation
 						{
-							let mut signing_session =
-								interactive_tx_constructor.into_signing_session();
+							let signing_session = interactive_tx_constructor.into_signing_session();
 							let commitment_signed = chan.context.funding_tx_constructed(
 								&mut funding,
-								&mut signing_session,
+								signing_session,
 								true,
 								chan.holder_commitment_point.next_transaction_number(),
 								&&logger,
 							)?;
 
-							chan.interactive_tx_signing_session = Some(signing_session);
 							pending_splice.funding_negotiation =
 								Some(FundingNegotiation::AwaitingSignatures { funding });
 
@@ -2057,7 +2053,6 @@ where
 				let mut funded_channel = FundedChannel {
 					funding: chan.funding,
 					context: chan.context,
-					interactive_tx_signing_session: chan.interactive_tx_signing_session,
 					holder_commitment_point,
 					pending_splice: None,
 					quiescent_action: None,
@@ -2082,6 +2077,7 @@ where
 					.map(|funding_negotiation| funding_negotiation.as_funding().is_some())
 					.unwrap_or(false);
 				let session_received_commitment_signed = funded_channel
+					.context
 					.interactive_tx_signing_session
 					.as_ref()
 					.map(|session| session.has_received_commitment_signed())
@@ -2993,6 +2989,16 @@ where
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
 	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
+
+	/// The signing session for the current interactive tx construction, if any.
+	///
+	/// This is populated when the interactive tx construction phase completes
+	/// (i.e., upon receiving a consecutive `tx_complete`) and the channel enters
+	/// the signing phase (`FundingNegotiated` state with the `INTERACTIVE_SIGNING` flag set).
+	///
+	/// This field is cleared once our counterparty sends a `channel_ready` or upon splice funding
+	/// promotion.
+	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
 /// A channel struct implementing this trait can receive an initial counterparty commitment
@@ -3567,6 +3573,8 @@ where
 			blocked_monitor_updates: Vec::new(),
 
 			is_manual_broadcast: false,
+
+			interactive_tx_signing_session: None,
 		};
 
 		Ok((funding, channel_context))
@@ -3803,6 +3811,8 @@ where
 			blocked_monitor_updates: Vec::new(),
 			local_initiated_shutdown: None,
 			is_manual_broadcast: false,
+
+			interactive_tx_signing_session: None,
 		};
 
 		Ok((funding, channel_context))
@@ -6112,7 +6122,7 @@ where
 
 	#[rustfmt::skip]
 	fn funding_tx_constructed<L: Deref>(
-		&mut self, funding: &mut FundingScope, signing_session: &mut InteractiveTxSigningSession,
+		&mut self, funding: &mut FundingScope, signing_session: InteractiveTxSigningSession,
 		is_splice: bool, holder_commitment_transaction_number: u64, logger: &L
 	) -> Result<msgs::CommitmentSigned, AbortReason>
 	where
@@ -6135,7 +6145,7 @@ where
 		};
 		funding
 			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
-
+		self.interactive_tx_signing_session = Some(signing_session);
 		self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 		self.channel_state.set_interactive_signing();
 
@@ -6226,7 +6236,7 @@ where
 	}
 
 	fn get_initial_commitment_signed_v2<L: Deref>(
-		&mut self, funding: &FundingScope, logger: &L,
+		&self, funding: &FundingScope, logger: &L,
 	) -> Option<msgs::CommitmentSigned>
 	where
 		SP::Target: SignerProvider,
@@ -6668,14 +6678,6 @@ where
 {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
-	/// The signing session for the current interactive tx construction, if any.
-	///
-	/// This is populated when the interactive tx construction phase completes
-	/// (i.e., upon receiving a consecutive `tx_complete`) and the channel enters
-	/// the signing phase (`FundingNegotiated` state with the `INTERACTIVE_SIGNING` flag set).
-	///
-	/// This field is cleared once our counterparty sends a `channel_ready`.
-	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
 
 	/// Information about any pending splice candidates, including RBF attempts.
@@ -7408,8 +7410,7 @@ where
 
 		self.context.counterparty_current_commitment_point = self.context.counterparty_next_commitment_point;
 		self.context.counterparty_next_commitment_point = Some(msg.next_per_commitment_point);
-		// Clear any interactive signing session.
-		self.interactive_tx_signing_session = None;
+		self.context.interactive_tx_signing_session = None;
 
 		log_info!(logger, "Received channel_ready from peer for channel {}", &self.context.channel_id());
 
@@ -7575,7 +7576,7 @@ where
 		log_info!(logger, "Received initial commitment_signed from peer for channel {}", &self.context.channel_id());
 
 		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
-		self.interactive_tx_signing_session.as_mut().expect("signing session should be present").received_commitment_signed();
+		self.context.interactive_tx_signing_session.as_mut().expect("signing session should be present").received_commitment_signed();
 		Ok(channel_monitor)
 	}
 
@@ -7668,7 +7669,8 @@ where
 			channel_id: Some(self.context.channel_id()),
 		};
 
-		self.interactive_tx_signing_session
+		self.context
+			.interactive_tx_signing_session
 			.as_mut()
 			.expect("Signing session must exist for negotiated pending splice")
 			.received_commitment_signed();
@@ -8615,6 +8617,7 @@ where
 		}
 
 		let (tx_signatures_opt, funding_tx_opt) = self
+			.context
 			.interactive_tx_signing_session
 			.as_mut()
 			.ok_or_else(|| APIError::APIMisuseError {
@@ -8682,7 +8685,7 @@ where
 			return Err(ChannelError::Ignore("Ignoring tx_signatures received outside of interactive signing".to_owned()));
 		}
 
-		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
+		if let Some(ref mut signing_session) = self.context.interactive_tx_signing_session {
 			if msg.tx_hash != signing_session.unsigned_tx().compute_txid() {
 				let msg = "The txid for the transaction does not match";
 				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
@@ -8955,7 +8958,7 @@ where
 		// An active interactive signing session or an awaiting channel_ready state implies that a
 		// commitment_signed retransmission is an initial one for funding negotiation. Thus, the
 		// signatures should be sent before channel_ready.
-		let channel_ready_order = if self.interactive_tx_signing_session.is_some() {
+		let channel_ready_order = if self.context.interactive_tx_signing_session.is_some() {
 			ChannelReadyOrder::SignaturesFirst
 		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
 			ChannelReadyOrder::SignaturesFirst
@@ -9463,7 +9466,7 @@ where
 		if let Some(next_funding) = &msg.next_funding {
 			// - if `next_funding` matches the latest interactive funding transaction
 			//   or the current channel funding transaction:
-			if let Some(session) = &self.interactive_tx_signing_session {
+			if let Some(session) = &self.context.interactive_tx_signing_session {
 				let our_next_funding_txid = session.unsigned_tx().compute_txid();
 				if our_next_funding_txid != next_funding.txid {
 					return Err(ChannelError::close(format!(
@@ -10763,7 +10766,7 @@ where
 				.collect::<Vec<_>>()
 		};
 
-		self.interactive_tx_signing_session = None;
+		self.context.interactive_tx_signing_session = None;
 		self.pending_splice = None;
 		self.context.announcement_sigs = None;
 		self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
@@ -11320,7 +11323,7 @@ where
 			// Since we have a signing_session, this implies we've sent an initial `commitment_signed`...
 			if !self.context.channel_state.is_their_tx_signatures_sent() {
 				// ...but we didn't receive a `tx_signatures` from the counterparty yet.
-				self.interactive_tx_signing_session
+				self.context.interactive_tx_signing_session
 					.as_ref()
 					.map(|signing_session| {
 						let mut next_funding = msgs::NextFunding {
@@ -11857,7 +11860,7 @@ where
 			})?;
 		let tx_msg_opt = interactive_tx_constructor.take_initiator_first_message();
 
-		debug_assert!(self.interactive_tx_signing_session.is_none());
+		debug_assert!(self.context.interactive_tx_signing_session.is_none());
 
 		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction {
 			funding: splice_funding,
@@ -13128,7 +13131,6 @@ where
 		let mut channel = FundedChannel {
 			funding: self.funding,
 			context: self.context,
-			interactive_tx_signing_session: None,
 			holder_commitment_point,
 			pending_splice: None,
 			quiescent_action: None,
@@ -13413,7 +13415,6 @@ where
 		let mut channel = FundedChannel {
 			funding: self.funding,
 			context: self.context,
-			interactive_tx_signing_session: None,
 			holder_commitment_point,
 			pending_splice: None,
 			quiescent_action: None,
@@ -13457,8 +13458,6 @@ where
 	pub funding_negotiation_context: FundingNegotiationContext,
 	/// The current interactive transaction construction session under negotiation.
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
-	/// The signing session created after `tx_complete` handling
-	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
 impl<SP: Deref> PendingV2Channel<SP>
@@ -13533,7 +13532,6 @@ where
 			unfunded_context,
 			funding_negotiation_context,
 			interactive_tx_constructor: None,
-			interactive_tx_signing_session: None,
 		};
 		Ok(chan)
 	}
@@ -13721,7 +13719,6 @@ where
 			context,
 			funding_negotiation_context,
 			interactive_tx_constructor,
-			interactive_tx_signing_session: None,
 			unfunded_context,
 		})
 	}
@@ -14328,7 +14325,7 @@ where
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
 			(55, removed_htlc_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_attribution_data, optional_vec), // Added in 0.2
-			(58, self.interactive_tx_signing_session, option), // Added in 0.2
+			(58, self.context.interactive_tx_signing_session, option), // Added in 0.2
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
@@ -15098,8 +15095,9 @@ where
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 				is_manual_broadcast: is_manual_broadcast.unwrap_or(false),
+
+				interactive_tx_signing_session,
 			},
-			interactive_tx_signing_session,
 			holder_commitment_point,
 			pending_splice,
 			quiescent_action,
