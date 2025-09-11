@@ -676,7 +676,7 @@ where
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let inner = Arc::clone(&self.0.0);
+		let inner = Arc::clone(&self.0 .0);
 		let res = poll_sync_future(inner.update_persisted_channel(monitor_name, update, monitor));
 		match res {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
@@ -706,7 +706,7 @@ where
 /// Unlike [`MonitorUpdatingPersister`], this does not implement [`Persist`], but is instead used
 /// directly by the [`ChainMonitor`].
 ///
-/// [`ChainMonitor`]: lightning::chain::chainmonitor::ChainMonitor
+/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 pub struct MonitorUpdatingPersisterAsync<
 	K: Deref,
 	S: FutureSpawner,
@@ -732,8 +732,7 @@ struct MonitorUpdatingPersisterAsyncInner<
 	SP: Deref,
 	BI: Deref,
 	FE: Deref,
->
-where
+> where
 	K::Target: KVStore,
 	L::Target: Logger,
 	ES::Target: EntropySource + Sized,
@@ -840,15 +839,14 @@ where
 }
 
 impl<
-	K: Deref + MaybeSend + MaybeSync + 'static,
-	S: FutureSpawner,
-	L: Deref + MaybeSend + MaybeSync + 'static,
-	ES: Deref + MaybeSend + MaybeSync + 'static,
-	SP: Deref + MaybeSend + MaybeSync + 'static,
-	BI: Deref + MaybeSend + MaybeSync + 'static,
-	FE: Deref + MaybeSend + MaybeSync + 'static,
->
-	MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
+		K: Deref + MaybeSend + MaybeSync + 'static,
+		S: FutureSpawner,
+		L: Deref + MaybeSend + MaybeSync + 'static,
+		ES: Deref + MaybeSend + MaybeSync + 'static,
+		SP: Deref + MaybeSend + MaybeSync + 'static,
+		BI: Deref + MaybeSend + MaybeSync + 'static,
+		FE: Deref + MaybeSend + MaybeSync + 'static,
+	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 where
 	K::Target: KVStore + MaybeSync,
 	L::Target: Logger,
@@ -859,7 +857,8 @@ where
 	<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend + 'static,
 {
 	pub(crate) fn spawn_async_persist_new_channel(
-		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+		&self, monitor_name: MonitorName,
+		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
 	) {
 		let inner = Arc::clone(&self.0);
 		let future = inner.persist_new_channel(monitor_name, monitor);
@@ -898,16 +897,13 @@ where
 		});
 	}
 
-	pub(crate) fn spawn_async_archive_persisted_channel(
-		&self, monitor_name: MonitorName,
-	) {
+	pub(crate) fn spawn_async_archive_persisted_channel(&self, monitor_name: MonitorName) {
 		let inner = Arc::clone(&self.0);
 		self.0.future_spawner.spawn(async move {
 			inner.archive_persisted_channel(monitor_name).await;
 		});
 	}
 }
-
 
 impl<K: Deref, S: FutureSpawner, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
 	MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
@@ -1076,7 +1072,10 @@ where
 	fn update_persisted_channel<'a, ChannelSigner: EcdsaChannelSigner + 'a>(
 		self: Arc<Self>, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
-	) -> impl Future<Output = Result<(), io::Error>> + 'a where Self: 'a {
+	) -> impl Future<Output = Result<(), io::Error>> + 'a
+	where
+		Self: 'a,
+	{
 		const LEGACY_CLOSED_CHANNEL_UPDATE_ID: u64 = u64::MAX;
 		let mut res_a = None;
 		let mut res_b = None;
@@ -1093,9 +1092,12 @@ where
 				// write method, allowing it to do its queueing immediately, and then return a
 				// future for the completion of the write. This ensures monitor persistence
 				// ordering is preserved.
-				res_a = Some(self.kv_store
-					.write(primary, &monitor_key, update_name.as_str(), update.encode())
-				);
+				res_a = Some(self.kv_store.write(
+					primary,
+					&monitor_key,
+					update_name.as_str(),
+					update.encode(),
+				));
 			} else {
 				// We could write this update, but it meets criteria of our design that calls for a full monitor write.
 				// Note that this is NOT an async function, but rather calls the *sync* KVStore
@@ -1110,7 +1112,12 @@ where
 					if let Ok(()) = write_status {
 						if latest_update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID {
 							let monitor_key = monitor_name.to_string();
-							self.cleanup_stale_updates_for_monitor_to(&monitor_key, latest_update_id, true).await?;
+							self.cleanup_stale_updates_for_monitor_to(
+								&monitor_key,
+								latest_update_id,
+								true,
+							)
+							.await?;
 						} else {
 							let end = latest_update_id;
 							let start = end.saturating_sub(self.maximum_pending_updates);
