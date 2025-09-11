@@ -2206,7 +2206,8 @@ mod tests {
 	use super::{ChannelPublicKeys, CounterpartyCommitmentSecrets};
 	use crate::chain;
 	use crate::ln::chan_utils::{
-		get_htlc_redeemscript, get_to_countersigner_keyed_anchor_redeemscript,
+		get_htlc_redeemscript, get_keyed_anchor_redeemscript,
+		get_to_countersigner_keyed_anchor_redeemscript, shared_anchor_script_pubkey,
 		BuiltCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction,
 		CounterpartyChannelTransactionParameters, HTLCOutputInCommitment,
 		TrustedCommitmentTransaction,
@@ -2254,7 +2255,7 @@ mod tests {
 				funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
 				splice_parent_funding_txid: None,
 				channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
-				channel_value_satoshis: 3000,
+				channel_value_satoshis: 4000,
 			};
 
 			Self {
@@ -2297,14 +2298,42 @@ mod tests {
 		let tx = builder.build(1000, 2000, Vec::new());
 		assert_eq!(tx.built.transaction.output.len(), 4);
 		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_to_countersigner_keyed_anchor_redeemscript(&builder.counterparty_pubkeys.payment_point).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_keyed_anchor_redeemscript(&builder.channel_parameters.holder_pubkeys.funding_pubkey).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[0].value.to_sat(), 330);
+		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_keyed_anchor_redeemscript(&builder.counterparty_pubkeys.funding_pubkey).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[1].value.to_sat(), 330);
 
 		// Generate broadcaster output and anchor
 		let tx = builder.build(3000, 0, Vec::new());
 		assert_eq!(tx.built.transaction.output.len(), 2);
+		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_keyed_anchor_redeemscript(&builder.channel_parameters.holder_pubkeys.funding_pubkey).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[0].value.to_sat(), 330);
 
 		// Generate counterparty output and anchor
 		let tx = builder.build(0, 3000, Vec::new());
 		assert_eq!(tx.built.transaction.output.len(), 2);
+		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_keyed_anchor_redeemscript(&builder.counterparty_pubkeys.funding_pubkey).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[0].value.to_sat(), 330);
+
+		// Generate broadcaster and counterparty outputs as well as a single anchor
+		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_fee_commitments();
+		let tx = builder.build(1000, 2000, Vec::new());
+		assert_eq!(tx.built.transaction.output.len(), 3);
+		assert_eq!(tx.built.transaction.output[2].script_pubkey, bitcoin::address::Address::p2wpkh(&CompressedPublicKey(builder.counterparty_pubkeys.payment_point), Network::Testnet).script_pubkey());
+		assert_eq!(tx.built.transaction.output[0].script_pubkey, shared_anchor_script_pubkey());
+		assert_eq!(tx.built.transaction.output[0].value.to_sat(), 240); // remember total channel value is 4000sat
+
+		// Generate broadcaster output and anchor
+		let tx = builder.build(3000, 0, Vec::new());
+		assert_eq!(tx.built.transaction.output.len(), 2);
+		assert_eq!(tx.built.transaction.output[0].script_pubkey, shared_anchor_script_pubkey());
+		assert_eq!(tx.built.transaction.output[0].value.to_sat(), 240); // remember total channel value is 4000sat
+
+		// Generate counterparty output and anchor
+		let tx = builder.build(0, 3000, Vec::new());
+		assert_eq!(tx.built.transaction.output.len(), 2);
+		assert_eq!(tx.built.transaction.output[0].script_pubkey, shared_anchor_script_pubkey());
+		assert_eq!(tx.built.transaction.output[0].value.to_sat(), 240); // remember total channel value is 4000sat
 
 		let received_htlc = HTLCOutputInCommitment {
 			offered: false,
@@ -2322,7 +2351,7 @@ mod tests {
 			transaction_output_index: None,
 		};
 
-		// Generate broadcaster output and received and offered HTLC outputs,  w/o anchors
+		// Generate broadcaster output and received and offered HTLC outputs, w/o anchors
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 		let tx = builder.build(3000, 0, vec![received_htlc.clone(), offered_htlc.clone()]);
 		let keys = tx.trust().keys();
@@ -2334,16 +2363,33 @@ mod tests {
 		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh().to_hex_string(),
 				   "0020215d61bba56b19e9eadb6107f5a85d7f99c40f65992443f69229c290165bc00d");
 
-		// Generate broadcaster output and received and offered HTLC outputs,  with anchors
+		// Generate broadcaster output and received and offered HTLC outputs, with keyed anchors
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		let tx = builder.build(3000, 0, vec![received_htlc.clone(), offered_htlc.clone()]);
 		assert_eq!(tx.built.transaction.output.len(), 5);
+		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_keyed_anchor_redeemscript(&builder.channel_parameters.holder_pubkeys.funding_pubkey).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[0].value.to_sat(), 330);
+		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_keyed_anchor_redeemscript(&builder.counterparty_pubkeys.funding_pubkey).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[1].value.to_sat(), 330);
 		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh());
 		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh());
 		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh().to_hex_string(),
 				   "0020b70d0649c72b38756885c7a30908d912a7898dd5d79457a7280b8e9a20f3f2bc");
 		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh().to_hex_string(),
 				   "002087a3faeb1950a469c0e2db4a79b093a41b9526e5a6fc6ef5cb949bde3be379c7");
+
+		// Generate broadcaster output and received and offered HTLC outputs, with P2A anchors
+		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_fee_commitments();
+		let tx = builder.build(3000, 0, vec![received_htlc.clone(), offered_htlc.clone()]);
+		assert_eq!(tx.built.transaction.output.len(), 4);
+		assert_eq!(tx.built.transaction.output[0].script_pubkey, shared_anchor_script_pubkey());
+		assert_eq!(tx.built.transaction.output[0].value.to_sat(), 0);
+		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_fee_commitments(), &keys).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_fee_commitments(), &keys).to_p2wsh());
+		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_fee_commitments(), &keys).to_p2wsh().to_hex_string(),
+				   "0020e43a7c068553003fe68fcae424fb7b28ec5ce48cd8b6744b3945631389bad2fb");
+		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_fee_commitments(), &keys).to_p2wsh().to_hex_string(),
+				   "0020215d61bba56b19e9eadb6107f5a85d7f99c40f65992443f69229c290165bc00d");
 	}
 
 	#[test]
