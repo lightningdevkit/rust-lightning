@@ -6257,19 +6257,6 @@ where
 		}
 	}
 
-	#[cfg(all(test))]
-	pub fn get_initial_counterparty_commitment_signature_for_test<L: Deref>(
-		&mut self, funding: &mut FundingScope, logger: &L,
-		counterparty_next_commitment_point_override: PublicKey,
-	) -> Option<Signature>
-	where
-		SP::Target: SignerProvider,
-		L::Target: Logger,
-	{
-		self.counterparty_next_commitment_point = Some(counterparty_next_commitment_point_override);
-		self.get_initial_counterparty_commitment_signature(funding, logger)
-	}
-
 	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
 		let minimum_depth = self
 			.minimum_depth(funding)
