@@ -53,7 +53,7 @@ use crate::util::async_poll::{MaybeSend, MaybeSync};
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::native_async::FutureSpawner;
-use crate::util::persist::{MonitorName, MonitorUpdatingPersisterAsync, KVStore};
+use crate::util::persist::{KVStore, MonitorName, MonitorUpdatingPersisterAsync};
 #[cfg(peer_storage)]
 use crate::util::ser::{VecWriter, Writeable};
 use crate::util::wakers::{Future, Notifier};
@@ -202,7 +202,9 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	/// [`ChainMonitor::channel_monitor_updated`]. Because of this, this method is defaulted and
 	/// hidden in the docs.
 	#[doc(hidden)]
-	fn get_and_clear_completed_updates(&self) -> Vec<(ChannelId, u64)> { Vec::new() }
+	fn get_and_clear_completed_updates(&self) -> Vec<(ChannelId, u64)> {
+		Vec::new()
+	}
 }
 
 struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
@@ -246,30 +248,43 @@ impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, Chann
 	}
 }
 
-
 /// An unconstructable [`Persist`]er which is used under the hood when you call
 /// [`ChainMonitor::new_async_beta`].
-pub struct AsyncPersister<K: Deref + MaybeSend + MaybeSync + 'static, S: FutureSpawner, L: Deref + MaybeSend + MaybeSync + 'static, ES: Deref + MaybeSend + MaybeSync + 'static, SP: Deref + MaybeSend + MaybeSync + 'static, BI: Deref + MaybeSend + MaybeSync + 'static, FE: Deref + MaybeSend + MaybeSync + 'static>
-where
+pub struct AsyncPersister<
+	K: Deref + MaybeSend + MaybeSync + 'static,
+	S: FutureSpawner,
+	L: Deref + MaybeSend + MaybeSync + 'static,
+	ES: Deref + MaybeSend + MaybeSync + 'static,
+	SP: Deref + MaybeSend + MaybeSync + 'static,
+	BI: Deref + MaybeSend + MaybeSync + 'static,
+	FE: Deref + MaybeSend + MaybeSync + 'static,
+> where
 	K::Target: KVStore + MaybeSync,
 	L::Target: Logger,
 	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator
+	FE::Target: FeeEstimator,
 {
 	persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>,
 }
 
-impl<K: Deref + MaybeSend + MaybeSync + 'static, S: FutureSpawner, L: Deref + MaybeSend + MaybeSync + 'static, ES: Deref + MaybeSend + MaybeSync + 'static, SP: Deref + MaybeSend + MaybeSync + 'static, BI: Deref + MaybeSend + MaybeSync + 'static, FE: Deref + MaybeSend + MaybeSync + 'static>
-Deref for AsyncPersister<K, S, L, ES, SP, BI, FE>
+impl<
+		K: Deref + MaybeSend + MaybeSync + 'static,
+		S: FutureSpawner,
+		L: Deref + MaybeSend + MaybeSync + 'static,
+		ES: Deref + MaybeSend + MaybeSync + 'static,
+		SP: Deref + MaybeSend + MaybeSync + 'static,
+		BI: Deref + MaybeSend + MaybeSync + 'static,
+		FE: Deref + MaybeSend + MaybeSync + 'static,
+	> Deref for AsyncPersister<K, S, L, ES, SP, BI, FE>
 where
 	K::Target: KVStore + MaybeSync,
 	L::Target: Logger,
 	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator
+	FE::Target: FeeEstimator,
 {
 	type Target = Self;
 	fn deref(&self) -> &Self {
@@ -277,8 +292,15 @@ where
 	}
 }
 
-impl<K: Deref + MaybeSend + MaybeSync + 'static, S: FutureSpawner, L: Deref + MaybeSend + MaybeSync + 'static, ES: Deref + MaybeSend + MaybeSync + 'static, SP: Deref + MaybeSend + MaybeSync + 'static, BI: Deref + MaybeSend + MaybeSync + 'static, FE: Deref + MaybeSend + MaybeSync + 'static>
-Persist<<SP::Target as SignerProvider>::EcdsaSigner> for AsyncPersister<K, S, L, ES, SP, BI, FE>
+impl<
+		K: Deref + MaybeSend + MaybeSync + 'static,
+		S: FutureSpawner,
+		L: Deref + MaybeSend + MaybeSync + 'static,
+		ES: Deref + MaybeSend + MaybeSync + 'static,
+		SP: Deref + MaybeSend + MaybeSync + 'static,
+		BI: Deref + MaybeSend + MaybeSync + 'static,
+		FE: Deref + MaybeSend + MaybeSync + 'static,
+	> Persist<<SP::Target as SignerProvider>::EcdsaSigner> for AsyncPersister<K, S, L, ES, SP, BI, FE>
 where
 	K::Target: KVStore + MaybeSync,
 	L::Target: Logger,
@@ -289,7 +311,8 @@ where
 	<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend + 'static,
 {
 	fn persist_new_channel(
-		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+		&self, monitor_name: MonitorName,
+		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
 	) -> ChannelMonitorUpdateStatus {
 		self.persister.spawn_async_persist_new_channel(monitor_name, monitor);
 		ChannelMonitorUpdateStatus::InProgress
@@ -311,7 +334,6 @@ where
 		self.persister.get_and_clear_completed_updates()
 	}
 }
-
 
 /// An implementation of [`chain::Watch`] for monitoring channels.
 ///
@@ -378,8 +400,16 @@ impl<
 		F: Deref + MaybeSend + MaybeSync + 'static,
 		L: Deref + MaybeSend + MaybeSync + 'static,
 		ES: Deref + MaybeSend + MaybeSync + 'static,
-	> ChainMonitor<<SP::Target as SignerProvider>::EcdsaSigner, C, T, F, L, AsyncPersister<K, S, L, ES, SP, T, F>, ES>
-where
+	>
+	ChainMonitor<
+		<SP::Target as SignerProvider>::EcdsaSigner,
+		C,
+		T,
+		F,
+		L,
+		AsyncPersister<K, S, L, ES, SP, T, F>,
+		ES,
+	> where
 	K::Target: KVStore + MaybeSync,
 	SP::Target: SignerProvider + Sized,
 	C::Target: chain::Filter,
