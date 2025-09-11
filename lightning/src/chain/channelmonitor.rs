@@ -1268,10 +1268,12 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// spending CSV for revocable outputs).
 	htlcs_resolved_on_chain: Vec<IrrevocablyResolvedHTLC>,
 
-	/// When a payment is fully resolved by the user processing a PaymentSent or PaymentFailed
-	/// event, we are informed by the ChannelManager (if the payment was resolved by an on-chain
-	/// transaction) of this so that we can stop telling the ChannelManager about the payment in
-	/// the future. We store the set of fully resolved payments here.
+	/// When a payment is resolved through an on-chain transaction, we tell the `ChannelManager`
+	/// about this via [`ChannelMonitor::get_onchain_failed_outbound_htlcs`] and
+	/// [`ChannelMonitor::get_all_current_outbound_htlcs`] at startup. We'll keep repeating the
+	/// same payments until they're eventually fully resolved by the user processing a
+	/// `PaymentSent` or `PaymentFailed` event, at which point the `ChannelManager` will inform of
+	/// this and we'll store the set of fully resolved payments here.
 	htlcs_resolved_to_user: HashSet<SentHTLCId>,
 
 	/// The set of `SpendableOutput` events which we have already passed upstream to be claimed.
