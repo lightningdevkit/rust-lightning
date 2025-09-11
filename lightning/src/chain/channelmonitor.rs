@@ -4275,9 +4275,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					|ChannelMonitorUpdateStep::RenegotiatedFundingLocked { .. } =>
 						is_pre_close_update = true,
 				// After a channel is closed, we don't communicate with our peer about it, so the
-				// only things we will update is getting a new preimage (from a different channel)
-				// or being told that the channel is closed. All other updates are generated while
-				// talking to our peer.
+				// only things we will update is getting a new preimage (from a different channel),
+				// being told that the channel is closed, or being told a payment which was
+				// resolved on-chain has had its resolution communicated to the user. All other
+				// updates are generated while talking to our peer.
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
