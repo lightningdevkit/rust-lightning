@@ -6671,7 +6671,8 @@ where
 	/// This field is cleared once our counterparty sends a `channel_ready`.
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
-	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
+
+	/// Information about any pending splice candidates, including RBF attempts.
 	pending_splice: Option<PendingFunding>,
 
 	/// Once we become quiescent, if we're the initiator, there's some action we'll want to take.
