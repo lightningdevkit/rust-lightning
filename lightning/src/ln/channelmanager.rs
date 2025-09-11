@@ -12354,7 +12354,7 @@ where
 			Some(amount_msats),
 			optional_params.payer_note,
 			payment_id,
-			Some(offer.hrn.clone()),
+			Some(offer.hrn),
 			create_pending_payment_fn,
 		)
 	}
