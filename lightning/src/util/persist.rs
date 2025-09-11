@@ -507,8 +507,9 @@ fn poll_sync_future<F: Future>(future: F) -> F::Output {
 /// If you have many stale updates stored (such as after a crash with pending lazy deletes), and
 /// would like to get rid of them, consider using the
 /// [`MonitorUpdatingPersister::cleanup_stale_updates`] function.
-pub struct MonitorUpdatingPersister<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
-(MonitorUpdatingPersisterAsync<KVStoreSyncWrapper<K>, L, ES, SP, BI, FE>)
+pub struct MonitorUpdatingPersister<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>(
+	MonitorUpdatingPersisterAsync<KVStoreSyncWrapper<K>, L, ES, SP, BI, FE>,
+)
 where
 	K::Target: KVStoreSync,
 	L::Target: Logger,
@@ -635,12 +636,12 @@ where
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let res = poll_sync_future(self.0.0.persist_new_channel(monitor_name, monitor));
+		let res = poll_sync_future(self.0 .0.persist_new_channel(monitor_name, monitor));
 		match res {
 			Ok(_) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(e) => {
 				log_error!(
-					self.0.0.logger,
+					self.0 .0.logger,
 					"Failed to write ChannelMonitor {}/{}/{} reason: {}",
 					CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 					CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -648,7 +649,7 @@ where
 					e
 				);
 				chain::ChannelMonitorUpdateStatus::UnrecoverableError
-			}
+			},
 		}
 	}
 
@@ -665,12 +666,13 @@ where
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let res = poll_sync_future(self.0.0.update_persisted_channel(monitor_name, update, monitor));
+		let res =
+			poll_sync_future(self.0 .0.update_persisted_channel(monitor_name, update, monitor));
 		match res {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(e) => {
 				log_error!(
-					self.0.0.logger,
+					self.0 .0.logger,
 					"Failed to write ChannelMonitorUpdate {} id {} reason: {}",
 					monitor_name,
 					update.as_ref().map(|upd| upd.update_id).unwrap_or(0),
@@ -682,7 +684,7 @@ where
 	}
 
 	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
-		poll_sync_future(self.0.0.archive_persisted_channel(monitor_name));
+		poll_sync_future(self.0 .0.archive_persisted_channel(monitor_name));
 	}
 }
 
@@ -690,8 +692,14 @@ where
 /// async versions of the public accessors.
 ///
 /// Note that async monitor updating is considered beta, and bugs may be triggered by its use.
-pub struct MonitorUpdatingPersisterAsync<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
-(Arc<MonitorUpdatingPersisterAsyncInner<K, L, ES, SP, BI, FE>>)
+pub struct MonitorUpdatingPersisterAsync<
+	K: Deref,
+	L: Deref,
+	ES: Deref,
+	SP: Deref,
+	BI: Deref,
+	FE: Deref,
+>(Arc<MonitorUpdatingPersisterAsyncInner<K, L, ES, SP, BI, FE>>)
 where
 	K::Target: KVStore,
 	L::Target: Logger,
@@ -700,8 +708,14 @@ where
 	BI::Target: BroadcasterInterface,
 	FE::Target: FeeEstimator;
 
-struct MonitorUpdatingPersisterAsyncInner<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
-where
+struct MonitorUpdatingPersisterAsyncInner<
+	K: Deref,
+	L: Deref,
+	ES: Deref,
+	SP: Deref,
+	BI: Deref,
+	FE: Deref,
+> where
 	K::Target: KVStore,
 	L::Target: Logger,
 	ES::Target: EntropySource + Sized,
@@ -805,7 +819,6 @@ where
 		self.0.cleanup_stale_updates(lazy).await
 	}
 }
-
 
 impl<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
 	MonitorUpdatingPersisterAsyncInner<K, L, ES, SP, BI, FE>
