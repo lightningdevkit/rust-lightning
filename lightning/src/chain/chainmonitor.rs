@@ -52,7 +52,8 @@ use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::util::async_poll::{MaybeSend, MaybeSync};
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
-use crate::util::persist::{FutureSpawner, MonitorName, MonitorUpdatingPersisterAsync, KVStore};
+use crate::util::native_async::FutureSpawner;
+use crate::util::persist::{MonitorName, MonitorUpdatingPersisterAsync, KVStore};
 #[cfg(peer_storage)]
 use crate::util::ser::{VecWriter, Writeable};
 use crate::util::wakers::{Future, Notifier};
