@@ -6121,19 +6121,13 @@ where
 		}
 	}
 
-	fn get_initial_counterparty_commitment_signature<L: Deref>(
+	fn get_initial_counterparty_commitment_signatures<L: Deref>(
 		&self, funding: &FundingScope, logger: &L,
-	) -> Option<Signature>
+	) -> Option<(Signature, Vec<Signature>)>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
-		let is_quiescent = matches!(
-			self.channel_state,
-			ChannelState::ChannelReady(f) if f.is_set(ChannelReadyFlags::QUIESCENT)
-		);
-		debug_assert!(self.channel_state.is_interactive_signing() || is_quiescent);
-
 		let mut commitment_number = self.counterparty_next_commitment_transaction_number;
 		let mut commitment_point = self.counterparty_next_commitment_point.unwrap();
 
@@ -6164,7 +6158,6 @@ where
 						Vec::new(),
 						&self.secp_ctx,
 					)
-					.map(|(signature, _)| signature)
 					.ok()
 			},
 			// TODO (taproot|arik)
@@ -6180,16 +6173,26 @@ where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
-		let signature = self.get_initial_counterparty_commitment_signature(funding, logger);
-		if let Some(signature) = signature {
+		let is_quiescent = matches!(
+			self.channel_state,
+			ChannelState::ChannelReady(f) if f.is_set(ChannelReadyFlags::QUIESCENT)
+		);
+		debug_assert!(self.channel_state.is_interactive_signing() || is_quiescent);
+
+		let signatures = self.get_initial_counterparty_commitment_signatures(funding, logger);
+		if let Some((signature, htlc_signatures)) = signatures {
 			log_info!(
 				logger,
 				"Generated commitment_signed for peer for channel {}",
 				&self.channel_id()
 			);
+			debug_assert_eq!(
+				htlc_signatures.is_empty(),
+				self.channel_state.is_interactive_signing()
+			);
 			Some(msgs::CommitmentSigned {
 				channel_id: self.channel_id,
-				htlc_signatures: vec![],
+				htlc_signatures,
 				signature,
 				funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
 				#[cfg(taproot)]
@@ -6213,7 +6216,7 @@ where
 		self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 		self.channel_state.set_interactive_signing();
 		self.counterparty_next_commitment_point = Some(counterparty_next_commitment_point_override);
-		self.get_initial_counterparty_commitment_signature(funding, logger)
+		self.get_initial_counterparty_commitment_signatures(funding, logger).map(|(sig, _)| sig)
 	}
 
 	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
