@@ -2370,16 +2370,19 @@ mod tests {
 				Arc::clone(&logger),
 				Arc::clone(&keys_manager),
 			));
-			let liquidity_manager = Arc::new(LiquidityManagerSync::new(
-				Arc::clone(&keys_manager),
-				Arc::clone(&keys_manager),
-				Arc::clone(&manager),
-				None,
-				None,
-				Arc::clone(&kv_store),
-				None,
-				None,
-			));
+			let liquidity_manager = Arc::new(
+				LiquidityManagerSync::new(
+					Arc::clone(&keys_manager),
+					Arc::clone(&keys_manager),
+					Arc::clone(&manager),
+					None,
+					None,
+					Arc::clone(&kv_store),
+					None,
+					None,
+				)
+				.unwrap(),
+			);
 			let node = Node {
 				node: manager,
 				p2p_gossip_sync,

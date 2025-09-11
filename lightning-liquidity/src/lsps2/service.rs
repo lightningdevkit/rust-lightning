@@ -465,7 +465,7 @@ impl OutboundJITChannel {
 	}
 }
 
-struct PeerState {
+pub(crate) struct PeerState {
 	outbound_channels_by_intercept_scid: HashMap<u64, OutboundJITChannel>,
 	intercept_scid_by_user_channel_id: HashMap<u128, u64>,
 	intercept_scid_by_channel_id: HashMap<ChannelId, u64>,
@@ -592,20 +592,48 @@ where
 {
 	/// Constructs a `LSPS2ServiceHandler`.
 	pub(crate) fn new(
-		pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue<K>>,
-		channel_manager: CM, kv_store: K, config: LSPS2ServiceConfig,
-	) -> Self {
-		Self {
+		per_peer_state: HashMap<PublicKey, Mutex<PeerState>>, pending_messages: Arc<MessageQueue>,
+		pending_events: Arc<EventQueue<K>>, channel_manager: CM, kv_store: K,
+		config: LSPS2ServiceConfig,
+	) -> Result<Self, lightning::io::Error> {
+		let mut peer_by_intercept_scid = new_hash_map();
+		let mut peer_by_channel_id = new_hash_map();
+		for (node_id, peer_state) in per_peer_state.iter() {
+			let peer_state_lock = peer_state.lock().unwrap();
+			for (intercept_scid, _) in peer_state_lock.outbound_channels_by_intercept_scid.iter() {
+				let res = peer_by_intercept_scid.insert(*intercept_scid, *node_id);
+				debug_assert!(res.is_none(), "Intercept SCIDs should never collide");
+				if res.is_some() {
+					return Err(lightning::io::Error::new(
+						lightning::io::ErrorKind::InvalidData,
+						"Failed to read LSPS2 peer state due to data inconsistencies: Intercept SCIDs should never collide",
+					));
+				}
+			}
+
+			for (channel_id, _) in peer_state_lock.intercept_scid_by_channel_id.iter() {
+				let res = peer_by_channel_id.insert(*channel_id, *node_id);
+				debug_assert!(res.is_none(), "Channel IDs should never collide");
+				if res.is_some() {
+					return Err(lightning::io::Error::new(
+							lightning::io::ErrorKind::InvalidData,
+							"Failed to read LSPS2 peer state due to data inconsistencies: Channel IDs should never collide",
+					));
+				}
+			}
+		}
+
+		Ok(Self {
 			pending_messages,
 			pending_events,
-			per_peer_state: RwLock::new(new_hash_map()),
-			peer_by_intercept_scid: RwLock::new(new_hash_map()),
-			peer_by_channel_id: RwLock::new(new_hash_map()),
+			per_peer_state: RwLock::new(per_peer_state),
+			peer_by_intercept_scid: RwLock::new(peer_by_intercept_scid),
+			peer_by_channel_id: RwLock::new(peer_by_channel_id),
 			total_pending_requests: AtomicUsize::new(0),
 			channel_manager,
 			kv_store,
 			config,
-		}
+		})
 	}
 
 	/// Returns a reference to the used config.
