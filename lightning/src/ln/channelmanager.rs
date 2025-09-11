@@ -12325,17 +12325,11 @@ where
 		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
 		optional_params: OptionalOfferPaymentParams,
 	) -> Result<(), Bolt12SemanticError> {
-		let create_pending_payment_fn = |invoice_request: &InvoiceRequest, nonce| {
-			let expiration = StaleExpiration::TimerTicks(1);
-			let retryable_invoice_request = RetryableInvoiceRequest {
-				invoice_request: invoice_request.clone(),
-				nonce,
-				needs_retry: true,
-			};
+		let create_pending_payment_fn = |retryable_invoice_request: RetryableInvoiceRequest| {
 			self.pending_outbound_payments
 				.add_new_awaiting_invoice(
 					payment_id,
-					expiration,
+					StaleExpiration::TimerTicks(1),
 					optional_params.retry_strategy,
 					optional_params.route_params_config,
 					Some(retryable_invoice_request),
@@ -12360,17 +12354,11 @@ where
 		&self, offer: &OfferFromHrn, amount_msats: u64, payment_id: PaymentId,
 		optional_params: OptionalOfferPaymentParams,
 	) -> Result<(), Bolt12SemanticError> {
-		let create_pending_payment_fn = |invoice_request: &InvoiceRequest, nonce| {
-			let expiration = StaleExpiration::TimerTicks(1);
-			let retryable_invoice_request = RetryableInvoiceRequest {
-				invoice_request: invoice_request.clone(),
-				nonce,
-				needs_retry: true,
-			};
+		let create_pending_payment_fn = |retryable_invoice_request: RetryableInvoiceRequest| {
 			self.pending_outbound_payments
 				.add_new_awaiting_invoice(
 					payment_id,
-					expiration,
+					StaleExpiration::TimerTicks(1),
 					optional_params.retry_strategy,
 					optional_params.route_params_config,
 					Some(retryable_invoice_request),
@@ -12408,17 +12396,11 @@ where
 		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
 		optional_params: OptionalOfferPaymentParams, quantity: u64,
 	) -> Result<(), Bolt12SemanticError> {
-		let create_pending_payment_fn = |invoice_request: &InvoiceRequest, nonce| {
-			let expiration = StaleExpiration::TimerTicks(1);
-			let retryable_invoice_request = RetryableInvoiceRequest {
-				invoice_request: invoice_request.clone(),
-				nonce,
-				needs_retry: true,
-			};
+		let create_pending_payment_fn = |retryable_invoice_request: RetryableInvoiceRequest| {
 			self.pending_outbound_payments
 				.add_new_awaiting_invoice(
 					payment_id,
-					expiration,
+					StaleExpiration::TimerTicks(1),
 					optional_params.retry_strategy,
 					optional_params.route_params_config,
 					Some(retryable_invoice_request),
@@ -12438,7 +12420,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn pay_for_offer_intern<CPP: FnOnce(&InvoiceRequest, Nonce) -> Result<(), Bolt12SemanticError>>(
+	fn pay_for_offer_intern<CPP: FnOnce(RetryableInvoiceRequest) -> Result<(), Bolt12SemanticError>>(
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
 		payer_note: Option<String>, payment_id: PaymentId,
 		human_readable_name: Option<HumanReadableName>, create_pending_payment: CPP,
@@ -12475,7 +12457,13 @@ where
 			self.get_peers_for_blinded_path()
 		)?;
 
-		create_pending_payment(&invoice_request, nonce)
+		let retryable_invoice_request = RetryableInvoiceRequest {
+			invoice_request: invoice_request.clone(),
+			nonce,
+			needs_retry: true,
+		};
+
+		create_pending_payment(retryable_invoice_request)
 	}
 
 	/// Creates a [`Bolt12Invoice`] for a [`Refund`] and enqueues it to be sent via an onion
@@ -14896,12 +14884,7 @@ where
 				if let Ok((amt_msats, payer_note)) = self.pending_outbound_payments.params_for_payment_awaiting_offer(payment_id) {
 					let offer_pay_res =
 						self.pay_for_offer_intern(&offer, None, Some(amt_msats), payer_note, payment_id, Some(name),
-							|invoice_request, nonce| {
-								let retryable_invoice_request = RetryableInvoiceRequest {
-									invoice_request: invoice_request.clone(),
-									nonce,
-									needs_retry: true,
-								};
+							|retryable_invoice_request| {
 								self.pending_outbound_payments
 									.received_offer(payment_id, Some(retryable_invoice_request))
 									.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
