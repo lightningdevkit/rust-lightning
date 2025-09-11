@@ -450,6 +450,7 @@ mod tests {
 	use core::sync::atomic::{AtomicU64, Ordering};
 	use lightning::util::persist::KVStoreSyncWrapper;
 	use lightning::util::test_utils::TestStore;
+	use lightning::util::wakers::Notifier;
 
 	struct UniqueTestEntropy {
 		counter: AtomicU64,
@@ -472,7 +473,8 @@ mod tests {
 		PublicKey,
 	) {
 		let test_entropy_source = Arc::new(UniqueTestEntropy { counter: AtomicU64::new(2) });
-		let message_queue = Arc::new(MessageQueue::new());
+		let notifier = Arc::new(Notifier::new());
+		let message_queue = Arc::new(MessageQueue::new(notifier));
 
 		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
 		let event_queue = Arc::new(EventQueue::new(VecDeque::new(), kv_store));

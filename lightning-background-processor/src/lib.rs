@@ -571,31 +571,34 @@ pub(crate) mod futures_util {
 		unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) }
 	}
 
-	enum JoinerResult<E, F: Future<Output = Result<(), E>> + Unpin> {
+	enum JoinerResult<ERR, F: Future<Output = Result<(), ERR>> + Unpin> {
 		Pending(Option<F>),
-		Ready(Result<(), E>),
+		Ready(Result<(), ERR>),
 	}
 
 	pub(crate) struct Joiner<
-		E,
-		A: Future<Output = Result<(), E>> + Unpin,
-		B: Future<Output = Result<(), E>> + Unpin,
-		C: Future<Output = Result<(), E>> + Unpin,
-		D: Future<Output = Result<(), E>> + Unpin,
+		ERR,
+		A: Future<Output = Result<(), ERR>> + Unpin,
+		B: Future<Output = Result<(), ERR>> + Unpin,
+		C: Future<Output = Result<(), ERR>> + Unpin,
+		D: Future<Output = Result<(), ERR>> + Unpin,
+		E: Future<Output = Result<(), ERR>> + Unpin,
 	> {
-		a: JoinerResult<E, A>,
-		b: JoinerResult<E, B>,
-		c: JoinerResult<E, C>,
-		d: JoinerResult<E, D>,
+		a: JoinerResult<ERR, A>,
+		b: JoinerResult<ERR, B>,
+		c: JoinerResult<ERR, C>,
+		d: JoinerResult<ERR, D>,
+		e: JoinerResult<ERR, E>,
 	}
 
 	impl<
-			E,
-			A: Future<Output = Result<(), E>> + Unpin,
-			B: Future<Output = Result<(), E>> + Unpin,
-			C: Future<Output = Result<(), E>> + Unpin,
-			D: Future<Output = Result<(), E>> + Unpin,
-		> Joiner<E, A, B, C, D>
+			ERR,
+			A: Future<Output = Result<(), ERR>> + Unpin,
+			B: Future<Output = Result<(), ERR>> + Unpin,
+			C: Future<Output = Result<(), ERR>> + Unpin,
+			D: Future<Output = Result<(), ERR>> + Unpin,
+			E: Future<Output = Result<(), ERR>> + Unpin,
+		> Joiner<ERR, A, B, C, D, E>
 	{
 		pub(crate) fn new() -> Self {
 			Self {
@@ -603,13 +606,14 @@ pub(crate) mod futures_util {
 				b: JoinerResult::Pending(None),
 				c: JoinerResult::Pending(None),
 				d: JoinerResult::Pending(None),
+				e: JoinerResult::Pending(None),
 			}
 		}
 
 		pub(crate) fn set_a(&mut self, fut: A) {
 			self.a = JoinerResult::Pending(Some(fut));
 		}
-		pub(crate) fn set_a_res(&mut self, res: Result<(), E>) {
+		pub(crate) fn set_a_res(&mut self, res: Result<(), ERR>) {
 			self.a = JoinerResult::Ready(res);
 		}
 		pub(crate) fn set_b(&mut self, fut: B) {
@@ -621,19 +625,23 @@ pub(crate) mod futures_util {
 		pub(crate) fn set_d(&mut self, fut: D) {
 			self.d = JoinerResult::Pending(Some(fut));
 		}
+		pub(crate) fn set_e(&mut self, fut: E) {
+			self.e = JoinerResult::Pending(Some(fut));
+		}
 	}
 
 	impl<
-			E,
-			A: Future<Output = Result<(), E>> + Unpin,
-			B: Future<Output = Result<(), E>> + Unpin,
-			C: Future<Output = Result<(), E>> + Unpin,
-			D: Future<Output = Result<(), E>> + Unpin,
-		> Future for Joiner<E, A, B, C, D>
+			ERR,
+			A: Future<Output = Result<(), ERR>> + Unpin,
+			B: Future<Output = Result<(), ERR>> + Unpin,
+			C: Future<Output = Result<(), ERR>> + Unpin,
+			D: Future<Output = Result<(), ERR>> + Unpin,
+			E: Future<Output = Result<(), ERR>> + Unpin,
+		> Future for Joiner<ERR, A, B, C, D, E>
 	where
-		Joiner<E, A, B, C, D>: Unpin,
+		Joiner<ERR, A, B, C, D, E>: Unpin,
 	{
-		type Output = [Result<(), E>; 4];
+		type Output = [Result<(), ERR>; 5];
 		fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
 			let mut all_complete = true;
 			macro_rules! handle {
@@ -642,7 +650,7 @@ pub(crate) mod futures_util {
 						JoinerResult::Pending(None) => {
 							self.$val = JoinerResult::Ready(Ok(()));
 						},
-						JoinerResult::<E, _>::Pending(Some(ref mut val)) => {
+						JoinerResult::<ERR, _>::Pending(Some(ref mut val)) => {
 							match Pin::new(val).poll(ctx) {
 								Poll::Ready(res) => {
 									self.$val = JoinerResult::Ready(res);
@@ -660,9 +668,10 @@ pub(crate) mod futures_util {
 			handle!(b);
 			handle!(c);
 			handle!(d);
+			handle!(e);
 
 			if all_complete {
-				let mut res = [Ok(()), Ok(()), Ok(()), Ok(())];
+				let mut res = [Ok(()), Ok(()), Ok(()), Ok(()), Ok(())];
 				if let JoinerResult::Ready(ref mut val) = &mut self.a {
 					core::mem::swap(&mut res[0], val);
 				}
@@ -674,6 +683,9 @@ pub(crate) mod futures_util {
 				}
 				if let JoinerResult::Ready(ref mut val) = &mut self.d {
 					core::mem::swap(&mut res[3], val);
+				}
+				if let JoinerResult::Ready(ref mut val) = &mut self.e {
+					core::mem::swap(&mut res[4], val);
 				}
 				Poll::Ready(res)
 			} else {
@@ -1003,7 +1015,7 @@ where
 			OptionalSelector { optional_future: None }
 		};
 		let lm_fut = if let Some(lm) = liquidity_manager.as_ref() {
-			let fut = lm.get_lm().get_pending_msgs_future();
+			let fut = lm.get_lm().get_pending_msgs_or_needs_persist_future();
 			OptionalSelector { optional_future: Some(fut) }
 		} else {
 			OptionalSelector { optional_future: None }
@@ -1204,6 +1216,17 @@ where
 			},
 			Some(true) => break,
 			None => {},
+		}
+
+		if let Some(liquidity_manager) = liquidity_manager.as_ref() {
+			log_trace!(logger, "Persisting LiquidityManager...");
+			let fut = async {
+				liquidity_manager.get_lm().persist().await.map_err(|e| {
+					log_error!(logger, "Persisting LiquidityManager failed: {}", e);
+					e
+				})
+			};
+			futures.set_e(Box::pin(fut));
 		}
 
 		// Run persistence tasks in parallel and exit if any of them returns an error.
@@ -1562,7 +1585,7 @@ impl BackgroundProcessor {
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 						&chain_monitor.get_update_future(),
 						&om.get_om().get_update_future(),
-						&lm.get_lm().get_pending_msgs_future(),
+						&lm.get_lm().get_pending_msgs_or_needs_persist_future(),
 					),
 					(Some(om), None) => Sleeper::from_three_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
@@ -1572,7 +1595,7 @@ impl BackgroundProcessor {
 					(None, Some(lm)) => Sleeper::from_three_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 						&chain_monitor.get_update_future(),
-						&lm.get_lm().get_pending_msgs_future(),
+						&lm.get_lm().get_pending_msgs_or_needs_persist_future(),
 					),
 					(None, None) => Sleeper::from_two_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
@@ -1604,6 +1627,13 @@ impl BackgroundProcessor {
 						channel_manager.get_cm().encode(),
 					))?;
 					log_trace!(logger, "Done persisting ChannelManager.");
+				}
+
+				if let Some(liquidity_manager) = liquidity_manager.as_ref() {
+					log_trace!(logger, "Persisting LiquidityManager...");
+					let _ = liquidity_manager.get_lm().persist().map_err(|e| {
+						log_error!(logger, "Persisting LiquidityManager failed: {}", e);
+					});
 				}
 
 				// Note that we want to run a graph prune once not long after startup before
