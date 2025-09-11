@@ -36,6 +36,7 @@ use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::sync::Mutex;
 use crate::util::async_poll::{dummy_waker, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
+use crate::util::native_async::FutureSpawner;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 
 /// The alphabet of characters allowed for namespaces and keys.
@@ -409,14 +410,6 @@ where
 		}
 	}
 	Ok(res)
-}
-
-/// A generic trait which is able to spawn futures in the background.
-pub trait FutureSpawner: Send + Sync + 'static {
-	/// Spawns the given future as a background task.
-	///
-	/// This method MUST NOT block on the given future immediately.
-	fn spawn<T: Future<Output = ()> + MaybeSend + 'static>(&self, future: T);
 }
 
 struct PanicingSpawner;
