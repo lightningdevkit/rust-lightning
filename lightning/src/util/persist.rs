@@ -1009,7 +1009,8 @@ where
 							&monitor_key,
 							latest_update_id,
 							true,
-						).await;
+						)
+						.await;
 					} else {
 						let end = latest_update_id;
 						let start = end.saturating_sub(self.maximum_pending_updates);
