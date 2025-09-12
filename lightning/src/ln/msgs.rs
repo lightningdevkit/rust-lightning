@@ -773,9 +773,9 @@ pub struct UpdateAddHTLC {
 	pub hold_htlc: Option<()>,
 }
 
-/// An onion message to be sent to or received from a peer.
+/// An [`onion message`] to be sent to or received from a peer.
 ///
-// TODO: update with link to OM when they are merged into the BOLTs
+/// [`onion message`]: https://github.com/lightning/bolts/blob/master/04-onion-routing.md#onion-messages
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct OnionMessage {
 	/// Used in decrypting the onion packet's payload.
