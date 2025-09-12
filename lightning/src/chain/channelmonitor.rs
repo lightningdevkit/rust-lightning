@@ -777,6 +777,24 @@ pub enum BalanceSource {
 	Htlc,
 }
 
+/// The claimable balance of a holder commitment transaction that has yet to be broadcast.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(PartialOrd, Ord))]
+pub struct HolderCommitmentTransactionBalance {
+	/// The amount available to claim, in satoshis, excluding the on-chain fees which will be
+	/// required to do so.
+	pub amount_satoshis: u64,
+	/// The transaction fee we pay for the closing commitment transaction. This amount is not
+	/// included in the [`HolderCommitmentTransactionBalance::amount_satoshis`] value.
+	/// This amount includes the sum of dust HTLCs on the commitment transaction, any elided anchors,
+	/// as well as the sum of msat amounts rounded down from non-dust HTLCs.
+	///
+	/// Note that if this channel is inbound (and thus our counterparty pays the commitment
+	/// transaction fee) this value will be zero. For [`ChannelMonitor`]s created prior to LDK
+	/// 0.0.124, the channel is always treated as outbound (and thus this value is never zero).
+	pub transaction_fee_satoshis: u64,
+}
+
 /// Details about the balance(s) available for spending once the channel appears on chain.
 ///
 /// See [`ChannelMonitor::get_claimable_balances`] for more details on when these will or will not
@@ -785,21 +803,26 @@ pub enum BalanceSource {
 #[cfg_attr(test, derive(PartialOrd, Ord))]
 pub enum Balance {
 	/// The channel is not yet closed (or the commitment or closing transaction has not yet
-	/// appeared in a block). The given balance is claimable (less on-chain fees) if the channel is
-	/// force-closed now.
+	/// appeared in a block).
 	ClaimableOnChannelClose {
-		/// The amount available to claim, in satoshis, excluding the on-chain fees which will be
-		/// required to do so.
-		amount_satoshis: u64,
-		/// The transaction fee we pay for the closing commitment transaction. This amount is not
-		/// included in the [`Balance::ClaimableOnChannelClose::amount_satoshis`] value.
-		/// This amount includes the sum of dust HTLCs on the commitment transaction, any elided anchors,
-		/// as well as the sum of msat amounts rounded down from non-dust HTLCs.
+		/// A list of balance candidates based on the latest set of valid holder commitment
+		/// transactions that can hit the chain. Typically, a channel only has one valid holder
+		/// commitment transaction that spends the current funding output. As soon as a channel is
+		/// spliced, an alternative holder commitment transaction exists spending the new funding
+		/// output. More alternative holder commitment transactions can exist as the splice remains
+		/// pending and RBF attempts are made.
 		///
-		/// Note that if this channel is inbound (and thus our counterparty pays the commitment
-		/// transaction fee) this value will be zero. For [`ChannelMonitor`]s created prior to LDK
-		/// 0.0.124, the channel is always treated as outbound (and thus this value is never zero).
-		transaction_fee_satoshis: u64,
+		/// The candidates are sorted by the order in which the holder commitment transactions were
+		/// negotiated. When only one candidate exists, the channel does not have a splice pending.
+		/// When multiple candidates exist, the last one reflects the balance of the
+		/// latest splice/RBF attempt, while the first reflects the balance prior to the splice
+		/// occurring.
+		balance_candidates: Vec<HolderCommitmentTransactionBalance>,
+		/// The index within [`Balance::ClaimableOnChannelClose::balance_candidates`] for the
+		/// balance according to the current onchain state of the channel. This can be helpful when
+		/// wanting to determine the claimable amount when the holder commitment transaction for the
+		/// current funding transaction is broadcast and/or confirms.
+		confirmed_balance_candidate_index: usize,
 		/// The amount of millisatoshis which has been burned to fees from HTLCs which are outbound
 		/// from us and are related to a payment which was sent by us. This is the sum of the
 		/// millisatoshis part of all HTLCs which are otherwise represented by
@@ -821,7 +844,7 @@ pub enum Balance {
 		/// to us and for which we know the preimage. This is the sum of the millisatoshis part of
 		/// all HTLCs which would be represented by [`Balance::ContentiousClaimable`] on channel
 		/// close, but whose current value is included in
-		/// [`Balance::ClaimableOnChannelClose::amount_satoshis`], as well as any dust HTLCs which
+		/// [`HolderCommitmentTransactionBalance::amount_satoshis`], as well as any dust HTLCs which
 		/// would otherwise be represented the same.
 		///
 		/// This amount (rounded up to a whole satoshi value) will not be included in the counterparty's
@@ -915,6 +938,13 @@ pub enum Balance {
 impl Balance {
 	/// The amount claimable, in satoshis.
 	///
+	/// When the channel has yet to close, this returns the balance we expect to claim from the
+	/// channel. This may change throughout the lifetime of the channel due to payments, but also
+	/// due to splicing. If there's a pending splice, this will return the balance we expect to have
+	/// assuming the latest negotiated splice confirms. However, if one of the negotiated splice
+	/// transactions has already confirmed but is not yet locked, this reports the corresponding
+	/// balance for said splice transaction instead.
+	///
 	/// For outbound payments, this excludes the balance from the possible HTLC timeout.
 	///
 	/// For forwarded payments, this includes the balance from the possible HTLC timeout as
@@ -928,7 +958,15 @@ impl Balance {
 	#[rustfmt::skip]
 	pub fn claimable_amount_satoshis(&self) -> u64 {
 		match self {
-			Balance::ClaimableOnChannelClose { amount_satoshis, .. }|
+			Balance::ClaimableOnChannelClose {
+				balance_candidates, confirmed_balance_candidate_index, ..
+			} => {
+				if *confirmed_balance_candidate_index != 0 {
+					balance_candidates[*confirmed_balance_candidate_index].amount_satoshis
+				} else {
+					balance_candidates.last().map(|balance| balance.amount_satoshis).unwrap_or(0)
+				}
+			},
 			Balance::ClaimableAwaitingConfirmations { amount_satoshis, .. }|
 			Balance::ContentiousClaimable { amount_satoshis, .. }|
 			Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. }
@@ -2675,7 +2713,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					debug_assert!(htlc_input_idx_opt.is_some());
 					BitcoinOutPoint::new(*txid, htlc_input_idx_opt.unwrap_or(0))
 				} else {
-					debug_assert!(!self.channel_type_features().supports_anchors_zero_fee_htlc_tx());
+					let funding = get_confirmed_funding_scope!(self);
+					debug_assert!(!funding.channel_type_features().supports_anchors_zero_fee_htlc_tx());
 					BitcoinOutPoint::new(*txid, 0)
 				}
 			} else {
@@ -2837,8 +2876,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		}
 
 		if let Some(txid) = confirmed_txid {
+			let funding_spent = get_confirmed_funding_scope!(us);
 			let mut found_commitment_tx = false;
-			if let Some(counterparty_tx_htlcs) = us.funding.counterparty_claimable_outpoints.get(&txid) {
+			if let Some(counterparty_tx_htlcs) = funding_spent.counterparty_claimable_outpoints.get(&txid) {
 				// First look for the to_remote output back to us.
 				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 					if let Some(value) = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
@@ -2859,7 +2899,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 						// confirmation with the same height or have never met our dust amount.
 					}
 				}
-				if Some(txid) == us.funding.current_counterparty_commitment_txid || Some(txid) == us.funding.prev_counterparty_commitment_txid {
+				if Some(txid) == funding_spent.current_counterparty_commitment_txid || Some(txid) == funding_spent.prev_counterparty_commitment_txid {
 					walk_htlcs!(false, false, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
 				} else {
 					walk_htlcs!(false, true, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
@@ -2902,17 +2942,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					}
 				}
 				found_commitment_tx = true;
-			} else if txid == us.funding.current_holder_commitment_tx.trust().txid() {
+			} else if txid == funding_spent.current_holder_commitment_tx.trust().txid() {
 				walk_htlcs!(true, false, holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES));
 				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 					res.push(Balance::ClaimableAwaitingConfirmations {
-						amount_satoshis: us.funding.current_holder_commitment_tx.to_broadcaster_value_sat(),
+						amount_satoshis: funding_spent.current_holder_commitment_tx.to_broadcaster_value_sat(),
 						confirmation_height: conf_thresh,
 						source: BalanceSource::HolderForceClosed,
 					});
 				}
 				found_commitment_tx = true;
-			} else if let Some(prev_holder_commitment_tx) = &us.funding.prev_holder_commitment_tx {
+			} else if let Some(prev_holder_commitment_tx) = &funding_spent.prev_holder_commitment_tx {
 				if txid == prev_holder_commitment_tx.trust().txid() {
 					walk_htlcs!(true, false, holder_commitment_htlcs!(us, PREV_WITH_SOURCES).unwrap());
 					if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
@@ -2931,7 +2971,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					// neither us nor our counterparty misbehaved. At worst we've under-estimated
 					// the amount we can claim as we'll punish a misbehaving counterparty.
 					res.push(Balance::ClaimableAwaitingConfirmations {
-						amount_satoshis: us.funding.current_holder_commitment_tx.to_broadcaster_value_sat(),
+						amount_satoshis: funding_spent.current_holder_commitment_tx.to_broadcaster_value_sat(),
 						confirmation_height: conf_thresh,
 						source: BalanceSource::CoopClose,
 					});
@@ -2943,6 +2983,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			let mut outbound_forwarded_htlc_rounded_msat = 0;
 			let mut inbound_claiming_htlc_rounded_msat = 0;
 			let mut inbound_htlc_rounded_msat = 0;
+			// We share the same set of HTLCs across all scopes, so we don't need to check the other
+			// scopes as it'd be redundant.
 			for (htlc, source) in holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES) {
 				let rounded_value_msat = if htlc.transaction_output_index.is_none() {
 					htlc.amount_msat
@@ -2984,16 +3026,40 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					}
 				}
 			}
-			let to_self_value_sat = us.funding.current_holder_commitment_tx.to_broadcaster_value_sat();
+			let balance_candidates = core::iter::once(&us.funding)
+				.chain(us.pending_funding.iter())
+				.map(|funding| {
+					let to_self_value_sat = funding.current_holder_commitment_tx.to_broadcaster_value_sat();
+					// In addition to `commit_tx_fee_sat`, this can also include dust HTLCs, any
+					// elided anchors, and the total msat amount rounded down from non-dust HTLCs.
+					let transaction_fee_satoshis = if us.holder_pays_commitment_tx_fee.unwrap_or(true) {
+						let transaction = &funding.current_holder_commitment_tx.trust().built_transaction().transaction;
+						let output_value_sat: u64 = transaction.output.iter().map(|txout| txout.value.to_sat()).sum();
+						funding.channel_parameters.channel_value_satoshis - output_value_sat
+					} else {
+						0
+					};
+					HolderCommitmentTransactionBalance {
+						amount_satoshis: to_self_value_sat + claimable_inbound_htlc_value_sat,
+						transaction_fee_satoshis,
+					}
+				})
+				.collect();
+			let confirmed_balance_candidate_index = core::iter::once(&us.funding)
+				.chain(us.pending_funding.iter())
+				.enumerate()
+				.find(|(_, funding)| {
+					us.alternative_funding_confirmed
+						.map(|(funding_txid_confirmed, _)| funding.funding_txid() == funding_txid_confirmed)
+						// If `alternative_funding_confirmed` is not set, we can assume the current
+						// funding is confirmed.
+						.unwrap_or(true)
+				})
+				.map(|(idx, _)| idx)
+				.expect("We must have one FundingScope that is confirmed");
 			res.push(Balance::ClaimableOnChannelClose {
-				amount_satoshis: to_self_value_sat + claimable_inbound_htlc_value_sat,
-				// In addition to `commit_tx_fee_sat`, this can also include dust HTLCs, any elided anchors,
-				// and the total msat amount rounded down from non-dust HTLCs
-				transaction_fee_satoshis: if us.holder_pays_commitment_tx_fee.unwrap_or(true) {
-					let transaction = &us.funding.current_holder_commitment_tx.trust().built_transaction().transaction;
-					let output_value_sat: u64 = transaction.output.iter().map(|txout| txout.value.to_sat()).sum();
-					us.funding.channel_parameters.channel_value_satoshis - output_value_sat
-				} else { 0 },
+				balance_candidates,
+				confirmed_balance_candidate_index,
 				outbound_payment_htlc_rounded_msat,
 				outbound_forwarded_htlc_rounded_msat,
 				inbound_claiming_htlc_rounded_msat,
