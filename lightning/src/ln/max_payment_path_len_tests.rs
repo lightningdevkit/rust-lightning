@@ -17,7 +17,7 @@ use crate::blinded_path::payment::{
 use crate::blinded_path::BlindedHop;
 use crate::events::Event;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
-use crate::ln::channelmanager::PaymentId;
+use crate::ln::channelmanager::{OptionalOfferPaymentParams, PaymentId};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
 use crate::ln::msgs::{BaseMessageHandler, OnionMessageHandler};
@@ -27,7 +27,7 @@ use crate::ln::outbound_payment::{RecipientOnionFields, Retry, RetryableSendFail
 use crate::offers::nonce::Nonce;
 use crate::prelude::*;
 use crate::routing::router::{
-	PaymentParameters, RouteParameters, RouteParametersConfig, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
+	PaymentParameters, RouteParameters, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 };
 use crate::sign::NodeSigner;
 use crate::types::features::BlindedHopFeatures;
@@ -519,10 +519,9 @@ fn bolt12_invoice_too_large_blinded_paths() {
 
 	let offer = nodes[1].node.create_offer_builder().unwrap().build().unwrap();
 	let payment_id = PaymentId([1; 32]);
-	let route_config = RouteParametersConfig::default();
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, None, Some(5000), None, payment_id, Retry::Attempts(0), route_config)
+		.pay_for_offer(&offer, Some(5000), payment_id, OptionalOfferPaymentParams::default())
 		.unwrap();
 	let invreq_om = nodes[0]
 		.onion_messenger
