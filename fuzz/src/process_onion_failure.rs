@@ -120,6 +120,7 @@ fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		first_hop_htlc_msat: 0,
 		payment_id,
 		bolt12_invoice: None,
+		hold_htlc: None,
 	};
 
 	let failure_len = get_u16!();
