@@ -102,7 +102,7 @@ impl FromBase32 for Bolt11InvoiceFeatures {
 		// Carry bits, 0, 1, 2, 3, or 4 bits
 		let mut carry_bits = 0;
 		let mut carry = 0u8;
-		let expected_raw_length = (field_data.len() * 5 + 7) / 8;
+		let expected_raw_length = (field_data.len() * 5).div_ceil(8);
 		let mut output = Vec::<u8>::with_capacity(expected_raw_length);
 
 		// Iterate over input in reverse
