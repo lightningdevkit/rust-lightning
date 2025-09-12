@@ -1006,15 +1006,13 @@ impl KVStoreSync for TestStore {
 
 // A `Future` that returns the result only on the second poll.
 pub(crate) struct TestStoreFuture<R> {
-	res: Mutex<Option<io::Result<R>>>,
-	first_poll: AtomicBool,
+	inner: Mutex<(bool, Option<io::Result<R>>)>,
 }
 
 impl<R> TestStoreFuture<R> {
 	fn new(res: io::Result<R>) -> Self {
-		let res = Mutex::new(Some(res));
-		let first_poll = AtomicBool::new(true);
-		Self { res, first_poll }
+		let inner = Mutex::new((true, Some(res)));
+		Self { inner }
 	}
 }
 
@@ -1023,10 +1021,13 @@ impl<R> Future for TestStoreFuture<R> {
 	fn poll(
 		self: Pin<&mut Self>, _cx: &mut core::task::Context<'_>,
 	) -> core::task::Poll<Self::Output> {
-		if self.first_poll.swap(false, Ordering::Relaxed) {
+		let mut inner_lock = self.inner.lock().unwrap();
+		let first_poll = &mut inner_lock.0;
+		if *first_poll {
+			*first_poll = false;
 			core::task::Poll::Pending
 		} else {
-			if let Some(res) = self.res.lock().unwrap().take() {
+			if let Some(res) = inner_lock.1.take() {
 				core::task::Poll::Ready(res)
 			} else {
 				unreachable!("We should never poll more than twice");
