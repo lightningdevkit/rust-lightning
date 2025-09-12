@@ -57,7 +57,7 @@ use crate::util::dyn_signer::{
 use crate::util::logger::{Logger, Record};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
-use crate::util::persist::{KVStoreSync, MonitorName};
+use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 
@@ -84,7 +84,10 @@ use crate::io;
 use crate::prelude::*;
 use crate::sign::{EntropySource, NodeSigner, RandomBytes, Recipient, SignerProvider};
 use crate::sync::{Arc, Mutex};
+use alloc::boxed::Box;
+use core::future::Future;
 use core::mem;
+use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 
@@ -950,6 +953,33 @@ impl TestStore {
 	}
 }
 
+impl KVStore for TestStore {
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>> {
+		let res = self.read_internal(&primary_namespace, &secondary_namespace, &key);
+		Box::pin(async move { TestStoreFuture::new(res).await })
+	}
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+		let res = self.write_internal(&primary_namespace, &secondary_namespace, &key, buf);
+		Box::pin(async move { TestStoreFuture::new(res).await })
+	}
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+		let res = self.remove_internal(&primary_namespace, &secondary_namespace, &key, lazy);
+		Box::pin(async move { TestStoreFuture::new(res).await })
+	}
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>> {
+		let res = self.list_internal(primary_namespace, secondary_namespace);
+		Box::pin(async move { TestStoreFuture::new(res).await })
+	}
+}
+
 impl KVStoreSync for TestStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
@@ -971,6 +1001,37 @@ impl KVStoreSync for TestStore {
 
 	fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> io::Result<Vec<String>> {
 		self.list_internal(primary_namespace, secondary_namespace)
+	}
+}
+
+// A `Future` that returns the result only on the second poll.
+pub(crate) struct TestStoreFuture<R> {
+	res: Mutex<Option<io::Result<R>>>,
+	first_poll: AtomicBool,
+}
+
+impl<R> TestStoreFuture<R> {
+	fn new(res: io::Result<R>) -> Self {
+		let res = Mutex::new(Some(res));
+		let first_poll = AtomicBool::new(true);
+		Self { res, first_poll }
+	}
+}
+
+impl<R> Future for TestStoreFuture<R> {
+	type Output = Result<R, io::Error>;
+	fn poll(
+		self: Pin<&mut Self>, _cx: &mut core::task::Context<'_>,
+	) -> core::task::Poll<Self::Output> {
+		if self.first_poll.swap(false, Ordering::Relaxed) {
+			core::task::Poll::Pending
+		} else {
+			if let Some(res) = self.res.lock().unwrap().take() {
+				core::task::Poll::Ready(res)
+			} else {
+				unreachable!("We should never poll more than twice");
+			}
+		}
 	}
 }
 
