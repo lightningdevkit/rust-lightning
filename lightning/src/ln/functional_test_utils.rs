@@ -409,7 +409,7 @@ pub fn provide_anchor_reserves<'a, 'b, 'c>(nodes: &[Node<'a, 'b, 'c>]) -> Transa
 	}
 	let tx = Transaction {
 		version: TxVersion::TWO,
-		lock_time: LockTime::ZERO,
+		lock_time: LockTime::from_height(nodes[0].best_block_info().1).unwrap(),
 		input: vec![TxIn { ..Default::default() }],
 		output,
 	};
@@ -4277,6 +4277,13 @@ pub fn test_default_channel_config() -> UserConfig {
 	default_config.channel_config.max_dust_htlc_exposure =
 		MaxDustHTLCExposure::FeeRateMultiplier(50_000_000 / 253);
 	default_config
+}
+
+pub fn test_default_anchors_channel_config() -> UserConfig {
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	config.manually_accept_inbound_channels = true;
+	config
 }
 
 pub fn create_node_chanmgrs<'a, 'b>(
