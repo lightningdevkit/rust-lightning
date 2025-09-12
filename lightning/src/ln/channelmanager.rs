@@ -5506,22 +5506,11 @@ where
 	fn send_payment_for_static_invoice(
 		&self, payment_id: PaymentId,
 	) -> Result<(), Bolt12PaymentError> {
-		let best_block_height = self.best_block.read().unwrap().height;
 		let mut res = Ok(());
+		let first_hops = self.list_usable_channels();
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			let outbound_pmts_res = self.pending_outbound_payments.send_payment_for_static_invoice(
-				payment_id,
-				&self.router,
-				self.list_usable_channels(),
-				|| self.compute_inflight_htlcs(),
-				&self.entropy_source,
-				&self.node_signer,
-				&self,
-				&self.secp_ctx,
-				best_block_height,
-				&self.pending_events,
-				|args| self.send_payment_along_path(args),
-			);
+			let outbound_pmts_res =
+				self.send_payment_for_static_invoice_no_persist(payment_id, first_hops);
 			match outbound_pmts_res {
 				Err(Bolt12PaymentError::UnexpectedInvoice)
 				| Err(Bolt12PaymentError::DuplicateInvoice) => {
@@ -5535,6 +5524,26 @@ where
 			}
 		});
 		res
+	}
+
+	/// Useful if the caller is already triggering a persist of the `ChannelManager`.
+	fn send_payment_for_static_invoice_no_persist(
+		&self, payment_id: PaymentId, first_hops: Vec<ChannelDetails>,
+	) -> Result<(), Bolt12PaymentError> {
+		let best_block_height = self.best_block.read().unwrap().height;
+		self.pending_outbound_payments.send_payment_for_static_invoice(
+			payment_id,
+			&self.router,
+			first_hops,
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			&self,
+			&self.secp_ctx,
+			best_block_height,
+			&self.pending_events,
+			|args| self.send_payment_along_path(args),
+		)
 	}
 
 	/// If we are holding an HTLC on behalf of an often-offline sender, this method allows us to
