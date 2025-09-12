@@ -55,7 +55,7 @@ use lightning::sign::EntropySource;
 use lightning::sign::OutputSpender;
 use lightning::util::logger::Logger;
 use lightning::util::persist::{
-	KVStore, KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
+	KVStore, KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY,
 	CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 	NETWORK_GRAPH_PERSISTENCE_KEY, NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 	NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
@@ -1185,80 +1185,6 @@ fn check_and_reset_sleeper<
 		},
 		task::Poll::Pending => None,
 	}
-}
-
-/// Async events processor that is based on [`process_events_async`] but allows for [`KVStoreSync`] to be used for
-/// synchronous background persistence.
-pub async fn process_events_async_with_kv_store_sync<
-	UL: 'static + Deref,
-	CF: 'static + Deref,
-	T: 'static + Deref,
-	F: 'static + Deref,
-	G: 'static + Deref<Target = NetworkGraph<L>>,
-	L: 'static + Deref + Send + Sync,
-	P: 'static + Deref,
-	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
-	EventHandler: Fn(Event) -> EventHandlerFuture,
-	ES: 'static + Deref + Send,
-	M: 'static
-		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
-		+ Send
-		+ Sync,
-	CM: 'static + Deref + Send + Sync,
-	OM: 'static + Deref,
-	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>>,
-	RGS: 'static + Deref<Target = RapidGossipSync<G, L>>,
-	PM: 'static + Deref,
-	LM: 'static + Deref,
-	D: 'static + Deref,
-	O: 'static + Deref,
-	K: 'static + Deref,
-	OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, KVStoreSyncWrapper<K>, L, O>>,
-	S: 'static + Deref<Target = SC> + Send + Sync,
-	SC: for<'b> WriteableScore<'b>,
-	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
-	Sleeper: Fn(Duration) -> SleepFuture,
-	FetchTime: Fn() -> Option<Duration>,
->(
-	kv_store: K, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
-	onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
-	liquidity_manager: Option<LM>, sweeper: Option<OS>, logger: L, scorer: Option<S>,
-	sleeper: Sleeper, mobile_interruptable_platform: bool, fetch_time: FetchTime,
-) -> Result<(), lightning::io::Error>
-where
-	UL::Target: 'static + UtxoLookup,
-	CF::Target: 'static + chain::Filter,
-	T::Target: 'static + BroadcasterInterface,
-	F::Target: 'static + FeeEstimator,
-	L::Target: 'static + Logger,
-	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-	ES::Target: 'static + EntropySource,
-	CM::Target: AChannelManager,
-	OM::Target: AOnionMessenger,
-	PM::Target: APeerManager,
-	LM::Target: ALiquidityManager,
-	O::Target: 'static + OutputSpender,
-	D::Target: 'static + ChangeDestinationSource,
-	K::Target: 'static + KVStoreSync,
-{
-	let kv_store = KVStoreSyncWrapper(kv_store);
-	process_events_async(
-		kv_store,
-		event_handler,
-		chain_monitor,
-		channel_manager,
-		onion_messenger,
-		gossip_sync,
-		peer_manager,
-		liquidity_manager,
-		sweeper,
-		logger,
-		scorer,
-		sleeper,
-		mobile_interruptable_platform,
-		fetch_time,
-	)
-	.await
 }
 
 #[cfg(feature = "std")]
