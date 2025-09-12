@@ -1006,12 +1006,12 @@ impl KVStoreSync for TestStore {
 
 // A `Future` that returns the result only on the second poll.
 pub(crate) struct TestStoreFuture<R> {
-	inner: Mutex<(bool, Option<io::Result<R>>)>,
+	inner: Mutex<(Option<core::task::Waker>, Option<io::Result<R>>)>,
 }
 
 impl<R> TestStoreFuture<R> {
 	fn new(res: io::Result<R>) -> Self {
-		let inner = Mutex::new((true, Some(res)));
+		let inner = Mutex::new((None, Some(res)));
 		Self { inner }
 	}
 }
@@ -1019,19 +1019,19 @@ impl<R> TestStoreFuture<R> {
 impl<R> Future for TestStoreFuture<R> {
 	type Output = Result<R, io::Error>;
 	fn poll(
-		self: Pin<&mut Self>, _cx: &mut core::task::Context<'_>,
+		self: Pin<&mut Self>, cx: &mut core::task::Context<'_>,
 	) -> core::task::Poll<Self::Output> {
 		let mut inner_lock = self.inner.lock().unwrap();
-		let first_poll = &mut inner_lock.0;
-		if *first_poll {
-			*first_poll = false;
+		let first_poll = inner_lock.0.is_none();
+		if first_poll {
+			(*inner_lock).0 = Some(cx.waker().clone());
 			core::task::Poll::Pending
 		} else {
-			if let Some(res) = inner_lock.1.take() {
-				core::task::Poll::Ready(res)
-			} else {
-				unreachable!("We should never poll more than twice");
-			}
+			let waker = inner_lock.0.take().expect("We should never poll more than twice");
+			let res = inner_lock.1.take().expect("We should never poll more than twice");
+			drop(inner_lock);
+			waker.wake();
+			core::task::Poll::Ready(res)
 		}
 	}
 }
