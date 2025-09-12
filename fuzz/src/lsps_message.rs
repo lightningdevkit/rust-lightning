@@ -21,7 +21,7 @@ use lightning::util::test_utils::{
 };
 
 use lightning_liquidity::lsps0::ser::LSPS_MESSAGE_TYPE_ID;
-use lightning_liquidity::LiquidityManager;
+use lightning_liquidity::LiquidityManagerSync;
 
 use core::time::Duration;
 
@@ -77,15 +77,16 @@ pub fn do_test(data: &[u8]) {
 		genesis_block.header.time,
 	));
 
-	let liquidity_manager = Arc::new(LiquidityManager::new(
+	let liquidity_manager = Arc::new(LiquidityManagerSync::new(
 		Arc::clone(&keys_manager),
 		Arc::clone(&keys_manager),
 		Arc::clone(&manager),
 		None::<Arc<dyn Filter + Send + Sync>>,
 		None,
+		kv_store,
 		None,
 		None,
-	));
+	).unwrap());
 	let mut reader = data;
 	if let Ok(Some(msg)) = liquidity_manager.read(LSPS_MESSAGE_TYPE_ID, &mut reader) {
 		let secp = Secp256k1::signing_only();

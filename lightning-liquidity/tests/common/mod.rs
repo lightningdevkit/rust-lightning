@@ -1,12 +1,12 @@
 #![cfg(test)]
 
 use lightning_liquidity::utils::time::TimeProvider;
-use lightning_liquidity::{LiquidityClientConfig, LiquidityManager, LiquidityServiceConfig};
+use lightning_liquidity::{LiquidityClientConfig, LiquidityManagerSync, LiquidityServiceConfig};
 
 use lightning::chain::{BestBlock, Filter};
 use lightning::ln::channelmanager::ChainParameters;
 use lightning::ln::functional_test_utils::{Node, TestChannelManager};
-use lightning::util::test_utils::TestKeysInterface;
+use lightning::util::test_utils::{TestKeysInterface, TestStore};
 
 use bitcoin::Network;
 
@@ -27,27 +27,33 @@ pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
 		network: Network::Testnet,
 		best_block: BestBlock::from_network(Network::Testnet),
 	};
-	let service_lm = LiquidityManager::new_with_custom_time_provider(
+	let service_kv_store = Arc::new(TestStore::new(false));
+	let service_lm = LiquidityManagerSync::new_with_custom_time_provider(
 		nodes[0].keys_manager,
 		nodes[0].keys_manager,
 		nodes[0].node,
 		None::<Arc<dyn Filter + Send + Sync>>,
 		Some(chain_params.clone()),
+		service_kv_store,
 		Some(service_config),
 		None,
 		Arc::clone(&time_provider),
-	);
+	)
+	.unwrap();
 
-	let client_lm = LiquidityManager::new_with_custom_time_provider(
+	let client_kv_store = Arc::new(TestStore::new(false));
+	let client_lm = LiquidityManagerSync::new_with_custom_time_provider(
 		nodes[1].keys_manager,
 		nodes[1].keys_manager,
 		nodes[1].node,
 		None::<Arc<dyn Filter + Send + Sync>>,
 		Some(chain_params),
+		client_kv_store,
 		None,
 		Some(client_config),
 		time_provider,
-	);
+	)
+	.unwrap();
 
 	let mut iter = nodes.into_iter();
 	let service_node = LiquidityNode::new(iter.next().unwrap(), service_lm);
@@ -58,11 +64,12 @@ pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
 
 pub(crate) struct LiquidityNode<'a, 'b, 'c> {
 	pub inner: Node<'a, 'b, 'c>,
-	pub liquidity_manager: LiquidityManager<
+	pub liquidity_manager: LiquidityManagerSync<
 		&'c TestKeysInterface,
 		&'c TestKeysInterface,
 		&'a TestChannelManager<'b, 'c>,
 		Arc<dyn Filter + Send + Sync>,
+		Arc<TestStore>,
 		Arc<dyn TimeProvider + Send + Sync>,
 	>,
 }
@@ -70,11 +77,12 @@ pub(crate) struct LiquidityNode<'a, 'b, 'c> {
 impl<'a, 'b, 'c> LiquidityNode<'a, 'b, 'c> {
 	pub fn new(
 		node: Node<'a, 'b, 'c>,
-		liquidity_manager: LiquidityManager<
+		liquidity_manager: LiquidityManagerSync<
 			&'c TestKeysInterface,
 			&'c TestKeysInterface,
 			&'a TestChannelManager<'b, 'c>,
 			Arc<dyn Filter + Send + Sync>,
+			Arc<TestStore>,
 			Arc<dyn TimeProvider + Send + Sync>,
 		>,
 	) -> Self {
