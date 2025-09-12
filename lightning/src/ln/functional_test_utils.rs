@@ -409,7 +409,7 @@ pub fn provide_anchor_reserves<'a, 'b, 'c>(nodes: &[Node<'a, 'b, 'c>]) -> Transa
 	}
 	let tx = Transaction {
 		version: TxVersion::TWO,
-		lock_time: LockTime::ZERO,
+		lock_time: LockTime::from_height(nodes[0].best_block_info().1).unwrap(),
 		input: vec![TxIn { ..Default::default() }],
 		output,
 	};
