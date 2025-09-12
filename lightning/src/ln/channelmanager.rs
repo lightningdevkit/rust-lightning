@@ -10776,7 +10776,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					// Pull this now to avoid introducing a lock order with `forward_htlcs`.
 					let is_our_scid = self.short_to_chan_info.read().unwrap().contains_key(&scid);
 
-					let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
 					let payment_hash = forward_info.payment_hash;
 					let logger = WithContext::from(
 						&self.logger,
@@ -10878,7 +10877,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							},
 						}
 					} else {
-						match forward_htlcs.entry(scid) {
+						match self.forward_htlcs.lock().unwrap().entry(scid) {
 							hash_map::Entry::Occupied(mut entry) => {
 								entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
 							},
