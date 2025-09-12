@@ -832,6 +832,7 @@ pub(super) struct SendAlongPathArgs<'a> {
 	pub invoice_request: Option<&'a InvoiceRequest>,
 	pub bolt12_invoice: Option<&'a PaidBolt12Invoice>,
 	pub session_priv_bytes: [u8; 32],
+	pub hold_htlc_at_next_hop: bool,
 }
 
 pub(super) struct OutboundPayments {
@@ -1064,7 +1065,7 @@ impl OutboundPayments {
 
 		let payment_params = Some(route_params.payment_params.clone());
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
-		let onion_session_privs = match outbounds.entry(payment_id) {
+		let (onion_session_privs, hold_htlcs_at_next_hop) = match outbounds.entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
 				PendingOutboundPayment::InvoiceReceived { .. } => {
 					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
@@ -1072,18 +1073,21 @@ impl OutboundPayments {
 						Some(retry_strategy), payment_params, entropy_source, best_block_height,
 					);
 					*entry.into_mut() = retryable_payment;
-					onion_session_privs
+					(onion_session_privs, false)
 				},
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => {
-					let invreq = if let PendingOutboundPayment::StaticInvoiceReceived { invoice_request, .. } = entry.remove() {
-						invoice_request
-					} else { unreachable!() };
+					let (invreq, hold_htlcs_at_next_hop) =
+						if let PendingOutboundPayment::StaticInvoiceReceived {
+							invoice_request, hold_htlcs_at_next_hop, ..
+						} = entry.remove() {
+							(invoice_request, hold_htlcs_at_next_hop)
+						} else { unreachable!() };
 					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
 						payment_hash, recipient_onion.clone(), keysend_preimage, Some(invreq), Some(bolt12_invoice.clone()), &route,
 						Some(retry_strategy), payment_params, entropy_source, best_block_height
 					);
 					outbounds.insert(payment_id, retryable_payment);
-					onion_session_privs
+					(onion_session_privs, hold_htlcs_at_next_hop)
 				},
 				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 			},
@@ -1093,7 +1097,7 @@ impl OutboundPayments {
 
 		let result = self.pay_route_internal(
 			&route, payment_hash, &recipient_onion, keysend_preimage, invoice_request, Some(&bolt12_invoice), payment_id,
-			Some(route_params.final_value_msat), &onion_session_privs, false, node_signer,
+			Some(route_params.final_value_msat), &onion_session_privs, hold_htlcs_at_next_hop, node_signer,
 			best_block_height, &send_payment_along_path
 		);
 		log_info!(
@@ -2130,7 +2134,7 @@ impl OutboundPayments {
 			let path_res = send_payment_along_path(SendAlongPathArgs {
 				path: &path, payment_hash: &payment_hash, recipient_onion, total_value,
 				cur_height, payment_id, keysend_preimage: &keysend_preimage, invoice_request,
-				bolt12_invoice,
+				bolt12_invoice, hold_htlc_at_next_hop: hold_htlcs_at_next_hop,
 				session_priv_bytes: *session_priv_bytes
 			});
 			results.push(path_res);

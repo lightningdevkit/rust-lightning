@@ -844,6 +844,13 @@ impl HTLCSource {
 			_ => None,
 		}
 	}
+
+	pub(crate) fn hold_htlc_at_next_hop(&self) -> bool {
+		match self {
+			Self::OutboundRoute { hold_htlc, .. } => hold_htlc.is_some(),
+			_ => false,
+		}
+	}
 }
 
 /// This enum is used to specify which error data to send to peers when failing back an HTLC
@@ -4943,6 +4950,7 @@ where
 			invoice_request: None,
 			bolt12_invoice: None,
 			session_priv_bytes,
+			hold_htlc_at_next_hop: false,
 		})
 	}
 
@@ -4958,6 +4966,7 @@ where
 			invoice_request,
 			bolt12_invoice,
 			session_priv_bytes,
+			hold_htlc_at_next_hop,
 		} = args;
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
@@ -5039,7 +5048,7 @@ where
 							first_hop_htlc_msat: htlc_msat,
 							payment_id,
 							bolt12_invoice: bolt12_invoice.cloned(),
-							hold_htlc: None,
+							hold_htlc: hold_htlc_at_next_hop.then(|| ()),
 						};
 						let send_res = chan.send_htlc_and_commit(
 							htlc_msat,
@@ -5425,19 +5434,35 @@ where
 				},
 			};
 
-			let enqueue_held_htlc_available_res = self.flow.enqueue_held_htlc_available(
-				invoice,
-				payment_id,
-				self.get_peers_for_blinded_path(),
-			);
-			if enqueue_held_htlc_available_res.is_err() {
-				self.abandon_payment_with_reason(
+			// If the call to `Self::hold_htlc_channels` succeeded, then we are a private node and can
+			// hold the HTLCs for this payment at our next-hop channel counterparty until the recipient
+			// comes online. This allows us to go offline after locking in the HTLCs.
+			if let Ok(channels) = hold_htlc_channels_res {
+				if let Err(e) =
+					self.send_payment_for_static_invoice_no_persist(payment_id, channels)
+				{
+					log_trace!(
+						self.logger,
+						"Failed to send held HTLC with payment id {}: {:?}",
+						payment_id,
+						e
+					);
+				}
+			} else {
+				let enqueue_held_htlc_available_res = self.flow.enqueue_held_htlc_available(
+					invoice,
 					payment_id,
-					PaymentFailureReason::BlindedPathCreationFailed,
+					self.get_peers_for_blinded_path(),
 				);
-				res = Err(Bolt12PaymentError::BlindedPathCreationFailed);
-				return NotifyOption::DoPersist;
-			};
+				if enqueue_held_htlc_available_res.is_err() {
+					self.abandon_payment_with_reason(
+						payment_id,
+						PaymentFailureReason::BlindedPathCreationFailed,
+					);
+					res = Err(Bolt12PaymentError::BlindedPathCreationFailed);
+					return NotifyOption::DoPersist;
+				};
+			}
 
 			NotifyOption::DoPersist
 		});
