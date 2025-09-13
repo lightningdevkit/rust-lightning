@@ -70,6 +70,7 @@ use crate::ln::onion_utils::{
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::types::ChannelId;
 use crate::ln::LN_MAX_MSG_LEN;
+use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::gossip::NodeId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::tx_builder::{HTLCAmountDirection, NextCommitmentStats, SpecTxBuilder, TxBuilder};
@@ -8183,10 +8184,25 @@ where
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
+	///
+	/// The static invoices will be used by us as an async sender to enqueue [`HeldHtlcAvailable`]
+	/// onion messages for the often-offline recipient, and the blinded reply paths the invoices are
+	/// paired with were created by our channel counterparty and will be used as reply paths for
+	/// corresponding [`ReleaseHeldHtlc`] messages.
+	///
+	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
 	pub fn revoke_and_ack<F: Deref, L: Deref>(
 		&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L, hold_mon_update: bool,
-	) -> Result<(Vec<(HTLCSource, PaymentHash)>, Option<ChannelMonitorUpdate>), ChannelError>
+	) -> Result<
+		(
+			Vec<(HTLCSource, PaymentHash)>,
+			Vec<(StaticInvoice, BlindedMessagePath)>,
+			Option<ChannelMonitorUpdate>,
+		),
+		ChannelError,
+	>
 	where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
@@ -8301,6 +8317,7 @@ where
 		let mut finalized_claimed_htlcs = Vec::new();
 		let mut update_fail_htlcs = Vec::new();
 		let mut update_fail_malformed_htlcs = Vec::new();
+		let mut static_invoices = Vec::new();
 		let mut require_commitment = false;
 		let mut value_to_self_msat_diff: i64 = 0;
 
@@ -8416,6 +8433,24 @@ where
 				}
 			}
 			for htlc in pending_outbound_htlcs.iter_mut() {
+				for (htlc_id, blinded_path) in &msg.release_htlc_message_paths {
+					if htlc.htlc_id != *htlc_id {
+						continue;
+					}
+					let static_invoice = match htlc.source.static_invoice() {
+						Some(inv) if htlc.source.hold_htlc_at_next_hop() => inv,
+						_ => {
+							// We should only be using our counterparty's release_htlc_message_path if we
+							// originally configured the HTLC to be held with them until the recipient comes
+							// online. Otherwise, our counterparty could include paths for all of our HTLCs and
+							// use the responses sent to their paths to determine which of our HTLCs are async
+							// payments.
+							log_trace!(logger, "Counterparty included release_htlc_message_path for non-async payment HTLC {}", htlc_id);
+							continue;
+						},
+					};
+					static_invoices.push((static_invoice, blinded_path.clone()));
+				}
 				if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 					log_trace!(
 						logger,
@@ -8483,9 +8518,9 @@ where
 					self.context
 						.blocked_monitor_updates
 						.push(PendingChannelMonitorUpdate { update: monitor_update });
-					return Ok(($htlcs_to_fail, None));
+					return Ok(($htlcs_to_fail, static_invoices, None));
 				} else {
-					return Ok(($htlcs_to_fail, Some(monitor_update)));
+					return Ok(($htlcs_to_fail, static_invoices, Some(monitor_update)));
 				}
 			};
 		}
@@ -9268,7 +9303,7 @@ where
 					onion_routing_packet: (**onion_packet).clone(),
 					skimmed_fee_msat: htlc.skimmed_fee_msat,
 					blinding_point: htlc.blinding_point,
-					hold_htlc: None, // Will be set by the async sender when support is added
+					hold_htlc: htlc.source.hold_htlc_at_next_hop().then(|| ()),
 				});
 			}
 		}
@@ -15387,6 +15422,7 @@ mod tests {
 				first_hop_htlc_msat: 548,
 				payment_id: PaymentId([42; 32]),
 				bolt12_invoice: None,
+				hold_htlc: None,
 			},
 			skimmed_fee_msat: None,
 			blinding_point: None,
@@ -15834,6 +15870,7 @@ mod tests {
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([42; 32]),
 			bolt12_invoice: None,
+			hold_htlc: None,
 		};
 		let dummy_outbound_output = OutboundHTLCOutput {
 			htlc_id: 0,

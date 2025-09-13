@@ -103,6 +103,10 @@ pub(crate) enum PendingOutboundPayment {
 		route_params: RouteParameters,
 		invoice_request: InvoiceRequest,
 		static_invoice: StaticInvoice,
+		// Whether we should pay the static invoice asynchronously, i.e. by setting
+		// [`UpdateAddHTLC::hold_htlc`] so our channel counterparty(s) hold the HTLC(s) for us until the
+		// recipient comes online, allowing us to go offline after locking in the HTLC(s).
+		hold_htlcs_at_next_hop: bool,
 		// The deadline as duration since the Unix epoch for the async recipient to come online,
 		// after which we'll fail the payment.
 		//
@@ -828,6 +832,7 @@ pub(super) struct SendAlongPathArgs<'a> {
 	pub invoice_request: Option<&'a InvoiceRequest>,
 	pub bolt12_invoice: Option<&'a PaidBolt12Invoice>,
 	pub session_priv_bytes: [u8; 32],
+	pub hold_htlc_at_next_hop: bool,
 }
 
 pub(super) struct OutboundPayments {
@@ -1060,7 +1065,7 @@ impl OutboundPayments {
 
 		let payment_params = Some(route_params.payment_params.clone());
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
-		let onion_session_privs = match outbounds.entry(payment_id) {
+		let (onion_session_privs, hold_htlcs_at_next_hop) = match outbounds.entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
 				PendingOutboundPayment::InvoiceReceived { .. } => {
 					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
@@ -1068,18 +1073,21 @@ impl OutboundPayments {
 						Some(retry_strategy), payment_params, entropy_source, best_block_height,
 					);
 					*entry.into_mut() = retryable_payment;
-					onion_session_privs
+					(onion_session_privs, false)
 				},
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => {
-					let invreq = if let PendingOutboundPayment::StaticInvoiceReceived { invoice_request, .. } = entry.remove() {
-						invoice_request
-					} else { unreachable!() };
+					let (invreq, hold_htlcs_at_next_hop) =
+						if let PendingOutboundPayment::StaticInvoiceReceived {
+							invoice_request, hold_htlcs_at_next_hop, ..
+						} = entry.remove() {
+							(invoice_request, hold_htlcs_at_next_hop)
+						} else { unreachable!() };
 					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
 						payment_hash, recipient_onion.clone(), keysend_preimage, Some(invreq), Some(bolt12_invoice.clone()), &route,
 						Some(retry_strategy), payment_params, entropy_source, best_block_height
 					);
 					outbounds.insert(payment_id, retryable_payment);
-					onion_session_privs
+					(onion_session_privs, hold_htlcs_at_next_hop)
 				},
 				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 			},
@@ -1089,8 +1097,8 @@ impl OutboundPayments {
 
 		let result = self.pay_route_internal(
 			&route, payment_hash, &recipient_onion, keysend_preimage, invoice_request, Some(&bolt12_invoice), payment_id,
-			Some(route_params.final_value_msat), &onion_session_privs, node_signer, best_block_height,
-			&send_payment_along_path
+			Some(route_params.final_value_msat), &onion_session_privs, hold_htlcs_at_next_hop, node_signer,
+			best_block_height, &send_payment_along_path
 		);
 		log_info!(
 			logger, "Sending payment with id {} and hash {} returned {:?}", payment_id,
@@ -1107,8 +1115,9 @@ impl OutboundPayments {
 	}
 
 	pub(super) fn static_invoice_received<ES: Deref>(
-		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
-		best_block_height: u32, duration_since_epoch: Duration, entropy_source: ES,
+		&self, invoice: &StaticInvoice, payment_id: PaymentId, hold_htlcs_at_next_hop: bool,
+		features: Bolt12InvoiceFeatures, best_block_height: u32, duration_since_epoch: Duration,
+		entropy_source: ES,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 	) -> Result<(), Bolt12PaymentError>
 	where
@@ -1192,6 +1201,13 @@ impl OutboundPayments {
 							RetryableSendFailure::OnionPacketSizeExceeded,
 						));
 					}
+
+					// If we expect the HTLCs for this payment to be held at our next-hop counterparty, don't
+					// retry the payment. In future iterations of this feature, we will send this payment via
+					// trampoline and the counterparty will retry on our behalf.
+					if hold_htlcs_at_next_hop {
+						*retry_strategy = Retry::Attempts(0);
+					}
 					let absolute_expiry =
 						duration_since_epoch.saturating_add(ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY);
 
@@ -1200,6 +1216,7 @@ impl OutboundPayments {
 						keysend_preimage,
 						retry_strategy: *retry_strategy,
 						route_params,
+						hold_htlcs_at_next_hop,
 						invoice_request: retryable_invoice_request
 							.take()
 							.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
@@ -1486,7 +1503,7 @@ impl OutboundPayments {
 			})?;
 
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion,
-			keysend_preimage, None, None, payment_id, None, &onion_session_privs, node_signer,
+			keysend_preimage, None, None, payment_id, None, &onion_session_privs, false, node_signer,
 			best_block_height, &send_payment_along_path);
 		log_info!(logger, "Sending payment with id {} and hash {} returned {:?}",
 			payment_id, payment_hash, res);
@@ -1649,8 +1666,8 @@ impl OutboundPayments {
 			}
 		};
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion, keysend_preimage,
-			invoice_request.as_ref(), bolt12_invoice.as_ref(), payment_id, Some(total_msat), &onion_session_privs, node_signer,
-			best_block_height, &send_payment_along_path);
+			invoice_request.as_ref(), bolt12_invoice.as_ref(), payment_id, Some(total_msat),
+			&onion_session_privs, false, node_signer, best_block_height, &send_payment_along_path);
 		log_info!(logger, "Result retrying payment id {}: {:?}", &payment_id, res);
 		if let Err(e) = res {
 			self.handle_pay_route_err(
@@ -1814,8 +1831,8 @@ impl OutboundPayments {
 
 		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 		match self.pay_route_internal(&route, payment_hash, &recipient_onion_fields,
-			None, None, None, payment_id, None, &onion_session_privs, node_signer, best_block_height,
-			&send_payment_along_path
+			None, None, None, payment_id, None, &onion_session_privs, false, node_signer,
+			best_block_height, &send_payment_along_path
 		) {
 			Ok(()) => Ok((payment_hash, payment_id)),
 			Err(e) => {
@@ -2063,7 +2080,7 @@ impl OutboundPayments {
 		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: &RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>, bolt12_invoice: Option<&PaidBolt12Invoice>,
 		payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: &Vec<[u8; 32]>,
-		node_signer: &NS, best_block_height: u32, send_payment_along_path: &F
+		hold_htlcs_at_next_hop: bool, node_signer: &NS, best_block_height: u32, send_payment_along_path: &F
 	) -> Result<(), PaymentSendFailure>
 	where
 		NS::Target: NodeSigner,
@@ -2117,7 +2134,7 @@ impl OutboundPayments {
 			let path_res = send_payment_along_path(SendAlongPathArgs {
 				path: &path, payment_hash: &payment_hash, recipient_onion, total_value,
 				cur_height, payment_id, keysend_preimage: &keysend_preimage, invoice_request,
-				bolt12_invoice,
+				bolt12_invoice, hold_htlc_at_next_hop: hold_htlcs_at_next_hop,
 				session_priv_bytes: *session_priv_bytes
 			});
 			results.push(path_res);
@@ -2186,7 +2203,7 @@ impl OutboundPayments {
 	{
 		self.pay_route_internal(route, payment_hash, &recipient_onion,
 			keysend_preimage, None, None, payment_id, recv_value_msat, &onion_session_privs,
-			node_signer, best_block_height, &send_payment_along_path)
+			false, node_signer, best_block_height, &send_payment_along_path)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
@@ -2759,6 +2776,12 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	// HTLCs are in-flight.
 	(9, StaticInvoiceReceived) => {
 		(0, payment_hash, required),
+		// Added in 0.2. If this field is set when this variant is created, the HTLCs are sent
+		// immediately after and the pending outbound is also immediately transitioned to Retryable.
+		// However, if we crash and then downgrade before the transition to Retryable, this payment will
+		// sit in outbounds until it either times out in `remove_stale_payments` or is manually
+		// abandoned.
+		(1, hold_htlcs_at_next_hop, required),
 		(2, keysend_preimage, required),
 		(4, retry_strategy, required),
 		(6, route_params, required),
@@ -3418,6 +3441,7 @@ mod tests {
 			invoice_request: dummy_invoice_request(),
 			static_invoice: dummy_static_invoice(),
 			expiry_time: Duration::from_secs(absolute_expiry + 2),
+			hold_htlcs_at_next_hop: false
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);
@@ -3468,6 +3492,7 @@ mod tests {
 			invoice_request: dummy_invoice_request(),
 			static_invoice: dummy_static_invoice(),
 			expiry_time: now(),
+			hold_htlcs_at_next_hop: false,
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);
