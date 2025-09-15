@@ -416,19 +416,6 @@ impl InFlightHtlcs {
 	}
 }
 
-impl Writeable for InFlightHtlcs {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		self.unblinded_hops.write(writer)
-	}
-}
-
-impl Readable for InFlightHtlcs {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let unblinded_hops: HashMap<(u64, bool), u64> = Readable::read(reader)?;
-		Ok(Self { unblinded_hops })
-	}
-}
-
 /// A hop in a route, and additional metadata about it. "Hop" is defined as a node and the channel
 /// that leads to it.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
