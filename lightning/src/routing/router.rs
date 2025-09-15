@@ -323,6 +323,18 @@ where
 	type ScoreParams = <S::Target as ScoreLookUp>::ScoreParams;
 	#[rustfmt::skip]
 	fn channel_penalty_msat(&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams) -> u64 {
+		if let CandidateRouteHop::Blinded(blinded_candidate) = candidate {
+			if let Some(used_liquidity) = self.inflight_htlcs.used_blinded_liquidity_msat(
+				*blinded_candidate.source_node_id, blinded_candidate.hint.blinding_point(),
+			) {
+				let usage = ChannelUsage {
+					inflight_htlc_msat: usage.inflight_htlc_msat.saturating_add(used_liquidity),
+					..usage
+				};
+
+				return self.scorer.channel_penalty_msat(candidate, usage, score_params);
+			}
+		}
 		let target = match candidate.target() {
 			Some(target) => target,
 			None => return self.scorer.channel_penalty_msat(candidate, usage, score_params),
@@ -356,12 +368,16 @@ pub struct InFlightHtlcs {
 	// key is less than its destination. See `InFlightHtlcs::used_liquidity_msat` for more
 	// details.
 	unblinded_hops: HashMap<(u64, bool), u64>,
+	/// A map with liquidity value (in msat) keyed by the introduction point of a blinded path and
+	/// the blinding point. In general blinding points should be globally unique, but just in case
+	/// we add the introduction point as well.
+	blinded_hops: HashMap<(NodeId, PublicKey), u64>,
 }
 
 impl InFlightHtlcs {
 	/// Constructs an empty `InFlightHtlcs`.
 	pub fn new() -> Self {
-		InFlightHtlcs { unblinded_hops: new_hash_map() }
+		InFlightHtlcs { unblinded_hops: new_hash_map(), blinded_hops: new_hash_map() }
 	}
 
 	/// Takes in a path with payer's node id and adds the path's details to `InFlightHtlcs`.
@@ -373,6 +389,23 @@ impl InFlightHtlcs {
 		let mut cumulative_msat = 0;
 		if let Some(tail) = &path.blinded_tail {
 			cumulative_msat += tail.final_value_msat;
+			if tail.hops.len() > 1 {
+				// Single-hop blinded paths aren't really "blinded" paths, as they terminate at the
+				// introduction point. In that case, we don't need to track anything.
+				let last_trampoline_hop =
+					tail.trampoline_hops.last().map(|hop| (hop.pubkey, hop.fee_msat));
+				let last_normal_hop = path.hops.last().unwrap();
+				let last_hop = last_trampoline_hop
+					.unwrap_or((last_normal_hop.pubkey, last_normal_hop.fee_msat));
+				let intro_node = NodeId::from_pubkey(&last_hop.0);
+				// The amount we send into the blinded path is the sum of the blinded path final
+				// amount and the fee we pay in it, which is the `fee_msat` of the last hop.
+				let blinded_path_sent_amt = last_hop.1 + cumulative_msat;
+				self.blinded_hops
+					.entry((intro_node, tail.blinding_point))
+					.and_modify(|used_liquidity_msat| *used_liquidity_msat += blinded_path_sent_amt)
+					.or_insert(blinded_path_sent_amt);
+			}
 		}
 
 		// total_inflight_map needs to be direction-sensitive when keeping track of the HTLC value
@@ -413,6 +446,13 @@ impl InFlightHtlcs {
 		&self, source: &NodeId, target: &NodeId, channel_scid: u64,
 	) -> Option<u64> {
 		self.unblinded_hops.get(&(channel_scid, source < target)).map(|v| *v)
+	}
+
+	/// Returns liquidity in msat given the blinded path introduction point and blinding point.
+	pub fn used_blinded_liquidity_msat(
+		&self, introduction_point: NodeId, blinding_point: PublicKey,
+	) -> Option<u64> {
+		self.blinded_hops.get(&(introduction_point, blinding_point)).map(|v| *v)
 	}
 }
 
@@ -3890,8 +3930,9 @@ mod tests {
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, P2PGossipSync};
 	use crate::routing::router::{
 		add_random_cltv_offset, build_route_from_hops_internal, default_node_features, get_route,
-		BlindedTail, CandidateRouteHop, InFlightHtlcs, Path, PaymentParameters, PublicHopCandidate,
-		Route, RouteHint, RouteHintHop, RouteHop, RouteParameters, RoutingFees,
+		BlindedPathCandidate, BlindedTail, CandidateRouteHop, InFlightHtlcs, Path,
+		PaymentParameters, PublicHopCandidate, Route, RouteHint, RouteHintHop, RouteHop,
+		RouteParameters, RoutingFees, ScorerAccountingForInFlightHtlcs,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE,
 	};
 	use crate::routing::scoring::{
@@ -3923,7 +3964,7 @@ mod tests {
 
 	use crate::io::Cursor;
 	use crate::prelude::*;
-	use crate::sync::Arc;
+	use crate::sync::{Arc, Mutex};
 
 	#[rustfmt::skip]
 	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
@@ -7960,9 +8001,9 @@ mod tests {
 
 	#[test]
 	#[rustfmt::skip]
-	fn blinded_path_inflight_processing() {
-		// Ensure we'll score the channel that's inbound to a blinded path's introduction node, and
-		// account for the blinded tail's final amount_msat.
+	fn one_hop_blinded_path_inflight_processing() {
+		// Ensure we'll score the channel that's inbound to a one-hop blinded path's introduction
+		// node, and account for the blinded tail's final amount_msat.
 		let mut inflight_htlcs = InFlightHtlcs::new();
 		let path = Path {
 			hops: vec![RouteHop {
@@ -7994,6 +8035,106 @@ mod tests {
 		inflight_htlcs.process_path(&path, ln_test_utils::pubkey(44));
 		assert_eq!(*inflight_htlcs.unblinded_hops.get(&(42, true)).unwrap(), 301);
 		assert_eq!(*inflight_htlcs.unblinded_hops.get(&(43, false)).unwrap(), 201);
+		assert!(inflight_htlcs.blinded_hops.is_empty());
+	}
+
+	struct UsageTrackingScorer(Mutex<Option<ChannelUsage>>);
+
+	impl ScoreLookUp for UsageTrackingScorer {
+		type ScoreParams = ();
+		fn channel_penalty_msat(&self, _: &CandidateRouteHop, usage: ChannelUsage, _: &()) -> u64 {
+			let mut inner = self.0.lock().unwrap();
+			assert!(inner.is_none());
+			*inner = Some(usage);
+			0
+		}
+	}
+
+	#[test]
+	fn blinded_path_inflight_processing() {
+		// Ensure we'll score the channel that's inbound to a blinded path's introduction node, and
+		// account for the blinded tail's final amount_msat as well as track the blinded path
+		// in-flight.
+		let mut inflight_htlcs = InFlightHtlcs::new();
+		let blinding_point = ln_test_utils::pubkey(48);
+		let mut blinded_hops = Vec::new();
+		for i in 0..2 {
+			blinded_hops.push(BlindedHop {
+				blinded_node_id: ln_test_utils::pubkey(49 + i as u8),
+				encrypted_payload: Vec::new(),
+			});
+		}
+		let intro_point = ln_test_utils::pubkey(43);
+		let path = Path {
+			hops: vec![
+				RouteHop {
+					pubkey: ln_test_utils::pubkey(42),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 42,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 100,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: false,
+				},
+				RouteHop {
+					pubkey: intro_point,
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 43,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 1,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: false,
+				},
+			],
+			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![],
+				hops: blinded_hops.clone(),
+				blinding_point,
+				excess_final_cltv_expiry_delta: 0,
+				final_value_msat: 200,
+			}),
+		};
+		inflight_htlcs.process_path(&path, ln_test_utils::pubkey(44));
+		assert_eq!(*inflight_htlcs.unblinded_hops.get(&(42, true)).unwrap(), 301);
+		assert_eq!(*inflight_htlcs.unblinded_hops.get(&(43, false)).unwrap(), 201);
+		let intro_node_id = NodeId::from_pubkey(&ln_test_utils::pubkey(43));
+		assert_eq!(
+			*inflight_htlcs.blinded_hops.get(&(intro_node_id, blinding_point)).unwrap(),
+			201
+		);
+
+		let tracking_scorer = UsageTrackingScorer(Mutex::new(None));
+		let inflight_scorer =
+			ScorerAccountingForInFlightHtlcs::new(&tracking_scorer, &inflight_htlcs);
+
+		let blinded_payinfo = BlindedPayInfo {
+			fee_base_msat: 100,
+			fee_proportional_millionths: 500,
+			htlc_minimum_msat: 1000,
+			htlc_maximum_msat: 100_000_000,
+			cltv_expiry_delta: 15,
+			features: BlindedHopFeatures::empty(),
+		};
+		let blinded_path = BlindedPaymentPath::from_blinded_path_and_payinfo(
+			intro_point,
+			blinding_point,
+			blinded_hops,
+			blinded_payinfo,
+		);
+
+		let candidate = CandidateRouteHop::Blinded(BlindedPathCandidate {
+			source_node_id: &intro_node_id,
+			hint: &blinded_path,
+			hint_idx: 0,
+			source_node_counter: 0,
+		});
+		let empty_usage = ChannelUsage {
+			amount_msat: 42,
+			inflight_htlc_msat: 0,
+			effective_capacity: EffectiveCapacity::HintMaxHTLC { amount_msat: 500 },
+		};
+		inflight_scorer.channel_penalty_msat(&candidate, empty_usage, &());
+		assert_eq!(tracking_scorer.0.lock().unwrap().unwrap().inflight_htlc_msat, 201);
 	}
 
 	#[test]
