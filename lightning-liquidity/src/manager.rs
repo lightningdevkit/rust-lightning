@@ -389,7 +389,11 @@ where
 		let pending_messages =
 			Arc::new(MessageQueue::new(Arc::clone(&pending_msgs_or_needs_persist_notifier)));
 		let persisted_queue = read_event_queue(kv_store.clone()).await?.unwrap_or_default();
-		let pending_events = Arc::new(EventQueue::new(persisted_queue, kv_store.clone()));
+		let pending_events = Arc::new(EventQueue::new(
+			persisted_queue,
+			kv_store.clone(),
+			Arc::clone(&pending_msgs_or_needs_persist_notifier),
+		));
 		let ignored_peers = RwLock::new(new_hash_set());
 
 		let mut supported_protocols = Vec::new();

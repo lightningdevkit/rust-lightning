@@ -20,6 +20,7 @@ use lightning::util::persist::KVStore;
 use lightning::util::ser::{
 	BigSize, CollectionLength, FixedLengthReader, Readable, Writeable, Writer,
 };
+use lightning::util::wakers::Notifier;
 
 /// The maximum queue size we allow before starting to drop events.
 pub const MAX_EVENT_QUEUE_SIZE: usize = 1000;
@@ -28,50 +29,73 @@ pub(crate) struct EventQueue<K: Deref + Clone>
 where
 	K::Target: KVStore,
 {
-	queue: Arc<Mutex<VecDeque<LiquidityEvent>>>,
+	state: Arc<Mutex<QueueState>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 	#[cfg(feature = "std")]
 	condvar: Arc<crate::sync::Condvar>,
 	kv_store: K,
+	persist_notifier: Arc<Notifier>,
 }
 
 impl<K: Deref + Clone> EventQueue<K>
 where
 	K::Target: KVStore,
 {
-	pub fn new(queue: VecDeque<LiquidityEvent>, kv_store: K) -> Self {
-		let queue = Arc::new(Mutex::new(queue));
+	pub fn new(
+		queue: VecDeque<LiquidityEvent>, kv_store: K, persist_notifier: Arc<Notifier>,
+	) -> Self {
+		let state = Arc::new(Mutex::new(QueueState { queue, needs_persist: false }));
 		let waker = Arc::new(Mutex::new(None));
 		Self {
-			queue,
+			state,
 			waker,
 			#[cfg(feature = "std")]
 			condvar: Arc::new(crate::sync::Condvar::new()),
 			kv_store,
+			persist_notifier,
 		}
 	}
 
 	pub fn next_event(&self) -> Option<LiquidityEvent> {
-		self.queue.lock().unwrap().pop_front()
+		let event_opt = {
+			let mut state_lock = self.state.lock().unwrap();
+			if state_lock.queue.is_empty() {
+				// Skip notifying below if nothing changed.
+				return None;
+			}
+
+			state_lock.needs_persist = true;
+			state_lock.queue.pop_front()
+		};
+
+		self.persist_notifier.notify();
+
+		event_opt
 	}
 
 	pub async fn next_event_async(&self) -> LiquidityEvent {
-		EventFuture { event_queue: Arc::clone(&self.queue), waker: Arc::clone(&self.waker) }.await
+		EventFuture {
+			queue_state: Arc::clone(&self.state),
+			waker: Arc::clone(&self.waker),
+			persist_notifier: Arc::clone(&self.persist_notifier),
+		}
+		.await
 	}
 
 	#[cfg(feature = "std")]
 	pub fn wait_next_event(&self) -> LiquidityEvent {
-		let mut queue = self
+		let mut state_lock = self
 			.condvar
-			.wait_while(self.queue.lock().unwrap(), |queue: &mut VecDeque<LiquidityEvent>| {
-				queue.is_empty()
+			.wait_while(self.state.lock().unwrap(), |state_lock: &mut QueueState| {
+				state_lock.queue.is_empty()
 			})
 			.unwrap();
 
-		let event = queue.pop_front().expect("non-empty queue");
-		let should_notify = !queue.is_empty();
+		let event = state_lock.queue.pop_front().expect("non-empty queue");
+		let should_notify = !state_lock.queue.is_empty();
+		state_lock.needs_persist = true;
 
-		drop(queue);
+		drop(state_lock);
 
 		if should_notify {
 			if let Some(waker) = self.waker.lock().unwrap().take() {
@@ -81,11 +105,28 @@ where
 			self.condvar.notify_one();
 		}
 
+		self.persist_notifier.notify();
+
 		event
 	}
 
 	pub fn get_and_clear_pending_events(&self) -> Vec<LiquidityEvent> {
-		self.queue.lock().unwrap().split_off(0).into()
+		let mut state_lock = self.state.lock().unwrap();
+
+		let needs_persist = !state_lock.queue.is_empty();
+		let events = state_lock.queue.split_off(0).into();
+
+		if needs_persist {
+			state_lock.needs_persist = true;
+		}
+
+		drop(state_lock);
+
+		if needs_persist {
+			self.persist_notifier.notify();
+		}
+
+		events
 	}
 
 	// Returns an [`EventQueueNotifierGuard`] that will notify about new event when dropped.
@@ -94,18 +135,36 @@ where
 	}
 
 	pub async fn persist(&self) -> Result<(), lightning::io::Error> {
-		let queue = self.queue.lock().unwrap();
-		let encoded = EventQueueSerWrapper(&queue).encode();
+		let fut = {
+			let mut state_lock = self.state.lock().unwrap();
 
-		self.kv_store
-			.write(
+			if !state_lock.needs_persist {
+				return Ok(());
+			}
+
+			state_lock.needs_persist = false;
+			let encoded = EventQueueSerWrapper(&state_lock.queue).encode();
+
+			self.kv_store.write(
 				LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 				LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_SECONDARY_NAMESPACE,
 				LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_KEY,
 				encoded,
 			)
-			.await
+		};
+
+		fut.await.map_err(|e| {
+			self.state.lock().unwrap().needs_persist = true;
+			e
+		})?;
+
+		Ok(())
 	}
+}
+
+struct QueueState {
+	queue: VecDeque<LiquidityEvent>,
+	needs_persist: bool,
 }
 
 // A guard type that will notify about new events when dropped.
@@ -119,9 +178,10 @@ where
 	K::Target: KVStore,
 {
 	pub fn enqueue<E: Into<LiquidityEvent>>(&self, event: E) {
-		let mut queue = self.0.queue.lock().unwrap();
-		if queue.len() < MAX_EVENT_QUEUE_SIZE {
-			queue.push_back(event.into());
+		let mut state_lock = self.0.state.lock().unwrap();
+		if state_lock.queue.len() < MAX_EVENT_QUEUE_SIZE {
+			state_lock.queue.push_back(event.into());
+			state_lock.needs_persist = true;
 		} else {
 			return;
 		}
@@ -133,7 +193,10 @@ where
 	K::Target: KVStore,
 {
 	fn drop(&mut self) {
-		let should_notify = !self.0.queue.lock().unwrap().is_empty();
+		let (should_notify, should_persist_notify) = {
+			let state_lock = self.0.state.lock().unwrap();
+			(!state_lock.queue.is_empty(), state_lock.needs_persist)
+		};
 
 		if should_notify {
 			if let Some(waker) = self.0.waker.lock().unwrap().take() {
@@ -143,12 +206,17 @@ where
 			#[cfg(feature = "std")]
 			self.0.condvar.notify_one();
 		}
+
+		if should_persist_notify {
+			self.0.persist_notifier.notify();
+		}
 	}
 }
 
 struct EventFuture {
-	event_queue: Arc<Mutex<VecDeque<LiquidityEvent>>>,
+	queue_state: Arc<Mutex<QueueState>>,
 	waker: Arc<Mutex<Option<Waker>>>,
+	persist_notifier: Arc<Notifier>,
 }
 
 impl Future for EventFuture {
@@ -157,12 +225,22 @@ impl Future for EventFuture {
 	fn poll(
 		self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>,
 	) -> core::task::Poll<Self::Output> {
-		if let Some(event) = self.event_queue.lock().unwrap().pop_front() {
-			Poll::Ready(event)
-		} else {
-			*self.waker.lock().unwrap() = Some(cx.waker().clone());
-			Poll::Pending
+		let (res, should_persist_notify) = {
+			let mut state_lock = self.queue_state.lock().unwrap();
+			if let Some(event) = state_lock.queue.pop_front() {
+				state_lock.needs_persist = true;
+				(Poll::Ready(event), true)
+			} else {
+				*self.waker.lock().unwrap() = Some(cx.waker().clone());
+				(Poll::Pending, false)
+			}
+		};
+
+		if should_persist_notify {
+			self.persist_notifier.notify();
 		}
+
+		res
 	}
 }
 
@@ -266,7 +344,8 @@ mod tests {
 		use std::time::Duration;
 
 		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
-		let event_queue = Arc::new(EventQueue::new(VecDeque::new(), kv_store));
+		let persist_notifier = Arc::new(Notifier::new());
+		let event_queue = Arc::new(EventQueue::new(VecDeque::new(), kv_store, persist_notifier));
 		assert_eq!(event_queue.next_event(), None);
 
 		let secp_ctx = Secp256k1::new();
