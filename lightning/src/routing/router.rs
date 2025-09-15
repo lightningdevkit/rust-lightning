@@ -350,23 +350,25 @@ where
 /// A data structure for tracking in-flight HTLCs. May be used during pathfinding to account for
 /// in-use channel liquidity.
 #[derive(Clone)]
-pub struct InFlightHtlcs(
+pub struct InFlightHtlcs {
 	// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
 	// is traveling in. The direction boolean is determined by checking if the HTLC source's public
 	// key is less than its destination. See `InFlightHtlcs::used_liquidity_msat` for more
 	// details.
-	HashMap<(u64, bool), u64>,
-);
+	unblinded_hops: HashMap<(u64, bool), u64>,
+}
 
 impl InFlightHtlcs {
 	/// Constructs an empty `InFlightHtlcs`.
-	#[rustfmt::skip]
-	pub fn new() -> Self { InFlightHtlcs(new_hash_map()) }
+	pub fn new() -> Self {
+		InFlightHtlcs { unblinded_hops: new_hash_map() }
+	}
 
 	/// Takes in a path with payer's node id and adds the path's details to `InFlightHtlcs`.
-	#[rustfmt::skip]
 	pub fn process_path(&mut self, path: &Path, payer_node_id: PublicKey) {
-		if path.hops.is_empty() { return };
+		if path.hops.is_empty() {
+			return;
+		}
 
 		let mut cumulative_msat = 0;
 		if let Some(tail) = &path.blinded_tail {
@@ -378,17 +380,17 @@ impl InFlightHtlcs {
 		// the router excludes the payer node. In the following lines, the payer's information is
 		// hardcoded with an inflight value of 0 so that we can correctly represent the first hop
 		// in our sliding window of two.
-		let reversed_hops_with_payer = path.hops.iter().rev().skip(1)
-			.map(|hop| hop.pubkey)
-			.chain(core::iter::once(payer_node_id));
+		let reversed_hops = path.hops.iter().rev().skip(1).map(|hop| hop.pubkey);
+		let reversed_hops_with_payer = reversed_hops.chain(core::iter::once(payer_node_id));
 
 		// Taking the reversed vector from above, we zip it with just the reversed hops list to
 		// work "backwards" of the given path, since the last hop's `fee_msat` actually represents
 		// the total amount sent.
 		for (next_hop, prev_hop) in path.hops.iter().rev().zip(reversed_hops_with_payer) {
 			cumulative_msat += next_hop.fee_msat;
-			self.0
-				.entry((next_hop.short_channel_id, NodeId::from_pubkey(&prev_hop) < NodeId::from_pubkey(&next_hop.pubkey)))
+			let direction = NodeId::from_pubkey(&prev_hop) < NodeId::from_pubkey(&next_hop.pubkey);
+			self.unblinded_hops
+				.entry((next_hop.short_channel_id, direction))
 				.and_modify(|used_liquidity_msat| *used_liquidity_msat += cumulative_msat)
 				.or_insert(cumulative_msat);
 		}
@@ -399,7 +401,7 @@ impl InFlightHtlcs {
 	pub fn add_inflight_htlc(
 		&mut self, source: &NodeId, target: &NodeId, channel_scid: u64, used_msat: u64,
 	) {
-		self.0
+		self.unblinded_hops
 			.entry((channel_scid, source < target))
 			.and_modify(|used_liquidity_msat| *used_liquidity_msat += used_msat)
 			.or_insert(used_msat);
@@ -410,19 +412,20 @@ impl InFlightHtlcs {
 	pub fn used_liquidity_msat(
 		&self, source: &NodeId, target: &NodeId, channel_scid: u64,
 	) -> Option<u64> {
-		self.0.get(&(channel_scid, source < target)).map(|v| *v)
+		self.unblinded_hops.get(&(channel_scid, source < target)).map(|v| *v)
 	}
 }
 
 impl Writeable for InFlightHtlcs {
-	#[rustfmt::skip]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.0.write(writer) }
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.unblinded_hops.write(writer)
+	}
 }
 
 impl Readable for InFlightHtlcs {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let infight_map: HashMap<(u64, bool), u64> = Readable::read(reader)?;
-		Ok(Self(infight_map))
+		let unblinded_hops: HashMap<(u64, bool), u64> = Readable::read(reader)?;
+		Ok(Self { unblinded_hops })
 	}
 }
 
@@ -8002,8 +8005,8 @@ mod tests {
 			}),
 		};
 		inflight_htlcs.process_path(&path, ln_test_utils::pubkey(44));
-		assert_eq!(*inflight_htlcs.0.get(&(42, true)).unwrap(), 301);
-		assert_eq!(*inflight_htlcs.0.get(&(43, false)).unwrap(), 201);
+		assert_eq!(*inflight_htlcs.unblinded_hops.get(&(42, true)).unwrap(), 301);
+		assert_eq!(*inflight_htlcs.unblinded_hops.get(&(43, false)).unwrap(), 201);
 	}
 
 	#[test]
