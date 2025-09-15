@@ -136,7 +136,8 @@ mod tests {
 		let pending_messages = Arc::new(MessageQueue::new(notifier));
 		let entropy_source = Arc::new(TestEntropy {});
 		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
-		let event_queue = Arc::new(EventQueue::new(VecDeque::new(), kv_store));
+		let persist_notifier = Arc::new(Notifier::new());
+		let event_queue = Arc::new(EventQueue::new(VecDeque::new(), kv_store, persist_notifier));
 
 		let lsps0_handler = Arc::new(LSPS0ClientHandler::new(
 			entropy_source,
