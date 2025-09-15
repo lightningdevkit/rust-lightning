@@ -588,6 +588,15 @@ pub struct InvoiceRequest {
 	signature: Signature,
 }
 
+#[cfg(not(test))]
+impl PartialEq for InvoiceRequest {
+	fn eq(&self, other: &Self) -> bool {
+		self.bytes.eq(&other.bytes) && self.signature.eq(&other.signature)
+	}
+}
+
+impl Eq for InvoiceRequest {}
+
 /// An [`InvoiceRequest`] that has been verified by [`InvoiceRequest::verify_using_metadata`] or
 /// [`InvoiceRequest::verify_using_recipient_data`] and exposes different ways to respond depending
 /// on whether the signing keys were derived.

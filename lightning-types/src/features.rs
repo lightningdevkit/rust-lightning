@@ -54,8 +54,7 @@
 //! - `SimpleClose` - requires/supports simplified closing negotiation
 //!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#closing-negotiation-closing_complete-and-closing_sig) for more information).
 //! - `OnionMessages` - requires/supports forwarding onion messages
-//!   (see [BOLT-7](https://github.com/lightning/bolts/pull/759/files) for more information).
-//     TODO: update link
+//!   (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md#onion-messages) for more information).
 //! - `ChannelType` - node supports the channel_type field in open/accept
 //!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `SCIDPrivacy` - supply channel aliases for routing
