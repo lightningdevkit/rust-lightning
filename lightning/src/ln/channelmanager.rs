@@ -8653,15 +8653,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn claim_funds_internal(
 		&self, source: HTLCSource, payment_preimage: PaymentPreimage,
 		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
-		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
-		next_channel_outpoint: OutPoint, next_channel_id: ChannelId,
-		next_user_channel_id: Option<u128>, attribution_data: Option<AttributionData>,
-		send_timestamp: Option<Duration>,
+		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
+		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
+		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
 	) {
-		debug_assert_eq!(
-			startup_replay,
-			!self.background_events_processed_since_startup.load(Ordering::Acquire)
-		);
+		let startup_replay =
+			!self.background_events_processed_since_startup.load(Ordering::Acquire);
 		let htlc_id = SentHTLCId::from_source(&source);
 		match source {
 			HTLCSource::OutboundRoute {
@@ -10509,7 +10506,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			Some(forwarded_htlc_value),
 			skimmed_fee_msat,
 			false,
-			false,
 			*counterparty_node_id,
 			funding_txo,
 			msg.channel_id,
@@ -11383,7 +11379,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								htlc_update.htlc_value_satoshis.map(|v| v * 1000),
 								None,
 								true,
-								false,
 								counterparty_node_id,
 								funding_outpoint,
 								channel_id,
@@ -17497,7 +17492,6 @@ where
 				Some(downstream_value),
 				None,
 				downstream_closed,
-				true,
 				downstream_node_id,
 				downstream_funding,
 				downstream_channel_id,
