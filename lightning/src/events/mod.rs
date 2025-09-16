@@ -1523,7 +1523,7 @@ pub enum Event {
 	/// To accept the request (and in the case of a dual-funded channel, not contribute funds),
 	/// call [`ChannelManager::accept_inbound_channel`].
 	/// To reject the request, call [`ChannelManager::force_close_broadcasting_latest_txn`].
-	/// Note that a ['ChannelClosed`] event will _not_ be triggered if the channel is rejected.
+	/// Note that a [`ChannelClosed`] event will _not_ be triggered if the channel is rejected.
 	///
 	/// The event is only triggered when a new open channel request is received and the
 	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true.
@@ -1533,6 +1533,7 @@ pub enum Event {
 	/// returning `Err(ReplayEvent ())`) and won't be persisted across restarts.
 	///
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+	/// [`ChannelClosed`]: Event::ChannelClosed
 	/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
 	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 	OpenChannelRequest {

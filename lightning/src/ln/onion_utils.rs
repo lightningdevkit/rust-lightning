@@ -1590,7 +1590,7 @@ pub enum LocalHTLCFailureReason {
 	/// The HTLC expires too far in the future, so it is rejected to avoid the worst-case outcome
 	/// of funds being held for extended periods of time.
 	///
-	/// Limit set by ['crate::ln::channelmanager::CLTV_FAR_FAR_AWAY`].
+	// Limit set by [`crate::ln::channelmanager::CLTV_FAR_FAR_AWAY`].
 	CLTVExpiryTooFar,
 	/// The HTLC payload contained in the onion packet could not be understood by our node.
 	InvalidOnionPayload,

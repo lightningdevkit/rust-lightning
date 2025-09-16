@@ -2502,7 +2502,7 @@ where
 /// [`get_event_or_persistence_needed_future`]: Self::get_event_or_persistence_needed_future
 /// [`lightning-block-sync`]: https://docs.rs/lightning_block_sync/latest/lightning_block_sync
 /// [`lightning-transaction-sync`]: https://docs.rs/lightning_transaction_sync/latest/lightning_transaction_sync
-/// [`lightning-background-processor`]: https://docs.rs/lightning_background_processor/lightning_background_processor
+/// [`lightning-background-processor`]: https://docs.rs/lightning-background-processor/latest/lightning_background_processor
 /// [`list_channels`]: Self::list_channels
 /// [`list_usable_channels`]: Self::list_usable_channels
 /// [`create_channel`]: Self::create_channel
@@ -4123,7 +4123,7 @@ where
 				)
 			};
 			let chan_by_id = peer_state.channel_by_id.iter();
-			return chan_by_id.map(|(_, chan)| (chan)).map(channel_to_details).collect();
+			return chan_by_id.map(|(_, chan)| chan).map(channel_to_details).collect();
 		}
 		vec![]
 	}
@@ -4286,7 +4286,7 @@ where
 	///
 	/// The `shutdown_script` provided  will be used as the `scriptPubKey` for the closing transaction.
 	/// Will fail if a shutdown script has already been set for this channel by
-	/// ['ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`]. The given shutdown script must
+	/// [`ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`]. The given shutdown script must
 	/// also be compatible with our and the counterparty's features.
 	///
 	/// May generate a [`SendShutdown`] message event on success, which should be relayed.
@@ -4298,6 +4298,7 @@ where
 	///
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
 	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
+	/// [`ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`]: crate::util::config::ChannelHandshakeConfig::commit_upfront_shutdown_pubkey
 	/// [`SendShutdown`]: MessageSendEvent::SendShutdown
 	pub fn close_channel_with_feerate_and_script(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,

@@ -35,22 +35,20 @@ impl LSPSUrl {
 		}
 
 		let (scheme, remainder) =
-			url_str.split_once("://").ok_or_else(|| (LSPS5ProtocolError::UrlParse))?;
+			url_str.split_once("://").ok_or_else(|| LSPS5ProtocolError::UrlParse)?;
 
 		if !scheme.eq_ignore_ascii_case("https") {
 			return Err(LSPS5ProtocolError::UnsupportedProtocol);
 		}
 
-		let host_section = remainder
-			.split(['/', '?', '#'])
-			.next()
-			.ok_or_else(|| (LSPS5ProtocolError::UrlParse))?;
+		let host_section =
+			remainder.split(['/', '?', '#']).next().ok_or_else(|| LSPS5ProtocolError::UrlParse)?;
 
 		let host_without_auth = host_section
 			.split('@')
 			.next_back()
 			.filter(|s| !s.is_empty())
-			.ok_or_else(|| (LSPS5ProtocolError::UrlParse))?;
+			.ok_or_else(|| LSPS5ProtocolError::UrlParse)?;
 
 		if host_without_auth.is_empty()
 			|| host_without_auth.chars().any(|c| !Self::is_valid_host_char(c))

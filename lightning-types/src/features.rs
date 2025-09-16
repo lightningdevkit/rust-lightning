@@ -831,7 +831,7 @@ impl FeatureFlags {
 	/// Fetches an iterator over the bytes of this [`FeatureFlags`]
 	pub fn iter(
 		&self,
-	) -> (impl Clone + ExactSizeIterator<Item = &u8> + DoubleEndedIterator<Item = &u8>) {
+	) -> impl Clone + ExactSizeIterator<Item = &u8> + DoubleEndedIterator<Item = &u8> {
 		let slice = self.deref();
 		slice.iter()
 	}
@@ -839,7 +839,7 @@ impl FeatureFlags {
 	/// Fetches a mutable iterator over the bytes of this [`FeatureFlags`]
 	pub fn iter_mut(
 		&mut self,
-	) -> (impl ExactSizeIterator<Item = &mut u8> + DoubleEndedIterator<Item = &mut u8>) {
+	) -> impl ExactSizeIterator<Item = &mut u8> + DoubleEndedIterator<Item = &mut u8> {
 		let slice = self.deref_mut();
 		slice.iter_mut()
 	}
