@@ -345,6 +345,11 @@ impl ConstructedTransaction {
 	}
 
 	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
+		let (contributed_inputs, contributed_outputs) = self.into_contributed_inputs_and_outputs();
+		NegotiationError { reason, contributed_inputs, contributed_outputs }
+	}
+
+	fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
 		let contributed_inputs = self
 			.tx
 			.input
@@ -371,7 +376,7 @@ impl ConstructedTransaction {
 			.map(|(_, (txout, _))| txout)
 			.collect();
 
-		NegotiationError { reason, contributed_inputs, contributed_outputs }
+		(contributed_inputs, contributed_outputs)
 	}
 
 	pub fn tx(&self) -> &Transaction {
@@ -851,6 +856,10 @@ impl InteractiveTxSigningSession {
 
 	pub(crate) fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
 		self.unsigned_tx.into_negotiation_error(reason)
+	}
+
+	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
+		self.unsigned_tx.into_contributed_inputs_and_outputs()
 	}
 }
 
@@ -1885,6 +1894,7 @@ impl InteractiveTxInput {
 
 pub(super) struct InteractiveTxConstructor {
 	state_machine: StateMachine,
+	is_initiator: bool,
 	initiator_first_message: Option<InteractiveTxMessageSend>,
 	channel_id: ChannelId,
 	inputs_to_contribute: Vec<(SerialId, InputOwned)>,
@@ -2047,6 +2057,7 @@ impl InteractiveTxConstructor {
 
 		let mut constructor = Self {
 			state_machine,
+			is_initiator,
 			initiator_first_message: None,
 			channel_id,
 			inputs_to_contribute,
@@ -2069,21 +2080,28 @@ impl InteractiveTxConstructor {
 	}
 
 	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
-		NegotiationError {
-			reason,
-			contributed_inputs: self
-				.inputs_to_contribute
-				.into_iter()
-				.filter(|(_, input)| !input.is_shared())
-				.map(|(_, input)| input.into_tx_in().previous_output)
-				.collect(),
-			contributed_outputs: self
-				.outputs_to_contribute
-				.into_iter()
-				.filter(|(_, output)| !output.is_shared())
-				.map(|(_, output)| output.into_tx_out())
-				.collect(),
-		}
+		let (contributed_inputs, contributed_outputs) = self.into_contributed_inputs_and_outputs();
+		NegotiationError { reason, contributed_inputs, contributed_outputs }
+	}
+
+	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
+		let contributed_inputs = self
+			.inputs_to_contribute
+			.into_iter()
+			.filter(|(_, input)| !input.is_shared())
+			.map(|(_, input)| input.into_tx_in().previous_output)
+			.collect();
+		let contributed_outputs = self
+			.outputs_to_contribute
+			.into_iter()
+			.filter(|(_, output)| !output.is_shared())
+			.map(|(_, output)| output.into_tx_out())
+			.collect();
+		(contributed_inputs, contributed_outputs)
+	}
+
+	pub fn is_initiator(&self) -> bool {
+		self.is_initiator
 	}
 
 	pub fn take_initiator_first_message(&mut self) -> Option<InteractiveTxMessageSend> {

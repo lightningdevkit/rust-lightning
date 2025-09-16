@@ -1054,6 +1054,29 @@ pub fn get_err_msg(node: &Node, recipient: &PublicKey) -> msgs::ErrorMessage {
 	}
 }
 
+/// Get a warning message from the pending events queue.
+pub fn get_warning_msg(node: &Node, recipient: &PublicKey) -> msgs::WarningMessage {
+	let events = node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::DisconnectPeerWithWarning { ref msg },
+			ref node_id,
+		} => {
+			assert_eq!(node_id, recipient);
+			(*msg).clone()
+		},
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::SendWarningMessage { ref msg, .. },
+			ref node_id,
+		} => {
+			assert_eq!(node_id, recipient);
+			msg.clone()
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
 /// Get a specific event from the pending events queue.
 #[macro_export]
 macro_rules! get_event {

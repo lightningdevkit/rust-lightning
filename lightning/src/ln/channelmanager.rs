@@ -61,7 +61,8 @@ use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, FundedChannel,
 	FundingTxSigned, InboundV1Channel, OutboundV1Channel, PendingV2Channel, ReconnectionMsg,
-	ShutdownResult, StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
+	ShutdownResult, SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch,
+	WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::SpliceContribution;
@@ -931,6 +932,7 @@ struct MsgHandleErrInternal {
 	err: msgs::LightningError,
 	closes_channel: bool,
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
+	tx_abort: Option<msgs::TxAbort>,
 }
 impl MsgHandleErrInternal {
 	fn send_err_msg_no_close(err: String, channel_id: ChannelId) -> Self {
@@ -943,11 +945,12 @@ impl MsgHandleErrInternal {
 			},
 			closes_channel: false,
 			shutdown_finish: None,
+			tx_abort: None,
 		}
 	}
 
 	fn from_no_close(err: msgs::LightningError) -> Self {
-		Self { err, closes_channel: false, shutdown_finish: None }
+		Self { err, closes_channel: false, shutdown_finish: None, tx_abort: None }
 	}
 
 	fn from_finish_shutdown(
@@ -967,10 +970,15 @@ impl MsgHandleErrInternal {
 			err: LightningError { err, action },
 			closes_channel: true,
 			shutdown_finish: Some((shutdown_res, channel_update)),
+			tx_abort: None,
 		}
 	}
 
 	fn from_chan_no_close(err: ChannelError, channel_id: ChannelId) -> Self {
+		let tx_abort = match &err {
+			&ChannelError::Abort(reason) => Some(reason.into_tx_abort_msg(channel_id)),
+			_ => None,
+		};
 		let err = match err {
 			ChannelError::Warn(msg) => LightningError {
 				err: msg.clone(),
@@ -988,6 +996,9 @@ impl MsgHandleErrInternal {
 			ChannelError::Ignore(msg) => {
 				LightningError { err: msg, action: msgs::ErrorAction::IgnoreError }
 			},
+			ChannelError::Abort(reason) => {
+				LightningError { err: reason.to_string(), action: msgs::ErrorAction::IgnoreError }
+			},
 			ChannelError::Close((msg, _)) | ChannelError::SendError(msg) => LightningError {
 				err: msg.clone(),
 				action: msgs::ErrorAction::SendErrorMessage {
@@ -995,7 +1006,7 @@ impl MsgHandleErrInternal {
 				},
 			},
 		};
-		Self { err, closes_channel: false, shutdown_finish: None }
+		Self { err, closes_channel: false, shutdown_finish: None, tx_abort }
 	}
 
 	fn dont_send_error_message(&mut self) {
@@ -3210,7 +3221,7 @@ macro_rules! handle_error {
 
 		match $internal {
 			Ok(msg) => Ok(msg),
-			Err(MsgHandleErrInternal { err, shutdown_finish, .. }) => {
+			Err(MsgHandleErrInternal { err, shutdown_finish, tx_abort, .. }) => {
 				let mut msg_event = None;
 
 				if let Some((shutdown_res, update_option)) = shutdown_finish {
@@ -3233,6 +3244,12 @@ macro_rules! handle_error {
 				}
 
 				if let msgs::ErrorAction::IgnoreError = err.action {
+					if let Some(tx_abort) = tx_abort {
+						msg_event = Some(MessageSendEvent::SendTxAbort {
+							node_id: $counterparty_node_id,
+							msg: tx_abort,
+						});
+					}
 				} else {
 					msg_event = Some(MessageSendEvent::HandleError {
 						node_id: $counterparty_node_id,
@@ -3329,6 +3346,9 @@ macro_rules! convert_channel_err {
 			},
 			ChannelError::Ignore(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id))
+			},
+			ChannelError::Abort(reason) => {
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Abort(reason), $channel_id))
 			},
 			ChannelError::Close((msg, reason)) => {
 				let (mut shutdown_res, chan_update) = $close(reason);
@@ -10270,11 +10290,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	fn internal_tx_msg<
-		HandleTxMsgFn: Fn(&mut Channel<SP>) -> Result<InteractiveTxMessageSend, msgs::TxAbort>,
+		HandleTxMsgFn: Fn(
+			&mut Channel<SP>,
+		) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)>,
 	>(
 		&self, counterparty_node_id: &PublicKey, channel_id: ChannelId,
 		tx_msg_handler: HandleTxMsgFn,
-	) -> Result<(), MsgHandleErrInternal> {
+	) -> Result<NotifyOption, MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 			debug_assert!(false);
@@ -10288,17 +10310,28 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let channel = chan_entry.get_mut();
-				let msg_send_event = match tx_msg_handler(channel) {
-					Ok(msg_send) => msg_send.into_msg_send_event(*counterparty_node_id),
-					Err(tx_abort) => {
-						MessageSendEvent::SendTxAbort {
-							node_id: *counterparty_node_id,
-							msg: tx_abort,
-						}
+				match tx_msg_handler(channel) {
+					Ok(msg_send) => {
+						let msg_send_event = msg_send.into_msg_send_event(*counterparty_node_id);
+						peer_state.pending_msg_events.push(msg_send_event);
+						Ok(NotifyOption::SkipPersistHandleEvents)
 					},
-				};
-				peer_state.pending_msg_events.push(msg_send_event);
-				Ok(())
+					Err((error, splice_funding_failed)) => {
+						if let Some(splice_funding_failed) = splice_funding_failed {
+							let pending_events = &mut self.pending_events.lock().unwrap();
+							pending_events.push_back((events::Event::SpliceFailed {
+								channel_id,
+								counterparty_node_id: *counterparty_node_id,
+								user_channel_id: channel.context().get_user_id(),
+								abandoned_funding_txo: splice_funding_failed.funding_txo,
+								channel_type: splice_funding_failed.channel_type.clone(),
+								contributed_inputs: splice_funding_failed.contributed_inputs,
+								contributed_outputs: splice_funding_failed.contributed_outputs,
+							}, None));
+						}
+						Err(MsgHandleErrInternal::from_chan_no_close(error, channel_id))
+					},
+				}
 			},
 			hash_map::Entry::Vacant(_) => {
 				Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
@@ -10311,7 +10344,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_add_input(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput,
-	) -> Result<(), MsgHandleErrInternal> {
+	) -> Result<NotifyOption, MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_add_input(msg, &self.logger)
 		})
@@ -10319,7 +10352,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_add_output(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput,
-	) -> Result<(), MsgHandleErrInternal> {
+	) -> Result<NotifyOption, MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_add_output(msg, &self.logger)
 		})
@@ -10327,7 +10360,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_remove_input(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput,
-	) -> Result<(), MsgHandleErrInternal> {
+	) -> Result<NotifyOption, MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_remove_input(msg, &self.logger)
 		})
@@ -10335,14 +10368,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_remove_output(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput,
-	) -> Result<(), MsgHandleErrInternal> {
+	) -> Result<NotifyOption, MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_remove_output(msg, &self.logger)
 		})
 	}
 
 	#[rustfmt::skip]
-	fn internal_tx_complete(&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete) -> Result<(), MsgHandleErrInternal> {
+	fn internal_tx_complete(&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete) -> Result<NotifyOption, MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
 			.ok_or_else(|| {
@@ -10358,6 +10391,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let chan = chan_entry.get_mut();
 				match chan.tx_complete(msg, &self.logger) {
 					Ok((interactive_tx_msg_send, commitment_signed)) => {
+						let persist = if interactive_tx_msg_send.is_some() || commitment_signed.is_some() {
+							NotifyOption::SkipPersistHandleEvents
+						} else {
+							NotifyOption::SkipPersistNoEvents
+						};
 						if let Some(interactive_tx_msg_send) = interactive_tx_msg_send {
 							let msg_send_event = interactive_tx_msg_send.into_msg_send_event(counterparty_node_id);
 							peer_state.pending_msg_events.push(msg_send_event);
@@ -10376,15 +10414,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								},
 							});
 						}
+						Ok(persist)
 					},
-					Err(tx_abort) => {
-						peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
-							node_id: counterparty_node_id,
-							msg: tx_abort,
-						});
+					Err((error, splice_funding_failed)) => {
+						if let Some(splice_funding_failed) = splice_funding_failed {
+							let pending_events = &mut self.pending_events.lock().unwrap();
+							pending_events.push_back((events::Event::SpliceFailed {
+								channel_id: msg.channel_id,
+								counterparty_node_id,
+								user_channel_id: chan.context().get_user_id(),
+								abandoned_funding_txo: splice_funding_failed.funding_txo,
+								channel_type: splice_funding_failed.channel_type.clone(),
+								contributed_inputs: splice_funding_failed.contributed_inputs,
+								contributed_outputs: splice_funding_failed.contributed_outputs,
+							}, None));
+						}
+						Err(MsgHandleErrInternal::from_chan_no_close(error, msg.channel_id))
 					},
 				}
-				Ok(())
 			},
 			hash_map::Entry::Vacant(_) => {
 				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -14741,57 +14788,62 @@ where
 	}
 
 	fn handle_tx_add_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput) {
-		// Note that we never need to persist the updated ChannelManager for an inbound
-		// tx_add_input message - interactive transaction construction does not need to
-		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_add_input(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(_) => NotifyOption::DoPersist,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 
 	fn handle_tx_add_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput) {
-		// Note that we never need to persist the updated ChannelManager for an inbound
-		// tx_add_output message - interactive transaction construction does not need to
-		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_add_output(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(_) => NotifyOption::DoPersist,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 
 	fn handle_tx_remove_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput) {
-		// Note that we never need to persist the updated ChannelManager for an inbound
-		// tx_remove_input message - interactive transaction construction does not need to
-		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_remove_input(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(_) => NotifyOption::DoPersist,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 
 	fn handle_tx_remove_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput) {
-		// Note that we never need to persist the updated ChannelManager for an inbound
-		// tx_remove_output message - interactive transaction construction does not need to
-		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_remove_output(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(_) => NotifyOption::DoPersist,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 
 	fn handle_tx_complete(&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete) {
-		// Note that we never need to persist the updated ChannelManager for an inbound
-		// tx_complete message - interactive transaction construction does not need to
-		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_complete(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(_) => NotifyOption::DoPersist,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 

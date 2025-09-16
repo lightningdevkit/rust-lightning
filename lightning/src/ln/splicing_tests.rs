@@ -21,6 +21,7 @@ use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSe
 use crate::ln::types::ChannelId;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
+use crate::util::test_channel_signer::SignerOp;
 
 use bitcoin::{Amount, OutPoint as BitcoinOutPoint, ScriptBuf, Transaction, TxOut};
 
@@ -68,6 +69,21 @@ fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	initiator_contribution: SpliceContribution,
 ) -> msgs::CommitmentSigned {
+	let new_funding_script =
+		complete_splice_handshake(initiator, acceptor, channel_id, initiator_contribution.clone());
+	complete_interactive_funding_negotiation(
+		initiator,
+		acceptor,
+		channel_id,
+		initiator_contribution,
+		new_funding_script,
+	)
+}
+
+fn complete_splice_handshake<'a, 'b, 'c, 'd>(
+	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
+	initiator_contribution: SpliceContribution,
+) -> ScriptBuf {
 	let node_id_initiator = initiator.node.get_our_node_id();
 	let node_id_acceptor = acceptor.node.get_our_node_id();
 
@@ -76,7 +92,7 @@ fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
 		.splice_channel(
 			&channel_id,
 			&node_id_acceptor,
-			initiator_contribution.clone(),
+			initiator_contribution,
 			FEERATE_FLOOR_SATS_PER_KW,
 			None,
 		)
@@ -98,13 +114,7 @@ fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
 	)
 	.to_p2wsh();
 
-	complete_interactive_funding_negotiation(
-		initiator,
-		acceptor,
-		channel_id,
-		initiator_contribution,
-		new_funding_script,
-	)
+	new_funding_script
 }
 
 fn complete_interactive_funding_negotiation<'a, 'b, 'c, 'd>(
@@ -249,8 +259,16 @@ fn splice_channel<'a, 'b, 'c, 'd>(
 	let node_id_initiator = initiator.node.get_our_node_id();
 	let node_id_acceptor = acceptor.node.get_our_node_id();
 
-	let initial_commit_sig_for_acceptor =
-		negotiate_splice_tx(initiator, acceptor, channel_id, initiator_contribution);
+	let new_funding_script =
+		complete_splice_handshake(initiator, acceptor, channel_id, initiator_contribution.clone());
+
+	let initial_commit_sig_for_acceptor = complete_interactive_funding_negotiation(
+		initiator,
+		acceptor,
+		channel_id,
+		initiator_contribution,
+		new_funding_script,
+	);
 	sign_interactive_funding_transaction(initiator, acceptor, initial_commit_sig_for_acceptor);
 
 	let splice_tx = {
@@ -1122,4 +1140,150 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 	nodes[1]
 		.chain_source
 		.remove_watched_txn_and_outputs(prev_funding_outpoint, prev_funding_script);
+}
+
+#[test]
+fn disconnect_on_unexpected_interactive_tx_message() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let config = test_default_anchors_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+
+	let _node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+	let splice_in_amount = initial_channel_capacity / 2;
+	let contribution = SpliceContribution::SpliceIn {
+		value: Amount::from_sat(splice_in_amount),
+		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
+		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	};
+
+	// Complete interactive-tx construction, but fail by having the acceptor send a duplicate
+	// tx_complete instead of commitment_signed.
+	let _ = negotiate_splice_tx(initiator, acceptor, channel_id, contribution.clone());
+
+	let mut msg_events = acceptor.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::UpdateHTLCs { .. }));
+
+	let tx_complete = msgs::TxComplete { channel_id };
+	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
+
+	let _warning = get_warning_msg(initiator, &node_id_acceptor);
+}
+
+#[test]
+fn fail_splice_on_interactive_tx_error() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let config = test_default_anchors_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+	let splice_in_amount = initial_channel_capacity / 2;
+	let contribution = SpliceContribution::SpliceIn {
+		value: Amount::from_sat(splice_in_amount),
+		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
+		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	};
+
+	// Fail during interactive-tx construction by having the acceptor echo back tx_add_input instead
+	// of sending tx_complete. The failure occurs because the serial id will have the wrong parity.
+	let _ = complete_splice_handshake(initiator, acceptor, channel_id, contribution.clone());
+
+	let tx_add_input =
+		get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
+	acceptor.node.handle_tx_add_input(node_id_initiator, &tx_add_input);
+
+	let _tx_complete =
+		get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
+	initiator.node.handle_tx_add_input(node_id_acceptor, &tx_add_input);
+
+	let event = get_event!(initiator, Event::SpliceFailed);
+	match event {
+		Event::SpliceFailed { contributed_inputs, .. } => {
+			assert_eq!(contributed_inputs.len(), 1);
+			assert_eq!(contributed_inputs[0], contribution.inputs()[0].outpoint());
+		},
+		_ => panic!("Expected Event::SpliceFailed"),
+	}
+
+	let tx_abort = get_event_msg!(initiator, MessageSendEvent::SendTxAbort, node_id_acceptor);
+	acceptor.node.handle_tx_abort(node_id_initiator, &tx_abort);
+
+	let tx_abort = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
+	initiator.node.handle_tx_abort(node_id_acceptor, &tx_abort);
+
+	// Fail signing the commitment transaction, which prevents the initiator from sending
+	// tx_complete.
+	initiator.disable_channel_signer_op(
+		&node_id_acceptor,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+	let _ = complete_splice_handshake(initiator, acceptor, channel_id, contribution.clone());
+
+	let tx_add_input =
+		get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
+	acceptor.node.handle_tx_add_input(node_id_initiator, &tx_add_input);
+
+	let tx_complete = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
+	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
+
+	let tx_add_input =
+		get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
+	acceptor.node.handle_tx_add_input(node_id_initiator, &tx_add_input);
+
+	let tx_complete = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
+	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
+
+	let tx_add_output =
+		get_event_msg!(initiator, MessageSendEvent::SendTxAddOutput, node_id_acceptor);
+	acceptor.node.handle_tx_add_output(node_id_initiator, &tx_add_output);
+
+	let tx_complete = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
+	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
+
+	let tx_add_output =
+		get_event_msg!(initiator, MessageSendEvent::SendTxAddOutput, node_id_acceptor);
+	acceptor.node.handle_tx_add_output(node_id_initiator, &tx_add_output);
+
+	let tx_complete = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
+	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
+
+	let event = get_event!(initiator, Event::SpliceFailed);
+	match event {
+		Event::SpliceFailed { contributed_inputs, .. } => {
+			assert_eq!(contributed_inputs.len(), 1);
+			assert_eq!(contributed_inputs[0], contribution.inputs()[0].outpoint());
+		},
+		_ => panic!("Expected Event::SpliceFailed"),
+	}
+
+	let tx_abort = get_event_msg!(initiator, MessageSendEvent::SendTxAbort, node_id_acceptor);
+	acceptor.node.handle_tx_abort(node_id_initiator, &tx_abort);
+
+	let tx_abort = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
+	initiator.node.handle_tx_abort(node_id_acceptor, &tx_abort);
 }

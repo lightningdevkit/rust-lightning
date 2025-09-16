@@ -204,6 +204,11 @@ impl FundingTxInput {
 		FundingTxInput::new(prevtx, vout, Weight::ZERO, Script::is_p2pkh)
 	}
 
+	/// The outpoint of the UTXO being spent.
+	pub fn outpoint(&self) -> bitcoin::OutPoint {
+		self.utxo.outpoint
+	}
+
 	/// The sequence number to use in the [`TxIn`].
 	///
 	/// [`TxIn`]: bitcoin::TxIn

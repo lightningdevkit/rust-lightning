@@ -920,6 +920,7 @@ pub(super) enum ChannelError {
 	Ignore(String),
 	Warn(String),
 	WarnAndDisconnect(String),
+	Abort(AbortReason),
 	Close((String, ClosureReason)),
 	SendError(String),
 }
@@ -932,6 +933,7 @@ impl fmt::Debug for ChannelError {
 			&ChannelError::WarnAndDisconnect(ref e) => {
 				write!(f, "Disconnecting with warning: {}", e)
 			},
+			&ChannelError::Abort(ref reason) => write!(f, "Abort: {}", reason),
 			&ChannelError::Close((ref e, _)) => write!(f, "Close: {}", e),
 			&ChannelError::SendError(ref e) => write!(f, "Not Found: {}", e),
 		}
@@ -944,6 +946,7 @@ impl fmt::Display for ChannelError {
 			&ChannelError::Ignore(ref e) => write!(f, "{}", e),
 			&ChannelError::Warn(ref e) => write!(f, "{}", e),
 			&ChannelError::WarnAndDisconnect(ref e) => write!(f, "{}", e),
+			&ChannelError::Abort(ref reason) => write!(f, "{}", reason),
 			&ChannelError::Close((ref e, _)) => write!(f, "{}", e),
 			&ChannelError::SendError(ref e) => write!(f, "{}", e),
 		}
@@ -1680,110 +1683,132 @@ where
 
 	fn fail_interactive_tx_negotiation<L: Deref>(
 		&mut self, reason: AbortReason, logger: &L,
-	) -> msgs::TxAbort
+	) -> (ChannelError, Option<SpliceFundingFailed>)
 	where
 		L::Target: Logger,
 	{
 		let logger = WithChannelContext::from(logger, &self.context(), None);
 		log_info!(logger, "Failed interactive transaction negotiation: {reason}");
 
-		match &mut self.phase {
+		let splice_funding_failed = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {},
+			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => None,
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
 				pending_v2_channel.interactive_tx_constructor.take();
+				None
 			},
 			ChannelPhase::Funded(funded_channel) => {
 				if funded_channel.should_reset_pending_splice_state() {
-					funded_channel.reset_pending_splice_state();
+					funded_channel.reset_pending_splice_state()
 				} else {
 					debug_assert!(false, "We should never fail an interactive funding negotiation once we're exchanging tx_signatures");
+					None
 				}
 			},
 		};
 
-		reason.into_tx_abort_msg(self.context().channel_id)
+		(ChannelError::Abort(reason), splice_funding_failed)
 	}
 
 	pub fn tx_add_input<L: Deref>(
 		&mut self, msg: &msgs::TxAddInput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)>
 	where
 		L::Target: Logger,
 	{
 		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor.handle_tx_add_input(msg),
-			None => Err(AbortReason::InternalError(
-				"Received unexpected interactive transaction negotiation message",
+			Some(interactive_tx_constructor) => interactive_tx_constructor
+				.handle_tx_add_input(msg)
+				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
+			None => Err((
+				ChannelError::WarnAndDisconnect(
+					"Received unexpected interactive transaction negotiation message".to_owned(),
+				),
+				None,
 			)),
 		}
-		.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))
 	}
 
 	pub fn tx_add_output<L: Deref>(
 		&mut self, msg: &msgs::TxAddOutput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)>
 	where
 		L::Target: Logger,
 	{
 		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => {
-				interactive_tx_constructor.handle_tx_add_output(msg)
-			},
-			None => Err(AbortReason::InternalError(
-				"Received unexpected interactive transaction negotiation message",
+			Some(interactive_tx_constructor) => interactive_tx_constructor
+				.handle_tx_add_output(msg)
+				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
+			None => Err((
+				ChannelError::WarnAndDisconnect(
+					"Received unexpected interactive transaction negotiation message".to_owned(),
+				),
+				None,
 			)),
 		}
-		.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))
 	}
 
 	pub fn tx_remove_input<L: Deref>(
 		&mut self, msg: &msgs::TxRemoveInput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)>
 	where
 		L::Target: Logger,
 	{
 		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => {
-				interactive_tx_constructor.handle_tx_remove_input(msg)
-			},
-			None => Err(AbortReason::InternalError(
-				"Received unexpected interactive transaction negotiation message",
+			Some(interactive_tx_constructor) => interactive_tx_constructor
+				.handle_tx_remove_input(msg)
+				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
+			None => Err((
+				ChannelError::WarnAndDisconnect(
+					"Received unexpected interactive transaction negotiation message".to_owned(),
+				),
+				None,
 			)),
 		}
-		.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))
 	}
 
 	pub fn tx_remove_output<L: Deref>(
 		&mut self, msg: &msgs::TxRemoveOutput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)>
 	where
 		L::Target: Logger,
 	{
 		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => {
-				interactive_tx_constructor.handle_tx_remove_output(msg)
-			},
-			None => Err(AbortReason::InternalError(
-				"Received unexpected interactive transaction negotiation message",
+			Some(interactive_tx_constructor) => interactive_tx_constructor
+				.handle_tx_remove_output(msg)
+				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
+			None => Err((
+				ChannelError::WarnAndDisconnect(
+					"Received unexpected interactive transaction negotiation message".to_owned(),
+				),
+				None,
 			)),
 		}
-		.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))
 	}
 
 	pub fn tx_complete<L: Deref>(
 		&mut self, msg: &msgs::TxComplete, logger: &L,
-	) -> Result<(Option<InteractiveTxMessageSend>, Option<msgs::CommitmentSigned>), msgs::TxAbort>
+	) -> Result<
+		(Option<InteractiveTxMessageSend>, Option<msgs::CommitmentSigned>),
+		(ChannelError, Option<SpliceFundingFailed>),
+	>
 	where
 		L::Target: Logger,
 	{
 		let tx_complete_action = match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor.handle_tx_complete(msg),
-			None => Err(AbortReason::InternalError(
-				"Received unexpected interactive transaction negotiation message",
-			)),
-		}
-		.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))?;
+			Some(interactive_tx_constructor) => interactive_tx_constructor
+				.handle_tx_complete(msg)
+				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))?,
+			None => {
+				return Err((
+					ChannelError::WarnAndDisconnect(
+						"Received unexpected interactive transaction negotiation message"
+							.to_owned(),
+					),
+					None,
+				))
+			},
+		};
 
 		let (interactive_tx_msg_send, negotiation_complete) = match tx_complete_action {
 			HandleTxCompleteValue::SendTxMessage(interactive_tx_msg_send) => {
@@ -1834,8 +1859,13 @@ where
 					));
 				}
 				if funded_channel.should_reset_pending_splice_state() {
-					let has_funding_negotiation = funded_channel.reset_pending_splice_state();
+					let has_funding_negotiation = funded_channel
+						.pending_splice
+						.as_ref()
+						.map(|pending_splice| pending_splice.funding_negotiation.is_some())
+						.unwrap_or(false);
 					debug_assert!(has_funding_negotiation);
+					funded_channel.reset_pending_splice_state();
 					true
 				} else {
 					// We were not tracking the pending funding negotiation state anymore, likely
@@ -1931,7 +1961,8 @@ where
 								interactive_tx_constructor,
 							} = funding_negotiation
 							{
-								Some((funding, interactive_tx_constructor))
+								let is_initiator = interactive_tx_constructor.is_initiator();
+								Some((is_initiator, funding, interactive_tx_constructor))
 							} else {
 								// Replace the taken state for later error handling
 								pending_splice.funding_negotiation = Some(funding_negotiation);
@@ -1943,7 +1974,7 @@ where
 								"Got a tx_complete message in an invalid state",
 							)
 						})
-						.and_then(|(mut funding, interactive_tx_constructor)| {
+						.and_then(|(is_initiator, mut funding, interactive_tx_constructor)| {
 							match chan.context.funding_tx_constructed(
 								&mut funding,
 								funding_outpoint,
@@ -1954,7 +1985,10 @@ where
 								Ok(commitment_signed) => {
 									// Advance the state
 									pending_splice.funding_negotiation =
-										Some(FundingNegotiation::AwaitingSignatures { funding });
+										Some(FundingNegotiation::AwaitingSignatures {
+											is_initiator,
+											funding,
+										});
 									Ok((interactive_tx_constructor, commitment_signed))
 								},
 								Err(e) => {
@@ -2558,12 +2592,14 @@ enum FundingNegotiation {
 	},
 	AwaitingSignatures {
 		funding: FundingScope,
+		is_initiator: bool,
 	},
 }
 
 impl_writeable_tlv_based_enum_upgradable!(FundingNegotiation,
 	(0, AwaitingSignatures) => {
 		(1, funding, required),
+		(3, is_initiator, required),
 	},
 	unread_variants: AwaitingAck, ConstructingTransaction
 );
@@ -2573,7 +2609,17 @@ impl FundingNegotiation {
 		match self {
 			FundingNegotiation::AwaitingAck { .. } => None,
 			FundingNegotiation::ConstructingTransaction { funding, .. } => Some(funding),
-			FundingNegotiation::AwaitingSignatures { funding } => Some(funding),
+			FundingNegotiation::AwaitingSignatures { funding, .. } => Some(funding),
+		}
+	}
+
+	fn is_initiator(&self) -> bool {
+		match self {
+			FundingNegotiation::AwaitingAck { context } => context.is_initiator,
+			FundingNegotiation::ConstructingTransaction { interactive_tx_constructor, .. } => {
+				interactive_tx_constructor.is_initiator()
+			},
+			FundingNegotiation::AwaitingSignatures { is_initiator, .. } => *is_initiator,
 		}
 	}
 }
@@ -6614,12 +6660,15 @@ impl FundingNegotiationContext {
 	}
 
 	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
+		let (contributed_inputs, contributed_outputs) = self.into_contributed_inputs_and_outputs();
+		NegotiationError { reason, contributed_inputs, contributed_outputs }
+	}
+
+	fn into_contributed_inputs_and_outputs(self) -> (Vec<bitcoin::OutPoint>, Vec<TxOut>) {
 		let contributed_inputs =
 			self.our_funding_inputs.into_iter().map(|input| input.utxo.outpoint).collect();
-
 		let contributed_outputs = self.our_funding_outputs;
-
-		NegotiationError { reason, contributed_inputs, contributed_outputs }
+		(contributed_inputs, contributed_outputs)
 	}
 }
 
@@ -6739,6 +6788,21 @@ pub struct SpliceFundingNegotiated {
 	pub channel_type: ChannelTypeFeatures,
 }
 
+/// Information about a splice funding negotiation that has failed.
+pub struct SpliceFundingFailed {
+	/// The outpoint of the channel's splice funding transaction, if one was created.
+	pub funding_txo: Option<bitcoin::OutPoint>,
+
+	/// The features that this channel will operate with, if available.
+	pub channel_type: Option<ChannelTypeFeatures>,
+
+	/// UTXOs spent as inputs contributed to the splice transaction.
+	pub contributed_inputs: Vec<bitcoin::OutPoint>,
+
+	/// Outputs contributed to the splice transaction.
+	pub contributed_outputs: Vec<bitcoin::TxOut>,
+}
+
 pub struct SpliceFundingPromotion {
 	pub funding_txo: OutPoint,
 	pub monitor_update: Option<ChannelMonitorUpdate>,
@@ -6813,19 +6877,53 @@ where
 			.unwrap_or(false)
 	}
 
-	fn reset_pending_splice_state(&mut self) -> bool {
+	fn reset_pending_splice_state(&mut self) -> Option<SpliceFundingFailed> {
 		debug_assert!(self.should_reset_pending_splice_state());
 		debug_assert!(self.context.interactive_tx_signing_session.is_none());
 		self.context.channel_state.clear_quiescent();
-		let has_funding_negotiation = self
+
+		let splice_funding_failed = self
 			.pending_splice
 			.as_mut()
 			.and_then(|pending_splice| pending_splice.funding_negotiation.take())
-			.is_some();
+			.filter(|funding_negotiation| funding_negotiation.is_initiator())
+			.map(|funding_negotiation| {
+				let funding_txo = funding_negotiation
+					.as_funding()
+					.and_then(|funding| funding.get_funding_txo())
+					.map(|txo| txo.into_bitcoin_outpoint());
+
+				let channel_type = funding_negotiation
+					.as_funding()
+					.map(|funding| funding.get_channel_type().clone());
+
+				let (contributed_inputs, contributed_outputs) = match funding_negotiation {
+					FundingNegotiation::AwaitingAck { context } => {
+						context.into_contributed_inputs_and_outputs()
+					},
+					FundingNegotiation::ConstructingTransaction {
+						interactive_tx_constructor,
+						..
+					} => interactive_tx_constructor.into_contributed_inputs_and_outputs(),
+					FundingNegotiation::AwaitingSignatures { .. } => {
+						debug_assert!(false);
+						(Vec::new(), Vec::new())
+					},
+				};
+
+				SpliceFundingFailed {
+					funding_txo,
+					channel_type,
+					contributed_inputs,
+					contributed_outputs,
+				}
+			});
+
 		if self.pending_funding().is_empty() {
 			self.pending_splice.take();
 		}
-		has_funding_negotiation
+
+		splice_funding_failed
 	}
 
 	#[rustfmt::skip]
@@ -8665,7 +8763,7 @@ where
 
 		if let Some(pending_splice) = self.pending_splice.as_mut() {
 			self.context.channel_state.clear_quiescent();
-			if let Some(FundingNegotiation::AwaitingSignatures { mut funding }) =
+			if let Some(FundingNegotiation::AwaitingSignatures { mut funding, .. }) =
 				pending_splice.funding_negotiation.take()
 			{
 				funding.funding_transaction = Some(funding_tx);
@@ -8713,7 +8811,11 @@ where
 				if signing_session.holder_tx_signatures().is_some() {
 					// Our `tx_signatures` either should've been the first time we processed them,
 					// or we're waiting for our counterparty to send theirs first.
-					return Ok(FundingTxSigned { tx_signatures: None, funding_tx: None, splice_negotiated: None });
+					return Ok(FundingTxSigned {
+						tx_signatures: None,
+						funding_tx: None,
+						splice_negotiated: None,
+					});
 				}
 
 				signing_session
@@ -8721,7 +8823,11 @@ where
 				if Some(funding_txid_signed) == self.funding.get_funding_txid() {
 					// We may be handling a duplicate call and the funding was already locked so we
 					// no longer have the signing session present.
-					return Ok(FundingTxSigned { tx_signatures: None, funding_tx: None, splice_negotiated: None });
+					return Ok(FundingTxSigned {
+						tx_signatures: None,
+						funding_tx: None,
+						splice_negotiated: None,
+					});
 				}
 				let err =
 					format!("Channel {} not expecting funding signatures", self.context.channel_id);
@@ -9600,7 +9706,7 @@ where
 						.as_ref()
 						.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
 						.and_then(|funding_negotiation| {
-							if let FundingNegotiation::AwaitingSignatures { funding } = &funding_negotiation {
+							if let FundingNegotiation::AwaitingSignatures { funding, .. } = &funding_negotiation {
 								Some(funding)
 							} else {
 								None
