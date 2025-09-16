@@ -4087,9 +4087,9 @@ where
 	}
 
 	fn list_funded_channels_with_filter<
-		Fn: FnMut(&(&InitFeatures, &ChannelId, &Channel<SP>)) -> bool + Copy,
+		Fn: FnMut(&(&InitFeatures, &ChannelId, &Channel<SP>)) -> bool,
 	>(
-		&self, f: Fn,
+		&self, mut f: Fn,
 	) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
@@ -4109,7 +4109,7 @@ where
 					.iter()
 					.map(|(cid, c)| (&peer_state.latest_features, cid, c))
 					.filter(|(_, _, chan)| chan.is_funded())
-					.filter(f);
+					.filter(|v| f(v));
 				res.extend(filtered_chan_by_id.map(|(_, _channel_id, channel)| {
 					ChannelDetails::from_channel(
 						channel,
@@ -5501,6 +5501,28 @@ where
 		});
 
 		res
+	}
+
+	/// Returns a list of channels where our counterparty supports
+	/// [`InitFeatures::supports_htlc_hold`], or an error if there are none or we are configured not
+	/// to hold HTLCs at our next-hop channel counterparty. Useful for sending async payments to
+	/// [`StaticInvoice`]s.
+	fn hold_htlc_channels(&self) -> Result<Vec<ChannelDetails>, ()> {
+		let should_send_async = self.config.read().unwrap().hold_outbound_htlcs_at_next_hop;
+		if !should_send_async {
+			return Err(());
+		}
+
+		let hold_htlc_channels =
+			self.list_funded_channels_with_filter(|&(init_features, _, ref channel)| {
+				init_features.supports_htlc_hold() && channel.context().is_live()
+			});
+
+		if hold_htlc_channels.is_empty() {
+			Err(())
+		} else {
+			Ok(hold_htlc_channels)
+		}
 	}
 
 	fn send_payment_for_static_invoice(
