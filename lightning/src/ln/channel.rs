@@ -1815,7 +1815,7 @@ where
 
 	pub fn tx_abort<L: Deref>(
 		&mut self, msg: &msgs::TxAbort, logger: &L,
-	) -> Result<Option<msgs::TxAbort>, ChannelError>
+	) -> Result<Option<(msgs::TxAbort, SpliceFundingFailed)>, ChannelError>
 	where
 		L::Target: Logger,
 	{
@@ -1824,14 +1824,16 @@ where
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
 		// For rationale why we echo back `tx_abort`:
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
-		let should_ack = match &mut self.phase {
+		let (should_ack, splice_funding_failed) = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
 				let err = "Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel establishment";
 				return Err(ChannelError::Warn(err.into()));
 			},
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
-				pending_v2_channel.interactive_tx_constructor.take().is_some()
+				let had_constructor =
+					pending_v2_channel.interactive_tx_constructor.take().is_some();
+				(had_constructor, None)
 			},
 			ChannelPhase::Funded(funded_channel) => {
 				if let Some(should_reset) =
@@ -1845,8 +1847,8 @@ where
 							.as_ref()
 							.map(|pending_splice| pending_splice.funding_negotiation.is_some())
 							.unwrap_or(false);
-						funded_channel.reset_pending_splice_state();
-						has_funding_negotiation
+						let splice_funding_failed = funded_channel.reset_pending_splice_state();
+						(has_funding_negotiation, splice_funding_failed)
 					} else {
 						return Err(ChannelError::close(
 							"Received tx_abort while awaiting tx_signatures exchange".to_owned(),
@@ -1855,21 +1857,25 @@ where
 				} else {
 					// We were not tracking the pending funding negotiation state anymore, likely
 					// due to a disconnection or already having sent our own `tx_abort`.
-					false
+					(false, None)
 				}
 			},
 		};
 
-		Ok(should_ack.then(|| {
+		let result = if should_ack {
 			let logger = WithChannelContext::from(logger, &self.context(), None);
 			let reason =
 				types::string::UntrustedString(String::from_utf8_lossy(&msg.data).to_string());
 			log_info!(logger, "Counterparty failed interactive transaction negotiation: {reason}");
-			msgs::TxAbort {
+			let tx_abort_response = msgs::TxAbort {
 				channel_id: msg.channel_id,
 				data: "Acknowledged tx_abort".to_string().into_bytes(),
-			}
-		}))
+			};
+			splice_funding_failed.map(|failed| (tx_abort_response, failed))
+		} else {
+			None
+		};
+		Ok(result)
 	}
 
 	#[rustfmt::skip]

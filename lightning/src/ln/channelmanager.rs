@@ -10473,7 +10473,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	#[rustfmt::skip]
 	fn internal_tx_abort(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAbort)
-	-> Result<(), MsgHandleErrInternal> {
+	-> Result<NotifyOption, MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
@@ -10487,13 +10487,29 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let res = chan_entry.get_mut().tx_abort(msg, &self.logger);
-				if let Some(msg) = try_channel_entry!(self, peer_state, res, chan_entry) {
+				let tx_abort_and_splice_failed = try_channel_entry!(self, peer_state, res, chan_entry);
+
+				// Emit SpliceFailed event and send TxAbort response if we had an active splice negotiation
+				if let Some((tx_abort_msg, splice_funding_failed)) = tx_abort_and_splice_failed {
+					let pending_events = &mut self.pending_events.lock().unwrap();
+					pending_events.push_back((events::Event::SpliceFailed {
+						channel_id: msg.channel_id,
+						counterparty_node_id: *counterparty_node_id,
+						user_channel_id: chan_entry.get().context().get_user_id(),
+						funding_txo: splice_funding_failed.funding_txo,
+						channel_type: splice_funding_failed.channel_type,
+						contributed_inputs: splice_funding_failed.contributed_inputs,
+						contributed_outputs: splice_funding_failed.contributed_outputs,
+					}, None));
+
 					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
 						node_id: *counterparty_node_id,
-						msg,
+						msg: tx_abort_msg,
 					});
+					Ok(NotifyOption::DoPersist)
+				} else {
+					Ok(NotifyOption::SkipPersistNoEvents)
 				}
-				Ok(())
 			},
 			hash_map::Entry::Vacant(_) => {
 				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -14855,8 +14871,13 @@ where
 		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_abort(&counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 
