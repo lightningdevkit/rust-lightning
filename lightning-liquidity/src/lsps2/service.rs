@@ -470,6 +470,7 @@ pub(crate) struct PeerState {
 	intercept_scid_by_user_channel_id: HashMap<u128, u64>,
 	intercept_scid_by_channel_id: HashMap<ChannelId, u64>,
 	pending_requests: HashMap<LSPSRequestId, LSPS2Request>,
+	needs_persist: bool,
 }
 
 impl PeerState {
@@ -478,16 +479,19 @@ impl PeerState {
 		let pending_requests = new_hash_map();
 		let intercept_scid_by_user_channel_id = new_hash_map();
 		let intercept_scid_by_channel_id = new_hash_map();
+		let needs_persist = false;
 		Self {
 			outbound_channels_by_intercept_scid,
 			pending_requests,
 			intercept_scid_by_user_channel_id,
 			intercept_scid_by_channel_id,
+			needs_persist,
 		}
 	}
 
 	fn insert_outbound_channel(&mut self, intercept_scid: u64, channel: OutboundJITChannel) {
 		self.outbound_channels_by_intercept_scid.insert(intercept_scid, channel);
+		self.needs_persist |= true;
 	}
 
 	fn prune_expired_request_state(&mut self) {
@@ -506,6 +510,7 @@ impl PeerState {
 				// We abort the flow, and prune any data kept.
 				self.intercept_scid_by_channel_id.retain(|_, iscid| intercept_scid != iscid);
 				self.intercept_scid_by_user_channel_id.retain(|_, iscid| intercept_scid != iscid);
+				// TODO: Remove peer state entry from the KVStore
 				return false;
 			}
 			true
@@ -533,6 +538,7 @@ impl_writeable_tlv_based!(PeerState, {
 	(2, intercept_scid_by_user_channel_id, required),
 	(4, intercept_scid_by_channel_id, required),
 	(_unused, pending_requests, (static_value, new_hash_map())),
+	(_unused, needs_persist, (static_value, false)),
 });
 
 macro_rules! get_or_insert_peer_state_entry {
@@ -831,6 +837,9 @@ where
 			match outer_state_lock.get(counterparty_node_id) {
 				Some(inner_state_lock) => {
 					let mut peer_state = inner_state_lock.lock().unwrap();
+					peer_state.needs_persist |= peer_state
+						.outbound_channels_by_intercept_scid
+						.contains_key(&intercept_scid);
 					if let Some(jit_channel) =
 						peer_state.outbound_channels_by_intercept_scid.get_mut(&intercept_scid)
 					{
@@ -918,6 +927,8 @@ where
 				match outer_state_lock.get(counterparty_node_id) {
 					Some(inner_state_lock) => {
 						let mut peer_state = inner_state_lock.lock().unwrap();
+						peer_state.needs_persist |=
+							peer_state.intercept_scid_by_channel_id.contains_key(&channel_id);
 						if let Some(intercept_scid) =
 							peer_state.intercept_scid_by_channel_id.get(&channel_id).copied()
 						{
@@ -986,6 +997,8 @@ where
 			match outer_state_lock.get(counterparty_node_id) {
 				Some(inner_state_lock) => {
 					let mut peer_state = inner_state_lock.lock().unwrap();
+					peer_state.needs_persist |=
+						peer_state.intercept_scid_by_channel_id.contains_key(&next_channel_id);
 					if let Some(intercept_scid) =
 						peer_state.intercept_scid_by_channel_id.get(&next_channel_id).copied()
 					{
@@ -1090,6 +1103,7 @@ where
 		peer_state.intercept_scid_by_user_channel_id.remove(&user_channel_id);
 		peer_state.outbound_channels_by_intercept_scid.remove(&intercept_scid);
 		peer_state.intercept_scid_by_channel_id.retain(|_, &mut scid| scid != intercept_scid);
+		peer_state.needs_persist |= true;
 
 		Ok(())
 	}
@@ -1121,6 +1135,8 @@ where
 				err: format!("Could not find a channel with user_channel_id {}", user_channel_id),
 			})?;
 
+		peer_state.needs_persist |=
+			peer_state.outbound_channels_by_intercept_scid.contains_key(&intercept_scid);
 		let jit_channel = peer_state
 			.outbound_channels_by_intercept_scid
 			.get_mut(&intercept_scid)
@@ -1170,6 +1186,8 @@ where
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state = inner_state_lock.lock().unwrap();
+				peer_state.needs_persist |=
+					peer_state.intercept_scid_by_user_channel_id.contains_key(&user_channel_id);
 				if let Some(intercept_scid) =
 					peer_state.intercept_scid_by_user_channel_id.get(&user_channel_id).copied()
 				{
@@ -1486,13 +1504,19 @@ where
 			let outer_state_lock = self.per_peer_state.read().unwrap();
 			let encoded = match outer_state_lock.get(&counterparty_node_id) {
 				None => {
-					let err = lightning::io::Error::new(
-						lightning::io::ErrorKind::Other,
-						"Failed to get peer entry",
-					);
-					return Err(err);
+					// We dropped the peer state by now.
+					return Ok(());
 				},
-				Some(entry) => entry.lock().unwrap().encode(),
+				Some(entry) => {
+					let mut peer_state_lock = entry.lock().unwrap();
+					if !peer_state_lock.needs_persist {
+						// We already have persisted otherwise by now.
+						return Ok(());
+					} else {
+						peer_state_lock.needs_persist = false;
+						peer_state_lock.encode()
+					}
+				},
 			};
 			let key = counterparty_node_id.to_string();
 
@@ -1504,7 +1528,14 @@ where
 			)
 		};
 
-		fut.await
+		fut.await.map_err(|e| {
+			self.per_peer_state
+				.read()
+				.unwrap()
+				.get(&counterparty_node_id)
+				.map(|p| p.lock().unwrap().needs_persist = true);
+			e
+		})
 	}
 
 	pub(crate) async fn persist(&self) -> Result<(), lightning::io::Error> {
@@ -1513,7 +1544,10 @@ where
 		// time.
 		let need_persist: Vec<PublicKey> = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
-			outer_state_lock.iter().filter_map(|(k, v)| Some(*k)).collect()
+			outer_state_lock
+				.iter()
+				.filter_map(|(k, v)| if v.lock().unwrap().needs_persist { Some(*k) } else { None })
+				.collect()
 		};
 
 		for counterparty_node_id in need_persist.into_iter() {
