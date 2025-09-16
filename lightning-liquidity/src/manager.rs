@@ -35,7 +35,7 @@ use crate::lsps1::service::{LSPS1ServiceConfig, LSPS1ServiceHandler};
 
 use crate::lsps2::client::{LSPS2ClientConfig, LSPS2ClientHandler};
 use crate::lsps2::msgs::LSPS2Message;
-use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler};
+use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler, LSPS2ServiceHandlerSync};
 use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils::async_poll::dummy_waker;
@@ -304,7 +304,7 @@ pub struct LiquidityManager<
 	#[cfg(lsps1_service)]
 	lsps1_service_handler: Option<LSPS1ServiceHandler<ES, CM, C, K>>,
 	lsps1_client_handler: Option<LSPS1ClientHandler<ES, K>>,
-	lsps2_service_handler: Option<LSPS2ServiceHandler<CM, K>>,
+	lsps2_service_handler: Option<Arc<LSPS2ServiceHandler<CM, K>>>,
 	lsps2_client_handler: Option<LSPS2ClientHandler<ES, K>>,
 	lsps5_service_handler: Option<LSPS5ServiceHandler<CM, NS, K, TP>>,
 	lsps5_client_handler: Option<LSPS5ClientHandler<ES, K>>,
@@ -418,14 +418,14 @@ where
 				}
 
 				let peer_states = read_lsps2_service_peer_states(kv_store.clone()).await?;
-				Some(LSPS2ServiceHandler::new(
+				Some(Arc::new(LSPS2ServiceHandler::new(
 					peer_states,
 					Arc::clone(&pending_messages),
 					Arc::clone(&pending_events),
 					channel_manager.clone(),
 					kv_store.clone(),
 					lsps2_service_config.clone(),
-				))
+				)))
 			} else {
 				None
 			}
@@ -571,7 +571,7 @@ where
 	///
 	/// The returned hendler allows to initiate the LSPS2 service-side flow.
 	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM, K>> {
-		self.lsps2_service_handler.as_ref()
+		self.lsps2_service_handler.as_ref().map(|r| &**r)
 	}
 
 	/// Returns a reference to the LSPS5 client-side handler.
@@ -1193,8 +1193,11 @@ where
 	/// Wraps [`LiquidityManager::lsps2_service_handler`].
 	pub fn lsps2_service_handler(
 		&self,
-	) -> Option<&LSPS2ServiceHandler<CM, Arc<KVStoreSyncWrapper<KS>>>> {
-		self.inner.lsps2_service_handler()
+	) -> Option<Arc<LSPS2ServiceHandlerSync<CM, Arc<KVStoreSyncWrapper<KS>>>>> {
+		self.inner
+			.lsps2_service_handler
+			.as_ref()
+			.map(|r| Arc::new(LSPS2ServiceHandlerSync::from_inner(Arc::clone(&r))))
 	}
 
 	/// Returns a reference to the LSPS5 client-side handler.
