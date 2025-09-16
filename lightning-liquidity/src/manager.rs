@@ -35,7 +35,7 @@ use crate::lsps1::service::{LSPS1ServiceConfig, LSPS1ServiceHandler};
 
 use crate::lsps2::client::{LSPS2ClientConfig, LSPS2ClientHandler};
 use crate::lsps2::msgs::LSPS2Message;
-use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler};
+use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler, LSPS2ServiceHandlerSync};
 use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils::async_poll::dummy_waker;
@@ -1191,10 +1191,10 @@ where
 	/// Returns a reference to the LSPS2 server-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps2_service_handler`].
-	pub fn lsps2_service_handler(
-		&self,
-	) -> Option<&LSPS2ServiceHandler<CM, Arc<KVStoreSyncWrapper<KS>>>> {
-		self.inner.lsps2_service_handler()
+	pub fn lsps2_service_handler<'a>(
+		&'a self,
+	) -> Option<LSPS2ServiceHandlerSync<'a, CM, Arc<KVStoreSyncWrapper<KS>>>> {
+		self.inner.lsps2_service_handler.as_ref().map(|r| LSPS2ServiceHandlerSync::from_inner(r))
 	}
 
 	/// Returns a reference to the LSPS5 client-side handler.

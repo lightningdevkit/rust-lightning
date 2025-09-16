@@ -1654,6 +1654,140 @@ fn calculate_amount_to_forward_per_htlc(
 	per_htlc_forwards
 }
 
+/// A synchroneous wrapper around [`LSPS2ServiceHandler`] to be used in contexts where async is not
+/// available.
+pub struct LSPS2ServiceHandlerSync<'a, CM: Deref, K: Deref + Clone>
+where
+	CM::Target: AChannelManager,
+	K::Target: KVStore,
+{
+	inner: &'a LSPS2ServiceHandler<CM, K>,
+}
+
+impl<'a, CM: Deref, K: Deref + Clone> LSPS2ServiceHandlerSync<'a, CM, K>
+where
+	CM::Target: AChannelManager,
+	K::Target: KVStore,
+{
+	pub(crate) fn from_inner(inner: &'a LSPS2ServiceHandler<CM, K>) -> Self {
+		Self { inner }
+	}
+
+	/// Returns a reference to the used config.
+	///
+	/// Wraps [`LSPS2ServiceHandler::config`].
+	pub fn config(&self) -> &LSPS2ServiceConfig {
+		&self.inner.config
+	}
+
+	/// Used by LSP to inform a client requesting a JIT Channel the token they used is invalid.
+	///
+	/// Wraps [`LSPS2ServiceHandler::invalid_token_provided`].
+	pub fn invalid_token_provided(
+		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId,
+	) -> Result<(), APIError> {
+		self.inner.invalid_token_provided(counterparty_node_id, request_id)
+	}
+
+	/// Used by LSP to provide fee parameters to a client requesting a JIT Channel.
+	///
+	/// Wraps [`LSPS2ServiceHandler::opening_fee_params_generated`].
+	pub fn opening_fee_params_generated(
+		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId,
+		opening_fee_params_menu: Vec<LSPS2RawOpeningFeeParams>,
+	) -> Result<(), APIError> {
+		self.inner.opening_fee_params_generated(
+			counterparty_node_id,
+			request_id,
+			opening_fee_params_menu,
+		)
+	}
+
+	/// Used by LSP to provide the client with the intercept scid and
+	/// `cltv_expiry_delta` to include in their invoice.
+	///
+	/// Wraps [`LSPS2ServiceHandler::invoice_parameters_generated`].
+	pub fn invoice_parameters_generated(
+		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId, intercept_scid: u64,
+		cltv_expiry_delta: u32, client_trusts_lsp: bool, user_channel_id: u128,
+	) -> Result<(), APIError> {
+		self.inner.invoice_parameters_generated(
+			counterparty_node_id,
+			request_id,
+			intercept_scid,
+			cltv_expiry_delta,
+			client_trusts_lsp,
+			user_channel_id,
+		)
+	}
+
+	/// Forward [`Event::HTLCIntercepted`] event parameters into this function.
+	///
+	/// Wraps [`LSPS2ServiceHandler::htlc_intercepted`].
+	///
+	/// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
+	pub fn htlc_intercepted(
+		&self, intercept_scid: u64, intercept_id: InterceptId, expected_outbound_amount_msat: u64,
+		payment_hash: PaymentHash,
+	) -> Result<(), APIError> {
+		self.inner.htlc_intercepted(
+			intercept_scid,
+			intercept_id,
+			expected_outbound_amount_msat,
+			payment_hash,
+		)
+	}
+
+	/// Forward [`Event::HTLCHandlingFailed`] event parameter into this function.
+	///
+	/// Wraps [`LSPS2ServiceHandler::htlc_handling_failed`].
+	///
+	/// [`Event::HTLCHandlingFailed`]: lightning::events::Event::HTLCHandlingFailed
+	pub fn htlc_handling_failed(
+		&self, failure_type: HTLCHandlingFailureType,
+	) -> Result<(), APIError> {
+		self.inner.htlc_handling_failed(failure_type)
+	}
+
+	/// Forward [`Event::PaymentForwarded`] event parameter into this function.
+	///
+	/// Wraps [`LSPS2ServiceHandler::payment_forwarded`].
+	///
+	/// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
+	pub fn payment_forwarded(&self, next_channel_id: ChannelId) -> Result<(), APIError> {
+		self.inner.payment_forwarded(next_channel_id)
+	}
+
+	/// Abandons a pending JIT‐open flow for `user_channel_id`, removing all local state.
+	///
+	/// Wraps [`LSPS2ServiceHandler::channel_open_abandoned`].
+	pub fn channel_open_abandoned(
+		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
+	) -> Result<(), APIError> {
+		self.inner.channel_open_abandoned(counterparty_node_id, user_channel_id)
+	}
+
+	/// Used to fail intercepted HTLCs backwards when a channel open attempt ultimately fails.
+	///
+	/// Wraps [`LSPS2ServiceHandler::channel_open_failed`].
+	pub fn channel_open_failed(
+		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
+	) -> Result<(), APIError> {
+		self.inner.channel_open_failed(counterparty_node_id, user_channel_id)
+	}
+
+	/// Forward [`Event::ChannelReady`] event parameters into this function.
+	///
+	/// Wraps [`LSPS2ServiceHandler::channel_ready`].
+	///
+	/// [`Event::ChannelReady`]: lightning::events::Event::ChannelReady
+	pub fn channel_ready(
+		&self, user_channel_id: u128, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+	) -> Result<(), APIError> {
+		self.inner.channel_ready(user_channel_id, channel_id, counterparty_node_id)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
