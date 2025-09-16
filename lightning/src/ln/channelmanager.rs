@@ -10220,10 +10220,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let res = chan_entry.get_mut().tx_abort(msg, &self.logger);
-				if let Some(msg) = try_channel_entry!(self, peer_state, res, chan_entry) {
+				let tx_abort_and_splice_failed = try_channel_entry!(self, peer_state, res, chan_entry);
+
+				// Emit SpliceFailed event and send TxAbort response if we had an active splice negotiation
+				if let Some((tx_abort_msg, splice_funding_failed)) = tx_abort_and_splice_failed {
+					let pending_events = &mut self.pending_events.lock().unwrap();
+					pending_events.push_back((events::Event::SpliceFailed {
+						channel_id: splice_funding_failed.channel_id,
+						counterparty_node_id: splice_funding_failed.counterparty_node_id,
+						user_channel_id: splice_funding_failed.user_channel_id,
+						funding_txo: splice_funding_failed.funding_txo,
+						channel_type: splice_funding_failed.channel_type,
+						contributed_inputs: splice_funding_failed.contributed_inputs,
+						contributed_outputs: splice_funding_failed.contributed_outputs,
+					}, None));
+
 					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
 						node_id: *counterparty_node_id,
-						msg,
+						msg: tx_abort_msg,
 					});
 				}
 				Ok(())

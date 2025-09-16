@@ -1887,7 +1887,7 @@ where
 
 	pub fn tx_abort<L: Deref>(
 		&mut self, msg: &msgs::TxAbort, logger: &L,
-	) -> Result<Option<msgs::TxAbort>, ChannelError>
+	) -> Result<Option<(msgs::TxAbort, SpliceFundingFailed)>, ChannelError>
 	where
 		L::Target: Logger,
 	{
@@ -1896,20 +1896,49 @@ where
 		// phase for this interactively constructed transaction and hence we have not exchanged
 		// `tx_signatures`. Either way, we never close the channel upon receiving a `tx_abort`:
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L574-L576
-		let should_ack = match &mut self.phase {
+		let (should_ack, splice_funding_failed) = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
 				let err = "Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel establishment";
 				return Err(ChannelError::Warn(err.into()));
 			},
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
-				pending_v2_channel.interactive_tx_constructor.take().is_some()
+				let had_constructor = pending_v2_channel.interactive_tx_constructor.take().is_some();
+				(had_constructor, None)
 			},
-			ChannelPhase::Funded(funded_channel) => funded_channel
-				.pending_splice
-				.as_mut()
-				.and_then(|pending_splice| pending_splice.funding_negotiation.take())
-				.is_some(),
+			ChannelPhase::Funded(funded_channel) => {
+				let funding_negotiation_opt = funded_channel
+					.pending_splice
+					.as_mut()
+					.and_then(|pending_splice| pending_splice.funding_negotiation.take());
+
+				let should_ack = funding_negotiation_opt.is_some();
+				let splice_funding_failed = funding_negotiation_opt.map(|funding_negotiation| {
+					// Create SpliceFundingFailed for the aborted splice
+					let (funding_txo, channel_type) = match &funding_negotiation {
+						FundingNegotiation::ConstructingTransaction { funding, .. } => {
+							(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
+						},
+						FundingNegotiation::AwaitingSignatures { funding } => {
+							(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
+						},
+						FundingNegotiation::AwaitingAck { .. } => {
+							(None, None)
+						},
+					};
+
+					SpliceFundingFailed {
+						channel_id: funded_channel.context.channel_id,
+						counterparty_node_id: funded_channel.context.counterparty_node_id,
+						user_channel_id: funded_channel.context.user_id,
+						funding_txo,
+						channel_type,
+						contributed_inputs: Vec::new(),
+						contributed_outputs: Vec::new(),
+					}
+				});
+				(should_ack, splice_funding_failed)
+			},
 		};
 
 		// NOTE: Since at this point we have not sent a `tx_abort` message for this negotiation
@@ -1918,16 +1947,20 @@ where
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
 		// For rationale why we echo back `tx_abort`:
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
-		Ok(should_ack.then(|| {
+		let result = if should_ack {
 			let logger = WithChannelContext::from(logger, &self.context(), None);
 			let reason =
 				types::string::UntrustedString(String::from_utf8_lossy(&msg.data).to_string());
 			log_info!(logger, "Counterparty failed interactive transaction negotiation: {reason}");
-			msgs::TxAbort {
+			let tx_abort_response = msgs::TxAbort {
 				channel_id: msg.channel_id,
 				data: "Acknowledged tx_abort".to_string().into_bytes(),
-			}
-		}))
+			};
+			splice_funding_failed.map(|failed| (tx_abort_response, failed))
+		} else {
+			None
+		};
+		Ok(result)
 	}
 
 	#[rustfmt::skip]
