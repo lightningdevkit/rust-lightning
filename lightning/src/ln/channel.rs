@@ -11882,12 +11882,23 @@ where
 	pub(crate) fn splice_ack<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceAck, signer_provider: &SP, entropy_source: &ES,
 		holder_node_id: &PublicKey, logger: &L,
-	) -> Result<Option<InteractiveTxMessageSend>, ChannelError>
+	) -> Result<Option<InteractiveTxMessageSend>, (ChannelError, SpliceFundingFailed)>
 	where
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
-		let splice_funding = self.validate_splice_ack(msg)?;
+		let splice_funding = self.validate_splice_ack(msg).map_err(|err| {
+			let splice_failed = SpliceFundingFailed {
+				channel_id: self.context.channel_id,
+				counterparty_node_id: self.context.counterparty_node_id,
+				user_channel_id: self.context.user_id,
+				funding_txo: None,
+				channel_type: None,
+				contributed_inputs: Vec::new(),
+				contributed_outputs: Vec::new(),
+			};
+			(err, splice_failed)
+		})?;
 
 		log_info!(
 			logger,
@@ -11917,10 +11928,20 @@ where
 				holder_node_id.clone(),
 			)
 			.map_err(|err| {
-				ChannelError::WarnAndDisconnect(format!(
+				let splice_failed = SpliceFundingFailed {
+					channel_id: self.context.channel_id,
+					counterparty_node_id: self.context.counterparty_node_id,
+					user_channel_id: self.context.user_id,
+					funding_txo: splice_funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()),
+					channel_type: Some(splice_funding.get_channel_type().clone()),
+					contributed_inputs: Vec::new(),
+					contributed_outputs: Vec::new(),
+				};
+				let channel_error = ChannelError::WarnAndDisconnect(format!(
 					"Failed to start interactive transaction construction, {:?}",
 					err
-				))
+				));
+				(channel_error, splice_failed)
 			})?;
 		let tx_msg_opt = interactive_tx_constructor.take_initiator_first_message();
 

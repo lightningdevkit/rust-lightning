@@ -11314,7 +11314,26 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						msg, &self.signer_provider, &self.entropy_source,
 						&self.get_our_node_id(), &self.logger
 					);
-					let tx_msg_opt = try_channel_entry!(self, peer_state, splice_ack_res, chan_entry);
+
+					// Handle splice_ack failure and emit SpliceFailed event if needed
+					let tx_msg_opt = match splice_ack_res {
+						Ok(tx_msg_opt) => Ok(tx_msg_opt),
+						Err((channel_error, splice_funding_failed)) => {
+							let pending_events = &mut self.pending_events.lock().unwrap();
+							pending_events.push_back((events::Event::SpliceFailed {
+								channel_id: splice_funding_failed.channel_id,
+								counterparty_node_id: splice_funding_failed.counterparty_node_id,
+								user_channel_id: splice_funding_failed.user_channel_id,
+								funding_txo: splice_funding_failed.funding_txo,
+								channel_type: splice_funding_failed.channel_type,
+								contributed_inputs: splice_funding_failed.contributed_inputs,
+								contributed_outputs: splice_funding_failed.contributed_outputs,
+							}, None));
+							Err(channel_error)
+						}
+					};
+
+					let tx_msg_opt = try_channel_entry!(self, peer_state, tx_msg_opt, chan_entry);
 					if let Some(tx_msg) = tx_msg_opt {
 						peer_state.pending_msg_events.push(tx_msg.into_msg_send_event(counterparty_node_id.clone()));
 					}
