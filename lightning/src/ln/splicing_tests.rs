@@ -248,6 +248,10 @@ fn splice_channel<'a, 'b, 'c, 'd>(
 		assert_eq!(initiator_txn, acceptor_txn);
 		initiator_txn.remove(0)
 	};
+
+	expect_splice_pending_event(initiator, &node_id_acceptor);
+	expect_splice_pending_event(acceptor, &node_id_initiator);
+
 	splice_tx
 }
 
