@@ -202,8 +202,8 @@ where
 		&self, counterparty_node_id: PublicKey,
 	) -> Result<(), lightning::io::Error> {
 		let fut = {
-			let outer_state_lock = self.per_peer_state.read().unwrap();
-			let encoded = match outer_state_lock.get(&counterparty_node_id) {
+			let mut outer_state_lock = self.per_peer_state.write().unwrap();
+			let encoded = match outer_state_lock.get_mut(&counterparty_node_id) {
 				None => {
 					let err = lightning::io::Error::new(
 						lightning::io::ErrorKind::Other,
@@ -211,7 +211,15 @@ where
 					);
 					return Err(err);
 				},
-				Some(entry) => entry.encode(),
+				Some(entry) => {
+					if !entry.needs_persist {
+						// We already have persisted otherwise by now.
+						return Ok(());
+					} else {
+						entry.needs_persist = false;
+						entry.encode()
+					}
+				},
 			};
 
 			let key = counterparty_node_id.to_string();
@@ -224,7 +232,14 @@ where
 			)
 		};
 
-		fut.await
+		fut.await.map_err(|e| {
+			self.per_peer_state
+				.write()
+				.unwrap()
+				.get_mut(&counterparty_node_id)
+				.map(|p| p.needs_persist = true);
+			e
+		})
 	}
 
 	pub(crate) async fn persist(&self) -> Result<(), lightning::io::Error> {
@@ -233,7 +248,10 @@ where
 		// time.
 		let need_persist: Vec<PublicKey> = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
-			outer_state_lock.iter().filter_map(|(k, v)| Some(*k)).collect()
+			outer_state_lock
+				.iter()
+				.filter_map(|(k, v)| if v.needs_persist { Some(*k) } else { None })
+				.collect()
 		};
 
 		for counterparty_node_id in need_persist.into_iter() {
@@ -260,6 +278,7 @@ where
 					// Don't prune clients with open channels
 					return true;
 				}
+				// TODO: Remove peer state entry from the KVStore
 				!peer_state.prune_stale_webhooks(now)
 			});
 			*last_pruning = Some(now);
@@ -290,6 +309,7 @@ where
 				webhook.url = params.webhook.clone();
 				webhook.last_used = now;
 				webhook.last_notification_sent = None;
+				peer_state.needs_persist |= true;
 			}
 		} else {
 			if num_webhooks >= self.config.max_webhooks_per_client as usize {
@@ -650,14 +670,18 @@ where
 	}
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct PeerState {
 	webhooks: Vec<(LSPS5AppName, Webhook)>,
+	needs_persist: bool,
 }
 
 impl PeerState {
 	fn webhook_mut(&mut self, name: &LSPS5AppName) -> Option<&mut Webhook> {
-		self.webhooks.iter_mut().find_map(|(n, h)| if n == name { Some(h) } else { None })
+		let res =
+			self.webhooks.iter_mut().find_map(|(n, h)| if n == name { Some(h) } else { None });
+		self.needs_persist |= true;
+		res
 	}
 
 	fn webhooks(&self) -> &Vec<(LSPS5AppName, Webhook)> {
@@ -665,7 +689,9 @@ impl PeerState {
 	}
 
 	fn webhooks_mut(&mut self) -> &mut Vec<(LSPS5AppName, Webhook)> {
-		&mut self.webhooks
+		let res = &mut self.webhooks;
+		self.needs_persist |= true;
+		res
 	}
 
 	fn webhooks_len(&self) -> usize {
@@ -685,6 +711,7 @@ impl PeerState {
 		}
 
 		self.webhooks.push((name, hook));
+		self.needs_persist |= true;
 	}
 
 	fn remove_webhook(&mut self, name: &LSPS5AppName) -> bool {
@@ -697,6 +724,7 @@ impl PeerState {
 				false
 			}
 		});
+		self.needs_persist |= true;
 		removed
 	}
 
@@ -704,6 +732,7 @@ impl PeerState {
 		for (_, h) in self.webhooks.iter_mut() {
 			h.last_notification_sent = None;
 		}
+		self.needs_persist |= true;
 	}
 
 	// Returns whether the entire state is empty and can be pruned.
@@ -716,6 +745,16 @@ impl PeerState {
 	}
 }
 
+impl Default for PeerState {
+	fn default() -> Self {
+		let webhooks = Vec::new();
+		let needs_persist = true;
+		Self { webhooks, needs_persist }
+	}
+}
+
 impl_writeable_tlv_based!(PeerState, {
 	(0, webhooks, required),
+	(_unused, needs_persist, (static_value, false)),
+
 });
