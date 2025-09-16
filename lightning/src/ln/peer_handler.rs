@@ -2804,6 +2804,8 @@ where
 	/// [`send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 	/// [`ChannelManager::process_pending_htlc_forwards`]: crate::ln::channelmanager::ChannelManager::process_pending_htlc_forwards
 	/// [`send_data`]: SocketDescriptor::send_data
+	/// [`lightning-net-tokio`]: https://docs.rs/lightning-net-tokio/latest/lightning_net_tokio
+	/// [`lightning-background-processor`]: https://docs.rs/lightning-background-processor/latest/lightning_background_processor
 	pub fn process_events(&self) {
 		if self.event_processing_state.fetch_add(1, Ordering::AcqRel) > 0 {
 			// If we're not the first event processor to get here, just return early, the increment
