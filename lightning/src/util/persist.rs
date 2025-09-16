@@ -1257,14 +1257,13 @@ mod tests {
 
 					let monitor_name = mon.persistence_key();
 					assert_eq!(
-						persister_0
-							.kv_store
-							.list(
-								CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-								&monitor_name.to_string()
-							)
-							.unwrap()
-							.len() as u64,
+						KVStoreSync::list(
+							&*persister_0.kv_store,
+							CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+							&monitor_name.to_string()
+						)
+						.unwrap()
+						.len() as u64,
 						mon.get_latest_update_id() % persister_0_max_pending_updates,
 						"Wrong number of updates stored in persister 0",
 					);
@@ -1276,14 +1275,13 @@ mod tests {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
 					let monitor_name = mon.persistence_key();
 					assert_eq!(
-						persister_1
-							.kv_store
-							.list(
-								CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-								&monitor_name.to_string()
-							)
-							.unwrap()
-							.len() as u64,
+						KVStoreSync::list(
+							&*persister_1.kv_store,
+							CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+							&monitor_name.to_string()
+						)
+						.unwrap()
+						.len() as u64,
 						mon.get_latest_update_id() % persister_1_max_pending_updates,
 						"Wrong number of updates stored in persister 1",
 					);
@@ -1481,28 +1479,26 @@ mod tests {
 		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates().unwrap();
 		let (_, monitor) = &persisted_chan_data[0];
 		let monitor_name = monitor.persistence_key();
-		persister_0
-			.kv_store
-			.write(
-				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-				&monitor_name.to_string(),
-				UpdateName::from(1).as_str(),
-				vec![0u8; 1],
-			)
-			.unwrap();
+		KVStoreSync::write(
+			&*persister_0.kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_name.to_string(),
+			UpdateName::from(1).as_str(),
+			vec![0u8; 1],
+		)
+		.unwrap();
 
 		// Do the stale update cleanup
 		persister_0.cleanup_stale_updates(false).unwrap();
 
 		// Confirm the stale update is unreadable/gone
-		assert!(persister_0
-			.kv_store
-			.read(
-				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-				&monitor_name.to_string(),
-				UpdateName::from(1).as_str()
-			)
-			.is_err());
+		assert!(KVStoreSync::read(
+			&*persister_0.kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_name.to_string(),
+			UpdateName::from(1).as_str()
+		)
+		.is_err());
 	}
 
 	fn persist_fn<P: Deref, ChannelSigner: EcdsaChannelSigner>(_persist: P) -> bool
