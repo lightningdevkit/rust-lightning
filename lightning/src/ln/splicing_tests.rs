@@ -246,6 +246,9 @@ fn splice_channel<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	initiator_contribution: SpliceContribution,
 ) -> Transaction {
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
 	let initial_commit_sig_for_acceptor =
 		negotiate_splice_tx(initiator, acceptor, channel_id, initiator_contribution);
 	sign_interactive_funding_transaction(initiator, acceptor, initial_commit_sig_for_acceptor);
@@ -257,6 +260,10 @@ fn splice_channel<'a, 'b, 'c, 'd>(
 		assert_eq!(initiator_txn, acceptor_txn);
 		initiator_txn.remove(0)
 	};
+
+	expect_splice_pending_event(initiator, &node_id_acceptor);
+	expect_splice_pending_event(acceptor, &node_id_initiator);
+
 	splice_tx
 }
 
@@ -999,11 +1006,13 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 		nodes[0].node.funding_transaction_signed(&channel_id, &node_id_1, tx).unwrap();
 	}
 	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendTxSignatures, node_id_1);
+	expect_splice_pending_event(&nodes[0], &node_id_1);
 
 	// Reconnect to make sure node 0 retransmits its `tx_signatures` as it was never delivered.
 	reconnect_nodes!(|reconnect_args: &mut ReconnectArgs| {
 		reconnect_args.send_interactive_tx_sigs = (false, true);
 	});
+	expect_splice_pending_event(&nodes[1], &node_id_0);
 
 	// Reestablish the channel again to make sure node 0 doesn't retransmit `tx_signatures`
 	// unnecessarily as it was delivered in the previous reestablishment.
