@@ -6098,9 +6098,22 @@ where
 							.filter(|witness| !witness.is_empty())
 							.collect();
 						match chan.funding_transaction_signed(txid, witnesses) {
-							Ok((Some(tx_signatures), funding_tx_opt)) => {
+							Ok((Some(tx_signatures), funding_tx_opt, splice_negotiated)) => {
 								if let Some(funding_tx) = funding_tx_opt {
 									self.broadcast_interactive_funding(chan, &funding_tx);
+								}
+								if let Some(splice_negotiated) = splice_negotiated {
+									self.pending_events.lock().unwrap().push_back((
+										events::Event::SplicePending {
+											channel_id: splice_negotiated.channel_id,
+											counterparty_node_id: splice_negotiated
+												.counterparty_node_id,
+											user_channel_id: splice_negotiated.user_channel_id,
+											funding_txo: splice_negotiated.funding_txo,
+											channel_type: splice_negotiated.channel_type,
+										},
+										None,
+									));
 								}
 								peer_state.pending_msg_events.push(
 									MessageSendEvent::SendTxSignatures {
@@ -9154,16 +9167,28 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			} else {
 				let txid = signing_session.unsigned_tx().compute_txid();
 				match channel.funding_transaction_signed(txid, vec![]) {
-					Ok((Some(tx_signatures), funding_tx_opt)) => {
+					Ok((Some(tx_signatures), funding_tx_opt, splice_negotiated)) => {
 						if let Some(funding_tx) = funding_tx_opt {
 							self.broadcast_interactive_funding(channel, &funding_tx);
+						}
+						if let Some(splice_negotiated) = splice_negotiated {
+							self.pending_events.lock().unwrap().push_back((
+								events::Event::SplicePending {
+									channel_id: splice_negotiated.channel_id,
+									counterparty_node_id: splice_negotiated.counterparty_node_id,
+									user_channel_id: splice_negotiated.user_channel_id,
+									funding_txo: splice_negotiated.funding_txo,
+									channel_type: splice_negotiated.channel_type,
+								},
+								None,
+							));
 						}
 						pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 							node_id: counterparty_node_id,
 							msg: tx_signatures,
 						});
 					},
-					Ok((None, _)) => {
+					Ok((None, _, _)) => {
 						debug_assert!(false, "If our tx_signatures is empty, then we should send it first!");
 					},
 					Err(err) => {
@@ -10109,7 +10134,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
-						let (tx_signatures_opt, funding_tx_opt) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg), chan_entry);
+						let (tx_signatures_opt, funding_tx_opt, splice_negotiated) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg), chan_entry);
 						if let Some(tx_signatures) = tx_signatures_opt {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
@@ -10122,6 +10147,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								let mut pending_events = self.pending_events.lock().unwrap();
 								emit_channel_pending_event!(pending_events, chan);
 							}
+						}
+						if let Some(splice_negotiated) = splice_negotiated {
+							self.pending_events.lock().unwrap().push_back((
+								events::Event::SplicePending {
+									channel_id: splice_negotiated.channel_id,
+									counterparty_node_id: splice_negotiated.counterparty_node_id,
+									user_channel_id: splice_negotiated.user_channel_id,
+									funding_txo: splice_negotiated.funding_txo,
+									channel_type: splice_negotiated.channel_type,
+								},
+								None,
+							));
 						}
 					},
 					None => {

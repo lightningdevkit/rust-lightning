@@ -111,6 +111,21 @@ pub struct ChannelValueStat {
 	pub counterparty_dust_limit_msat: u64,
 }
 
+/// Information about a splice funding negotiation that has been completed.
+/// This is returned from channel operations and converted to an Event::SplicePending in ChannelManager.
+pub struct SpliceFundingNegotiated {
+	/// The channel_id of the channel being spliced.
+	pub channel_id: ChannelId,
+	/// The counterparty's node_id.
+	pub counterparty_node_id: PublicKey,
+	/// The user_channel_id value.
+	pub user_channel_id: u128,
+	/// The outpoint of the channel's splice funding transaction.
+	pub funding_txo: bitcoin::OutPoint,
+	/// The features that this channel will operate with.
+	pub channel_type: ChannelTypeFeatures,
+}
+
 pub struct AvailableBalances {
 	/// Total amount available for our counterparty to send to us.
 	pub inbound_capacity_msat: u64,
@@ -8579,30 +8594,52 @@ where
 		}
 	}
 
-	fn on_tx_signatures_exchange(&mut self, funding_tx: Transaction) {
+	fn on_tx_signatures_exchange(
+		&mut self, funding_tx: Transaction,
+	) -> Option<SpliceFundingNegotiated> {
 		debug_assert!(!self.context.channel_state.is_monitor_update_in_progress());
 		debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
 
 		if let Some(pending_splice) = self.pending_splice.as_mut() {
+			self.context.channel_state.clear_quiescent();
 			if let Some(FundingNegotiation::AwaitingSignatures { mut funding }) =
 				pending_splice.funding_negotiation.take()
 			{
 				funding.funding_transaction = Some(funding_tx);
+
+				let funding_txo =
+					funding.get_funding_txo().expect("funding outpoint should be set");
+				let channel_type = funding.get_channel_type().clone();
+
 				pending_splice.negotiated_candidates.push(funding);
+
+				let splice_negotiated = SpliceFundingNegotiated {
+					channel_id: self.context.channel_id,
+					counterparty_node_id: self.context.counterparty_node_id,
+					user_channel_id: self.context.user_id,
+					funding_txo: funding_txo.into_bitcoin_outpoint(),
+					channel_type,
+				};
+
+				Some(splice_negotiated)
 			} else {
 				debug_assert!(false);
+				None
 			}
-			self.context.channel_state.clear_quiescent();
 		} else {
 			self.funding.funding_transaction = Some(funding_tx);
 			self.context.channel_state =
 				ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+			None
 		}
 	}
 
 	pub fn funding_transaction_signed(
 		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>,
-	) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), APIError> {
+	) -> Result<
+		(Option<msgs::TxSignatures>, Option<Transaction>, Option<SpliceFundingNegotiated>),
+		APIError,
+	> {
 		let signing_session =
 			if let Some(signing_session) = self.context.interactive_tx_signing_session.as_mut() {
 				if let Some(pending_splice) = self.pending_splice.as_ref() {
@@ -8658,17 +8695,22 @@ where
 			.provide_holder_witnesses(tx_signatures, &self.context.secp_ctx)
 			.map_err(|err| APIError::APIMisuseError { err })?;
 
-		if let Some(funding_tx) = funding_tx_opt.clone() {
+		let splice_negotiated = if let Some(funding_tx) = funding_tx_opt.clone() {
 			debug_assert!(tx_signatures_opt.is_some());
-			self.on_tx_signatures_exchange(funding_tx);
-		}
+			self.on_tx_signatures_exchange(funding_tx)
+		} else {
+			None
+		};
 
-		Ok((tx_signatures_opt, funding_tx_opt))
+		Ok((tx_signatures_opt, funding_tx_opt, splice_negotiated))
 	}
 
 	pub fn tx_signatures(
 		&mut self, msg: &msgs::TxSignatures,
-	) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), ChannelError> {
+	) -> Result<
+		(Option<msgs::TxSignatures>, Option<Transaction>, Option<SpliceFundingNegotiated>),
+		ChannelError,
+	> {
 		let signing_session = if let Some(signing_session) =
 			self.context.interactive_tx_signing_session.as_mut()
 		{
@@ -8714,11 +8756,13 @@ where
 		let (holder_tx_signatures_opt, funding_tx_opt) =
 			signing_session.received_tx_signatures(msg).map_err(|msg| ChannelError::Warn(msg))?;
 
-		if let Some(funding_tx) = funding_tx_opt.clone() {
-			self.on_tx_signatures_exchange(funding_tx);
-		}
+		let splice_negotiated = if let Some(funding_tx) = funding_tx_opt.clone() {
+			self.on_tx_signatures_exchange(funding_tx)
+		} else {
+			None
+		};
 
-		Ok((holder_tx_signatures_opt, funding_tx_opt))
+		Ok((holder_tx_signatures_opt, funding_tx_opt, splice_negotiated))
 	}
 
 	/// Queues up an outbound update fee by placing it in the holding cell. You should call
