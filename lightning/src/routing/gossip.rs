@@ -2356,9 +2356,7 @@ where
 			return;
 		}
 		let min_time_unix: u32 = (current_time_unix - STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS) as u32;
-		// Sadly BTreeMap::retain was only stabilized in 1.53 so we can't switch to it for some
-		// time.
-		let mut scids_to_remove = Vec::new();
+		let mut scids_to_remove = new_hash_set();
 		for (scid, info) in channels.unordered_iter_mut() {
 			if info.one_to_two.is_some()
 				&& info.one_to_two.as_ref().unwrap().last_update < min_time_unix
@@ -2382,18 +2380,19 @@ where
 				if announcement_received_timestamp < min_time_unix as u64 {
 					log_gossip!(self.logger, "Removing channel {} because both directional updates are missing and its announcement timestamp {} being below {}",
 						scid, announcement_received_timestamp, min_time_unix);
-					scids_to_remove.push(*scid);
+					scids_to_remove.insert(*scid);
 				}
 			}
 		}
 		if !scids_to_remove.is_empty() {
 			let mut nodes = self.nodes.write().unwrap();
-			for scid in scids_to_remove {
-				let info = channels
-					.remove(&scid)
-					.expect("We just accessed this scid, it should be present");
+			let mut removed_channels_lck = self.removed_channels.lock().unwrap();
+
+			let channels_removed_bulk = channels.remove_fetch_bulk(&scids_to_remove);
+			removed_channels_lck.reserve(channels_removed_bulk.len());
+			for (scid, info) in channels_removed_bulk {
 				self.remove_channel_in_nodes(&mut nodes, &info, scid);
-				self.removed_channels.lock().unwrap().insert(scid, Some(current_time_unix));
+				removed_channels_lck.insert(scid, Some(current_time_unix));
 			}
 		}
 

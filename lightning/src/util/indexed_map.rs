@@ -72,6 +72,18 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 		ret
 	}
 
+	/// Removes elements with the given `keys` in bulk, returning the set of removed elements.
+	pub fn remove_fetch_bulk(&mut self, keys: &HashSet<K>) -> Vec<(K, V)> {
+		let mut res = Vec::with_capacity(keys.len());
+		for key in keys.iter() {
+			if let Some((k, v)) = self.map.remove_entry(key) {
+				res.push((k, v));
+			}
+		}
+		self.keys.retain(|k| !keys.contains(k));
+		res
+	}
+
 	/// Inserts the given `key`/`value` pair into the map, returning the element that was
 	/// previously stored at the given `key`, if one exists.
 	pub fn insert(&mut self, key: K, value: V) -> Option<V> {
