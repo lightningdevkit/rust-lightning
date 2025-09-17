@@ -8678,8 +8678,19 @@ where
 						.unwrap_or(false));
 				}
 
+				if signing_session.holder_tx_signatures().is_some() {
+					// Our `tx_signatures` either should've been the first time we processed them,
+					// or we're waiting for our counterparty to send theirs first.
+					return Ok((None, None));
+				}
+
 				signing_session
 			} else {
+				if Some(funding_txid_signed) == self.funding.get_funding_txid() {
+					// We may be handling a duplicate call and the funding was already locked so we
+					// no longer have the signing session present.
+					return Ok((None, None));
+				}
 				let err =
 					format!("Channel {} not expecting funding signatures", self.context.channel_id);
 				return Err(APIError::APIMisuseError { err });
