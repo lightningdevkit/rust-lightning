@@ -8617,6 +8617,12 @@ where
 						.unwrap_or(false));
 				}
 
+				if signing_session.holder_tx_signatures().is_some() {
+					// Our `tx_signatures` either should've been the first time we processed them,
+					// or we're waiting for our counterparty to send theirs first.
+					return Ok((None, None));
+				}
+
 				signing_session
 			} else {
 				let err =
