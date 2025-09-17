@@ -84,6 +84,14 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 		res
 	}
 
+	/// Removes elements with the given `keys` in bulk.
+	pub fn remove_bulk(&mut self, keys: &HashSet<K>) {
+		for key in keys.iter() {
+			self.map.remove(key);
+		}
+		self.keys.retain(|k| !keys.contains(k));
+	}
+
 	/// Inserts the given `key`/`value` pair into the map, returning the element that was
 	/// previously stored at the given `key`, if one exists.
 	pub fn insert(&mut self, key: K, value: V) -> Option<V> {
@@ -220,6 +228,11 @@ impl<'a, K: Hash + Ord, V> OccupiedEntry<'a, K, V> {
 			self.keys.iter().position(|k| k == &res.0).expect("map and keys must be consistent");
 		self.keys.remove(idx);
 		res
+	}
+
+	/// Get a reference to the key at the position described by this entry.
+	pub fn key(&self) -> &K {
+		self.underlying_entry.key()
 	}
 
 	/// Get a reference to the value at the position described by this entry.
