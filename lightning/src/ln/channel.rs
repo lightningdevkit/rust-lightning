@@ -8695,14 +8695,14 @@ where
 			.provide_holder_witnesses(tx_signatures, &self.context.secp_ctx)
 			.map_err(|err| APIError::APIMisuseError { err })?;
 
-		let splice_negotiated = if let Some(funding_tx) = funding_tx_opt.clone() {
+		let splice_negotiated_opt = if let Some(funding_tx) = funding_tx_opt.clone() {
 			debug_assert!(tx_signatures_opt.is_some());
 			self.on_tx_signatures_exchange(funding_tx)
 		} else {
 			None
 		};
 
-		Ok((tx_signatures_opt, funding_tx_opt, splice_negotiated))
+		Ok((tx_signatures_opt, funding_tx_opt, splice_negotiated_opt))
 	}
 
 	pub fn tx_signatures(
@@ -8756,13 +8756,13 @@ where
 		let (holder_tx_signatures_opt, funding_tx_opt) =
 			signing_session.received_tx_signatures(msg).map_err(|msg| ChannelError::Warn(msg))?;
 
-		let splice_negotiated = if let Some(funding_tx) = funding_tx_opt.clone() {
+		let splice_negotiated_opt = if let Some(funding_tx) = funding_tx_opt.clone() {
 			self.on_tx_signatures_exchange(funding_tx)
 		} else {
 			None
 		};
 
-		Ok((holder_tx_signatures_opt, funding_tx_opt, splice_negotiated))
+		Ok((holder_tx_signatures_opt, funding_tx_opt, splice_negotiated_opt))
 	}
 
 	/// Queues up an outbound update fee by placing it in the holding cell. You should call

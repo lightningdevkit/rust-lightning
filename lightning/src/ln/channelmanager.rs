@@ -6098,11 +6098,11 @@ where
 							.filter(|witness| !witness.is_empty())
 							.collect();
 						match chan.funding_transaction_signed(txid, witnesses) {
-							Ok((Some(tx_signatures), funding_tx_opt, splice_negotiated)) => {
+							Ok((Some(tx_signatures), funding_tx_opt, splice_negotiated_opt)) => {
 								if let Some(funding_tx) = funding_tx_opt {
 									self.broadcast_interactive_funding(chan, &funding_tx);
 								}
-								if let Some(splice_negotiated) = splice_negotiated {
+								if let Some(splice_negotiated) = splice_negotiated_opt {
 									self.pending_events.lock().unwrap().push_back((
 										events::Event::SplicePending {
 											channel_id: splice_negotiated.channel_id,
@@ -6127,7 +6127,9 @@ where
 								result = Err(err);
 								return NotifyOption::SkipPersistNoEvents;
 							},
-							_ => {
+							Ok((None, funding_tx_opt, splice_negotiated_opt)) => {
+								debug_assert!(funding_tx_opt.is_none());
+								debug_assert!(splice_negotiated_opt.is_none());
 								return NotifyOption::SkipPersistNoEvents;
 							},
 						}
@@ -9167,11 +9169,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			} else {
 				let txid = signing_session.unsigned_tx().compute_txid();
 				match channel.funding_transaction_signed(txid, vec![]) {
-					Ok((Some(tx_signatures), funding_tx_opt, splice_negotiated)) => {
+					Ok((Some(tx_signatures), funding_tx_opt, splice_negotiated_opt)) => {
 						if let Some(funding_tx) = funding_tx_opt {
 							self.broadcast_interactive_funding(channel, &funding_tx);
 						}
-						if let Some(splice_negotiated) = splice_negotiated {
+						if let Some(splice_negotiated) = splice_negotiated_opt {
 							self.pending_events.lock().unwrap().push_back((
 								events::Event::SplicePending {
 									channel_id: splice_negotiated.channel_id,
@@ -10134,7 +10136,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
-						let (tx_signatures_opt, funding_tx_opt, splice_negotiated) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg), chan_entry);
+						let (tx_signatures_opt, funding_tx_opt, splice_negotiated_opt) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg), chan_entry);
 						if let Some(tx_signatures) = tx_signatures_opt {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
@@ -10148,7 +10150,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								emit_channel_pending_event!(pending_events, chan);
 							}
 						}
-						if let Some(splice_negotiated) = splice_negotiated {
+						if let Some(splice_negotiated) = splice_negotiated_opt {
 							self.pending_events.lock().unwrap().push_back((
 								events::Event::SplicePending {
 									channel_id: splice_negotiated.channel_id,
