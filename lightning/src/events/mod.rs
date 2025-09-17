@@ -1412,30 +1412,6 @@ pub enum Event {
 		/// Will be `None` for channels created prior to LDK version 0.0.122.
 		channel_type: Option<ChannelTypeFeatures>,
 	},
-	/// Used to indicate that a splice transaction for the given `channel_id` is pending confirmation.
-	///
-	/// # Failure Behavior and Persistence
-	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
-	SplicePending {
-		/// The `channel_id` of the channel that has a pending splice transaction.
-		channel_id: ChannelId,
-		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
-		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
-		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-		/// `user_channel_id` will be randomized for an inbound channel.
-		///
-		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
-		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
-		user_channel_id: u128,
-		/// The `node_id` of the channel counterparty.
-		counterparty_node_id: PublicKey,
-		/// The outpoint of the channel's splice funding transaction.
-		funding_txo: OutPoint,
-		/// The features that this channel will operate with.
-		channel_type: ChannelTypeFeatures,
-	},
 	/// Used to indicate that a channel with the given `channel_id` is ready to be used. This event
 	/// is emitted when
 	/// - the initial funding transaction has been confirmed on-chain to an acceptable depth
@@ -1523,6 +1499,30 @@ pub enum Event {
 		///
 		/// [`ChainMonitor::get_claimable_balances`]: crate::chain::chainmonitor::ChainMonitor::get_claimable_balances
 		last_local_balance_msat: Option<u64>,
+	},
+	/// Used to indicate that a splice transaction for the given `channel_id` is pending confirmation.
+	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
+	SplicePending {
+		/// The `channel_id` of the channel that has a pending splice transaction.
+		channel_id: ChannelId,
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be randomized for an inbound channel.
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+		/// The `node_id` of the channel counterparty.
+		counterparty_node_id: PublicKey,
+		/// The outpoint of the channel's splice funding transaction.
+		funding_txo: OutPoint,
+		/// The features that this channel will operate with.
+		channel_type: ChannelTypeFeatures,
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
@@ -2182,22 +2182,6 @@ impl Writeable for Event {
 					(8, funding_txo, required),
 				});
 			},
-			&Event::SplicePending {
-				ref channel_id,
-				ref user_channel_id,
-				ref counterparty_node_id,
-				ref funding_txo,
-				ref channel_type,
-			} => {
-				50u8.write(writer)?;
-				write_tlv_fields!(writer, {
-					(1, channel_id, required),
-					(3, channel_type, required),
-					(5, user_channel_id, required),
-					(7, counterparty_node_id, required),
-					(9, funding_txo, required),
-				});
-			},
 			&Event::ConnectionNeeded { .. } => {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
@@ -2253,6 +2237,22 @@ impl Writeable for Event {
 				49u8.write(writer)?;
 				// We never write out FundingTransactionReadyForSigning events as they will be regenerated when
 				// necessary.
+			},
+			&Event::SplicePending {
+				ref channel_id,
+				ref user_channel_id,
+				ref counterparty_node_id,
+				ref funding_txo,
+				ref channel_type,
+			} => {
+				50u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, channel_id, required),
+					(3, channel_type, required),
+					(5, user_channel_id, required),
+					(7, counterparty_node_id, required),
+					(9, funding_txo, required),
+				});
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
