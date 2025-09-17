@@ -25,8 +25,8 @@ use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	shared_anchor_script_pubkey, HTLCOutputInCommitment, ANCHOR_INPUT_WITNESS_WEIGHT,
 	HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT, HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT,
+	P2A_ANCHOR_INPUT_WITNESS_WEIGHT,
 };
-use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -64,6 +64,8 @@ pub struct AnchorDescriptor {
 	/// The transaction input's outpoint corresponding to the commitment transaction's anchor
 	/// output.
 	pub outpoint: OutPoint,
+	/// Zero-fee-commitment anchors have variable value, which is tracked here.
+	pub value: Amount,
 }
 
 impl AnchorDescriptor {
@@ -80,7 +82,7 @@ impl AnchorDescriptor {
 			assert!(tx_params.channel_type_features.supports_anchor_zero_fee_commitments());
 			shared_anchor_script_pubkey()
 		};
-		TxOut { script_pubkey, value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI) }
+		TxOut { script_pubkey, value: self.value }
 	}
 
 	/// Returns the unsigned transaction input spending the anchor output in the commitment
@@ -668,6 +670,16 @@ where
 		commitment_tx: &Transaction, commitment_tx_fee_sat: u64,
 		anchor_descriptor: &AnchorDescriptor,
 	) -> Result<(), ()> {
+		let channel_type = &anchor_descriptor
+			.channel_derivation_parameters
+			.transaction_parameters
+			.channel_type_features;
+		let anchor_input_witness_weight = if channel_type.supports_anchor_zero_fee_commitments() {
+			P2A_ANCHOR_INPUT_WITNESS_WEIGHT
+		} else {
+			ANCHOR_INPUT_WITNESS_WEIGHT
+		};
+
 		// First, check if the commitment transaction has sufficient fees on its own.
 		let commitment_tx_feerate_sat_per_1000_weight = compute_feerate_sat_per_1000_weight(
 			commitment_tx_fee_sat,
@@ -688,7 +700,7 @@ where
 		let commitment_tx_fee_sat = Amount::from_sat(commitment_tx_fee_sat);
 		anchor_utxo.value += commitment_tx_fee_sat;
 		let starting_package_and_fixed_input_satisfaction_weight =
-			commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
+			commitment_tx.weight().to_wu() + anchor_input_witness_weight + EMPTY_SCRIPT_SIG_WEIGHT;
 		let mut package_and_fixed_input_satisfaction_weight =
 			starting_package_and_fixed_input_satisfaction_weight;
 
@@ -713,8 +725,14 @@ where
 				)
 				.await?;
 
+			let version = if channel_type.supports_anchor_zero_fee_commitments() {
+				Version::non_standard(3)
+			} else {
+				Version::TWO
+			};
+
 			let mut anchor_tx = Transaction {
-				version: Version::TWO,
+				version,
 				lock_time: LockTime::ZERO, // TODO: Use next best height.
 				input: vec![anchor_descriptor.unsigned_tx_input()],
 				output: vec![],
@@ -723,7 +741,7 @@ where
 			let input_satisfaction_weight: u64 =
 				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum();
 			let total_satisfaction_weight =
-				ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + input_satisfaction_weight;
+				anchor_input_witness_weight + EMPTY_SCRIPT_SIG_WEIGHT + input_satisfaction_weight;
 			let total_input_amount = must_spend_amount
 				+ coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
 
@@ -779,18 +797,21 @@ where
 			log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
 			anchor_tx = self.utxo_source.sign_psbt(anchor_psbt).await?;
 
-			let signer = self
-				.signer_provider
-				.derive_channel_signer(anchor_descriptor.channel_derivation_parameters.keys_id);
-			let channel_parameters =
-				&anchor_descriptor.channel_derivation_parameters.transaction_parameters;
-			let anchor_sig = signer.sign_holder_keyed_anchor_input(
-				channel_parameters,
-				&anchor_tx,
-				0,
-				&self.secp,
-			)?;
-			anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
+			// No need to produce any witness to spend P2A anchors
+			if channel_type.supports_anchors_zero_fee_htlc_tx() {
+				let signer = self
+					.signer_provider
+					.derive_channel_signer(anchor_descriptor.channel_derivation_parameters.keys_id);
+				let channel_parameters =
+					&anchor_descriptor.channel_derivation_parameters.transaction_parameters;
+				let anchor_sig = signer.sign_holder_keyed_anchor_input(
+					channel_parameters,
+					&anchor_tx,
+					0,
+					&self.secp,
+				)?;
+				anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
+			}
 
 			#[cfg(debug_assertions)]
 			{
@@ -1029,6 +1050,7 @@ mod tests {
 	};
 	use crate::io::Cursor;
 	use crate::ln::chan_utils::ChannelTransactionParameters;
+	use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 	use crate::sign::KeysManager;
 	use crate::types::features::ChannelTypeFeatures;
 	use crate::util::ser::Readable;
@@ -1147,6 +1169,7 @@ mod tests {
 					transaction_parameters,
 				},
 				outpoint: OutPoint { txid: Txid::from_byte_array([42; 32]), vout: 0 },
+				value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
 			},
 			pending_htlcs: Vec::new(),
 		});

@@ -14926,7 +14926,6 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	#[cfg(any(test, fuzzing))]
 	features.set_quiescence_optional();
 
-	#[cfg(test)]
 	if config.channel_handshake_config.negotiate_anchor_zero_fee_commitments {
 		features.set_anchor_zero_fee_commitments_optional();
 	}

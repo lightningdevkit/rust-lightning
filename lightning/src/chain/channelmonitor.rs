@@ -2715,6 +2715,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				} else {
 					let funding = get_confirmed_funding_scope!(self);
 					debug_assert!(!funding.channel_type_features().supports_anchors_zero_fee_htlc_tx());
+					debug_assert!(!funding.channel_type_features().supports_anchor_zero_fee_commitments());
 					BitcoinOutPoint::new(*txid, 0)
 				}
 			} else {
@@ -3949,10 +3950,18 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// new channel updates.
 		self.holder_tx_signed = true;
 		let mut watch_outputs = Vec::new();
-		// We can't broadcast our HTLC transactions while the commitment transaction is
-		// unconfirmed. We'll delay doing so until we detect the confirmed commitment in
-		// `transactions_confirmed`.
-		if !funding.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+		// In CSV anchor channels, we can't broadcast our HTLC transactions while the commitment transaction is
+		// unconfirmed.
+		// We'll delay doing so until we detect the confirmed commitment in `transactions_confirmed`.
+		//
+		// TODO: For now in 0FC channels, we also delay broadcasting any HTLC transactions until the commitment
+		// transaction gets confirmed. It is nonetheless possible to add HTLC spends to the P2A spend
+		// transaction while the commitment transaction is still unconfirmed.
+		let zero_fee_htlcs =
+			self.channel_type_features().supports_anchors_zero_fee_htlc_tx();
+		let zero_fee_commitments =
+			self.channel_type_features().supports_anchor_zero_fee_commitments();
+		if !zero_fee_htlcs && !zero_fee_commitments {
 			// Because we're broadcasting a commitment transaction, we should construct the package
 			// assuming it gets confirmed in the next block. Sadly, we have code which considers
 			// "not yet confirmed" things as discardable, so we cannot do that here.
@@ -4416,8 +4425,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						counterparty_node_id,
 						claim_id,
 						package_target_feerate_sat_per_1000_weight,
-						commitment_tx,
-						commitment_tx_fee_satoshis,
 						anchor_descriptor: AnchorDescriptor {
 							channel_derivation_parameters: ChannelDerivationParameters {
 								keys_id: self.channel_keys_id,
@@ -4428,8 +4435,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								txid: commitment_txid,
 								vout: anchor_output_idx,
 							},
+							value: commitment_tx.output[anchor_output_idx as usize].value,
 						},
 						pending_htlcs: pending_nondust_htlcs,
+						commitment_tx,
+						commitment_tx_fee_satoshis,
 					}));
 				},
 				ClaimEvent::BumpHTLC {
@@ -4646,7 +4656,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				if outp.script_pubkey == revokeable_p2wsh {
 					let revk_outp = RevokedOutput::build(
 						per_commitment_point, per_commitment_key, outp.value,
-						funding_spent.channel_type_features().supports_anchors_zero_fee_htlc_tx(),
 						funding_spent.channel_parameters.clone(), height,
 					);
 					let justice_package = PackageTemplate::build_package(
@@ -4859,9 +4868,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if input.previous_output.txid == *commitment_txid && input.witness.len() == 5 && tx.output.get(idx).is_some() {
 				log_error!(logger, "Got broadcast of revoked counterparty HTLC transaction, spending {}:{}", htlc_txid, idx);
 				let revk_outp = RevokedOutput::build(
-					per_commitment_point, per_commitment_key, tx.output[idx].value, false,
-					funding_spent.channel_parameters.clone(),
-					height,
+					per_commitment_point, per_commitment_key, tx.output[idx].value,
+					self.funding.channel_parameters.clone(), height,
 				);
 				let justice_package = PackageTemplate::build_package(
 					htlc_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp),
@@ -5129,9 +5137,22 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.funding.current_holder_commitment_tx.add_holder_sig(&redeem_script, sig)
 		};
 		let mut holder_transactions = vec![commitment_tx];
-		// When anchor outputs are present, the HTLC transactions are only final once the commitment
-		// transaction confirms due to the CSV 1 encumberance.
-		if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+
+		if self.channel_type_features().supports_anchors_zero_fee_htlc_tx()
+			|| self.channel_type_features().supports_anchor_zero_fee_commitments()
+		{
+			// HTLC transactions in these channels require external funding before finalized,
+			// so we return the commitment transaction alone here.
+			//
+			// In 0FC channels, we *could* use HTLC transactions to pay for fees on a
+			// 0FC commitment transaction to save the fixed transaction overhead
+			// (locktime + version), but we would still have to pay for fees using
+			// external UTXOs to avoid invalidating the counterparty HTLC signature.
+			// This is something we would consider in the future.
+			//
+			// Furthermore, we can't broadcast a HTLC claim transaction while the
+			// anchor claim transaction and its parent are still unconfirmed due to the
+			// current single-child restriction on TRUC transactions.
 			return holder_transactions;
 		}
 

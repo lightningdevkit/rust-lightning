@@ -144,7 +144,6 @@ pub(crate) struct RevokedOutput {
 	weight: u64,
 	amount: Amount,
 	on_counterparty_tx_csv: u16,
-	is_counterparty_balance_on_anchors: Option<()>,
 	channel_parameters: Option<ChannelTransactionParameters>,
 	// Added in LDK 0.1.4/0.2 and always set since.
 	outpoint_confirmation_height: Option<u32>,
@@ -154,7 +153,7 @@ impl RevokedOutput {
 	#[rustfmt::skip]
 	pub(crate) fn build(
 		per_commitment_point: PublicKey, per_commitment_key: SecretKey, amount: Amount,
-		is_counterparty_balance_on_anchors: bool, channel_parameters: ChannelTransactionParameters,
+		channel_parameters: ChannelTransactionParameters,
 		outpoint_confirmation_height: u32,
 	) -> Self {
 		let directed_params = channel_parameters.as_counterparty_broadcastable();
@@ -170,7 +169,6 @@ impl RevokedOutput {
 			weight: WEIGHT_REVOKED_OUTPUT,
 			amount,
 			on_counterparty_tx_csv,
-			is_counterparty_balance_on_anchors: if is_counterparty_balance_on_anchors { Some(()) } else { None },
 			channel_parameters: Some(channel_parameters),
 			outpoint_confirmation_height: Some(outpoint_confirmation_height),
 		}
@@ -186,7 +184,9 @@ impl_writeable_tlv_based!(RevokedOutput, {
 	(8, weight, required),
 	(10, amount, required),
 	(12, on_counterparty_tx_csv, required),
-	(14, is_counterparty_balance_on_anchors, option),
+	// Unused since 0.1, this setting causes downgrades to before 0.1 to refuse to
+	// aggregate `RevokedOutput` claims, which is the more conservative stance.
+	(14, is_counterparty_balance_on_anchors, (legacy, (), |_| Some(()))),
 	(15, channel_parameters, (option: ReadableArgs, None)), // Added in 0.2.
 });
 
@@ -750,11 +750,17 @@ impl PackageSolvingData {
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
-				debug_assert!(outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
+				let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
+				let free_commitments =
+					outp.channel_type_features.supports_anchor_zero_fee_commitments();
+				debug_assert!(free_htlcs || free_commitments);
 				outp.amount_msat / 1000
 			},
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
-				debug_assert!(outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
+				let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
+				let free_commitments =
+					outp.channel_type_features.supports_anchor_zero_fee_commitments();
+				debug_assert!(free_htlcs || free_commitments);
 				outp.funding_amount_sats.unwrap()
 			}
 		};
@@ -768,7 +774,10 @@ impl PackageSolvingData {
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => weight_offered_htlc(&outp.channel_type_features) as usize,
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => weight_received_htlc(&outp.channel_type_features) as usize,
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
-				debug_assert!(outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
+				let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
+				let free_commitments =
+					outp.channel_type_features.supports_anchor_zero_fee_commitments();
+				debug_assert!(free_htlcs || free_commitments);
 				if outp.preimage.is_none() {
 					weight_offered_htlc(&outp.channel_type_features) as usize
 				} else {
@@ -988,6 +997,7 @@ impl PackageSolvingData {
 		match self {
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
 				debug_assert!(!outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
+				debug_assert!(!outp.channel_type_features.supports_anchor_zero_fee_commitments());
 				outp.get_maybe_signed_htlc_tx(onchain_handler, outpoint)
 			}
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
@@ -1040,14 +1050,20 @@ impl PackageSolvingData {
 				PackageMalleability::Malleable(AggregationCluster::Unpinnable),
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) =>
 				PackageMalleability::Malleable(AggregationCluster::Pinnable),
-			PackageSolvingData::HolderHTLCOutput(ref outp) if outp.channel_type_features.supports_anchors_zero_fee_htlc_tx() => {
-				if outp.preimage.is_some() {
-					PackageMalleability::Malleable(AggregationCluster::Unpinnable)
+			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+				let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
+				let free_commits = outp.channel_type_features.supports_anchor_zero_fee_commitments();
+
+				if free_htlcs || free_commits {
+					if outp.preimage.is_some() {
+						PackageMalleability::Malleable(AggregationCluster::Unpinnable)
+					} else {
+						PackageMalleability::Malleable(AggregationCluster::Pinnable)
+					}
 				} else {
-					PackageMalleability::Malleable(AggregationCluster::Pinnable)
+					PackageMalleability::Untractable
 				}
 			},
-			PackageSolvingData::HolderHTLCOutput(..) => PackageMalleability::Untractable,
 			PackageSolvingData::HolderFundingOutput(..) => PackageMalleability::Untractable,
 		}
 	}
@@ -1364,7 +1380,10 @@ impl PackageTemplate {
 		for (previous_output, input) in &self.inputs {
 			match input {
 				PackageSolvingData::HolderHTLCOutput(ref outp) => {
-					debug_assert!(outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
+					let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
+					let free_commitments =
+						outp.channel_type_features.supports_anchor_zero_fee_commitments();
+					debug_assert!(free_htlcs || free_commitments);
 					outp.get_htlc_descriptor(onchain_handler, &previous_output).map(|htlc| {
 						htlcs.get_or_insert_with(|| Vec::with_capacity(self.inputs.len())).push(htlc);
 					});
@@ -1559,8 +1578,14 @@ impl PackageTemplate {
 	#[rustfmt::skip]
 	pub(crate) fn requires_external_funding(&self) -> bool {
 		self.inputs.iter().find(|input| match input.1 {
-			PackageSolvingData::HolderFundingOutput(ref outp) => outp.channel_type_features.supports_anchors_zero_fee_htlc_tx(),
-			PackageSolvingData::HolderHTLCOutput(ref outp) => outp.channel_type_features.supports_anchors_zero_fee_htlc_tx(),
+			PackageSolvingData::HolderFundingOutput(ref outp) => {
+				outp.channel_type_features.supports_anchors_zero_fee_htlc_tx()
+					|| outp.channel_type_features.supports_anchor_zero_fee_commitments()
+			},
+			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+				outp.channel_type_features.supports_anchors_zero_fee_htlc_tx()
+					|| outp.channel_type_features.supports_anchor_zero_fee_commitments()
+			},
 			_ => false,
 		}).is_some()
 	}
@@ -1796,16 +1821,13 @@ mod tests {
 
 	#[rustfmt::skip]
 	macro_rules! dumb_revk_output {
-		($is_counterparty_balance_on_anchors: expr) => {
+		() => {
 			{
 				let secp_ctx = Secp256k1::new();
 				let dumb_scalar = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
 				let channel_parameters = ChannelTransactionParameters::test_dummy(0);
-				PackageSolvingData::RevokedOutput(RevokedOutput::build(
-					dumb_point, dumb_scalar, Amount::ZERO, $is_counterparty_balance_on_anchors,
-					channel_parameters, 0,
-				))
+				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, dumb_scalar, Amount::ZERO, channel_parameters, 0))
 			}
 		}
 	}
@@ -2107,9 +2129,9 @@ mod tests {
 	#[test]
 	#[rustfmt::skip]
 	fn test_package_split_malleable() {
-		let revk_outp_one = dumb_revk_output!(false);
-		let revk_outp_two = dumb_revk_output!(false);
-		let revk_outp_three = dumb_revk_output!(false);
+		let revk_outp_one = dumb_revk_output!();
+		let revk_outp_two = dumb_revk_output!();
+		let revk_outp_three = dumb_revk_output!();
 
 		let mut package_one = PackageTemplate::build_package(fake_txid(1), 0, revk_outp_one, 1100);
 		let package_two = PackageTemplate::build_package(fake_txid(1), 1, revk_outp_two, 1100);
@@ -2141,7 +2163,7 @@ mod tests {
 
 	#[test]
 	fn test_package_timer() {
-		let revk_outp = dumb_revk_output!(false);
+		let revk_outp = dumb_revk_output!();
 
 		let mut package = PackageTemplate::build_package(fake_txid(1), 0, revk_outp, 1000);
 		assert_eq!(package.timer(), 0);
@@ -2165,7 +2187,7 @@ mod tests {
 		let weight_sans_output = (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR as u64 + 2;
 
 		{
-			let revk_outp = dumb_revk_output!(false);
+			let revk_outp = dumb_revk_output!();
 			let package = PackageTemplate::build_package(fake_txid(1), 0, revk_outp, 0);
 			assert_eq!(package.package_weight(&ScriptBuf::new()),  weight_sans_output + WEIGHT_REVOKED_OUTPUT);
 		}
