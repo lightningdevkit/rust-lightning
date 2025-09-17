@@ -206,6 +206,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 		nodes[1].node.peer_disconnected(node_a_id);
 		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 		reconnect_args.send_channel_ready = (true, true);
+		reconnect_args.send_announcement_sigs = (true, true);
 		reconnect_nodes(reconnect_args);
 	}
 
