@@ -504,6 +504,7 @@ fn test_set_outpoints_partial_claiming() {
 		channel_id: Some(chan.2),
 		counterparty_node_id: Some(nodes[0].node.get_our_node_id()),
 		discard_funding: false,
+		splice_failed: false,
 		reason: None, // Could be due to either HTLC timing out, so don't bother checking
 		channel_funding_txo: None,
 		user_channel_id: None,

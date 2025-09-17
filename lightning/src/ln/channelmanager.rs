@@ -4536,6 +4536,18 @@ where
 				last_local_balance_msat: Some(shutdown_res.last_local_balance_msat),
 			}, None));
 
+			if let Some(splice_funding_failed) = shutdown_res.splice_funding_failed.take() {
+				pending_events.push_back((events::Event::SpliceFailed {
+					channel_id: shutdown_res.channel_id,
+					counterparty_node_id: shutdown_res.counterparty_node_id,
+					user_channel_id: shutdown_res.user_channel_id,
+					abandoned_funding_txo: splice_funding_failed.funding_txo,
+					channel_type: splice_funding_failed.channel_type,
+					contributed_inputs: splice_funding_failed.contributed_inputs,
+					contributed_outputs: splice_funding_failed.contributed_outputs,
+				}, None));
+			}
+
 			if let Some(transaction) = shutdown_res.unbroadcasted_funding_tx {
 				let funding_info = if shutdown_res.is_manual_broadcast {
 					FundingInfo::OutPoint {

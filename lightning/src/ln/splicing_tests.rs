@@ -1341,3 +1341,114 @@ fn fail_splice_on_tx_abort() {
 	let tx_abort = get_event_msg!(initiator, MessageSendEvent::SendTxAbort, node_id_acceptor);
 	acceptor.node.handle_tx_abort(node_id_initiator, &tx_abort);
 }
+
+#[test]
+fn fail_splice_on_channel_close() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let config = test_default_anchors_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+
+	let _node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+	let splice_in_amount = initial_channel_capacity / 2;
+	let contribution = SpliceContribution::SpliceIn {
+		value: Amount::from_sat(splice_in_amount),
+		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
+		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	};
+
+	// Close the channel before completion of interactive-tx construction.
+	let _ = complete_splice_handshake(initiator, acceptor, channel_id, contribution.clone());
+	let _tx_add_input =
+		get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
+
+	initiator
+		.node
+		.force_close_broadcasting_latest_txn(&channel_id, &node_id_acceptor, "test".to_owned())
+		.unwrap();
+	handle_bump_events(initiator, true, 0);
+	check_closed_events(
+		&nodes[0],
+		&[ExpectedCloseEvent {
+			channel_id: Some(channel_id),
+			discard_funding: false,
+			splice_failed: true,
+			channel_funding_txo: None,
+			user_channel_id: Some(42),
+			..Default::default()
+		}],
+	);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
+}
+
+#[test]
+fn fail_quiescent_action_on_channel_close() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let config = test_default_anchors_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+
+	let _node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+	let splice_in_amount = initial_channel_capacity / 2;
+	let contribution = SpliceContribution::SpliceIn {
+		value: Amount::from_sat(splice_in_amount),
+		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
+		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	};
+
+	// Close the channel before completion of STFU handshake.
+	initiator
+		.node
+		.splice_channel(
+			&channel_id,
+			&node_id_acceptor,
+			contribution,
+			FEERATE_FLOOR_SATS_PER_KW,
+			None,
+		)
+		.unwrap();
+
+	let _stfu_init = get_event_msg!(initiator, MessageSendEvent::SendStfu, node_id_acceptor);
+
+	initiator
+		.node
+		.force_close_broadcasting_latest_txn(&channel_id, &node_id_acceptor, "test".to_owned())
+		.unwrap();
+	handle_bump_events(initiator, true, 0);
+	check_closed_events(
+		&nodes[0],
+		&[ExpectedCloseEvent {
+			channel_id: Some(channel_id),
+			discard_funding: false,
+			splice_failed: true,
+			channel_funding_txo: None,
+			user_channel_id: Some(42),
+			..Default::default()
+		}],
+	);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
+}

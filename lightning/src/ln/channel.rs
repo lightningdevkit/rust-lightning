@@ -1191,6 +1191,9 @@ pub(crate) struct ShutdownResult {
 	pub(crate) unbroadcasted_funding_tx: Option<Transaction>,
 	pub(crate) channel_funding_txo: Option<OutPoint>,
 	pub(crate) last_local_balance_msat: u64,
+	/// If a splice was in progress when the channel was shut down, this contains
+	/// the splice funding information for emitting a SpliceFailed event.
+	pub(crate) splice_funding_failed: Option<SpliceFundingFailed>,
 }
 
 /// Tracks the transaction number, along with current and next commitment points.
@@ -2684,6 +2687,15 @@ pub(crate) struct SpliceInstructions {
 	change_script: Option<ScriptBuf>,
 	funding_feerate_per_kw: u32,
 	locktime: u32,
+}
+
+impl SpliceInstructions {
+	fn into_contributed_inputs_and_outputs(self) -> (Vec<bitcoin::OutPoint>, Vec<TxOut>) {
+		(
+			self.our_funding_inputs.into_iter().map(|input| input.utxo.outpoint).collect(),
+			self.our_funding_outputs,
+		)
+	}
 }
 
 impl_writeable_tlv_based!(SpliceInstructions, {
@@ -6040,6 +6052,7 @@ where
 			is_manual_broadcast: self.is_manual_broadcast,
 			channel_funding_txo: funding.get_funding_txo(),
 			last_local_balance_msat: funding.value_to_self_msat,
+			splice_funding_failed: None,
 		}
 	}
 
@@ -6824,7 +6837,38 @@ where
 	}
 
 	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
-		self.context.force_shutdown(&self.funding, closure_reason)
+		let splice_funding_failed =
+			if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
+				if self.should_reset_pending_splice_state() {
+					self.reset_pending_splice_state()
+				} else {
+					match self.quiescent_action.take() {
+						Some(QuiescentAction::Splice(instructions)) => {
+							self.context.channel_state.clear_awaiting_quiescence();
+							let (inputs, outputs) =
+								instructions.into_contributed_inputs_and_outputs();
+							Some(SpliceFundingFailed {
+								funding_txo: None,
+								channel_type: None,
+								contributed_inputs: inputs,
+								contributed_outputs: outputs,
+							})
+						},
+						#[cfg(any(test, fuzzing))]
+						Some(quiescent_action) => {
+							self.quiescent_action = Some(quiescent_action);
+							None
+						},
+						None => None,
+					}
+				}
+			} else {
+				None
+			};
+
+		let mut shutdown_result = self.context.force_shutdown(&self.funding, closure_reason);
+		shutdown_result.splice_funding_failed = splice_funding_failed;
+		shutdown_result
 	}
 
 	fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
@@ -10372,6 +10416,7 @@ where
 			is_manual_broadcast: self.context.is_manual_broadcast,
 			channel_funding_txo: self.funding.get_funding_txo(),
 			last_local_balance_msat: self.funding.value_to_self_msat,
+			splice_funding_failed: None,
 		}
 	}
 

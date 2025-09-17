@@ -1467,6 +1467,7 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 		channel_id: Some(chan_id),
 		counterparty_node_id: Some(nodes[0].node.get_our_node_id()),
 		discard_funding: false,
+		splice_failed: false,
 		reason: None, // Could be due to any HTLC timing out, so don't bother checking
 		channel_funding_txo: None,
 		user_channel_id: None,
