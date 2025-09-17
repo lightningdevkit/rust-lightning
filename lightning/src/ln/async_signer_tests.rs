@@ -600,7 +600,7 @@ fn do_test_async_raa_peer_disconnect(
 	}
 
 	// Expect the RAA
-	let (_, revoke_and_ack, commitment_signed, resend_order, _) =
+	let (_, revoke_and_ack, commitment_signed, resend_order, _, _) =
 		handle_chan_reestablish_msgs!(dst, src);
 	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
 		assert!(revoke_and_ack.is_none());
@@ -616,14 +616,15 @@ fn do_test_async_raa_peer_disconnect(
 	dst.node.signer_unblocked(Some((src_node_id, chan_id)));
 
 	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
-		let (_, revoke_and_ack, commitment_signed, resend_order, _) =
+		let (_, revoke_and_ack, commitment_signed, resend_order, _, _) =
 			handle_chan_reestablish_msgs!(dst, src);
 		assert!(revoke_and_ack.is_some());
 		assert!(commitment_signed.is_some());
 		assert!(resend_order == RAACommitmentOrder::RevokeAndACKFirst);
 	} else {
 		// Make sure we don't double send the RAA.
-		let (_, revoke_and_ack, commitment_signed, _, _) = handle_chan_reestablish_msgs!(dst, src);
+		let (_, revoke_and_ack, commitment_signed, _, _, _) =
+			handle_chan_reestablish_msgs!(dst, src);
 		assert!(revoke_and_ack.is_none());
 		assert!(commitment_signed.is_none());
 	}
@@ -749,7 +750,7 @@ fn do_test_async_commitment_signature_peer_disconnect(
 	}
 
 	// Expect the RAA
-	let (_, revoke_and_ack, commitment_signed, _, _) = handle_chan_reestablish_msgs!(dst, src);
+	let (_, revoke_and_ack, commitment_signed, _, _, _) = handle_chan_reestablish_msgs!(dst, src);
 	assert!(revoke_and_ack.is_some());
 	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
 		assert!(commitment_signed.is_none());
@@ -762,11 +763,11 @@ fn do_test_async_commitment_signature_peer_disconnect(
 	dst.node.signer_unblocked(Some((src_node_id, chan_id)));
 
 	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
-		let (_, _, commitment_signed, _, _) = handle_chan_reestablish_msgs!(dst, src);
+		let (_, _, commitment_signed, _, _, _) = handle_chan_reestablish_msgs!(dst, src);
 		assert!(commitment_signed.is_some());
 	} else {
 		// Make sure we don't double send the CS.
-		let (_, _, commitment_signed, _, _) = handle_chan_reestablish_msgs!(dst, src);
+		let (_, _, commitment_signed, _, _, _) = handle_chan_reestablish_msgs!(dst, src);
 		assert!(commitment_signed.is_none());
 	}
 }
@@ -882,6 +883,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	assert!(as_resp.1.is_none());
 	assert!(as_resp.2.is_none());
 	assert!(as_resp.4.is_none());
+	assert!(as_resp.5.is_none());
 
 	if monitor_update_failure {
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
@@ -902,6 +904,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	assert!(as_resp.1.is_none());
 	assert!(as_resp.2.is_none());
 	assert!(as_resp.4.is_none());
+	assert!(as_resp.5.is_none());
 
 	nodes[0].enable_channel_signer_op(&node_b_id, &chan_id, SignerOp::SignCounterpartyCommitment);
 	nodes[0].node.signer_unblocked(Some((node_b_id, chan_id)));
@@ -920,6 +923,9 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 
 	assert!(as_resp.4.is_none());
 	assert!(bs_resp.4.is_none());
+
+	assert!(as_resp.5.is_none());
+	assert!(bs_resp.5.is_none());
 
 	// Now that everything is restored, get the CS + RAA and handle them.
 	nodes[1]
