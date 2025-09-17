@@ -1255,6 +1255,9 @@ pub(crate) struct ShutdownResult {
 	pub(crate) unbroadcasted_funding_tx: Option<Transaction>,
 	pub(crate) channel_funding_txo: Option<OutPoint>,
 	pub(crate) last_local_balance_msat: u64,
+	/// If a splice was in progress when the channel was shut down, this contains
+	/// the splice funding information for emitting a SpliceFailed event.
+	pub(crate) splice_funding_failed: Option<SpliceFundingFailed>,
 }
 
 /// Tracks the transaction number, along with current and next commitment points.
@@ -6090,6 +6093,7 @@ where
 			is_manual_broadcast: self.is_manual_broadcast,
 			channel_funding_txo: funding.get_funding_txo(),
 			last_local_balance_msat: funding.value_to_self_msat,
+			splice_funding_failed: None,
 		}
 	}
 
@@ -6846,7 +6850,37 @@ where
 	}
 
 	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
-		self.context.force_shutdown(&self.funding, closure_reason)
+		// Capture splice funding failed information if we have an active splice negotiation
+		let splice_funding_failed = self.pending_splice.as_mut()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.take())
+			.map(|funding_negotiation| {
+				// Create SpliceFundingFailed for any active splice negotiation during shutdown
+				let (funding_txo, channel_type) = match &funding_negotiation {
+					FundingNegotiation::AwaitingAck { .. } => {
+						(None, None)
+					},
+					FundingNegotiation::ConstructingTransaction { funding, .. } => {
+						(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
+					},
+					FundingNegotiation::AwaitingSignatures { funding } => {
+						(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
+					},
+				};
+
+				SpliceFundingFailed {
+					channel_id: self.context.channel_id,
+					counterparty_node_id: self.context.counterparty_node_id,
+					user_channel_id: self.context.user_id,
+					funding_txo,
+					channel_type,
+					contributed_inputs: Vec::new(),
+					contributed_outputs: Vec::new(),
+				}
+			});
+
+		let mut shutdown_result = self.context.force_shutdown(&self.funding, closure_reason);
+		shutdown_result.splice_funding_failed = splice_funding_failed;
+		shutdown_result
 	}
 
 	fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
@@ -10242,6 +10276,7 @@ where
 			is_manual_broadcast: self.context.is_manual_broadcast,
 			channel_funding_txo: self.funding.get_funding_txo(),
 			last_local_balance_msat: self.funding.value_to_self_msat,
+			splice_funding_failed: None,
 		}
 	}
 
