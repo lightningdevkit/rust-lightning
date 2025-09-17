@@ -12832,27 +12832,27 @@ where
 	#[rustfmt::skip]
 	pub fn stfu<L: Deref>(
 		&mut self, msg: &msgs::Stfu, logger: &L
-	) -> Result<Option<StfuResponse>, ChannelError> where L::Target: Logger {
+	) -> Result<Option<StfuResponse>, (ChannelError, Option<SpliceFundingFailed>)> where L::Target: Logger {
 		if self.context.channel_state.is_quiescent() {
-			return Err(ChannelError::Warn("Channel is already quiescent".to_owned()));
+			return Err((ChannelError::Warn("Channel is already quiescent".to_owned()), None));
 		}
 		if self.context.channel_state.is_remote_stfu_sent() {
-			return Err(ChannelError::Warn(
+			return Err((ChannelError::Warn(
 				"Peer sent `stfu` when they already sent it and we've yet to become quiescent".to_owned()
-			));
+			), None));
 		}
 
 		if !self.context.is_live() {
-			return Err(ChannelError::Warn(
+			return Err((ChannelError::Warn(
 				"Peer sent `stfu` when we were not in a live state".to_owned()
-			));
+			), None));
 		}
 
 		if !self.context.channel_state.is_local_stfu_sent() {
 			if !msg.initiator {
-				return Err(ChannelError::WarnAndDisconnect(
+				return Err((ChannelError::WarnAndDisconnect(
 					"Peer sent unexpected `stfu` without signaling as initiator".to_owned()
-				));
+				), None));
 			}
 
 			// We don't check `is_waiting_on_peer_pending_channel_update` prior to setting the flag
@@ -12866,7 +12866,7 @@ where
 			return self
 				.send_stfu(logger)
 				.map(|stfu| Some(StfuResponse::Stfu(stfu)))
-				.map_err(|e| ChannelError::Ignore(e.to_owned()));
+				.map_err(|e| (ChannelError::Ignore(e.to_owned()), None));
 		}
 
 		// We already sent `stfu` and are now processing theirs. It may be in response to ours, or
@@ -12885,9 +12885,9 @@ where
 			// have a monitor update pending if we've processed a message from the counterparty, but
 			// we don't consider this when becoming quiescent since the states are not mutually
 			// exclusive.
-			return Err(ChannelError::WarnAndDisconnect(
+			return Err((ChannelError::WarnAndDisconnect(
 				"Received counterparty stfu while having pending counterparty updates".to_owned()
-			));
+			), None));
 		}
 
 		self.context.channel_state.clear_local_stfu_sent();
@@ -12903,14 +12903,25 @@ where
 			match self.quiescent_action.take() {
 				None => {
 					debug_assert!(false);
-					return Err(ChannelError::WarnAndDisconnect(
+					return Err((ChannelError::WarnAndDisconnect(
 						"Internal Error: Didn't have anything to do after reaching quiescence".to_owned()
-					));
+					), None));
 				},
 				Some(QuiescentAction::Splice(_instructions)) => {
 					return self.send_splice_init(_instructions)
 						.map(|splice_init| Some(StfuResponse::SpliceInit(splice_init)))
-						.map_err(|e| ChannelError::WarnAndDisconnect(e.to_owned()));
+						.map_err(|e| {
+							let splice_failed = SpliceFundingFailed {
+								channel_id: self.context.channel_id,
+								counterparty_node_id: self.context.counterparty_node_id,
+								user_channel_id: self.context.user_id,
+								funding_txo: None,
+								channel_type: None,
+								contributed_inputs: Vec::new(),
+								contributed_outputs: Vec::new(),
+							};
+							(ChannelError::WarnAndDisconnect(e.to_owned()), Some(splice_failed))
+						});
 				},
 				#[cfg(any(test, fuzzing))]
 				Some(QuiescentAction::DoNothing) => {

@@ -11033,7 +11033,25 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					);
 
 					let res = chan.stfu(&msg, &&logger);
-					let resp = try_channel_entry!(self, peer_state, res, chan_entry);
+					let resp = match res {
+						Ok(resp) => resp,
+						Err((e, splice_funding_failed)) => {
+							// Emit SpliceFailed event if there was an active splice negotiation
+							if let Some(splice_failed) = splice_funding_failed {
+								let pending_events = &mut self.pending_events.lock().unwrap();
+								pending_events.push_back((events::Event::SpliceFailed {
+									channel_id: splice_failed.channel_id,
+									counterparty_node_id: splice_failed.counterparty_node_id,
+									user_channel_id: splice_failed.user_channel_id,
+									funding_txo: splice_failed.funding_txo,
+									channel_type: splice_failed.channel_type,
+									contributed_inputs: splice_failed.contributed_inputs,
+									contributed_outputs: splice_failed.contributed_outputs,
+								}, None));
+							}
+							try_channel_entry!(self, peer_state, Err(e), chan_entry)
+						},
+					};
 					match resp {
 						None => Ok(false),
 						Some(StfuResponse::Stfu(msg)) => {
