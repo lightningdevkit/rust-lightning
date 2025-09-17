@@ -4796,11 +4796,14 @@ macro_rules! handle_chan_reestablish_msgs {
 				None
 			};
 
-		if let Some(&MessageSendEvent::SendAnnouncementSignatures { ref node_id, msg: _ }) =
+		let mut announcement_sigs = None; // May be now or later
+		if let Some(&MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg }) =
 			msg_events.get(idx)
 		{
 			idx += 1;
 			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+			assert!(announcement_sigs.is_none());
+			announcement_sigs = Some(msg.clone());
 		}
 
 		let mut had_channel_update = false; // ChannelUpdate may be now or later, but not both
@@ -4859,6 +4862,15 @@ macro_rules! handle_chan_reestablish_msgs {
 			}
 		}
 
+		if let Some(&MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg }) =
+			msg_events.get(idx)
+		{
+			idx += 1;
+			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+			assert!(announcement_sigs.is_none());
+			announcement_sigs = Some(msg.clone());
+		}
+
 		if let Some(&MessageSendEvent::SendChannelUpdate { ref node_id, .. }) = msg_events.get(idx)
 		{
 			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
@@ -4866,9 +4878,9 @@ macro_rules! handle_chan_reestablish_msgs {
 			assert!(!had_channel_update);
 		}
 
-		assert_eq!(msg_events.len(), idx);
+		assert_eq!(msg_events.len(), idx, "{msg_events:?}");
 
-		(channel_ready, revoke_and_ack, commitment_update, order)
+		(channel_ready, revoke_and_ack, commitment_update, order, announcement_sigs)
 	}};
 }
 
@@ -4876,6 +4888,7 @@ pub struct ReconnectArgs<'a, 'b, 'c, 'd> {
 	pub node_a: &'a Node<'b, 'c, 'd>,
 	pub node_b: &'a Node<'b, 'c, 'd>,
 	pub send_channel_ready: (bool, bool),
+	pub send_announcement_sigs: (bool, bool),
 	pub pending_responding_commitment_signed: (bool, bool),
 	/// Indicates that the pending responding commitment signed will be a dup for the recipient,
 	/// and no monitor update is expected
@@ -4894,6 +4907,7 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 			node_a,
 			node_b,
 			send_channel_ready: (false, false),
+			send_announcement_sigs: (false, false),
 			pending_responding_commitment_signed: (false, false),
 			pending_responding_commitment_signed_dup_monitor: (false, false),
 			pending_htlc_adds: (0, 0),
@@ -4913,6 +4927,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		node_a,
 		node_b,
 		send_channel_ready,
+		send_announcement_sigs,
 		pending_htlc_adds,
 		pending_htlc_claims,
 		pending_htlc_fails,
@@ -4994,7 +5009,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				&& pending_cell_htlc_fails.1 == 0)
 	);
 
-	for chan_msgs in resp_1.drain(..) {
+	for mut chan_msgs in resp_1.drain(..) {
 		if send_channel_ready.0 {
 			node_a.node.handle_channel_ready(node_b_id, &chan_msgs.0.unwrap());
 			let announcement_event = node_a.node.get_and_clear_pending_msg_events();
@@ -5008,6 +5023,18 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			}
 		} else {
 			assert!(chan_msgs.0.is_none());
+		}
+		if send_announcement_sigs.0 {
+			let announcement_sigs = chan_msgs.4.take().unwrap();
+			node_a.node.handle_announcement_signatures(node_b_id, &announcement_sigs);
+			let msg_events = node_a.node.get_and_clear_pending_msg_events();
+			assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+			if let MessageSendEvent::BroadcastChannelAnnouncement { .. } = msg_events[0] {
+			} else {
+				panic!("Unexpected event! {:?}", msg_events[0]);
+			}
+		} else {
+			assert!(chan_msgs.4.is_none());
 		}
 		if pending_raa.0 {
 			assert!(chan_msgs.3 == RAACommitmentOrder::RevokeAndACKFirst);
@@ -5073,7 +5100,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		}
 	}
 
-	for chan_msgs in resp_2.drain(..) {
+	for mut chan_msgs in resp_2.drain(..) {
 		if send_channel_ready.1 {
 			node_b.node.handle_channel_ready(node_a_id, &chan_msgs.0.unwrap());
 			let announcement_event = node_b.node.get_and_clear_pending_msg_events();
@@ -5087,6 +5114,18 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			}
 		} else {
 			assert!(chan_msgs.0.is_none());
+		}
+		if send_announcement_sigs.1 {
+			let announcement_sigs = chan_msgs.4.take().unwrap();
+			node_b.node.handle_announcement_signatures(node_a_id, &announcement_sigs);
+			let mut msg_events = node_b.node.get_and_clear_pending_msg_events();
+			assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+			if let MessageSendEvent::BroadcastChannelAnnouncement { .. } = msg_events.remove(0) {
+			} else {
+				panic!();
+			}
+		} else {
+			assert!(chan_msgs.4.is_none());
 		}
 		if pending_raa.1 {
 			assert!(chan_msgs.3 == RAACommitmentOrder::RevokeAndACKFirst);

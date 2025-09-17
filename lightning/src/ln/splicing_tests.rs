@@ -401,6 +401,7 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.send_channel_ready = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
 	reconnect_nodes(reconnect_args);
 
 	nodes[0]
@@ -457,6 +458,7 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.send_channel_ready = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
 	reconnect_nodes(reconnect_args);
 
 	// Attempt a splice negotiation that completes, (i.e. `tx_signatures` are exchanged). Reconnecting
@@ -488,6 +490,7 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 	}
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_announcement_sigs = (true, true);
 	reconnect_nodes(reconnect_args);
 
 	mine_transaction(&nodes[0], &splice_tx);

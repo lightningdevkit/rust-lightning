@@ -333,6 +333,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 			// generate an error message we can handle below.
 			let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 			reconnect_args.send_channel_ready = (true, true);
+			reconnect_args.send_announcement_sigs = (true, true);
 			reconnect_nodes(reconnect_args);
 		}
 	}
