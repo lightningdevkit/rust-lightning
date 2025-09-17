@@ -6877,6 +6877,22 @@ where
 					contributed_inputs: Vec::new(),
 					contributed_outputs: Vec::new(),
 				}
+			})
+			.or_else(|| {
+				// Also check for pending quiescent action that is a splice
+				if let Some(QuiescentAction::Splice(_)) = self.quiescent_action.take() {
+					Some(SpliceFundingFailed {
+						channel_id: self.context.channel_id,
+						counterparty_node_id: self.context.counterparty_node_id,
+						user_channel_id: self.context.user_id,
+						funding_txo: None,
+						channel_type: None,
+						contributed_inputs: Vec::new(),
+						contributed_outputs: Vec::new(),
+					})
+				} else {
+					None
+				}
 			});
 
 		let mut shutdown_result = self.context.force_shutdown(&self.funding, closure_reason);
