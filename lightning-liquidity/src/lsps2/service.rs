@@ -757,6 +757,7 @@ where
 	///
 	/// [`ChannelManager::get_intercept_scid`]: lightning::ln::channelmanager::ChannelManager::get_intercept_scid
 	/// [`LSPS2ServiceEvent::BuyRequest`]: crate::lsps2::event::LSPS2ServiceEvent::BuyRequest
+	#[allow(clippy::await_holding_lock)]
 	pub async fn invoice_parameters_generated(
 		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId, intercept_scid: u64,
 		cltv_expiry_delta: u32, client_trusts_lsp: bool, user_channel_id: u128,
@@ -843,6 +844,7 @@ where
 	///
 	/// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
 	/// [`LSPS2ServiceEvent::OpenChannel`]: crate::lsps2::event::LSPS2ServiceEvent::OpenChannel
+	#[allow(clippy::await_holding_lock)]
 	pub async fn htlc_intercepted(
 		&self, intercept_scid: u64, intercept_id: InterceptId, expected_outbound_amount_msat: u64,
 		payment_hash: PaymentHash,
@@ -1119,6 +1121,7 @@ where
 	/// open, as it only affects the local LSPS2 state and doesn't affect any channels that
 	/// might already exist on-chain. Any pending channel open attempts must be managed
 	/// separately.
+	#[allow(clippy::await_holding_lock)]
 	pub async fn channel_open_abandoned(
 		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
 	) -> Result<(), APIError> {
@@ -1184,6 +1187,7 @@ where
 	/// state so that the payer may try the payment again.
 	///
 	/// [`LSPS2ServiceEvent::OpenChannel`]: crate::lsps2::event::LSPS2ServiceEvent::OpenChannel
+	#[allow(clippy::await_holding_lock)]
 	pub async fn channel_open_failed(
 		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
 	) -> Result<(), APIError> {
@@ -1261,6 +1265,7 @@ where
 	/// we need to forward a payment over otherwise it will be ignored.
 	///
 	/// [`Event::ChannelReady`]: lightning::events::Event::ChannelReady
+	#[allow(clippy::await_holding_lock)]
 	pub async fn channel_ready(
 		&self, user_channel_id: u128, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 	) -> Result<(), APIError> {
