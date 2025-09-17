@@ -1754,56 +1754,34 @@ where
 		let logger = WithChannelContext::from(logger, &self.context(), None);
 		log_info!(logger, "Failed interactive transaction negotiation: {reason}");
 
-		let mut splice_failed = None;
-
-		let _interactive_tx_constructor = match &mut self.phase {
+		let splice_funding_failed = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => None,
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
-				pending_v2_channel.interactive_tx_constructor.take()
+				pending_v2_channel.interactive_tx_constructor.take();
+				None
 			},
 			ChannelPhase::Funded(funded_channel) => {
-				if let Some(pending_splice) = funded_channel.pending_splice.as_mut() {
-					if pending_splice.funding_negotiation.is_some() {
-						let funding_negotiation = pending_splice.funding_negotiation.take();
-
-						let (funding_txo, channel_type, contributed_inputs, contributed_outputs) =
-							if let Some(FundingNegotiation::ConstructingTransaction { funding, interactive_tx_constructor: _ }) = &funding_negotiation {
-								(
-									funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()),
-									Some(funding.get_channel_type().clone()),
-									Vec::new(), // TODO: Extract contributed inputs from interactive_tx_constructor
-									Vec::new(), // TODO: Extract contributed outputs from interactive_tx_constructor
-								)
-							} else {
-								(None, None, Vec::new(), Vec::new())
-							};
-
-						splice_failed = Some(SpliceFundingFailed {
+				funded_channel
+					.pending_splice
+					.as_mut()
+					.and_then(|pending_splice| pending_splice.funding_negotiation.take())
+					.map(|funding_negotiation| {
+						let funding = funding_negotiation.as_funding();
+						SpliceFundingFailed {
 							channel_id: funded_channel.context.channel_id,
 							counterparty_node_id: funded_channel.context.counterparty_node_id,
 							user_channel_id: funded_channel.context.user_id,
-							funding_txo,
-							channel_type,
-							contributed_inputs,
-							contributed_outputs,
-						});
-
-						if let Some(FundingNegotiation::ConstructingTransaction { interactive_tx_constructor, .. }) = funding_negotiation {
-							Some(interactive_tx_constructor)
-						} else {
-							None
+							funding_txo: funding.as_ref().and_then(|funding| funding.get_funding_txo()).map(|txo| txo.into_bitcoin_outpoint()),
+							channel_type: funding.as_ref().map(|funding| funding.get_channel_type().clone()),
+							contributed_inputs: Vec::new(),
+							contributed_outputs: Vec::new(),
 						}
-					} else {
-						None
-					}
-				} else {
-					None
-				}
+					})
 			},
 		};
 
-		(reason.into_tx_abort_msg(self.context().channel_id), splice_failed)
+		(reason.into_tx_abort_msg(self.context().channel_id), splice_funding_failed)
 	}
 
 	pub fn tx_add_input<L: Deref>(
@@ -2024,18 +2002,20 @@ where
 						} = funding_negotiation
 						{
 							let signing_session = interactive_tx_constructor.into_signing_session();
-							let commitment_signed = chan.context.funding_tx_constructed(
+							let commitment_signed_result = chan.context.funding_tx_constructed(
 								&mut funding,
 								signing_session,
 								true,
 								chan.holder_commitment_point.next_transaction_number(),
 								&&logger,
-							)?;
+							);
 
+							// This must be set even if returning an Err. Otherwise,
+							// fail_interactive_tx_negotiation won't produce a SpliceFailed event.
 							pending_splice.funding_negotiation =
 								Some(FundingNegotiation::AwaitingSignatures { funding });
 
-							return Ok(commitment_signed);
+							return commitment_signed_result;
 						} else {
 							// Replace the taken state
 							pending_splice.funding_negotiation = Some(funding_negotiation);
