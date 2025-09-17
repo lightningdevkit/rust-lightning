@@ -972,13 +972,16 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
 
-fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
+fn do_test_async_holder_signatures(keyed_anchors: bool, p2a_anchor: bool, remote_commitment: bool) {
 	// Ensures that we can obtain holder signatures for commitment and HTLC transactions
 	// asynchronously by allowing their retrieval to fail and retrying via
 	// `ChannelMonitor::signer_unblocked`.
 	let mut config = test_default_channel_config();
-	if anchors {
+	if keyed_anchors {
 		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		config.manually_accept_inbound_channels = true;
+	} else if p2a_anchor {
+		config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 		config.manually_accept_inbound_channels = true;
 	}
 
@@ -999,7 +1002,7 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 			script_pubkey: closing_node.wallet_source.get_change_script().unwrap(),
 		}],
 	};
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
 		*nodes[1].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
 		closing_node.wallet_source.add_utxo(
@@ -1051,13 +1054,17 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 			&nodes[0].logger,
 		);
 	}
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		handle_bump_close_event(closing_node);
 	}
 
 	let commitment_tx = {
 		let mut txn = closing_node.tx_broadcaster.txn_broadcast();
-		if anchors || remote_commitment {
+		if p2a_anchor {
+			assert_eq!(txn.len(), 2);
+			check_spends!(txn[0], funding_tx);
+			txn.remove(0)
+		} else if keyed_anchors || remote_commitment {
 			assert_eq!(txn.len(), 1);
 			check_spends!(txn[0], funding_tx);
 			txn.remove(0)
@@ -1102,7 +1109,7 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	}
 
 	// No HTLC transaction should be broadcast as the signer is not available yet.
-	if anchors && !remote_commitment {
+	if (keyed_anchors || p2a_anchor) && !remote_commitment {
 		handle_bump_htlc_event(&nodes[0], 1);
 	}
 	let txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -1117,7 +1124,7 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 		&nodes[0].logger,
 	);
 
-	if anchors && !remote_commitment {
+	if (keyed_anchors || p2a_anchor) && !remote_commitment {
 		handle_bump_htlc_event(&nodes[0], 1);
 	}
 	{
@@ -1129,22 +1136,32 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 
 #[test]
 fn test_async_holder_signatures_no_anchors() {
-	do_test_async_holder_signatures(false, false);
+	do_test_async_holder_signatures(false, false, false);
 }
 
 #[test]
 fn test_async_holder_signatures_remote_commitment_no_anchors() {
-	do_test_async_holder_signatures(false, true);
+	do_test_async_holder_signatures(false, false, true);
 }
 
 #[test]
-fn test_async_holder_signatures_anchors() {
-	do_test_async_holder_signatures(true, false);
+fn test_async_holder_signatures_keyed_anchors() {
+	do_test_async_holder_signatures(true, false, false);
 }
 
 #[test]
-fn test_async_holder_signatures_remote_commitment_anchors() {
-	do_test_async_holder_signatures(true, true);
+fn test_async_holder_signatures_remote_commitment_keyed_anchors() {
+	do_test_async_holder_signatures(true, false, true);
+}
+
+#[test]
+fn test_async_holder_signatures_p2a_anchor() {
+	do_test_async_holder_signatures(false, true, false);
+}
+
+#[test]
+fn test_async_holder_signatures_remote_commitment_p2a_anchor() {
+	do_test_async_holder_signatures(false, true, true);
 }
 
 #[test]
