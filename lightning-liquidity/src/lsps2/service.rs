@@ -1454,9 +1454,9 @@ where
 	async fn persist_peer_state(
 		&self, counterparty_node_id: PublicKey,
 	) -> Result<(), lightning::io::Error> {
-		let encoded = {
+		let fut = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
-			match outer_state_lock.get(&counterparty_node_id) {
+			let encoded = match outer_state_lock.get(&counterparty_node_id) {
 				None => {
 					let err = lightning::io::Error::new(
 						lightning::io::ErrorKind::Other,
@@ -1465,19 +1465,18 @@ where
 					return Err(err);
 				},
 				Some(entry) => entry.lock().unwrap().encode(),
-			}
-		};
+			};
+			let key = counterparty_node_id.to_string();
 
-		let key = counterparty_node_id.to_string();
-
-		self.kv_store
-			.write(
+			self.kv_store.write(
 				LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 				LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
 				&key,
 				encoded,
 			)
-			.await
+		};
+
+		fut.await
 	}
 
 	pub(crate) async fn persist(&self) -> Result<(), lightning::io::Error> {
