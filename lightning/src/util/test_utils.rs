@@ -68,10 +68,10 @@ use bitcoin::constants::ChainHash;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::Hash;
 use bitcoin::network::Network;
-use bitcoin::opcodes;
 use bitcoin::script::{Builder, Script, ScriptBuf};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 use bitcoin::transaction::{Transaction, TxOut};
+use bitcoin::{opcodes, Witness};
 
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
@@ -2055,7 +2055,7 @@ impl TestWalletSource {
 
 	pub fn add_utxo(&self, outpoint: bitcoin::OutPoint, value: Amount) -> TxOut {
 		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
-		let utxo = Utxo::new_p2pkh(outpoint, value, &public_key.pubkey_hash());
+		let utxo = Utxo::new_v0_p2wpkh(outpoint, value, &public_key.wpubkey_hash().unwrap());
 		self.utxos.lock().unwrap().push(utxo.clone());
 		utxo.output
 	}
@@ -2069,6 +2069,33 @@ impl TestWalletSource {
 	pub fn remove_utxo(&self, outpoint: bitcoin::OutPoint) {
 		self.utxos.lock().unwrap().retain(|utxo| utxo.outpoint != outpoint);
 	}
+
+	pub fn sign_tx(
+		&self, mut tx: Transaction,
+	) -> Result<Transaction, bitcoin::sighash::P2wpkhError> {
+		let utxos = self.utxos.lock().unwrap();
+		for i in 0..tx.input.len() {
+			if let Some(utxo) =
+				utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output)
+			{
+				let sighash = SighashCache::new(&tx).p2wpkh_signature_hash(
+					i,
+					&utxo.output.script_pubkey,
+					utxo.output.value,
+					EcdsaSighashType::All,
+				)?;
+				let signature = self.secp.sign_ecdsa(
+					&secp256k1::Message::from_digest(sighash.to_byte_array()),
+					&self.secret_key,
+				);
+				let bitcoin_sig =
+					bitcoin::ecdsa::Signature { signature, sighash_type: EcdsaSighashType::All };
+				tx.input[i].witness =
+					Witness::p2wpkh(&bitcoin_sig, &self.secret_key.public_key(&self.secp));
+			}
+		}
+		Ok(tx)
+	}
 }
 
 impl WalletSourceSync for TestWalletSource {
@@ -2078,35 +2105,11 @@ impl WalletSourceSync for TestWalletSource {
 
 	fn get_change_script(&self) -> Result<ScriptBuf, ()> {
 		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
-		Ok(ScriptBuf::new_p2pkh(&public_key.pubkey_hash()))
+		Ok(ScriptBuf::new_p2wpkh(&public_key.wpubkey_hash().unwrap()))
 	}
 
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
-		let mut tx = psbt.extract_tx_unchecked_fee_rate();
-		let utxos = self.utxos.lock().unwrap();
-		for i in 0..tx.input.len() {
-			if let Some(utxo) =
-				utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output)
-			{
-				let sighash = SighashCache::new(&tx)
-					.legacy_signature_hash(
-						i,
-						&utxo.output.script_pubkey,
-						EcdsaSighashType::All as u32,
-					)
-					.map_err(|_| ())?;
-				let signature = self.secp.sign_ecdsa(
-					&secp256k1::Message::from_digest(sighash.to_byte_array()),
-					&self.secret_key,
-				);
-				let bitcoin_sig =
-					bitcoin::ecdsa::Signature { signature, sighash_type: EcdsaSighashType::All };
-				tx.input[i].script_sig = Builder::new()
-					.push_slice(&bitcoin_sig.serialize())
-					.push_slice(&self.secret_key.public_key(&self.secp).serialize())
-					.into_script();
-			}
-		}
-		Ok(tx)
+		let tx = psbt.extract_tx_unchecked_fee_rate();
+		self.sign_tx(tx).map_err(|_| ())
 	}
 }
