@@ -240,6 +240,9 @@ fn pass_async_payments_oms(
 		.next_onion_message_for_peer(sender_node_id)
 		.unwrap();
 	sender.onion_messenger.handle_onion_message(always_online_node_id, &static_invoice_om);
+	// Check that the node will not lock in HTLCs yet.
+	sender.node.process_pending_htlc_forwards();
+	assert!(sender.node.get_and_clear_pending_msg_events().is_empty());
 
 	let held_htlc_available_om_0_1 =
 		sender.onion_messenger.next_onion_message_for_peer(always_online_node_id).unwrap();
