@@ -97,18 +97,33 @@ impl From<lsps5::event::LSPS5ServiceEvent> for LiquidityEvent {
 impl Writeable for LiquidityEvent {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
-			Self::LSPS0Client(_) => {},
-			Self::LSPS1Client(_) => {},
-			#[cfg(lsps1_service)]
-			Self::LSPS1Service(_) => {},
-			Self::LSPS2Client(_) => {},
-			Self::LSPS2Service(event) => {
+			Self::LSPS0Client(_) => {
+				// We'll always need to write something for `MaybeReadable`.
 				0u8.write(writer)?;
+			},
+			Self::LSPS1Client(_) => {
+				// We'll always need to write something for `MaybeReadable`.
+				1u8.write(writer)?;
+			},
+			#[cfg(lsps1_service)]
+			Self::LSPS1Service(_) => {
+				// We'll always need to write something for `MaybeReadable`.
+				2u8.write(writer)?;
+			},
+			Self::LSPS2Client(_) => {
+				// We'll always need to write something for `MaybeReadable`.
+				3u8.write(writer)?;
+			},
+			Self::LSPS2Service(event) => {
+				4u8.write(writer)?;
 				event.write(writer)?;
 			},
-			Self::LSPS5Client(_) => {},
+			Self::LSPS5Client(_) => {
+				// We'll always need to write something for `MaybeReadable`.
+				5u8.write(writer)?;
+			},
 			Self::LSPS5Service(event) => {
-				2u8.write(writer)?;
+				6u8.write(writer)?;
 				event.write(writer)?;
 			},
 		}
@@ -120,10 +135,30 @@ impl MaybeReadable for LiquidityEvent {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
 		match Readable::read(reader)? {
 			0u8 => {
+				// LSPS0ClientEvents are not persisted.
+				Ok(None)
+			},
+			1u8 => {
+				// LSPS1ClientEvents are not persisted.
+				Ok(None)
+			},
+			2u8 => {
+				// LSPS1ServiceEvents are not persisted.
+				Ok(None)
+			},
+			3u8 => {
+				// LSPS2ClientEvents are not persisted.
+				Ok(None)
+			},
+			4u8 => {
 				let event = Readable::read(reader)?;
 				Ok(Some(LiquidityEvent::LSPS2Service(event)))
 			},
-			2u8 => {
+			5u8 => {
+				// LSPS5ClientEvents are not persisted.
+				Ok(None)
+			},
+			6u8 => {
 				let event = Readable::read(reader)?;
 				Ok(Some(LiquidityEvent::LSPS5Service(event)))
 			},
