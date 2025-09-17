@@ -36,7 +36,9 @@ use crate::ln::msgs::{
 use crate::ln::types::ChannelId;
 use crate::routing::utxo::{self, UtxoLookup, UtxoResolver};
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-use crate::util::indexed_map::{Entry as IndexedMapEntry, IndexedMap};
+use crate::util::indexed_map::{
+	Entry as IndexedMapEntry, IndexedMap, OccupiedEntry as IndexedMapOccupiedEntry,
+};
 use crate::util::logger::{Level, Logger};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 use crate::util::ser::{MaybeReadable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
@@ -2384,11 +2386,15 @@ where
 			let mut removed_channels_lck = self.removed_channels.lock().unwrap();
 
 			let channels_removed_bulk = channels.remove_fetch_bulk(&scids_to_remove);
-			removed_channels_lck.reserve(channels_removed_bulk.len());
+			self.removed_node_counters.lock().unwrap().reserve(channels_removed_bulk.len());
+			let mut nodes_to_remove = hash_set_with_capacity(channels_removed_bulk.len());
 			for (scid, info) in channels_removed_bulk {
-				self.remove_channel_in_nodes(&mut nodes, &info, scid);
+				self.remove_channel_in_nodes_callback(&mut nodes, &info, scid, |e| {
+					nodes_to_remove.insert(*e.key());
+				});
 				removed_channels_lck.insert(scid, Some(current_time_unix));
 			}
+			nodes.remove_bulk(&nodes_to_remove);
 		}
 
 		let should_keep_tracking = |time: &mut Option<u64>| {
@@ -2627,8 +2633,9 @@ where
 		Ok(())
 	}
 
-	fn remove_channel_in_nodes(
+	fn remove_channel_in_nodes_callback<RM: FnMut(IndexedMapOccupiedEntry<NodeId, NodeInfo>)>(
 		&self, nodes: &mut IndexedMap<NodeId, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64,
+		mut remove_node: RM,
 	) {
 		macro_rules! remove_from_node {
 			($node_id: expr) => {
@@ -2636,7 +2643,7 @@ where
 					entry.get_mut().channels.retain(|chan_id| short_channel_id != *chan_id);
 					if entry.get().channels.is_empty() {
 						self.removed_node_counters.lock().unwrap().push(entry.get().node_counter);
-						entry.remove_entry();
+						remove_node(entry);
 					}
 				} else {
 					panic!(
@@ -2648,6 +2655,14 @@ where
 
 		remove_from_node!(chan.node_one);
 		remove_from_node!(chan.node_two);
+	}
+
+	fn remove_channel_in_nodes(
+		&self, nodes: &mut IndexedMap<NodeId, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64,
+	) {
+		self.remove_channel_in_nodes_callback(nodes, chan, short_channel_id, |e| {
+			e.remove_entry();
+		});
 	}
 }
 
