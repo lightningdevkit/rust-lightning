@@ -205,11 +205,8 @@ where
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
 			let encoded = match outer_state_lock.get_mut(&counterparty_node_id) {
 				None => {
-					let err = lightning::io::Error::new(
-						lightning::io::ErrorKind::Other,
-						"Failed to get peer entry",
-					);
-					return Err(err);
+					// We dropped the peer state by now.
+					return Ok(());
 				},
 				Some(entry) => {
 					if !entry.needs_persist {
