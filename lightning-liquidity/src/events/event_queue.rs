@@ -134,7 +134,7 @@ where
 	}
 
 	pub async fn persist(&self) -> Result<(), lightning::io::Error> {
-		let encoded = {
+		let fut = {
 			let mut state_lock = self.state.lock().unwrap();
 
 			if !state_lock.needs_persist {
@@ -142,21 +142,20 @@ where
 			}
 
 			state_lock.needs_persist = false;
-			EventQueueSerWrapper(&state_lock.queue).encode()
-		};
+			let encoded = EventQueueSerWrapper(&state_lock.queue).encode();
 
-		self.kv_store
-			.write(
+			self.kv_store.write(
 				LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 				LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_SECONDARY_NAMESPACE,
 				LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_KEY,
 				encoded,
 			)
-			.await
-			.map_err(|e| {
-				self.state.lock().unwrap().needs_persist = true;
-				e
-			})?;
+		};
+
+		fut.await.map_err(|e| {
+			self.state.lock().unwrap().needs_persist = true;
+			e
+		})?;
 
 		Ok(())
 	}
