@@ -8048,7 +8048,7 @@ where
 						ref onion_routing_packet,
 						skimmed_fee_msat,
 						blinding_point,
-						hold_htlc: _,
+						hold_htlc,
 						..
 					} => {
 						match self.send_htlc(
@@ -8060,6 +8060,7 @@ where
 							false,
 							skimmed_fee_msat,
 							blinding_point,
+							hold_htlc.is_some(),
 							fee_estimator,
 							logger,
 						) {
@@ -12022,6 +12023,8 @@ where
 			true,
 			skimmed_fee_msat,
 			blinding_point,
+			// This method is only called for forwarded HTLCs, which are never held at the next hop
+			false,
 			fee_estimator,
 			logger,
 		)
@@ -12052,7 +12055,7 @@ where
 	fn send_htlc<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
-		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>,
+		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>, hold_htlc: bool,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<bool, (LocalHTLCFailureReason, String)>
 	where
@@ -12134,7 +12137,7 @@ where
 				onion_routing_packet,
 				skimmed_fee_msat,
 				blinding_point,
-				hold_htlc: None,
+				hold_htlc: hold_htlc.then(|| ()),
 			});
 			return Ok(false);
 		}
@@ -12156,7 +12159,7 @@ where
 			blinding_point,
 			skimmed_fee_msat,
 			send_timestamp,
-			hold_htlc: None,
+			hold_htlc: hold_htlc.then(|| ()),
 		});
 		self.context.next_holder_htlc_id += 1;
 
@@ -12391,7 +12394,7 @@ where
 	pub fn send_htlc_and_commit<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		hold_htlc: bool, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
 	where
 		F::Target: FeeEstimator,
@@ -12406,6 +12409,7 @@ where
 			false,
 			skimmed_fee_msat,
 			None,
+			hold_htlc,
 			fee_estimator,
 			logger,
 		);

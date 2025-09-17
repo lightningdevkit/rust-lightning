@@ -5098,6 +5098,7 @@ where
 							htlc_source,
 							onion_packet,
 							None,
+							false,
 							&self.fee_estimator,
 							&&logger,
 						);
