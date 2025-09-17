@@ -1191,13 +1191,10 @@ where
 	/// Returns a reference to the LSPS2 server-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps2_service_handler`].
-	pub fn lsps2_service_handler(
-		&self,
-	) -> Option<Arc<LSPS2ServiceHandlerSync<CM, Arc<KVStoreSyncWrapper<KS>>>>> {
-		self.inner
-			.lsps2_service_handler
-			.as_ref()
-			.map(|r| Arc::new(LSPS2ServiceHandlerSync::from_inner(Arc::clone(&r))))
+	pub fn lsps2_service_handler<'a>(
+		&'a self,
+	) -> Option<LSPS2ServiceHandlerSync<'a, CM, Arc<KVStoreSyncWrapper<KS>>>> {
+		self.inner.lsps2_service_handler.as_ref().map(|r| LSPS2ServiceHandlerSync::from_inner(r))
 	}
 
 	/// Returns a reference to the LSPS5 client-side handler.

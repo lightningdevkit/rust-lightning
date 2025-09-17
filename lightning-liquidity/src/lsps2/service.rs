@@ -1648,20 +1648,20 @@ fn calculate_amount_to_forward_per_htlc(
 
 /// A synchroneous wrapper around [`LSPS2ServiceHandler`] to be used in contexts where async is not
 /// available.
-pub struct LSPS2ServiceHandlerSync<CM: Deref, K: Deref + Clone>
+pub struct LSPS2ServiceHandlerSync<'a, CM: Deref, K: Deref + Clone>
 where
 	CM::Target: AChannelManager,
 	K::Target: KVStore,
 {
-	inner: Arc<LSPS2ServiceHandler<CM, K>>,
+	inner: &'a LSPS2ServiceHandler<CM, K>,
 }
 
-impl<CM: Deref, K: Deref + Clone> LSPS2ServiceHandlerSync<CM, K>
+impl<'a, CM: Deref, K: Deref + Clone> LSPS2ServiceHandlerSync<'a, CM, K>
 where
 	CM::Target: AChannelManager,
 	K::Target: KVStore,
 {
-	pub(crate) fn from_inner(inner: Arc<LSPS2ServiceHandler<CM, K>>) -> Self {
+	pub(crate) fn from_inner(inner: &'a LSPS2ServiceHandler<CM, K>) -> Self {
 		Self { inner }
 	}
 
