@@ -3407,10 +3407,12 @@ macro_rules! try_channel_entry {
 
 macro_rules! send_channel_ready {
 	($self: ident, $pending_msg_events: expr, $channel: expr, $channel_ready_msg: expr) => {{
-		$pending_msg_events.push(MessageSendEvent::SendChannelReady {
-			node_id: $channel.context.get_counterparty_node_id(),
-			msg: $channel_ready_msg,
-		});
+		if $channel.context.is_connected() {
+			$pending_msg_events.push(MessageSendEvent::SendChannelReady {
+				node_id: $channel.context.get_counterparty_node_id(),
+				msg: $channel_ready_msg,
+			});
+		}
 		// Note that we may send a `channel_ready` multiple times for a channel if we reconnect, so
 		// we allow collisions, but we shouldn't ever be updating the channel ID pointed to.
 		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
@@ -3512,7 +3514,10 @@ macro_rules! handle_monitor_update_completion {
 			&$self.node_signer, $self.chain_hash, &*$self.config.read().unwrap(),
 			$self.best_block.read().unwrap().height,
 			|htlc_id| $self.path_for_release_held_htlc(htlc_id, &channel_id, &counterparty_node_id));
-		let channel_update = if updates.channel_ready.is_some() && $chan.context.is_usable() {
+		let channel_update = if updates.channel_ready.is_some()
+			&& $chan.context.is_usable()
+			&& $peer_state.is_connected
+		{
 			// We only send a channel_update in the case where we are just now sending a
 			// channel_ready and the channel is in a usable state. We may re-send a
 			// channel_update later through the announcement_signatures process for public
@@ -4035,6 +4040,9 @@ where
 			.ok_or_else(|| APIError::APIMisuseError{ err: format!("Not connected to node: {}", their_network_key) })?;
 
 		let mut peer_state = peer_state_mutex.lock().unwrap();
+		if !peer_state.is_connected {
+			return Err(APIError::APIMisuseError{ err: format!("Not connected to node: {}", their_network_key) });
+		}
 
 		if let Some(temporary_channel_id) = temporary_channel_id {
 			if peer_state.channel_by_id.contains_key(&temporary_channel_id) {
@@ -4242,6 +4250,12 @@ where
 
 			match peer_state.channel_by_id.entry(*chan_id) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
+					if !chan_entry.get().context().is_connected() {
+						return Err(APIError::ChannelUnavailable {
+							err: "Cannot begin shutdown while peer is disconnected, maybe force-close instead?".to_owned(),
+						});
+					}
+
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let funding_txo_opt = chan.funding.get_funding_txo();
 						let their_features = &peer_state.latest_features;
@@ -4529,7 +4543,7 @@ where
 			Ok(())
 		} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
 			log_error!(logger, "Force-closing inbound channel request {}", &channel_id);
-			if !is_from_counterparty {
+			if !is_from_counterparty && peer_state.is_connected {
 				peer_state.pending_msg_events.push(
 					MessageSendEvent::HandleError {
 						node_id: *peer_node_id,
@@ -4643,6 +4657,14 @@ where
 		// Look for the channel
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				if !chan_phase_entry.get().context().is_connected() {
+					// TODO: We should probably support this, but right now `splice_channel` refuses when
+					// the peer is disconnected, so we just check it here.
+					return Err(APIError::ChannelUnavailable {
+						err: "Cannot initiate splice while peer is disconnected".to_owned(),
+					});
+				}
+
 				let locktime = locktime.unwrap_or_else(|| self.current_best_block().height);
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
@@ -6267,11 +6289,13 @@ where
 					if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
 						let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
 						pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate { msg });
-					} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
-						peer_state.pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
-							node_id: channel.context.get_counterparty_node_id(),
-							msg,
-						});
+					} else if peer_state.is_connected {
+						if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
+								node_id: channel.context.get_counterparty_node_id(),
+								msg,
+							});
+						}
 					}
 				}
 				continue;
@@ -7865,15 +7889,17 @@ where
 								None,
 							);
 							log_error!(logger, "Force-closing unaccepted inbound channel {} for not accepting in a timely manner", &chan_id);
-							peer_state.pending_msg_events.push(MessageSendEvent::HandleError {
-								node_id: counterparty_node_id,
-								action: msgs::ErrorAction::SendErrorMessage {
-									msg: msgs::ErrorMessage {
-										channel_id: chan_id.clone(),
-										data: "Channel force-closed".to_owned(),
+							if peer_state.is_connected {
+								peer_state.pending_msg_events.push(MessageSendEvent::HandleError {
+									node_id: counterparty_node_id,
+									action: msgs::ErrorAction::SendErrorMessage {
+										msg: msgs::ErrorMessage {
+											channel_id: chan_id.clone(),
+											data: "Channel force-closed".to_owned(),
+										},
 									},
-								},
-							});
+								});
+							}
 						}
 					}
 					peer_state
@@ -9144,72 +9170,76 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			decode_update_add_htlcs = Some((short_channel_id, pending_update_adds));
 		}
 
-		if let ChannelReadyOrder::ChannelReadyFirst = channel_ready_order {
-			if let Some(msg) = &channel_ready {
-				send_channel_ready!(self, pending_msg_events, channel, msg.clone());
+		if channel.context.is_connected() {
+			if let ChannelReadyOrder::ChannelReadyFirst = channel_ready_order {
+				if let Some(msg) = &channel_ready {
+					send_channel_ready!(self, pending_msg_events, channel, msg.clone());
+				}
+
+				if let Some(msg) = &announcement_sigs {
+					pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+						node_id: counterparty_node_id,
+						msg: msg.clone(),
+					});
+				}
 			}
 
-			if let Some(msg) = &announcement_sigs {
-				pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
-					node_id: counterparty_node_id,
-					msg: msg.clone(),
-				});
-			}
-		}
-
-		macro_rules! handle_cs { () => {
-			if let Some(update) = commitment_update {
-				pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
-					node_id: counterparty_node_id,
-					channel_id: channel.context.channel_id(),
-					updates: update,
-				});
-			}
-		} }
-		macro_rules! handle_raa { () => {
-			if let Some(revoke_and_ack) = raa {
-				pending_msg_events.push(MessageSendEvent::SendRevokeAndACK {
-					node_id: counterparty_node_id,
-					msg: revoke_and_ack,
-				});
-			}
-		} }
-		match commitment_order {
-			RAACommitmentOrder::CommitmentFirst => {
-				handle_cs!();
-				handle_raa!();
-			},
-			RAACommitmentOrder::RevokeAndACKFirst => {
-				handle_raa!();
-				handle_cs!();
-			},
-		}
-
-		// TODO(dual_funding): For async signing support we need to hold back `tx_signatures` until the `commitment_signed` is ready.
-		if let Some(msg) = tx_signatures {
-			pending_msg_events.push(MessageSendEvent::SendTxSignatures {
-				node_id: counterparty_node_id,
-				msg,
-			});
-		}
-		if let Some(msg) = tx_abort {
-			pending_msg_events.push(MessageSendEvent::SendTxAbort {
-				node_id: counterparty_node_id,
-				msg,
-			});
-		}
-
-		if let ChannelReadyOrder::SignaturesFirst = channel_ready_order {
-			if let Some(msg) = channel_ready {
-				send_channel_ready!(self, pending_msg_events, channel, msg);
+			macro_rules! handle_cs { () => {
+				if let Some(update) = commitment_update {
+					pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
+						node_id: counterparty_node_id,
+						channel_id: channel.context.channel_id(),
+						updates: update,
+					});
+				}
+			} }
+			macro_rules! handle_raa { () => {
+				if let Some(revoke_and_ack) = raa {
+					pending_msg_events.push(MessageSendEvent::SendRevokeAndACK {
+						node_id: counterparty_node_id,
+						msg: revoke_and_ack,
+					});
+				}
+			} }
+			match commitment_order {
+				RAACommitmentOrder::CommitmentFirst => {
+					handle_cs!();
+					handle_raa!();
+				},
+				RAACommitmentOrder::RevokeAndACKFirst => {
+					handle_raa!();
+					handle_cs!();
+				},
 			}
 
-			if let Some(msg) = announcement_sigs {
-				pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+			// TODO(dual_funding): For async signing support we need to hold back `tx_signatures` until the `commitment_signed` is ready.
+			if let Some(msg) = tx_signatures {
+				pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 					node_id: counterparty_node_id,
 					msg,
 				});
 			}
+			if let Some(msg) = tx_abort {
+				pending_msg_events.push(MessageSendEvent::SendTxAbort {
+					node_id: counterparty_node_id,
+					msg,
+				});
+			}
+
+			if let ChannelReadyOrder::SignaturesFirst = channel_ready_order {
+				if let Some(msg) = channel_ready {
+					send_channel_ready!(self, pending_msg_events, channel, msg);
+				}
+
+				if let Some(msg) = announcement_sigs {
+					pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+						node_id: counterparty_node_id,
+						msg,
+					});
+				}
+			}
+		} else if let Some(msg) = channel_ready {
+			send_channel_ready!(self, pending_msg_events, channel, msg);
 		}
 
 		if let Some(tx) = funding_broadcastable {
@@ -9259,10 +9289,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if let Some(funding_tx) = funding_tx_opt {
 							self.broadcast_interactive_funding(channel, &funding_tx);
 						}
-						pending_msg_events.push(MessageSendEvent::SendTxSignatures {
-							node_id: counterparty_node_id,
-							msg: tx_signatures,
-						});
+						if channel.context.is_connected() {
+							pending_msg_events.push(MessageSendEvent::SendTxSignatures {
+								node_id: counterparty_node_id,
+								msg: tx_signatures,
+							});
+						}
 					},
 					Ok((None, _)) => {
 						debug_assert!(false, "If our tx_signatures is empty, then we should send it first!");
@@ -11683,57 +11715,59 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				self.chain_hash, &&logger,
 				|htlc_id| self.path_for_release_held_htlc(htlc_id, &channel_id, &node_id)
 			) {
-				if let Some(msg) = msgs.open_channel {
-					pending_msg_events.push(MessageSendEvent::SendOpenChannel {
+				if chan.context().is_connected() {
+					if let Some(msg) = msgs.open_channel {
+						pending_msg_events.push(MessageSendEvent::SendOpenChannel {
+							node_id,
+							msg,
+						});
+					}
+					if let Some(msg) = msgs.funding_created {
+						pending_msg_events.push(MessageSendEvent::SendFundingCreated {
+							node_id,
+							msg,
+						});
+					}
+					if let Some(msg) = msgs.accept_channel {
+						pending_msg_events.push(MessageSendEvent::SendAcceptChannel {
+							node_id,
+							msg,
+						});
+					}
+					let cu_msg = msgs.commitment_update.map(|updates| MessageSendEvent::UpdateHTLCs {
+						node_id,
+						channel_id,
+						updates,
+					});
+					let raa_msg = msgs.revoke_and_ack.map(|msg| MessageSendEvent::SendRevokeAndACK {
 						node_id,
 						msg,
 					});
-				}
-				if let Some(msg) = msgs.funding_created {
-					pending_msg_events.push(MessageSendEvent::SendFundingCreated {
-						node_id,
-						msg,
-					});
-				}
-				if let Some(msg) = msgs.accept_channel {
-					pending_msg_events.push(MessageSendEvent::SendAcceptChannel {
-						node_id,
-						msg,
-					});
-				}
-				let cu_msg = msgs.commitment_update.map(|updates| MessageSendEvent::UpdateHTLCs {
-					node_id,
-					channel_id,
-					updates,
-				});
-				let raa_msg = msgs.revoke_and_ack.map(|msg| MessageSendEvent::SendRevokeAndACK {
-					node_id,
-					msg,
-				});
-				match (cu_msg, raa_msg) {
-					(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::CommitmentFirst => {
-						pending_msg_events.push(cu);
-						pending_msg_events.push(raa);
-					},
-					(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::RevokeAndACKFirst => {
-						pending_msg_events.push(raa);
-						pending_msg_events.push(cu);
-					},
-					(Some(cu), _) => pending_msg_events.push(cu),
-					(_, Some(raa)) => pending_msg_events.push(raa),
-					(_, _) => {},
-				}
-				if let Some(msg) = msgs.funding_signed {
-					pending_msg_events.push(MessageSendEvent::SendFundingSigned {
-						node_id,
-						msg,
-					});
-				}
-				if let Some(msg) = msgs.closing_signed {
-					pending_msg_events.push(MessageSendEvent::SendClosingSigned {
-						node_id,
-						msg,
-					});
+					match (cu_msg, raa_msg) {
+						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::CommitmentFirst => {
+							pending_msg_events.push(cu);
+							pending_msg_events.push(raa);
+						},
+						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::RevokeAndACKFirst => {
+							pending_msg_events.push(raa);
+							pending_msg_events.push(cu);
+						},
+						(Some(cu), _) => pending_msg_events.push(cu),
+						(_, Some(raa)) => pending_msg_events.push(raa),
+						(_, _) => {},
+					}
+					if let Some(msg) = msgs.funding_signed {
+						pending_msg_events.push(MessageSendEvent::SendFundingSigned {
+							node_id,
+							msg,
+						});
+					}
+					if let Some(msg) = msgs.closing_signed {
+						pending_msg_events.push(MessageSendEvent::SendClosingSigned {
+							node_id,
+							msg,
+						});
+					}
 				}
 				if let Some(funded_chan) = chan.as_funded() {
 					if let Some(msg) = msgs.channel_ready {
@@ -11814,6 +11848,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 				peer_state.channel_by_id.retain(|_, chan| {
+					if !chan.context().is_connected() {
+						return true;
+					}
 					match chan.as_funded_mut() {
 						Some(funded_chan) => {
 							let logger = WithChannelContext::from(&self.logger, &funded_chan.context, None);
@@ -13782,7 +13819,7 @@ where
 								match funding_confirmed_opt {
 									Some(FundingConfirmedMessage::Establishment(channel_ready)) => {
 										send_channel_ready!(self, pending_msg_events, funded_channel, channel_ready);
-										if funded_channel.context.is_usable() {
+										if funded_channel.context.is_usable() && peer_state.is_connected {
 											log_trace!(logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", channel_id);
 											if let Ok(msg) = self.get_channel_update_for_unicast(funded_channel) {
 												pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
@@ -13833,10 +13870,12 @@ where
 											});
 										}
 
-										pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
-											node_id: counterparty_node_id,
-											msg: splice_locked,
-										});
+										if funded_channel.context.is_connected() {
+											pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+												node_id: counterparty_node_id,
+												msg: splice_locked,
+											});
+										}
 									},
 									None => {},
 								}
@@ -13882,11 +13921,13 @@ where
 									}
 								}
 								if let Some(announcement_sigs) = announcement_sigs {
-									log_trace!(logger, "Sending announcement_signatures for channel {}", funded_channel.context.channel_id());
-									pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
-										node_id: funded_channel.context.get_counterparty_node_id(),
-										msg: announcement_sigs,
-									});
+									if peer_state.is_connected {
+										log_trace!(logger, "Sending announcement_signatures for channel {}", funded_channel.context.channel_id());
+										pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+											node_id: funded_channel.context.get_counterparty_node_id(),
+											msg: announcement_sigs,
+										});
+									}
 								}
 								if funded_channel.is_our_channel_ready() {
 									if let Some(real_scid) = funded_channel.funding.get_short_channel_id() {

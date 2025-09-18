@@ -387,7 +387,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		[nodes[1].node.get_our_node_id()], 100000);
 
 	// Now check that we can create a new channel
-	if reload_node && nodes[0].node.per_peer_state.read().unwrap().len() == 0 {
+	if reload_node {
 		// If we dropped the channel before reloading the node, nodes[1] was also dropped from
 		// nodes[0] storage, and hence not connected again on startup. We therefore need to
 		// reconnect to the node before attempting to create a new channel.
