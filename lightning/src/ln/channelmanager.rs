@@ -3509,6 +3509,7 @@ macro_rules! emit_initial_channel_ready_event {
 macro_rules! handle_monitor_update_completion {
 	($self: ident, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
 		let channel_id = $chan.context.channel_id();
+		let outbound_scid_alias = $chan.context().outbound_scid_alias();
 		let counterparty_node_id = $chan.context.get_counterparty_node_id();
 		#[cfg(debug_assertions)]
 		{
@@ -3521,7 +3522,7 @@ macro_rules! handle_monitor_update_completion {
 		let mut updates = $chan.monitor_updating_restored(&&logger,
 			&$self.node_signer, $self.chain_hash, &*$self.config.read().unwrap(),
 			$self.best_block.read().unwrap().height,
-			|htlc_id| $self.path_for_release_held_htlc(htlc_id, &channel_id, &counterparty_node_id));
+			|htlc_id| $self.path_for_release_held_htlc(htlc_id, outbound_scid_alias, &channel_id, &counterparty_node_id));
 		let channel_update = if updates.channel_ready.is_some()
 			&& $chan.context.is_usable()
 			&& $peer_state.is_connected
@@ -5623,11 +5624,17 @@ where
 	/// [`HeldHtlcAvailable`] onion message, so the recipient's [`ReleaseHeldHtlc`] response will be
 	/// received to our node.
 	fn path_for_release_held_htlc(
-		&self, htlc_id: u64, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		&self, htlc_id: u64, prev_outbound_scid_alias: u64, channel_id: &ChannelId,
+		counterparty_node_id: &PublicKey,
 	) -> BlindedMessagePath {
 		let intercept_id =
 			InterceptId::from_htlc_id_and_chan_id(htlc_id, channel_id, counterparty_node_id);
-		self.flow.path_for_release_held_htlc(intercept_id, &*self.entropy_source)
+		self.flow.path_for_release_held_htlc(
+			intercept_id,
+			prev_outbound_scid_alias,
+			htlc_id,
+			&*self.entropy_source,
+		)
 	}
 
 	/// Signals that no further attempts for the given payment should occur. Useful if you have a
@@ -11302,6 +11309,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						// disconnect, so Channel's reestablish will never hand us any holding cell
 						// freed HTLCs to fail backwards. If in the future we no longer drop pending
 						// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
+						let outbound_scid_alias = chan.context.outbound_scid_alias();
 						let res = chan.channel_reestablish(
 							msg,
 							&&logger,
@@ -11309,7 +11317,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							self.chain_hash,
 							&self.config.read().unwrap(),
 							&*self.best_block.read().unwrap(),
-							|htlc_id| self.path_for_release_held_htlc(htlc_id, &msg.channel_id, counterparty_node_id)
+							|htlc_id| self.path_for_release_held_htlc(htlc_id, outbound_scid_alias, &msg.channel_id, counterparty_node_id)
 						);
 						let responses = try_channel_entry!(self, peer_state, res, chan_entry);
 						let mut channel_update = None;
@@ -11786,11 +11794,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Returns whether we should remove this channel as it's just been closed.
 		let unblock_chan = |chan: &mut Channel<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| -> Option<ShutdownResult> {
 			let channel_id = chan.context().channel_id();
+			let outbound_scid_alias = chan.context().outbound_scid_alias();
 			let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 			let node_id = chan.context().get_counterparty_node_id();
 			if let Some(msgs) = chan.signer_maybe_unblocked(
 				self.chain_hash, &&logger,
-				|htlc_id| self.path_for_release_held_htlc(htlc_id, &channel_id, &node_id)
+				|htlc_id| self.path_for_release_held_htlc(htlc_id, outbound_scid_alias, &channel_id, &node_id)
 			) {
 				if chan.context().is_connected() {
 					if let Some(msg) = msgs.open_channel {
@@ -15029,7 +15038,34 @@ where
 					);
 				}
 			},
-			AsyncPaymentsContext::ReleaseHeldHtlc { intercept_id } => {
+			AsyncPaymentsContext::ReleaseHeldHtlc {
+				intercept_id,
+				prev_outbound_scid_alias,
+				htlc_id,
+			} => {
+				// It's possible the release_held_htlc message raced ahead of us transitioning the pending
+				// update_add to `Self::pending_intercept_htlcs`. If that's the case, update the pending
+				// update_add to indicate that the HTLC should be released immediately.
+				//
+				// Check for the HTLC here before checking `pending_intercept_htlcs` to avoid a different
+				// race where the HTLC gets transitioned to `pending_intercept_htlcs` after we drop that
+				// map's lock but before acquiring the `decode_update_add_htlcs` lock.
+				let mut decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
+				if let Some(htlcs) = decode_update_add_htlcs.get_mut(&prev_outbound_scid_alias) {
+					for update_add in htlcs.iter_mut() {
+						if update_add.htlc_id == htlc_id {
+							log_trace!(
+								self.logger,
+								"Marking held htlc with intercept_id {} as ready to release",
+								intercept_id
+							);
+							update_add.hold_htlc.take();
+							return;
+						}
+					}
+				}
+				core::mem::drop(decode_update_add_htlcs);
+
 				let mut htlc = {
 					let mut pending_intercept_htlcs =
 						self.pending_intercepted_htlcs.lock().unwrap();
