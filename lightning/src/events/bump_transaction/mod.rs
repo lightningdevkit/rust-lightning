@@ -849,8 +849,16 @@ where
 		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
 		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: LockTime,
 	) -> Result<(), ()> {
+		let channel_type = &htlc_descriptors[0]
+			.channel_derivation_parameters
+			.transaction_parameters
+			.channel_type_features;
 		let mut htlc_tx = Transaction {
-			version: Version::TWO,
+			version: if channel_type.supports_anchor_zero_fee_commitments() {
+				Version::non_standard(3)
+			} else {
+				Version::TWO
+			},
 			lock_time: tx_lock_time,
 			input: vec![],
 			output: vec![],
