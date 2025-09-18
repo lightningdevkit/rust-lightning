@@ -2,11 +2,15 @@
 
 mod common;
 
-use common::{create_service_and_client_nodes, get_lsps_message, LSPSNodes, LiquidityNode};
+use common::{
+	create_service_and_client_nodes, create_service_and_client_nodes_with_kv_stores,
+	get_lsps_message, LSPSNodes, LiquidityNode,
+};
 
+use lightning::chain::{BestBlock, Filter};
 use lightning::check_closed_event;
 use lightning::events::ClosureReason;
-use lightning::ln::channelmanager::InterceptId;
+use lightning::ln::channelmanager::{ChainParameters, InterceptId};
 use lightning::ln::functional_test_utils::{
 	close_channel, create_chan_between_nodes, create_chanmon_cfgs, create_network,
 	create_node_cfgs, create_node_chanmgrs, Node,
@@ -14,6 +18,7 @@ use lightning::ln::functional_test_utils::{
 use lightning::ln::msgs::Init;
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::util::hash_tables::{HashMap, HashSet};
+use lightning::util::test_utils::TestStore;
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::ser::LSPSDateTime;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
@@ -34,16 +39,20 @@ use lightning_liquidity::lsps5::service::{
 };
 use lightning_liquidity::lsps5::validator::{LSPS5Validator, MAX_RECENT_SIGNATURES};
 use lightning_liquidity::utils::time::{DefaultTimeProvider, TimeProvider};
+use lightning_liquidity::LiquidityManagerSync;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use lightning_types::payment::PaymentHash;
+
+use bitcoin::Network;
 
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-pub(crate) fn lsps5_test_setup<'a, 'b, 'c>(
+pub(crate) fn lsps5_test_setup_with_kv_stores<'a, 'b, 'c>(
 	nodes: Vec<Node<'a, 'b, 'c>>, time_provider: Arc<dyn TimeProvider + Send + Sync>,
+	service_kv_store: Arc<TestStore>, client_kv_store: Arc<TestStore>,
 ) -> (LSPSNodes<'a, 'b, 'c>, LSPS5Validator) {
 	let lsps5_service_config = LSPS5ServiceConfig::default();
 	let service_config = LiquidityServiceConfig {
@@ -62,16 +71,26 @@ pub(crate) fn lsps5_test_setup<'a, 'b, 'c>(
 		lsps5_client_config: Some(lsps5_client_config),
 	};
 
-	let lsps_nodes = create_service_and_client_nodes(
+	let lsps_nodes = create_service_and_client_nodes_with_kv_stores(
 		nodes,
 		service_config,
 		client_config,
 		Arc::clone(&time_provider),
+		service_kv_store,
+		client_kv_store,
 	);
 
 	let validator = LSPS5Validator::new();
 
 	(lsps_nodes, validator)
+}
+
+pub(crate) fn lsps5_test_setup<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>, time_provider: Arc<dyn TimeProvider + Send + Sync>,
+) -> (LSPSNodes<'a, 'b, 'c>, LSPS5Validator) {
+	let service_kv_store = Arc::new(TestStore::new(false));
+	let client_kv_store = Arc::new(TestStore::new(false));
+	lsps5_test_setup_with_kv_stores(nodes, time_provider, service_kv_store, client_kv_store)
 }
 
 fn assert_lsps5_reject(
@@ -1478,4 +1497,148 @@ fn lsps2_state_allows_lsps5_request() {
 	establish_lsps2_prior_interaction(&lsps_nodes);
 
 	assert_lsps5_accept(&lsps_nodes.service_node, &lsps_nodes.client_node);
+}
+
+#[test]
+fn lsps5_service_handler_persistence_across_restarts() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create shared KV store for service node that will persist across restarts
+	let service_kv_store = Arc::new(TestStore::new(false));
+	let client_kv_store = Arc::new(TestStore::new(false));
+
+	let service_config = LiquidityServiceConfig {
+		#[cfg(lsps1_service)]
+		lsps1_service_config: None,
+		lsps2_service_config: None,
+		lsps5_service_config: Some(LSPS5ServiceConfig::default()),
+		advertise_service: true,
+	};
+	let time_provider: Arc<dyn TimeProvider + Send + Sync> = Arc::new(DefaultTimeProvider);
+
+	// Variables to carry state between scopes
+	let client_node_id;
+	let app_name = "PersistenceTestApp";
+	let webhook_url = "https://example.org/persistence-test";
+
+	// First scope: Setup, webhook registration, persistence, and dropping of all node objects
+	{
+		// Use the helper function with custom KV stores
+		let (lsps_nodes, _validator) = lsps5_test_setup_with_kv_stores(
+			nodes,
+			Arc::clone(&time_provider),
+			Arc::clone(&service_kv_store),
+			client_kv_store,
+		);
+		let LSPSNodes { service_node, client_node } = lsps_nodes;
+
+		// Establish a channel to meet LSPS5 requirements
+		create_chan_between_nodes(&service_node.inner, &client_node.inner);
+
+		let service_node_id = service_node.inner.node.get_our_node_id();
+		client_node_id = client_node.inner.node.get_our_node_id();
+
+		let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
+
+		// Register a webhook to create state that needs persistence
+		let _request_id = client_handler
+			.set_webhook(service_node_id, app_name.to_string(), webhook_url.to_string())
+			.expect("Register webhook request should succeed");
+		let set_webhook_request = get_lsps_message!(client_node, service_node_id);
+
+		service_node
+			.liquidity_manager
+			.handle_custom_message(set_webhook_request, client_node_id)
+			.unwrap();
+
+		// Consume SendWebhookNotification event for webhook_registered
+		let webhook_notification_event = service_node.liquidity_manager.next_event().unwrap();
+		match webhook_notification_event {
+			LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
+				counterparty_node_id,
+				notification,
+				..
+			}) => {
+				assert_eq!(counterparty_node_id, client_node_id);
+				assert_eq!(notification.method, WebhookNotificationMethod::LSPS5WebhookRegistered);
+			},
+			_ => panic!("Expected SendWebhookNotification event"),
+		}
+
+		let set_webhook_response = get_lsps_message!(service_node, client_node_id);
+		client_node
+			.liquidity_manager
+			.handle_custom_message(set_webhook_response, service_node_id)
+			.unwrap();
+
+		let webhook_registered_event = client_node.liquidity_manager.next_event().unwrap();
+		match webhook_registered_event {
+			LiquidityEvent::LSPS5Client(LSPS5ClientEvent::WebhookRegistered {
+				num_webhooks,
+				..
+			}) => {
+				assert_eq!(num_webhooks, 1);
+			},
+			_ => panic!("Expected WebhookRegistered event"),
+		}
+
+		// Trigger persistence by calling persist
+		service_node.liquidity_manager.persist().unwrap();
+
+		// All node objects are dropped at the end of this scope
+	}
+
+	// Second scope: Recovery from persisted store and verification
+	{
+		// Create fresh node configurations for restart to avoid connection conflicts
+		let node_chanmgrs_restart = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes_restart = create_network(2, &node_cfgs, &node_chanmgrs_restart);
+
+		// Create a new LiquidityManager with the same configuration and KV store to simulate restart
+		let chain_params = ChainParameters {
+			network: Network::Testnet,
+			best_block: BestBlock::from_network(Network::Testnet),
+		};
+
+		let restarted_service_lm = LiquidityManagerSync::new_with_custom_time_provider(
+			nodes_restart[0].keys_manager,
+			nodes_restart[0].keys_manager,
+			nodes_restart[0].node,
+			None::<Arc<dyn Filter + Send + Sync>>,
+			Some(chain_params),
+			service_kv_store,
+			Some(service_config),
+			None,
+			Arc::clone(&time_provider),
+		)
+		.unwrap();
+
+		let restarted_service_handler = restarted_service_lm.lsps5_service_handler().unwrap();
+
+		// Verify the state was properly restored by attempting to send a notification
+		// This should succeed if the webhook state was properly restored
+		let result = restarted_service_handler.notify_payment_incoming(client_node_id);
+		assert!(result.is_ok(), "Notification should succeed with restored webhook state");
+
+		// Check that we get a SendWebhookNotification event, confirming the state was restored correctly
+		let event = restarted_service_lm.next_event();
+		assert!(event.is_some(), "Should have an event after sending notification");
+
+		if let Some(LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
+			counterparty_node_id,
+			url,
+			notification,
+			..
+		})) = event
+		{
+			assert_eq!(counterparty_node_id, client_node_id);
+			assert_eq!(url.as_str(), webhook_url);
+			assert_eq!(notification.method, WebhookNotificationMethod::LSPS5PaymentIncoming);
+		} else {
+			panic!("Expected SendWebhookNotification event after restart");
+		}
+	}
 }
