@@ -388,6 +388,7 @@ mod test {
 		let amt = 42_000;
 		let mut opts = OptionalOfferPaymentParams::default();
 		opts.payer_note = payer_note.clone();
+		#[allow(deprecated)]
 		nodes[0]
 			.node
 			.pay_for_offer_from_human_readable_name(name, amt, payment_id, opts, resolvers)

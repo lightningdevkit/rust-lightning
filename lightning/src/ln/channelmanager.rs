@@ -12592,13 +12592,10 @@ where
 	/// Pays for an [`Offer`] looked up using [BIP 353] Human Readable Names resolved by the DNS
 	/// resolver(s) at `dns_resolvers` which resolve names according to [bLIP 32].
 	///
-	/// If the wallet supports paying on-chain schemes, you should instead use
-	/// [`OMNameResolver::resolve_name`] and [`OMNameResolver::handle_dnssec_proof_for_uri`] (by
-	/// implementing [`DNSResolverMessageHandler`]) directly to look up a URI and then delegate to
-	/// your normal URI handling.
-	///
-	/// Alternatively, the [`bitcoin-payment-instructions`] crate provides an implementation of
-	/// much of this logic, and may be useful to decode and resolve payment instructions generally.
+	/// Because most wallets support on-chain or other payment schemes beyond only offers, this is
+	/// deprecated in favor of the [`bitcoin-payment-instructions`] crate, which can be used to
+	/// build an [`OfferFromHrn`] and call [`Self::pay_for_offer_from_hrn`]. Thus, this method is
+	/// deprecated.
 	///
 	/// # Payment
 	///
@@ -12630,6 +12627,7 @@ where
 	/// [`PaymentFailureReason::UserAbandoned`]: crate::events::PaymentFailureReason::UserAbandoned
 	/// [`PaymentFailureReason::InvoiceRequestRejected`]: crate::events::PaymentFailureReason::InvoiceRequestRejected
 	#[cfg(feature = "dnssec")]
+	#[deprecated(note = "Use bitcoin-payment-instructions and pay_for_offer_from_hrn instead")]
 	pub fn pay_for_offer_from_human_readable_name(
 		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
 		optional_params: OptionalOfferPaymentParams, dns_resolvers: Vec<Destination>,
