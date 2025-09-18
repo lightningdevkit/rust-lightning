@@ -1913,30 +1913,32 @@ where
 					.and_then(|pending_splice| pending_splice.funding_negotiation.take());
 
 				let should_ack = funding_negotiation_opt.is_some();
-				let splice_funding_failed = funding_negotiation_opt.map(|funding_negotiation| {
-					// Create SpliceFundingFailed for the aborted splice
-					let (funding_txo, channel_type) = match &funding_negotiation {
-						FundingNegotiation::ConstructingTransaction { funding, .. } => {
-							(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
-						},
-						FundingNegotiation::AwaitingSignatures { funding } => {
-							(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
-						},
-						FundingNegotiation::AwaitingAck { .. } => {
-							(None, None)
-						},
-					};
+				let splice_funding_failed = funding_negotiation_opt
+					.filter(|funding_negotiation| funding_negotiation.is_initiator())
+					.map(|funding_negotiation| {
+						// Create SpliceFundingFailed for the aborted splice
+						let (funding_txo, channel_type) = match &funding_negotiation {
+							FundingNegotiation::ConstructingTransaction { funding, .. } => {
+								(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
+							},
+							FundingNegotiation::AwaitingSignatures { funding, .. } => {
+								(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
+							},
+							FundingNegotiation::AwaitingAck { .. } => {
+								(None, None)
+							},
+						};
 
-					SpliceFundingFailed {
-						channel_id: funded_channel.context.channel_id,
-						counterparty_node_id: funded_channel.context.counterparty_node_id,
-						user_channel_id: funded_channel.context.user_id,
-						funding_txo,
-						channel_type,
-						contributed_inputs: Vec::new(),
-						contributed_outputs: Vec::new(),
-					}
-				});
+						SpliceFundingFailed {
+							channel_id: funded_channel.context.channel_id,
+							counterparty_node_id: funded_channel.context.counterparty_node_id,
+							user_channel_id: funded_channel.context.user_id,
+							funding_txo,
+							channel_type,
+							contributed_inputs: Vec::new(),
+							contributed_outputs: Vec::new(),
+						}
+					});
 				(should_ack, splice_funding_failed)
 			},
 		};
