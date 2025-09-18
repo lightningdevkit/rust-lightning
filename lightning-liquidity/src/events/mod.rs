@@ -25,12 +25,6 @@ use crate::lsps1;
 use crate::lsps2;
 use crate::lsps5;
 
-use lightning::io;
-use lightning::ln::msgs::DecodeError;
-use lightning::util::ser::{
-	BigSize, FixedLengthReader, MaybeReadable, Readable, Writeable, Writer,
-};
-
 /// An event which you should probably take some action in response to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiquidityEvent {
@@ -91,90 +85,5 @@ impl From<lsps5::event::LSPS5ClientEvent> for LiquidityEvent {
 impl From<lsps5::event::LSPS5ServiceEvent> for LiquidityEvent {
 	fn from(event: lsps5::event::LSPS5ServiceEvent) -> Self {
 		Self::LSPS5Service(event)
-	}
-}
-
-impl Writeable for LiquidityEvent {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		match self {
-			Self::LSPS0Client(_) => {
-				// We'll always need to write something for `MaybeReadable`.
-				0u8.write(writer)?;
-			},
-			Self::LSPS1Client(_) => {
-				// We'll always need to write something for `MaybeReadable`.
-				1u8.write(writer)?;
-			},
-			#[cfg(lsps1_service)]
-			Self::LSPS1Service(_) => {
-				// We'll always need to write something for `MaybeReadable`.
-				2u8.write(writer)?;
-			},
-			Self::LSPS2Client(_) => {
-				// We'll always need to write something for `MaybeReadable`.
-				3u8.write(writer)?;
-			},
-			Self::LSPS2Service(event) => {
-				4u8.write(writer)?;
-				event.write(writer)?;
-			},
-			Self::LSPS5Client(_) => {
-				// We'll always need to write something for `MaybeReadable`.
-				5u8.write(writer)?;
-			},
-			Self::LSPS5Service(event) => {
-				6u8.write(writer)?;
-				event.write(writer)?;
-			},
-		}
-		Ok(())
-	}
-}
-
-impl MaybeReadable for LiquidityEvent {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
-		match Readable::read(reader)? {
-			0u8 => {
-				// LSPS0ClientEvents are not persisted.
-				Ok(None)
-			},
-			1u8 => {
-				// LSPS1ClientEvents are not persisted.
-				Ok(None)
-			},
-			2u8 => {
-				// LSPS1ServiceEvents are not persisted.
-				Ok(None)
-			},
-			3u8 => {
-				// LSPS2ClientEvents are not persisted.
-				Ok(None)
-			},
-			4u8 => {
-				let event = Readable::read(reader)?;
-				Ok(Some(LiquidityEvent::LSPS2Service(event)))
-			},
-			5u8 => {
-				// LSPS5ClientEvents are not persisted.
-				Ok(None)
-			},
-			6u8 => {
-				let event = Readable::read(reader)?;
-				Ok(Some(LiquidityEvent::LSPS5Service(event)))
-			},
-			x if x % 2 == 1 => {
-				// If the event is of unknown type, assume it was written with `write_tlv_fields`,
-				// which prefixes the whole thing with a length BigSize. Because the event is
-				// odd-type unknown, we should treat it as `Ok(None)` even if it has some TLV
-				// fields that are even. Thus, we avoid using `read_tlv_fields` and simply read
-				// exactly the number of bytes specified, ignoring them entirely.
-				let tlv_len: BigSize = Readable::read(reader)?;
-				FixedLengthReader::new(reader, tlv_len.0)
-					.eat_remaining()
-					.map_err(|_| DecodeError::ShortRead)?;
-				Ok(None)
-			},
-			_ => Err(DecodeError::InvalidValue),
-		}
 	}
 }

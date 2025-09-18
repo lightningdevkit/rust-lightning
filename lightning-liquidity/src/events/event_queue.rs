@@ -14,8 +14,11 @@ use core::future::Future;
 use core::ops::Deref;
 use core::task::{Poll, Waker};
 
+use lightning::ln::msgs::DecodeError;
 use lightning::util::persist::KVStore;
-use lightning::util::ser::{CollectionLength, MaybeReadable, Readable, Writeable, Writer};
+use lightning::util::ser::{
+	BigSize, CollectionLength, FixedLengthReader, Readable, Writeable, Writer,
+};
 
 /// The maximum queue size we allow before starting to drop events.
 pub const MAX_EVENT_QUEUE_SIZE: usize = 1000;
@@ -165,15 +168,54 @@ impl Future for EventFuture {
 pub(crate) struct EventQueueDeserWrapper(pub VecDeque<LiquidityEvent>);
 
 impl Readable for EventQueueDeserWrapper {
-	fn read<R: lightning::io::Read>(
-		reader: &mut R,
-	) -> Result<Self, lightning::ln::msgs::DecodeError> {
+	fn read<R: lightning::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let len: CollectionLength = Readable::read(reader)?;
 		let mut queue = VecDeque::with_capacity(len.0 as usize);
 		for _ in 0..len.0 {
-			if let Some(event) = MaybeReadable::read(reader)? {
-				queue.push_back(event);
-			}
+			let event = match Readable::read(reader)? {
+				0u8 => {
+					// LSPS0ClientEvents are not persisted.
+					continue;
+				},
+				1u8 => {
+					// LSPS1ClientEvents are not persisted.
+					continue;
+				},
+				2u8 => {
+					// LSPS1ServiceEvents are not persisted.
+					continue;
+				},
+				3u8 => {
+					// LSPS2ClientEvents are not persisted.
+					continue;
+				},
+				4u8 => {
+					let ev = Readable::read(reader)?;
+					LiquidityEvent::LSPS2Service(ev)
+				},
+				5u8 => {
+					// LSPS5ClientEvents are not persisted.
+					continue;
+				},
+				6u8 => {
+					let ev = Readable::read(reader)?;
+					LiquidityEvent::LSPS5Service(ev)
+				},
+				x if x % 2 == 1 => {
+					// If the event is of unknown type, assume it was written with `write_tlv_fields`,
+					// which prefixes the whole thing with a length BigSize. Because the event is
+					// odd-type unknown, we should treat it as `Ok(None)` even if it has some TLV
+					// fields that are even. Thus, we avoid using `read_tlv_fields` and simply read
+					// exactly the number of bytes specified, ignoring them entirely.
+					let tlv_len: BigSize = Readable::read(reader)?;
+					FixedLengthReader::new(reader, tlv_len.0)
+						.eat_remaining()
+						.map_err(|_| DecodeError::ShortRead)?;
+					continue;
+				},
+				_ => return Err(DecodeError::InvalidValue),
+			};
+			queue.push_back(event);
 		}
 		Ok(Self(queue))
 	}
@@ -185,7 +227,42 @@ impl Writeable for EventQueueSerWrapper<'_> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), lightning::io::Error> {
 		CollectionLength(self.0.len() as u64).write(writer)?;
 		for e in self.0.iter() {
-			e.write(writer)?;
+			match e {
+				LiquidityEvent::LSPS0Client(_) => {
+					// LSPS0ClientEvents are not persisted.
+					0u8.write(writer)?;
+					continue;
+				},
+				LiquidityEvent::LSPS1Client(_) => {
+					// LSPS1ClientEvents are not persisted.
+					1u8.write(writer)?;
+					continue;
+				},
+				#[cfg(lsps1_service)]
+				LiquidityEvent::LSPS1Service(_) => {
+					// LSPS1ServiceEvents are not persisted.
+					2u8.write(writer)?;
+					continue;
+				},
+				LiquidityEvent::LSPS2Client(_) => {
+					// LSPS2ClientEvents are not persisted.
+					3u8.write(writer)?;
+					continue;
+				},
+				LiquidityEvent::LSPS2Service(event) => {
+					4u8.write(writer)?;
+					event.write(writer)?;
+				},
+				LiquidityEvent::LSPS5Client(_) => {
+					// LSPS5ClientEvents are not persisted.
+					5u8.write(writer)?;
+					continue;
+				},
+				LiquidityEvent::LSPS5Service(event) => {
+					6u8.write(writer)?;
+					event.write(writer)?;
+				},
+			}
 		}
 		Ok(())
 	}
