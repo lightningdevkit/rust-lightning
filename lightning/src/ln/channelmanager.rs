@@ -2680,7 +2680,7 @@ pub struct ChannelManager<
 	/// See `PendingOutboundPayment` documentation for more info.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	pending_outbound_payments: OutboundPayments,
+	pending_outbound_payments: OutboundPayments<L>,
 
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
 	///
@@ -3893,7 +3893,7 @@ where
 			best_block: RwLock::new(params.best_block),
 
 			outbound_scid_aliases: Mutex::new(new_hash_set()),
-			pending_outbound_payments: OutboundPayments::new(new_hash_map()),
+			pending_outbound_payments: OutboundPayments::new(new_hash_map(), logger.clone()),
 			forward_htlcs: Mutex::new(new_hash_map()),
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
@@ -5166,7 +5166,7 @@ where
 		self.pending_outbound_payments
 			.send_payment(payment_hash, recipient_onion, payment_id, Retry::Attempts(0),
 				route_params, &&router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
-				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
+				&self.entropy_source, &self.node_signer, best_block_height,
 				&self.pending_events, |args| self.send_payment_along_path(args))
 	}
 
@@ -5225,7 +5225,6 @@ where
 			&self.entropy_source,
 			&self.node_signer,
 			best_block_height,
-			&self.logger,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
 		)
@@ -5324,7 +5323,6 @@ where
 			&self.entropy_source,
 			&self.node_signer,
 			best_block_height,
-			&self.logger,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
 		)
@@ -5394,7 +5392,6 @@ where
 			&self,
 			&self.secp_ctx,
 			best_block_height,
-			&self.logger,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
 		)
@@ -5515,7 +5512,6 @@ where
 				&self,
 				&self.secp_ctx,
 				best_block_height,
-				&self.logger,
 				&self.pending_events,
 				|args| self.send_payment_along_path(args),
 			);
@@ -5615,7 +5611,6 @@ where
 			&self.entropy_source,
 			&self.node_signer,
 			best_block_height,
-			&self.logger,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
 		)
@@ -6772,7 +6767,6 @@ where
 			&self.node_signer,
 			best_block_height,
 			&self.pending_events,
-			&self.logger,
 			|args| self.send_payment_along_path(args),
 		);
 		if needs_persist {
@@ -8156,7 +8150,6 @@ where
 					self.probing_cookie_secret,
 					&self.secp_ctx,
 					&self.pending_events,
-					&self.logger,
 					&mut from_monitor_update_completion,
 				);
 				if let Some(update) = from_monitor_update_completion {
@@ -8838,7 +8831,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					from_onchain,
 					&mut ev_completion_action,
 					&self.pending_events,
-					&self.logger,
 				);
 				// If an event was generated, `claim_htlc` set `ev_completion_action` to None, if
 				// not, we should go ahead and run it now (as the claim was duplicative), at least
@@ -16552,7 +16544,8 @@ where
 			}
 			pending_outbound_payments = Some(outbounds);
 		}
-		let pending_outbounds = OutboundPayments::new(pending_outbound_payments.unwrap());
+		let pending_outbounds =
+			OutboundPayments::new(pending_outbound_payments.unwrap(), args.logger.clone());
 
 		for (peer_pubkey, peer_storage) in peer_storage_dir {
 			if let Some(peer_state) = per_peer_state.get_mut(&peer_pubkey) {
@@ -16858,7 +16851,6 @@ where
 								session_priv_bytes,
 								&path,
 								best_block_height,
-								logger,
 							);
 						}
 					}
@@ -16958,7 +16950,6 @@ where
 										true,
 										&mut compl_action,
 										&pending_events,
-										&&logger,
 									);
 									// If the completion action was not consumed, then there was no
 									// payment to claim, and we need to tell the `ChannelMonitor`
