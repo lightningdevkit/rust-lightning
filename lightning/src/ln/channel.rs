@@ -1766,6 +1766,7 @@ where
 					.pending_splice
 					.as_mut()
 					.and_then(|pending_splice| pending_splice.funding_negotiation.take())
+					.filter(|funding_negotiation| funding_negotiation.is_initiator())
 					.map(|funding_negotiation| {
 						let funding = funding_negotiation.as_funding();
 						SpliceFundingFailed {
@@ -2001,6 +2002,7 @@ where
 							interactive_tx_constructor,
 						} = funding_negotiation
 						{
+							let is_initiator = interactive_tx_constructor.is_initiator();
 							let signing_session = interactive_tx_constructor.into_signing_session();
 							let commitment_signed_result = chan.context.funding_tx_constructed(
 								&mut funding,
@@ -2013,7 +2015,7 @@ where
 							// This must be set even if returning an Err. Otherwise,
 							// fail_interactive_tx_negotiation won't produce a SpliceFailed event.
 							pending_splice.funding_negotiation =
-								Some(FundingNegotiation::AwaitingSignatures { funding });
+								Some(FundingNegotiation::AwaitingSignatures { funding, is_initiator });
 
 							return commitment_signed_result;
 						} else {
@@ -2606,12 +2608,14 @@ enum FundingNegotiation {
 	},
 	AwaitingSignatures {
 		funding: FundingScope,
+		is_initiator: bool,
 	},
 }
 
 impl_writeable_tlv_based_enum_upgradable!(FundingNegotiation,
 	(0, AwaitingSignatures) => {
 		(1, funding, required),
+		(3, is_initiator, required),
 	},
 	unread_variants: AwaitingAck, ConstructingTransaction
 );
@@ -2621,7 +2625,17 @@ impl FundingNegotiation {
 		match self {
 			FundingNegotiation::AwaitingAck { .. } => None,
 			FundingNegotiation::ConstructingTransaction { funding, .. } => Some(funding),
-			FundingNegotiation::AwaitingSignatures { funding } => Some(funding),
+			FundingNegotiation::AwaitingSignatures { funding, .. } => Some(funding),
+		}
+	}
+
+	fn is_initiator(&self) -> bool {
+		match self {
+			FundingNegotiation::AwaitingAck { context } => context.is_initiator,
+			FundingNegotiation::ConstructingTransaction { interactive_tx_constructor, .. } => {
+				interactive_tx_constructor.is_initiator()
+			},
+			FundingNegotiation::AwaitingSignatures { is_initiator, .. } => *is_initiator,
 		}
 	}
 }
@@ -8627,7 +8641,7 @@ where
 
 		if let Some(pending_splice) = self.pending_splice.as_mut() {
 			self.context.channel_state.clear_quiescent();
-			if let Some(FundingNegotiation::AwaitingSignatures { mut funding }) =
+			if let Some(FundingNegotiation::AwaitingSignatures { mut funding, .. }) =
 				pending_splice.funding_negotiation.take()
 			{
 				funding.funding_transaction = Some(funding_tx);
@@ -9544,7 +9558,7 @@ where
 						.as_ref()
 						.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
 						.and_then(|funding_negotiation| {
-							if let FundingNegotiation::AwaitingSignatures { funding } = &funding_negotiation {
+							if let FundingNegotiation::AwaitingSignatures { funding, .. } = &funding_negotiation {
 								Some(funding)
 							} else {
 								None

@@ -1848,6 +1848,7 @@ impl InteractiveTxInput {
 
 pub(super) struct InteractiveTxConstructor {
 	state_machine: StateMachine,
+	is_initiator: bool,
 	initiator_first_message: Option<InteractiveTxMessageSend>,
 	channel_id: ChannelId,
 	inputs_to_contribute: Vec<(SerialId, InputOwned)>,
@@ -2009,6 +2010,7 @@ impl InteractiveTxConstructor {
 
 		let mut constructor = Self {
 			state_machine,
+			is_initiator,
 			initiator_first_message: None,
 			channel_id,
 			inputs_to_contribute,
@@ -2019,6 +2021,10 @@ impl InteractiveTxConstructor {
 			constructor.initiator_first_message = Some(constructor.maybe_send_message()?);
 		}
 		Ok(constructor)
+	}
+
+	pub fn is_initiator(&self) -> bool {
+		self.is_initiator
 	}
 
 	pub fn take_initiator_first_message(&mut self) -> Option<InteractiveTxMessageSend> {
