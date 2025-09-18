@@ -6853,6 +6853,7 @@ where
 		// Capture splice funding failed information if we have an active splice negotiation
 		let splice_funding_failed = self.pending_splice.as_mut()
 			.and_then(|pending_splice| pending_splice.funding_negotiation.take())
+			.filter(|funding_negotiation| funding_negotiation.is_initiator())
 			.map(|funding_negotiation| {
 				// Create SpliceFundingFailed for any active splice negotiation during shutdown
 				let (funding_txo, channel_type) = match &funding_negotiation {
@@ -6862,7 +6863,7 @@ where
 					FundingNegotiation::ConstructingTransaction { funding, .. } => {
 						(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
 					},
-					FundingNegotiation::AwaitingSignatures { funding } => {
+					FundingNegotiation::AwaitingSignatures { funding, .. } => {
 						(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
 					},
 				};
