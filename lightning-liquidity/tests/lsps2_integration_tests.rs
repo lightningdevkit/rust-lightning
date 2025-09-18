@@ -2,7 +2,9 @@
 
 mod common;
 
-use common::{create_service_and_client_nodes, get_lsps_message, LSPSNodes, LiquidityNode};
+use common::{
+	create_service_and_client_nodes_with_kv_stores, get_lsps_message, LSPSNodes, LiquidityNode,
+};
 
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::ser::LSPSDateTime;
@@ -12,10 +14,11 @@ use lightning_liquidity::lsps2::event::LSPS2ServiceEvent;
 use lightning_liquidity::lsps2::msgs::LSPS2RawOpeningFeeParams;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
 use lightning_liquidity::lsps2::utils::is_valid_opening_fee_params;
-use lightning_liquidity::utils::time::DefaultTimeProvider;
-use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
+use lightning_liquidity::utils::time::{DefaultTimeProvider, TimeProvider};
+use lightning_liquidity::{LiquidityClientConfig, LiquidityManagerSync, LiquidityServiceConfig};
 
-use lightning::ln::channelmanager::{InterceptId, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use lightning::chain::{BestBlock, Filter};
+use lightning::ln::channelmanager::{ChainParameters, InterceptId, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use lightning::ln::functional_test_utils::{
 	create_chanmon_cfgs, create_node_cfgs, create_node_chanmgrs,
 };
@@ -26,6 +29,7 @@ use lightning::routing::router::{RouteHint, RouteHintHop};
 use lightning::sign::NodeSigner;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Logger;
+use lightning::util::test_utils::TestStore;
 
 use lightning_invoice::{Bolt11Invoice, InvoiceBuilder, RoutingFees};
 
@@ -42,8 +46,8 @@ use std::time::Duration;
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
 
-fn setup_test_lsps2_nodes<'a, 'b, 'c>(
-	nodes: Vec<Node<'a, 'b, 'c>>,
+fn setup_test_lsps2_nodes_with_kv_stores<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>, service_kv_store: Arc<TestStore>, client_kv_store: Arc<TestStore>,
 ) -> (LSPSNodes<'a, 'b, 'c>, [u8; 32]) {
 	let promise_secret = [42; 32];
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
@@ -61,14 +65,24 @@ fn setup_test_lsps2_nodes<'a, 'b, 'c>(
 		lsps2_client_config: Some(lsps2_client_config),
 		lsps5_client_config: None,
 	};
-	let lsps_nodes = create_service_and_client_nodes(
+	let lsps_nodes = create_service_and_client_nodes_with_kv_stores(
 		nodes,
 		service_config,
 		client_config,
 		Arc::new(DefaultTimeProvider),
+		service_kv_store,
+		client_kv_store,
 	);
 
 	(lsps_nodes, promise_secret)
+}
+
+fn setup_test_lsps2_nodes<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>,
+) -> (LSPSNodes<'a, 'b, 'c>, [u8; 32]) {
+	let service_kv_store = Arc::new(TestStore::new(false));
+	let client_kv_store = Arc::new(TestStore::new(false));
+	setup_test_lsps2_nodes_with_kv_stores(nodes, service_kv_store, client_kv_store)
 }
 
 fn create_jit_invoice(
@@ -885,5 +899,201 @@ fn opening_fee_params_menu_is_sorted_by_spec() {
 		}
 	} else {
 		panic!("Unexpected event");
+	}
+}
+
+#[test]
+fn lsps2_service_handler_persistence_across_restarts() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create shared KV store for service node that will persist across restarts
+	let service_kv_store = Arc::new(TestStore::new(false));
+	let client_kv_store = Arc::new(TestStore::new(false));
+
+	let promise_secret = [42; 32];
+	let service_config = LiquidityServiceConfig {
+		#[cfg(lsps1_service)]
+		lsps1_service_config: None,
+		lsps2_service_config: Some(LSPS2ServiceConfig { promise_secret }),
+		lsps5_service_config: None,
+		advertise_service: true,
+	};
+	let time_provider: Arc<dyn TimeProvider + Send + Sync> = Arc::new(DefaultTimeProvider);
+
+	// Variables to carry state between scopes
+	let user_channel_id = 42;
+	let cltv_expiry_delta = 144;
+	let intercept_scid;
+	let client_node_id;
+
+	// First scope: Setup, persistence, and dropping of all node objects
+	{
+		// Use the helper function with custom KV stores
+		let (lsps_nodes, _) = setup_test_lsps2_nodes_with_kv_stores(
+			nodes,
+			Arc::clone(&service_kv_store),
+			client_kv_store,
+		);
+		let LSPSNodes { service_node, client_node } = lsps_nodes;
+
+		let service_node_id = service_node.inner.node.get_our_node_id();
+		client_node_id = client_node.inner.node.get_our_node_id();
+
+		let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
+		let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+		// Set up a JIT channel request to create state that needs persistence
+		let _get_info_request_id = client_handler.request_opening_params(service_node_id, None);
+		let get_info_request = get_lsps_message!(client_node, service_node_id);
+		service_node
+			.liquidity_manager
+			.handle_custom_message(get_info_request, client_node_id)
+			.unwrap();
+
+		let get_info_event = service_node.liquidity_manager.next_event().unwrap();
+		let request_id = match get_info_event {
+			LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::GetInfo { request_id, .. }) => {
+				request_id
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		let raw_opening_params = LSPS2RawOpeningFeeParams {
+			min_fee_msat: 100,
+			proportional: 21,
+			valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
+			min_lifetime: 144,
+			max_client_to_self_delay: 128,
+			min_payment_size_msat: 1,
+			max_payment_size_msat: 100_000_000,
+		};
+
+		service_handler
+			.opening_fee_params_generated(
+				&client_node_id,
+				request_id.clone(),
+				vec![raw_opening_params],
+			)
+			.unwrap();
+
+		let get_info_response = get_lsps_message!(service_node, client_node_id);
+		client_node
+			.liquidity_manager
+			.handle_custom_message(get_info_response, service_node_id)
+			.unwrap();
+
+		let opening_fee_params = match client_node.liquidity_manager.next_event().unwrap() {
+			LiquidityEvent::LSPS2Client(LSPS2ClientEvent::OpeningParametersReady {
+				opening_fee_params_menu,
+				..
+			}) => opening_fee_params_menu.first().unwrap().clone(),
+			_ => panic!("Unexpected event"),
+		};
+
+		// Client makes a buy request
+		let payment_size_msat = Some(1_000_000);
+		let buy_request_id = client_handler
+			.select_opening_params(service_node_id, payment_size_msat, opening_fee_params.clone())
+			.unwrap();
+
+		let buy_request = get_lsps_message!(client_node, service_node_id);
+		service_node.liquidity_manager.handle_custom_message(buy_request, client_node_id).unwrap();
+
+		let buy_event = service_node.liquidity_manager.next_event().unwrap();
+		if let LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::BuyRequest { request_id, .. }) =
+			buy_event
+		{
+			assert_eq!(request_id, buy_request_id);
+		} else {
+			panic!("Unexpected event");
+		}
+
+		// Service responds with invoice parameters, creating persistent channel state
+		intercept_scid = service_node.node.get_intercept_scid();
+		let client_trusts_lsp = true;
+
+		service_handler
+			.invoice_parameters_generated(
+				&client_node_id,
+				buy_request_id.clone(),
+				intercept_scid,
+				cltv_expiry_delta,
+				client_trusts_lsp,
+				user_channel_id,
+			)
+			.unwrap();
+
+		let buy_response = get_lsps_message!(service_node, client_node_id);
+		client_node.liquidity_manager.handle_custom_message(buy_response, service_node_id).unwrap();
+
+		let _invoice_params_event = client_node.liquidity_manager.next_event().unwrap();
+
+		// Trigger persistence by calling persist
+		service_node.liquidity_manager.persist().unwrap();
+
+		// All node objects are dropped at the end of this scope
+	}
+
+	// Second scope: Recovery from persisted store and verification
+	{
+		// Create fresh node configurations for restart to avoid connection conflicts
+		let node_chanmgrs_restart = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes_restart = create_network(2, &node_cfgs, &node_chanmgrs_restart);
+
+		// Create a new LiquidityManager with the same configuration and KV store to simulate restart
+		let chain_params = ChainParameters {
+			network: Network::Testnet,
+			best_block: BestBlock::from_network(Network::Testnet),
+		};
+
+		let restarted_service_lm = LiquidityManagerSync::new_with_custom_time_provider(
+			nodes_restart[0].keys_manager,
+			nodes_restart[0].keys_manager,
+			nodes_restart[0].node,
+			None::<Arc<dyn Filter + Send + Sync>>,
+			Some(chain_params),
+			service_kv_store,
+			Some(service_config),
+			None,
+			time_provider,
+		)
+		.unwrap();
+
+		let restarted_service_handler = restarted_service_lm.lsps2_service_handler().unwrap();
+
+		// Verify the state was properly restored by checking if the channel exists
+		// We can do this by trying to call htlc_intercepted which should succeed if state was restored
+		let htlc_amount_msat = 1_000_000;
+		let intercept_id = InterceptId([0; 32]);
+		let payment_hash = PaymentHash([1; 32]);
+
+		let result = restarted_service_handler.htlc_intercepted(
+			intercept_scid,
+			intercept_id,
+			htlc_amount_msat,
+			payment_hash,
+		);
+
+		// This should succeed if the channel state was properly restored
+		assert!(result.is_ok(), "HTLC interception should succeed with restored state");
+
+		// Check that we get an OpenChannel event, confirming the state was restored correctly
+		let event = restarted_service_lm.next_event();
+		assert!(event.is_some(), "Should have an event after HTLC interception");
+
+		if let Some(LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel {
+			user_channel_id: restored_channel_id,
+			intercept_scid: restored_scid,
+			..
+		})) = event
+		{
+			assert_eq!(restored_channel_id, user_channel_id);
+			assert_eq!(restored_scid, intercept_scid);
+		} else {
+			panic!("Expected OpenChannel event after restart");
+		}
 	}
 }

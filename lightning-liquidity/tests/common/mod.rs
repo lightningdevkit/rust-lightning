@@ -19,15 +19,15 @@ pub(crate) struct LSPSNodes<'a, 'b, 'c> {
 	pub client_node: LiquidityNode<'a, 'b, 'c>,
 }
 
-pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
+pub(crate) fn create_service_and_client_nodes_with_kv_stores<'a, 'b, 'c>(
 	nodes: Vec<Node<'a, 'b, 'c>>, service_config: LiquidityServiceConfig,
 	client_config: LiquidityClientConfig, time_provider: Arc<dyn TimeProvider + Send + Sync>,
+	service_kv_store: Arc<TestStore>, client_kv_store: Arc<TestStore>,
 ) -> LSPSNodes<'a, 'b, 'c> {
 	let chain_params = ChainParameters {
 		network: Network::Testnet,
 		best_block: BestBlock::from_network(Network::Testnet),
 	};
-	let service_kv_store = Arc::new(TestStore::new(false));
 	let service_lm = LiquidityManagerSync::new_with_custom_time_provider(
 		nodes[0].keys_manager,
 		nodes[0].keys_manager,
@@ -41,7 +41,6 @@ pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
 	)
 	.unwrap();
 
-	let client_kv_store = Arc::new(TestStore::new(false));
 	let client_lm = LiquidityManagerSync::new_with_custom_time_provider(
 		nodes[1].keys_manager,
 		nodes[1].keys_manager,
@@ -60,6 +59,23 @@ pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
 	let client_node = LiquidityNode::new(iter.next().unwrap(), client_lm);
 
 	LSPSNodes { service_node, client_node }
+}
+
+#[allow(unused)]
+pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>, service_config: LiquidityServiceConfig,
+	client_config: LiquidityClientConfig, time_provider: Arc<dyn TimeProvider + Send + Sync>,
+) -> LSPSNodes<'a, 'b, 'c> {
+	let service_kv_store = Arc::new(TestStore::new(false));
+	let client_kv_store = Arc::new(TestStore::new(false));
+	create_service_and_client_nodes_with_kv_stores(
+		nodes,
+		service_config,
+		client_config,
+		time_provider,
+		service_kv_store,
+		client_kv_store,
+	)
 }
 
 pub(crate) struct LiquidityNode<'a, 'b, 'c> {
