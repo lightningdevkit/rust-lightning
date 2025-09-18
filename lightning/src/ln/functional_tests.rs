@@ -18,6 +18,7 @@ use crate::chain::channelmonitor::{
 	Balance, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE,
 	LATENCY_GRACE_PERIOD_BLOCKS,
 };
+use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::events::{
 	ClosureReason, Event, HTLCHandlingFailureType, PathFailure, PaymentFailureReason,
@@ -6649,8 +6650,12 @@ pub fn test_channel_conf_timeout() {
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 
-	let _funding_tx =
+	let funding_tx =
 		create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 100_000);
+
+	// Inbound channels which haven't advanced state at all and never were funded will generate
+	// claimable `Balance`s until they're closed.
+	assert!(!nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
 
 	// The outbound node should wait forever for confirmation:
 	// This matches `channel::FUNDING_CONF_DEADLINE_BLOCKS` and BOLT 2's suggested timeout, thus is
@@ -6662,6 +6667,10 @@ pub fn test_channel_conf_timeout() {
 	connect_blocks(&nodes[1], 2015);
 	check_added_monitors(&nodes[1], 0);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 1);
+	assert!(!nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
 
 	connect_blocks(&nodes[1], 1);
 	check_added_monitors(&nodes[1], 1);
@@ -6681,6 +6690,22 @@ pub fn test_channel_conf_timeout() {
 		},
 		_ => panic!("Unexpected event"),
 	}
+
+	// Once an inbound never-confirmed channel is closed, it will no longer generate any claimable
+	// `Balance`s.
+	assert!(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+
+	// Once the funding times out the monitor should be immediately archived.
+	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 0);
+	assert!(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+
+	// Remove the corresponding outputs and transactions the chain source is
+	// watching. This is to make sure the `Drop` function assertions pass.
+	nodes[1].chain_source.remove_watched_txn_and_outputs(
+		OutPoint { txid: funding_tx.compute_txid(), index: 0 },
+		funding_tx.output[0].script_pubkey.clone(),
+	);
 }
 
 #[xtest(feature = "_externalize_tests")]

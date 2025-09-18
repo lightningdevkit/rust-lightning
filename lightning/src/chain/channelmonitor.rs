@@ -2599,6 +2599,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let current_height = self.current_best_block().height;
 		let mut inner = self.inner.lock().unwrap();
 
+		if inner.is_closed_without_updates()
+			&& is_all_funds_claimed
+			&& !inner.funding_spend_seen
+		{
+			// We closed the channel without ever advancing it and didn't have any funds in it.
+			// We should immediately archive this monitor as there's nothing for us to ever do with
+			// it.
+			return (true, false);
+		}
+
 		if is_all_funds_claimed && !inner.funding_spend_seen {
 			debug_assert!(false, "We should see funding spend by the time a monitor clears out");
 			is_all_funds_claimed = false;
@@ -3073,7 +3083,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 						transaction_fee_satoshis,
 					}
 				})
-				.collect();
+				.collect::<Vec<_>>();
 			let confirmed_balance_candidate_index = core::iter::once(&us.funding)
 				.chain(us.pending_funding.iter())
 				.enumerate()
@@ -3086,14 +3096,25 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				})
 				.map(|(idx, _)| idx)
 				.expect("We must have one FundingScope that is confirmed");
-			res.push(Balance::ClaimableOnChannelClose {
-				balance_candidates,
-				confirmed_balance_candidate_index,
-				outbound_payment_htlc_rounded_msat,
-				outbound_forwarded_htlc_rounded_msat,
-				inbound_claiming_htlc_rounded_msat,
-				inbound_htlc_rounded_msat,
-			});
+
+			// Only push a primary balance if either the channel isn't closed or we've advanced the
+			// channel state machine at least once (implying there are multiple previous commitment
+			// transactions) or we actually have a balance.
+			// Avoiding including a `Balance` if none of these are true allows us to prune monitors
+			// for chanels that were opened inbound to us but where the funding transaction never
+			// confirmed at all.
+			if !us.is_closed_without_updates()
+				|| balance_candidates.iter().any(|bal| bal.amount_satoshis != 0)
+			{
+				res.push(Balance::ClaimableOnChannelClose {
+					balance_candidates,
+					confirmed_balance_candidate_index,
+					outbound_payment_htlc_rounded_msat,
+					outbound_forwarded_htlc_rounded_msat,
+					inbound_claiming_htlc_rounded_msat,
+					inbound_htlc_rounded_msat,
+				});
+			}
 		}
 
 		res
@@ -4308,6 +4329,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
 			Err(())
 		} else { ret }
+	}
+
+	/// Returns true if the channel has been closed (i.e. no further updates are allowed) and no
+	/// commitment state updates ever happened.
+	fn is_closed_without_updates(&self) -> bool {
+		let mut commitment_not_advanced =
+			self.current_counterparty_commitment_number == INITIAL_COMMITMENT_NUMBER;
+		commitment_not_advanced &=
+			self.current_holder_commitment_number == INITIAL_COMMITMENT_NUMBER;
+		(self.holder_tx_signed || self.lockdown_from_offchain) && commitment_not_advanced
 	}
 
 	fn no_further_updates_allowed(&self) -> bool {
