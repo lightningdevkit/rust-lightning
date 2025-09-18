@@ -86,6 +86,7 @@ use crate::offers::merkle::{TaggedHash, TlvRecord, TlvStream};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{self, Metadata, MetadataMaterial};
+use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::types::features::OfferFeatures;
 use crate::types::string::PrintableString;
 use crate::util::ser::{
@@ -577,6 +578,20 @@ impl<'a> From<OfferWithDerivedMetadataBuilder<'a>>
 	}
 }
 
+/// An [`Offer`] which was fetched from a human readable name, ie through BIP 353.
+pub struct OfferFromHrn {
+	/// The offer itself.
+	///
+	/// When you resolve this into an [`InvoiceRequestBuilder`] you *must* call
+	/// [`InvoiceRequestBuilder::sourced_from_human_readable_name`].
+	///
+	/// If you call [`Self::request_invoice`] rather than [`Offer::request_invoice`] this will be
+	/// handled for you.
+	pub offer: Offer,
+	/// The human readable name which was resolved to fetch the [`Self::offer`].
+	pub hrn: HumanReadableName,
+}
+
 /// An `Offer` is a potentially long-lived proposal for payment of a good or service.
 ///
 /// An offer is a precursor to an [`InvoiceRequest`]. A merchant publishes an offer from which a
@@ -750,7 +765,7 @@ impl Offer {
 	}
 }
 
-macro_rules! request_invoice_derived_signing_pubkey { ($self: ident, $builder: ty) => {
+macro_rules! request_invoice_derived_signing_pubkey { ($self: ident, $offer: expr, $builder: ty, $hrn: expr) => {
 	/// Creates an [`InvoiceRequestBuilder`] for the offer, which
 	/// - derives the [`InvoiceRequest::payer_signing_pubkey`] such that a different key can be used
 	///   for each request in order to protect the sender's privacy,
@@ -779,24 +794,57 @@ macro_rules! request_invoice_derived_signing_pubkey { ($self: ident, $builder: t
 		secp_ctx: &'b Secp256k1<secp256k1::All>,
 		payment_id: PaymentId
 	) -> Result<$builder, Bolt12SemanticError> {
-		if $self.offer_features().requires_unknown_bits() {
+		if $offer.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(<$builder>::deriving_signing_pubkey($self, expanded_key, nonce, secp_ctx, payment_id))
+		let mut builder = <$builder>::deriving_signing_pubkey(&$offer, expanded_key, nonce, secp_ctx, payment_id);
+		if let Some(hrn) = $hrn {
+			#[cfg(c_bindings)]
+			{
+				builder.sourced_from_human_readable_name(hrn);
+			}
+			#[cfg(not(c_bindings))]
+			{
+				builder = builder.sourced_from_human_readable_name(hrn);
+			}
+		}
+		Ok(builder)
 	}
 } }
 
 #[cfg(not(c_bindings))]
 impl Offer {
-	request_invoice_derived_signing_pubkey!(self, InvoiceRequestBuilder<'a, 'b, T>);
+	request_invoice_derived_signing_pubkey!(self, self, InvoiceRequestBuilder<'a, 'b, T>, None);
+}
+
+#[cfg(not(c_bindings))]
+impl OfferFromHrn {
+	request_invoice_derived_signing_pubkey!(
+		self,
+		self.offer,
+		InvoiceRequestBuilder<'a, 'b, T>,
+		Some(self.hrn)
+	);
 }
 
 #[cfg(c_bindings)]
 impl Offer {
 	request_invoice_derived_signing_pubkey!(
 		self,
-		InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>
+		self,
+		InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>,
+		None
+	);
+}
+
+#[cfg(c_bindings)]
+impl OfferFromHrn {
+	request_invoice_derived_signing_pubkey!(
+		self,
+		self.offer,
+		InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>,
+		Some(self.hrn)
 	);
 }
 

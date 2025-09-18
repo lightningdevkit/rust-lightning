@@ -164,7 +164,7 @@ mod test {
 	};
 	use lightning::blinded_path::NodeIdLookUp;
 	use lightning::events::{Event, PaymentPurpose};
-	use lightning::ln::channelmanager::{PaymentId, Retry};
+	use lightning::ln::channelmanager::{OptionalOfferPaymentParams, PaymentId};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{
 		BaseMessageHandler, ChannelMessageHandler, Init, OnionMessageHandler,
@@ -175,7 +175,6 @@ mod test {
 	use lightning::onion_message::messenger::{
 		AOnionMessenger, Destination, MessageRouter, OnionMessagePath, OnionMessenger,
 	};
-	use lightning::routing::router::RouteParametersConfig;
 	use lightning::sign::{KeysManager, NodeSigner, ReceiveAuthKey, Recipient};
 	use lightning::types::features::InitFeatures;
 	use lightning::types::payment::PaymentHash;
@@ -380,23 +379,18 @@ mod test {
 	async fn pay_offer_flow<'a, 'b, 'c>(
 		nodes: &[Node<'a, 'b, 'c>], resolver_messenger: &impl AOnionMessenger,
 		resolver_id: PublicKey, payer_id: PublicKey, payee_id: PublicKey, offer: Offer,
-		name: HumanReadableName, amt: u64, payment_id: PaymentId, payer_note: Option<String>,
-		retry: Retry, params: RouteParametersConfig, resolvers: Vec<Destination>,
+		name: HumanReadableName, payment_id: PaymentId, payer_note: Option<String>,
+		resolvers: Vec<Destination>,
 	) {
 		// Override contents to offer provided
 		let proof_override = &nodes[0].node.testing_dnssec_proof_offer_resolution_override;
 		proof_override.lock().unwrap().insert(name.clone(), offer);
+		let amt = 42_000;
+		let mut opts = OptionalOfferPaymentParams::default();
+		opts.payer_note = payer_note.clone();
 		nodes[0]
 			.node
-			.pay_for_offer_from_human_readable_name(
-				name,
-				amt,
-				payment_id,
-				payer_note.clone(),
-				retry,
-				params,
-				resolvers,
-			)
+			.pay_for_offer_from_human_readable_name(name, amt, payment_id, opts, resolvers)
 			.unwrap();
 
 		let query = nodes[0].onion_messenger.next_onion_message_for_peer(resolver_id).unwrap();
@@ -493,9 +487,6 @@ mod test {
 
 		let bs_offer = nodes[1].node.create_offer_builder().unwrap().build().unwrap();
 		let resolvers = vec![Destination::Node(resolver_id)];
-		let retry = Retry::Attempts(0);
-		let amt = 42_000;
-		let params = RouteParametersConfig::default();
 
 		pay_offer_flow(
 			&nodes,
@@ -505,11 +496,8 @@ mod test {
 			payee_id,
 			bs_offer.clone(),
 			name.clone(),
-			amt,
 			PaymentId([42; 32]),
 			None,
-			retry,
-			params,
 			resolvers.clone(),
 		)
 		.await;
@@ -523,11 +511,8 @@ mod test {
 			payee_id,
 			bs_offer,
 			name,
-			amt,
 			PaymentId([21; 32]),
 			Some("foo".into()),
-			retry,
-			params,
 			resolvers,
 		)
 		.await;

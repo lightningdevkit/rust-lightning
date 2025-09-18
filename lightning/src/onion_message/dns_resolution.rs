@@ -201,7 +201,7 @@ const REQUIRED_EXTRA_LEN: usize = ".user._bitcoin-payment.".len() + 1;
 /// This struct can also be used for LN-Address recipients.
 ///
 /// [Homograph Attacks]: https://en.wikipedia.org/wiki/IDN_homograph_attack
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct HumanReadableName {
 	contents: [u8; 255 - REQUIRED_EXTRA_LEN],
 	user_len: u8,
