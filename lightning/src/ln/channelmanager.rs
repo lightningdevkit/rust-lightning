@@ -3228,7 +3228,9 @@ macro_rules! handle_error {
 					let per_peer_state = $self.per_peer_state.read().unwrap();
 					if let Some(peer_state_mutex) = per_peer_state.get(&$counterparty_node_id) {
 						let mut peer_state = peer_state_mutex.lock().unwrap();
-						peer_state.pending_msg_events.push(msg_event);
+						if peer_state.is_connected {
+							peer_state.pending_msg_events.push(msg_event);
+						}
 					}
 				}
 
@@ -18808,7 +18810,7 @@ mod tests {
 			.node
 			.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone())
 			.unwrap();
-		check_closed_broadcast(&nodes[0], 1, true);
+		check_closed_broadcast(&nodes[0], 1, false);
 		check_added_monitors(&nodes[0], 1);
 		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 100000);

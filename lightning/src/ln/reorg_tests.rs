@@ -325,6 +325,16 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		let chan_0_monitor_serialized = get_monitor!(nodes[0], chan.2).encode();
 
 		reload_node!(nodes[0], nodes[0].node.get_current_config(), &nodes_0_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+
+		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+
+		if reorg_after_reload {
+			// If we haven't yet closed the channel, reconnect the peers so that nodes[0] will
+			// generate an error message we can handle below.
+			let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+			reconnect_args.send_channel_ready = (true, true);
+			reconnect_nodes(reconnect_args);
+		}
 	}
 
 	if reorg_after_reload {
@@ -387,7 +397,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		[nodes[1].node.get_our_node_id()], 100000);
 
 	// Now check that we can create a new channel
-	if reload_node {
+	if reload_node && !reorg_after_reload {
 		// If we dropped the channel before reloading the node, nodes[1] was also dropped from
 		// nodes[0] storage, and hence not connected again on startup. We therefore need to
 		// reconnect to the node before attempting to create a new channel.
@@ -879,7 +889,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 		.node
 		.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id(), message.clone())
 		.unwrap();
-	check_closed_broadcast(&nodes[1], 1, true);
+	check_closed_broadcast(&nodes[1], 1, !revoked_counterparty_commitment);
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[1], 1, reason, false, &[nodes[0].node.get_our_node_id()], 100_000);
@@ -1002,7 +1012,7 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
 	// Force-close and fetch node B's commitment transaction and the transaction claiming the first
 	// two HTLCs.
 	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, err).unwrap();
-	check_closed_broadcast(&nodes[1], 1, true);
+	check_closed_broadcast(&nodes[1], 1, false);
 	check_added_monitors(&nodes[1], 1);
 	let message = "Channel force-closed".to_owned();
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
@@ -1015,7 +1025,7 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
 	check_spends!(commitment_tx, funding_tx);
 
 	mine_transaction(&nodes[0], &commitment_tx);
-	check_closed_broadcast(&nodes[0], 1, true);
+	check_closed_broadcast(&nodes[0], 1, false);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 10_000_000);
 	check_added_monitors(&nodes[0], 1);
