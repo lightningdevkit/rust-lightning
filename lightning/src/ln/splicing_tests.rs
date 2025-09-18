@@ -9,9 +9,11 @@
 
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::transaction::OutPoint;
 use crate::events::bump_transaction::sync::WalletSourceSync;
-use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
+use crate::events::{ClosureReason, Event, FundingInfo, HTLCHandlingFailureType};
 use crate::ln::chan_utils;
+use crate::ln::channelmanager::BREAKDOWN_TIMEOUT;
 use crate::ln::functional_test_utils::*;
 use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -305,7 +307,8 @@ fn lock_splice_after_blocks<'a, 'b, 'c, 'd>(
 		panic!();
 	}
 
-	// Remove the corresponding outputs and transactions the chain source is watching.
+	// Remove the corresponding outputs and transactions the chain source is watching for the
+	// old funding as it is no longer being tracked.
 	node_a
 		.chain_source
 		.remove_watched_txn_and_outputs(prev_funding_outpoint, prev_funding_script.clone());
@@ -560,4 +563,42 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 		);
 	}
 	check_added_monitors(&nodes[0], 2); // Two `ReleasePaymentComplete` monitor updates
+
+	// When the splice never confirms and we see a commitment transaction broadcast and confirm for
+	// the current funding instead, we should expect to see an `Event::DiscardFunding` for the
+	// splice transaction.
+	if splice_status == SpliceStatus::Unconfirmed {
+		// Remove the corresponding outputs and transactions the chain source is watching for the
+		// splice as it is no longer being tracked.
+		connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32);
+		let (vout, txout) = splice_tx
+			.output
+			.iter()
+			.enumerate()
+			.find(|(_, output)| output.script_pubkey.is_p2wsh())
+			.unwrap();
+		let funding_outpoint = OutPoint { txid: splice_tx.compute_txid(), index: vout as u16 };
+		nodes[0]
+			.chain_source
+			.remove_watched_txn_and_outputs(funding_outpoint, txout.script_pubkey.clone());
+		nodes[1]
+			.chain_source
+			.remove_watched_txn_and_outputs(funding_outpoint, txout.script_pubkey.clone());
+
+		// `SpendableOutputs` events are also included here, but we don't care for them.
+		let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+		assert_eq!(events.len(), if claim_htlcs { 2 } else { 4 }, "{events:?}");
+		if let Event::DiscardFunding { funding_info, .. } = &events[0] {
+			assert_eq!(*funding_info, FundingInfo::OutPoint { outpoint: funding_outpoint });
+		} else {
+			panic!();
+		}
+		let events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+		assert_eq!(events.len(), if claim_htlcs { 2 } else { 1 }, "{events:?}");
+		if let Event::DiscardFunding { funding_info, .. } = &events[0] {
+			assert_eq!(*funding_info, FundingInfo::OutPoint { outpoint: funding_outpoint });
+		} else {
+			panic!();
+		}
+	}
 }
