@@ -219,9 +219,13 @@ impl PendingOutboundPayment {
 			params.insert_previously_failed_blinded_path(blinded_tail);
 		}
 	}
-	fn is_awaiting_invoice(&self) -> bool {
+	// Used for payments to BOLT 12 offers where we are either waiting for an invoice or have an
+	// invoice but have not locked in HTLCs for the payment yet.
+	fn is_pre_htlc_lock_in(&self) -> bool {
 		match self {
-			PendingOutboundPayment::AwaitingInvoice { .. } => true,
+			PendingOutboundPayment::AwaitingInvoice { .. }
+			| PendingOutboundPayment::InvoiceReceived { .. }
+			| PendingOutboundPayment::StaticInvoiceReceived { .. } => true,
 			_ => false,
 		}
 	}
@@ -1370,7 +1374,7 @@ impl OutboundPayments {
 			let mut retain = true;
 			if !pmt.is_auto_retryable_now()
 				&& pmt.remaining_parts() == 0
-				&& !pmt.is_awaiting_invoice()
+				&& !pmt.is_pre_htlc_lock_in()
 			{
 				pmt.mark_abandoned(PaymentFailureReason::RetriesExhausted);
 				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = pmt {
@@ -1398,7 +1402,7 @@ impl OutboundPayments {
 				|| !pmt.is_auto_retryable_now()
 					&& pmt.remaining_parts() == 0
 					&& !pmt.is_fulfilled()
-					&& !pmt.is_awaiting_invoice()
+					&& !pmt.is_pre_htlc_lock_in()
 		})
 	}
 
