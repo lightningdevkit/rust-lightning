@@ -242,16 +242,39 @@ where
 		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
 		// introduce some batching to upper-bound the number of requests inflight at any given
 		// time.
-		let need_persist: Vec<PublicKey> = {
-			let outer_state_lock = self.per_peer_state.read().unwrap();
-			outer_state_lock
-				.iter()
-				.filter_map(|(k, v)| if v.needs_persist { Some(*k) } else { None })
-				.collect()
+		let mut need_remove = Vec::new();
+		let mut need_persist = Vec::new();
+		{
+			let mut outer_state_lock = self.per_peer_state.write().unwrap();
+			self.check_prune_stale_webhooks(&mut outer_state_lock);
+
+			outer_state_lock.retain(|client_id, peer_state| {
+				let is_prunable = peer_state.is_prunable();
+				let has_open_channel = self.client_has_open_channel(client_id);
+				if is_prunable && !has_open_channel {
+					need_remove.push(*client_id);
+				} else if peer_state.needs_persist {
+					need_persist.push(*client_id);
+				}
+				!is_prunable || has_open_channel
+			});
 		};
 
 		for counterparty_node_id in need_persist.into_iter() {
+			debug_assert!(!need_remove.contains(&counterparty_node_id));
 			self.persist_peer_state(counterparty_node_id).await?;
+		}
+
+		for counterparty_node_id in need_remove {
+			let key = counterparty_node_id.to_string();
+			self.kv_store
+				.remove(
+					LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+					LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+					&key,
+					true,
+				)
+				.await?;
 		}
 
 		Ok(())
@@ -269,14 +292,11 @@ where
 		});
 
 		if should_prune {
-			outer_state_lock.retain(|client_id, peer_state| {
-				if self.client_has_open_channel(client_id) {
-					// Don't prune clients with open channels
-					return true;
-				}
-				// TODO: Remove peer state entry from the KVStore
-				!peer_state.prune_stale_webhooks(now)
-			});
+			for (_, peer_state) in outer_state_lock.iter_mut() {
+				// Prune stale webhooks, but leave removal of the peers states to the prune logic
+				// in `persist` which will remove it from the store.
+				peer_state.prune_stale_webhooks(now)
+			}
 			*last_pruning = Some(now);
 		}
 	}
@@ -732,11 +752,17 @@ impl PeerState {
 	}
 
 	// Returns whether the entire state is empty and can be pruned.
-	fn prune_stale_webhooks(&mut self, now: LSPSDateTime) -> bool {
+	fn prune_stale_webhooks(&mut self, now: LSPSDateTime) {
 		self.webhooks.retain(|(_, webhook)| {
-			now.duration_since(&webhook.last_used) < MIN_WEBHOOK_RETENTION_DAYS
+			let should_prune = now.duration_since(&webhook.last_used) >= MIN_WEBHOOK_RETENTION_DAYS;
+			if should_prune {
+				self.needs_persist |= true;
+			}
+			!should_prune
 		});
+	}
 
+	fn is_prunable(&mut self) -> bool {
 		self.webhooks.is_empty()
 	}
 }
