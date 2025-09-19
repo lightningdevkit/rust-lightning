@@ -8615,7 +8615,7 @@ where
 				return Err(APIError::APIMisuseError { err });
 			};
 
-		let tx = signing_session.unsigned_tx().build_unsigned_tx();
+		let tx = signing_session.unsigned_tx().tx();
 		if funding_txid_signed != tx.compute_txid() {
 			return Err(APIError::APIMisuseError {
 				err: "Transaction was malleated prior to signing".to_owned(),
@@ -8627,7 +8627,7 @@ where
 				let sig = match &self.context.holder_signer {
 					ChannelSignerType::Ecdsa(signer) => signer.sign_splice_shared_input(
 						&self.funding.channel_transaction_parameters,
-						&tx,
+						tx,
 						splice_input_index as usize,
 						&self.context.secp_ctx,
 					),

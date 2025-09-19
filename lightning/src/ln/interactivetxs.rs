@@ -200,6 +200,7 @@ pub(crate) struct ConstructedTransaction {
 
 	inputs: Vec<NegotiatedTxInput>,
 	outputs: Vec<InteractiveTxOutput>,
+	tx: Transaction,
 
 	local_inputs_value_satoshis: u64,
 	local_outputs_value_satoshis: u64,
@@ -207,14 +208,12 @@ pub(crate) struct ConstructedTransaction {
 	remote_inputs_value_satoshis: u64,
 	remote_outputs_value_satoshis: u64,
 
-	lock_time: AbsoluteLockTime,
 	shared_input_index: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NegotiatedTxInput {
 	serial_id: SerialId,
-	txin: TxIn,
 	prev_output: TxOut,
 }
 
@@ -230,19 +229,18 @@ impl NegotiatedTxInput {
 
 impl_writeable_tlv_based!(NegotiatedTxInput, {
 	(1, serial_id, required),
-	(3, txin, required),
-	(5, prev_output, required),
+	(3, prev_output, required),
 });
 
 impl_writeable_tlv_based!(ConstructedTransaction, {
 	(1, holder_is_initiator, required),
 	(3, inputs, required),
 	(5, outputs, required),
-	(7, local_inputs_value_satoshis, required),
-	(9, local_outputs_value_satoshis, required),
-	(11, remote_inputs_value_satoshis, required),
-	(13, remote_outputs_value_satoshis, required),
-	(15, lock_time, required),
+	(7, tx, required),
+	(9, local_inputs_value_satoshis, required),
+	(11, local_outputs_value_satoshis, required),
+	(13, remote_inputs_value_satoshis, required),
+	(15, remote_outputs_value_satoshis, required),
 	(17, shared_input_index, option),
 });
 
@@ -281,23 +279,37 @@ impl ConstructedTransaction {
 				value.saturating_add(input.satisfaction_weight().to_wu())
 			}));
 
-		let mut inputs: Vec<NegotiatedTxInput> =
-			context.inputs.into_values().map(|tx_input| tx_input.into_negotiated_input()).collect();
+		let mut inputs: Vec<(TxIn, NegotiatedTxInput)> = context
+			.inputs
+			.into_values()
+			.map(|input| input.into_txin_and_negotiated_input())
+			.collect();
 		let mut outputs: Vec<InteractiveTxOutput> = context.outputs.into_values().collect();
-		inputs.sort_unstable_by_key(|input| input.serial_id);
+		inputs.sort_unstable_by_key(|(_, input)| input.serial_id);
 		outputs.sort_unstable_by_key(|output| output.serial_id);
 
 		let shared_input_index =
 			context.shared_funding_input.as_ref().and_then(|shared_funding_input| {
 				inputs
 					.iter()
-					.position(|input| {
-						input.txin.previous_output == shared_funding_input.input.previous_output
+					.position(|(txin, _)| {
+						txin.previous_output == shared_funding_input.input.previous_output
 					})
 					.map(|position| position as u32)
 			});
 
-		let constructed_tx = Self {
+		let (input, inputs): (Vec<TxIn>, Vec<NegotiatedTxInput>) = inputs.into_iter().unzip();
+		let output = outputs.iter().map(|output| output.tx_out().clone()).collect();
+
+		let tx =
+			Transaction { version: Version::TWO, lock_time: context.tx_locktime, input, output };
+
+		let tx_weight = tx.weight().checked_add(satisfaction_weight).unwrap_or(Weight::MAX);
+		if tx_weight > Weight::from_wu(MAX_STANDARD_TX_WEIGHT as u64) {
+			return Err(AbortReason::TransactionTooLarge);
+		}
+
+		Ok(Self {
 			holder_is_initiator: context.holder_is_initiator,
 
 			local_inputs_value_satoshis,
@@ -308,39 +320,14 @@ impl ConstructedTransaction {
 
 			inputs,
 			outputs,
+			tx,
 
-			lock_time: context.tx_locktime,
 			shared_input_index,
-		};
-
-		let tx_weight = constructed_tx.weight(satisfaction_weight);
-		if tx_weight > Weight::from_wu(MAX_STANDARD_TX_WEIGHT as u64) {
-			return Err(AbortReason::TransactionTooLarge);
-		}
-
-		Ok(constructed_tx)
+		})
 	}
 
-	fn weight(&self, satisfaction_weight: Weight) -> Weight {
-		let inputs_weight = Weight::from_wu(self.inputs.len() as u64 * BASE_INPUT_WEIGHT)
-			.checked_add(satisfaction_weight)
-			.unwrap_or(Weight::MAX);
-		let outputs_weight = self.outputs.iter().fold(Weight::from_wu(0), |weight, output| {
-			weight.checked_add(get_output_weight(output.script_pubkey())).unwrap_or(Weight::MAX)
-		});
-		Weight::from_wu(TX_COMMON_FIELDS_WEIGHT)
-			.checked_add(inputs_weight)
-			.and_then(|weight| weight.checked_add(outputs_weight))
-			.unwrap_or(Weight::MAX)
-	}
-
-	pub fn build_unsigned_tx(&self) -> Transaction {
-		let ConstructedTransaction { inputs, outputs, .. } = self;
-
-		let input: Vec<TxIn> = inputs.iter().map(|input| input.txin.clone()).collect();
-		let output: Vec<TxOut> = outputs.iter().map(|output| output.tx_out().clone()).collect();
-
-		Transaction { version: Version::TWO, lock_time: self.lock_time, input, output }
+	pub fn tx(&self) -> &Transaction {
+		&self.tx
 	}
 
 	pub fn outputs(&self) -> impl Iterator<Item = &InteractiveTxOutput> {
@@ -352,23 +339,25 @@ impl ConstructedTransaction {
 	}
 
 	pub fn compute_txid(&self) -> Txid {
-		self.build_unsigned_tx().compute_txid()
+		self.tx().compute_txid()
 	}
 
 	/// Adds provided holder witnesses to holder inputs of unsigned transaction.
 	///
 	/// Note that it is assumed that the witness count equals the holder input count.
 	fn add_local_witnesses(&mut self, witnesses: Vec<Witness>) {
-		self.inputs
+		self.tx
+			.input
 			.iter_mut()
+			.zip(self.inputs.iter())
 			.enumerate()
-			.filter(|(_, input)| input.is_local(self.holder_is_initiator))
+			.filter(|(_, (_, input))| input.is_local(self.holder_is_initiator))
 			.filter(|(index, _)| {
 				self.shared_input_index
 					.map(|shared_index| *index != shared_index as usize)
 					.unwrap_or(true)
 			})
-			.map(|(_, input)| &mut input.txin)
+			.map(|(_, (txin, _))| txin)
 			.zip(witnesses)
 			.for_each(|(input, witness)| input.witness = witness);
 	}
@@ -377,16 +366,18 @@ impl ConstructedTransaction {
 	///
 	/// Note that it is assumed that the witness count equals the counterparty input count.
 	fn add_remote_witnesses(&mut self, witnesses: Vec<Witness>) {
-		self.inputs
+		self.tx
+			.input
 			.iter_mut()
+			.zip(self.inputs.iter())
 			.enumerate()
-			.filter(|(_, input)| !input.is_local(self.holder_is_initiator))
+			.filter(|(_, (_, input))| !input.is_local(self.holder_is_initiator))
 			.filter(|(index, _)| {
 				self.shared_input_index
 					.map(|shared_index| *index != shared_index as usize)
 					.unwrap_or(true)
 			})
-			.map(|(_, input)| &mut input.txin)
+			.map(|(_, (txin, _))| txin)
 			.zip(witnesses)
 			.for_each(|(input, witness)| input.witness = witness);
 	}
@@ -594,18 +585,7 @@ impl InteractiveTxSigningSession {
 	}
 
 	fn finalize_funding_tx(&mut self) -> Transaction {
-		let lock_time = self.unsigned_tx.lock_time;
-		let ConstructedTransaction { inputs, outputs, shared_input_index, .. } =
-			&mut self.unsigned_tx;
-
-		let mut tx = Transaction {
-			version: Version::TWO,
-			lock_time,
-			input: inputs.iter().cloned().map(|input| input.txin).collect(),
-			output: outputs.iter().cloned().map(|output| output.into_tx_out()).collect(),
-		};
-
-		if let Some(shared_input_index) = shared_input_index {
+		if let Some(shared_input_index) = self.unsigned_tx.shared_input_index {
 			if let Some(holder_shared_input_sig) = self
 				.holder_tx_signatures
 				.as_ref()
@@ -628,7 +608,7 @@ impl InteractiveTxSigningSession {
 							witness.push_ecdsa_signature(&holder_sig);
 						}
 						witness.push(&shared_input_sig.witness_script);
-						tx.input[*shared_input_index as usize].witness = witness;
+						self.unsigned_tx.tx.input[shared_input_index as usize].witness = witness;
 					} else {
 						debug_assert!(false);
 					}
@@ -640,19 +620,19 @@ impl InteractiveTxSigningSession {
 			}
 		}
 
-		tx
+		self.unsigned_tx.tx.clone()
 	}
 
 	fn verify_interactive_tx_signatures<C: bitcoin::secp256k1::Verification>(
 		&self, secp_ctx: &Secp256k1<C>, witnesses: &Vec<Witness>,
 	) -> Result<(), String> {
 		let unsigned_tx = self.unsigned_tx();
-		let built_tx = unsigned_tx.build_unsigned_tx();
+		let built_tx = unsigned_tx.tx();
 		let prev_outputs: Vec<&TxOut> =
 			unsigned_tx.inputs().map(|input| input.prev_output()).collect::<Vec<_>>();
 		let all_prevouts = sighash::Prevouts::All(&prev_outputs[..]);
 
-		let mut cache = SighashCache::new(&built_tx);
+		let mut cache = SighashCache::new(built_tx);
 
 		let script_pubkeys = unsigned_tx
 			.inputs()
@@ -1855,9 +1835,9 @@ impl InteractiveTxInput {
 		self.input.satisfaction_weight()
 	}
 
-	fn into_negotiated_input(self) -> NegotiatedTxInput {
+	fn into_txin_and_negotiated_input(self) -> (TxIn, NegotiatedTxInput) {
 		let (txin, prev_output) = self.input.into_tx_in_with_prev_output();
-		NegotiatedTxInput { serial_id: self.serial_id, txin, prev_output }
+		(txin, NegotiatedTxInput { serial_id: self.serial_id, prev_output })
 	}
 }
 
@@ -3321,16 +3301,12 @@ mod tests {
 	fn do_verify_tx_signatures(
 		transaction: Transaction, prev_outputs: Vec<TxOut>,
 	) -> Result<(), String> {
-		let inputs: Vec<NegotiatedTxInput> = transaction
-			.input
-			.iter()
-			.cloned()
-			.zip(prev_outputs.into_iter())
+		let inputs: Vec<NegotiatedTxInput> = prev_outputs
+			.into_iter()
 			.enumerate()
-			.map(|(idx, (txin, prev_output))| {
+			.map(|(idx, prev_output)| {
 				NegotiatedTxInput {
 					serial_id: idx as u64, // even values will be holder (initiator in this test)
-					txin,
 					prev_output,
 				}
 			})
@@ -3351,11 +3327,11 @@ mod tests {
 			holder_is_initiator: true,
 			inputs,
 			outputs,
+			tx: transaction.clone(),
 			local_inputs_value_satoshis: 0,   // N/A for test
 			local_outputs_value_satoshis: 0,  // N/A for test
 			remote_inputs_value_satoshis: 0,  // N/A for test
 			remote_outputs_value_satoshis: 0, // N/A for test
-			lock_time: transaction.lock_time,
 			shared_input_index: None,
 		};
 
