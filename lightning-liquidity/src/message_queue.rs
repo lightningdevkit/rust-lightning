@@ -13,9 +13,9 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::lsps0::ser::LSPSMessage;
-use crate::sync::Mutex;
+use crate::sync::{Arc, Mutex};
 
-use lightning::util::wakers::{Future, Notifier};
+use lightning::util::wakers::Notifier;
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -24,22 +24,17 @@ use bitcoin::secp256k1::PublicKey;
 /// [`LiquidityManager`]: crate::LiquidityManager
 pub struct MessageQueue {
 	queue: Mutex<VecDeque<(PublicKey, LSPSMessage)>>,
-	pending_msgs_notifier: Notifier,
+	pending_msgs_notifier: Arc<Notifier>,
 }
 
 impl MessageQueue {
-	pub(crate) fn new() -> Self {
+	pub(crate) fn new(pending_msgs_notifier: Arc<Notifier>) -> Self {
 		let queue = Mutex::new(VecDeque::new());
-		let pending_msgs_notifier = Notifier::new();
 		Self { queue, pending_msgs_notifier }
 	}
 
 	pub(crate) fn get_and_clear_pending_msgs(&self) -> Vec<(PublicKey, LSPSMessage)> {
 		self.queue.lock().unwrap().drain(..).collect()
-	}
-
-	pub(crate) fn get_pending_msgs_future(&self) -> Future {
-		self.pending_msgs_notifier.get_future()
 	}
 
 	pub(crate) fn notifier(&self) -> MessageQueueNotifierGuard<'_> {

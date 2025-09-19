@@ -36,6 +36,7 @@ use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::sign::EntropySource;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
+use lightning::util::persist::KVStore;
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -131,32 +132,35 @@ impl PeerState {
 }
 
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
-pub struct LSPS1ServiceHandler<ES: Deref, CM: Deref + Clone, C: Deref>
+pub struct LSPS1ServiceHandler<ES: Deref, CM: Deref + Clone, C: Deref, K: Deref + Clone>
 where
 	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	K::Target: KVStore,
 {
 	entropy_source: ES,
 	channel_manager: CM,
 	chain_source: Option<C>,
 	pending_messages: Arc<MessageQueue>,
-	pending_events: Arc<EventQueue>,
+	pending_events: Arc<EventQueue<K>>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 	config: LSPS1ServiceConfig,
 }
 
-impl<ES: Deref, CM: Deref + Clone, C: Deref> LSPS1ServiceHandler<ES, CM, C>
+impl<ES: Deref, CM: Deref + Clone, C: Deref, K: Deref + Clone> LSPS1ServiceHandler<ES, CM, C, K>
 where
 	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	/// Constructs a `LSPS1ServiceHandler`.
 	pub(crate) fn new(
-		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>,
-		channel_manager: CM, chain_source: Option<C>, config: LSPS1ServiceConfig,
+		entropy_source: ES, pending_messages: Arc<MessageQueue>,
+		pending_events: Arc<EventQueue<K>>, channel_manager: CM, chain_source: Option<C>,
+		config: LSPS1ServiceConfig,
 	) -> Self {
 		Self {
 			entropy_source,
@@ -417,12 +421,13 @@ where
 	}
 }
 
-impl<ES: Deref, CM: Deref + Clone, C: Deref> LSPSProtocolMessageHandler
-	for LSPS1ServiceHandler<ES, CM, C>
+impl<ES: Deref, CM: Deref + Clone, C: Deref, K: Deref + Clone> LSPSProtocolMessageHandler
+	for LSPS1ServiceHandler<ES, CM, C, K>
 where
 	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
+	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS1Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(1);

@@ -87,13 +87,15 @@ mod tests {
 	use crate::tests::utils;
 	use alloc::string::ToString;
 	use alloc::sync::Arc;
+	use lightning::util::wakers::Notifier;
 
 	use super::*;
 
 	#[test]
 	fn test_handle_list_protocols_request() {
 		let protocols: Vec<u16> = vec![];
-		let pending_messages = Arc::new(MessageQueue::new());
+		let notifier = Arc::new(Notifier::new());
+		let pending_messages = Arc::new(MessageQueue::new(notifier));
 
 		let lsps0_handler =
 			Arc::new(LSPS0ServiceHandler::new(protocols, Arc::clone(&pending_messages)));

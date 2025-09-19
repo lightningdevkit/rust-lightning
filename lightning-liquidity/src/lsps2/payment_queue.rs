@@ -9,6 +9,7 @@
 
 use alloc::vec::Vec;
 
+use lightning::impl_writeable_tlv_based;
 use lightning::ln::channelmanager::InterceptId;
 use lightning_types::payment::PaymentHash;
 
@@ -62,11 +63,20 @@ impl PaymentQueue {
 	}
 }
 
+impl_writeable_tlv_based!(PaymentQueue, {
+	(0, payments, optional_vec),
+});
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct PaymentQueueEntry {
 	pub(crate) payment_hash: PaymentHash,
 	pub(crate) htlcs: Vec<InterceptedHTLC>,
 }
+
+impl_writeable_tlv_based!(PaymentQueueEntry, {
+	(0, payment_hash, required),
+	(2, htlcs, optional_vec),
+});
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct InterceptedHTLC {
@@ -74,6 +84,12 @@ pub(crate) struct InterceptedHTLC {
 	pub(crate) expected_outbound_amount_msat: u64,
 	pub(crate) payment_hash: PaymentHash,
 }
+
+impl_writeable_tlv_based!(InterceptedHTLC, {
+	(0, intercept_id, required),
+	(2, expected_outbound_amount_msat, required),
+	(4, payment_hash, required),
+});
 
 #[cfg(test)]
 mod tests {
