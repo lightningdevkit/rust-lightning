@@ -91,7 +91,7 @@ use crate::ln::outbound_payment::{
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
-use crate::offers::flow::{InvreqResponseInstructions, OffersMessageFlow};
+use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};
 use crate::offers::invoice::{
 	Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder, DEFAULT_RELATIVE_EXPIRY,
 };
@@ -870,6 +870,16 @@ impl HTLCSource {
 	pub(crate) fn inbound_htlc_expiry(&self) -> Option<u32> {
 		match self {
 			Self::PreviousHopData(HTLCPreviousHopData { cltv_expiry, .. }) => *cltv_expiry,
+			_ => None,
+		}
+	}
+
+	pub(crate) fn static_invoice(&self) -> Option<StaticInvoice> {
+		match self {
+			Self::OutboundRoute {
+				bolt12_invoice: Some(PaidBolt12Invoice::StaticInvoice(inv)),
+				..
+			} => Some(inv.clone()),
 			_ => None,
 		}
 	}
@@ -4086,8 +4096,10 @@ where
 		Ok(temporary_channel_id)
 	}
 
-	fn list_funded_channels_with_filter<Fn: FnMut(&(&ChannelId, &Channel<SP>)) -> bool + Copy>(
-		&self, f: Fn,
+	fn list_funded_channels_with_filter<
+		Fn: FnMut(&(&InitFeatures, &ChannelId, &Channel<SP>)) -> bool,
+	>(
+		&self, mut f: Fn,
 	) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
@@ -4102,9 +4114,13 @@ where
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				// Only `Channels` in the `Channel::Funded` phase can be considered funded.
-				let filtered_chan_by_id =
-					peer_state.channel_by_id.iter().filter(|(_, chan)| chan.is_funded()).filter(f);
-				res.extend(filtered_chan_by_id.map(|(_channel_id, channel)| {
+				let filtered_chan_by_id = peer_state
+					.channel_by_id
+					.iter()
+					.map(|(cid, c)| (&peer_state.latest_features, cid, c))
+					.filter(|(_, _, chan)| chan.is_funded())
+					.filter(|v| f(v));
+				res.extend(filtered_chan_by_id.map(|(_, _channel_id, channel)| {
 					ChannelDetails::from_channel(
 						channel,
 						best_block_height,
@@ -4156,7 +4172,7 @@ where
 		// Note we use is_live here instead of usable which leads to somewhat confused
 		// internal/external nomenclature, but that's ok cause that's probably what the user
 		// really wanted anyway.
-		self.list_funded_channels_with_filter(|&(_, ref channel)| channel.context().is_live())
+		self.list_funded_channels_with_filter(|&(_, _, ref channel)| channel.context().is_live())
 	}
 
 	/// Gets the list of channels we have with a given counterparty, in random order.
@@ -4988,6 +5004,7 @@ where
 			invoice_request: None,
 			bolt12_invoice: None,
 			session_priv_bytes,
+			hold_htlc_at_next_hop: false,
 		})
 	}
 
@@ -5003,6 +5020,7 @@ where
 			invoice_request,
 			bolt12_invoice,
 			session_priv_bytes,
+			hold_htlc_at_next_hop,
 		} = args;
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
@@ -5092,6 +5110,7 @@ where
 							htlc_source,
 							onion_packet,
 							None,
+							hold_htlc_at_next_hop,
 							&self.fee_estimator,
 							&&logger,
 						);
@@ -5476,19 +5495,36 @@ where
 				},
 			};
 
-			let enqueue_held_htlc_available_res = self.flow.enqueue_held_htlc_available(
-				invoice,
-				payment_id,
-				self.get_peers_for_blinded_path(),
-			);
-			if enqueue_held_htlc_available_res.is_err() {
-				self.abandon_payment_with_reason(
+			// If the call to `Self::hold_htlc_channels` succeeded, then we are a private node and can
+			// hold the HTLCs for this payment at our next-hop channel counterparty until the recipient
+			// comes online. This allows us to go offline after locking in the HTLCs.
+			if let Ok(channels) = self.hold_htlc_channels() {
+				if let Err(e) =
+					self.send_payment_for_static_invoice_no_persist(payment_id, channels, true)
+				{
+					log_trace!(
+						self.logger,
+						"Failed to send held HTLC with payment id {}: {:?}",
+						payment_id,
+						e
+					);
+				}
+			} else {
+				let reply_path = HeldHtlcReplyPath::ToUs {
 					payment_id,
-					PaymentFailureReason::BlindedPathCreationFailed,
-				);
-				res = Err(Bolt12PaymentError::BlindedPathCreationFailed);
-				return NotifyOption::DoPersist;
-			};
+					peers: self.get_peers_for_blinded_path(),
+				};
+				let enqueue_held_htlc_available_res =
+					self.flow.enqueue_held_htlc_available(invoice, reply_path);
+				if enqueue_held_htlc_available_res.is_err() {
+					self.abandon_payment_with_reason(
+						payment_id,
+						PaymentFailureReason::BlindedPathCreationFailed,
+					);
+					res = Err(Bolt12PaymentError::BlindedPathCreationFailed);
+					return NotifyOption::DoPersist;
+				};
+			}
 
 			NotifyOption::DoPersist
 		});
@@ -5496,25 +5532,36 @@ where
 		res
 	}
 
+	/// Returns a list of channels where our counterparty supports
+	/// [`InitFeatures::supports_htlc_hold`], or an error if there are none or we are configured not
+	/// to hold HTLCs at our next-hop channel counterparty. Useful for sending async payments to
+	/// [`StaticInvoice`]s.
+	fn hold_htlc_channels(&self) -> Result<Vec<ChannelDetails>, ()> {
+		let should_send_async = self.config.read().unwrap().hold_outbound_htlcs_at_next_hop;
+		if !should_send_async {
+			return Err(());
+		}
+
+		let hold_htlc_channels =
+			self.list_funded_channels_with_filter(|&(init_features, _, ref channel)| {
+				init_features.supports_htlc_hold() && channel.context().is_live()
+			});
+
+		if hold_htlc_channels.is_empty() {
+			Err(())
+		} else {
+			Ok(hold_htlc_channels)
+		}
+	}
+
 	fn send_payment_for_static_invoice(
 		&self, payment_id: PaymentId,
 	) -> Result<(), Bolt12PaymentError> {
-		let best_block_height = self.best_block.read().unwrap().height;
 		let mut res = Ok(());
+		let first_hops = self.list_usable_channels();
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			let outbound_pmts_res = self.pending_outbound_payments.send_payment_for_static_invoice(
-				payment_id,
-				&self.router,
-				self.list_usable_channels(),
-				|| self.compute_inflight_htlcs(),
-				&self.entropy_source,
-				&self.node_signer,
-				&self,
-				&self.secp_ctx,
-				best_block_height,
-				&self.pending_events,
-				|args| self.send_payment_along_path(args),
-			);
+			let outbound_pmts_res =
+				self.send_payment_for_static_invoice_no_persist(payment_id, first_hops, false);
 			match outbound_pmts_res {
 				Err(Bolt12PaymentError::UnexpectedInvoice)
 				| Err(Bolt12PaymentError::DuplicateInvoice) => {
@@ -5528,6 +5575,27 @@ where
 			}
 		});
 		res
+	}
+
+	/// Useful if the caller is already triggering a persist of the `ChannelManager`.
+	fn send_payment_for_static_invoice_no_persist(
+		&self, payment_id: PaymentId, first_hops: Vec<ChannelDetails>, hold_htlcs_at_next_hop: bool,
+	) -> Result<(), Bolt12PaymentError> {
+		let best_block_height = self.best_block.read().unwrap().height;
+		self.pending_outbound_payments.send_payment_for_static_invoice(
+			payment_id,
+			hold_htlcs_at_next_hop,
+			&self.router,
+			first_hops,
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			&self,
+			&self.secp_ctx,
+			best_block_height,
+			&self.pending_events,
+			|args| self.send_payment_along_path(args),
+		)
 	}
 
 	/// If we are holding an HTLC on behalf of an often-offline sender, this method allows us to
@@ -10776,7 +10844,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					// Pull this now to avoid introducing a lock order with `forward_htlcs`.
 					let is_our_scid = self.short_to_chan_info.read().unwrap().contains_key(&scid);
 
-					let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
 					let payment_hash = forward_info.payment_hash;
 					let logger = WithContext::from(
 						&self.logger,
@@ -10878,7 +10945,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							},
 						}
 					} else {
-						match forward_htlcs.entry(scid) {
+						match self.forward_htlcs.lock().unwrap().entry(scid) {
 							hash_map::Entry::Occupied(mut entry) => {
 								entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
 							},
@@ -10954,7 +11021,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	#[rustfmt::skip]
 	fn internal_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
-		let htlcs_to_fail = {
+		let (htlcs_to_fail, static_invoices) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let mut peer_state_lock = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
@@ -10970,7 +11037,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let mon_update_blocked = self.raa_monitor_updates_held(
 							&peer_state.actions_blocking_raa_monitor_updates, msg.channel_id,
 							*counterparty_node_id);
-						let (htlcs_to_fail, monitor_update_opt) = try_channel_entry!(self, peer_state,
+						let (htlcs_to_fail, static_invoices, monitor_update_opt) = try_channel_entry!(self, peer_state,
 							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_entry);
 						if let Some(monitor_update) = monitor_update_opt {
 							let funding_txo = funding_txo_opt
@@ -10978,7 +11045,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							handle_new_monitor_update!(self, funding_txo, monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
-						htlcs_to_fail
+						(htlcs_to_fail, static_invoices)
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
 							"Got a revoke_and_ack message for an unfunded channel!".into())), chan_entry);
@@ -10988,6 +11055,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		};
 		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id, counterparty_node_id);
+		for (static_invoice, reply_path) in static_invoices {
+			let res = self.flow.enqueue_held_htlc_available(&static_invoice, HeldHtlcReplyPath::ToCounterparty { path: reply_path });
+			debug_assert!(res.is_ok(), "enqueue_held_htlc_available can only fail for non-async senders");
+		}
 		Ok(())
 	}
 
@@ -15132,9 +15203,6 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 		features.set_anchor_zero_fee_commitments_optional();
 	}
 
-	// If we are configured to be an announced node, we are expected to be always-online and can
-	// advertise the htlc_hold feature.
-	#[cfg(test)]
 	if config.enable_htlc_hold {
 		features.set_htlc_hold_optional();
 	}

@@ -423,6 +423,26 @@ pub enum InvreqResponseInstructions {
 	},
 }
 
+/// Parameters for the reply path to a [`HeldHtlcAvailable`] onion message.
+pub enum HeldHtlcReplyPath {
+	/// The reply path to the [`HeldHtlcAvailable`] message should terminate at our node.
+	ToUs {
+		/// The id of the payment.
+		payment_id: PaymentId,
+		/// The peers to use when creating this reply path.
+		peers: Vec<MessageForwardNode>,
+	},
+	/// The reply path to the [`HeldHtlcAvailable`] message should terminate at our next-hop channel
+	/// counterparty, as they are holding our HTLC until they receive the corresponding
+	/// [`ReleaseHeldHtlc`] message.
+	///
+	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+	ToCounterparty {
+		/// The blinded path provided to us by our counterparty.
+		path: BlindedMessagePath,
+	},
+}
+
 impl<MR: Deref, L: Deref> OffersMessageFlow<MR, L>
 where
 	MR::Target: MessageRouter,
@@ -1159,26 +1179,36 @@ where
 	/// Enqueues `held_htlc_available` onion messages to be sent to the payee via the reply paths
 	/// contained within the provided [`StaticInvoice`].
 	///
-	/// # Peers
-	///
-	/// The user must provide a list of [`MessageForwardNode`] that will be used to generate valid
-	/// reply paths for the recipient to send back the corresponding [`ReleaseHeldHtlc`] onion message.
-	///
 	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
 	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 	pub fn enqueue_held_htlc_available(
-		&self, invoice: &StaticInvoice, payment_id: PaymentId, peers: Vec<MessageForwardNode>,
+		&self, invoice: &StaticInvoice, reply_path_params: HeldHtlcReplyPath,
 	) -> Result<(), Bolt12SemanticError> {
-		let context =
-			MessageContext::AsyncPayments(AsyncPaymentsContext::OutboundPayment { payment_id });
+		let reply_path_terminates_at_us =
+			matches!(reply_path_params, HeldHtlcReplyPath::ToUs { .. });
 
-		let reply_paths = self
-			.create_blinded_paths(peers, context)
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let reply_paths = match reply_path_params {
+			HeldHtlcReplyPath::ToUs { payment_id, peers } => {
+				let context =
+					MessageContext::AsyncPayments(AsyncPaymentsContext::OutboundPayment {
+						payment_id,
+					});
+				self.create_blinded_paths(peers, context)
+					.map_err(|_| {
+						log_trace!(self.logger, "Failed to create blinded paths when enqueueing held_htlc_available message");
+						Bolt12SemanticError::MissingPaths
+					})?
+			},
+			HeldHtlcReplyPath::ToCounterparty { path } => vec![path],
+		};
 
+		log_trace!(
+			self.logger,
+			"Sending held_htlc_available message for async HTLC, with reply_path terminating at {}",
+			if reply_path_terminates_at_us { "our node" } else { "our always-online counterparty" }
+		);
 		let mut pending_async_payments_messages =
 			self.pending_async_payments_messages.lock().unwrap();
-
 		let message = AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable {});
 		enqueue_onion_message_with_reply_paths(
 			message,

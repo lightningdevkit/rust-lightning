@@ -70,6 +70,7 @@ use crate::ln::onion_utils::{
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::types::ChannelId;
 use crate::ln::LN_MAX_MSG_LEN;
+use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::gossip::NodeId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::tx_builder::{HTLCAmountDirection, NextCommitmentStats, SpecTxBuilder, TxBuilder};
@@ -443,6 +444,7 @@ struct OutboundHTLCOutput {
 	blinding_point: Option<PublicKey>,
 	skimmed_fee_msat: Option<u64>,
 	send_timestamp: Option<Duration>,
+	hold_htlc: Option<()>,
 }
 
 impl OutboundHTLCOutput {
@@ -477,6 +479,7 @@ enum HTLCUpdateAwaitingACK {
 		// The extra fee we're skimming off the top of this HTLC.
 		skimmed_fee_msat: Option<u64>,
 		blinding_point: Option<PublicKey>,
+		hold_htlc: Option<()>,
 	},
 	ClaimHTLC {
 		payment_preimage: PaymentPreimage,
@@ -8046,6 +8049,7 @@ where
 						ref onion_routing_packet,
 						skimmed_fee_msat,
 						blinding_point,
+						hold_htlc,
 						..
 					} => {
 						match self.send_htlc(
@@ -8057,6 +8061,7 @@ where
 							false,
 							skimmed_fee_msat,
 							blinding_point,
+							hold_htlc.is_some(),
 							fee_estimator,
 							logger,
 						) {
@@ -8180,10 +8185,25 @@ where
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
+	///
+	/// The static invoices will be used by us as an async sender to enqueue [`HeldHtlcAvailable`]
+	/// onion messages for the often-offline recipient, and the blinded reply paths the invoices are
+	/// paired with were created by our channel counterparty and will be used as reply paths for
+	/// corresponding [`ReleaseHeldHtlc`] messages.
+	///
+	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
 	pub fn revoke_and_ack<F: Deref, L: Deref>(
 		&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L, hold_mon_update: bool,
-	) -> Result<(Vec<(HTLCSource, PaymentHash)>, Option<ChannelMonitorUpdate>), ChannelError>
+	) -> Result<
+		(
+			Vec<(HTLCSource, PaymentHash)>,
+			Vec<(StaticInvoice, BlindedMessagePath)>,
+			Option<ChannelMonitorUpdate>,
+		),
+		ChannelError,
+	>
 	where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
@@ -8298,6 +8318,7 @@ where
 		let mut finalized_claimed_htlcs = Vec::new();
 		let mut update_fail_htlcs = Vec::new();
 		let mut update_fail_malformed_htlcs = Vec::new();
+		let mut static_invoices = Vec::new();
 		let mut require_commitment = false;
 		let mut value_to_self_msat_diff: i64 = 0;
 
@@ -8413,6 +8434,24 @@ where
 				}
 			}
 			for htlc in pending_outbound_htlcs.iter_mut() {
+				for (htlc_id, blinded_path) in &msg.release_htlc_message_paths {
+					if htlc.htlc_id != *htlc_id {
+						continue;
+					}
+					let static_invoice = match htlc.source.static_invoice() {
+						Some(inv) if htlc.hold_htlc.is_some() => inv,
+						_ => {
+							// We should only be using our counterparty's release_htlc_message_path if we
+							// originally configured the HTLC to be held with them until the recipient comes
+							// online. Otherwise, our counterparty could include paths for all of our HTLCs and
+							// use the responses sent to their paths to determine which of our HTLCs are async
+							// payments.
+							log_trace!(logger, "Counterparty included release_htlc_message_path for non-async payment HTLC {}", htlc_id);
+							continue;
+						},
+					};
+					static_invoices.push((static_invoice, blinded_path.clone()));
+				}
 				if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 					log_trace!(
 						logger,
@@ -8480,9 +8519,9 @@ where
 					self.context
 						.blocked_monitor_updates
 						.push(PendingChannelMonitorUpdate { update: monitor_update });
-					return Ok(($htlcs_to_fail, None));
+					return Ok(($htlcs_to_fail, static_invoices, None));
 				} else {
-					return Ok(($htlcs_to_fail, Some(monitor_update)));
+					return Ok(($htlcs_to_fail, static_invoices, Some(monitor_update)));
 				}
 			};
 		}
@@ -9261,7 +9300,7 @@ where
 					onion_routing_packet: (**onion_packet).clone(),
 					skimmed_fee_msat: htlc.skimmed_fee_msat,
 					blinding_point: htlc.blinding_point,
-					hold_htlc: None, // Will be set by the async sender when support is added
+					hold_htlc: htlc.hold_htlc,
 				});
 			}
 		}
@@ -12019,6 +12058,8 @@ where
 			true,
 			skimmed_fee_msat,
 			blinding_point,
+			// This method is only called for forwarded HTLCs, which are never held at the next hop
+			false,
 			fee_estimator,
 			logger,
 		)
@@ -12049,7 +12090,7 @@ where
 	fn send_htlc<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
-		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>,
+		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>, hold_htlc: bool,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<bool, (LocalHTLCFailureReason, String)>
 	where
@@ -12131,6 +12172,7 @@ where
 				onion_routing_packet,
 				skimmed_fee_msat,
 				blinding_point,
+				hold_htlc: hold_htlc.then(|| ()),
 			});
 			return Ok(false);
 		}
@@ -12152,6 +12194,7 @@ where
 			blinding_point,
 			skimmed_fee_msat,
 			send_timestamp,
+			hold_htlc: hold_htlc.then(|| ()),
 		});
 		self.context.next_holder_htlc_id += 1;
 
@@ -12386,7 +12429,7 @@ where
 	pub fn send_htlc_and_commit<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		hold_htlc: bool, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
 	where
 		F::Target: FeeEstimator,
@@ -12401,6 +12444,7 @@ where
 			false,
 			skimmed_fee_msat,
 			None,
+			hold_htlc,
 			fee_estimator,
 			logger,
 		);
@@ -13990,6 +14034,7 @@ where
 		let mut fulfill_attribution_data = vec![];
 		let mut pending_outbound_skimmed_fees: Vec<Option<u64>> = Vec::new();
 		let mut pending_outbound_blinding_points: Vec<Option<PublicKey>> = Vec::new();
+		let mut pending_outbound_held_htlc_flags: Vec<Option<()>> = Vec::new();
 
 		(self.context.pending_outbound_htlcs.len() as u64).write(writer)?;
 		for htlc in self.context.pending_outbound_htlcs.iter() {
@@ -14032,6 +14077,7 @@ where
 			}
 			pending_outbound_skimmed_fees.push(htlc.skimmed_fee_msat);
 			pending_outbound_blinding_points.push(htlc.blinding_point);
+			pending_outbound_held_htlc_flags.push(htlc.hold_htlc);
 		}
 
 		let holding_cell_htlc_update_count = self.context.holding_cell_htlc_updates.len();
@@ -14040,6 +14086,8 @@ where
 		let mut holding_cell_blinding_points: Vec<Option<PublicKey>> =
 			Vec::with_capacity(holding_cell_htlc_update_count);
 		let mut holding_cell_attribution_data: Vec<Option<&AttributionData>> =
+			Vec::with_capacity(holding_cell_htlc_update_count);
+		let mut holding_cell_held_htlc_flags: Vec<Option<()>> =
 			Vec::with_capacity(holding_cell_htlc_update_count);
 		// Vec of (htlc_id, failure_code, sha256_of_onion)
 		let mut malformed_htlcs: Vec<(u64, u16, [u8; 32])> = Vec::new();
@@ -14054,6 +14102,7 @@ where
 					ref onion_routing_packet,
 					blinding_point,
 					skimmed_fee_msat,
+					hold_htlc,
 				} => {
 					0u8.write(writer)?;
 					amount_msat.write(writer)?;
@@ -14064,6 +14113,7 @@ where
 
 					holding_cell_skimmed_fees.push(skimmed_fee_msat);
 					holding_cell_blinding_points.push(blinding_point);
+					holding_cell_held_htlc_flags.push(hold_htlc);
 				},
 				&HTLCUpdateAwaitingACK::ClaimHTLC {
 					ref payment_preimage,
@@ -14311,6 +14361,8 @@ where
 			(63, holder_commitment_point_current, option), // Added in 0.2
 			(64, self.pending_splice, option), // Added in 0.2
 			(65, self.quiescent_action, option), // Added in 0.2
+			(67, pending_outbound_held_htlc_flags, optional_vec), // Added in 0.2
+			(69, holding_cell_held_htlc_flags, optional_vec), // Added in 0.2
 		});
 
 		Ok(())
@@ -14459,6 +14511,7 @@ where
 				skimmed_fee_msat: None,
 				blinding_point: None,
 				send_timestamp: None,
+				hold_htlc: None,
 			});
 		}
 
@@ -14477,6 +14530,7 @@ where
 					onion_routing_packet: Readable::read(reader)?,
 					skimmed_fee_msat: None,
 					blinding_point: None,
+					hold_htlc: None,
 				},
 				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
 					payment_preimage: Readable::read(reader)?,
@@ -14674,6 +14728,9 @@ where
 		let mut pending_splice: Option<PendingFunding> = None;
 		let mut quiescent_action = None;
 
+		let mut pending_outbound_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
+		let mut holding_cell_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -14718,6 +14775,8 @@ where
 			(63, holder_commitment_point_current_opt, option), // Added in 0.2
 			(64, pending_splice, option), // Added in 0.2
 			(65, quiescent_action, upgradable_option), // Added in 0.2
+			(67, pending_outbound_held_htlc_flags_opt, optional_vec), // Added in 0.2
+			(69, holding_cell_held_htlc_flags_opt, optional_vec), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -14815,6 +14874,28 @@ where
 				}
 			}
 			// We expect all blinding points to be consumed above
+			if iter.next().is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		if let Some(held_htlcs) = pending_outbound_held_htlc_flags_opt {
+			let mut iter = held_htlcs.into_iter();
+			for htlc in pending_outbound_htlcs.iter_mut() {
+				htlc.hold_htlc = iter.next().ok_or(DecodeError::InvalidValue)?;
+			}
+			// We expect all held HTLC flags to be consumed above
+			if iter.next().is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		if let Some(held_htlcs) = holding_cell_held_htlc_flags_opt {
+			let mut iter = held_htlcs.into_iter();
+			for htlc in holding_cell_htlc_updates.iter_mut() {
+				if let HTLCUpdateAwaitingACK::AddHTLC { ref mut hold_htlc, .. } = htlc {
+					*hold_htlc = iter.next().ok_or(DecodeError::InvalidValue)?;
+				}
+			}
+			// We expect all held HTLC flags to be consumed above
 			if iter.next().is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -15391,6 +15472,7 @@ mod tests {
 			skimmed_fee_msat: None,
 			blinding_point: None,
 			send_timestamp: None,
+			hold_htlc: None,
 		});
 
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
@@ -15845,6 +15927,7 @@ mod tests {
 			skimmed_fee_msat: None,
 			blinding_point: None,
 			send_timestamp: None,
+			hold_htlc: None,
 		};
 		let mut pending_outbound_htlcs = vec![dummy_outbound_output.clone(); 10];
 		for (idx, htlc) in pending_outbound_htlcs.iter_mut().enumerate() {
@@ -15870,6 +15953,7 @@ mod tests {
 			},
 			skimmed_fee_msat: None,
 			blinding_point: None,
+			hold_htlc: None,
 		};
 		let dummy_holding_cell_claim_htlc = |attribution_data| HTLCUpdateAwaitingACK::ClaimHTLC {
 			payment_preimage: PaymentPreimage([42; 32]),
@@ -16193,6 +16277,7 @@ mod tests {
 				skimmed_fee_msat: None,
 				blinding_point: None,
 				send_timestamp: None,
+				hold_htlc: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap()).to_byte_array();
 			out
@@ -16208,6 +16293,7 @@ mod tests {
 				skimmed_fee_msat: None,
 				blinding_point: None,
 				send_timestamp: None,
+				hold_htlc: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0303030303030303030303030303030303030303030303030303030303030303").unwrap()).to_byte_array();
 			out
@@ -16621,6 +16707,7 @@ mod tests {
 				skimmed_fee_msat: None,
 				blinding_point: None,
 				send_timestamp: None,
+				hold_htlc: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
 			out
@@ -16636,6 +16723,7 @@ mod tests {
 				skimmed_fee_msat: None,
 				blinding_point: None,
 				send_timestamp: None,
+				hold_htlc: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
 			out

@@ -834,6 +834,7 @@ pub(super) struct SendAlongPathArgs<'a> {
 	pub invoice_request: Option<&'a InvoiceRequest>,
 	pub bolt12_invoice: Option<&'a PaidBolt12Invoice>,
 	pub session_priv_bytes: [u8; 32],
+	pub hold_htlc_at_next_hop: bool,
 }
 
 pub(super) struct OutboundPayments<L: Deref>
@@ -999,9 +1000,9 @@ where
 		}
 		let invoice = PaidBolt12Invoice::Bolt12Invoice(invoice.clone());
 		self.send_payment_for_bolt12_invoice_internal(
-			payment_id, payment_hash, None, None, invoice, route_params, retry_strategy, router, first_hops,
-			inflight_htlcs, entropy_source, node_signer, node_id_lookup, secp_ctx, best_block_height,
-			pending_events, send_payment_along_path
+			payment_id, payment_hash, None, None, invoice, route_params, retry_strategy, false, router,
+			first_hops, inflight_htlcs, entropy_source, node_signer, node_id_lookup, secp_ctx,
+			best_block_height, pending_events, send_payment_along_path
 		)
 	}
 
@@ -1012,7 +1013,7 @@ where
 		&self, payment_id: PaymentId, payment_hash: PaymentHash,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
 		bolt12_invoice: PaidBolt12Invoice,
-		mut route_params: RouteParameters, retry_strategy: Retry, router: &R,
+		mut route_params: RouteParameters, retry_strategy: Retry, hold_htlcs_at_next_hop: bool, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
 		node_id_lookup: &NL, secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
@@ -1097,8 +1098,8 @@ where
 
 		let result = self.pay_route_internal(
 			&route, payment_hash, &recipient_onion, keysend_preimage, invoice_request, Some(&bolt12_invoice), payment_id,
-			Some(route_params.final_value_msat), &onion_session_privs, node_signer, best_block_height,
-			&send_payment_along_path
+			Some(route_params.final_value_msat), &onion_session_privs, hold_htlcs_at_next_hop, node_signer,
+			best_block_height, &send_payment_along_path
 		);
 		log_info!(
 			self.logger, "Sending payment with id {} and hash {} returned {:?}", payment_id,
@@ -1231,9 +1232,9 @@ where
 		IH,
 		SP,
 	>(
-		&self, payment_id: PaymentId, router: &R, first_hops: Vec<ChannelDetails>,
-		inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
-		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
+		&self, payment_id: PaymentId, hold_htlcs_at_next_hop: bool, router: &R,
+		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
+		node_id_lookup: &NL, secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		send_payment_along_path: SP,
 	) -> Result<(), Bolt12PaymentError>
@@ -1249,7 +1250,7 @@ where
 			payment_hash,
 			keysend_preimage,
 			route_params,
-			retry_strategy,
+			mut retry_strategy,
 			invoice_request,
 			invoice,
 		) = match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
@@ -1274,6 +1275,14 @@ where
 			},
 			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
 		};
+
+		// If we expect the HTLCs for this payment to be held at our next-hop counterparty, don't
+		// retry the payment. In future iterations of this feature, we will send this payment via
+		// trampoline and the counterparty will retry on our behalf.
+		if hold_htlcs_at_next_hop {
+			retry_strategy = Retry::Attempts(0);
+		}
+
 		let invoice = PaidBolt12Invoice::StaticInvoice(invoice);
 		self.send_payment_for_bolt12_invoice_internal(
 			payment_id,
@@ -1283,6 +1292,7 @@ where
 			invoice,
 			route_params,
 			retry_strategy,
+			hold_htlcs_at_next_hop,
 			router,
 			first_hops,
 			inflight_htlcs,
@@ -1489,7 +1499,7 @@ where
 			})?;
 
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion,
-			keysend_preimage, None, None, payment_id, None, &onion_session_privs, node_signer,
+			keysend_preimage, None, None, payment_id, None, &onion_session_privs, false, node_signer,
 			best_block_height, &send_payment_along_path);
 		log_info!(self.logger, "Sending payment with id {} and hash {} returned {:?}",
 			payment_id, payment_hash, res);
@@ -1652,8 +1662,8 @@ where
 			}
 		};
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion, keysend_preimage,
-			invoice_request.as_ref(), bolt12_invoice.as_ref(), payment_id, Some(total_msat), &onion_session_privs, node_signer,
-			best_block_height, &send_payment_along_path);
+			invoice_request.as_ref(), bolt12_invoice.as_ref(), payment_id, Some(total_msat),
+			&onion_session_privs, false, node_signer, best_block_height, &send_payment_along_path);
 		log_info!(self.logger, "Result retrying payment id {}: {:?}", &payment_id, res);
 		if let Err(e) = res {
 			self.handle_pay_route_err(
@@ -1813,8 +1823,8 @@ where
 
 		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 		match self.pay_route_internal(&route, payment_hash, &recipient_onion_fields,
-			None, None, None, payment_id, None, &onion_session_privs, node_signer, best_block_height,
-			&send_payment_along_path
+			None, None, None, payment_id, None, &onion_session_privs, false, node_signer,
+			best_block_height, &send_payment_along_path
 		) {
 			Ok(()) => Ok((payment_hash, payment_id)),
 			Err(e) => {
@@ -2062,7 +2072,7 @@ where
 		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: &RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>, bolt12_invoice: Option<&PaidBolt12Invoice>,
 		payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: &Vec<[u8; 32]>,
-		node_signer: &NS, best_block_height: u32, send_payment_along_path: &F
+		hold_htlcs_at_next_hop: bool, node_signer: &NS, best_block_height: u32, send_payment_along_path: &F
 	) -> Result<(), PaymentSendFailure>
 	where
 		NS::Target: NodeSigner,
@@ -2116,7 +2126,7 @@ where
 			let path_res = send_payment_along_path(SendAlongPathArgs {
 				path: &path, payment_hash: &payment_hash, recipient_onion, total_value,
 				cur_height, payment_id, keysend_preimage: &keysend_preimage, invoice_request,
-				bolt12_invoice,
+				bolt12_invoice, hold_htlc_at_next_hop: hold_htlcs_at_next_hop,
 				session_priv_bytes: *session_priv_bytes
 			});
 			results.push(path_res);
@@ -2185,7 +2195,7 @@ where
 	{
 		self.pay_route_internal(route, payment_hash, &recipient_onion,
 			keysend_preimage, None, None, payment_id, recv_value_msat, &onion_session_privs,
-			node_signer, best_block_height, &send_payment_along_path)
+			false, node_signer, best_block_height, &send_payment_along_path)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
