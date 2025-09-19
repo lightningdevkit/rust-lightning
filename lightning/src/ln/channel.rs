@@ -9451,9 +9451,10 @@ where
 		let mut tx_signatures = None;
 		let mut tx_abort = None;
 
-		// if next_funding is set:
+		// A receiving node:
+		//   - if the `next_funding` TLV is set:
 		if let Some(next_funding) = &msg.next_funding {
-			// - if `next_funding` matches the latest interactive funding transaction
+			// - if `next_funding_txid` matches the latest interactive funding transaction
 			//   or the current channel funding transaction:
 			if let Some(session) = &self.context.interactive_tx_signing_session {
 				let our_next_funding_txid = session.unsigned_tx().compute_txid();
@@ -9468,8 +9469,12 @@ where
 					self.context.expecting_peer_commitment_signed = true;
 				}
 
-				// TODO(splicing): Add comment for spec requirements
-				if next_funding.should_retransmit(msgs::NextFundingFlag::CommitmentSigned) {
+				// - if it has not received `tx_signatures` for that funding transaction:
+				//   - if the `commitment_signed` bit is set in `retransmit_flags`:
+				if !session.has_received_tx_signatures()
+					&& next_funding.should_retransmit(msgs::NextFundingFlag::CommitmentSigned)
+				{
+					// - MUST retransmit its `commitment_signed` for that funding transaction.
 					let funding = self
 						.pending_splice
 						.as_ref()
@@ -11307,26 +11312,31 @@ where
 	}
 
 	fn maybe_get_next_funding(&self) -> Option<msgs::NextFunding> {
-		// If we've sent `commtiment_signed` for an interactively constructed transaction
-		// during a signing session, but have not received `tx_signatures` we MUST set `next_funding`
-		// to the txid of that interactive transaction, else we MUST NOT set it.
+		// The sending node:
+		//   - if it has sent `commitment_signed` for an interactive transaction construction but
+		//     it has not received `tx_signatures`:
 		self.context
 			.interactive_tx_signing_session
 			.as_ref()
 			.filter(|session| !session.has_received_tx_signatures())
 			.map(|signing_session| {
+				// - MUST include the `next_funding` TLV.
+				// - MUST set `next_funding_txid` to the txid of that interactive transaction.
 				let mut next_funding = msgs::NextFunding {
 					txid: signing_session.unsigned_tx().compute_txid(),
 					retransmit_flags: 0,
 				};
 
-				// TODO(splicing): Add comment for spec requirements
+				// - if it has not received `commitment_signed` for this `next_funding_txid`:
+				//   - MUST set the `commitment_signed` bit in `retransmit_flags`.
 				if !signing_session.has_received_commitment_signed() {
 					next_funding.retransmit(msgs::NextFundingFlag::CommitmentSigned);
 				}
 
 				next_funding
 			})
+		//   - otherwise:
+		//     - MUST NOT include the `next_funding` TLV.
 	}
 
 	fn maybe_get_my_current_funding_locked(&self) -> Option<msgs::FundingLocked> {
