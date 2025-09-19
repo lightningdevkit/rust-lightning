@@ -2274,8 +2274,7 @@ fn test_trampoline_single_hop_receive() {
 	do_test_trampoline_single_hop_receive(false);
 }
 
-#[test]
-fn test_trampoline_unblinded_receive() {
+fn do_test_trampoline_unblinded_receive(success: bool) {
 	// Simulate a payment of A (0) -> B (1) -> C(Trampoline) (2)
 
 	const TOTAL_NODE_COUNT: usize = 3;
@@ -2416,8 +2415,17 @@ fn test_trampoline_unblinded_receive() {
 	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
 		.with_payment_secret(payment_secret);
 	do_pass_along_path(args);
+	if success {
+		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+	} else {
+		fail_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_hash);
+	}
+}
 
-	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+#[test]
+fn test_trampoline_unblinded_receive() {
+    do_test_trampoline_unblinded_receive(true);
+    do_test_trampoline_unblinded_receive(false);
 }
 
 #[test]
