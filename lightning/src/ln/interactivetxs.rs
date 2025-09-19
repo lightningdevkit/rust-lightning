@@ -215,8 +215,6 @@ pub(crate) struct ConstructedTransaction {
 pub(crate) struct NegotiatedTxInput {
 	serial_id: SerialId,
 	txin: TxIn,
-	// The weight of the input including an estimate of its witness weight.
-	weight: Weight,
 	prev_output: TxOut,
 }
 
@@ -233,8 +231,7 @@ impl NegotiatedTxInput {
 impl_writeable_tlv_based!(NegotiatedTxInput, {
 	(1, serial_id, required),
 	(3, txin, required),
-	(5, weight, required),
-	(7, prev_output, required),
+	(5, prev_output, required),
 });
 
 impl_writeable_tlv_based!(ConstructedTransaction, {
@@ -278,6 +275,12 @@ impl ConstructedTransaction {
 
 		let remote_inputs_value_satoshis = context.remote_inputs_value();
 		let remote_outputs_value_satoshis = context.remote_outputs_value();
+
+		let satisfaction_weight =
+			Weight::from_wu(context.inputs.iter().fold(0u64, |value, (_, input)| {
+				value.saturating_add(input.satisfaction_weight().to_wu())
+			}));
+
 		let mut inputs: Vec<NegotiatedTxInput> =
 			context.inputs.into_values().map(|tx_input| tx_input.into_negotiated_input()).collect();
 		let mut outputs: Vec<InteractiveTxOutput> = context.outputs.into_values().collect();
@@ -310,17 +313,18 @@ impl ConstructedTransaction {
 			shared_input_index,
 		};
 
-		if constructed_tx.weight().to_wu() > MAX_STANDARD_TX_WEIGHT as u64 {
+		let tx_weight = constructed_tx.weight(satisfaction_weight);
+		if tx_weight > Weight::from_wu(MAX_STANDARD_TX_WEIGHT as u64) {
 			return Err(AbortReason::TransactionTooLarge);
 		}
 
 		Ok(constructed_tx)
 	}
 
-	pub fn weight(&self) -> Weight {
-		let inputs_weight = self.inputs.iter().fold(Weight::from_wu(0), |weight, input| {
-			weight.checked_add(input.weight).unwrap_or(Weight::MAX)
-		});
+	fn weight(&self, satisfaction_weight: Weight) -> Weight {
+		let inputs_weight = Weight::from_wu(self.inputs.len() as u64 * BASE_INPUT_WEIGHT)
+			.checked_add(satisfaction_weight)
+			.unwrap_or(Weight::MAX);
 		let outputs_weight = self.outputs.iter().fold(Weight::from_wu(0), |weight, output| {
 			weight.checked_add(get_output_weight(output.script_pubkey())).unwrap_or(Weight::MAX)
 		});
@@ -1852,9 +1856,8 @@ impl InteractiveTxInput {
 	}
 
 	fn into_negotiated_input(self) -> NegotiatedTxInput {
-		let weight = Weight::from_wu(BASE_INPUT_WEIGHT) + self.input.satisfaction_weight();
 		let (txin, prev_output) = self.input.into_tx_in_with_prev_output();
-		NegotiatedTxInput { serial_id: self.serial_id, txin, weight, prev_output }
+		NegotiatedTxInput { serial_id: self.serial_id, txin, prev_output }
 	}
 }
 
@@ -3328,7 +3331,6 @@ mod tests {
 				NegotiatedTxInput {
 					serial_id: idx as u64, // even values will be holder (initiator in this test)
 					txin,
-					weight: Weight::from_wu(0), // N/A for test
 					prev_output,
 				}
 			})
