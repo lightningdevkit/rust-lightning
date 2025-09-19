@@ -6617,14 +6617,6 @@ impl FundingNegotiationContext {
 			}
 		}
 
-		let funding_inputs = self
-			.our_funding_inputs
-			.into_iter()
-			.map(|FundingTxInput { utxo, sequence, prevtx }| {
-				(TxIn { previous_output: utxo.outpoint, sequence, ..Default::default() }, prevtx)
-			})
-			.collect();
-
 		let constructor_args = InteractiveTxConstructorArgs {
 			entropy_source,
 			holder_node_id,
@@ -6633,7 +6625,7 @@ impl FundingNegotiationContext {
 			feerate_sat_per_kw: self.funding_feerate_sat_per_1000_weight,
 			is_initiator: self.is_initiator,
 			funding_tx_locktime: self.funding_tx_locktime,
-			inputs_to_contribute: funding_inputs,
+			inputs_to_contribute: self.our_funding_inputs,
 			shared_funding_input: self.shared_funding_input,
 			shared_funding_output: SharedOwnedOutput::new(
 				shared_funding_output,
@@ -13669,12 +13661,6 @@ where
 			value: Amount::from_sat(funding.get_value_satoshis()),
 			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
 		};
-		let inputs_to_contribute = our_funding_inputs
-			.into_iter()
-			.map(|FundingTxInput { utxo, sequence, prevtx }| {
-				(TxIn { previous_output: utxo.outpoint, sequence, ..Default::default() }, prevtx)
-			})
-			.collect();
 
 		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
 			InteractiveTxConstructorArgs {
@@ -13685,7 +13671,7 @@ where
 				feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 				funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
 				is_initiator: false,
-				inputs_to_contribute,
+				inputs_to_contribute: our_funding_inputs,
 				shared_funding_input: None,
 				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_contribution_sats),
 				outputs_to_contribute: funding_negotiation_context.our_funding_outputs.clone(),

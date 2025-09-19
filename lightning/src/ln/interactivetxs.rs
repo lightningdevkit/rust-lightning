@@ -1920,7 +1920,7 @@ where
 	pub feerate_sat_per_kw: u32,
 	pub is_initiator: bool,
 	pub funding_tx_locktime: AbsoluteLockTime,
-	pub inputs_to_contribute: Vec<(TxIn, Transaction)>,
+	pub inputs_to_contribute: Vec<FundingTxInput>,
 	pub shared_funding_input: Option<SharedOwnedInput>,
 	pub shared_funding_output: SharedOwnedOutput,
 	pub outputs_to_contribute: Vec<TxOut>,
@@ -1959,21 +1959,14 @@ impl InteractiveTxConstructor {
 			shared_funding_output.clone(),
 		);
 
-		// Check for the existence of prevouts'
-		for (txin, tx) in inputs_to_contribute.iter() {
-			let vout = txin.previous_output.vout as usize;
-			if tx.output.get(vout).is_none() {
-				return Err(AbortReason::PrevTxOutInvalid);
-			}
-		}
 		let mut inputs_to_contribute: Vec<(SerialId, InputOwned)> = inputs_to_contribute
 			.into_iter()
-			.map(|(txin, tx)| {
+			.map(|FundingTxInput { utxo, sequence, prevtx: prev_tx }| {
 				let serial_id = generate_holder_serial_id(entropy_source, is_initiator);
-				let vout = txin.previous_output.vout as usize;
-				let prev_output = tx.output.get(vout).unwrap().clone(); // checked above
+				let txin = TxIn { previous_output: utxo.outpoint, sequence, ..Default::default() };
+				let prev_output = utxo.output;
 				let input =
-					InputOwned::Single(SingleOwnedInput { input: txin, prev_tx: tx, prev_output });
+					InputOwned::Single(SingleOwnedInput { input: txin, prev_tx, prev_output });
 				(serial_id, input)
 			})
 			.collect();
@@ -2283,12 +2276,12 @@ mod tests {
 
 	struct TestSession {
 		description: &'static str,
-		inputs_a: Vec<(TxIn, Transaction)>,
+		inputs_a: Vec<FundingTxInput>,
 		a_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_a: (TxOut, u64),
 		outputs_a: Vec<TxOut>,
-		inputs_b: Vec<(TxIn, Transaction)>,
+		inputs_b: Vec<FundingTxInput>,
 		b_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_b: (TxOut, u64),
@@ -2558,20 +2551,22 @@ mod tests {
 		}
 	}
 
-	fn generate_inputs(outputs: &[TestOutput]) -> Vec<(TxIn, Transaction)> {
+	fn generate_inputs(outputs: &[TestOutput]) -> Vec<FundingTxInput> {
 		let tx = generate_tx(outputs);
-		let txid = tx.compute_txid();
-		tx.output
+		outputs
 			.iter()
 			.enumerate()
-			.map(|(idx, _)| {
-				let txin = TxIn {
-					previous_output: OutPoint { txid, vout: idx as u32 },
-					script_sig: Default::default(),
-					sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-					witness: Default::default(),
-				};
-				(txin, tx.clone())
+			.map(|(idx, output)| match output {
+				TestOutput::P2WPKH(_) => {
+					FundingTxInput::new_p2wpkh(tx.clone(), idx as u32).unwrap()
+				},
+				TestOutput::P2WSH(_) => {
+					FundingTxInput::new_p2wsh(tx.clone(), idx as u32, Weight::from_wu(42)).unwrap()
+				},
+				TestOutput::P2TR(_) => {
+					FundingTxInput::new_p2tr_key_spend(tx.clone(), idx as u32).unwrap()
+				},
+				TestOutput::P2PKH(_) => FundingTxInput::new_p2pkh(tx.clone(), idx as u32).unwrap(),
 			})
 			.collect()
 	}
@@ -2619,37 +2614,26 @@ mod tests {
 		(generate_txout(&TestOutput::P2WSH(value)), local_value)
 	}
 
-	fn generate_fixed_number_of_inputs(count: u16) -> Vec<(TxIn, Transaction)> {
+	fn generate_fixed_number_of_inputs(count: u16) -> Vec<FundingTxInput> {
 		// Generate transactions with a total `count` number of outputs such that no transaction has a
 		// serialized length greater than u16::MAX.
 		let max_outputs_per_prevtx = 1_500;
 		let mut remaining = count;
-		let mut inputs: Vec<(TxIn, Transaction)> = Vec::with_capacity(count as usize);
+		let mut inputs: Vec<FundingTxInput> = Vec::with_capacity(count as usize);
 
 		while remaining > 0 {
 			let tx_output_count = remaining.min(max_outputs_per_prevtx);
 			remaining -= tx_output_count;
 
-			// Use unique locktime for each tx so outpoints are different across transactions
-			let tx = generate_tx_with_locktime(
-				&vec![TestOutput::P2WPKH(1_000_000); tx_output_count as usize],
-				(1337 + remaining).into(),
-			);
-			let txid = tx.compute_txid();
+			let outputs = vec![TestOutput::P2WPKH(1_000_000); tx_output_count as usize];
 
-			let mut temp: Vec<(TxIn, Transaction)> = tx
-				.output
+			// Use unique locktime for each tx so outpoints are different across transactions
+			let tx = generate_tx_with_locktime(&outputs, (1337 + remaining).into());
+
+			let mut temp: Vec<FundingTxInput> = outputs
 				.iter()
 				.enumerate()
-				.map(|(idx, _)| {
-					let input = TxIn {
-						previous_output: OutPoint { txid, vout: idx as u32 },
-						script_sig: Default::default(),
-						sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-						witness: Default::default(),
-					};
-					(input, tx.clone())
-				})
+				.map(|(idx, _)| FundingTxInput::new_p2wpkh(tx.clone(), idx as u32).unwrap())
 				.collect();
 
 			inputs.append(&mut temp);
@@ -2860,13 +2844,11 @@ mod tests {
 		});
 
 		let tx = generate_tx(&[TestOutput::P2WPKH(1_000_000)]);
-		let invalid_sequence_input = TxIn {
-			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
-			..Default::default()
-		};
+		let mut invalid_sequence_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
+		invalid_sequence_input.set_sequence(Default::default());
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Invalid input sequence from initiator",
-			inputs_a: vec![(invalid_sequence_input, tx.clone())],
+			inputs_a: vec![invalid_sequence_input],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 1_000_000),
 			outputs_a: vec![],
@@ -2876,14 +2858,10 @@ mod tests {
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::IncorrectInputSequenceValue, ErrorCulprit::NodeA)),
 		});
-		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
-			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			..Default::default()
-		};
+		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Duplicate prevout from initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone()), (duplicate_input, tx.clone())],
+			inputs_a: vec![duplicate_input.clone(), duplicate_input],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 1_000_000),
 			outputs_a: vec![],
@@ -2894,35 +2872,27 @@ mod tests {
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeB)),
 		});
 		// Non-initiator uses same prevout as initiator.
-		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
-			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			..Default::default()
-		};
+		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_a: vec![duplicate_input.clone()],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 905_000),
 			outputs_a: vec![],
-			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_b: vec![duplicate_input],
 			b_shared_input: None,
 			shared_output_b: generate_funding_txout(1_000_000, 95_000),
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 		});
-		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
-			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			..Default::default()
-		};
+		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_a: vec![duplicate_input.clone()],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 1_000_000),
 			outputs_a: vec![],
-			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_b: vec![duplicate_input],
 			b_shared_input: None,
 			shared_output_b: generate_funding_txout(1_000_000, 0),
 			outputs_b: vec![],
