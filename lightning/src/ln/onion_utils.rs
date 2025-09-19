@@ -2195,7 +2195,6 @@ pub(crate) enum Hop {
 		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
 		outer_shared_secret: SharedSecret,
 		trampoline_hop_data: msgs::InboundOnionReceivePayload,
-		#[allow(unused)]
 		trampoline_shared_secret: SharedSecret,
 	},
 	/// This onion payload was for us, not for forwarding to a next-hop, and it was sent to us via
@@ -2205,7 +2204,6 @@ pub(crate) enum Hop {
 		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
 		outer_shared_secret: SharedSecret,
 		trampoline_hop_data: msgs::InboundOnionBlindedReceivePayload,
-		#[allow(unused)]
 		trampoline_shared_secret: SharedSecret,
 	},
 }
