@@ -4309,6 +4309,13 @@ pub fn test_default_channel_config() -> UserConfig {
 	default_config
 }
 
+pub fn test_default_anchors_channel_config() -> UserConfig {
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	config.manually_accept_inbound_channels = true;
+	config
+}
+
 pub fn create_node_chanmgrs<'a, 'b>(
 	node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>],
 ) -> Vec<

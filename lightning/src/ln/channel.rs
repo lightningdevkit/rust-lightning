@@ -6167,9 +6167,9 @@ where
 		}
 	}
 
-	fn get_initial_counterparty_commitment_signature<L: Deref>(
+	fn get_initial_counterparty_commitment_signatures<L: Deref>(
 		&self, funding: &FundingScope, logger: &L,
-	) -> Option<Signature>
+	) -> Option<(Signature, Vec<Signature>)>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
@@ -6204,7 +6204,6 @@ where
 						Vec::new(),
 						&self.secp_ctx,
 					)
-					.map(|(signature, _)| signature)
 					.ok()
 			},
 			// TODO (taproot|arik)
@@ -6222,16 +6221,20 @@ where
 	{
 		debug_assert!(self.interactive_tx_signing_session.is_some());
 
-		let signature = self.get_initial_counterparty_commitment_signature(funding, logger);
-		if let Some(signature) = signature {
+		let signatures = self.get_initial_counterparty_commitment_signatures(funding, logger);
+		if let Some((signature, htlc_signatures)) = signatures {
 			log_info!(
 				logger,
 				"Generated commitment_signed for peer for channel {}",
 				&self.channel_id()
 			);
+			if matches!(self.channel_state, ChannelState::FundingNegotiated(_)) {
+				// We shouldn't expect any HTLCs before `ChannelReady`.
+				debug_assert!(htlc_signatures.is_empty());
+			}
 			Some(msgs::CommitmentSigned {
 				channel_id: self.channel_id,
-				htlc_signatures: vec![],
+				htlc_signatures,
 				signature,
 				funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
 				#[cfg(taproot)]
