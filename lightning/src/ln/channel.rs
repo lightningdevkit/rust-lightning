@@ -9380,6 +9380,10 @@ where
 			return Err(ChannelError::close("Peer sent a loose channel_reestablish not after reconnect".to_owned()));
 		}
 
+		// A node:
+		//   - if `next_commitment_number` is zero:
+		//     - MUST immediately fail the channel and broadcast any relevant latest commitment
+		//       transaction.
 		if msg.next_local_commitment_number == 0
 			|| msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER
 			|| msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER
@@ -9610,6 +9614,13 @@ where
 		let is_awaiting_remote_revoke = self.context.channel_state.is_awaiting_remote_revoke();
 		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.context.counterparty_next_commitment_transaction_number + if is_awaiting_remote_revoke { 1 } else { 0 };
 
+		// A node:
+		//   - if `next_commitment_number` is 1 in both the `channel_reestablish` it
+		//     sent and received:
+		//     - MUST retransmit `channel_ready`.
+		//   - otherwise:
+		//     - MUST NOT retransmit `channel_ready`, but MAY send `channel_ready` with
+		//       a different `short_channel_id` `alias` field.
 		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.next_transaction_number() == 1 {
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
 			self.get_channel_ready(logger)
