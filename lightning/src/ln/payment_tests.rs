@@ -1287,7 +1287,7 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
 
 	mine_transaction(&nodes[1], &commitment_tx);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, false);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [node_a_id], 100000);
 	let htlc_success_tx = {
