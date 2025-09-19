@@ -199,6 +199,11 @@ impl FundingTxInput {
 		FundingTxInput::new(prevtx, vout, witness_weight, Script::is_p2tr)
 	}
 
+	#[cfg(test)]
+	pub(crate) fn new_p2pkh(prevtx: Transaction, vout: u32) -> Result<Self, ()> {
+		FundingTxInput::new(prevtx, vout, Weight::ZERO, Script::is_p2pkh)
+	}
+
 	/// The sequence number to use in the [`TxIn`].
 	///
 	/// [`TxIn`]: bitcoin::TxIn
