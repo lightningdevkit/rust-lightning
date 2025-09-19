@@ -199,7 +199,7 @@ pub(crate) struct ConstructedTransaction {
 	holder_is_initiator: bool,
 
 	inputs: Vec<NegotiatedTxInput>,
-	outputs: Vec<InteractiveTxOutput>,
+	outputs: Vec<NegotiatedTxOutput>,
 	tx: Transaction,
 
 	local_inputs_value_satoshis: u64,
@@ -217,6 +217,11 @@ pub(crate) struct NegotiatedTxInput {
 	prev_output: TxOut,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NegotiatedTxOutput {
+	serial_id: SerialId,
+}
+
 impl NegotiatedTxInput {
 	pub(super) fn is_local(&self, holder_is_initiator: bool) -> bool {
 		!is_serial_id_valid_for_counterparty(holder_is_initiator, self.serial_id)
@@ -227,9 +232,19 @@ impl NegotiatedTxInput {
 	}
 }
 
+impl NegotiatedTxOutput {
+	pub(super) fn is_local(&self, holder_is_initiator: bool) -> bool {
+		!is_serial_id_valid_for_counterparty(holder_is_initiator, self.serial_id)
+	}
+}
+
 impl_writeable_tlv_based!(NegotiatedTxInput, {
 	(1, serial_id, required),
 	(3, prev_output, required),
+});
+
+impl_writeable_tlv_based!(NegotiatedTxOutput, {
+	(1, serial_id, required),
 });
 
 impl_writeable_tlv_based!(ConstructedTransaction, {
@@ -284,9 +299,13 @@ impl ConstructedTransaction {
 			.into_values()
 			.map(|input| input.into_txin_and_negotiated_input())
 			.collect();
-		let mut outputs: Vec<InteractiveTxOutput> = context.outputs.into_values().collect();
+		let mut outputs: Vec<(TxOut, NegotiatedTxOutput)> = context
+			.outputs
+			.into_values()
+			.map(|output| output.into_txout_and_negotiated_output())
+			.collect();
 		inputs.sort_unstable_by_key(|(_, input)| input.serial_id);
-		outputs.sort_unstable_by_key(|output| output.serial_id);
+		outputs.sort_unstable_by_key(|(_, output)| output.serial_id);
 
 		let shared_input_index =
 			context.shared_funding_input.as_ref().and_then(|shared_funding_input| {
@@ -299,7 +318,7 @@ impl ConstructedTransaction {
 			});
 
 		let (input, inputs): (Vec<TxIn>, Vec<NegotiatedTxInput>) = inputs.into_iter().unzip();
-		let output = outputs.iter().map(|output| output.tx_out().clone()).collect();
+		let (output, outputs): (Vec<TxOut>, Vec<NegotiatedTxOutput>) = outputs.into_iter().unzip();
 
 		let tx =
 			Transaction { version: Version::TWO, lock_time: context.tx_locktime, input, output };
@@ -328,10 +347,6 @@ impl ConstructedTransaction {
 
 	pub fn tx(&self) -> &Transaction {
 		&self.tx
-	}
-
-	pub fn outputs(&self) -> impl Iterator<Item = &InteractiveTxOutput> {
-		self.outputs.iter()
 	}
 
 	pub fn inputs(&self) -> impl Iterator<Item = &NegotiatedTxInput> {
@@ -565,12 +580,7 @@ impl InteractiveTxSigningSession {
 			.outputs
 			.iter()
 			.enumerate()
-			.filter(|(_, output)| {
-				!is_serial_id_valid_for_counterparty(
-					self.unsigned_tx.holder_is_initiator,
-					output.serial_id,
-				)
-			})
+			.filter(|(_, output)| output.is_local(self.unsigned_tx.holder_is_initiator))
 			.count()
 	}
 
@@ -1774,12 +1784,6 @@ pub(crate) struct InteractiveTxOutput {
 	output: OutputOwned,
 }
 
-impl_writeable_tlv_based!(InteractiveTxOutput, {
-	(1, serial_id, required),
-	(3, added_by, required),
-	(5, output, required),
-});
-
 impl InteractiveTxOutput {
 	pub fn tx_out(&self) -> &TxOut {
 		self.output.tx_out()
@@ -1803,6 +1807,11 @@ impl InteractiveTxOutput {
 
 	pub fn script_pubkey(&self) -> &ScriptBuf {
 		&self.output.tx_out().script_pubkey
+	}
+
+	fn into_txout_and_negotiated_output(self) -> (TxOut, NegotiatedTxOutput) {
+		let txout = self.output.into_tx_out();
+		(txout, NegotiatedTxOutput { serial_id: self.serial_id })
 	}
 }
 
@@ -2227,9 +2236,9 @@ mod tests {
 	use core::ops::Deref;
 
 	use super::{
-		get_output_weight, AddingRole, ConstructedTransaction, InteractiveTxOutput,
-		InteractiveTxSigningSession, NegotiatedTxInput, OutputOwned, P2TR_INPUT_WEIGHT_LOWER_BOUND,
-		P2WPKH_INPUT_WEIGHT_LOWER_BOUND, P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
+		get_output_weight, ConstructedTransaction, InteractiveTxSigningSession, NegotiatedTxInput,
+		P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
+		P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
 	};
 
 	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
@@ -3312,21 +3321,10 @@ mod tests {
 			})
 			.collect();
 
-		let outputs: Vec<InteractiveTxOutput> = transaction
-			.output
-			.iter()
-			.cloned()
-			.map(|txout| InteractiveTxOutput {
-				serial_id: 0, // N/A for test
-				added_by: AddingRole::Local,
-				output: OutputOwned::Single(txout),
-			})
-			.collect();
-
 		let unsigned_tx = ConstructedTransaction {
 			holder_is_initiator: true,
 			inputs,
-			outputs,
+			outputs: vec![], // N/A for test
 			tx: transaction.clone(),
 			local_inputs_value_satoshis: 0,   // N/A for test
 			local_outputs_value_satoshis: 0,  // N/A for test
