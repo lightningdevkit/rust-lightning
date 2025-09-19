@@ -253,14 +253,14 @@ pub(super) fn create_recv_pending_htlc_info(
 	let (
 		payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, onion_cltv_expiry,
 		payment_metadata, payment_context, requires_blinded_error, has_recipient_created_payment_secret,
-		invoice_request
+		invoice_request, trampoline_shared_secret,
 	) = match hop_data {
 		onion_utils::Hop::Receive { hop_data: msgs::InboundOnionReceivePayload {
 			payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
 			cltv_expiry_height, payment_metadata, ..
 		}, .. } =>
 			(payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
-			 cltv_expiry_height, payment_metadata, None, false, keysend_preimage.is_none(), None),
+			 cltv_expiry_height, payment_metadata, None, false, keysend_preimage.is_none(), None, None),
 		onion_utils::Hop::BlindedReceive { hop_data: msgs::InboundOnionBlindedReceivePayload {
 			sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
 			intro_node_blinding_point, payment_constraints, payment_context, keysend_preimage,
@@ -279,17 +279,19 @@ pub(super) fn create_recv_pending_htlc_info(
 			let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
 			(Some(payment_data), keysend_preimage, custom_tlvs,
 			 sender_intended_htlc_amt_msat, cltv_expiry_height, None, Some(payment_context),
-			 intro_node_blinding_point.is_none(), true, invoice_request)
+			 intro_node_blinding_point.is_none(), true, invoice_request, None)
 		}
 		onion_utils::Hop::TrampolineReceive {
+			trampoline_shared_secret,
 			trampoline_hop_data: msgs::InboundOnionReceivePayload {
 				payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
 				cltv_expiry_height, payment_metadata, ..
 			}, ..
 		} =>
 			(payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
-				cltv_expiry_height, payment_metadata, None, false, keysend_preimage.is_none(), None),
+				cltv_expiry_height, payment_metadata, None, false, keysend_preimage.is_none(), None, Some(trampoline_shared_secret.secret_bytes())),
 		onion_utils::Hop::TrampolineBlindedReceive {
+			trampoline_shared_secret,
 			trampoline_hop_data: msgs::InboundOnionBlindedReceivePayload {
 				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
 				intro_node_blinding_point, payment_constraints, payment_context, keysend_preimage,
@@ -309,7 +311,7 @@ pub(super) fn create_recv_pending_htlc_info(
 			let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
 			(Some(payment_data), keysend_preimage, custom_tlvs,
 				sender_intended_htlc_amt_msat, cltv_expiry_height, None, Some(payment_context),
-				intro_node_blinding_point.is_none(), true, invoice_request)
+				intro_node_blinding_point.is_none(), true, invoice_request, Some(trampoline_shared_secret.secret_bytes()))
 		},
 		onion_utils::Hop::Forward { .. } => {
 			return Err(InboundHTLCErr {
@@ -398,6 +400,7 @@ pub(super) fn create_recv_pending_htlc_info(
 			payment_context,
 			incoming_cltv_expiry: onion_cltv_expiry,
 			phantom_shared_secret,
+			trampoline_shared_secret,
 			custom_tlvs,
 			requires_blinded_error,
 		}
