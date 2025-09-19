@@ -1551,6 +1551,7 @@ where
 			}
 			if peer.should_buffer_gossip_broadcast() {
 				if let Some(msg) = peer.gossip_broadcast_buffer.pop_front() {
+					peer.msgs_sent_since_pong += 1;
 					peer.pending_outbound_buffer
 						.push_back(peer.channel_encryptor.encrypt_buffer(msg));
 				}
@@ -1712,12 +1713,6 @@ where
 		}
 		peer.msgs_sent_since_pong += 1;
 		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message));
-	}
-
-	/// Append a message to a peer's pending outbound/write gossip broadcast buffer
-	fn enqueue_encoded_gossip_broadcast(&self, peer: &mut Peer, encoded_message: MessageBuf) {
-		peer.msgs_sent_since_pong += 1;
-		peer.gossip_broadcast_buffer.push_back(encoded_message);
 	}
 
 	fn do_read_event(
@@ -2689,10 +2684,8 @@ where
 					{
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(
-						&mut *peer,
-						MessageBuf::from_encoded(&encoded_msg),
-					);
+					let encoded_message = MessageBuf::from_encoded(&encoded_msg);
+					peer.gossip_broadcast_buffer.push_back(encoded_message);
 				}
 			},
 			wire::Message::NodeAnnouncement(ref msg) => {
@@ -2733,10 +2726,8 @@ where
 					{
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(
-						&mut *peer,
-						MessageBuf::from_encoded(&encoded_msg),
-					);
+					let encoded_message = MessageBuf::from_encoded(&encoded_msg);
+					peer.gossip_broadcast_buffer.push_back(encoded_message);
 				}
 			},
 			wire::Message::ChannelUpdate(ref msg) => {
@@ -2772,10 +2763,8 @@ where
 					{
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(
-						&mut *peer,
-						MessageBuf::from_encoded(&encoded_msg),
-					);
+					let encoded_message = MessageBuf::from_encoded(&encoded_msg);
+					peer.gossip_broadcast_buffer.push_back(encoded_message);
 				}
 			},
 			_ => {
