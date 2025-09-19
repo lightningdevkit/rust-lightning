@@ -270,15 +270,47 @@ where
 		});
 
 		if should_prune {
+			for (_, peer_state) in outer_state_lock.iter_mut() {
+				// Prune stale webhooks, but leave removal of the peers states to prune_peer_state
+				// which will also remove it from the store.
+				peer_state.prune_stale_webhooks(now)
+			}
+			*last_pruning = Some(now);
+		}
+	}
+
+	pub(crate) async fn prune_peer_state(&self) {
+		let mut need_remove = Vec::new();
+
+		{
+			let mut outer_state_lock = self.per_peer_state.write().unwrap();
+			self.check_prune_stale_webhooks(&mut outer_state_lock);
+
 			outer_state_lock.retain(|client_id, peer_state| {
 				if self.client_has_open_channel(client_id) {
 					// Don't prune clients with open channels
 					return true;
 				}
-				// TODO: Remove peer state entry from the KVStore
-				!peer_state.prune_stale_webhooks(now)
+
+				let is_prunable = peer_state.is_prunable();
+				if is_prunable {
+					need_remove.push(*client_id);
+				}
+				!is_prunable
 			});
-			*last_pruning = Some(now);
+		}
+
+		for counterparty_node_id in need_remove {
+			let key = counterparty_node_id.to_string();
+			let _ = self
+				.kv_store
+				.remove(
+					LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+					LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+					&key,
+					true,
+				)
+				.await;
 		}
 	}
 
@@ -733,11 +765,17 @@ impl PeerState {
 	}
 
 	// Returns whether the entire state is empty and can be pruned.
-	fn prune_stale_webhooks(&mut self, now: LSPSDateTime) -> bool {
+	fn prune_stale_webhooks(&mut self, now: LSPSDateTime) {
 		self.webhooks.retain(|(_, webhook)| {
-			now.duration_since(&webhook.last_used) < MIN_WEBHOOK_RETENTION_DAYS
+			let should_prune = now.duration_since(&webhook.last_used) >= MIN_WEBHOOK_RETENTION_DAYS;
+			if should_prune {
+				self.needs_persist |= true;
+			}
+			!should_prune
 		});
+	}
 
+	fn is_prunable(&mut self) -> bool {
 		self.webhooks.is_empty()
 	}
 }

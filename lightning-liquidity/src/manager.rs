@@ -61,6 +61,7 @@ use bitcoin::secp256k1::PublicKey;
 use core::future::Future as StdFuture;
 use core::ops::Deref;
 use core::task;
+use core::time::Duration;
 
 const LSPS_FEATURE_BIT: usize = 729;
 
@@ -311,7 +312,9 @@ pub struct LiquidityManager<
 	service_config: Option<LiquidityServiceConfig>,
 	_client_config: Option<LiquidityClientConfig>,
 	best_block: RwLock<Option<BestBlock>>,
+	last_peer_state_pruning: Mutex<Option<Duration>>,
 	_chain_source: Option<C>,
+	time_provider: TP,
 	pending_msgs_or_needs_persist_notifier: Arc<Notifier>,
 }
 
@@ -461,7 +464,7 @@ where
 					kv_store.clone(),
 					node_signer,
 					lsps5_service_config.clone(),
-					time_provider,
+					time_provider.clone(),
 				))
 			} else {
 				None
@@ -512,6 +515,8 @@ where
 			None
 		};
 
+		let last_peer_state_pruning = Mutex::new(None);
+
 		Ok(Self {
 			pending_messages,
 			pending_events,
@@ -529,7 +534,9 @@ where
 			service_config,
 			_client_config: client_config,
 			best_block: RwLock::new(chain_params.map(|chain_params| chain_params.best_block)),
+			last_peer_state_pruning,
 			_chain_source: chain_source,
+			time_provider,
 			pending_msgs_or_needs_persist_notifier,
 		})
 	}
@@ -650,14 +657,32 @@ where
 	/// This will be regularly called by LDK's background processor if necessary and only needs to
 	/// be called manually if it's not utilized.
 	pub async fn persist(&self) -> Result<(), lightning::io::Error> {
+		let should_prune_state = {
+			const PRUNE_INTERVAL: Duration = Duration::from_secs(600);
+			let mut last_peer_state_pruning_lock = self.last_peer_state_pruning.lock().unwrap();
+			let now = self.time_provider.duration_since_epoch();
+			if last_peer_state_pruning_lock.map_or(true, |l| l + PRUNE_INTERVAL < now) {
+				*last_peer_state_pruning_lock = Some(now);
+				true
+			} else {
+				false
+			}
+		};
+
 		// TODO: We should eventually persist in parallel.
 		self.pending_events.persist().await?;
 
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
+			if should_prune_state {
+				lsps2_service_handler.prune_peer_state().await;
+			}
 			lsps2_service_handler.persist().await?;
 		}
 
 		if let Some(lsps5_service_handler) = self.lsps5_service_handler.as_ref() {
+			if should_prune_state {
+				lsps5_service_handler.prune_peer_state().await;
+			}
 			lsps5_service_handler.persist().await?;
 		}
 
@@ -1015,9 +1040,6 @@ where
 		*self.best_block.write().unwrap() = Some(new_best_block);
 
 		// TODO: Call best_block_updated on all sub-modules that require it, e.g., LSPS1MessageHandler.
-		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
-			lsps2_service_handler.prune_peer_state();
-		}
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(bitcoin::Txid, u32, Option<bitcoin::BlockHash>)> {

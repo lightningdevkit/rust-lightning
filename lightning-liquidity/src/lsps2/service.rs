@@ -514,7 +514,7 @@ impl PeerState {
 				// We abort the flow, and prune any data kept.
 				self.intercept_scid_by_channel_id.retain(|_, iscid| intercept_scid != iscid);
 				self.intercept_scid_by_user_channel_id.retain(|_, iscid| intercept_scid != iscid);
-				// TODO: Remove peer state entry from the KVStore
+				self.needs_persist |= true;
 				return false;
 			}
 			true
@@ -1662,28 +1662,44 @@ where
 	}
 
 	pub(crate) fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
-		let mut outer_state_lock = self.per_peer_state.write().unwrap();
-		let is_prunable =
-			if let Some(inner_state_lock) = outer_state_lock.get(&counterparty_node_id) {
-				let mut peer_state_lock = inner_state_lock.lock().unwrap();
-				peer_state_lock.prune_expired_request_state();
-				peer_state_lock.is_prunable()
-			} else {
-				return;
-			};
-		if is_prunable {
-			outer_state_lock.remove(&counterparty_node_id);
+		let outer_state_lock = self.per_peer_state.write().unwrap();
+		if let Some(inner_state_lock) = outer_state_lock.get(&counterparty_node_id) {
+			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+			// We clean up the peer state, but leave removing the peer entry to `prune_peer_state`
+			// which also removes it from the store.
+			peer_state_lock.prune_expired_request_state();
 		}
 	}
 
 	#[allow(clippy::bool_comparison)]
-	pub(crate) fn prune_peer_state(&self) {
-		let mut outer_state_lock = self.per_peer_state.write().unwrap();
-		outer_state_lock.retain(|_, inner_state_lock| {
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
-			peer_state_lock.prune_expired_request_state();
-			peer_state_lock.is_prunable() == false
-		});
+	pub(crate) async fn prune_peer_state(&self) {
+		let mut need_remove = Vec::new();
+
+		{
+			let mut outer_state_lock = self.per_peer_state.write().unwrap();
+			outer_state_lock.retain(|counterparty_node_id, inner_state_lock| {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+				peer_state_lock.prune_expired_request_state();
+				let is_prunable = peer_state_lock.is_prunable();
+				if is_prunable {
+					need_remove.push(*counterparty_node_id);
+				}
+				is_prunable == false
+			});
+		}
+
+		for counterparty_node_id in need_remove {
+			let key = counterparty_node_id.to_string();
+			let _ = self
+				.kv_store
+				.remove(
+					LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+					LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+					&key,
+					true,
+				)
+				.await;
+		}
 	}
 }
 
