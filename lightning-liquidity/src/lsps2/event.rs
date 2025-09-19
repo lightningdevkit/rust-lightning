@@ -149,6 +149,11 @@ pub enum LSPS2ServiceEvent {
 	},
 	/// You should open a channel using [`ChannelManager::create_channel`].
 	///
+	/// **Note: ** As this event is persisted and might get replayed after restart, you'll need to
+	/// ensure channel creation idempotency. I.e., please check if you already created a
+	/// corresponding channel based on the given `their_network_key` and `intercept_scid` and
+	/// ignore this event in case you did.
+	///
 	/// [`ChannelManager::create_channel`]: lightning::ln::channelmanager::ChannelManager::create_channel
 	OpenChannel {
 		/// The node to open channel with.
