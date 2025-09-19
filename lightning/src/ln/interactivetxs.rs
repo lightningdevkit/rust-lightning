@@ -842,16 +842,18 @@ struct NegotiationContext {
 	feerate_sat_per_kw: u32,
 }
 
-pub(crate) fn estimate_input_weight(prev_output: &TxOut) -> Weight {
-	Weight::from_wu(if prev_output.script_pubkey.is_p2wpkh() {
-		P2WPKH_INPUT_WEIGHT_LOWER_BOUND
-	} else if prev_output.script_pubkey.is_p2wsh() {
-		P2WSH_INPUT_WEIGHT_LOWER_BOUND
-	} else if prev_output.script_pubkey.is_p2tr() {
-		P2TR_INPUT_WEIGHT_LOWER_BOUND
-	} else {
-		UNKNOWN_SEGWIT_VERSION_INPUT_WEIGHT_LOWER_BOUND
-	})
+fn estimate_input_satisfaction_weight(prev_output: &TxOut) -> Weight {
+	Weight::from_wu(
+		if prev_output.script_pubkey.is_p2wpkh() {
+			P2WPKH_INPUT_WEIGHT_LOWER_BOUND
+		} else if prev_output.script_pubkey.is_p2wsh() {
+			P2WSH_INPUT_WEIGHT_LOWER_BOUND
+		} else if prev_output.script_pubkey.is_p2tr() {
+			P2TR_INPUT_WEIGHT_LOWER_BOUND
+		} else {
+			UNKNOWN_SEGWIT_VERSION_INPUT_WEIGHT_LOWER_BOUND
+		} - BASE_INPUT_WEIGHT,
+	)
 }
 
 pub(crate) fn get_output_weight(script_pubkey: &ScriptBuf) -> Weight {
@@ -906,7 +908,9 @@ impl NegotiationContext {
 				.iter()
 				.filter(|(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
 				.fold(0u64, |weight, (_, input)| {
-					weight.saturating_add(input.estimate_input_weight().to_wu())
+					weight
+						.saturating_add(BASE_INPUT_WEIGHT)
+						.saturating_add(input.satisfaction_weight().to_wu())
 				}),
 		)
 	}
@@ -998,6 +1002,7 @@ impl NegotiationContext {
 						input: txin,
 						prev_tx: prevtx.clone(),
 						prev_output: tx_out.clone(),
+						satisfaction_weight: estimate_input_satisfaction_weight(&tx_out),
 					}),
 					prev_outpoint,
 				)
@@ -1150,7 +1155,9 @@ impl NegotiationContext {
 		}
 	}
 
-	fn sent_tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<(), AbortReason> {
+	fn sent_tx_add_input(
+		&mut self, (msg, satisfaction_weight): (&msgs::TxAddInput, Weight),
+	) -> Result<(), AbortReason> {
 		let vout = msg.prevtx_out as usize;
 		let (prev_outpoint, input) = if let Some(shared_input_txid) = msg.shared_input_txid {
 			let prev_outpoint = OutPoint { txid: shared_input_txid, vout: msg.prevtx_out };
@@ -1168,8 +1175,12 @@ impl NegotiationContext {
 				sequence: Sequence(msg.sequence),
 				..Default::default()
 			};
-			let single_input =
-				SingleOwnedInput { input: txin, prev_tx: prevtx.clone(), prev_output };
+			let single_input = SingleOwnedInput {
+				input: txin,
+				prev_tx: prevtx.clone(),
+				prev_output,
+				satisfaction_weight,
+			};
 			(prev_outpoint, InputOwned::Single(single_input))
 		} else {
 			return Err(AbortReason::MissingPrevTx);
@@ -1432,7 +1443,7 @@ define_state_transitions!(SENT_MSG_STATE, [
 // State transitions when we have received some messages from our counterparty and we should
 // respond.
 define_state_transitions!(RECEIVED_MSG_STATE, [
-	DATA &msgs::TxAddInput, TRANSITION sent_tx_add_input,
+	DATA (&msgs::TxAddInput, Weight), TRANSITION sent_tx_add_input,
 	DATA &msgs::TxRemoveInput, TRANSITION sent_tx_remove_input,
 	DATA &msgs::TxAddOutput, TRANSITION sent_tx_add_output,
 	DATA &msgs::TxRemoveOutput, TRANSITION sent_tx_remove_output
@@ -1499,7 +1510,7 @@ impl StateMachine {
 	}
 
 	// TxAddInput
-	define_state_machine_transitions!(sent_tx_add_input, &msgs::TxAddInput, [
+	define_state_machine_transitions!(sent_tx_add_input, (&msgs::TxAddInput, Weight), [
 		FROM ReceivedChangeMsg, TO SentChangeMsg,
 		FROM ReceivedTxComplete, TO SentChangeMsg
 	]);
@@ -1566,6 +1577,7 @@ struct SingleOwnedInput {
 	input: TxIn,
 	prev_tx: Transaction,
 	prev_output: TxOut,
+	satisfaction_weight: Weight,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1658,13 +1670,13 @@ impl InputOwned {
 		}
 	}
 
-	fn estimate_input_weight(&self) -> Weight {
+	fn satisfaction_weight(&self) -> Weight {
 		match self {
-			InputOwned::Single(single) => estimate_input_weight(&single.prev_output),
+			InputOwned::Single(single) => single.satisfaction_weight,
 			// TODO(taproot): Needs to consider different weights based on channel type
-			InputOwned::Shared(_) => Weight::from_wu(
-				BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
-			),
+			InputOwned::Shared(_) => {
+				Weight::from_wu(EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT)
+			},
 		}
 	}
 
@@ -1835,12 +1847,12 @@ impl InteractiveTxInput {
 		self.input.remote_value(self.added_by)
 	}
 
-	pub fn estimate_input_weight(&self) -> Weight {
-		self.input.estimate_input_weight()
+	pub fn satisfaction_weight(&self) -> Weight {
+		self.input.satisfaction_weight()
 	}
 
 	fn into_negotiated_input(self) -> NegotiatedTxInput {
-		let weight = self.input.estimate_input_weight();
+		let weight = Weight::from_wu(BASE_INPUT_WEIGHT) + self.input.satisfaction_weight();
 		let (txin, prev_output) = self.input.into_tx_in_with_prev_output();
 		NegotiatedTxInput { serial_id: self.serial_id, txin, weight, prev_output }
 	}
@@ -1965,8 +1977,12 @@ impl InteractiveTxConstructor {
 				let serial_id = generate_holder_serial_id(entropy_source, is_initiator);
 				let txin = TxIn { previous_output: utxo.outpoint, sequence, ..Default::default() };
 				let prev_output = utxo.output;
-				let input =
-					InputOwned::Single(SingleOwnedInput { input: txin, prev_tx, prev_output });
+				let input = InputOwned::Single(SingleOwnedInput {
+					input: txin,
+					prev_tx,
+					prev_output,
+					satisfaction_weight: Weight::from_wu(utxo.satisfaction_weight),
+				});
 				(serial_id, input)
 			})
 			.collect();
@@ -2022,6 +2038,7 @@ impl InteractiveTxConstructor {
 		// We first attempt to send inputs we want to add, then outputs. Once we are done sending
 		// them both, then we always send tx_complete.
 		if let Some((serial_id, input)) = self.inputs_to_contribute.pop() {
+			let satisfaction_weight = input.satisfaction_weight();
 			let msg = match input {
 				InputOwned::Single(single) => msgs::TxAddInput {
 					channel_id: self.channel_id,
@@ -2040,7 +2057,7 @@ impl InteractiveTxConstructor {
 					shared_input_txid: Some(shared.input.previous_output.txid),
 				},
 			};
-			do_state_transition!(self, sent_tx_add_input, &msg)?;
+			do_state_transition!(self, sent_tx_add_input, (&msg, satisfaction_weight))?;
 			Ok(InteractiveTxMessageSend::TxAddInput(msg))
 		} else if let Some((serial_id, output)) = self.outputs_to_contribute.pop() {
 			let msg = msgs::TxAddOutput {
