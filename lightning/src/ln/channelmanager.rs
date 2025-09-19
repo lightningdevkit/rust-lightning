@@ -92,13 +92,13 @@ use crate::ln::outbound_payment::{
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::flow::{InvreqResponseInstructions, OffersMessageFlow};
-use crate::offers::invoice::{
-	Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder, DEFAULT_RELATIVE_EXPIRY,
-};
+use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::InvoiceRequest;
+use crate::offers::invoice_request::{
+	DefaultCurrencyConversion, InvoiceRequest, InvoiceRequestVerifiedFromOffer,
+};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferFromHrn};
+use crate::offers::offer::{Amount, Offer, OfferFromHrn};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::Refund;
 use crate::offers::signer;
@@ -2653,6 +2653,9 @@ pub struct ChannelManager<
 	fee_estimator: LowerBoundedFeeEstimator<F>,
 	chain_monitor: M,
 	tx_broadcaster: T,
+	#[cfg(test)]
+	pub(super) router: R,
+	#[cfg(not(test))]
 	router: R,
 
 	#[cfg(test)]
@@ -2882,6 +2885,9 @@ pub struct ChannelManager<
 	pub(super) entropy_source: ES,
 	#[cfg(not(test))]
 	entropy_source: ES,
+	#[cfg(test)]
+	pub(super) node_signer: NS,
+	#[cfg(not(test))]
 	node_signer: NS,
 	#[cfg(test)]
 	pub(super) signer_provider: SP,
@@ -3878,7 +3884,8 @@ where
 		let flow = OffersMessageFlow::new(
 			ChainHash::using_genesis_block(params.network), params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
-			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
+			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, false,
+			logger.clone(),
 		);
 
 		ChannelManager {
@@ -5456,6 +5463,7 @@ where
 			let features = self.bolt12_invoice_features();
 			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
 				invoice,
+				&DefaultCurrencyConversion,
 				payment_id,
 				features,
 				best_block_height,
@@ -7586,7 +7594,7 @@ where
 								};
 								let payment_purpose_context =
 									PaymentContext::Bolt12Offer(Bolt12OfferContext {
-										offer_id: verified_invreq.offer_id,
+										offer_id: verified_invreq.offer_id(),
 										invoice_request: verified_invreq.fields(),
 									});
 								let from_parts_res = events::PaymentPurpose::from_parts(
@@ -12499,6 +12507,13 @@ where
 		let entropy = &*self.entropy_source;
 		let nonce = Nonce::from_entropy_source(entropy);
 
+		// If the offer is for a specific currency, ensure the amount is provided.
+		if let Some(Amount::Currency { iso4217_code: _, amount: _ }) = offer.amount() {
+			if amount_msats.is_none() {
+				return Err(Bolt12SemanticError::MissingAmount);
+			}
+		}
+
 		let builder = self.flow.create_invoice_request_builder(
 			offer, nonce, payment_id,
 		)?;
@@ -12560,33 +12575,42 @@ where
 	///
 	/// [`BlindedPaymentPath`]: crate::blinded_path::payment::BlindedPaymentPath
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	#[rustfmt::skip]
 	pub fn request_refund_payment(
-		&self, refund: &Refund
+		&self, refund: &Refund,
 	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
 		let secp_ctx = &self.secp_ctx;
-
-		let amount_msats = refund.amount_msats();
-		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
+		let entropy = &*self.entropy_source;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
-			Ok((payment_hash, payment_secret)) => {
-				let entropy = &*self.entropy_source;
-				let builder = self.flow.create_invoice_builder_from_refund(
-					&self.router, entropy, refund, payment_hash,
-					payment_secret, self.list_usable_channels()
-				)?;
-
-				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
-
-				self.flow.enqueue_invoice(invoice.clone(), refund, self.get_peers_for_blinded_path())?;
-
-				Ok(invoice)
+		let builder = self.flow.create_invoice_builder_from_refund(
+			&self.router,
+			entropy,
+			refund,
+			self.list_usable_channels(),
+			|amount_msats, relative_expiry| {
+				self.create_inbound_payment(Some(amount_msats), relative_expiry, None)
+					.map_err(|()| Bolt12SemanticError::InvalidAmount)
 			},
-			Err(()) => Err(Bolt12SemanticError::InvalidAmount),
+		)?;
+
+		let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
+
+		if refund.paths().is_empty() {
+			self.flow.enqueue_invoice_using_node_id(
+				invoice.clone(),
+				refund.payer_signing_pubkey(),
+				self.get_peers_for_blinded_path(),
+			)?;
+		} else {
+			self.flow.enqueue_invoice_using_reply_paths(
+				invoice.clone(),
+				refund.paths(),
+				self.get_peers_for_blinded_path(),
+			)?;
 		}
+
+		Ok(invoice)
 	}
 
 	/// Pays for an [`Offer`] looked up using [BIP 353] Human Readable Names resolved by the DNS
@@ -12808,7 +12832,7 @@ where
 		now
 	}
 
-	fn get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
+	pub(crate) fn get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		per_peer_state
 			.iter()
@@ -14686,7 +14710,7 @@ where
 					None => return None,
 				};
 
-				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
+				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context, responder.clone()) {
 					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
 					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot, invoice_request }) => {
 						self.pending_events.lock().unwrap().push_back((Event::StaticInvoiceRequested {
@@ -14695,37 +14719,89 @@ where
 
 						return None
 					},
+					Ok(InvreqResponseInstructions::AsynchronouslyHandleResponse) => return None,
 					Err(_) => return None,
 				};
 
-				let amount_msats = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
-					&invoice_request.inner
-				) {
-					Ok(amount_msats) => amount_msats,
-					Err(error) => return Some((OffersMessage::InvoiceError(error.into()), responder.respond())),
+				let get_payment_info = |amount_msats, relative_expiry| {
+					self.create_inbound_payment(
+						Some(amount_msats),
+						relative_expiry,
+						None
+					).map_err(|_| Bolt12SemanticError::InvalidAmount)
 				};
 
-				let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
-				let (payment_hash, payment_secret) = match self.create_inbound_payment(
-					Some(amount_msats), relative_expiry, None
-				) {
-					Ok((payment_hash, payment_secret)) => (payment_hash, payment_secret),
-					Err(()) => {
-						let error = Bolt12SemanticError::InvalidAmount;
-						return Some((OffersMessage::InvoiceError(error.into()), responder.respond()));
+				let (result, context) = match invoice_request {
+					InvoiceRequestVerifiedFromOffer::DerivedKeys(request) => {
+						let result = self.flow.create_invoice_builder_from_invoice_request_with_keys(
+							&self.router,
+							&*self.entropy_source,
+							&DefaultCurrencyConversion,
+							&request,
+							self.list_usable_channels(),
+							get_payment_info,
+						);
+
+						match result {
+							Ok((builder, context)) => {
+								let res = builder
+									.build_and_sign(&self.secp_ctx)
+									.map_err(InvoiceError::from);
+
+								(res, context)
+							},
+							Err(error) => {
+								return Some((
+									OffersMessage::InvoiceError(InvoiceError::from(error)),
+									responder.respond(),
+								));
+							},
+						}
 					},
+					InvoiceRequestVerifiedFromOffer::ExplicitKeys(request) => {
+						let result = self.flow.create_invoice_builder_from_invoice_request_without_keys(
+							&self.router,
+							&*self.entropy_source,
+							&DefaultCurrencyConversion,
+							&request,
+							self.list_usable_channels(),
+							get_payment_info,
+						);
+
+						match result {
+							Ok((builder, context)) => {
+								let res = builder
+									.build()
+									.map_err(InvoiceError::from)
+									.and_then(|invoice| {
+										#[cfg(c_bindings)]
+										let mut invoice = invoice;
+										invoice
+											.sign(|invoice: &UnsignedBolt12Invoice| self.node_signer.sign_bolt12_invoice(invoice))
+											.map_err(InvoiceError::from)
+									});
+								(res, context)
+							},
+							Err(error) => {
+								return Some((
+									OffersMessage::InvoiceError(InvoiceError::from(error)),
+									responder.respond(),
+								));
+							},
+						}
+					}
 				};
 
-				let entropy = &*self.entropy_source;
-				let (response, context) = self.flow.create_response_for_invoice_request(
-					&self.node_signer, &self.router, entropy, invoice_request, amount_msats,
-					payment_hash, payment_secret, self.list_usable_channels()
-				);
-
-				match context {
-					Some(context) => Some((response, responder.respond_with_reply_path(context))),
-					None => Some((response, responder.respond()))
-				}
+				Some(match result {
+					Ok(invoice) => (
+						OffersMessage::Invoice(invoice),
+						responder.respond_with_reply_path(context),
+					),
+					Err(error) => (
+						OffersMessage::InvoiceError(error),
+						responder.respond(),
+					),
+				})
 			},
 			OffersMessage::Invoice(invoice) => {
 				let payment_id = match self.flow.verify_bolt12_invoice(&invoice, context.as_ref()) {
@@ -17388,6 +17464,7 @@ where
 			args.node_signer.get_receive_auth_key(),
 			secp_ctx.clone(),
 			args.message_router,
+			false,
 			args.logger.clone(),
 		)
 		.with_async_payments_offers_cache(async_receive_offer_cache);
