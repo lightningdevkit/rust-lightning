@@ -199,7 +199,7 @@ pub(crate) struct ConstructedTransaction {
 	holder_is_initiator: bool,
 
 	input_metadata: Vec<TxInMetadata>,
-	outputs: Vec<InteractiveTxOutput>,
+	output_metadata: Vec<TxOutMetadata>,
 	tx: Transaction,
 
 	local_inputs_value_satoshis: u64,
@@ -217,6 +217,11 @@ pub(crate) struct TxInMetadata {
 	prev_output: TxOut,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TxOutMetadata {
+	serial_id: SerialId,
+}
+
 impl TxInMetadata {
 	pub(super) fn is_local(&self, holder_is_initiator: bool) -> bool {
 		!is_serial_id_valid_for_counterparty(holder_is_initiator, self.serial_id)
@@ -227,15 +232,25 @@ impl TxInMetadata {
 	}
 }
 
+impl TxOutMetadata {
+	pub(super) fn is_local(&self, holder_is_initiator: bool) -> bool {
+		!is_serial_id_valid_for_counterparty(holder_is_initiator, self.serial_id)
+	}
+}
+
 impl_writeable_tlv_based!(TxInMetadata, {
 	(1, serial_id, required),
 	(3, prev_output, required),
 });
 
+impl_writeable_tlv_based!(TxOutMetadata, {
+	(1, serial_id, required),
+});
+
 impl_writeable_tlv_based!(ConstructedTransaction, {
 	(1, holder_is_initiator, required),
 	(3, input_metadata, required),
-	(5, outputs, required),
+	(5, output_metadata, required),
 	(7, tx, required),
 	(9, local_inputs_value_satoshis, required),
 	(11, local_outputs_value_satoshis, required),
@@ -281,9 +296,10 @@ impl ConstructedTransaction {
 
 		let mut inputs: Vec<(TxIn, TxInMetadata)> =
 			context.inputs.into_values().map(|input| input.into_txin_and_metadata()).collect();
-		let mut outputs: Vec<InteractiveTxOutput> = context.outputs.into_values().collect();
+		let mut outputs: Vec<(TxOut, TxOutMetadata)> =
+			context.outputs.into_values().map(|output| output.into_txout_and_metadata()).collect();
 		inputs.sort_unstable_by_key(|(_, input)| input.serial_id);
-		outputs.sort_unstable_by_key(|output| output.serial_id);
+		outputs.sort_unstable_by_key(|(_, output)| output.serial_id);
 
 		let shared_input_index =
 			context.shared_funding_input.as_ref().and_then(|shared_funding_input| {
@@ -296,7 +312,8 @@ impl ConstructedTransaction {
 			});
 
 		let (input, input_metadata): (Vec<TxIn>, Vec<TxInMetadata>) = inputs.into_iter().unzip();
-		let output = outputs.iter().map(|output| output.tx_out().clone()).collect();
+		let (output, output_metadata): (Vec<TxOut>, Vec<TxOutMetadata>) =
+			outputs.into_iter().unzip();
 
 		let tx =
 			Transaction { version: Version::TWO, lock_time: context.tx_locktime, input, output };
@@ -316,7 +333,7 @@ impl ConstructedTransaction {
 			remote_outputs_value_satoshis,
 
 			input_metadata,
-			outputs,
+			output_metadata,
 			tx,
 
 			shared_input_index,
@@ -325,10 +342,6 @@ impl ConstructedTransaction {
 
 	pub fn tx(&self) -> &Transaction {
 		&self.tx
-	}
-
-	pub fn outputs(&self) -> impl Iterator<Item = &InteractiveTxOutput> {
-		self.outputs.iter()
 	}
 
 	pub fn input_metadata(&self) -> impl Iterator<Item = &TxInMetadata> {
@@ -559,15 +572,10 @@ impl InteractiveTxSigningSession {
 
 	fn local_outputs_count(&self) -> usize {
 		self.unsigned_tx
-			.outputs
+			.output_metadata
 			.iter()
 			.enumerate()
-			.filter(|(_, output)| {
-				!is_serial_id_valid_for_counterparty(
-					self.unsigned_tx.holder_is_initiator,
-					output.serial_id,
-				)
-			})
+			.filter(|(_, output)| output.is_local(self.unsigned_tx.holder_is_initiator))
 			.count()
 	}
 
@@ -1771,12 +1779,6 @@ pub(crate) struct InteractiveTxOutput {
 	output: OutputOwned,
 }
 
-impl_writeable_tlv_based!(InteractiveTxOutput, {
-	(1, serial_id, required),
-	(3, added_by, required),
-	(5, output, required),
-});
-
 impl InteractiveTxOutput {
 	pub fn tx_out(&self) -> &TxOut {
 		self.output.tx_out()
@@ -1800,6 +1802,11 @@ impl InteractiveTxOutput {
 
 	pub fn script_pubkey(&self) -> &ScriptBuf {
 		&self.output.tx_out().script_pubkey
+	}
+
+	fn into_txout_and_metadata(self) -> (TxOut, TxOutMetadata) {
+		let txout = self.output.into_tx_out();
+		(txout, TxOutMetadata { serial_id: self.serial_id })
 	}
 }
 
@@ -2224,9 +2231,9 @@ mod tests {
 	use core::ops::Deref;
 
 	use super::{
-		get_output_weight, AddingRole, ConstructedTransaction, InteractiveTxOutput,
-		InteractiveTxSigningSession, OutputOwned, TxInMetadata, P2TR_INPUT_WEIGHT_LOWER_BOUND,
-		P2WPKH_INPUT_WEIGHT_LOWER_BOUND, P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
+		get_output_weight, ConstructedTransaction, InteractiveTxSigningSession, TxInMetadata,
+		P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
+		P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
 	};
 
 	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
@@ -3309,21 +3316,10 @@ mod tests {
 			})
 			.collect();
 
-		let outputs: Vec<InteractiveTxOutput> = transaction
-			.output
-			.iter()
-			.cloned()
-			.map(|txout| InteractiveTxOutput {
-				serial_id: 0, // N/A for test
-				added_by: AddingRole::Local,
-				output: OutputOwned::Single(txout),
-			})
-			.collect();
-
 		let unsigned_tx = ConstructedTransaction {
 			holder_is_initiator: true,
 			input_metadata,
-			outputs,
+			output_metadata: vec![], // N/A for test
 			tx: transaction.clone(),
 			local_inputs_value_satoshis: 0,   // N/A for test
 			local_outputs_value_satoshis: 0,  // N/A for test

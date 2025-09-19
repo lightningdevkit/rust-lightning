@@ -6108,8 +6108,8 @@ where
 	{
 		let mut output_index = None;
 		let expected_spk = funding.get_funding_redeemscript().to_p2wsh();
-		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
-			if outp.script_pubkey() == &expected_spk && outp.value() == funding.get_value_satoshis() {
+		for (idx, outp) in signing_session.unsigned_tx().tx().output.iter().enumerate() {
+			if outp.script_pubkey == expected_spk && outp.value.to_sat() == funding.get_value_satoshis() {
 				if output_index.is_some() {
 					return Err(AbortReason::DuplicateFundingOutput);
 				}
