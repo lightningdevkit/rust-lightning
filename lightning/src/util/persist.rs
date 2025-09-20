@@ -1262,7 +1262,7 @@ mod tests {
 					let update_list = KVStoreSync::list(
 						&*persister_0.kv_store,
 						CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-						&monitor_name.to_string()
+						&monitor_name.to_string(),
 					);
 					assert_eq!(update_list.unwrap().len() as u64, expected_updates, "persister 0");
 				}
@@ -1280,7 +1280,7 @@ mod tests {
 					let update_list = KVStoreSync::list(
 						&*persister_1.kv_store,
 						CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-						&monitor_name.to_string()
+						&monitor_name.to_string(),
 					);
 					assert_eq!(update_list.unwrap().len() as u64, expected_updates, "persister 1");
 				}
