@@ -6167,9 +6167,9 @@ where
 		}
 	}
 
-	fn get_initial_counterparty_commitment_signature<L: Deref>(
+	fn get_initial_counterparty_commitment_signatures<L: Deref>(
 		&self, funding: &FundingScope, logger: &L,
-	) -> Option<Signature>
+	) -> Option<(Signature, Vec<Signature>)>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
@@ -6204,7 +6204,6 @@ where
 						Vec::new(),
 						&self.secp_ctx,
 					)
-					.map(|(signature, _)| signature)
 					.ok()
 			},
 			// TODO (taproot|arik)
@@ -6222,16 +6221,20 @@ where
 	{
 		debug_assert!(self.interactive_tx_signing_session.is_some());
 
-		let signature = self.get_initial_counterparty_commitment_signature(funding, logger);
-		if let Some(signature) = signature {
+		let signatures = self.get_initial_counterparty_commitment_signatures(funding, logger);
+		if let Some((signature, htlc_signatures)) = signatures {
 			log_info!(
 				logger,
 				"Generated commitment_signed for peer for channel {}",
 				&self.channel_id()
 			);
+			if matches!(self.channel_state, ChannelState::FundingNegotiated(_)) {
+				// We shouldn't expect any HTLCs before `ChannelReady`.
+				debug_assert!(htlc_signatures.is_empty());
+			}
 			Some(msgs::CommitmentSigned {
 				channel_id: self.channel_id,
-				htlc_signatures: vec![],
+				htlc_signatures,
 				signature,
 				funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
 				#[cfg(taproot)]
@@ -8653,6 +8656,12 @@ where
 						.unwrap_or(false));
 				}
 
+				if signing_session.holder_tx_signatures().is_some() {
+					// Our `tx_signatures` either should've been the first time we processed them,
+					// or we're waiting for our counterparty to send theirs first.
+					return Ok((None, None));
+				}
+
 				signing_session
 			} else {
 				let err =
@@ -8912,7 +8921,18 @@ where
 			}
 			self.context.channel_state.clear_local_stfu_sent();
 			self.context.channel_state.clear_remote_stfu_sent();
-			self.context.channel_state.clear_quiescent();
+			if self
+				.context
+				.interactive_tx_signing_session
+				.as_ref()
+				.map(|signing_session| {
+					signing_session.has_received_tx_signatures()
+						&& signing_session.holder_tx_signatures().is_some()
+				})
+				.unwrap_or(true)
+			{
+				self.context.channel_state.clear_quiescent();
+			}
 		}
 
 		self.context.channel_state.set_peer_disconnected();
@@ -11352,6 +11372,10 @@ where
 			.as_ref()
 			.filter(|session| !session.has_received_tx_signatures())
 			.map(|signing_session| {
+				if self.pending_splice.is_some() {
+					debug_assert!(self.context.channel_state.is_quiescent());
+				}
+
 				let mut next_funding = msgs::NextFunding {
 					txid: signing_session.unsigned_tx().compute_txid(),
 					retransmit_flags: 0,
@@ -13948,7 +13972,18 @@ where
 					}
 					channel_state.clear_local_stfu_sent();
 					channel_state.clear_remote_stfu_sent();
-					channel_state.clear_quiescent();
+					if self
+						.context
+						.interactive_tx_signing_session
+						.as_ref()
+						.map(|signing_session| {
+							signing_session.has_received_tx_signatures()
+								&& signing_session.holder_tx_signatures().is_some()
+						})
+						.unwrap_or(true)
+					{
+						channel_state.clear_quiescent();
+					}
 				},
 				ChannelState::FundingNegotiated(_)
 					if self.context.interactive_tx_signing_session.is_some() => {},

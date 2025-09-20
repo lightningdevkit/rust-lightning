@@ -4309,6 +4309,13 @@ pub fn test_default_channel_config() -> UserConfig {
 	default_config
 }
 
+pub fn test_default_anchors_channel_config() -> UserConfig {
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	config.manually_accept_inbound_channels = true;
+	config
+}
+
 pub fn create_node_chanmgrs<'a, 'b>(
 	node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>],
 ) -> Vec<
@@ -4764,11 +4771,14 @@ macro_rules! handle_chan_reestablish_msgs {
 				None
 			};
 
-		if let Some(&MessageSendEvent::SendAnnouncementSignatures { ref node_id, msg: _ }) =
+		let mut announcement_sigs = None; // May be now or later
+		if let Some(&MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg }) =
 			msg_events.get(idx)
 		{
 			idx += 1;
 			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+			assert!(announcement_sigs.is_none());
+			announcement_sigs = Some(msg.clone());
 		}
 
 		let mut had_channel_update = false; // ChannelUpdate may be now or later, but not both
@@ -4827,6 +4837,15 @@ macro_rules! handle_chan_reestablish_msgs {
 			}
 		}
 
+		let mut tx_signatures = None;
+		if let Some(&MessageSendEvent::SendTxSignatures { ref node_id, ref msg }) =
+			msg_events.get(idx)
+		{
+			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+			tx_signatures = Some(msg.clone());
+			idx += 1;
+		}
+
 		if let Some(&MessageSendEvent::SendChannelUpdate { ref node_id, .. }) = msg_events.get(idx)
 		{
 			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
@@ -4834,9 +4853,18 @@ macro_rules! handle_chan_reestablish_msgs {
 			assert!(!had_channel_update);
 		}
 
-		assert_eq!(msg_events.len(), idx);
+		if let Some(&MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg }) =
+			msg_events.get(idx)
+		{
+			idx += 1;
+			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+			assert!(announcement_sigs.is_none());
+			announcement_sigs = Some(msg.clone());
+		}
 
-		(channel_ready, revoke_and_ack, commitment_update, order)
+		assert_eq!(msg_events.len(), idx, "{msg_events:?}");
+
+		(channel_ready, revoke_and_ack, commitment_update, order, announcement_sigs, tx_signatures)
 	}};
 }
 
@@ -4844,6 +4872,10 @@ pub struct ReconnectArgs<'a, 'b, 'c, 'd> {
 	pub node_a: &'a Node<'b, 'c, 'd>,
 	pub node_b: &'a Node<'b, 'c, 'd>,
 	pub send_channel_ready: (bool, bool),
+	pub send_announcement_sigs: (bool, bool),
+	pub send_interactive_tx_commit_sig: (bool, bool),
+	pub send_interactive_tx_sigs: (bool, bool),
+	pub expect_renegotiated_funding_locked_monitor_update: (bool, bool),
 	pub pending_responding_commitment_signed: (bool, bool),
 	/// Indicates that the pending responding commitment signed will be a dup for the recipient,
 	/// and no monitor update is expected
@@ -4862,6 +4894,10 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 			node_a,
 			node_b,
 			send_channel_ready: (false, false),
+			send_announcement_sigs: (false, false),
+			send_interactive_tx_commit_sig: (false, false),
+			send_interactive_tx_sigs: (false, false),
+			expect_renegotiated_funding_locked_monitor_update: (false, false),
 			pending_responding_commitment_signed: (false, false),
 			pending_responding_commitment_signed_dup_monitor: (false, false),
 			pending_htlc_adds: (0, 0),
@@ -4881,6 +4917,10 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		node_a,
 		node_b,
 		send_channel_ready,
+		send_announcement_sigs,
+		send_interactive_tx_commit_sig,
+		send_interactive_tx_sigs,
+		expect_renegotiated_funding_locked_monitor_update,
 		pending_htlc_adds,
 		pending_htlc_claims,
 		pending_htlc_fails,
@@ -4931,7 +4971,11 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		node_b.node.handle_channel_reestablish(node_a_id, &msg);
 		resp_1.push(handle_chan_reestablish_msgs!(node_b, node_a));
 	}
-	if pending_cell_htlc_claims.0 != 0 || pending_cell_htlc_fails.0 != 0 {
+
+	if pending_cell_htlc_claims.0 != 0
+		|| pending_cell_htlc_fails.0 != 0
+		|| expect_renegotiated_funding_locked_monitor_update.1
+	{
 		check_added_monitors!(node_b, 1);
 	} else {
 		check_added_monitors!(node_b, 0);
@@ -4942,7 +4986,10 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		node_a.node.handle_channel_reestablish(node_b_id, &msg);
 		resp_2.push(handle_chan_reestablish_msgs!(node_a, node_b));
 	}
-	if pending_cell_htlc_claims.1 != 0 || pending_cell_htlc_fails.1 != 0 {
+	if pending_cell_htlc_claims.1 != 0
+		|| pending_cell_htlc_fails.1 != 0
+		|| expect_renegotiated_funding_locked_monitor_update.0
+	{
 		check_added_monitors!(node_a, 1);
 	} else {
 		check_added_monitors!(node_a, 0);
@@ -4962,7 +5009,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				&& pending_cell_htlc_fails.1 == 0)
 	);
 
-	for chan_msgs in resp_1.drain(..) {
+	for mut chan_msgs in resp_1.drain(..) {
 		if send_channel_ready.0 {
 			node_a.node.handle_channel_ready(node_b_id, &chan_msgs.0.unwrap());
 			let announcement_event = node_a.node.get_and_clear_pending_msg_events();
@@ -4976,6 +5023,33 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			}
 		} else {
 			assert!(chan_msgs.0.is_none());
+		}
+		if send_announcement_sigs.0 {
+			let announcement_sigs = chan_msgs.4.take().unwrap();
+			node_a.node.handle_announcement_signatures(node_b_id, &announcement_sigs);
+			let msg_events = node_a.node.get_and_clear_pending_msg_events();
+			assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+			if let MessageSendEvent::BroadcastChannelAnnouncement { .. } = msg_events[0] {
+			} else {
+				panic!("Unexpected event! {:?}", msg_events[0]);
+			}
+		} else {
+			assert!(chan_msgs.4.is_none());
+		}
+		if send_interactive_tx_commit_sig.0 {
+			assert!(chan_msgs.1.is_none());
+			let commitment_update = chan_msgs.2.take().unwrap();
+			assert_eq!(commitment_update.commitment_signed.len(), 1);
+			node_a.node.handle_commitment_signed_batch_test(
+				node_b_id,
+				&commitment_update.commitment_signed,
+			)
+		}
+		if send_interactive_tx_sigs.0 {
+			let tx_signatures = chan_msgs.5.take().unwrap();
+			node_a.node.handle_tx_signatures(node_b_id, &tx_signatures);
+		} else {
+			assert!(chan_msgs.5.is_none());
 		}
 		if pending_raa.0 {
 			assert!(chan_msgs.3 == RAACommitmentOrder::RevokeAndACKFirst);
@@ -5041,7 +5115,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		}
 	}
 
-	for chan_msgs in resp_2.drain(..) {
+	for mut chan_msgs in resp_2.drain(..) {
 		if send_channel_ready.1 {
 			node_b.node.handle_channel_ready(node_a_id, &chan_msgs.0.unwrap());
 			let announcement_event = node_b.node.get_and_clear_pending_msg_events();
@@ -5055,6 +5129,33 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			}
 		} else {
 			assert!(chan_msgs.0.is_none());
+		}
+		if send_announcement_sigs.1 {
+			let announcement_sigs = chan_msgs.4.take().unwrap();
+			node_b.node.handle_announcement_signatures(node_a_id, &announcement_sigs);
+			let mut msg_events = node_b.node.get_and_clear_pending_msg_events();
+			assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+			if let MessageSendEvent::BroadcastChannelAnnouncement { .. } = msg_events.remove(0) {
+			} else {
+				panic!();
+			}
+		} else {
+			assert!(chan_msgs.4.is_none());
+		}
+		if send_interactive_tx_commit_sig.1 {
+			assert!(chan_msgs.1.is_none());
+			let commitment_update = chan_msgs.2.take().unwrap();
+			assert_eq!(commitment_update.commitment_signed.len(), 1);
+			node_b.node.handle_commitment_signed_batch_test(
+				node_a_id,
+				&commitment_update.commitment_signed,
+			)
+		}
+		if send_interactive_tx_sigs.1 {
+			let tx_signatures = chan_msgs.5.take().unwrap();
+			node_b.node.handle_tx_signatures(node_a_id, &tx_signatures);
+		} else {
+			assert!(chan_msgs.5.is_none());
 		}
 		if pending_raa.1 {
 			assert!(chan_msgs.3 == RAACommitmentOrder::RevokeAndACKFirst);

@@ -4858,6 +4858,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	}
 	let mut reconnect_args = ReconnectArgs::new(&nodes[2], &nodes[3]);
 	reconnect_args.send_channel_ready = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
 	reconnect_nodes(reconnect_args);
 
 	// Create a new channel between C and D as A will refuse to retry on the existing one because
