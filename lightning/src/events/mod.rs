@@ -49,7 +49,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{OutPoint, Transaction};
+use bitcoin::{OutPoint, Transaction, TxOut};
 use core::ops::Deref;
 
 #[allow(unused_imports)]
@@ -1500,6 +1500,61 @@ pub enum Event {
 		/// [`ChainMonitor::get_claimable_balances`]: crate::chain::chainmonitor::ChainMonitor::get_claimable_balances
 		last_local_balance_msat: Option<u64>,
 	},
+	/// Used to indicate that a splice transaction for the given `channel_id` is pending confirmation.
+	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
+	SplicePending {
+		/// The `channel_id` of the channel that has a pending splice transaction.
+		channel_id: ChannelId,
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be randomized for an inbound channel.
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+		/// The `node_id` of the channel counterparty.
+		counterparty_node_id: PublicKey,
+		/// The outpoint of the channel's splice funding transaction.
+		funding_txo: OutPoint,
+		/// The features that this channel will operate with.
+		channel_type: ChannelTypeFeatures,
+	},
+	/// Used to indicate that a splice transaction for the given `channel_id` has failed.
+	///
+	/// This event is emitted when a splice transaction construction or negotiation fails,
+	/// allowing applications to handle the failure and potentially retry or take corrective action.
+	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
+	SpliceFailed {
+		/// The `channel_id` of the channel for which the splice failed.
+		channel_id: ChannelId,
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be randomized for an inbound channel.
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+		/// The `node_id` of the channel counterparty.
+		counterparty_node_id: PublicKey,
+		/// The outpoint of the channel's splice funding transaction, if one was created.
+		funding_txo: Option<OutPoint>,
+		/// The features that this channel will operate with, if available.
+		channel_type: Option<ChannelTypeFeatures>,
+		/// Input outpoints contributed to the splice transaction.
+		contributed_inputs: Vec<OutPoint>,
+		/// Outputs contributed to the splice transaction.
+		contributed_outputs: Vec<TxOut>,
+	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
 	///
@@ -2215,6 +2270,42 @@ impl Writeable for Event {
 				// We never write out FundingTransactionReadyForSigning events as they will be regenerated when
 				// necessary.
 			},
+			&Event::SplicePending {
+				ref channel_id,
+				ref user_channel_id,
+				ref counterparty_node_id,
+				ref funding_txo,
+				ref channel_type,
+			} => {
+				50u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, channel_id, required),
+					(3, channel_type, required),
+					(5, user_channel_id, required),
+					(7, counterparty_node_id, required),
+					(9, funding_txo, required),
+				});
+			},
+			&Event::SpliceFailed {
+				ref channel_id,
+				ref user_channel_id,
+				ref counterparty_node_id,
+				ref funding_txo,
+				ref channel_type,
+				ref contributed_inputs,
+				ref contributed_outputs,
+			} => {
+				52u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, channel_id, required),
+					(3, channel_type, option),
+					(5, user_channel_id, required),
+					(7, counterparty_node_id, required),
+					(9, funding_txo, option),
+					(11, *contributed_inputs, optional_vec),
+					(13, *contributed_outputs, optional_vec),
+				});
+			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -2797,6 +2888,50 @@ impl MaybeReadable for Event {
 			47u8 => Ok(None),
 			// Note that we do not write a length-prefixed TLV for FundingTransactionReadyForSigning events.
 			49u8 => Ok(None),
+			50u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, channel_id, required),
+						(3, channel_type, required),
+						(5, user_channel_id, required),
+						(7, counterparty_node_id, required),
+						(9, funding_txo, required),
+					});
+
+					Ok(Some(Event::SplicePending {
+						channel_id: channel_id.0.unwrap(),
+						user_channel_id: user_channel_id.0.unwrap(),
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						funding_txo: funding_txo.0.unwrap(),
+						channel_type: channel_type.0.unwrap(),
+					}))
+				};
+				f()
+			},
+			52u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, channel_id, required),
+						(3, channel_type, option),
+						(5, user_channel_id, required),
+						(7, counterparty_node_id, required),
+						(9, funding_txo, option),
+						(11, contributed_inputs, optional_vec),
+						(13, contributed_outputs, optional_vec),
+					});
+
+					Ok(Some(Event::SpliceFailed {
+						channel_id: channel_id.0.unwrap(),
+						user_channel_id: user_channel_id.0.unwrap(),
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						funding_txo,
+						channel_type,
+						contributed_inputs: contributed_inputs.unwrap_or_default(),
+						contributed_outputs: contributed_outputs.unwrap_or_default(),
+					}))
+				};
+				f()
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.

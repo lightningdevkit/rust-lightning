@@ -112,6 +112,40 @@ pub struct ChannelValueStat {
 	pub counterparty_dust_limit_msat: u64,
 }
 
+/// Information about a splice funding negotiation that has been completed.
+/// This is returned from channel operations and converted to an Event::SplicePending in ChannelManager.
+pub struct SpliceFundingNegotiated {
+	/// The channel_id of the channel being spliced.
+	pub channel_id: ChannelId,
+	/// The counterparty's node_id.
+	pub counterparty_node_id: PublicKey,
+	/// The user_channel_id value.
+	pub user_channel_id: u128,
+	/// The outpoint of the channel's splice funding transaction.
+	pub funding_txo: bitcoin::OutPoint,
+	/// The features that this channel will operate with.
+	pub channel_type: ChannelTypeFeatures,
+}
+
+/// Information about a splice funding negotiation that has failed.
+/// This is returned from channel operations and converted to an Event::SpliceFailed in ChannelManager.
+pub struct SpliceFundingFailed {
+	/// The channel_id of the channel for which the splice failed.
+	pub channel_id: ChannelId,
+	/// The counterparty's node_id.
+	pub counterparty_node_id: PublicKey,
+	/// The user_channel_id value.
+	pub user_channel_id: u128,
+	/// The outpoint of the channel's splice funding transaction, if one was created.
+	pub funding_txo: Option<bitcoin::OutPoint>,
+	/// The features that this channel will operate with, if available.
+	pub channel_type: Option<ChannelTypeFeatures>,
+	/// Input outpoints contributed to the splice transaction.
+	pub contributed_inputs: Vec<bitcoin::OutPoint>,
+	/// Outputs contributed to the splice transaction.
+	pub contributed_outputs: Vec<bitcoin::TxOut>,
+}
+
 pub struct AvailableBalances {
 	/// Total amount available for our counterparty to send to us.
 	pub inbound_capacity_msat: u64,
@@ -1224,6 +1258,9 @@ pub(crate) struct ShutdownResult {
 	pub(crate) unbroadcasted_funding_tx: Option<Transaction>,
 	pub(crate) channel_funding_txo: Option<OutPoint>,
 	pub(crate) last_local_balance_msat: u64,
+	/// If a splice was in progress when the channel was shut down, this contains
+	/// the splice funding information for emitting a SpliceFailed event.
+	pub(crate) splice_funding_failed: Option<SpliceFundingFailed>,
 }
 
 /// Tracks the transaction number, along with current and next commitment points.
@@ -1716,42 +1753,47 @@ where
 
 	fn fail_interactive_tx_negotiation<L: Deref>(
 		&mut self, reason: AbortReason, logger: &L,
-	) -> msgs::TxAbort
+	) -> (msgs::TxAbort, Option<SpliceFundingFailed>)
 	where
 		L::Target: Logger,
 	{
 		let logger = WithChannelContext::from(logger, &self.context(), None);
 		log_info!(logger, "Failed interactive transaction negotiation: {reason}");
 
-		let _interactive_tx_constructor = match &mut self.phase {
+		let splice_funding_failed = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => None,
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
-				pending_v2_channel.interactive_tx_constructor.take()
+				pending_v2_channel.interactive_tx_constructor.take();
+				None
 			},
-			ChannelPhase::Funded(funded_channel) => funded_channel
-				.pending_splice
-				.as_mut()
-				.and_then(|pending_splice| pending_splice.funding_negotiation.take())
-				.and_then(|funding_negotiation| {
-					if let FundingNegotiation::ConstructingTransaction {
-						interactive_tx_constructor,
-						..
-					} = funding_negotiation
-					{
-						Some(interactive_tx_constructor)
-					} else {
-						None
-					}
-				}),
+			ChannelPhase::Funded(funded_channel) => {
+				funded_channel
+					.pending_splice
+					.as_mut()
+					.and_then(|pending_splice| pending_splice.funding_negotiation.take())
+					.filter(|funding_negotiation| funding_negotiation.is_initiator())
+					.map(|funding_negotiation| {
+						let funding = funding_negotiation.as_funding();
+						SpliceFundingFailed {
+							channel_id: funded_channel.context.channel_id,
+							counterparty_node_id: funded_channel.context.counterparty_node_id,
+							user_channel_id: funded_channel.context.user_id,
+							funding_txo: funding.as_ref().and_then(|funding| funding.get_funding_txo()).map(|txo| txo.into_bitcoin_outpoint()),
+							channel_type: funding.as_ref().map(|funding| funding.get_channel_type().clone()),
+							contributed_inputs: Vec::new(),
+							contributed_outputs: Vec::new(),
+						}
+					})
+			},
 		};
 
-		reason.into_tx_abort_msg(self.context().channel_id)
+		(reason.into_tx_abort_msg(self.context().channel_id), splice_funding_failed)
 	}
 
 	pub fn tx_add_input<L: Deref>(
 		&mut self, msg: &msgs::TxAddInput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	) -> Result<InteractiveTxMessageSend, (msgs::TxAbort, Option<SpliceFundingFailed>)>
 	where
 		L::Target: Logger,
 	{
@@ -1766,7 +1808,7 @@ where
 
 	pub fn tx_add_output<L: Deref>(
 		&mut self, msg: &msgs::TxAddOutput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	) -> Result<InteractiveTxMessageSend, (msgs::TxAbort, Option<SpliceFundingFailed>)>
 	where
 		L::Target: Logger,
 	{
@@ -1783,7 +1825,7 @@ where
 
 	pub fn tx_remove_input<L: Deref>(
 		&mut self, msg: &msgs::TxRemoveInput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	) -> Result<InteractiveTxMessageSend, (msgs::TxAbort, Option<SpliceFundingFailed>)>
 	where
 		L::Target: Logger,
 	{
@@ -1800,7 +1842,7 @@ where
 
 	pub fn tx_remove_output<L: Deref>(
 		&mut self, msg: &msgs::TxRemoveOutput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, msgs::TxAbort>
+	) -> Result<InteractiveTxMessageSend, (msgs::TxAbort, Option<SpliceFundingFailed>)>
 	where
 		L::Target: Logger,
 	{
@@ -1817,7 +1859,7 @@ where
 
 	pub fn tx_complete<L: Deref>(
 		&mut self, msg: &msgs::TxComplete, logger: &L,
-	) -> Result<(Option<InteractiveTxMessageSend>, Option<msgs::CommitmentSigned>), msgs::TxAbort>
+	) -> Result<(Option<InteractiveTxMessageSend>, Option<msgs::CommitmentSigned>), (msgs::TxAbort, Option<SpliceFundingFailed>)>
 	where
 		L::Target: Logger,
 	{
@@ -1851,7 +1893,7 @@ where
 
 	pub fn tx_abort<L: Deref>(
 		&mut self, msg: &msgs::TxAbort, logger: &L,
-	) -> Result<Option<msgs::TxAbort>, ChannelError>
+	) -> Result<Option<(msgs::TxAbort, SpliceFundingFailed)>, ChannelError>
 	where
 		L::Target: Logger,
 	{
@@ -1860,20 +1902,51 @@ where
 		// phase for this interactively constructed transaction and hence we have not exchanged
 		// `tx_signatures`. Either way, we never close the channel upon receiving a `tx_abort`:
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L574-L576
-		let should_ack = match &mut self.phase {
+		let (should_ack, splice_funding_failed) = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
 				let err = "Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel establishment";
 				return Err(ChannelError::Warn(err.into()));
 			},
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
-				pending_v2_channel.interactive_tx_constructor.take().is_some()
+				let had_constructor = pending_v2_channel.interactive_tx_constructor.take().is_some();
+				(had_constructor, None)
 			},
-			ChannelPhase::Funded(funded_channel) => funded_channel
-				.pending_splice
-				.as_mut()
-				.and_then(|pending_splice| pending_splice.funding_negotiation.take())
-				.is_some(),
+			ChannelPhase::Funded(funded_channel) => {
+				let funding_negotiation_opt = funded_channel
+					.pending_splice
+					.as_mut()
+					.and_then(|pending_splice| pending_splice.funding_negotiation.take());
+
+				let should_ack = funding_negotiation_opt.is_some();
+				let splice_funding_failed = funding_negotiation_opt
+					.filter(|funding_negotiation| funding_negotiation.is_initiator())
+					.map(|funding_negotiation| {
+						// Create SpliceFundingFailed for the aborted splice
+						let (funding_txo, channel_type) = match &funding_negotiation {
+							FundingNegotiation::ConstructingTransaction { funding, .. } => {
+								(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
+							},
+							FundingNegotiation::AwaitingSignatures { funding, .. } => {
+								(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
+							},
+							FundingNegotiation::AwaitingAck { .. } => {
+								(None, None)
+							},
+						};
+
+						SpliceFundingFailed {
+							channel_id: funded_channel.context.channel_id,
+							counterparty_node_id: funded_channel.context.counterparty_node_id,
+							user_channel_id: funded_channel.context.user_id,
+							funding_txo,
+							channel_type,
+							contributed_inputs: Vec::new(),
+							contributed_outputs: Vec::new(),
+						}
+					});
+				(should_ack, splice_funding_failed)
+			},
 		};
 
 		// NOTE: Since at this point we have not sent a `tx_abort` message for this negotiation
@@ -1882,16 +1955,20 @@ where
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
 		// For rationale why we echo back `tx_abort`:
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
-		Ok(should_ack.then(|| {
+		let result = if should_ack {
 			let logger = WithChannelContext::from(logger, &self.context(), None);
 			let reason =
 				types::string::UntrustedString(String::from_utf8_lossy(&msg.data).to_string());
 			log_info!(logger, "Counterparty failed interactive transaction negotiation: {reason}");
-			msgs::TxAbort {
+			let tx_abort_response = msgs::TxAbort {
 				channel_id: msg.channel_id,
 				data: "Acknowledged tx_abort".to_string().into_bytes(),
-			}
-		}))
+			};
+			splice_funding_failed.map(|failed| (tx_abort_response, failed))
+		} else {
+			None
+		};
+		Ok(result)
 	}
 
 	#[rustfmt::skip]
@@ -1966,19 +2043,22 @@ where
 							interactive_tx_constructor,
 						} = funding_negotiation
 						{
+							let is_initiator = interactive_tx_constructor.is_initiator();
 							let signing_session = interactive_tx_constructor.into_signing_session();
-							let commitment_signed = chan.context.funding_tx_constructed(
+							let commitment_signed_result = chan.context.funding_tx_constructed(
 								&mut funding,
 								signing_session,
 								true,
 								chan.holder_commitment_point.next_transaction_number(),
 								&&logger,
-							)?;
+							);
 
+							// This must be set even if returning an Err. Otherwise,
+							// fail_interactive_tx_negotiation won't produce a SpliceFailed event.
 							pending_splice.funding_negotiation =
-								Some(FundingNegotiation::AwaitingSignatures { funding });
+								Some(FundingNegotiation::AwaitingSignatures { funding, is_initiator });
 
-							return Ok(commitment_signed);
+							return commitment_signed_result;
 						} else {
 							// Replace the taken state
 							pending_splice.funding_negotiation = Some(funding_negotiation);
@@ -2569,12 +2649,14 @@ enum FundingNegotiation {
 	},
 	AwaitingSignatures {
 		funding: FundingScope,
+		is_initiator: bool,
 	},
 }
 
 impl_writeable_tlv_based_enum_upgradable!(FundingNegotiation,
 	(0, AwaitingSignatures) => {
 		(1, funding, required),
+		(3, is_initiator, required),
 	},
 	unread_variants: AwaitingAck, ConstructingTransaction
 );
@@ -2584,7 +2666,17 @@ impl FundingNegotiation {
 		match self {
 			FundingNegotiation::AwaitingAck { .. } => None,
 			FundingNegotiation::ConstructingTransaction { funding, .. } => Some(funding),
-			FundingNegotiation::AwaitingSignatures { funding } => Some(funding),
+			FundingNegotiation::AwaitingSignatures { funding, .. } => Some(funding),
+		}
+	}
+
+	fn is_initiator(&self) -> bool {
+		match self {
+			FundingNegotiation::AwaitingAck { context } => context.is_initiator,
+			FundingNegotiation::ConstructingTransaction { interactive_tx_constructor, .. } => {
+				interactive_tx_constructor.is_initiator()
+			},
+			FundingNegotiation::AwaitingSignatures { is_initiator, .. } => *is_initiator,
 		}
 	}
 }
@@ -6004,6 +6096,7 @@ where
 			is_manual_broadcast: self.is_manual_broadcast,
 			channel_funding_txo: funding.get_funding_txo(),
 			last_local_balance_msat: funding.value_to_self_msat,
+			splice_funding_failed: None,
 		}
 	}
 
@@ -6758,7 +6851,54 @@ where
 	}
 
 	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
-		self.context.force_shutdown(&self.funding, closure_reason)
+		// Capture splice funding failed information if we have an active splice negotiation
+		let splice_funding_failed = self.pending_splice.as_mut()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.take())
+			.filter(|funding_negotiation| funding_negotiation.is_initiator())
+			.map(|funding_negotiation| {
+				// Create SpliceFundingFailed for any active splice negotiation during shutdown
+				let (funding_txo, channel_type) = match &funding_negotiation {
+					FundingNegotiation::AwaitingAck { .. } => {
+						(None, None)
+					},
+					FundingNegotiation::ConstructingTransaction { funding, .. } => {
+						(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
+					},
+					FundingNegotiation::AwaitingSignatures { funding, .. } => {
+						(funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()), Some(funding.get_channel_type().clone()))
+					},
+				};
+
+				SpliceFundingFailed {
+					channel_id: self.context.channel_id,
+					counterparty_node_id: self.context.counterparty_node_id,
+					user_channel_id: self.context.user_id,
+					funding_txo,
+					channel_type,
+					contributed_inputs: Vec::new(),
+					contributed_outputs: Vec::new(),
+				}
+			})
+			.or_else(|| {
+				// Also check for pending quiescent action that is a splice
+				if let Some(QuiescentAction::Splice(_)) = self.quiescent_action.take() {
+					Some(SpliceFundingFailed {
+						channel_id: self.context.channel_id,
+						counterparty_node_id: self.context.counterparty_node_id,
+						user_channel_id: self.context.user_id,
+						funding_txo: None,
+						channel_type: None,
+						contributed_inputs: Vec::new(),
+						contributed_outputs: Vec::new(),
+					})
+				} else {
+					None
+				}
+			});
+
+		let mut shutdown_result = self.context.force_shutdown(&self.funding, closure_reason);
+		shutdown_result.splice_funding_failed = splice_funding_failed;
+		shutdown_result
 	}
 
 	fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
@@ -8616,30 +8756,52 @@ where
 		}
 	}
 
-	fn on_tx_signatures_exchange(&mut self, funding_tx: Transaction) {
+	fn on_tx_signatures_exchange(
+		&mut self, funding_tx: Transaction,
+	) -> Option<SpliceFundingNegotiated> {
 		debug_assert!(!self.context.channel_state.is_monitor_update_in_progress());
 		debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
 
 		if let Some(pending_splice) = self.pending_splice.as_mut() {
-			if let Some(FundingNegotiation::AwaitingSignatures { mut funding }) =
+			self.context.channel_state.clear_quiescent();
+			if let Some(FundingNegotiation::AwaitingSignatures { mut funding, .. }) =
 				pending_splice.funding_negotiation.take()
 			{
 				funding.funding_transaction = Some(funding_tx);
+
+				let funding_txo =
+					funding.get_funding_txo().expect("funding outpoint should be set");
+				let channel_type = funding.get_channel_type().clone();
+
 				pending_splice.negotiated_candidates.push(funding);
+
+				let splice_negotiated = SpliceFundingNegotiated {
+					channel_id: self.context.channel_id,
+					counterparty_node_id: self.context.counterparty_node_id,
+					user_channel_id: self.context.user_id,
+					funding_txo: funding_txo.into_bitcoin_outpoint(),
+					channel_type,
+				};
+
+				Some(splice_negotiated)
 			} else {
 				debug_assert!(false);
+				None
 			}
-			self.context.channel_state.clear_quiescent();
 		} else {
 			self.funding.funding_transaction = Some(funding_tx);
 			self.context.channel_state =
 				ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+			None
 		}
 	}
 
 	pub fn funding_transaction_signed(
 		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>,
-	) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), APIError> {
+	) -> Result<
+		(Option<msgs::TxSignatures>, Option<Transaction>, Option<SpliceFundingNegotiated>),
+		APIError,
+	> {
 		let signing_session =
 			if let Some(signing_session) = self.context.interactive_tx_signing_session.as_mut() {
 				if let Some(pending_splice) = self.pending_splice.as_ref() {
@@ -8695,17 +8857,22 @@ where
 			.provide_holder_witnesses(tx_signatures, &self.context.secp_ctx)
 			.map_err(|err| APIError::APIMisuseError { err })?;
 
-		if let Some(funding_tx) = funding_tx_opt.clone() {
+		let splice_negotiated_opt = if let Some(funding_tx) = funding_tx_opt.clone() {
 			debug_assert!(tx_signatures_opt.is_some());
-			self.on_tx_signatures_exchange(funding_tx);
-		}
+			self.on_tx_signatures_exchange(funding_tx)
+		} else {
+			None
+		};
 
-		Ok((tx_signatures_opt, funding_tx_opt))
+		Ok((tx_signatures_opt, funding_tx_opt, splice_negotiated_opt))
 	}
 
 	pub fn tx_signatures(
 		&mut self, msg: &msgs::TxSignatures,
-	) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), ChannelError> {
+	) -> Result<
+		(Option<msgs::TxSignatures>, Option<Transaction>, Option<SpliceFundingNegotiated>),
+		ChannelError,
+	> {
 		let signing_session = if let Some(signing_session) =
 			self.context.interactive_tx_signing_session.as_mut()
 		{
@@ -8751,11 +8918,13 @@ where
 		let (holder_tx_signatures_opt, funding_tx_opt) =
 			signing_session.received_tx_signatures(msg).map_err(|msg| ChannelError::Warn(msg))?;
 
-		if let Some(funding_tx) = funding_tx_opt.clone() {
-			self.on_tx_signatures_exchange(funding_tx);
-		}
+		let splice_negotiated_opt = if let Some(funding_tx) = funding_tx_opt.clone() {
+			self.on_tx_signatures_exchange(funding_tx)
+		} else {
+			None
+		};
 
-		Ok((holder_tx_signatures_opt, funding_tx_opt))
+		Ok((holder_tx_signatures_opt, funding_tx_opt, splice_negotiated_opt))
 	}
 
 	/// Queues up an outbound update fee by placing it in the holding cell. You should call
@@ -9512,7 +9681,7 @@ where
 						.as_ref()
 						.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
 						.and_then(|funding_negotiation| {
-							if let FundingNegotiation::AwaitingSignatures { funding } = &funding_negotiation {
+							if let FundingNegotiation::AwaitingSignatures { funding, .. } = &funding_negotiation {
 								Some(funding)
 							} else {
 								None
@@ -10161,6 +10330,7 @@ where
 			is_manual_broadcast: self.context.is_manual_broadcast,
 			channel_funding_txo: self.funding.get_funding_txo(),
 			last_local_balance_msat: self.funding.value_to_self_msat,
+			splice_funding_failed: None,
 		}
 	}
 
@@ -11836,12 +12006,23 @@ where
 	pub(crate) fn splice_ack<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceAck, signer_provider: &SP, entropy_source: &ES,
 		holder_node_id: &PublicKey, logger: &L,
-	) -> Result<Option<InteractiveTxMessageSend>, ChannelError>
+	) -> Result<Option<InteractiveTxMessageSend>, (ChannelError, SpliceFundingFailed)>
 	where
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
-		let splice_funding = self.validate_splice_ack(msg)?;
+		let splice_funding = self.validate_splice_ack(msg).map_err(|err| {
+			let splice_failed = SpliceFundingFailed {
+				channel_id: self.context.channel_id,
+				counterparty_node_id: self.context.counterparty_node_id,
+				user_channel_id: self.context.user_id,
+				funding_txo: None,
+				channel_type: None,
+				contributed_inputs: Vec::new(),
+				contributed_outputs: Vec::new(),
+			};
+			(err, splice_failed)
+		})?;
 
 		log_info!(
 			logger,
@@ -11871,10 +12052,20 @@ where
 				holder_node_id.clone(),
 			)
 			.map_err(|err| {
-				ChannelError::WarnAndDisconnect(format!(
+				let splice_failed = SpliceFundingFailed {
+					channel_id: self.context.channel_id,
+					counterparty_node_id: self.context.counterparty_node_id,
+					user_channel_id: self.context.user_id,
+					funding_txo: splice_funding.get_funding_txo().map(|txo| txo.into_bitcoin_outpoint()),
+					channel_type: Some(splice_funding.get_channel_type().clone()),
+					contributed_inputs: Vec::new(),
+					contributed_outputs: Vec::new(),
+				};
+				let channel_error = ChannelError::WarnAndDisconnect(format!(
 					"Failed to start interactive transaction construction, {:?}",
 					err
-				))
+				));
+				(channel_error, splice_failed)
 			})?;
 		let tx_msg_opt = interactive_tx_constructor.take_initiator_first_message();
 
@@ -12699,27 +12890,27 @@ where
 	#[rustfmt::skip]
 	pub fn stfu<L: Deref>(
 		&mut self, msg: &msgs::Stfu, logger: &L
-	) -> Result<Option<StfuResponse>, ChannelError> where L::Target: Logger {
+	) -> Result<Option<StfuResponse>, (ChannelError, Option<SpliceFundingFailed>)> where L::Target: Logger {
 		if self.context.channel_state.is_quiescent() {
-			return Err(ChannelError::Warn("Channel is already quiescent".to_owned()));
+			return Err((ChannelError::Warn("Channel is already quiescent".to_owned()), None));
 		}
 		if self.context.channel_state.is_remote_stfu_sent() {
-			return Err(ChannelError::Warn(
+			return Err((ChannelError::Warn(
 				"Peer sent `stfu` when they already sent it and we've yet to become quiescent".to_owned()
-			));
+			), None));
 		}
 
 		if !self.context.is_live() {
-			return Err(ChannelError::Warn(
+			return Err((ChannelError::Warn(
 				"Peer sent `stfu` when we were not in a live state".to_owned()
-			));
+			), None));
 		}
 
 		if !self.context.channel_state.is_local_stfu_sent() {
 			if !msg.initiator {
-				return Err(ChannelError::WarnAndDisconnect(
+				return Err((ChannelError::WarnAndDisconnect(
 					"Peer sent unexpected `stfu` without signaling as initiator".to_owned()
-				));
+				), None));
 			}
 
 			// We don't check `is_waiting_on_peer_pending_channel_update` prior to setting the flag
@@ -12733,7 +12924,7 @@ where
 			return self
 				.send_stfu(logger)
 				.map(|stfu| Some(StfuResponse::Stfu(stfu)))
-				.map_err(|e| ChannelError::Ignore(e.to_owned()));
+				.map_err(|e| (ChannelError::Ignore(e.to_owned()), None));
 		}
 
 		// We already sent `stfu` and are now processing theirs. It may be in response to ours, or
@@ -12752,9 +12943,9 @@ where
 			// have a monitor update pending if we've processed a message from the counterparty, but
 			// we don't consider this when becoming quiescent since the states are not mutually
 			// exclusive.
-			return Err(ChannelError::WarnAndDisconnect(
+			return Err((ChannelError::WarnAndDisconnect(
 				"Received counterparty stfu while having pending counterparty updates".to_owned()
-			));
+			), None));
 		}
 
 		self.context.channel_state.clear_local_stfu_sent();
@@ -12770,14 +12961,25 @@ where
 			match self.quiescent_action.take() {
 				None => {
 					debug_assert!(false);
-					return Err(ChannelError::WarnAndDisconnect(
+					return Err((ChannelError::WarnAndDisconnect(
 						"Internal Error: Didn't have anything to do after reaching quiescence".to_owned()
-					));
+					), None));
 				},
 				Some(QuiescentAction::Splice(_instructions)) => {
 					return self.send_splice_init(_instructions)
 						.map(|splice_init| Some(StfuResponse::SpliceInit(splice_init)))
-						.map_err(|e| ChannelError::WarnAndDisconnect(e.to_owned()));
+						.map_err(|e| {
+							let splice_failed = SpliceFundingFailed {
+								channel_id: self.context.channel_id,
+								counterparty_node_id: self.context.counterparty_node_id,
+								user_channel_id: self.context.user_id,
+								funding_txo: None,
+								channel_type: None,
+								contributed_inputs: Vec::new(),
+								contributed_outputs: Vec::new(),
+							};
+							(ChannelError::WarnAndDisconnect(e.to_owned()), Some(splice_failed))
+						});
 				},
 				#[cfg(any(test, fuzzing))]
 				Some(QuiescentAction::DoNothing) => {
