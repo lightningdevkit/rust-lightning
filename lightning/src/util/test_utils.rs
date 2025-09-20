@@ -89,6 +89,7 @@ use core::future::Future;
 use core::mem;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::task::{Context, Poll, Waker};
 use core::time::Duration;
 
 use bitcoin::psbt::Psbt;
@@ -856,15 +857,80 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister 
 	}
 }
 
+type SPSCKVChannelState = Arc<Mutex<(Option<Result<(), io::Error>>, Option<Waker>)>>;
+struct SPSCKVChannel(SPSCKVChannelState);
+impl Future for SPSCKVChannel {
+	type Output = Result<(), io::Error>;
+	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+		let mut state = self.0.lock().unwrap();
+		state.0.take().map(|res| Poll::Ready(res)).unwrap_or_else(|| {
+			state.1 = Some(cx.waker().clone());
+			Poll::Pending
+		})
+	}
+}
+
 pub struct TestStore {
+	pending_async_writes: Mutex<HashMap<String, Vec<(usize, SPSCKVChannelState, Vec<u8>)>>>,
 	persisted_bytes: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
 	read_only: bool,
 }
 
 impl TestStore {
 	pub fn new(read_only: bool) -> Self {
+		let pending_async_writes = Mutex::new(new_hash_map());
 		let persisted_bytes = Mutex::new(new_hash_map());
-		Self { persisted_bytes, read_only }
+		Self { pending_async_writes, persisted_bytes, read_only }
+	}
+
+	pub fn list_pending_async_writes(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> Vec<usize> {
+		let key = format!("{primary_namespace}/{secondary_namespace}/{key}");
+		let writes_lock = self.pending_async_writes.lock().unwrap();
+		writes_lock
+			.get(&key)
+			.map(|v| v.iter().map(|(id, _, _)| *id).collect())
+			.unwrap_or(Vec::new())
+	}
+
+	pub fn complete_async_writes_through(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, write_id: usize,
+	) {
+		let prefix = format!("{primary_namespace}/{secondary_namespace}");
+		let key = format!("{primary_namespace}/{secondary_namespace}/{key}");
+
+		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
+		let mut writes_lock = self.pending_async_writes.lock().unwrap();
+
+		let pending_writes = writes_lock.get_mut(&key).unwrap();
+		pending_writes.retain(|(id, res, data)| {
+			if *id <= write_id {
+				let namespace = persisted_lock.entry(prefix.clone()).or_insert(new_hash_map());
+				*namespace.entry(key.to_string()).or_default() = data.clone();
+				let mut future_state = res.lock().unwrap();
+				future_state.0 = Some(Ok(()));
+				if let Some(waker) = future_state.1.take() {
+					waker.wake();
+				}
+				false
+			} else {
+				true
+			}
+		});
+	}
+
+	pub fn complete_all_async_writes(&self) {
+		let pending_writes: Vec<String> =
+			self.pending_async_writes.lock().unwrap().keys().cloned().collect();
+		for key in pending_writes {
+			let mut levels = key.split("/");
+			let primary = levels.next().unwrap();
+			let secondary = levels.next().unwrap();
+			let key = levels.next().unwrap();
+			assert!(levels.next().is_none());
+			self.complete_async_writes_through(primary, secondary, key, usize::MAX);
+		}
 	}
 
 	fn read_internal(
@@ -885,23 +951,6 @@ impl TestStore {
 		}
 	}
 
-	fn write_internal(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> io::Result<()> {
-		if self.read_only {
-			return Err(io::Error::new(
-				io::ErrorKind::PermissionDenied,
-				"Cannot modify read-only store",
-			));
-		}
-		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
-
-		let prefixed = format!("{primary_namespace}/{secondary_namespace}");
-		let outer_e = persisted_lock.entry(prefixed).or_insert(new_hash_map());
-		outer_e.insert(key.to_string(), buf);
-		Ok(())
-	}
-
 	fn remove_internal(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, _lazy: bool,
 	) -> io::Result<()> {
@@ -913,10 +962,21 @@ impl TestStore {
 		}
 
 		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
+		let mut async_writes_lock = self.pending_async_writes.lock().unwrap();
 
 		let prefixed = format!("{primary_namespace}/{secondary_namespace}");
 		if let Some(outer_ref) = persisted_lock.get_mut(&prefixed) {
 			outer_ref.remove(&key.to_string());
+		}
+
+		if let Some(pending_writes) = async_writes_lock.remove(&format!("{prefixed}/{key}")) {
+			for (_, future, _) in pending_writes {
+				let mut future_lock = future.lock().unwrap();
+				future_lock.0 = Some(Ok(()));
+				if let Some(waker) = future_lock.1.take() {
+					waker.wake();
+				}
+			}
 		}
 
 		Ok(())
@@ -945,8 +1005,15 @@ impl KVStore for TestStore {
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
 	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
-		let res = self.write_internal(&primary_namespace, &secondary_namespace, &key, buf);
-		Box::pin(async move { res })
+		let path = format!("{primary_namespace}/{secondary_namespace}/{key}");
+		let future = Arc::new(Mutex::new((None, None)));
+
+		let mut async_writes_lock = self.pending_async_writes.lock().unwrap();
+		let pending_writes = async_writes_lock.entry(path).or_insert(Vec::new());
+		let new_id = pending_writes.last().map(|(id, _, _)| id + 1).unwrap_or(0);
+		pending_writes.push((new_id, Arc::clone(&future), buf));
+
+		Box::pin(SPSCKVChannel(future))
 	}
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
@@ -972,7 +1039,30 @@ impl KVStoreSync for TestStore {
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
 	) -> io::Result<()> {
-		self.write_internal(primary_namespace, secondary_namespace, key, buf)
+		if self.read_only {
+			return Err(io::Error::new(
+				io::ErrorKind::PermissionDenied,
+				"Cannot modify read-only store",
+			));
+		}
+		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
+		let mut async_writes_lock = self.pending_async_writes.lock().unwrap();
+
+		let prefixed = format!("{primary_namespace}/{secondary_namespace}");
+		let async_writes_pending = async_writes_lock.remove(&format!("{prefixed}/{key}"));
+		let outer_e = persisted_lock.entry(prefixed).or_insert(new_hash_map());
+		outer_e.insert(key.to_string(), buf);
+
+		if let Some(pending_writes) = async_writes_pending {
+			for (_, future, _) in pending_writes {
+				let mut future_lock = future.lock().unwrap();
+				future_lock.0 = Some(Ok(()));
+				if let Some(waker) = future_lock.1.take() {
+					waker.wake();
+				}
+			}
+		}
+		Ok(())
 	}
 
 	fn remove(
