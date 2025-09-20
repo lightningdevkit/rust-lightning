@@ -1941,11 +1941,15 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(
 pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 	tx: &Transaction, get_output: F,
 ) {
+	let mut single_output_below_dust = false;
 	for outp in tx.output.iter() {
-		assert!(
-			outp.value >= outp.script_pubkey.minimal_non_dust(),
-			"Spending tx output didn't meet dust limit"
-		);
+		if outp.value < outp.script_pubkey.minimal_non_dust() {
+			if single_output_below_dust {
+				panic!("Spending tx output didn't meet dust limit");
+			} else {
+				single_output_below_dust = true;
+			}
+		};
 	}
 	let mut total_value_in = 0;
 	for input in tx.input.iter() {
@@ -1955,9 +1959,15 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 	for output in tx.output.iter() {
 		total_value_out += output.value.to_sat();
 	}
-	let min_fee = (tx.weight().to_wu() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
-													// Input amount - output amount = fee, so check that out + min_fee is smaller than input
-	assert!(total_value_out + min_fee <= total_value_in);
+	if single_output_below_dust {
+		assert_eq!(
+			total_value_in, total_value_out,
+			"Spending tx has one output below dust, while not zero fee"
+		);
+	} else {
+		let min_fee = (tx.weight().to_wu() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
+		assert!(total_value_out + min_fee <= total_value_in);
+	}
 	tx.verify(get_output).unwrap();
 }
 
@@ -1966,8 +1976,15 @@ macro_rules! check_spends {
 	($tx: expr, $($spends_txn: expr),*) => {
 		{
 			$(
+			let mut single_output_below_dust = false;
 			for outp in $spends_txn.output.iter() {
-				assert!(outp.value >= outp.script_pubkey.minimal_non_dust(), "Input tx output didn't meet dust limit");
+				if outp.value.lt(&outp.script_pubkey.minimal_non_dust()) {
+					if single_output_below_dust || outp.script_pubkey != $crate::ln::chan_utils::shared_anchor_script_pubkey() {
+						panic!("Input tx output didn't meet dust limit");
+					} else {
+						single_output_below_dust = true;
+					}
+				}
 			}
 			)*
 			let get_output = |out_point: &bitcoin::transaction::OutPoint| {
@@ -1980,7 +1997,10 @@ macro_rules! check_spends {
 			};
 			$crate::ln::functional_test_utils::do_check_spends(&$tx, get_output);
 		}
-	}
+	};
+	($tx: expr, $($spends_txn: expr),*) => {
+		check_spends!($tx, $($spends_txn; false),*)
+	};
 }
 
 macro_rules! get_closing_signed_broadcast {
