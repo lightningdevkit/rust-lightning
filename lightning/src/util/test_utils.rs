@@ -871,11 +871,7 @@ impl TestStore {
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 	) -> io::Result<Vec<u8>> {
 		let persisted_lock = self.persisted_bytes.lock().unwrap();
-		let prefixed = if secondary_namespace.is_empty() {
-			primary_namespace.to_string()
-		} else {
-			format!("{}/{}", primary_namespace, secondary_namespace)
-		};
+		let prefixed = format!("{primary_namespace}/{secondary_namespace}");
 
 		if let Some(outer_ref) = persisted_lock.get(&prefixed) {
 			if let Some(inner_ref) = outer_ref.get(key) {
@@ -900,15 +896,9 @@ impl TestStore {
 		}
 		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
 
-		let prefixed = if secondary_namespace.is_empty() {
-			primary_namespace.to_string()
-		} else {
-			format!("{}/{}", primary_namespace, secondary_namespace)
-		};
+		let prefixed = format!("{primary_namespace}/{secondary_namespace}");
 		let outer_e = persisted_lock.entry(prefixed).or_insert(new_hash_map());
-		let mut bytes = Vec::new();
-		bytes.write_all(&buf)?;
-		outer_e.insert(key.to_string(), bytes);
+		outer_e.insert(key.to_string(), buf);
 		Ok(())
 	}
 
@@ -924,11 +914,7 @@ impl TestStore {
 
 		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
 
-		let prefixed = if secondary_namespace.is_empty() {
-			primary_namespace.to_string()
-		} else {
-			format!("{}/{}", primary_namespace, secondary_namespace)
-		};
+		let prefixed = format!("{primary_namespace}/{secondary_namespace}");
 		if let Some(outer_ref) = persisted_lock.get_mut(&prefixed) {
 			outer_ref.remove(&key.to_string());
 		}
@@ -941,11 +927,7 @@ impl TestStore {
 	) -> io::Result<Vec<String>> {
 		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
 
-		let prefixed = if secondary_namespace.is_empty() {
-			primary_namespace.to_string()
-		} else {
-			format!("{}/{}", primary_namespace, secondary_namespace)
-		};
+		let prefixed = format!("{primary_namespace}/{secondary_namespace}");
 		match persisted_lock.entry(prefixed) {
 			hash_map::Entry::Occupied(e) => Ok(e.get().keys().cloned().collect()),
 			hash_map::Entry::Vacant(_) => Ok(Vec::new()),
