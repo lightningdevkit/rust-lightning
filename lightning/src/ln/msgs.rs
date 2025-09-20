@@ -1273,27 +1273,27 @@ impl std::net::ToSocketAddrs for SocketAddress {
 pub fn parse_onion_address(
 	host: &str, port: u16,
 ) -> Result<SocketAddress, SocketAddressParseError> {
-	if host.ends_with(".onion") {
-		let domain = &host[..host.len() - ".onion".len()];
-		if domain.len() != 56 {
-			return Err(SocketAddressParseError::InvalidOnionV3);
-		}
-		let onion = base32::Alphabet::RFC4648 { padding: false }
-			.decode(&domain)
-			.map_err(|_| SocketAddressParseError::InvalidOnionV3)?;
-		if onion.len() != 35 {
-			return Err(SocketAddressParseError::InvalidOnionV3);
-		}
-		let version = onion[0];
-		let first_checksum_flag = onion[1];
-		let second_checksum_flag = onion[2];
-		let mut ed25519_pubkey = [0; 32];
-		ed25519_pubkey.copy_from_slice(&onion[3..35]);
-		let checksum = u16::from_be_bytes([first_checksum_flag, second_checksum_flag]);
-		return Ok(SocketAddress::OnionV3 { ed25519_pubkey, checksum, version, port });
-	} else {
+	if !host.ends_with(".onion") {
 		return Err(SocketAddressParseError::InvalidInput);
 	}
+	let domain = &host[..host.len() - ".onion".len()];
+	if domain.len() != 56 {
+		return Err(SocketAddressParseError::InvalidOnionV3);
+	}
+	let onion = base32::Alphabet::RFC4648 { padding: false }
+		.decode(domain)
+		.map_err(|_| SocketAddressParseError::InvalidOnionV3)?;
+	if onion.len() != 35 {
+		return Err(SocketAddressParseError::InvalidOnionV3);
+	}
+
+	let mut ed25519_pubkey = [0u8; 32];
+	ed25519_pubkey.copy_from_slice(&onion[0..32]);
+
+	let checksum = u16::from_be_bytes([onion[32], onion[33]]);
+	let version = onion[34];
+
+	Ok(SocketAddress::OnionV3 { ed25519_pubkey, checksum, version, port })
 }
 
 impl Display for SocketAddress {
@@ -1313,10 +1313,13 @@ impl Display for SocketAddress {
 				version,
 				port,
 			} => {
-				let [first_checksum_flag, second_checksum_flag] = checksum.to_be_bytes();
-				let mut addr = vec![*version, first_checksum_flag, second_checksum_flag];
+				let mut addr = Vec::with_capacity(35);
 				addr.extend_from_slice(ed25519_pubkey);
-				let onion = base32::Alphabet::RFC4648 { padding: false }.encode(&addr);
+				let [c0, c1] = checksum.to_be_bytes();
+				addr.push(c0);
+				addr.push(c1);
+				addr.push(*version);
+				let onion = base32::Alphabet::RFC4648 { padding: false }.encode(&addr).to_lowercase();
 				write!(f, "{}.onion:{}", onion, port)?
 			},
 			SocketAddress::Hostname { hostname, port } => write!(f, "{}:{}", hostname, port)?,
@@ -6666,21 +6669,21 @@ mod tests {
 
 		let onion_v3 = SocketAddress::OnionV3 {
 			ed25519_pubkey: [
-				37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247, 246, 85, 111,
-				177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31, 33, 71, 3,
+				121, 188, 198, 37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247,
+				246, 85, 111, 177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31,
 			],
-			checksum: 48326,
-			version: 121,
+			checksum: 8519,
+			version: 3,
 			port: 1234,
 		};
-		assert_eq!(
-			onion_v3,
-			SocketAddress::from_str(
-				"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:1234"
-			)
-			.unwrap()
-		);
-		assert_eq!(onion_v3, SocketAddress::from_str(&onion_v3.to_string()).unwrap());
+		let onion_v3_str = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:1234";
+		let parsed = SocketAddress::from_str(onion_v3_str).unwrap();
+		assert_eq!(onion_v3, parsed);
+		assert_eq!(onion_v3_str, parsed.to_string());
+		match parsed {
+			SocketAddress::OnionV3 { version, .. } => assert_eq!(version, 3),
+			_ => panic!("expected OnionV3"),
+		}
 
 		assert_eq!(
 			Err(SocketAddressParseError::InvalidOnionV3),
