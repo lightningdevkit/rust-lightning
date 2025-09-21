@@ -309,7 +309,7 @@ fn archive_fully_resolved_monitors() {
 	}
 }
 
-fn do_chanmon_claim_value_coop_close(anchors: bool) {
+fn do_chanmon_claim_value_coop_close(keyed_anchors: bool, p2a_anchor: bool) {
 	// Tests `get_claimable_balances` returns the correct values across a simple cooperative claim.
 	// Specifically, this tests that the channel non-HTLC balances show up in
 	// `get_claimable_balances` until the cooperative claims have confirmed and generated a
@@ -317,10 +317,11 @@ fn do_chanmon_claim_value_coop_close(anchors: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
-	if anchors {
-		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		user_config.manually_accept_inbound_channels = true;
-	}
+	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	user_config.manually_accept_inbound_channels = true;
+	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
+	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -333,7 +334,7 @@ fn do_chanmon_claim_value_coop_close(anchors: bool) {
 	let channel_type_features = get_channel_type_features!(nodes[0], nodes[1], chan_id);
 
 	let commitment_tx_fee = chan_feerate * chan_utils::commitment_tx_base_weight(&channel_type_features) / 1000;
-	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
+	let anchor_outputs_value = if keyed_anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis: 1_000_000 - 1_000 - commitment_tx_fee - anchor_outputs_value,
@@ -434,8 +435,9 @@ fn do_chanmon_claim_value_coop_close(anchors: bool) {
 
 #[test]
 fn chanmon_claim_value_coop_close() {
-	do_chanmon_claim_value_coop_close(false);
-	do_chanmon_claim_value_coop_close(true);
+	do_chanmon_claim_value_coop_close(false, false);
+	do_chanmon_claim_value_coop_close(true, false);
+	do_chanmon_claim_value_coop_close(false, true);
 }
 
 fn sorted_vec<T: Ord>(mut v: Vec<T>) -> Vec<T> {
@@ -454,7 +456,7 @@ fn fuzzy_assert_eq<V: core::convert::TryInto<u64>>(a: V, b: V) {
 	assert!(b_u64 >= a_u64 - 5);
 }
 
-fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
+fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_commitment_tx: bool) {
 	// Tests `get_claimable_balances` with an HTLC across a force-close.
 	// We build a channel with an HTLC pending, then force close the channel and check that the
 	// `get_claimable_balances` return value is correct as transactions confirm on-chain.
@@ -468,10 +470,9 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	}
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
-	if anchors {
-		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		user_config.manually_accept_inbound_channels = true;
-	}
+	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
+	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -535,13 +536,13 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// as claimable. A lists both its to-self balance and the (possibly-claimable) HTLCs.
 	let commitment_tx_fee = chan_feerate as u64 *
 		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-	let anchor_outputs_value = if anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
+	let anchor_outputs_value = if keyed_anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
 	let amount_satoshis = 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - commitment_tx_fee - anchor_outputs_value - 1; /* msat amount that is burned to fees */
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis,
 				// In addition to `commitment_tx_fee`, this also includes the dust HTLC, and the total msat amount rounded down from non-dust HTLCs
-				transaction_fee_satoshis: 1_000_000 - 4_000 - 3_000 - 1_000 - amount_satoshis - anchor_outputs_value,
+				transaction_fee_satoshis: if p2a_anchor { 0 } else { 1_000_000 - 4_000 - 3_000 - 1_000 - amount_satoshis - anchor_outputs_value },
 			}],
 			confirmed_balance_candidate_index: 0,
 			outbound_payment_htlc_rounded_msat: 3300,
@@ -611,7 +612,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis, // Channel funding value in satoshis
 				// In addition to `commitment_tx_fee`, this also includes the dust HTLC, and the total msat amount rounded down from non-dust HTLCs
-				transaction_fee_satoshis: 1_000_000 - 4_000 - 3_000 - 1_000 - amount_satoshis - anchor_outputs_value,
+				transaction_fee_satoshis: if p2a_anchor { 0 } else { 1_000_000 - 4_000 - 3_000 - 1_000 - amount_satoshis - anchor_outputs_value },
 			}],
 			confirmed_balance_candidate_index: 0,
 			outbound_payment_htlc_rounded_msat: 3000 + if prev_commitment_tx {
@@ -645,7 +646,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	mine_transaction(&nodes[0], &remote_txn[0]);
 	mine_transaction(&nodes[1], &remote_txn[0]);
 
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events.pop().unwrap() {
@@ -674,8 +675,8 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// b_broadcast_txn should spend the HTLCs output of the commitment tx for 3_000 and 4_000 sats
 	check_spends!(b_broadcast_txn[0], remote_txn[0], coinbase_tx);
 	check_spends!(b_broadcast_txn[1], remote_txn[0], coinbase_tx);
-	assert_eq!(b_broadcast_txn[0].input.len(), if anchors { 2 } else { 1 });
-	assert_eq!(b_broadcast_txn[1].input.len(), if anchors { 2 } else { 1 });
+	assert_eq!(b_broadcast_txn[0].input.len(), if keyed_anchors || p2a_anchor { 2 } else { 1 });
+	assert_eq!(b_broadcast_txn[1].input.len(), if keyed_anchors || p2a_anchor { 2 } else { 1 });
 	assert_eq!(remote_txn[0].output[b_broadcast_txn[0].input[0].previous_output.vout as usize].value.to_sat(), 3_000);
 	assert_eq!(remote_txn[0].output[b_broadcast_txn[1].input[0].previous_output.vout as usize].value.to_sat(), 4_000);
 
@@ -807,7 +808,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// After reaching the commitment output CSV, we'll get a SpendableOutputs event for it and have
 	// only the HTLCs claimable on node B.
 	connect_blocks(&nodes[1], node_b_commitment_claimable - nodes[1].best_block_info().1);
-	test_spendable_output(&nodes[1], &remote_txn[0], anchors);
+	test_spendable_output(&nodes[1], &remote_txn[0], keyed_anchors || p2a_anchor);
 
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 3_000,
@@ -819,7 +820,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// After reaching the claimed HTLC output CSV, we'll get a SpendableOutptus event for it and
 	// have only one HTLC output left spendable.
 	connect_blocks(&nodes[1], node_b_htlc_claimable - nodes[1].best_block_info().1);
-	test_spendable_output(&nodes[1], &b_broadcast_txn[0], anchors);
+	test_spendable_output(&nodes[1], &b_broadcast_txn[0], keyed_anchors || p2a_anchor);
 
 	assert_eq!(vec![received_htlc_timeout_claiming_balance.clone()],
 		nodes[1].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances());
@@ -847,13 +848,15 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 
 #[test]
 fn test_claim_value_force_close() {
-	do_test_claim_value_force_close(false, true);
-	do_test_claim_value_force_close(false, false);
-	do_test_claim_value_force_close(true, true);
-	do_test_claim_value_force_close(true, false);
+	do_test_claim_value_force_close(false, false, true);
+	do_test_claim_value_force_close(false, false, false);
+	do_test_claim_value_force_close(true, false, true);
+	do_test_claim_value_force_close(true, false, false);
+	do_test_claim_value_force_close(false, true, true);
+	do_test_claim_value_force_close(false, true, false);
 }
 
-fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
+fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: bool) {
 	// Previously, when handling the broadcast of a local commitment transactions (with associated
 	// CSV delays prior to spendability), we incorrectly handled the CSV delays on HTLC
 	// transactions. This caused us to miss spendable outputs for HTLCs which were awaiting a CSV
@@ -866,10 +869,9 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
-	if anchors {
-		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		user_config.manually_accept_inbound_channels = true;
-	}
+	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
+	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -920,26 +922,35 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	check_closed_broadcast!(nodes[0], true);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 1000000);
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		handle_bump_close_event(&nodes[0]);
 	}
-	let commitment_tx = {
+	let (commitment_tx, anchor_tx) = {
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
-		assert_eq!(txn.len(), 1);
+		assert_eq!(txn.len(), if p2a_anchor { 2 } else { 1 });
+		let anchor_tx = p2a_anchor.then(|| txn.pop().unwrap());
 		let commitment_tx = txn.pop().unwrap();
 		check_spends!(commitment_tx, funding_tx);
-		commitment_tx
+		if p2a_anchor {
+			check_spends!(anchor_tx.as_ref().unwrap(), commitment_tx, coinbase_tx);
+		}
+		(commitment_tx, anchor_tx)
 	};
 	let commitment_tx_conf_height_a = block_from_scid(mine_transaction(&nodes[0], &commitment_tx));
+	if p2a_anchor {
+		let _ = mine_transaction(&nodes[0], anchor_tx.as_ref().unwrap());
+	}
 	if nodes[0].connect_style.borrow().updates_best_block_first() {
-		if anchors {
+		if keyed_anchors || p2a_anchor {
 			handle_bump_close_event(&nodes[0]);
 		}
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
-		assert_eq!(txn.len(), if anchors { 2 } else { 1 });
+		assert_eq!(txn.len(), if keyed_anchors || p2a_anchor { 2 } else { 1 });
 		assert_eq!(txn[0].compute_txid(), commitment_tx.compute_txid());
-		if anchors {
-			check_spends!(txn[1], txn[0]);  // Anchor output spend.
+		if p2a_anchor {
+			check_spends!(txn[1], txn[0], anchor_tx.as_ref().unwrap());  // Anchor output spend.
+		} else if keyed_anchors {
+			check_spends!(txn[1], txn[0], coinbase_tx);  // Anchor output spend.
 		}
 	}
 
@@ -958,7 +969,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 
 	let commitment_tx_fee = chan_feerate *
 		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-	let anchor_outputs_value = if anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
+	let anchor_outputs_value = if keyed_anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 10_000 - 20_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: node_a_commitment_claimable,
@@ -984,18 +995,18 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 			source: BalanceSource::HolderForceClosed,
 		}, htlc_balance_known_preimage.clone(), htlc_balance_unknown_preimage.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		handle_bump_htlc_event(&nodes[0], 1);
 	}
 	let mut timeout_htlc_txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		// Aggregated HTLC timeouts.
 		assert_eq!(timeout_htlc_txn.len(), 1);
-		check_spends!(timeout_htlc_txn[0], commitment_tx, coinbase_tx);
+		check_spends!(timeout_htlc_txn[0], commitment_tx, if p2a_anchor { anchor_tx.as_ref().unwrap() } else { &coinbase_tx });
 		// One input from the commitment transaction for each HTLC, and one input to provide fees.
 		assert_eq!(timeout_htlc_txn[0].input.len(), 3);
-		assert_eq!(timeout_htlc_txn[0].input[0].witness.last().unwrap().len(), chan_utils::OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS);
-		assert_eq!(timeout_htlc_txn[0].input[1].witness.last().unwrap().len(), chan_utils::OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS);
+		assert_eq!(timeout_htlc_txn[0].input[0].witness.last().unwrap().len(), if p2a_anchor { chan_utils::OFFERED_HTLC_SCRIPT_WEIGHT } else { chan_utils::OFFERED_HTLC_SCRIPT_WEIGHT_KEYED_ANCHORS });
+		assert_eq!(timeout_htlc_txn[0].input[1].witness.last().unwrap().len(), if p2a_anchor { chan_utils::OFFERED_HTLC_SCRIPT_WEIGHT } else { chan_utils::OFFERED_HTLC_SCRIPT_WEIGHT_KEYED_ANCHORS });
 	} else {
 		assert_eq!(timeout_htlc_txn.len(), 2);
 		check_spends!(timeout_htlc_txn[0], commitment_tx);
@@ -1015,16 +1026,20 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 		}, htlc_balance_known_preimage.clone(), htlc_balance_unknown_preimage.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
 
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		// The HTLC timeout claim corresponding to the counterparty preimage claim is removed from the
 		// aggregated package.
 		handle_bump_htlc_event(&nodes[0], 1);
 		timeout_htlc_txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 		assert_eq!(timeout_htlc_txn.len(), 1);
-		check_spends!(timeout_htlc_txn[0], commitment_tx, coinbase_tx);
+		if p2a_anchor {
+			check_spends!(timeout_htlc_txn[0], commitment_tx, anchor_tx.as_ref().unwrap());
+		} else {
+			check_spends!(timeout_htlc_txn[0], commitment_tx, coinbase_tx);
+		}
 		// One input from the commitment transaction for the HTLC, and one input to provide fees.
 		assert_eq!(timeout_htlc_txn[0].input.len(), 2);
-		assert_eq!(timeout_htlc_txn[0].input[0].witness.last().unwrap().len(), chan_utils::OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS);
+		assert_eq!(timeout_htlc_txn[0].input[0].witness.last().unwrap().len(), if p2a_anchor { chan_utils::OFFERED_HTLC_SCRIPT_WEIGHT } else { chan_utils::OFFERED_HTLC_SCRIPT_WEIGHT_KEYED_ANCHORS });
 	}
 
 	// Now confirm nodes[0]'s HTLC-Timeout transaction, which changes the claimable balance to an
@@ -1098,8 +1113,9 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 
 #[test]
 fn test_balances_on_local_commitment_htlcs() {
-	do_test_balances_on_local_commitment_htlcs(false);
-	do_test_balances_on_local_commitment_htlcs(true);
+	do_test_balances_on_local_commitment_htlcs(false, false);
+	do_test_balances_on_local_commitment_htlcs(true, false);
+	do_test_balances_on_local_commitment_htlcs(false, true);
 }
 
 #[test]
@@ -1354,7 +1370,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances().is_empty());
 }
 
-fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_spend_first: bool) {
+fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anchor: bool, confirm_htlc_spend_first: bool) {
 	// Tests `get_claimable_balances` for revoked counterparty commitment transactions.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	// We broadcast a second-to-latest commitment transaction, without providing the revocation
@@ -1364,10 +1380,9 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
-	if anchors {
-		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		user_config.manually_accept_inbound_channels = true;
-	}
+	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
+	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1498,10 +1513,10 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	claim_txn.sort_unstable_by_key(|tx| tx.output.iter().map(|output| output.value.to_sat()).sum::<u64>());
 
 	// The following constants were determined experimentally
-	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
+	let anchor_outputs_value = if keyed_anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	let commitment_tx_fee = chan_feerate *
   		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 3 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-	let pinnable_weight = if anchors { 1398 } else { 1389 };
+	let pinnable_weight = if keyed_anchors { 1398 } else { 1389 };
 	let unpinnable_weight = 483;
 
 	// Check that the weight is close to the expected weight. Note that signature sizes vary
@@ -1654,22 +1669,23 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 
 #[test]
 fn test_revoked_counterparty_commitment_balances() {
-	do_test_revoked_counterparty_commitment_balances(false, true);
-	do_test_revoked_counterparty_commitment_balances(false, false);
-	do_test_revoked_counterparty_commitment_balances(true, true);
-	do_test_revoked_counterparty_commitment_balances(true, false);
+	do_test_revoked_counterparty_commitment_balances(false, false, true);
+	do_test_revoked_counterparty_commitment_balances(false, false, false);
+	do_test_revoked_counterparty_commitment_balances(true, false, true);
+	do_test_revoked_counterparty_commitment_balances(true, false, false);
+	do_test_revoked_counterparty_commitment_balances(false, true, true);
+	do_test_revoked_counterparty_commitment_balances(false, true, false);
 }
 
-fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
+fn do_test_revoked_counterparty_htlc_tx_balances(keyed_anchors: bool, p2a_anchor: bool) {
 	// Tests `get_claimable_balances` for revocation spends of HTLC transactions.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
-	if anchors {
-		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		user_config.manually_accept_inbound_channels = true;
-	}
+	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
+	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1686,7 +1702,9 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan_id);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, funding_tx.compute_txid());
-	if anchors {
+	if p2a_anchor {
+		assert_eq!(revoked_local_txn[0].output[3].value.to_sat(), 11000); // to_self output
+	} else if keyed_anchors {
 		assert_eq!(revoked_local_txn[0].output[4].value.to_sat(), 11000); // to_self output
 	} else {
 		assert_eq!(revoked_local_txn[0].output[2].value.to_sat(), 11000); // to_self output
@@ -1694,7 +1712,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 
 	// The to-be-revoked commitment tx should have two HTLCs, an output for each side, and an
 	// anchor output for each side if enabled.
-	assert_eq!(revoked_local_txn[0].output.len(), if anchors { 6 } else { 4 });
+	assert_eq!(revoked_local_txn[0].output.len(), if keyed_anchors { 6 } else if p2a_anchor { 5 } else { 4 });
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
 
@@ -1706,23 +1724,23 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		handle_bump_htlc_event(&nodes[1], 1);
 	}
 	let revoked_htlc_success = {
 		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
-		assert_eq!(txn[0].input.len(), if anchors { 2 } else { 1 });
-		assert_eq!(txn[0].input[0].previous_output.vout, if anchors { 3 } else { 1 });
+		assert_eq!(txn[0].input.len(), if keyed_anchors || p2a_anchor { 2 } else { 1 });
+		assert_eq!(txn[0].input[0].previous_output.vout, if keyed_anchors { 3 } else if p2a_anchor { 2 } else { 1 });
 		assert_eq!(txn[0].input[0].witness.last().unwrap().len(),
-			if anchors { ACCEPTED_HTLC_SCRIPT_WEIGHT_ANCHORS } else { ACCEPTED_HTLC_SCRIPT_WEIGHT });
+			if keyed_anchors { ACCEPTED_HTLC_SCRIPT_WEIGHT_ANCHORS } else { ACCEPTED_HTLC_SCRIPT_WEIGHT });
 		check_spends!(txn[0], revoked_local_txn[0], coinbase_tx);
 		txn.pop().unwrap()
 	};
 	let revoked_htlc_success_fee = chan_feerate * revoked_htlc_success.weight().to_wu() / 1000;
 
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV);
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		handle_bump_htlc_event(&nodes[1], 2);
 	}
 	let revoked_htlc_timeout = {
@@ -1772,7 +1790,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	// `CounterpartyRevokedOutputClaimable` entry doesn't change.
 	let commitment_tx_fee = chan_feerate *
 		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
+	let anchor_outputs_value = if keyed_anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	let as_balances = sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_remote output in B's revoked commitment
 			amount_satoshis: 1_000_000 - 12_000 - 3_000 - commitment_tx_fee - anchor_outputs_value - 1 /* The rounded up msat part of the one HTLC */,
@@ -1803,8 +1821,13 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
 
 	assert_eq!(as_htlc_claim_tx[0].output.len(), 1);
-	let as_revoked_htlc_success_claim_fee = chan_feerate * as_htlc_claim_tx[0].weight().to_wu() / 1000;
-	if anchors {
+	let htlc_tx_feerate = 253;
+	if !nodes[0].node.channel_type_features().supports_anchor_zero_fee_commitments() {
+		// `chan_feerate` is 0 in 0FC commitments
+		assert_eq!(htlc_tx_feerate, chan_feerate);
+	}
+	let as_revoked_htlc_success_claim_fee = htlc_tx_feerate * as_htlc_claim_tx[0].weight().to_wu() / 1000;
+	if keyed_anchors || p2a_anchor {
 		// With anchors, B can pay for revoked_htlc_success's fee with additional inputs, rather
 		// than with the HTLC itself.
 		fuzzy_assert_eq(as_htlc_claim_tx[0].output[0].value.to_sat(),
@@ -1934,11 +1957,12 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 
 #[test]
 fn test_revoked_counterparty_htlc_tx_balances() {
-	do_test_revoked_counterparty_htlc_tx_balances(false);
-	do_test_revoked_counterparty_htlc_tx_balances(true);
+	do_test_revoked_counterparty_htlc_tx_balances(false, false);
+	do_test_revoked_counterparty_htlc_tx_balances(true, false);
+	do_test_revoked_counterparty_htlc_tx_balances(false, true);
 }
 
-fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
+fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_anchor: bool) {
 	// Tests `get_claimable_balances` for revoked counterparty commitment transactions when
 	// claiming with an aggregated claim transaction.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1949,10 +1973,9 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
-	if anchors {
-		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		user_config.manually_accept_inbound_channels = true;
-	}
+	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
+	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1979,28 +2002,20 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 		&LowerBoundedFeeEstimator::new(node_cfgs[0].fee_estimator), &nodes[0].logger
 	);
 
-	// Now get the latest commitment transaction from A and then update the fee to revoke it
+	// Now get the latest commitment transaction from A and then route a dummy HTLC to revoke it
 	let as_revoked_txn = get_local_commitment_txn!(nodes[0], chan_id);
 
-	assert_eq!(as_revoked_txn.len(), if anchors { 1 } else { 2 });
+	assert_eq!(as_revoked_txn.len(), if keyed_anchors || p2a_anchor { 1 } else { 2 });
 	check_spends!(as_revoked_txn[0], funding_tx);
-	if !anchors {
+	if !(keyed_anchors || p2a_anchor) {
 		check_spends!(as_revoked_txn[1], as_revoked_txn[0]); // The HTLC-Claim transaction
 	}
 
 	let channel_type_features = get_channel_type_features!(nodes[0], nodes[1], chan_id);
 	let chan_feerate = get_feerate!(nodes[0], nodes[1], chan_id) as u64;
 
-	{
-		let mut feerate = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
-		*feerate += 1;
-	}
-	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
-
-	let fee_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), &fee_update.update_fee.unwrap());
-	commitment_signed_dance!(nodes[1], nodes[0], fee_update.commitment_signed, false);
+	const DUMMY_HTLC_AMT: u64 = 1000;
+	route_payment(&nodes[0], &[&nodes[1]], DUMMY_HTLC_AMT);
 
 	nodes[0].node.claim_funds(claimed_payment_preimage);
 	expect_payment_claimed!(nodes[0], claimed_payment_hash, 3_000_100);
@@ -2016,7 +2031,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 			outbound_payment_htlc_rounded_msat: 100,
 			outbound_forwarded_htlc_rounded_msat: 0,
 			inbound_claiming_htlc_rounded_msat: 0,
-			inbound_htlc_rounded_msat: 0,
+			inbound_htlc_rounded_msat: DUMMY_HTLC_AMT,
 		}, Balance::MaybeTimeoutClaimableHTLC {
 			amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
@@ -2052,7 +2067,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 
 	let commitment_tx_fee = chan_feerate *
 		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-	let anchor_outputs_value = if anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
+	let anchor_outputs_value = if keyed_anchors { channel::ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_remote output in A's revoked commitment
 			amount_satoshis: 100_000 - 4_000 - 3_000 - 1 /* rounded up msat parts of HTLCs */,
@@ -2070,14 +2085,14 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 
 	// Confirm A's HTLC-Success transaction which presumably raced B's claim, causing B to create a
 	// new claim.
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		mine_transaction(&nodes[0], &as_revoked_txn[0]);
 		check_closed_broadcast(&nodes[0], 1, true);
 		check_added_monitors(&nodes[0], 1);
 		check_closed_event!(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false, [nodes[1].node.get_our_node_id()], 1_000_000);
 		handle_bump_htlc_event(&nodes[0], 1);
 	}
-	let htlc_success_claim = if anchors {
+	let htlc_success_claim = if keyed_anchors || p2a_anchor {
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
 		check_spends!(txn[0], as_revoked_txn[0], coinbase_tx);
@@ -2092,7 +2107,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	// Once B sees the HTLC-Success transaction it splits its claim transaction into two, though in
 	// theory it could re-aggregate the claims as well.
 	assert_eq!(claim_txn_2.len(), 2);
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		assert_eq!(claim_txn_2[0].input.len(), 1);
 		assert_eq!(claim_txn_2[0].input[0].previous_output.vout, 0);
 		check_spends!(claim_txn_2[0], &htlc_success_claim);
@@ -2215,11 +2230,12 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 
 #[test]
 fn test_revoked_counterparty_aggregated_claims() {
-	do_test_revoked_counterparty_aggregated_claims(false);
-	do_test_revoked_counterparty_aggregated_claims(true);
+	do_test_revoked_counterparty_aggregated_claims(false, false);
+	do_test_revoked_counterparty_aggregated_claims(true, false);
+	do_test_revoked_counterparty_aggregated_claims(false, true);
 }
 
-fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: bool, anchors: bool) {
+fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: bool, keyed_anchors: bool, p2a_anchor: bool) {
 	// Previously when a user fetched their balances via `get_claimable_balances` after forwarding a
 	// payment, but before it cleared, and summed up their balance using `Balance::claimable_amount_satoshis`
 	// neither the value of preimage claimable HTLC nor the timeout claimable HTLC would be included.
@@ -2234,10 +2250,9 @@ fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: boo
 	let mut chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
-	if anchors {
-		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		user_config.manually_accept_inbound_channels = true;
-	}
+	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
+	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(user_config.clone()), Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
@@ -2268,7 +2283,7 @@ fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: boo
 
 	// This HTLC will be forwarded by B from A -> C
 	let _ = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 4_000_000);
-	let anchor_outputs_value = if anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
+	let anchor_outputs_value = if keyed_anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
 
 	if outbound_payment {
 		assert_eq!(
@@ -2289,10 +2304,12 @@ fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: boo
 
 #[test]
 fn test_claimable_balance_correct_while_payment_pending() {
-	do_test_claimable_balance_correct_while_payment_pending(false, false);
-	do_test_claimable_balance_correct_while_payment_pending(false, true);
-	do_test_claimable_balance_correct_while_payment_pending(true, false);
-	do_test_claimable_balance_correct_while_payment_pending(true, true);
+	do_test_claimable_balance_correct_while_payment_pending(false, false, false);
+	do_test_claimable_balance_correct_while_payment_pending(false, true, false);
+	do_test_claimable_balance_correct_while_payment_pending(false, false, true);
+	do_test_claimable_balance_correct_while_payment_pending(true, false, false);
+	do_test_claimable_balance_correct_while_payment_pending(true, true, false);
+	do_test_claimable_balance_correct_while_payment_pending(true, false, true);
 }
 
 fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool) {
@@ -2376,16 +2393,15 @@ fn test_restored_packages_retry() {
 	do_test_restored_packages_retry(true);
 }
 
-fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
+fn do_test_monitor_rebroadcast_pending_claims(keyed_anchors: bool, p2a_anchor: bool) {
 	// Test that we will retry broadcasting pending claims for a force-closed channel on every
 	// `ChainMonitor::rebroadcast_pending_claims` call.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
-	if anchors {
-		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		config.manually_accept_inbound_channels = true;
-	}
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -2401,7 +2417,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1;
 
 	let commitment_txn = get_local_commitment_txn!(&nodes[0], chan_id);
-	assert_eq!(commitment_txn.len(), if anchors { 1 /* commitment tx only */} else { 2 /* commitment and htlc timeout tx */ });
+	assert_eq!(commitment_txn.len(), if keyed_anchors || p2a_anchor { 1 /* commitment tx only */} else { 2 /* commitment and htlc timeout tx */ });
 	check_spends!(&commitment_txn[0], &funding_tx);
 	mine_transaction(&nodes[0], &commitment_txn[0]);
 	check_closed_broadcast!(&nodes[0], true);
@@ -2414,7 +2430,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	// re-evaluates at every block) or after `ChainMonitor::rebroadcast_pending_claims` is called.
 	let mut prev_htlc_tx_feerate = None;
 	let mut check_htlc_retry = |should_retry: bool, should_bump: bool| -> Option<Transaction> {
-		let (htlc_tx, htlc_tx_feerate) = if anchors {
+		let (htlc_tx, htlc_tx_feerate) = if keyed_anchors || p2a_anchor {
 			assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
 			let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 			assert_eq!(events.len(), if should_retry { 1 } else { 0 });
@@ -2468,7 +2484,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	// Connect a few more blocks, expecting a retry with a fee bump. Unfortunately, we cannot bump
 	// HTLC transactions pre-anchors.
 	connect_blocks(&nodes[0], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
-	check_htlc_retry(true, anchors);
+	check_htlc_retry(true, keyed_anchors || p2a_anchor);
 
 	// Trigger a call and we should have another retry, but without a bump.
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
@@ -2477,12 +2493,12 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	// Double the feerate and trigger a call, expecting a fee-bumped retry.
 	*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
-	check_htlc_retry(true, anchors);
+	check_htlc_retry(true, keyed_anchors || p2a_anchor);
 
 	// Connect a few more blocks, expecting a retry with a fee bump. Unfortunately, we cannot bump
 	// HTLC transactions pre-anchors.
 	connect_blocks(&nodes[0], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
-	let htlc_tx = check_htlc_retry(true, anchors).unwrap();
+	let htlc_tx = check_htlc_retry(true, keyed_anchors || p2a_anchor).unwrap();
 
 	// Mine the HTLC transaction to ensure we don't retry claims while they're confirmed.
 	mine_transaction(&nodes[0], &htlc_tx);
@@ -2492,11 +2508,12 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 
 #[test]
 fn test_monitor_timer_based_claim() {
-	do_test_monitor_rebroadcast_pending_claims(false);
-	do_test_monitor_rebroadcast_pending_claims(true);
+	do_test_monitor_rebroadcast_pending_claims(false, false);
+	do_test_monitor_rebroadcast_pending_claims(true, false);
+	do_test_monitor_rebroadcast_pending_claims(false, true);
 }
 
-fn do_test_yield_anchors_events(have_htlcs: bool) {
+fn do_test_yield_anchors_events(have_htlcs: bool, p2a_anchor: bool) {
 	// Tests that two parties supporting anchor outputs can open a channel, route payments over
 	// it, and finalize its resolution uncooperatively. Once the HTLCs are locked in, one side will
 	// force close once the HTLCs expire. The force close should stem from an event emitted by LDK,
@@ -2508,6 +2525,7 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 	let mut anchors_config = test_default_channel_config();
 	anchors_config.channel_handshake_config.announce_for_forwarding = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	anchors_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	anchors_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -2551,8 +2569,14 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 	{
 		handle_bump_close_event(&nodes[1]);
 		let txn = nodes[1].tx_broadcaster.txn_broadcast();
-		assert_eq!(txn.len(), 1);
-		check_spends!(txn[0], funding_tx);
+		if p2a_anchor {
+			assert_eq!(txn.len(), 2);
+			check_spends!(txn[0], funding_tx);
+			check_spends!(txn[1], txn[0], coinbase_tx);
+		} else {
+			assert_eq!(txn.len(), 1);
+			check_spends!(txn[0], funding_tx);
+		}
 	}
 
 	if have_htlcs {
@@ -2601,7 +2625,10 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 	};
 	check_spends!(commitment_tx, funding_tx);
 
-	if have_htlcs {
+	if have_htlcs && p2a_anchor {
+		assert_eq!(commitment_tx.output[1].value.to_sat(), 1_000); // HTLC A -> B
+		assert_eq!(commitment_tx.output[2].value.to_sat(), 2_000); // HTLC B -> A
+	} else if have_htlcs {
 		assert_eq!(commitment_tx.output[2].value.to_sat(), 1_000); // HTLC A -> B
 		assert_eq!(commitment_tx.output[3].value.to_sat(), 2_000); // HTLC B -> A
 	}
@@ -2626,12 +2653,12 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 		assert_eq!(txn.len(), if nodes[1].connect_style.borrow().updates_best_block_first() { 3 } else { 1 });
 		if nodes[1].connect_style.borrow().updates_best_block_first() {
 			check_spends!(txn[1], funding_tx);
-			check_spends!(txn[2], txn[1]);  // Anchor output spend.
+			check_spends!(txn[2], txn[1], coinbase_tx); // Anchor output spend.
 		}
 		let htlc_claim_tx = &txn[0];
 		assert_eq!(htlc_claim_tx.input.len(), 2);
-		assert_eq!(htlc_claim_tx.input[0].previous_output.vout, 2);
-		assert_eq!(htlc_claim_tx.input[1].previous_output.vout, 3);
+		assert_eq!(htlc_claim_tx.input[0].previous_output.vout, if p2a_anchor { 1 } else { 2 });
+		assert_eq!(htlc_claim_tx.input[1].previous_output.vout, if p2a_anchor { 2 } else { 3 });
 		check_spends!(htlc_claim_tx, commitment_tx);
 	}
 
@@ -2681,12 +2708,13 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 
 #[test]
 fn test_yield_anchors_events() {
-	do_test_yield_anchors_events(true);
-	do_test_yield_anchors_events(false);
+	do_test_yield_anchors_events(true, false);
+	do_test_yield_anchors_events(false, false);
+	do_test_yield_anchors_events(true, true);
+	do_test_yield_anchors_events(false, true);
 }
 
-#[test]
-fn test_anchors_aggregated_revoked_htlc_tx() {
+fn do_test_anchors_aggregated_revoked_htlc_tx(p2a_anchor: bool) {
 	// Test that `ChannelMonitor`s can properly detect and claim funds from a counterparty claiming
 	// multiple HTLCs from multiple channels in a single transaction via the success path from a
 	// revoked commitment.
@@ -2700,8 +2728,9 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 
 	let mut anchors_config = test_default_channel_config();
 	anchors_config.channel_handshake_config.announce_for_forwarding = true;
-	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.manually_accept_inbound_channels = true;
+	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	anchors_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone())]);
 	let bob_deserialized;
 
@@ -2756,10 +2785,8 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	// Bob force closes by restarting with the outdated state, prompting the ChannelMonitors to
 	// broadcast the latest commitment transaction known to them, which in our case is the one with
 	// the HTLCs still pending.
-	*nodes[1].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
-	nodes[1].node.timer_tick_occurred();
-	check_added_monitors(&nodes[1], 2);
 	check_closed_event!(&nodes[1], 2, ClosureReason::OutdatedChannelManager, [nodes[0].node.get_our_node_id(); 2], 1000000);
+	check_added_monitors(&nodes[1], 2);
 
 	// Bob should now receive two events to bump his revoked commitment transaction fees.
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
@@ -2773,22 +2800,31 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			_ => panic!("Unexpected event"),
 		};
 		let txn = nodes[1].tx_broadcaster.txn_broadcast();
-		assert_eq!(txn.len(), 2);
-		assert_eq!(txn[0].output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
+		assert_eq!(txn.len(), if p2a_anchor { 2 } else { 1 });
+		assert_eq!(txn[0].output.len(), if p2a_anchor { 5 } else { 6 }); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 1 or 2 anchor outputs
 		if txn[0].input[0].previous_output.txid == chan_a.3.compute_txid() {
 			check_spends!(&txn[0], &chan_a.3);
 		} else {
 			check_spends!(&txn[0], &chan_b.3);
 		}
-		let (commitment_tx, anchor_tx) = (&txn[0], &txn[1]);
-		check_spends!(anchor_tx, coinbase_tx, commitment_tx);
+		if p2a_anchor {
+			let (commitment_tx, anchor_tx) = (&txn[0], &txn[1]);
+			check_spends!(anchor_tx, coinbase_tx, commitment_tx);
 
-		revoked_commitment_txs.push(commitment_tx.clone());
-		anchor_txs.push(anchor_tx.clone());
+			revoked_commitment_txs.push(commitment_tx.clone());
+			anchor_txs.push(anchor_tx.clone());
+		} else {
+			let commitment_tx = &txn[0];
+			revoked_commitment_txs.push(commitment_tx.clone());
+		}
 	};
 
 	for node in &nodes {
-		mine_transactions(node, &[&revoked_commitment_txs[0], &anchor_txs[0], &revoked_commitment_txs[1], &anchor_txs[1]]);
+		if p2a_anchor {
+			mine_transactions(node, &[&revoked_commitment_txs[0], &anchor_txs[0], &revoked_commitment_txs[1], &anchor_txs[1]]);
+		} else {
+			mine_transactions(node, &[&revoked_commitment_txs[0], &revoked_commitment_txs[1]]);
+		}
 	}
 	check_closed_broadcast(&nodes[0], 2, true);
 	check_added_monitors!(&nodes[0], 2);
@@ -2853,7 +2889,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			}],
 		};
 		let mut htlc_tx = Transaction {
-			version: Version::TWO,
+			version: if p2a_anchor { Version::non_standard(3) } else { Version::TWO },
 			lock_time: LockTime::ZERO,
 			input: vec![TxIn { // Fee input
 				previous_output: bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 },
@@ -2984,6 +3020,12 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).len(), 6);
 }
 
+#[test]
+fn test_anchors_aggregated_revoked_htlc_tx() {
+	do_test_anchors_aggregated_revoked_htlc_tx(false);
+	do_test_anchors_aggregated_revoked_htlc_tx(true);
+}
+
 fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_commitment_before_reload: bool) {
 	// Tests that we'll fix a ChannelMonitor's `counterparty_payment_script` for an anchor outputs
 	// channel upon deserialization.
@@ -3078,16 +3120,15 @@ fn test_anchors_monitor_fixes_counterparty_payment_script_on_reload() {
 }
 
 #[cfg(not(ldk_test_vectors))]
-fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterparty_commitment: bool) {
+fn do_test_monitor_claims_with_random_signatures(keyed_anchors: bool, p2a_anchor: bool, confirm_counterparty_commitment: bool) {
 	// Tests that our monitor claims will always use fresh random signatures (ensuring a unique
 	// wtxid) to prevent certain classes of transaction replacement at the bitcoin P2P layer.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
-	if anchors {
-		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		user_config.manually_accept_inbound_channels = true;
-	}
+	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
+	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -3106,19 +3147,26 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 	get_monitor!(closing_node, chan_id).broadcast_latest_holder_commitment_txn(
 		&closing_node.tx_broadcaster, &closing_node.fee_estimator, &closing_node.logger
 	);
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		handle_bump_close_event(&closing_node);
 	}
 
 	// The commitment transaction comes first.
-	let commitment_tx = {
+	let (commitment_tx, anchor_tx) = {
 		let mut txn = closing_node.tx_broadcaster.unique_txn_broadcast();
-		assert_eq!(txn.len(), 1);
+		assert_eq!(txn.len(), if p2a_anchor { 2 } else { 1 });
 		check_spends!(txn[0], funding_tx);
-		txn.pop().unwrap()
+		if p2a_anchor {
+			check_spends!(txn[1], txn[0], coinbase_tx);
+		}
+		let anchor_tx = p2a_anchor.then(|| txn.pop().unwrap());
+		(txn.pop().unwrap(), anchor_tx)
 	};
 
 	mine_transaction(closing_node, &commitment_tx);
+	if p2a_anchor {
+		mine_transaction(closing_node, anchor_tx.as_ref().unwrap());
+	}
 	check_closed_broadcast!(closing_node, true);
 	check_added_monitors!(closing_node, 1);
 	let message = "ChannelMonitor-initiated commitment transaction broadcast".to_string();
@@ -3143,20 +3191,24 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 	} else {
 		connect_blocks(&nodes[0], TEST_FINAL_CLTV);
 	}
-	if anchors && !confirm_counterparty_commitment {
+	if (keyed_anchors || p2a_anchor) && !confirm_counterparty_commitment {
 		handle_bump_htlc_event(&nodes[0], 1);
 	}
 	let htlc_timeout_tx = {
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
 		let tx = txn.pop().unwrap();
-		check_spends!(tx, commitment_tx, coinbase_tx);
+		if p2a_anchor {
+			check_spends!(tx, commitment_tx, anchor_tx.as_ref().unwrap());
+		} else {
+			check_spends!(tx, commitment_tx, coinbase_tx);
+		}
 		tx
 	};
 
 	// Check we rebroadcast it with a different wtxid.
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
-	if anchors && !confirm_counterparty_commitment {
+	if (keyed_anchors || p2a_anchor) && !confirm_counterparty_commitment {
 		handle_bump_htlc_event(&nodes[0], 1);
 	}
 	{
@@ -3170,10 +3222,12 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 #[cfg(not(ldk_test_vectors))]
 #[test]
 fn test_monitor_claims_with_random_signatures() {
-	do_test_monitor_claims_with_random_signatures(false, false);
-	do_test_monitor_claims_with_random_signatures(false, true);
-	do_test_monitor_claims_with_random_signatures(true, false);
-	do_test_monitor_claims_with_random_signatures(true, true);
+	do_test_monitor_claims_with_random_signatures(false, false, false);
+	do_test_monitor_claims_with_random_signatures(false, false, true);
+	do_test_monitor_claims_with_random_signatures(true, false, false);
+	do_test_monitor_claims_with_random_signatures(true, false, true);
+	do_test_monitor_claims_with_random_signatures(false, true, false);
+	do_test_monitor_claims_with_random_signatures(false, true, true);
 }
 
 #[test]
@@ -3348,7 +3402,7 @@ fn test_claim_event_never_handled() {
 	check_added_monitors(&nodes[1], 2);
 }
 
-fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool) {
+fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool, p2a_anchor: bool) {
 	// `MonitorEvent`s aren't delivered to the `ChannelManager` in a durable fashion - if the
 	// `ChannelManager` fetches the pending `MonitorEvent`s, then the `ChannelMonitor` gets
 	// persisted (i.e. due to a block update) then the node crashes, prior to persisting the
@@ -3367,6 +3421,7 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool) {
 	let mut cfg = test_default_channel_config();
 	cfg.manually_accept_inbound_channels = true;
 	cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let cfgs = [Some(cfg.clone()), Some(cfg.clone()), Some(cfg.clone())];
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -3411,7 +3466,7 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool) {
 
 	handle_bump_events(&nodes[2], true, 0);
 	let cs_commit_tx = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(cs_commit_tx.len(), 1);
+	assert_eq!(cs_commit_tx.len(), if p2a_anchor { 2 } else { 1 });
 
 	let message = "Closed".to_owned();
 	nodes[1]
@@ -3425,7 +3480,7 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool) {
 
 	handle_bump_events(&nodes[1], true, 0);
 	let bs_commit_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(bs_commit_tx.len(), 1);
+	assert_eq!(bs_commit_tx.len(), if p2a_anchor { 2 } else { 1 });
 
 	let selected_commit_tx = if on_counterparty_tx {
 		&cs_commit_tx[0]
@@ -3514,8 +3569,10 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool) {
 
 #[test]
 fn test_lost_preimage_monitor_events() {
-	do_test_lost_preimage_monitor_events(true);
-	do_test_lost_preimage_monitor_events(false);
+	do_test_lost_preimage_monitor_events(true, false);
+	do_test_lost_preimage_monitor_events(false, false);
+	do_test_lost_preimage_monitor_events(true, true);
+	do_test_lost_preimage_monitor_events(false, true);
 }
 
 #[derive(PartialEq)]
@@ -3527,7 +3584,7 @@ enum CommitmentType {
 	LocalWithLastHTLC,
 }
 
-fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: bool) {
+fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: bool, p2a_anchor: bool) {
 	// `MonitorEvent`s aren't delivered to the `ChannelManager` in a durable fashion - if the
 	// `ChannelManager` fetches the pending `MonitorEvent`s, then the `ChannelMonitor` gets
 	// persisted (i.e. due to a block update) then the node crashes, prior to persisting the
@@ -3546,6 +3603,7 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	let mut cfg = test_default_channel_config();
 	cfg.manually_accept_inbound_channels = true;
 	cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let cfgs = [Some(cfg.clone()), Some(cfg.clone()), Some(cfg.clone())];
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -3622,7 +3680,7 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 
 	handle_bump_events(&nodes[2], true, 0);
 	let cs_commit_tx = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(cs_commit_tx.len(), 1);
+	assert_eq!(cs_commit_tx.len(), if p2a_anchor { 2 } else { 1 });
 
 	let message = "Closed".to_owned();
 	nodes[1]
@@ -3636,7 +3694,7 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 
 	handle_bump_events(&nodes[1], true, 0);
 	let bs_commit_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(bs_commit_tx.len(), 1);
+	assert_eq!(bs_commit_tx.len(), if p2a_anchor { 2 } else { 1 });
 
 	let selected_commit_tx = match confirm_tx {
 		CommitmentType::RevokedCounterparty => &cs_revoked_commit[0],
@@ -3756,14 +3814,25 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 
 #[test]
 fn test_lost_timeout_monitor_events() {
-	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, false);
-	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, true);
-	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, false);
-	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, true);
-	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, false);
-	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, true);
-	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, false);
-	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, true);
-	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, false);
-	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, false, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, true, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, false, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, true, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, false, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, true, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, false, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, true, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, false, false);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, true, false);
+
+	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, false, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, true, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, false, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, true, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, false, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, true, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, false, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, true, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, false, true);
+	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, true, true);
 }

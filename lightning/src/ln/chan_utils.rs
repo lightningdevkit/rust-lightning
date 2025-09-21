@@ -69,10 +69,10 @@ pub fn max_htlcs(channel_type: &ChannelTypeFeatures) -> u16 {
 		483
 	}
 }
-/// The weight of a BIP141 witnessScript for a BOLT3's "offered HTLC output" on a commitment transaction, non-anchor variant.
+/// The weight of a BIP141 witnessScript for a BOLT3's "offered HTLC output" on a commitment transaction, non-anchor and p2a anchor variant.
 pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
-/// The weight of a BIP141 witnessScript for a BOLT3's "offered HTLC output" on a commitment transaction, anchor variant.
-pub const OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS: usize = 136;
+/// The weight of a BIP141 witnessScript for a BOLT3's "offered HTLC output" on a commitment transaction, keyed anchor variant.
+pub const OFFERED_HTLC_SCRIPT_WEIGHT_KEYED_ANCHORS: usize = 136;
 
 /// The weight of a BIP141 witnessScript for a BOLT3's "received HTLC output" can vary in function of its CLTV argument value.
 /// We define a range that encompasses both its non-anchors and anchors variants.
@@ -162,7 +162,7 @@ impl HTLCClaim {
 	/// Check if a given input witness attempts to claim a HTLC.
 	#[rustfmt::skip]
 	pub fn from_witness(witness: &Witness) -> Option<Self> {
-		debug_assert_eq!(OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS, MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		debug_assert_eq!(OFFERED_HTLC_SCRIPT_WEIGHT_KEYED_ANCHORS, MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		if witness.len() < 2 {
 			return None;
 		}
@@ -181,7 +181,7 @@ impl HTLCClaim {
 			} else {
 				None
 			}
-		} else if witness_script.len() == OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS {
+		} else if witness_script.len() == OFFERED_HTLC_SCRIPT_WEIGHT_KEYED_ANCHORS {
 			// It's possible for the weight of `offered_htlc_script` and `accepted_htlc_script` to
 			// match so we check for both here.
 			if witness.len() == 3 && second_to_last.len() == 33 {
