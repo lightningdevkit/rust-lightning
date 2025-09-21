@@ -14,7 +14,7 @@ use crate::crypto::streams::ChaChaReader;
 use crate::events::HTLCHandlingFailureReason;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
-use crate::ln::msgs;
+use crate::ln::msgs::{self, DecodeError};
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters, TrampolineHop};
@@ -1807,51 +1807,76 @@ impl_from_u16_for_htlc_reason!(
 	]
 );
 
-impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
-	(1, TemporaryNodeFailure) => {},
-	(3, PermanentNodeFailure) => {},
-	(5, RequiredNodeFeature) => {},
-	(7, InvalidOnionVersion) => {},
-	(9, InvalidOnionHMAC) => {},
-	(11, InvalidOnionKey) => {},
-	(13, TemporaryChannelFailure) => {},
-	(15, PermanentChannelFailure) => {},
-	(17, RequiredChannelFeature) => {},
-	(19, UnknownNextPeer) => {},
-	(21, AmountBelowMinimum) => {},
-	(23, FeeInsufficient) => {},
-	(25, IncorrectCLTVExpiry) => {},
-	(27, CLTVExpiryTooSoon) => {},
-	(29, IncorrectPaymentDetails) => {},
-	(31, FinalIncorrectCLTVExpiry) => {},
-	(33, FinalIncorrectHTLCAmount) => {},
-	(35, ChannelDisabled) => {},
-	(37, CLTVExpiryTooFar) => {},
-	(39, InvalidOnionPayload) => {},
-	(41, MPPTimeout) => {},
-	(43, InvalidOnionBlinding) => {},
-	(45, UnknownFailureCode) => {
-		(0, code, required),
-	},
-	(47, ForwardExpiryBuffer) => {},
-	(49, InvalidTrampolineForward) => {},
-	(51, PaymentClaimBuffer) => {},
-	(53, DustLimitHolder) => {},
-	(55, DustLimitCounterparty) => {},
-	(57, FeeSpikeBuffer) => {},
-	(59, PrivateChannelForward) => {},
-	(61, RealSCIDForward) => {},
-	(63, ChannelNotReady) => {},
-	(65, InvalidKeysendPreimage) => {},
-	(67, InvalidTrampolinePayload) => {},
-	(69, PaymentSecretRequired) => {},
-	(71, OutgoingCLTVTooSoon) => {},
-	(73, ChannelClosed) => {},
-	(75, OnChainTimeout) => {},
-	(77, ZeroAmount) => {},
-	(79, HTLCMinimum) => {},
-	(81, HTLCMaximum) => {},
-	(83, PeerOffline) => {},
+macro_rules! ser_failure_reasons {
+	($(($idx: expr, $name: ident)),*) => {
+		impl Readable for LocalHTLCFailureReason {
+			fn read<R: Read>(r: &mut R) -> Result<LocalHTLCFailureReason, DecodeError> {
+				let code: u16 = Readable::read(r)?;
+				let reason: u8 = Readable::read(r)?;
+				read_tlv_fields!(r, {});
+				match reason {
+					$($idx => Ok(LocalHTLCFailureReason::$name),)*
+					_ => Ok(code.into()),
+				}
+			}
+		}
+		impl Writeable for LocalHTLCFailureReason {
+			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), bitcoin::io::Error> {
+				self.failure_code().write(writer)?;
+				let reason: u8 = match self {
+					$(LocalHTLCFailureReason::$name => $idx,)*
+					LocalHTLCFailureReason::UnknownFailureCode { .. } => 0xff,
+				};
+				reason.write(writer)?;
+				write_tlv_fields!(writer, {});
+				Ok(())
+			}
+		}
+	}
+}
+
+ser_failure_reasons!(
+	(1, TemporaryNodeFailure),
+	(2, PermanentNodeFailure),
+	(3, RequiredNodeFeature),
+	(4, InvalidOnionVersion),
+	(5, InvalidOnionHMAC),
+	(6, InvalidOnionKey),
+	(7, TemporaryChannelFailure),
+	(8, PermanentChannelFailure),
+	(9, RequiredChannelFeature),
+	(10, UnknownNextPeer),
+	(11, AmountBelowMinimum),
+	(12, FeeInsufficient),
+	(13, IncorrectCLTVExpiry),
+	(14, CLTVExpiryTooSoon),
+	(15, IncorrectPaymentDetails),
+	(16, FinalIncorrectCLTVExpiry),
+	(17, FinalIncorrectHTLCAmount),
+	(18, ChannelDisabled),
+	(19, CLTVExpiryTooFar),
+	(20, InvalidOnionPayload),
+	(21, MPPTimeout),
+	(22, InvalidOnionBlinding),
+	(23, ForwardExpiryBuffer),
+	(24, InvalidTrampolineForward),
+	(25, PaymentClaimBuffer),
+	(26, DustLimitHolder),
+	(27, DustLimitCounterparty),
+	(28, FeeSpikeBuffer),
+	(29, PrivateChannelForward),
+	(30, RealSCIDForward),
+	(31, ChannelNotReady),
+	(32, InvalidKeysendPreimage),
+	(33, InvalidTrampolinePayload),
+	(34, PaymentSecretRequired),
+	(35, OutgoingCLTVTooSoon),
+	(36, ChannelClosed),
+	(37, OnChainTimeout),
+	(38, ZeroAmount),
+	(39, HTLCMinimum),
+	(40, HTLCMaximum),
+	(41, PeerOffline)
 );
 
 impl From<&HTLCFailReason> for HTLCHandlingFailureReason {
