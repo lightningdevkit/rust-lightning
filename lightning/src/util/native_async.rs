@@ -7,11 +7,12 @@
 //! This module contains a few public utility which are used to run LDK in a native Rust async
 //! environment.
 
-use crate::util::async_poll::MaybeSend;
+use crate::util::async_poll::{MaybeSend, MaybeSync};
+
 use core::future::Future;
 
 /// A generic trait which is able to spawn futures in the background.
-pub trait FutureSpawner: Send + Sync + 'static {
+pub trait FutureSpawner: MaybeSend + MaybeSync + 'static {
 	/// Spawns the given future as a background task.
 	///
 	/// This method MUST NOT block on the given future immediately.
