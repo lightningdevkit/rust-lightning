@@ -98,8 +98,6 @@ pub(crate) fn verify_channel_type_features(channel_type_features: &Option<Channe
 		let mut supported_feature_set = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		supported_feature_set.set_scid_privacy_required();
 		supported_feature_set.set_zero_conf_required();
-
-		#[cfg(test)]
 		supported_feature_set.set_anchor_zero_fee_commitments_required();
 
 		// allow the passing of an additional necessary permitted flag
