@@ -62,8 +62,6 @@ use bitcoin::locktime::absolute::LockTime;
 use bitcoin::network::Network;
 use bitcoin::opcodes;
 use bitcoin::script::Builder;
-use bitcoin::transaction::Version;
-use bitcoin::{Amount, Transaction, TxIn, TxOut};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
@@ -1148,15 +1146,7 @@ pub fn claim_htlc_outputs() {
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
 }
 
-// Test that the HTLC package logic removes HTLCs from the package when they are claimed by the
-// counterparty, even when the counterparty claims HTLCs from multiple packages in a single
-// transaction.
-//
-// This is a regression test for https://github.com/lightningdevkit/rust-lightning/issues/3537.
-#[xtest(feature = "_externalize_tests")]
-pub fn test_multiple_package_conflicts() {
-	use crate::events::bump_transaction::sync::WalletSourceSync;
-
+pub fn do_test_multiple_package_conflicts(p2a_anchor: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut user_cfg = test_default_channel_config();
@@ -1164,48 +1154,18 @@ pub fn test_multiple_package_conflicts() {
 	// Anchor channels are required so that multiple HTLC-Successes can be aggregated into a single
 	// transaction.
 	user_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	user_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	user_cfg.manually_accept_inbound_channels = true;
 
 	let configs = [Some(user_cfg.clone()), Some(user_cfg.clone()), Some(user_cfg)];
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &configs);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
-
-	// Since we're using anchor channels, make sure each node has a UTXO for paying fees.
-	let coinbase_tx = Transaction {
-		version: Version::TWO,
-		lock_time: LockTime::ZERO,
-		input: vec![TxIn { ..Default::default() }],
-		output: vec![
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-			},
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
-			},
-			TxOut {
-				value: Amount::ONE_BTC,
-				script_pubkey: nodes[2].wallet_source.get_change_script().unwrap(),
-			},
-		],
-	};
-	nodes[0].wallet_source.add_utxo(
-		bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 },
-		coinbase_tx.output[0].value,
-	);
-	nodes[1].wallet_source.add_utxo(
-		bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 1 },
-		coinbase_tx.output[1].value,
-	);
-	nodes[2].wallet_source.add_utxo(
-		bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 2 },
-		coinbase_tx.output[2].value,
-	);
 
 	// Create the network.
 	//   0 -- 1 -- 2
@@ -1401,6 +1361,17 @@ pub fn test_multiple_package_conflicts() {
 		true,
 		false,
 	);
+}
+
+// Test that the HTLC package logic removes HTLCs from the package when they are claimed by the
+// counterparty, even when the counterparty claims HTLCs from multiple packages in a single
+// transaction.
+//
+// This is a regression test for https://github.com/lightningdevkit/rust-lightning/issues/3537.
+#[xtest(feature = "_externalize_tests")]
+pub fn test_multiple_package_conflicts() {
+	do_test_multiple_package_conflicts(false);
+	do_test_multiple_package_conflicts(true);
 }
 
 #[xtest(feature = "_externalize_tests")]
