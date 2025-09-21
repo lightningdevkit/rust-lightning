@@ -95,12 +95,16 @@ pub const P2A_ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 1;
 /// The maximum value of a P2A anchor.
 pub const P2A_MAX_VALUE: u64 = 240;
 
-/// The upper bound weight of an HTLC timeout input from a commitment transaction with anchor
-/// outputs.
-pub const HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT: u64 = 288;
-/// The upper bound weight of an HTLC success input from a commitment transaction with anchor
-/// outputs.
-pub const HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT: u64 = 327;
+/// The upper bound weight of an HTLC timeout input from a commitment transaction with keyed anchor outputs.
+pub const HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT: u64 = 288;
+/// The upper bound weight of an HTLC timeout input from a commitment transaction with a p2a anchor output.
+/// Note the corresponding outputs no longer have the 1 CSV lock.
+pub const HTLC_TIMEOUT_INPUT_P2A_ANCHOR_WITNESS_WEIGHT: u64 = 285;
+/// The upper bound weight of an HTLC success input from a commitment transaction with keyed anchor outputs.
+pub const HTLC_SUCCESS_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT: u64 = 327;
+/// The upper bound weight of an HTLC success input from a commitment transaction with a p2a anchor output.
+/// Note the corresponding outputs no longer have the 1 CSV lock.
+pub const HTLC_SUCCESS_INPUT_P2A_ANCHOR_WITNESS_WEIGHT: u64 = 324;
 
 /// The size of the 2-of-2 multisig script
 const MULTISIG_SCRIPT_SIZE: u64 = 1 + // OP_2

@@ -24,7 +24,8 @@ use crate::io_extras::sink;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	shared_anchor_script_pubkey, HTLCOutputInCommitment, ANCHOR_INPUT_WITNESS_WEIGHT,
-	HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT, HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT,
+	HTLC_SUCCESS_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_P2A_ANCHOR_WITNESS_WEIGHT,
+	HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT, HTLC_TIMEOUT_INPUT_P2A_ANCHOR_WITNESS_WEIGHT,
 	P2A_ANCHOR_INPUT_WITNESS_WEIGHT,
 };
 use crate::ln::types::ChannelId;
@@ -864,6 +865,20 @@ where
 			output: vec![],
 		};
 		let mut must_spend = Vec::with_capacity(htlc_descriptors.len());
+		let (htlc_success_witness_weight, htlc_timeout_witness_weight) =
+			if channel_type.supports_anchor_zero_fee_commitments() {
+				(
+					HTLC_SUCCESS_INPUT_P2A_ANCHOR_WITNESS_WEIGHT,
+					HTLC_TIMEOUT_INPUT_P2A_ANCHOR_WITNESS_WEIGHT,
+				)
+			} else if channel_type.supports_anchors_zero_fee_htlc_tx() {
+				(
+					HTLC_SUCCESS_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT,
+					HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT,
+				)
+			} else {
+				panic!("channel type should be either zero-fee HTLCs, or zero-fee commitments");
+			};
 		for htlc_descriptor in htlc_descriptors {
 			let htlc_input = htlc_descriptor.unsigned_tx_input();
 			must_spend.push(Input {
@@ -871,9 +886,9 @@ where
 				previous_utxo: htlc_descriptor.previous_utxo(&self.secp),
 				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT
 					+ if htlc_descriptor.preimage.is_some() {
-						HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT
+						htlc_success_witness_weight
 					} else {
-						HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT
+						htlc_timeout_witness_weight
 					},
 			});
 			htlc_tx.input.push(htlc_input);
