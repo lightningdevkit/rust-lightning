@@ -3886,6 +3886,12 @@ where
 		self.is_usable() && !self.channel_state.is_peer_disconnected()
 	}
 
+	/// Returns true if the peer for this channel is currently connected and we're not waiting on
+	/// `channel_reestablish` messages to re-init the channel.
+	pub fn is_connected(&self) -> bool {
+		!self.channel_state.is_peer_disconnected()
+	}
+
 	/// Returns false if our last broadcasted channel_update message has the "channel disabled" bit set
 	pub fn is_enabled(&self) -> bool {
 		self.is_usable()

@@ -3897,7 +3897,7 @@ fn do_test_durable_preimages_on_closed_channel(
 		}
 	}
 	if !close_chans_before_reload {
-		check_closed_broadcast(&nodes[1], 1, true);
+		check_closed_broadcast(&nodes[1], 1, false);
 		let reason = ClosureReason::CommitmentTxConfirmed;
 		check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
 	}
@@ -3914,7 +3914,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	check_spends!(bs_preimage_tx, as_closing_tx[0]);
 
 	mine_transactions(&nodes[0], &[&as_closing_tx[0], bs_preimage_tx]);
-	check_closed_broadcast(&nodes[0], 1, true);
+	check_closed_broadcast(&nodes[0], 1, false);
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 
 	if !close_chans_before_reload || close_only_a {
@@ -4063,7 +4063,7 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 			Event::ChannelClosed { .. } => {},
 			_ => panic!(),
 		}
-		check_closed_broadcast!(nodes[1], true);
+		check_closed_broadcast(&nodes[1], 1, false);
 	}
 
 	// Once we run event processing the monitor should free, check that it was indeed the B<->C

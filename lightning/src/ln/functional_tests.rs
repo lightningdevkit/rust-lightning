@@ -8048,7 +8048,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		.force_close_broadcasting_latest_txn(&channel_id, &node_c_id, message.clone())
 		.unwrap();
 
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, false);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[1], 1, reason, [node_c_id], 100000);
 	check_added_monitors(&nodes[1], 1);

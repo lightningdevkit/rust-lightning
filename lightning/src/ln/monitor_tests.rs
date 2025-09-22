@@ -3044,7 +3044,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 		let serialized_monitor = get_monitor!(nodes[1], chan_id).encode();
 		reload_node!(nodes[1], user_config, &nodes[1].node.encode(), &[&serialized_monitor], persister, chain_monitor, node_deserialized);
 		let commitment_tx_conf_height = block_from_scid(mine_transaction(&nodes[1], &commitment_tx));
-		check_closed_broadcast(&nodes[1], 1, true);
+		check_closed_broadcast(&nodes[1], 1, false);
 		check_added_monitors(&nodes[1], 1);
 		commitment_tx_conf_height
 	};
@@ -3407,7 +3407,7 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool) {
 	check_added_monitors(&nodes[2], 1);
 	let c_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[2], 1, c_reason, [node_b_id], 1_000_000);
-	check_closed_broadcast!(nodes[2], true);
+	check_closed_broadcast(&nodes[2], 1, false);
 
 	handle_bump_events(&nodes[2], true, 0);
 	let cs_commit_tx = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -3421,7 +3421,7 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool) {
 	check_added_monitors(&nodes[1], 1);
 	let b_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[1], 1, b_reason, [node_c_id], 1_000_000);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, false);
 
 	handle_bump_events(&nodes[1], true, 0);
 	let bs_commit_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -3618,7 +3618,7 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	check_added_monitors(&nodes[2], 1);
 	let c_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[2], 1, c_reason, [node_b_id], 1_000_000);
-	check_closed_broadcast!(nodes[2], true);
+	check_closed_broadcast(&nodes[2], 1, false);
 
 	handle_bump_events(&nodes[2], true, 0);
 	let cs_commit_tx = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -3632,7 +3632,7 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	check_added_monitors(&nodes[1], 1);
 	let b_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event!(nodes[1], 1, b_reason, [node_c_id], 1_000_000);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, false);
 
 	handle_bump_events(&nodes[1], true, 0);
 	let bs_commit_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
