@@ -28,8 +28,7 @@ use crate::ln::types::ChannelId;
 use crate::sign::NodeSigner;
 use crate::util::native_async::FutureQueue;
 use crate::util::persist::{
-	MonitorName, MonitorUpdatingPersisterAsync, CHANNEL_MONITOR_PRIMARY_NAMESPACE,
-	CHANNEL_MONITOR_SECONDARY_NAMESPACE, MONITOR_UPDATE_PRIMARY_NAMESPACE,
+	MonitorName, MonitorUpdatingPersisterAsync, CHANNEL_MONITOR_NAMESPACE, MONITOR_UPDATE_NAMESPACE,
 };
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_channel_signer::TestChannelSigner;
@@ -4938,11 +4937,7 @@ fn native_async_persist() {
 
 	let funding_txo = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 	let key = MonitorName::V1Channel(funding_txo).to_string();
-	let pending_writes = kv_store.list_pending_async_writes(
-		CHANNEL_MONITOR_PRIMARY_NAMESPACE,
-		CHANNEL_MONITOR_SECONDARY_NAMESPACE,
-		&key,
-	);
+	let pending_writes = kv_store.list_pending_async_writes(CHANNEL_MONITOR_NAMESPACE, "", &key);
 	assert_eq!(pending_writes.len(), 1);
 
 	// Once we complete the future, the write will still be pending until the future gets `poll`ed.
@@ -4970,21 +4965,19 @@ fn native_async_persist() {
 	persist_futures.poll_futures();
 	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
 
-	let pending_writes =
-		kv_store.list_pending_async_writes(MONITOR_UPDATE_PRIMARY_NAMESPACE, &key, "1");
+	let pending_writes = kv_store.list_pending_async_writes(MONITOR_UPDATE_NAMESPACE, &key, "1");
 	assert_eq!(pending_writes.len(), 1);
-	let pending_writes =
-		kv_store.list_pending_async_writes(MONITOR_UPDATE_PRIMARY_NAMESPACE, &key, "2");
+	let pending_writes = kv_store.list_pending_async_writes(MONITOR_UPDATE_NAMESPACE, &key, "2");
 	assert_eq!(pending_writes.len(), 1);
 
-	kv_store.complete_async_writes_through(MONITOR_UPDATE_PRIMARY_NAMESPACE, &key, "1", usize::MAX);
+	kv_store.complete_async_writes_through(MONITOR_UPDATE_NAMESPACE, &key, "1", usize::MAX);
 	persist_futures.poll_futures();
 	// While the `ChainMonitor` could return a `MonitorEvent::Completed` here, it currently
 	// doesn't. If that ever changes we should validate that the `Completed` event has the correct
 	// `monitor_update_id` (1).
 	assert!(async_chain_monitor.release_pending_monitor_events().is_empty());
 
-	kv_store.complete_async_writes_through(MONITOR_UPDATE_PRIMARY_NAMESPACE, &key, "2", usize::MAX);
+	kv_store.complete_async_writes_through(MONITOR_UPDATE_NAMESPACE, &key, "2", usize::MAX);
 	persist_futures.poll_futures();
 	let completed_persist = async_chain_monitor.release_pending_monitor_events();
 	assert_eq!(completed_persist.len(), 1);
@@ -5003,18 +4996,16 @@ fn native_async_persist() {
 	persist_futures.poll_futures();
 	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
 
-	let pending_writes =
-		kv_store.list_pending_async_writes(MONITOR_UPDATE_PRIMARY_NAMESPACE, &key, "3");
+	let pending_writes = kv_store.list_pending_async_writes(MONITOR_UPDATE_NAMESPACE, &key, "3");
 	assert_eq!(pending_writes.len(), 1);
-	let pending_writes =
-		kv_store.list_pending_async_writes(MONITOR_UPDATE_PRIMARY_NAMESPACE, &key, "4");
+	let pending_writes = kv_store.list_pending_async_writes(MONITOR_UPDATE_NAMESPACE, &key, "4");
 	assert_eq!(pending_writes.len(), 1);
 
-	kv_store.complete_async_writes_through(MONITOR_UPDATE_PRIMARY_NAMESPACE, &key, "4", usize::MAX);
+	kv_store.complete_async_writes_through(MONITOR_UPDATE_NAMESPACE, &key, "4", usize::MAX);
 	persist_futures.poll_futures();
 	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
 
-	kv_store.complete_async_writes_through(MONITOR_UPDATE_PRIMARY_NAMESPACE, &key, "3", usize::MAX);
+	kv_store.complete_async_writes_through(MONITOR_UPDATE_NAMESPACE, &key, "3", usize::MAX);
 	persist_futures.poll_futures();
 	let completed_persist = async_chain_monitor.release_pending_monitor_events();
 	assert_eq!(completed_persist.len(), 1);
