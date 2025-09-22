@@ -656,6 +656,11 @@ impl MessageBuf {
 		res[16 + 2..].copy_from_slice(&encoded_msg);
 		Self(res)
 	}
+
+	#[cfg(test)]
+	pub(crate) fn fetch_encoded_msg_with_type_pfx(&self) -> Vec<u8> {
+		self.0.clone().split_off(16 + 2)
+	}
 }
 
 #[cfg(test)]

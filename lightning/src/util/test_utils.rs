@@ -1355,7 +1355,7 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 	}
 }
 
-fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
+pub fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	let network = Network::Testnet;
 	msgs::ChannelUpdate {
