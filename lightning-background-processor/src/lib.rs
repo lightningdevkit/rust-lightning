@@ -53,11 +53,10 @@ use lightning::sign::{
 };
 use lightning::util::logger::Logger;
 use lightning::util::persist::{
-	KVStore, KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
-	CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-	NETWORK_GRAPH_PERSISTENCE_KEY, NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-	NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
-	SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+	KVStore, KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_KEY,
+	CHANNEL_MANAGER_PRIMARY_NAMESPACE, CHANNEL_MANAGER_SECONDARY_NAMESPACE, NETWORK_GRAPH_KEY,
+	NETWORK_GRAPH_PRIMARY_NAMESPACE, NETWORK_GRAPH_SECONDARY_NAMESPACE, SCORER_KEY,
+	SCORER_PRIMARY_NAMESPACE, SCORER_SECONDARY_NAMESPACE,
 };
 use lightning::util::sweep::{OutputSweeper, OutputSweeperSync};
 #[cfg(feature = "std")]
@@ -944,9 +943,9 @@ where
 						log_trace!(logger, "Persisting scorer after update");
 						if let Err(e) = kv_store
 							.write(
-								SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-								SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-								SCORER_PERSISTENCE_KEY,
+								SCORER_PRIMARY_NAMESPACE,
+								SCORER_SECONDARY_NAMESPACE,
+								SCORER_KEY,
 								scorer.encode(),
 							)
 							.await
@@ -1080,9 +1079,9 @@ where
 			let fut = async {
 				kv_store
 					.write(
-						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-						CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-						CHANNEL_MANAGER_PERSISTENCE_KEY,
+						CHANNEL_MANAGER_PRIMARY_NAMESPACE,
+						CHANNEL_MANAGER_SECONDARY_NAMESPACE,
+						CHANNEL_MANAGER_KEY,
 						channel_manager.get_cm().encode(),
 					)
 					.await
@@ -1143,9 +1142,9 @@ where
 				let fut = async {
 					if let Err(e) = kv_store
 						.write(
-							NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-							NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-							NETWORK_GRAPH_PERSISTENCE_KEY,
+							NETWORK_GRAPH_PRIMARY_NAMESPACE,
+							NETWORK_GRAPH_SECONDARY_NAMESPACE,
+							NETWORK_GRAPH_KEY,
 							network_graph.encode(),
 						)
 						.await
@@ -1185,9 +1184,9 @@ where
 					let fut = async {
 						if let Err(e) = kv_store
 							.write(
-								SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-								SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-								SCORER_PERSISTENCE_KEY,
+								SCORER_PRIMARY_NAMESPACE,
+								SCORER_SECONDARY_NAMESPACE,
+								SCORER_KEY,
 								scorer.encode(),
 							)
 							.await
@@ -1301,18 +1300,18 @@ where
 	// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
 	kv_store
 		.write(
-			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_KEY,
+			CHANNEL_MANAGER_PRIMARY_NAMESPACE,
+			CHANNEL_MANAGER_SECONDARY_NAMESPACE,
+			CHANNEL_MANAGER_KEY,
 			channel_manager.get_cm().encode(),
 		)
 		.await?;
 	if let Some(ref scorer) = scorer {
 		kv_store
 			.write(
-				SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-				SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-				SCORER_PERSISTENCE_KEY,
+				SCORER_PRIMARY_NAMESPACE,
+				SCORER_SECONDARY_NAMESPACE,
+				SCORER_KEY,
 				scorer.encode(),
 			)
 			.await?;
@@ -1320,9 +1319,9 @@ where
 	if let Some(network_graph) = gossip_sync.network_graph() {
 		kv_store
 			.write(
-				NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-				NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-				NETWORK_GRAPH_PERSISTENCE_KEY,
+				NETWORK_GRAPH_PRIMARY_NAMESPACE,
+				NETWORK_GRAPH_SECONDARY_NAMESPACE,
+				NETWORK_GRAPH_KEY,
 				network_graph.encode(),
 			)
 			.await?;
@@ -1527,9 +1526,9 @@ impl BackgroundProcessor {
 					if update_scorer(scorer, &event, duration_since_epoch) {
 						log_trace!(logger, "Persisting scorer after update");
 						if let Err(e) = kv_store.write(
-							SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-							SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-							SCORER_PERSISTENCE_KEY,
+							SCORER_PRIMARY_NAMESPACE,
+							SCORER_SECONDARY_NAMESPACE,
+							SCORER_KEY,
 							scorer.encode(),
 						) {
 							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
@@ -1627,9 +1626,9 @@ impl BackgroundProcessor {
 				if channel_manager.get_cm().get_and_clear_needs_persistence() {
 					log_trace!(logger, "Persisting ChannelManager...");
 					(kv_store.write(
-						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-						CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-						CHANNEL_MANAGER_PERSISTENCE_KEY,
+						CHANNEL_MANAGER_PRIMARY_NAMESPACE,
+						CHANNEL_MANAGER_SECONDARY_NAMESPACE,
+						CHANNEL_MANAGER_KEY,
 						channel_manager.get_cm().encode(),
 					))?;
 					log_trace!(logger, "Done persisting ChannelManager.");
@@ -1666,9 +1665,9 @@ impl BackgroundProcessor {
 							duration_since_epoch.as_secs(),
 						);
 						if let Err(e) = kv_store.write(
-							NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-							NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-							NETWORK_GRAPH_PERSISTENCE_KEY,
+							NETWORK_GRAPH_PRIMARY_NAMESPACE,
+							NETWORK_GRAPH_SECONDARY_NAMESPACE,
+							NETWORK_GRAPH_KEY,
 							network_graph.encode(),
 						) {
 							log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}", e);
@@ -1695,9 +1694,9 @@ impl BackgroundProcessor {
 						log_trace!(logger, "Calling time_passed and persisting scorer");
 						scorer.write_lock().time_passed(duration_since_epoch);
 						if let Err(e) = kv_store.write(
-							SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-							SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-							SCORER_PERSISTENCE_KEY,
+							SCORER_PRIMARY_NAMESPACE,
+							SCORER_SECONDARY_NAMESPACE,
+							SCORER_KEY,
 							scorer.encode(),
 						) {
 							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
@@ -1735,24 +1734,24 @@ impl BackgroundProcessor {
 			// some races where users quit while channel updates were in-flight, with
 			// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
 			kv_store.write(
-				CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-				CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-				CHANNEL_MANAGER_PERSISTENCE_KEY,
+				CHANNEL_MANAGER_PRIMARY_NAMESPACE,
+				CHANNEL_MANAGER_SECONDARY_NAMESPACE,
+				CHANNEL_MANAGER_KEY,
 				channel_manager.get_cm().encode(),
 			)?;
 			if let Some(ref scorer) = scorer {
 				kv_store.write(
-					SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-					SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-					SCORER_PERSISTENCE_KEY,
+					SCORER_PRIMARY_NAMESPACE,
+					SCORER_SECONDARY_NAMESPACE,
+					SCORER_KEY,
 					scorer.encode(),
 				)?;
 			}
 			if let Some(network_graph) = gossip_sync.network_graph() {
 				kv_store.write(
-					NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-					NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-					NETWORK_GRAPH_PERSISTENCE_KEY,
+					NETWORK_GRAPH_PRIMARY_NAMESPACE,
+					NETWORK_GRAPH_SECONDARY_NAMESPACE,
+					NETWORK_GRAPH_KEY,
 					network_graph.encode(),
 				)?;
 			}
@@ -1844,12 +1843,10 @@ mod tests {
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
 	use lightning::util::persist::{
-		KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
-		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-		CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
-		NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-		SCORER_PERSISTENCE_KEY, SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-		SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+		KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_KEY, CHANNEL_MANAGER_PRIMARY_NAMESPACE,
+		CHANNEL_MANAGER_SECONDARY_NAMESPACE, NETWORK_GRAPH_KEY, NETWORK_GRAPH_PRIMARY_NAMESPACE,
+		NETWORK_GRAPH_SECONDARY_NAMESPACE, SCORER_KEY, SCORER_PRIMARY_NAMESPACE,
+		SCORER_SECONDARY_NAMESPACE,
 	};
 	use lightning::util::ser::Writeable;
 	use lightning::util::sweep::{
@@ -2104,18 +2101,18 @@ mod tests {
 		fn write(
 			&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
 		) -> lightning::io::Result<()> {
-			if primary_namespace == CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE
-				&& secondary_namespace == CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE
-				&& key == CHANNEL_MANAGER_PERSISTENCE_KEY
+			if primary_namespace == CHANNEL_MANAGER_PRIMARY_NAMESPACE
+				&& secondary_namespace == CHANNEL_MANAGER_SECONDARY_NAMESPACE
+				&& key == CHANNEL_MANAGER_KEY
 			{
 				if let Some((error, message)) = self.manager_error {
 					return Err(std::io::Error::new(error, message).into());
 				}
 			}
 
-			if primary_namespace == NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE
-				&& secondary_namespace == NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE
-				&& key == NETWORK_GRAPH_PERSISTENCE_KEY
+			if primary_namespace == NETWORK_GRAPH_PRIMARY_NAMESPACE
+				&& secondary_namespace == NETWORK_GRAPH_SECONDARY_NAMESPACE
+				&& key == NETWORK_GRAPH_KEY
 			{
 				if let Some(sender) = &self.graph_persistence_notifier {
 					match sender.send(()) {
@@ -2131,9 +2128,9 @@ mod tests {
 				}
 			}
 
-			if primary_namespace == SCORER_PERSISTENCE_PRIMARY_NAMESPACE
-				&& secondary_namespace == SCORER_PERSISTENCE_SECONDARY_NAMESPACE
-				&& key == SCORER_PERSISTENCE_KEY
+			if primary_namespace == SCORER_PRIMARY_NAMESPACE
+				&& secondary_namespace == SCORER_SECONDARY_NAMESPACE
+				&& key == SCORER_KEY
 			{
 				if let Some((error, message)) = self.scorer_error {
 					return Err(std::io::Error::new(error, message).into());
