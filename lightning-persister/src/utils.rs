@@ -1,9 +1,8 @@
 use lightning::types::string::PrintableString;
-use lightning::util::persist::{KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN};
+use lightning::util::persist::{NAMESPACE_ALPHABET, NAMESPACE_MAX_LEN};
 
 pub(crate) fn is_valid_kvstore_str(key: &str) -> bool {
-	key.len() <= KVSTORE_NAMESPACE_KEY_MAX_LEN
-		&& key.chars().all(|c| KVSTORE_NAMESPACE_KEY_ALPHABET.contains(c))
+	key.len() <= NAMESPACE_MAX_LEN && key.chars().all(|c| NAMESPACE_ALPHABET.contains(c))
 }
 
 pub(crate) fn check_namespace_key_validity(

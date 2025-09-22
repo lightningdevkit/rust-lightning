@@ -41,11 +41,11 @@ use crate::util::ser::{Readable, ReadableArgs, Writeable};
 use crate::util::wakers::Notifier;
 
 /// The alphabet of characters allowed for namespaces and keys.
-pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str =
+pub const NAMESPACE_ALPHABET: &str =
 	"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
 
 /// The maximum number of characters namespaces and keys may have.
-pub const KVSTORE_NAMESPACE_KEY_MAX_LEN: usize = 120;
+pub const NAMESPACE_MAX_LEN: usize = 120;
 
 /// The primary namespace under which the [`ChannelManager`] will be persisted.
 ///
@@ -126,15 +126,14 @@ pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 /// ways, as long as per-namespace key uniqueness is asserted.
 ///
 /// Keys and namespaces are required to be valid ASCII strings in the range of
-/// [`KVSTORE_NAMESPACE_KEY_ALPHABET`] and no longer than [`KVSTORE_NAMESPACE_KEY_MAX_LEN`]. Empty
-/// primary namespaces and secondary namespaces (`""`) are assumed to be a valid, however, if
-/// `primary_namespace` is empty, `secondary_namespace` is required to be empty, too. This means
-/// that concerns should always be separated by primary namespace first, before secondary
-/// namespaces are used. While the number of primary namespaces will be relatively small and is
-/// determined at compile time, there may be many secondary namespaces per primary namespace. Note
-/// that per-namespace uniqueness needs to also hold for keys *and* namespaces in any given
-/// namespace, i.e., conflicts between keys and equally named
-/// primary namespaces/secondary namespaces must be avoided.
+/// [`NAMESPACE_ALPHABET`] and no longer than [`NAMESPACE_MAX_LEN`]. Empty primary namespaces and
+/// secondary namespaces (`""`) are assumed to be a valid, however, if `primary_namespace` is empty,
+/// `secondary_namespace` is required to be empty, too. This means that concerns should always be
+/// separated by primary namespace first, before secondary namespaces are used. While the number of
+/// primary namespaces will be relatively small and is determined at compile time, there may be many
+/// secondary namespaces per primary namespace. Note that per-namespace uniqueness needs to also
+/// hold for keys *and* namespaces in any given namespace, i.e., conflicts between keys and equally
+/// named primary namespaces/secondary namespaces must be avoided.
 ///
 /// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
 /// interface can use a concatenation of `[{primary_namespace}/[{secondary_namespace}/]]{key}` to
@@ -255,15 +254,14 @@ where
 /// ways, as long as per-namespace key uniqueness is asserted.
 ///
 /// Keys and namespaces are required to be valid ASCII strings in the range of
-/// [`KVSTORE_NAMESPACE_KEY_ALPHABET`] and no longer than [`KVSTORE_NAMESPACE_KEY_MAX_LEN`]. Empty
-/// primary namespaces and secondary namespaces (`""`) are assumed to be a valid, however, if
-/// `primary_namespace` is empty, `secondary_namespace` is required to be empty, too. This means
-/// that concerns should always be separated by primary namespace first, before secondary
-/// namespaces are used. While the number of primary namespaces will be relatively small and is
-/// determined at compile time, there may be many secondary namespaces per primary namespace. Note
-/// that per-namespace uniqueness needs to also hold for keys *and* namespaces in any given
-/// namespace, i.e., conflicts between keys and equally named
-/// primary namespaces/secondary namespaces must be avoided.
+/// [`NAMESPACE_ALPHABET`] and no longer than [`NAMESPACE_MAX_LEN`]. Empty primary namespaces and
+/// secondary namespaces (`""`) are assumed to be a valid, however, if `primary_namespace` is
+/// empty, `secondary_namespace` is required to be empty, too. This means that concerns should
+/// always be separated by primary namespace first, before secondary namespaces are used. While the
+/// number of primary namespaces will be relatively small and is determined at compile time, there
+/// may be many secondary namespaces per primary namespace. Note that per-namespace uniqueness
+/// needs to also hold for keys *and* namespaces in any given namespace, i.e., conflicts between
+/// keys and equally named primary namespaces/secondary namespaces must be avoided.
 ///
 /// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
 /// interface can use a concatenation of `[{primary_namespace}/[{secondary_namespace}/]]{key}` to

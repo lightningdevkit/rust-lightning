@@ -5,7 +5,7 @@ use lightning::ln::functional_test_utils::{
 };
 use lightning::util::persist::{
 	migrate_kv_store_data, read_channel_monitors, KVStoreSync, MigratableKVStore,
-	KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
+	NAMESPACE_ALPHABET, NAMESPACE_MAX_LEN,
 };
 use lightning::util::test_utils;
 use lightning::{check_added_monitors, check_closed_broadcast, check_closed_event};
@@ -46,8 +46,8 @@ pub(crate) fn do_read_write_remove_list_persist<K: KVStoreSync + RefUnwindSafe>(
 	assert_eq!(listed_keys.len(), 0);
 
 	// Ensure we have no issue operating with primary_namespace/secondary_namespace/key being
-	// KVSTORE_NAMESPACE_KEY_MAX_LEN
-	let max_chars = "A".repeat(KVSTORE_NAMESPACE_KEY_MAX_LEN);
+	// NAMESPACE_MAX_LEN
+	let max_chars = "A".repeat(NAMESPACE_MAX_LEN);
 	kv_store.write(&max_chars, &max_chars, &max_chars, data.clone()).unwrap();
 
 	let listed_keys = kv_store.list(&max_chars, &max_chars).unwrap();
@@ -76,17 +76,16 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>
 		let primary_namespace = if i == 0 {
 			String::new()
 		} else {
-			format!("testspace{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(i).unwrap())
+			format!("testspace{}", NAMESPACE_ALPHABET.chars().nth(i).unwrap())
 		};
 		for j in 0..num_secondary_namespaces {
 			let secondary_namespace = if i == 0 || j == 0 {
 				String::new()
 			} else {
-				format!("testsubspace{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(j).unwrap())
+				format!("testsubspace{}", NAMESPACE_ALPHABET.chars().nth(j).unwrap())
 			};
 			for k in 0..num_keys {
-				let key =
-					format!("testkey{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(k).unwrap());
+				let key = format!("testkey{}", NAMESPACE_ALPHABET.chars().nth(k).unwrap());
 				source_store
 					.write(&primary_namespace, &secondary_namespace, &key, dummy_data.clone())
 					.unwrap();
