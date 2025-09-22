@@ -23,8 +23,7 @@ use crate::sync::Arc;
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 use crate::util::persist::{
-	KVStore, KVStoreSync, KVStoreSyncWrapper, OUTPUT_SWEEPER_PERSISTENCE_KEY,
-	OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+	KVStore, KVStoreSync, KVStoreSyncWrapper, OUTPUT_SWEEPER_KEY, OUTPUT_SWEEPER_NAMESPACE,
 };
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 use crate::{impl_writeable_tlv_based, log_debug, log_error};
@@ -650,13 +649,7 @@ where
 		&self, sweeper_state: &SweeperState,
 	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'a + Send>> {
 		let encoded = sweeper_state.encode();
-
-		self.kv_store.write(
-			OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
-			OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
-			OUTPUT_SWEEPER_PERSISTENCE_KEY,
-			encoded,
-		)
+		self.kv_store.write(OUTPUT_SWEEPER_NAMESPACE, "", OUTPUT_SWEEPER_KEY, encoded)
 	}
 
 	/// Updates the sweeper state by executing the given callback. Persists the state afterwards if it is marked dirty,

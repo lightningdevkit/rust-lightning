@@ -26,6 +26,7 @@ pub mod base32;
 pub(crate) mod base32;
 pub mod errors;
 pub mod message_signing;
+pub mod native_async;
 pub mod persist;
 pub mod scid_utils;
 pub mod ser;

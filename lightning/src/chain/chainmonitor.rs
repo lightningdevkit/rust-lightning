@@ -46,12 +46,14 @@ use crate::ln::our_peer_storage::{DecryptedOurPeerStorage, PeerStorageMonitorHol
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::sign::{EntropySource, PeerStorageKey};
+use crate::sign::{EntropySource, PeerStorageKey, SignerProvider};
 use crate::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use crate::types::features::{InitFeatures, NodeFeatures};
+use crate::util::async_poll::{MaybeSend, MaybeSync};
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
-use crate::util::persist::MonitorName;
+use crate::util::native_async::FutureSpawner;
+use crate::util::persist::{KVStore, MonitorName, MonitorUpdatingPersisterAsync};
 #[cfg(peer_storage)]
 use crate::util::ser::{VecWriter, Writeable};
 use crate::util::wakers::{Future, Notifier};
@@ -192,6 +194,17 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	/// restart, this method must in that case be idempotent, ensuring it can handle scenarios where
 	/// the monitor already exists in the archive.
 	fn archive_persisted_channel(&self, monitor_name: MonitorName);
+
+	/// Fetches the set of [`ChannelMonitorUpdate`]s, previously persisted with
+	/// [`Self::update_persisted_channel`], which have completed.
+	///
+	/// Returning an update here is equivalent to calling
+	/// [`ChainMonitor::channel_monitor_updated`]. Because of this, this method is defaulted and
+	/// hidden in the docs.
+	#[doc(hidden)]
+	fn get_and_clear_completed_updates(&self) -> Vec<(ChannelId, u64)> {
+		Vec::new()
+	}
 }
 
 struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
@@ -232,6 +245,93 @@ impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, Chann
 	type Target = ChannelMonitor<ChannelSigner>;
 	fn deref(&self) -> &ChannelMonitor<ChannelSigner> {
 		&self.lock.get(&self.channel_id).expect("Checked at construction").monitor
+	}
+}
+
+/// An unconstructable [`Persist`]er which is used under the hood when you call
+/// [`ChainMonitor::new_async_beta`].
+pub struct AsyncPersister<
+	K: Deref + MaybeSend + MaybeSync + 'static,
+	S: FutureSpawner,
+	L: Deref + MaybeSend + MaybeSync + 'static,
+	ES: Deref + MaybeSend + MaybeSync + 'static,
+	SP: Deref + MaybeSend + MaybeSync + 'static,
+	BI: Deref + MaybeSend + MaybeSync + 'static,
+	FE: Deref + MaybeSend + MaybeSync + 'static,
+> where
+	K::Target: KVStore + MaybeSync,
+	L::Target: Logger,
+	ES::Target: EntropySource + Sized,
+	SP::Target: SignerProvider + Sized,
+	BI::Target: BroadcasterInterface,
+	FE::Target: FeeEstimator,
+{
+	persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>,
+}
+
+impl<
+		K: Deref + MaybeSend + MaybeSync + 'static,
+		S: FutureSpawner,
+		L: Deref + MaybeSend + MaybeSync + 'static,
+		ES: Deref + MaybeSend + MaybeSync + 'static,
+		SP: Deref + MaybeSend + MaybeSync + 'static,
+		BI: Deref + MaybeSend + MaybeSync + 'static,
+		FE: Deref + MaybeSend + MaybeSync + 'static,
+	> Deref for AsyncPersister<K, S, L, ES, SP, BI, FE>
+where
+	K::Target: KVStore + MaybeSync,
+	L::Target: Logger,
+	ES::Target: EntropySource + Sized,
+	SP::Target: SignerProvider + Sized,
+	BI::Target: BroadcasterInterface,
+	FE::Target: FeeEstimator,
+{
+	type Target = Self;
+	fn deref(&self) -> &Self {
+		self
+	}
+}
+
+impl<
+		K: Deref + MaybeSend + MaybeSync + 'static,
+		S: FutureSpawner,
+		L: Deref + MaybeSend + MaybeSync + 'static,
+		ES: Deref + MaybeSend + MaybeSync + 'static,
+		SP: Deref + MaybeSend + MaybeSync + 'static,
+		BI: Deref + MaybeSend + MaybeSync + 'static,
+		FE: Deref + MaybeSend + MaybeSync + 'static,
+	> Persist<<SP::Target as SignerProvider>::EcdsaSigner> for AsyncPersister<K, S, L, ES, SP, BI, FE>
+where
+	K::Target: KVStore + MaybeSync,
+	L::Target: Logger,
+	ES::Target: EntropySource + Sized,
+	SP::Target: SignerProvider + Sized,
+	BI::Target: BroadcasterInterface,
+	FE::Target: FeeEstimator,
+	<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend + 'static,
+{
+	fn persist_new_channel(
+		&self, monitor_name: MonitorName,
+		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+	) -> ChannelMonitorUpdateStatus {
+		self.persister.spawn_async_persist_new_channel(monitor_name, monitor);
+		ChannelMonitorUpdateStatus::InProgress
+	}
+
+	fn update_persisted_channel(
+		&self, monitor_name: MonitorName, monitor_update: Option<&ChannelMonitorUpdate>,
+		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+	) -> ChannelMonitorUpdateStatus {
+		self.persister.spawn_async_update_persisted_channel(monitor_name, monitor_update, monitor);
+		ChannelMonitorUpdateStatus::InProgress
+	}
+
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
+		self.persister.spawn_async_archive_persisted_channel(monitor_name);
+	}
+
+	fn get_and_clear_completed_updates(&self) -> Vec<(ChannelId, u64)> {
+		self.persister.get_and_clear_completed_updates()
 	}
 }
 
@@ -289,6 +389,63 @@ pub struct ChainMonitor<
 
 	#[cfg(peer_storage)]
 	our_peerstorage_encryption_key: PeerStorageKey,
+}
+
+impl<
+		K: Deref + MaybeSend + MaybeSync + 'static,
+		S: FutureSpawner,
+		SP: Deref + MaybeSend + MaybeSync + 'static,
+		C: Deref,
+		T: Deref + MaybeSend + MaybeSync + 'static,
+		F: Deref + MaybeSend + MaybeSync + 'static,
+		L: Deref + MaybeSend + MaybeSync + 'static,
+		ES: Deref + MaybeSend + MaybeSync + 'static,
+	>
+	ChainMonitor<
+		<SP::Target as SignerProvider>::EcdsaSigner,
+		C,
+		T,
+		F,
+		L,
+		AsyncPersister<K, S, L, ES, SP, T, F>,
+		ES,
+	> where
+	K::Target: KVStore + MaybeSync,
+	SP::Target: SignerProvider + Sized,
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	ES::Target: EntropySource + Sized,
+	<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend + 'static,
+{
+	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
+	///
+	/// This behaves the same as [`ChainMonitor::new`] except that it relies on
+	/// [`MonitorUpdatingPersisterAsync`] and thus allows persistence to be completed async.
+	///
+	/// Note that async monitor updating is considered beta, and bugs may be triggered by its use.
+	pub fn new_async_beta(
+		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F,
+		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, T, F>, _entropy_source: ES,
+		_our_peerstorage_encryption_key: PeerStorageKey,
+	) -> Self {
+		Self {
+			monitors: RwLock::new(new_hash_map()),
+			chain_source,
+			broadcaster,
+			logger,
+			fee_estimator: feeest,
+			persister: AsyncPersister { persister },
+			_entropy_source,
+			pending_monitor_events: Mutex::new(Vec::new()),
+			highest_chain_height: AtomicUsize::new(0),
+			event_notifier: Notifier::new(),
+			pending_send_only_events: Mutex::new(Vec::new()),
+			#[cfg(peer_storage)]
+			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
+		}
+	}
 }
 
 impl<
@@ -1357,6 +1514,9 @@ where
 	fn release_pending_monitor_events(
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
+		for (channel_id, update_id) in self.persister.get_and_clear_completed_updates() {
+			let _ = self.channel_monitor_updated(channel_id, update_id);
+		}
 		let mut pending_monitor_events = self.pending_monitor_events.lock().unwrap().split_off(0);
 		for monitor_state in self.monitors.read().unwrap().values() {
 			let monitor_events = monitor_state.monitor.get_and_clear_pending_monitor_events();
