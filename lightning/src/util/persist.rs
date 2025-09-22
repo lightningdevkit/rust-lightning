@@ -821,8 +821,7 @@ where
 		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
 		io::Error,
 	> {
-		let primary = CHANNEL_MONITOR_NAMESPACE;
-		let monitor_list = self.0.kv_store.list(primary, "").await?;
+		let monitor_list = self.0.kv_store.list(CHANNEL_MONITOR_NAMESPACE, "").await?;
 		let mut res = Vec::with_capacity(monitor_list.len());
 		for monitor_key in monitor_list {
 			let result =
@@ -1040,8 +1039,7 @@ where
 		Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
 		io::Error,
 	> {
-		let primary = CHANNEL_MONITOR_NAMESPACE;
-		let monitor_bytes = self.kv_store.read(primary, "", monitor_key).await?;
+		let monitor_bytes = self.kv_store.read(CHANNEL_MONITOR_NAMESPACE, "", monitor_key).await?;
 		let mut monitor_cursor = io::Cursor::new(monitor_bytes);
 		// Discard the sentinel bytes if found.
 		if monitor_cursor.get_ref().starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL) {
@@ -1099,8 +1097,7 @@ where
 	}
 
 	async fn cleanup_stale_updates(&self, lazy: bool) -> Result<(), io::Error> {
-		let primary = CHANNEL_MONITOR_NAMESPACE;
-		let monitor_keys = self.kv_store.list(primary, "").await?;
+		let monitor_keys = self.kv_store.list(CHANNEL_MONITOR_NAMESPACE, "").await?;
 		for monitor_key in monitor_keys {
 			let monitor_name = MonitorName::from_str(&monitor_key)?;
 			let maybe_monitor = self.maybe_read_monitor(&monitor_name, &monitor_key).await?;
@@ -1119,13 +1116,14 @@ where
 	async fn cleanup_stale_updates_for_monitor_to(
 		&self, monitor_key: &str, latest_update_id: u64, lazy: bool,
 	) -> Result<(), io::Error> {
-		let primary = MONITOR_UPDATE_NAMESPACE;
-		let updates = self.kv_store.list(primary, monitor_key).await?;
+		let updates = self.kv_store.list(MONITOR_UPDATE_NAMESPACE, monitor_key).await?;
 		for update in updates {
 			let update_name = UpdateName::new(update)?;
 			// if the update_id is lower than the stored monitor, delete
 			if update_name.0 <= latest_update_id {
-				self.kv_store.remove(primary, monitor_key, update_name.as_str(), lazy).await?;
+				self.kv_store
+					.remove(MONITOR_UPDATE_NAMESPACE, monitor_key, update_name.as_str(), lazy)
+					.await?;
 			}
 		}
 		Ok(())
@@ -1150,8 +1148,7 @@ where
 		// Note that this is NOT an async function, but rather calls the *sync* KVStore write
 		// method, allowing it to do its queueing immediately, and then return a future for the
 		// completion of the write. This ensures monitor persistence ordering is preserved.
-		let primary = CHANNEL_MONITOR_NAMESPACE;
-		self.kv_store.write(primary, "", monitor_key.as_str(), monitor_bytes)
+		self.kv_store.write(CHANNEL_MONITOR_NAMESPACE, "", monitor_key.as_str(), monitor_bytes)
 	}
 
 	fn update_persisted_channel<'a, ChannelSigner: EcdsaChannelSigner + 'a>(
@@ -1172,13 +1169,12 @@ where
 			if persist_update {
 				let monitor_key = monitor_name.to_string();
 				let update_name = UpdateName::from(update.update_id);
-				let primary = MONITOR_UPDATE_NAMESPACE;
 				// Note that this is NOT an async function, but rather calls the *sync* KVStore
 				// write method, allowing it to do its queueing immediately, and then return a
 				// future for the completion of the write. This ensures monitor persistence
 				// ordering is preserved.
 				res_a = Some(self.kv_store.write(
-					primary,
+					MONITOR_UPDATE_NAMESPACE,
 					&monitor_key,
 					update_name.as_str(),
 					update.encode(),
@@ -1248,8 +1244,7 @@ where
 			Ok(()) => {},
 			Err(_e) => return,
 		};
-		let primary = CHANNEL_MONITOR_NAMESPACE;
-		let _ = self.kv_store.remove(primary, "", &monitor_key, true).await;
+		let _ = self.kv_store.remove(CHANNEL_MONITOR_NAMESPACE, "", &monitor_key, true).await;
 	}
 
 	// Cleans up monitor updates for given monitor in range `start..=end`.
