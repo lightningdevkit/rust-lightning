@@ -84,6 +84,8 @@ use std::time::Instant;
 
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
+#[cfg(all(not(c_bindings), not(feature = "std")))]
+use alloc::sync::Arc;
 
 /// `BackgroundProcessor` takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
@@ -330,6 +332,104 @@ fn update_scorer<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + Wri
 	}
 	true
 }
+
+#[cfg(not(c_bindings))]
+type DynRouter = lightning::routing::router::DefaultRouter<
+	&'static NetworkGraph<&'static dyn Logger>,
+	&'static dyn Logger,
+	&'static dyn EntropySource,
+	&'static core::cell::RefCell<
+		lightning::routing::scoring::ProbabilisticScorer<
+			&'static NetworkGraph<&'static dyn Logger>,
+			&'static dyn Logger,
+		>,
+	>,
+	lightning::routing::scoring::ProbabilisticScoringFeeParameters,
+	lightning::routing::scoring::ProbabilisticScorer<
+		&'static NetworkGraph<&'static dyn Logger>,
+		&'static dyn Logger,
+	>,
+>;
+
+#[cfg(not(c_bindings))]
+type DynMessageRouter = lightning::onion_message::messenger::DefaultMessageRouter<
+	&'static NetworkGraph<&'static dyn Logger>,
+	&'static dyn Logger,
+	&'static dyn EntropySource,
+>;
+
+#[cfg(all(not(c_bindings), not(taproot)))]
+type DynSignerProvider =
+	dyn lightning::sign::SignerProvider<EcdsaSigner = lightning::sign::InMemorySigner>;
+
+#[cfg(all(not(c_bindings), taproot))]
+type DynSignerProvider = dyn lightning::sign::SignerProvider<
+	EcdsaSigner = lightning::sign::InMemorySigner,
+	TaprootSigner = lightning::sign::InMemorySigner,
+>;
+
+#[cfg(not(c_bindings))]
+type DynChannelManager = lightning::ln::channelmanager::ChannelManager<
+	&'static dyn chain::Watch<lightning::sign::InMemorySigner>,
+	&'static dyn BroadcasterInterface,
+	&'static dyn EntropySource,
+	&'static dyn lightning::sign::NodeSigner,
+	&'static DynSignerProvider,
+	&'static dyn FeeEstimator,
+	&'static DynRouter,
+	&'static DynMessageRouter,
+	&'static dyn Logger,
+>;
+
+/// When initializing a background processor without an onion messenger, this can be used to avoid
+/// specifying a concrete `OnionMessenger` type.
+#[cfg(not(c_bindings))]
+pub const NO_ONION_MESSENGER: Option<
+	Arc<
+		dyn AOnionMessenger<
+				EntropySource = dyn EntropySource,
+				ES = &dyn EntropySource,
+				NodeSigner = dyn lightning::sign::NodeSigner,
+				NS = &dyn lightning::sign::NodeSigner,
+				Logger = dyn Logger,
+				L = &'static dyn Logger,
+				NodeIdLookUp = DynChannelManager,
+				NL = &'static DynChannelManager,
+				MessageRouter = DynMessageRouter,
+				MR = &'static DynMessageRouter,
+				OffersMessageHandler = lightning::ln::peer_handler::IgnoringMessageHandler,
+				OMH = &'static lightning::ln::peer_handler::IgnoringMessageHandler,
+				AsyncPaymentsMessageHandler = lightning::ln::peer_handler::IgnoringMessageHandler,
+				APH = &'static lightning::ln::peer_handler::IgnoringMessageHandler,
+				DNSResolverMessageHandler = lightning::ln::peer_handler::IgnoringMessageHandler,
+				DRH = &'static lightning::ln::peer_handler::IgnoringMessageHandler,
+				CustomOnionMessageHandler = lightning::ln::peer_handler::IgnoringMessageHandler,
+				CMH = &'static lightning::ln::peer_handler::IgnoringMessageHandler,
+			> + Send
+			+ Sync,
+	>,
+> = None;
+
+/// When initializing a background processor without a liquidity manager, this can be used to avoid
+/// specifying a concrete `LiquidityManager` type.
+#[cfg(not(c_bindings))]
+pub const NO_LIQUIDITY_MANAGER: Option<
+	Arc<
+		dyn ALiquidityManager<
+				EntropySource = dyn EntropySource,
+				ES = &dyn EntropySource,
+				NodeSigner = dyn lightning::sign::NodeSigner,
+				NS = &dyn lightning::sign::NodeSigner,
+				AChannelManager = DynChannelManager,
+				CM = &DynChannelManager,
+				Filter = dyn chain::Filter,
+				C = &dyn chain::Filter,
+				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider,
+				TP = &dyn lightning_liquidity::utils::time::TimeProvider,
+			> + Send
+			+ Sync,
+	>,
+> = None;
 
 pub(crate) mod futures_util {
 	use core::future::Future;
@@ -3383,5 +3483,31 @@ mod tests {
 		let (r1, r2) = tokio::join!(t1, t2);
 		r1.unwrap().unwrap();
 		r2.unwrap()
+	}
+
+	#[test]
+	#[cfg(not(c_bindings))]
+	fn test_no_consts() {
+		// Compile-test the NO_* constants can be used.
+		let (_, nodes) = create_nodes(1, "test_no_consts");
+		let data_dir = nodes[0].kv_store.get_data_dir();
+		let persister = Arc::new(Persister::new(data_dir));
+		let bg_processor = BackgroundProcessor::start(
+			persister,
+			move |_: Event| Ok(()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			crate::NO_ONION_MESSENGER,
+			nodes[0].no_gossip_sync(),
+			Arc::clone(&nodes[0].peer_manager),
+			crate::NO_LIQUIDITY_MANAGER,
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
+		);
+
+		if !std::thread::panicking() {
+			bg_processor.stop().unwrap();
+		}
 	}
 }
