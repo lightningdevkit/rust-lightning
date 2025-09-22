@@ -1343,6 +1343,8 @@ mod tests {
 		check_added_monitors!(nodes[1], 1);
 
 		// Make sure everything is persisted as expected after close.
+		// We always send at least two payments, and loop up to persister_0_max_pending_updates *
+		// 2.
 		check_persisted_data!(
 			cmp::max(2, persister_0_max_pending_updates * 2) * EXPECTED_UPDATES_PER_PAYMENT + 1
 		);
@@ -1350,7 +1352,6 @@ mod tests {
 
 	#[test]
 	fn persister_with_real_monitors() {
-		// Test various alignments
 		do_persister_with_real_monitors((7, 3));
 		do_persister_with_real_monitors((0, 1));
 		do_persister_with_real_monitors((4, 2));
