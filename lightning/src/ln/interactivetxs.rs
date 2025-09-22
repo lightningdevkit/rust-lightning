@@ -198,7 +198,7 @@ impl Display for AbortReason {
 pub(crate) struct ConstructedTransaction {
 	holder_is_initiator: bool,
 
-	inputs: Vec<NegotiatedTxInput>,
+	input_metadata: Vec<TxInMetadata>,
 	outputs: Vec<InteractiveTxOutput>,
 	tx: Transaction,
 
@@ -212,12 +212,12 @@ pub(crate) struct ConstructedTransaction {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct NegotiatedTxInput {
+pub(crate) struct TxInMetadata {
 	serial_id: SerialId,
 	prev_output: TxOut,
 }
 
-impl NegotiatedTxInput {
+impl TxInMetadata {
 	pub(super) fn is_local(&self, holder_is_initiator: bool) -> bool {
 		!is_serial_id_valid_for_counterparty(holder_is_initiator, self.serial_id)
 	}
@@ -227,14 +227,14 @@ impl NegotiatedTxInput {
 	}
 }
 
-impl_writeable_tlv_based!(NegotiatedTxInput, {
+impl_writeable_tlv_based!(TxInMetadata, {
 	(1, serial_id, required),
 	(3, prev_output, required),
 });
 
 impl_writeable_tlv_based!(ConstructedTransaction, {
 	(1, holder_is_initiator, required),
-	(3, inputs, required),
+	(3, input_metadata, required),
 	(5, outputs, required),
 	(7, tx, required),
 	(9, local_inputs_value_satoshis, required),
@@ -279,11 +279,8 @@ impl ConstructedTransaction {
 				value.saturating_add(input.satisfaction_weight().to_wu())
 			}));
 
-		let mut inputs: Vec<(TxIn, NegotiatedTxInput)> = context
-			.inputs
-			.into_values()
-			.map(|input| input.into_txin_and_negotiated_input())
-			.collect();
+		let mut inputs: Vec<(TxIn, TxInMetadata)> =
+			context.inputs.into_values().map(|input| input.into_txin_and_metadata()).collect();
 		let mut outputs: Vec<InteractiveTxOutput> = context.outputs.into_values().collect();
 		inputs.sort_unstable_by_key(|(_, input)| input.serial_id);
 		outputs.sort_unstable_by_key(|output| output.serial_id);
@@ -298,7 +295,7 @@ impl ConstructedTransaction {
 					.map(|position| position as u32)
 			});
 
-		let (input, inputs): (Vec<TxIn>, Vec<NegotiatedTxInput>) = inputs.into_iter().unzip();
+		let (input, input_metadata): (Vec<TxIn>, Vec<TxInMetadata>) = inputs.into_iter().unzip();
 		let output = outputs.iter().map(|output| output.tx_out().clone()).collect();
 
 		let tx =
@@ -318,7 +315,7 @@ impl ConstructedTransaction {
 			remote_inputs_value_satoshis,
 			remote_outputs_value_satoshis,
 
-			inputs,
+			input_metadata,
 			outputs,
 			tx,
 
@@ -334,8 +331,8 @@ impl ConstructedTransaction {
 		self.outputs.iter()
 	}
 
-	pub fn inputs(&self) -> impl Iterator<Item = &NegotiatedTxInput> {
-		self.inputs.iter()
+	pub fn input_metadata(&self) -> impl Iterator<Item = &TxInMetadata> {
+		self.input_metadata.iter()
 	}
 
 	pub fn compute_txid(&self) -> Txid {
@@ -349,7 +346,7 @@ impl ConstructedTransaction {
 		self.tx
 			.input
 			.iter_mut()
-			.zip(self.inputs.iter())
+			.zip(self.input_metadata.iter())
 			.enumerate()
 			.filter(|(_, (_, input))| input.is_local(self.holder_is_initiator))
 			.filter(|(index, _)| {
@@ -369,7 +366,7 @@ impl ConstructedTransaction {
 		self.tx
 			.input
 			.iter_mut()
-			.zip(self.inputs.iter())
+			.zip(self.input_metadata.iter())
 			.enumerate()
 			.filter(|(_, (_, input))| !input.is_local(self.holder_is_initiator))
 			.filter(|(index, _)| {
@@ -535,7 +532,7 @@ impl InteractiveTxSigningSession {
 	pub fn remote_inputs_count(&self) -> usize {
 		let shared_index = self.unsigned_tx.shared_input_index.as_ref();
 		self.unsigned_tx
-			.inputs
+			.input_metadata
 			.iter()
 			.enumerate()
 			.filter(|(_, input)| !input.is_local(self.unsigned_tx.holder_is_initiator))
@@ -547,7 +544,7 @@ impl InteractiveTxSigningSession {
 
 	pub fn local_inputs_count(&self) -> usize {
 		self.unsigned_tx
-			.inputs
+			.input_metadata
 			.iter()
 			.enumerate()
 			.filter(|(_, input)| input.is_local(self.unsigned_tx.holder_is_initiator))
@@ -578,10 +575,10 @@ impl InteractiveTxSigningSession {
 		self.local_inputs_count() > 0 || self.local_outputs_count() > 0
 	}
 
-	pub fn shared_input(&self) -> Option<&NegotiatedTxInput> {
-		self.unsigned_tx
-			.shared_input_index
-			.and_then(|shared_input_index| self.unsigned_tx.inputs.get(shared_input_index as usize))
+	pub fn shared_input(&self) -> Option<&TxInMetadata> {
+		self.unsigned_tx.shared_input_index.and_then(|shared_input_index| {
+			self.unsigned_tx.input_metadata.get(shared_input_index as usize)
+		})
 	}
 
 	fn finalize_funding_tx(&mut self) -> Transaction {
@@ -629,13 +626,13 @@ impl InteractiveTxSigningSession {
 		let unsigned_tx = self.unsigned_tx();
 		let built_tx = unsigned_tx.tx();
 		let prev_outputs: Vec<&TxOut> =
-			unsigned_tx.inputs().map(|input| input.prev_output()).collect::<Vec<_>>();
+			unsigned_tx.input_metadata().map(|input| input.prev_output()).collect::<Vec<_>>();
 		let all_prevouts = sighash::Prevouts::All(&prev_outputs[..]);
 
 		let mut cache = SighashCache::new(built_tx);
 
 		let script_pubkeys = unsigned_tx
-			.inputs()
+			.input_metadata()
 			.enumerate()
 			.filter(|(_, input)| input.is_local(unsigned_tx.holder_is_initiator()))
 			.filter(|(index, _)| {
@@ -1835,9 +1832,9 @@ impl InteractiveTxInput {
 		self.input.satisfaction_weight()
 	}
 
-	fn into_txin_and_negotiated_input(self) -> (TxIn, NegotiatedTxInput) {
+	fn into_txin_and_metadata(self) -> (TxIn, TxInMetadata) {
 		let (txin, prev_output) = self.input.into_tx_in_with_prev_output();
-		(txin, NegotiatedTxInput { serial_id: self.serial_id, prev_output })
+		(txin, TxInMetadata { serial_id: self.serial_id, prev_output })
 	}
 }
 
@@ -2228,7 +2225,7 @@ mod tests {
 
 	use super::{
 		get_output_weight, AddingRole, ConstructedTransaction, InteractiveTxOutput,
-		InteractiveTxSigningSession, NegotiatedTxInput, OutputOwned, P2TR_INPUT_WEIGHT_LOWER_BOUND,
+		InteractiveTxSigningSession, OutputOwned, TxInMetadata, P2TR_INPUT_WEIGHT_LOWER_BOUND,
 		P2WPKH_INPUT_WEIGHT_LOWER_BOUND, P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
 	};
 
@@ -3301,11 +3298,11 @@ mod tests {
 	fn do_verify_tx_signatures(
 		transaction: Transaction, prev_outputs: Vec<TxOut>,
 	) -> Result<(), String> {
-		let inputs: Vec<NegotiatedTxInput> = prev_outputs
+		let input_metadata: Vec<TxInMetadata> = prev_outputs
 			.into_iter()
 			.enumerate()
 			.map(|(idx, prev_output)| {
-				NegotiatedTxInput {
+				TxInMetadata {
 					serial_id: idx as u64, // even values will be holder (initiator in this test)
 					prev_output,
 				}
@@ -3325,7 +3322,7 @@ mod tests {
 
 		let unsigned_tx = ConstructedTransaction {
 			holder_is_initiator: true,
-			inputs,
+			input_metadata,
 			outputs,
 			tx: transaction.clone(),
 			local_inputs_value_satoshis: 0,   // N/A for test
