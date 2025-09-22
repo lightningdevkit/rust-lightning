@@ -23,8 +23,8 @@ use crate::sync::Arc;
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 use crate::util::persist::{
-	KVStore, KVStoreSync, KVStoreSyncWrapper, OUTPUT_SWEEPER_PERSISTENCE_KEY,
-	OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+	KVStore, KVStoreSync, KVStoreSyncWrapper, OUTPUT_SWEEPER_KEY, OUTPUT_SWEEPER_PRIMARY_NAMESPACE,
+	OUTPUT_SWEEPER_SECONDARY_NAMESPACE,
 };
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 use crate::{impl_writeable_tlv_based, log_debug, log_error};
@@ -652,9 +652,9 @@ where
 		let encoded = sweeper_state.encode();
 
 		self.kv_store.write(
-			OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
-			OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
-			OUTPUT_SWEEPER_PERSISTENCE_KEY,
+			OUTPUT_SWEEPER_PRIMARY_NAMESPACE,
+			OUTPUT_SWEEPER_SECONDARY_NAMESPACE,
+			OUTPUT_SWEEPER_KEY,
 			encoded,
 		)
 	}
