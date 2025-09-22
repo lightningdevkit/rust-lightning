@@ -3042,9 +3042,6 @@ where
 									commitment_signed.len(),
 									channel_id);
 							let mut peer = get_peer_for_forwarding!(node_id)?;
-							for msg in update_add_htlcs {
-								self.enqueue_message(&mut *peer, msg);
-							}
 							for msg in update_fulfill_htlcs {
 								self.enqueue_message(&mut *peer, msg);
 							}
@@ -3052,6 +3049,9 @@ where
 								self.enqueue_message(&mut *peer, msg);
 							}
 							for msg in update_fail_malformed_htlcs {
+								self.enqueue_message(&mut *peer, msg);
+							}
+							for msg in update_add_htlcs {
 								self.enqueue_message(&mut *peer, msg);
 							}
 							if let &Some(ref msg) = update_fee {
