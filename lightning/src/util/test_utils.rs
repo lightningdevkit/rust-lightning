@@ -915,7 +915,7 @@ impl TestStore {
 		let mut persisted_lock = self.persisted_bytes.lock().unwrap();
 		let mut writes_lock = self.pending_async_writes.lock().unwrap();
 
-		let pending_writes = writes_lock.get_mut(&key).unwrap();
+		let pending_writes = writes_lock.get_mut(&key).expect("No pending writes for given key");
 		pending_writes.retain(|(id, res, data)| {
 			if *id <= write_id {
 				let namespace = persisted_lock.entry(prefix.clone()).or_insert(new_hash_map());
