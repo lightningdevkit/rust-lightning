@@ -223,11 +223,13 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = chanmon_cfgs[2].keys_manager.get_expanded_key();
+	let receive_auth_key = chanmon_cfgs[2].keys_manager.get_receive_auth_key();
 	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[],
 		nodes[2].node.get_our_node_id(),
+		receive_auth_key,
 		payee_tlvs,
 		u64::MAX,
 		TEST_FINAL_CLTV as u16,

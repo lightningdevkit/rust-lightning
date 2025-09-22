@@ -329,6 +329,7 @@ where
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*entropy_source;
 		let secp_ctx = &self.secp_ctx;
+		let receive_auth_key = self.receive_auth_key;
 
 		let payee_node_id = self.get_our_node_id();
 
@@ -349,6 +350,7 @@ where
 
 		router.create_blinded_payment_paths(
 			payee_node_id,
+			receive_auth_key,
 			usable_channels,
 			payee_tlvs,
 			amount_msats,

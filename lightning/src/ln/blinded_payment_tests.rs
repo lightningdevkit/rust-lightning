@@ -86,12 +86,13 @@ pub fn blinded_payment_path(
 
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = keys_manager.get_expanded_key();
+	let receive_auth_key = keys_manager.get_receive_auth_key();
 	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 
 	let mut secp_ctx = Secp256k1::new();
 	BlindedPaymentPath::new(
-		&intermediate_nodes[..], *node_ids.last().unwrap(), payee_tlvs,
-		intro_node_max_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_maximum_msat),
+		&intermediate_nodes[..], *node_ids.last().unwrap(), receive_auth_key,
+		payee_tlvs, intro_node_max_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_maximum_msat),
 		TEST_FINAL_CLTV as u16, keys_manager, &secp_ctx
 	).unwrap()
 }
@@ -171,11 +172,13 @@ fn do_one_hop_blinded_path(success: bool) {
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = chanmon_cfgs[1].keys_manager.get_expanded_key();
+	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
 	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
-		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		&[], nodes[1].node.get_our_node_id(), receive_auth_key,
+		payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
@@ -225,9 +228,11 @@ fn mpp_to_one_hop_blinded_path() {
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = chanmon_cfgs[3].keys_manager.get_expanded_key();
+	let receive_auth_key = chanmon_cfgs[3].keys_manager.get_receive_auth_key();
 	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 	let blinded_path = BlindedPaymentPath::new(
-		&[], nodes[3].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		&[], nodes[3].node.get_our_node_id(), receive_auth_key,
+		payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[3].keys_manager, &secp_ctx
 	).unwrap();
 
@@ -1335,10 +1340,12 @@ fn custom_tlvs_to_blinded_path() {
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = chanmon_cfgs[1].keys_manager.get_expanded_key();
+	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
 	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
-		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		&[], nodes[1].node.get_our_node_id(), receive_auth_key,
+		payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
@@ -1389,11 +1396,13 @@ fn fails_receive_tlvs_authentication() {
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = chanmon_cfgs[1].keys_manager.get_expanded_key();
+	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
 	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
-		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		&[], nodes[1].node.get_our_node_id(), receive_auth_key,
+		payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
@@ -1424,7 +1433,8 @@ fn fails_receive_tlvs_authentication() {
 
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
-		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		&[], nodes[1].node.get_our_node_id(), receive_auth_key,
+		payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
@@ -1627,7 +1637,7 @@ fn route_blinding_spec_test_vector() {
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 		) -> Result<RecoverableSignature, ()> { unreachable!() }
 		fn get_peer_storage_key(&self) -> PeerStorageKey { unreachable!() }
-		fn get_receive_auth_key(&self) -> ReceiveAuthKey { unreachable!() }
+		fn get_receive_auth_key(&self) -> ReceiveAuthKey { ReceiveAuthKey([41; 32]) }
 		fn sign_bolt12_invoice(
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }
@@ -1940,7 +1950,7 @@ fn test_trampoline_inbound_payment_decoding() {
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 		) -> Result<RecoverableSignature, ()> { unreachable!() }
 		fn get_peer_storage_key(&self) -> PeerStorageKey { unreachable!() }
-		fn get_receive_auth_key(&self) -> ReceiveAuthKey { unreachable!() }
+		fn get_receive_auth_key(&self) -> ReceiveAuthKey { ReceiveAuthKey([41; 32]) }
 		fn sign_bolt12_invoice(
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }
@@ -2207,8 +2217,9 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = nodes[2].keys_manager.get_expanded_key();
+	let receive_auth_key = nodes[2].keys_manager.get_receive_auth_key();
 	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
-	let blinded_path = BlindedPaymentPath::new(&[], carol_node_id, payee_tlvs, u64::MAX, 0, nodes[2].keys_manager, &secp_ctx).unwrap();
+	let blinded_path = BlindedPaymentPath::new(&[], carol_node_id, receive_auth_key, payee_tlvs, u64::MAX, 0, nodes[2].keys_manager, &secp_ctx).unwrap();
 
 	let route = Route {
 		paths: vec![Path {

@@ -20,7 +20,7 @@ use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::nonce::Nonce;
 use lightning::offers::parse::Bolt12SemanticError;
 use lightning::offers::refund::Refund;
-use lightning::sign::EntropySource;
+use lightning::sign::{EntropySource, ReceiveAuthKey};
 use lightning::types::features::BlindedHopFeatures;
 use lightning::types::payment::{PaymentHash, PaymentSecret};
 use lightning::util::ser::Writeable;
@@ -71,6 +71,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 ) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
 	let expanded_key = ExpandedKey::new([42; 32]);
 	let entropy_source = Randomness {};
+	let receive_auth_key = ReceiveAuthKey([41; 32]);
 	let nonce = Nonce::from_entropy_source(&entropy_source);
 	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
 	let payee_tlvs = UnauthenticatedReceiveTlvs {
@@ -103,6 +104,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	let payment_path = BlindedPaymentPath::new(
 		&intermediate_nodes,
 		pubkey(42),
+		receive_auth_key,
 		payee_tlvs,
 		u64::MAX,
 		MIN_FINAL_CLTV_EXPIRY_DELTA,

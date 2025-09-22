@@ -21,7 +21,7 @@ use lightning::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
 use lightning::offers::nonce::Nonce;
 use lightning::offers::offer::OfferId;
 use lightning::offers::parse::Bolt12SemanticError;
-use lightning::sign::EntropySource;
+use lightning::sign::{EntropySource, ReceiveAuthKey};
 use lightning::types::features::BlindedHopFeatures;
 use lightning::types::payment::{PaymentHash, PaymentSecret};
 use lightning::types::string::UntrustedString;
@@ -85,6 +85,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	let expanded_key = ExpandedKey::new([42; 32]);
 	let entropy_source = Randomness {};
 	let nonce = Nonce::from_entropy_source(&entropy_source);
+	let receive_auth_key = ReceiveAuthKey([41; 32]);
 
 	let invoice_request_fields =
 		if let Ok(ver) = invoice_request.clone().verify_using_metadata(&expanded_key, secp_ctx) {
@@ -136,6 +137,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	let payment_path = BlindedPaymentPath::new(
 		&intermediate_nodes,
 		pubkey(42),
+		receive_auth_key,
 		payee_tlvs,
 		u64::MAX,
 		MIN_FINAL_CLTV_EXPIRY_DELTA,
