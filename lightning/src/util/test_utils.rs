@@ -857,13 +857,17 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister 
 	}
 }
 
-type SPSCKVChannelState = Arc<Mutex<(Option<Result<(), io::Error>>, Option<Waker>)>>;
-struct SPSCKVChannel(SPSCKVChannelState);
-impl Future for SPSCKVChannel {
+// A simple multi-producer-single-consumer one-shot channel
+type OneShotChannelState = Arc<Mutex<(Option<Result<(), io::Error>>, Option<Waker>)>>;
+struct OneShotChannel(OneShotChannelState);
+impl Future for OneShotChannel {
 	type Output = Result<(), io::Error>;
 	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
 		let mut state = self.0.lock().unwrap();
+		// If the future is complete, take() the result and return it,
 		state.0.take().map(|res| Poll::Ready(res)).unwrap_or_else(|| {
+			// otherwise, store the waker so that the future will be poll()ed again when the result
+			// is ready.
 			state.1 = Some(cx.waker().clone());
 			Poll::Pending
 		})
@@ -871,7 +875,7 @@ impl Future for SPSCKVChannel {
 }
 
 pub struct TestStore {
-	pending_async_writes: Mutex<HashMap<String, Vec<(usize, SPSCKVChannelState, Vec<u8>)>>>,
+	pending_async_writes: Mutex<HashMap<String, Vec<(usize, OneShotChannelState, Vec<u8>)>>>,
 	persisted_bytes: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
 	read_only: bool,
 }
@@ -1013,7 +1017,7 @@ impl KVStore for TestStore {
 		let new_id = pending_writes.last().map(|(id, _, _)| id + 1).unwrap_or(0);
 		pending_writes.push((new_id, Arc::clone(&future), buf));
 
-		Box::pin(SPSCKVChannel(future))
+		Box::pin(OneShotChannel(future))
 	}
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
