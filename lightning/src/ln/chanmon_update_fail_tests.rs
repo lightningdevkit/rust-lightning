@@ -4921,7 +4921,7 @@ fn native_async_persist() {
 	);
 
 	// Write the initial ChannelMonitor async, testing primarily that the `MonitorEvent::Completed`
-	// isn't returned until the write is complted (via `complete_all_async_writes`) and the future
+	// isn't returned until the write is completed (via `complete_all_async_writes`) and the future
 	// is `poll`ed (which a background spawn should do automatically in production, but which is
 	// needed to get the future completion through to the `ChainMonitor`).
 	let write_status = async_chain_monitor.watch_channel(chan_id, monitor).unwrap();
