@@ -203,10 +203,7 @@ pub(crate) struct ConstructedTransaction {
 	tx: Transaction,
 
 	local_inputs_value_satoshis: u64,
-	local_outputs_value_satoshis: u64,
-
 	remote_inputs_value_satoshis: u64,
-	remote_outputs_value_satoshis: u64,
 
 	shared_input_index: Option<u32>,
 }
@@ -253,10 +250,8 @@ impl_writeable_tlv_based!(ConstructedTransaction, {
 	(5, output_metadata, required),
 	(7, tx, required),
 	(9, local_inputs_value_satoshis, required),
-	(11, local_outputs_value_satoshis, required),
-	(13, remote_inputs_value_satoshis, required),
-	(15, remote_outputs_value_satoshis, required),
-	(17, shared_input_index, option),
+	(11, remote_inputs_value_satoshis, required),
+	(13, shared_input_index, option),
 });
 
 impl ConstructedTransaction {
@@ -280,14 +275,7 @@ impl ConstructedTransaction {
 			.inputs
 			.iter()
 			.fold(0u64, |value, (_, input)| value.saturating_add(input.local_value()));
-
-		let local_outputs_value_satoshis = context
-			.outputs
-			.iter()
-			.fold(0u64, |value, (_, output)| value.saturating_add(output.local_value()));
-
 		let remote_inputs_value_satoshis = context.remote_inputs_value();
-		let remote_outputs_value_satoshis = context.remote_outputs_value();
 
 		let satisfaction_weight =
 			Weight::from_wu(context.inputs.iter().fold(0u64, |value, (_, input)| {
@@ -326,15 +314,12 @@ impl ConstructedTransaction {
 		Ok(Self {
 			holder_is_initiator: context.holder_is_initiator,
 
-			local_inputs_value_satoshis,
-			local_outputs_value_satoshis,
-
-			remote_inputs_value_satoshis,
-			remote_outputs_value_satoshis,
-
 			input_metadata,
 			output_metadata,
 			tx,
+
+			local_inputs_value_satoshis,
+			remote_inputs_value_satoshis,
 
 			shared_input_index,
 		})
@@ -3321,10 +3306,8 @@ mod tests {
 			input_metadata,
 			output_metadata: vec![], // N/A for test
 			tx: transaction.clone(),
-			local_inputs_value_satoshis: 0,   // N/A for test
-			local_outputs_value_satoshis: 0,  // N/A for test
-			remote_inputs_value_satoshis: 0,  // N/A for test
-			remote_outputs_value_satoshis: 0, // N/A for test
+			local_inputs_value_satoshis: 0,  // N/A for test
+			remote_inputs_value_satoshis: 0, // N/A for test
 			shared_input_index: None,
 		};
 
