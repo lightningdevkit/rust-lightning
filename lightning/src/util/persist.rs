@@ -1041,12 +1041,14 @@ where
 			Ok((_block_hash, monitor)) => monitor,
 			Err(_) => return,
 		};
-		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
-		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let primary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		match self.kv_store.write(primary, secondary, &monitor_key, monitor.encode()).await {
 			Ok(()) => {},
 			Err(_e) => return,
 		};
+		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let _ = self.kv_store.remove(primary, secondary, &monitor_key, true).await;
 	}
 
