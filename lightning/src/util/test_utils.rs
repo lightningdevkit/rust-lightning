@@ -874,6 +874,12 @@ impl Future for OneShotChannel {
 	}
 }
 
+/// An in-memory KVStore for testing.
+///
+/// Sync writes always complete immediately while async writes always block until manually
+/// completed with [`Self::complete_async_writes_through`] or [`Self::complete_all_async_writes`].
+///
+/// Removes always complete immediately.
 pub struct TestStore {
 	pending_async_writes: Mutex<HashMap<String, Vec<(usize, OneShotChannelState, Vec<u8>)>>>,
 	persisted_bytes: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
@@ -898,6 +904,8 @@ impl TestStore {
 			.unwrap_or(Vec::new())
 	}
 
+	/// Completes all pending async writes for the given namespace and key, up to and through the
+	/// given `write_id` (which can be fetched from [`Self::list_pending_async_writes`]).
 	pub fn complete_async_writes_through(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, write_id: usize,
 	) {
@@ -924,6 +932,7 @@ impl TestStore {
 		});
 	}
 
+	/// Completes all pending async writes on all namespaces and keys.
 	pub fn complete_all_async_writes(&self) {
 		let pending_writes: Vec<String> =
 			self.pending_async_writes.lock().unwrap().keys().cloned().collect();
