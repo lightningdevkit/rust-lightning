@@ -23,6 +23,7 @@ use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::test_channel_signer::SignerOp;
 
+use bitcoin::secp256k1::PublicKey;
 use bitcoin::{Amount, OutPoint as BitcoinOutPoint, ScriptBuf, Transaction, TxOut};
 
 #[test]
@@ -206,25 +207,25 @@ fn complete_interactive_funding_negotiation<'a, 'b, 'c, 'd>(
 	}
 }
 
-fn sign_interactive_funding_transaction<'a, 'b, 'c, 'd>(
+fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>,
-	initial_commit_sig_for_acceptor: msgs::CommitmentSigned,
-) {
+	initial_commit_sig_for_acceptor: msgs::CommitmentSigned, is_0conf: bool,
+) -> (Transaction, Option<(msgs::SpliceLocked, PublicKey)>) {
 	let node_id_initiator = initiator.node.get_our_node_id();
 	let node_id_acceptor = acceptor.node.get_our_node_id();
 
 	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
 	acceptor.node.handle_commitment_signed(node_id_initiator, &initial_commit_sig_for_acceptor);
 
-	let mut msg_events = acceptor.node.get_and_clear_pending_msg_events();
+	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
-	if let MessageSendEvent::UpdateHTLCs { mut updates, .. } = msg_events.remove(0) {
-		let commitment_signed = updates.commitment_signed.remove(0);
-		initiator.node.handle_commitment_signed(node_id_acceptor, &commitment_signed);
+	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
+		let commitment_signed = &updates.commitment_signed[0];
+		initiator.node.handle_commitment_signed(node_id_acceptor, commitment_signed);
 	} else {
 		panic!();
 	}
-	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = msg_events.remove(0) {
+	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[1] {
 		initiator.node.handle_tx_signatures(node_id_acceptor, msg);
 	} else {
 		panic!();
@@ -244,12 +245,34 @@ fn sign_interactive_funding_transaction<'a, 'b, 'c, 'd>(
 			.funding_transaction_signed(&channel_id, &counterparty_node_id, partially_signed_tx)
 			.unwrap();
 	}
-	let tx_signatures =
-		get_event_msg!(initiator, MessageSendEvent::SendTxSignatures, node_id_acceptor);
-	acceptor.node.handle_tx_signatures(node_id_initiator, &tx_signatures);
+	let mut msg_events = initiator.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), if is_0conf { 2 } else { 1 }, "{msg_events:?}");
+	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[0] {
+		acceptor.node.handle_tx_signatures(node_id_initiator, msg);
+	} else {
+		panic!();
+	}
+	let splice_locked = if is_0conf {
+		if let MessageSendEvent::SendSpliceLocked { msg, .. } = msg_events.remove(1) {
+			Some((msg, node_id_acceptor))
+		} else {
+			panic!();
+		}
+	} else {
+		None
+	};
 
 	check_added_monitors(&initiator, 1);
 	check_added_monitors(&acceptor, 1);
+
+	let tx = {
+		let mut initiator_txn = initiator.tx_broadcaster.txn_broadcast();
+		assert_eq!(initiator_txn.len(), 1);
+		let acceptor_txn = acceptor.tx_broadcaster.txn_broadcast();
+		assert_eq!(initiator_txn, acceptor_txn,);
+		initiator_txn.remove(0)
+	};
+	(tx, splice_locked)
 }
 
 fn splice_channel<'a, 'b, 'c, 'd>(
@@ -269,15 +292,9 @@ fn splice_channel<'a, 'b, 'c, 'd>(
 		initiator_contribution,
 		new_funding_script,
 	);
-	sign_interactive_funding_transaction(initiator, acceptor, initial_commit_sig_for_acceptor);
-
-	let splice_tx = {
-		let mut initiator_txn = initiator.tx_broadcaster.txn_broadcast();
-		assert_eq!(initiator_txn.len(), 1);
-		let acceptor_txn = acceptor.tx_broadcaster.txn_broadcast();
-		assert_eq!(initiator_txn, acceptor_txn);
-		initiator_txn.remove(0)
-	};
+	let (splice_tx, splice_locked) =
+		sign_interactive_funding_tx(initiator, acceptor, initial_commit_sig_for_acceptor, false);
+	assert!(splice_locked.is_none());
 
 	expect_splice_pending_event(initiator, &node_id_acceptor);
 	expect_splice_pending_event(acceptor, &node_id_initiator);
@@ -286,36 +303,46 @@ fn splice_channel<'a, 'b, 'c, 'd>(
 }
 
 fn lock_splice_after_blocks<'a, 'b, 'c, 'd>(
-	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
-	num_blocks: u32,
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, num_blocks: u32,
+) {
+	connect_blocks(node_a, num_blocks);
+	connect_blocks(node_b, num_blocks);
+
+	let node_id_b = node_b.node.get_our_node_id();
+	let splice_locked_for_node_b =
+		get_event_msg!(node_a, MessageSendEvent::SendSpliceLocked, node_id_b);
+	lock_splice(node_a, node_b, &splice_locked_for_node_b, false);
+}
+
+fn lock_splice<'a, 'b, 'c, 'd>(
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>,
+	splice_locked_for_node_b: &msgs::SpliceLocked, is_0conf: bool,
 ) {
 	let (prev_funding_outpoint, prev_funding_script) = node_a
 		.chain_monitor
 		.chain_monitor
-		.get_monitor(channel_id)
+		.get_monitor(splice_locked_for_node_b.channel_id)
 		.map(|monitor| (monitor.get_funding_txo(), monitor.get_funding_script()))
 		.unwrap();
-
-	connect_blocks(node_a, num_blocks);
-	connect_blocks(node_b, num_blocks);
 
 	let node_id_a = node_a.node.get_our_node_id();
 	let node_id_b = node_b.node.get_our_node_id();
 
-	let splice_locked_a = get_event_msg!(node_a, MessageSendEvent::SendSpliceLocked, node_id_b);
-	node_b.node.handle_splice_locked(node_id_a, &splice_locked_a);
+	node_b.node.handle_splice_locked(node_id_a, splice_locked_for_node_b);
 
 	let mut msg_events = node_b.node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	assert_eq!(msg_events.len(), if is_0conf { 1 } else { 2 }, "{msg_events:?}");
 	if let MessageSendEvent::SendSpliceLocked { msg, .. } = msg_events.remove(0) {
 		node_a.node.handle_splice_locked(node_id_b, &msg);
 	} else {
 		panic!();
 	}
-	if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
-		node_a.node.handle_announcement_signatures(node_id_b, &msg);
-	} else {
-		panic!();
+	if !is_0conf {
+		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+			node_a.node.handle_announcement_signatures(node_id_b, &msg);
+		} else {
+			panic!();
+		}
 	}
 
 	expect_channel_ready_event(&node_a, &node_id_b);
@@ -323,23 +350,25 @@ fn lock_splice_after_blocks<'a, 'b, 'c, 'd>(
 	expect_channel_ready_event(&node_b, &node_id_a);
 	check_added_monitors(&node_b, 1);
 
-	let mut msg_events = node_a.node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
-	if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
-		node_b.node.handle_announcement_signatures(node_id_a, &msg);
-	} else {
-		panic!();
-	}
-	if let MessageSendEvent::BroadcastChannelAnnouncement { .. } = msg_events.remove(0) {
-	} else {
-		panic!();
-	}
+	if !is_0conf {
+		let mut msg_events = node_a.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+			node_b.node.handle_announcement_signatures(node_id_a, &msg);
+		} else {
+			panic!();
+		}
+		if let MessageSendEvent::BroadcastChannelAnnouncement { .. } = msg_events.remove(0) {
+		} else {
+			panic!();
+		}
 
-	let mut msg_events = node_b.node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
-	if let MessageSendEvent::BroadcastChannelAnnouncement { .. } = msg_events.remove(0) {
-	} else {
-		panic!();
+		let mut msg_events = node_b.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+		if let MessageSendEvent::BroadcastChannelAnnouncement { .. } = msg_events.remove(0) {
+		} else {
+			panic!();
+		}
 	}
 
 	// Remove the corresponding outputs and transactions the chain source is watching for the
@@ -533,7 +562,7 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 
 	mine_transaction(&nodes[0], &splice_tx);
 	mine_transaction(&nodes[1], &splice_tx);
-	lock_splice_after_blocks(&nodes[0], &nodes[1], channel_id, ANTI_REORG_DELAY - 1);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
 }
 
 #[test]
@@ -633,7 +662,7 @@ fn test_splice_in() {
 	assert!(htlc_limit_msat < initial_channel_value_sat * 1000);
 	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
 
-	lock_splice_after_blocks(&nodes[0], &nodes[1], channel_id, ANTI_REORG_DELAY - 1);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
 
 	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
 	assert!(htlc_limit_msat > initial_channel_value_sat);
@@ -676,7 +705,7 @@ fn test_splice_out() {
 	assert!(htlc_limit_msat < initial_channel_value_sat / 2 * 1000);
 	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
 
-	lock_splice_after_blocks(&nodes[0], &nodes[1], channel_id, ANTI_REORG_DELAY - 1);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
 
 	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
 	assert!(htlc_limit_msat < initial_channel_value_sat / 2 * 1000);
@@ -736,7 +765,7 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 		mine_transaction(&nodes[1], &splice_tx);
 	}
 	if splice_status == SpliceStatus::Locked {
-		lock_splice_after_blocks(&nodes[0], &nodes[1], channel_id, ANTI_REORG_DELAY - 1);
+		lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
 	}
 
 	if claim_htlcs {
