@@ -12,7 +12,9 @@
 //! There are a bunch of these as their handling is relatively error-prone so they are split out
 //! here. See also the chanmon_fail_consistency fuzz test.
 
-use crate::chain::channelmonitor::{ChannelMonitor, ANTI_REORG_DELAY};
+use crate::chain::chainmonitor::ChainMonitor;
+use crate::chain::channelmonitor::{ChannelMonitor, MonitorEvent, ANTI_REORG_DELAY};
+use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
 use crate::ln::channel::AnnouncementSigsState;
@@ -22,6 +24,13 @@ use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
 };
 use crate::ln::types::ChannelId;
+use crate::sign::NodeSigner;
+use crate::util::native_async::FutureQueue;
+use crate::util::persist::{
+	MonitorName, MonitorUpdatingPersisterAsync, CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+	CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+	CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+};
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils::TestBroadcaster;
@@ -4846,4 +4855,201 @@ fn test_single_channel_multiple_mpp() {
 	let raa = get_event_msg!(nodes[8], MessageSendEvent::SendRevokeAndACK, node_h_id);
 	nodes[7].node.handle_revoke_and_ack(node_i_id, &raa);
 	check_added_monitors(&nodes[7], 1);
+}
+
+#[test]
+fn native_async_persist() {
+	// Test ChainMonitor::new_async_beta and the backing MonitorUpdatingPersisterAsync.
+	//
+	// Because our test utils aren't really set up for such utils, we simply test them directly,
+	// first spinning up some nodes to create a `ChannelMonitor` and some `ChannelMonitorUpdate`s
+	// we can apply.
+	let (monitor, updates);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	monitor = get_monitor!(nodes[0], chan_id).clone();
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let mon_updates =
+		nodes[0].chain_monitor.monitor_updates.lock().unwrap().remove(&chan_id).unwrap();
+	updates = mon_updates.into_iter().collect::<Vec<_>>();
+	assert!(updates.len() >= 4, "The test below needs at least four updates");
+
+	core::mem::drop(nodes);
+	core::mem::drop(node_chanmgrs);
+	core::mem::drop(node_cfgs);
+
+	let node_0_utils = chanmon_cfgs.remove(0);
+	let (logger, keys_manager, tx_broadcaster, fee_estimator) = (
+		node_0_utils.logger,
+		node_0_utils.keys_manager,
+		node_0_utils.tx_broadcaster,
+		node_0_utils.fee_estimator,
+	);
+
+	// Now that we have some updates, build a new ChainMonitor with a backing async KVStore.
+	let logger = Arc::new(logger);
+	let keys_manager = Arc::new(keys_manager);
+	let tx_broadcaster = Arc::new(tx_broadcaster);
+	let fee_estimator = Arc::new(fee_estimator);
+
+	let kv_store = Arc::new(test_utils::TestStore::new(false));
+	let persist_futures = Arc::new(FutureQueue::new());
+	let native_async_persister = MonitorUpdatingPersisterAsync::new(
+		Arc::clone(&kv_store),
+		Arc::clone(&persist_futures),
+		Arc::clone(&logger),
+		42,
+		Arc::clone(&keys_manager),
+		Arc::clone(&keys_manager),
+		Arc::clone(&tx_broadcaster),
+		Arc::clone(&fee_estimator),
+	);
+	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
+	let async_chain_monitor = ChainMonitor::new_async_beta(
+		Some(&chain_source),
+		tx_broadcaster,
+		logger,
+		fee_estimator,
+		native_async_persister,
+		Arc::clone(&keys_manager),
+		keys_manager.get_peer_storage_key(),
+	);
+
+	// Write the initial ChannelMonitor async, testing primarily that the `MonitorEvent::Completed`
+	// isn't returned until the write is completed (via `complete_all_async_writes`) and the future
+	// is `poll`ed (which a background spawn should do automatically in production, but which is
+	// needed to get the future completion through to the `ChainMonitor`).
+	let write_status = async_chain_monitor.watch_channel(chan_id, monitor).unwrap();
+	assert_eq!(write_status, ChannelMonitorUpdateStatus::InProgress);
+
+	// The write will remain pending until we call `complete_all_async_writes`, below.
+	assert_eq!(persist_futures.pending_futures(), 1);
+	persist_futures.poll_futures();
+	assert_eq!(persist_futures.pending_futures(), 1);
+
+	let funding_txo = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
+	let key = MonitorName::V1Channel(funding_txo).to_string();
+	let pending_writes = kv_store.list_pending_async_writes(
+		CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+		&key,
+	);
+	assert_eq!(pending_writes.len(), 1);
+
+	// Once we complete the future, the write will still be pending until the future gets `poll`ed.
+	kv_store.complete_all_async_writes();
+	assert_eq!(persist_futures.pending_futures(), 1);
+	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
+
+	assert_eq!(persist_futures.pending_futures(), 1);
+	persist_futures.poll_futures();
+	assert_eq!(persist_futures.pending_futures(), 0);
+
+	let completed_persist = async_chain_monitor.release_pending_monitor_events();
+	assert_eq!(completed_persist.len(), 1);
+	assert_eq!(completed_persist[0].2.len(), 1);
+	assert!(matches!(completed_persist[0].2[0], MonitorEvent::Completed { .. }));
+
+	// Now test two async `ChannelMonitorUpdate`s in flight at once, completing them in-order but
+	// separately.
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[0]);
+	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
+
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[1]);
+	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
+
+	persist_futures.poll_futures();
+	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
+
+	let pending_writes = kv_store.list_pending_async_writes(
+		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+		&key,
+		"1",
+	);
+	assert_eq!(pending_writes.len(), 1);
+	let pending_writes = kv_store.list_pending_async_writes(
+		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+		&key,
+		"2",
+	);
+	assert_eq!(pending_writes.len(), 1);
+
+	kv_store.complete_async_writes_through(
+		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+		&key,
+		"1",
+		usize::MAX,
+	);
+	persist_futures.poll_futures();
+	// While the `ChainMonitor` could return a `MonitorEvent::Completed` here, it currently
+	// doesn't. If that ever changes we should validate that the `Completed` event has the correct
+	// `monitor_update_id` (1).
+	assert!(async_chain_monitor.release_pending_monitor_events().is_empty());
+
+	kv_store.complete_async_writes_through(
+		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+		&key,
+		"2",
+		usize::MAX,
+	);
+	persist_futures.poll_futures();
+	let completed_persist = async_chain_monitor.release_pending_monitor_events();
+	assert_eq!(completed_persist.len(), 1);
+	assert_eq!(completed_persist[0].2.len(), 1);
+	assert!(matches!(completed_persist[0].2[0], MonitorEvent::Completed { .. }));
+
+	// Finally, test two async `ChanelMonitorUpdate`s in flight at once, completing them
+	// out-of-order and ensuring that no `MonitorEvent::Completed` is generated until they are both
+	// completed (and that it marks both as completed when it is generated).
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[2]);
+	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
+
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[3]);
+	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
+
+	persist_futures.poll_futures();
+	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
+
+	let pending_writes = kv_store.list_pending_async_writes(
+		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+		&key,
+		"3",
+	);
+	assert_eq!(pending_writes.len(), 1);
+	let pending_writes = kv_store.list_pending_async_writes(
+		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+		&key,
+		"4",
+	);
+	assert_eq!(pending_writes.len(), 1);
+
+	kv_store.complete_async_writes_through(
+		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+		&key,
+		"4",
+		usize::MAX,
+	);
+	persist_futures.poll_futures();
+	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
+
+	kv_store.complete_async_writes_through(
+		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+		&key,
+		"3",
+		usize::MAX,
+	);
+	persist_futures.poll_futures();
+	let completed_persist = async_chain_monitor.release_pending_monitor_events();
+	assert_eq!(completed_persist.len(), 1);
+	assert_eq!(completed_persist[0].2.len(), 1);
+	if let MonitorEvent::Completed { monitor_update_id, .. } = &completed_persist[0].2[0] {
+		assert_eq!(*monitor_update_id, 4);
+	} else {
+		panic!();
+	}
 }
