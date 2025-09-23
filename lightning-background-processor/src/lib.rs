@@ -1846,11 +1846,13 @@ mod tests {
 		SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 	};
 	use lightning::util::ser::Writeable;
-	use lightning::util::sweep::{OutputSpendStatus, OutputSweeperSync, PRUNE_DELAY_BLOCKS};
+	use lightning::util::sweep::{
+		OutputSpendStatus, OutputSweeper, OutputSweeperSync, PRUNE_DELAY_BLOCKS,
+	};
 	use lightning::util::test_utils;
 	use lightning::{get_event, get_event_msg};
 	use lightning_liquidity::utils::time::DefaultTimeProvider;
-	use lightning_liquidity::{ALiquidityManagerSync, LiquidityManagerSync};
+	use lightning_liquidity::{ALiquidityManagerSync, LiquidityManager, LiquidityManagerSync};
 	use lightning_persister::fs_store::FilesystemStore;
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use std::collections::VecDeque;
@@ -2781,6 +2783,17 @@ mod tests {
 		);
 		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store_sync));
 
+		// Yes, you can unsafe { turn off the borrow checker }
+		let lm_async: &'static LiquidityManager<_, _, _, _, _, _> = unsafe {
+			&*(nodes[0].liquidity_manager.get_lm_async()
+				as *const LiquidityManager<_, _, _, _, _, _>)
+				as &'static LiquidityManager<_, _, _, _, _, _>
+		};
+		let sweeper_async: &'static OutputSweeper<_, _, _, _, _, _, _> = unsafe {
+			&*(nodes[0].sweeper.sweeper_async() as *const OutputSweeper<_, _, _, _, _, _, _>)
+				as &'static OutputSweeper<_, _, _, _, _, _, _>
+		};
+
 		let bp_future = super::process_events_async(
 			kv_store,
 			|_: _| async { Ok(()) },
@@ -2789,8 +2802,8 @@ mod tests {
 			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].rapid_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(nodes[0].liquidity_manager.get_lm_async()),
-			Some(nodes[0].sweeper.sweeper_async()),
+			Some(lm_async),
+			Some(sweeper_async),
 			Arc::clone(&nodes[0].logger),
 			Some(Arc::clone(&nodes[0].scorer)),
 			move |dur: Duration| {
@@ -3289,6 +3302,17 @@ mod tests {
 			Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store_sync));
 
+		// Yes, you can unsafe { turn off the borrow checker }
+		let lm_async: &'static LiquidityManager<_, _, _, _, _, _> = unsafe {
+			&*(nodes[0].liquidity_manager.get_lm_async()
+				as *const LiquidityManager<_, _, _, _, _, _>)
+				as &'static LiquidityManager<_, _, _, _, _, _>
+		};
+		let sweeper_async: &'static OutputSweeper<_, _, _, _, _, _, _> = unsafe {
+			&*(nodes[0].sweeper.sweeper_async() as *const OutputSweeper<_, _, _, _, _, _, _>)
+				as &'static OutputSweeper<_, _, _, _, _, _, _>
+		};
+
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 		let bp_future = super::process_events_async(
 			kv_store,
@@ -3298,8 +3322,8 @@ mod tests {
 			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].rapid_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(nodes[0].liquidity_manager.get_lm_async()),
-			Some(nodes[0].sweeper.sweeper_async()),
+			Some(lm_async),
+			Some(sweeper_async),
 			Arc::clone(&nodes[0].logger),
 			Some(Arc::clone(&nodes[0].scorer)),
 			move |dur: Duration| {
@@ -3505,6 +3529,17 @@ mod tests {
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 
+		// Yes, you can unsafe { turn off the borrow checker }
+		let lm_async: &'static LiquidityManager<_, _, _, _, _, _> = unsafe {
+			&*(nodes[0].liquidity_manager.get_lm_async()
+				as *const LiquidityManager<_, _, _, _, _, _>)
+				as &'static LiquidityManager<_, _, _, _, _, _>
+		};
+		let sweeper_async: &'static OutputSweeper<_, _, _, _, _, _, _> = unsafe {
+			&*(nodes[0].sweeper.sweeper_async() as *const OutputSweeper<_, _, _, _, _, _, _>)
+				as &'static OutputSweeper<_, _, _, _, _, _, _>
+		};
+
 		let bp_future = super::process_events_async(
 			kv_store,
 			event_handler,
@@ -3513,8 +3548,8 @@ mod tests {
 			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(nodes[0].liquidity_manager.get_lm_async()),
-			Some(nodes[0].sweeper.sweeper_async()),
+			Some(lm_async),
+			Some(sweeper_async),
 			Arc::clone(&nodes[0].logger),
 			Some(Arc::clone(&nodes[0].scorer)),
 			move |dur: Duration| {

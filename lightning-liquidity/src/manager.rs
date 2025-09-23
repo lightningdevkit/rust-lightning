@@ -195,15 +195,13 @@ pub trait ALiquidityManagerSync {
 	#[cfg(any(test, feature = "_test_utils"))]
 	fn get_lm_async(
 		&self,
-	) -> Arc<
-		LiquidityManager<
-			Self::ES,
-			Self::NS,
-			Self::CM,
-			Self::C,
-			Arc<KVStoreSyncWrapper<Self::KS>>,
-			Self::TP,
-		>,
+	) -> &LiquidityManager<
+		Self::ES,
+		Self::NS,
+		Self::CM,
+		Self::C,
+		Arc<KVStoreSyncWrapper<Self::KS>>,
+		Self::TP,
 	>;
 	/// Returns a reference to the actual [`LiquidityManager`] object.
 	fn get_lm(
@@ -243,17 +241,15 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	fn get_lm_async(
 		&self,
-	) -> Arc<
-		LiquidityManager<
-			Self::ES,
-			Self::NS,
-			Self::CM,
-			Self::C,
-			Arc<KVStoreSyncWrapper<Self::KS>>,
-			Self::TP,
-		>,
+	) -> &LiquidityManager<
+		Self::ES,
+		Self::NS,
+		Self::CM,
+		Self::C,
+		Arc<KVStoreSyncWrapper<Self::KS>>,
+		Self::TP,
 	> {
-		Arc::clone(&self.inner)
+		&self.inner
 	}
 	fn get_lm(&self) -> &LiquidityManagerSync<ES, NS, CM, C, KS, TP> {
 		self
@@ -1040,7 +1036,7 @@ pub struct LiquidityManagerSync<
 	KS::Target: KVStoreSync,
 	TP::Target: TimeProvider,
 {
-	inner: Arc<LiquidityManager<ES, NS, CM, C, Arc<KVStoreSyncWrapper<KS>>, TP>>,
+	inner: LiquidityManager<ES, NS, CM, C, Arc<KVStoreSyncWrapper<KS>>, TP>,
 }
 
 #[cfg(feature = "time")]
@@ -1089,7 +1085,7 @@ where
 				unreachable!("LiquidityManager::new should not be pending in a sync context");
 			},
 		}?;
-		Ok(Self { inner: Arc::new(inner) })
+		Ok(Self { inner })
 	}
 }
 
@@ -1140,7 +1136,7 @@ where
 				unreachable!("LiquidityManager::new should not be pending in a sync context");
 			},
 		}?;
-		Ok(Self { inner: Arc::new(inner) })
+		Ok(Self { inner })
 	}
 
 	/// Returns a reference to the LSPS0 client-side handler.

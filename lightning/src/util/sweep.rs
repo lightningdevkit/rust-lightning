@@ -981,16 +981,14 @@ where
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
-	sweeper: Arc<
-		OutputSweeper<
-			B,
-			Arc<ChangeDestinationSourceSyncWrapper<D>>,
-			E,
-			F,
-			Arc<KVStoreSyncWrapper<K>>,
-			L,
-			O,
-		>,
+	sweeper: OutputSweeper<
+		B,
+		Arc<ChangeDestinationSourceSyncWrapper<D>>,
+		E,
+		F,
+		Arc<KVStoreSyncWrapper<K>>,
+		L,
+		O,
 	>,
 }
 
@@ -1025,7 +1023,7 @@ where
 			kv_store,
 			logger,
 		);
-		Self { sweeper: Arc::new(sweeper) }
+		Self { sweeper }
 	}
 
 	/// Regenerates and broadcasts the spending transaction for any outputs that are pending. Wraps
@@ -1074,18 +1072,16 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn sweeper_async(
 		&self,
-	) -> Arc<
-		OutputSweeper<
-			B,
-			Arc<ChangeDestinationSourceSyncWrapper<D>>,
-			E,
-			F,
-			Arc<KVStoreSyncWrapper<K>>,
-			L,
-			O,
-		>,
+	) -> &OutputSweeper<
+		B,
+		Arc<ChangeDestinationSourceSyncWrapper<D>>,
+		E,
+		F,
+		Arc<KVStoreSyncWrapper<K>>,
+		L,
+		O,
 	> {
-		Arc::clone(&self.sweeper)
+		&self.sweeper
 	}
 }
 
