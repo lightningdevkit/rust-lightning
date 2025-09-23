@@ -6440,7 +6440,11 @@ where
 								splice_negotiated,
 							}) => {
 								if let Some(funding_tx) = funding_tx {
-									self.broadcast_interactive_funding(chan, &funding_tx);
+									self.broadcast_interactive_funding(
+										chan,
+										&funding_tx,
+										&self.logger,
+									);
 								}
 								if let Some(splice_negotiated) = splice_negotiated {
 									self.pending_events.lock().unwrap().push_back((
@@ -6503,8 +6507,14 @@ where
 	}
 
 	fn broadcast_interactive_funding(
-		&self, channel: &mut FundedChannel<SP>, funding_tx: &Transaction,
+		&self, channel: &mut FundedChannel<SP>, funding_tx: &Transaction, logger: &L,
 	) {
+		let logger = WithChannelContext::from(logger, channel.context(), None);
+		log_info!(
+			logger,
+			"Broadcasting signed interactive funding transaction {}",
+			funding_tx.compute_txid()
+		);
 		self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
@@ -9573,7 +9583,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				match channel.funding_transaction_signed(txid, vec![]) {
 					Ok(FundingTxSigned { tx_signatures: Some(tx_signatures), funding_tx, splice_negotiated }) => {
 						if let Some(funding_tx) = funding_tx {
-							self.broadcast_interactive_funding(channel, &funding_tx);
+							self.broadcast_interactive_funding(channel, &funding_tx, &self.logger);
 						}
 
 						if let Some(splice_negotiated) = splice_negotiated {
@@ -10581,11 +10591,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							});
 						}
 						if let Some(ref funding_tx) = funding_tx {
-							self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
-							{
-								let mut pending_events = self.pending_events.lock().unwrap();
-								emit_channel_pending_event!(pending_events, chan);
-							}
+							self.broadcast_interactive_funding(chan, funding_tx, &self.logger);
 						}
 						if let Some(splice_negotiated) = splice_negotiated {
 							self.pending_events.lock().unwrap().push_back((
