@@ -1617,6 +1617,9 @@ pub enum Event {
 	/// `OnionMessenger` was initialized with
 	/// [`OnionMessenger::new_with_offline_peer_interception`], see its docs.
 	///
+	/// The offline peer should be awoken if possible on receipt of this event, such as via the LSPS5
+	/// protocol.
+	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
@@ -1660,6 +1663,14 @@ pub enum Event {
 		/// request, we'll forward it to the async recipient over this path in case the
 		/// recipient is online to provide a new invoice. This path should be persisted and
 		/// later provided to [`ChannelManager::respond_to_static_invoice_request`].
+		///
+		/// This path's [`BlindedMessagePath::introduction_node`] MUST be set to our node or one of our
+		/// peers. This is because, for DoS protection, invoice requests forwarded over this path are
+		/// treated by our node like any other onion message forward and will not generate
+		/// [`Event::ConnectionNeeded`] if the first hop in the path is not our peer.
+		///
+		/// If the next-hop peer in the path is offline, if configured to do so we will generate an
+		/// [`Event::OnionMessageIntercepted`] for the invoice request.
 		///
 		/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
 		invoice_request_path: BlindedMessagePath,

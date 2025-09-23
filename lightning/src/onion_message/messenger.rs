@@ -490,6 +490,21 @@ pub enum MessageSendInstructions {
 		/// The instructions provided by the [`Responder`].
 		instructions: ResponseInstruction,
 	},
+	/// Indicates that this onion message did not originate from our node and is being forwarded
+	/// through us from another node on the network to the destination.
+	///
+	/// We separate out this case because forwarded onion messages are treated differently from
+	/// outbound onion messages initiated by our node. Outbounds are buffered internally, whereas, for
+	/// DoS protection, forwards should never be buffered internally and instead will either be
+	/// dropped or generate an [`Event::OnionMessageIntercepted`] if the next-hop node is
+	/// disconnected.
+	ForwardedMessage {
+		/// The destination where we need to send the forwarded onion message.
+		destination: Destination,
+		/// The reply path which should be included in the message, that terminates at the original
+		/// sender of this forwarded message.
+		reply_path: Option<BlindedMessagePath>,
+	},
 }
 
 /// A trait defining behavior for routing an [`OnionMessage`].
@@ -1467,6 +1482,7 @@ where
 	fn send_onion_message_internal<T: OnionMessageContents>(
 		&self, contents: T, instructions: MessageSendInstructions, log_suffix: fmt::Arguments,
 	) -> Result<SendSuccess, SendError> {
+		let is_forward = matches!(instructions, MessageSendInstructions::ForwardedMessage { .. });
 		let (destination, reply_path) = match instructions {
 			MessageSendInstructions::WithSpecifiedReplyPath { destination, reply_path } => {
 				(destination, Some(reply_path))
@@ -1490,12 +1506,24 @@ where
 			| MessageSendInstructions::ForReply {
 				instructions: ResponseInstruction { destination, context: None },
 			} => (destination, None),
+			MessageSendInstructions::ForwardedMessage { destination, reply_path } => {
+				(destination, reply_path)
+			},
 		};
 
-		let path = self.find_path(destination).map_err(|e| {
-			log_trace!(self.logger, "Failed to find path {}", log_suffix);
-			e
-		})?;
+		let path = if is_forward {
+			// If this onion message is being treated as a forward, we shouldn't pathfind to the next hop.
+			OnionMessagePath {
+				intermediate_nodes: Vec::new(),
+				first_node_addresses: None,
+				destination,
+			}
+		} else {
+			self.find_path(destination).map_err(|e| {
+				log_trace!(self.logger, "Failed to find path {}", log_suffix);
+				e
+			})?
+		};
 		let first_hop = path.intermediate_nodes.get(0).map(|p| *p);
 		let logger = WithContext::from(&self.logger, first_hop, None, None);
 
@@ -1514,7 +1542,17 @@ where
 			e
 		})?;
 
-		let result = self.enqueue_outbound_onion_message(onion_message, first_node_id, addresses);
+		let result = if is_forward {
+			self.enqueue_forwarded_onion_message(
+				NextMessageHop::NodeId(first_node_id),
+				onion_message,
+				log_suffix,
+			)
+			.map(|()| SendSuccess::Buffered)
+		} else {
+			self.enqueue_outbound_onion_message(onion_message, first_node_id, addresses)
+		};
+
 		match result.as_ref() {
 			Err(SendError::GetNodeIdFailed) => {
 				log_warn!(logger, "Unable to retrieve node id {}", log_suffix);
