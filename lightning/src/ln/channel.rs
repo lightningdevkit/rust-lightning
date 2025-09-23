@@ -11507,10 +11507,10 @@ where
 			});
 		}
 
-		if !self.context.is_live() {
+		if !self.context.is_usable() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Channel {} cannot be spliced, as channel is not live",
+					"Channel {} cannot be spliced as it is either pending open/close",
 					self.context.channel_id()
 				),
 			});
@@ -12656,6 +12656,7 @@ where
 			|| self.context.channel_state.is_awaiting_quiescence()
 			|| self.context.channel_state.is_local_stfu_sent()
 		{
+			log_info!(logger, "Channel is either pending or already quiescent");
 			return Ok(None);
 		}
 
@@ -12663,6 +12664,7 @@ where
 		if self.context.is_live() {
 			Ok(Some(self.send_stfu(logger)?))
 		} else {
+			log_info!(logger, "Waiting for peer reconnection to send stfu");
 			Ok(None)
 		}
 	}
