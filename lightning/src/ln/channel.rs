@@ -11180,6 +11180,12 @@ where
 		let announcement_sigs =
 			self.get_announcement_sigs(node_signer, chain_hash, user_config, block_height, logger);
 
+		if let Some(quiescent_action) = self.quiescent_action.as_ref() {
+			if matches!(quiescent_action, QuiescentAction::Splice(_)) {
+				self.context.channel_state.set_awaiting_quiescence();
+			}
+		}
+
 		Some(SpliceFundingPromotion {
 			funding_txo,
 			monitor_update,
