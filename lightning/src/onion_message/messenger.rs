@@ -1492,13 +1492,29 @@ where
 			} => (destination, None),
 		};
 
-		let mut logger = WithContext::from(&self.logger, None, None, None);
-		let result = self.find_path(destination).and_then(|path| {
-			let first_hop = path.intermediate_nodes.get(0).map(|p| *p);
-			logger = WithContext::from(&self.logger, first_hop, None, None);
-			self.enqueue_onion_message(path, contents, reply_path, log_suffix)
-		});
+		let path = self.find_path(destination).map_err(|e| {
+			log_trace!(self.logger, "Failed to find path {}", log_suffix);
+			e
+		})?;
+		let first_hop = path.intermediate_nodes.get(0).map(|p| *p);
+		let logger = WithContext::from(&self.logger, first_hop, None, None);
 
+		log_trace!(logger, "Constructing onion message {}: {:?}", log_suffix, contents);
+		let (first_node_id, onion_message, addresses) = create_onion_message(
+			&self.entropy_source,
+			&self.node_signer,
+			&self.node_id_lookup,
+			&self.secp_ctx,
+			path,
+			contents,
+			reply_path,
+		)
+		.map_err(|e| {
+			log_warn!(logger, "Failed to create onion message with {:?} {}", e, log_suffix);
+			e
+		})?;
+
+		let result = self.enqueue_outbound_onion_message(onion_message, first_node_id, addresses);
 		match result.as_ref() {
 			Err(SendError::GetNodeIdFailed) => {
 				log_warn!(logger, "Unable to retrieve node id {}", log_suffix);
@@ -1578,22 +1594,10 @@ where
 			.map_err(|_| SendError::PathNotFound)
 	}
 
-	fn enqueue_onion_message<T: OnionMessageContents>(
-		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedMessagePath>,
-		log_suffix: fmt::Arguments,
+	fn enqueue_outbound_onion_message(
+		&self, onion_message: OnionMessage, first_node_id: PublicKey,
+		addresses: Option<Vec<SocketAddress>>,
 	) -> Result<SendSuccess, SendError> {
-		log_trace!(self.logger, "Constructing onion message {}: {:?}", log_suffix, contents);
-
-		let (first_node_id, onion_message, addresses) = create_onion_message(
-			&self.entropy_source,
-			&self.node_signer,
-			&self.node_id_lookup,
-			&self.secp_ctx,
-			path,
-			contents,
-			reply_path,
-		)?;
-
 		let mut message_recipients = self.message_recipients.lock().unwrap();
 		if outbound_buffer_full(&first_node_id, &message_recipients) {
 			return Err(SendError::BufferFull);
@@ -1713,7 +1717,16 @@ where
 	pub fn send_onion_message_using_path<T: OnionMessageContents>(
 		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedMessagePath>,
 	) -> Result<SendSuccess, SendError> {
-		self.enqueue_onion_message(path, contents, reply_path, format_args!(""))
+		let (first_node_id, onion_message, addresses) = create_onion_message(
+			&self.entropy_source,
+			&self.node_signer,
+			&self.node_id_lookup,
+			&self.secp_ctx,
+			path,
+			contents,
+			reply_path,
+		)?;
+		self.enqueue_outbound_onion_message(onion_message, first_node_id, addresses)
 	}
 
 	pub(crate) fn peel_onion_message(
