@@ -304,7 +304,7 @@ where
 
 /// Updates scorer based on event and returns whether an update occurred so we can decide whether
 /// to persist.
-fn update_scorer<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + WriteableScore<'a>>(
+fn update_scorer<'a, S: Deref<Target = SC> + Send + Sync, SC: 'a + WriteableScore<'a>>(
 	scorer: &'a S, event: &Event, duration_since_epoch: Duration,
 ) -> bool {
 	match event {
@@ -866,31 +866,30 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 ///```
 pub async fn process_events_async<
 	'a,
-	UL: 'static + Deref,
-	CF: 'static + Deref,
-	T: 'static + Deref,
-	F: 'static + Deref,
-	G: 'static + Deref<Target = NetworkGraph<L>>,
-	L: 'static + Deref,
-	P: 'static + Deref,
+	UL: Deref,
+	CF: Deref,
+	T: Deref,
+	F: Deref,
+	G: Deref<Target = NetworkGraph<L>>,
+	L: Deref,
+	P: Deref,
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
-	ES: 'static + Deref + Send,
-	M: 'static
-		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
+	ES: Deref + Send,
+	M: Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
 		+ Send
 		+ Sync,
-	CM: 'static + Deref,
-	OM: 'static + Deref,
-	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>>,
-	RGS: 'static + Deref<Target = RapidGossipSync<G, L>>,
-	PM: 'static + Deref,
-	LM: 'static + Deref,
-	D: 'static + Deref,
-	O: 'static + Deref,
-	K: 'static + Deref,
-	OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>>,
-	S: 'static + Deref<Target = SC> + Send + Sync,
+	CM: Deref,
+	OM: Deref,
+	PGS: Deref<Target = P2PGossipSync<G, UL, L>>,
+	RGS: Deref<Target = RapidGossipSync<G, L>>,
+	PM: Deref,
+	LM: Deref,
+	D: Deref,
+	O: Deref,
+	K: Deref,
+	OS: Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>>,
+	S: Deref<Target = SC> + Send + Sync,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
 	Sleeper: Fn(Duration) -> SleepFuture,
@@ -902,20 +901,20 @@ pub async fn process_events_async<
 	sleeper: Sleeper, mobile_interruptable_platform: bool, fetch_time: FetchTime,
 ) -> Result<(), lightning::io::Error>
 where
-	UL::Target: 'static + UtxoLookup,
-	CF::Target: 'static + chain::Filter,
-	T::Target: 'static + BroadcasterInterface,
-	F::Target: 'static + FeeEstimator,
-	L::Target: 'static + Logger,
-	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-	ES::Target: 'static + EntropySource,
+	UL::Target: UtxoLookup,
+	CF::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
+	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,
 	PM::Target: APeerManager,
 	LM::Target: ALiquidityManager,
-	O::Target: 'static + OutputSpender,
-	D::Target: 'static + ChangeDestinationSource,
-	K::Target: 'static + KVStore,
+	O::Target: OutputSpender,
+	D::Target: ChangeDestinationSource,
+	K::Target: KVStore,
 {
 	let async_event_handler = |event| {
 		let network_graph = gossip_sync.network_graph();
@@ -1340,31 +1339,30 @@ fn check_and_reset_sleeper<
 /// Async events processor that is based on [`process_events_async`] but allows for [`KVStoreSync`] to be used for
 /// synchronous background persistence.
 pub async fn process_events_async_with_kv_store_sync<
-	UL: 'static + Deref,
-	CF: 'static + Deref,
-	T: 'static + Deref,
-	F: 'static + Deref,
-	G: 'static + Deref<Target = NetworkGraph<L>>,
-	L: 'static + Deref + Send + Sync,
-	P: 'static + Deref,
+	UL: Deref,
+	CF: Deref,
+	T: Deref,
+	F: Deref,
+	G: Deref<Target = NetworkGraph<L>>,
+	L: Deref + Send + Sync,
+	P: Deref,
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
-	ES: 'static + Deref + Send,
-	M: 'static
-		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
+	ES: Deref + Send,
+	M: Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
 		+ Send
 		+ Sync,
-	CM: 'static + Deref + Send + Sync,
-	OM: 'static + Deref,
-	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>>,
-	RGS: 'static + Deref<Target = RapidGossipSync<G, L>>,
-	PM: 'static + Deref,
-	LM: 'static + Deref,
-	D: 'static + Deref,
-	O: 'static + Deref,
-	K: 'static + Deref,
-	OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, KVStoreSyncWrapper<K>, L, O>>,
-	S: 'static + Deref<Target = SC> + Send + Sync,
+	CM: Deref + Send + Sync,
+	OM: Deref,
+	PGS: Deref<Target = P2PGossipSync<G, UL, L>>,
+	RGS: Deref<Target = RapidGossipSync<G, L>>,
+	PM: Deref,
+	LM: Deref,
+	D: Deref,
+	O: Deref,
+	K: Deref,
+	OS: Deref<Target = OutputSweeper<T, D, F, CF, KVStoreSyncWrapper<K>, L, O>>,
+	S: Deref<Target = SC> + Send + Sync,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
 	Sleeper: Fn(Duration) -> SleepFuture,
@@ -1376,20 +1374,20 @@ pub async fn process_events_async_with_kv_store_sync<
 	sleeper: Sleeper, mobile_interruptable_platform: bool, fetch_time: FetchTime,
 ) -> Result<(), lightning::io::Error>
 where
-	UL::Target: 'static + UtxoLookup,
-	CF::Target: 'static + chain::Filter,
-	T::Target: 'static + BroadcasterInterface,
-	F::Target: 'static + FeeEstimator,
-	L::Target: 'static + Logger,
-	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-	ES::Target: 'static + EntropySource,
+	UL::Target: UtxoLookup,
+	CF::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
+	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,
 	PM::Target: APeerManager,
 	LM::Target: ALiquidityManager,
-	O::Target: 'static + OutputSpender,
-	D::Target: 'static + ChangeDestinationSource,
-	K::Target: 'static + KVStoreSync,
+	O::Target: OutputSpender,
+	D::Target: ChangeDestinationSource,
+	K::Target: KVStoreSync,
 {
 	let kv_store = KVStoreSyncWrapper(kv_store);
 	process_events_async(
