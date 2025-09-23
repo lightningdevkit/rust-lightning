@@ -249,6 +249,12 @@ pub trait KVStore {
 	/// eventual batch deletion of multiple keys. As a consequence, subsequent calls to
 	/// [`KVStoreSync::list`] might include the removed key until the changes are actually persisted.
 	///
+	/// Irrespective of the `lazy` flag, any [`Self::write`] calls which are made after a call to
+	/// this method must write the new state. In other words, if a call to this method is made with
+	/// the `lazy` flag and a call to [`Self::write`] is made after this method returns (but before
+	/// the returned future completes), the contents from [`Self::write`] must ultimately be stored,
+	/// overwriting the removal.
+	///
 	/// Note that while setting the `lazy` flag reduces the I/O burden of multiple subsequent
 	/// `remove` calls, it also influences the atomicity guarantees as lazy `remove`s could
 	/// potentially get lost on crash after the method returns. Therefore, this flag should only be
