@@ -622,7 +622,7 @@ pub fn test_insane_channel_opens() {
 	});
 }
 
-#[test]
+#[xtest(feature = "_externalize_tests")]
 fn test_insane_zero_fee_channel_open() {
 	let mut cfg = UserConfig::default();
 	cfg.manually_accept_inbound_channels = true;
