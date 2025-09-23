@@ -6433,11 +6433,18 @@ where
 							.map(|input| input.witness)
 							.filter(|witness| !witness.is_empty())
 							.collect();
-						match chan.funding_transaction_signed(txid, witnesses) {
+						let best_block_height = self.best_block.read().unwrap().height;
+						match chan.funding_transaction_signed(
+							txid,
+							witnesses,
+							best_block_height,
+							&self.logger,
+						) {
 							Ok(FundingTxSigned {
 								tx_signatures: Some(tx_signatures),
 								funding_tx,
 								splice_negotiated,
+								splice_locked,
 							}) => {
 								if let Some(funding_tx) = funding_tx {
 									self.broadcast_interactive_funding(
@@ -6464,6 +6471,14 @@ where
 										msg: tx_signatures,
 									},
 								);
+								if let Some(splice_locked) = splice_locked {
+									peer_state.pending_msg_events.push(
+										MessageSendEvent::SendSpliceLocked {
+											node_id: *counterparty_node_id,
+											msg: splice_locked,
+										},
+									);
+								}
 								return NotifyOption::DoPersist;
 							},
 							Err(err) => {
@@ -6474,9 +6489,11 @@ where
 								tx_signatures: None,
 								funding_tx,
 								splice_negotiated,
+								splice_locked,
 							}) => {
 								debug_assert!(funding_tx.is_none());
 								debug_assert!(splice_negotiated.is_none());
+								debug_assert!(splice_locked.is_none());
 								return NotifyOption::SkipPersistNoEvents;
 							},
 						}
@@ -9580,8 +9597,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 			} else {
 				let txid = signing_session.unsigned_tx().compute_txid();
-				match channel.funding_transaction_signed(txid, vec![]) {
-					Ok(FundingTxSigned { tx_signatures: Some(tx_signatures), funding_tx, splice_negotiated }) => {
+				let best_block_height = self.best_block.read().unwrap().height;
+				match channel.funding_transaction_signed(txid, vec![], best_block_height, &self.logger) {
+					Ok(FundingTxSigned {
+						tx_signatures: Some(tx_signatures),
+						funding_tx,
+						splice_negotiated,
+						splice_locked,
+					}) => {
 						if let Some(funding_tx) = funding_tx {
 							self.broadcast_interactive_funding(channel, &funding_tx, &self.logger);
 						}
@@ -9604,6 +9627,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								node_id: counterparty_node_id,
 								msg: tx_signatures,
 							});
+							if let Some(splice_locked) = splice_locked {
+								pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+									node_id: counterparty_node_id,
+									msg: splice_locked,
+								});
+							}
 						}
 					},
 					Ok(FundingTxSigned { tx_signatures: None, .. }) => {
@@ -10582,12 +10611,28 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
-						let FundingTxSigned { tx_signatures, funding_tx, splice_negotiated } =
-							try_channel_entry!(self, peer_state, chan.tx_signatures(msg), chan_entry);
+						let best_block_height = self.best_block.read().unwrap().height;
+						let FundingTxSigned {
+							tx_signatures,
+							funding_tx,
+							splice_negotiated,
+							splice_locked,
+						} = try_channel_entry!(
+							self,
+							peer_state,
+							chan.tx_signatures(msg, best_block_height, &self.logger),
+							chan_entry
+						);
 						if let Some(tx_signatures) = tx_signatures {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
 								msg: tx_signatures,
+							});
+						}
+						if let Some(splice_locked) = splice_locked {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+								node_id: *counterparty_node_id,
+								msg: splice_locked,
 							});
 						}
 						if let Some(ref funding_tx) = funding_tx {
