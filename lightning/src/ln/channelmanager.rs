@@ -4730,14 +4730,6 @@ where
 		// Look for the channel
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if !chan_phase_entry.get().context().is_connected() {
-					// TODO: We should probably support this, but right now `splice_channel` refuses when
-					// the peer is disconnected, so we just check it here.
-					return Err(APIError::ChannelUnavailable {
-						err: "Cannot initiate splice while peer is disconnected".to_owned(),
-					});
-				}
-
 				let locktime = locktime.unwrap_or_else(|| self.current_best_block().height);
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
