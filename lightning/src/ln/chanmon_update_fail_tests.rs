@@ -12,6 +12,7 @@
 //! There are a bunch of these as their handling is relatively error-prone so they are split out
 //! here. See also the chanmon_fail_consistency fuzz test.
 
+use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::chainmonitor::ChainMonitor;
 use crate::chain::channelmonitor::{ChannelMonitor, MonitorEvent, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
@@ -133,9 +134,12 @@ fn test_monitor_and_persister_update_fail() {
 		let chan_opt = get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan.2);
 		if let Some(channel) = chan_opt.as_funded_mut() {
 			assert_eq!(updates.commitment_signed.len(), 1);
-			if let Ok(Some(update)) =
-				channel.commitment_signed(&updates.commitment_signed[0], &node_cfgs[0].logger)
-			{
+			let feeest = LowerBoundedFeeEstimator::new(&chanmon_cfgs[0].fee_estimator);
+			if let Ok(Some(update)) = channel.commitment_signed(
+				&updates.commitment_signed[0],
+				&feeest,
+				&node_cfgs[0].logger,
+			) {
 				// Check that the persister returns InProgress (and will never actually complete)
 				// as the monitor update errors.
 				if let ChannelMonitorUpdateStatus::InProgress =

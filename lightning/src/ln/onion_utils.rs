@@ -1678,6 +1678,8 @@ pub enum LocalHTLCFailureReason {
 	HTLCMaximum,
 	/// The HTLC was failed because our remote peer is offline.
 	PeerOffline,
+	/// The HTLC was failed because the channel balance was overdrawn.
+	ChannelBalanceOverdrawn,
 }
 
 impl LocalHTLCFailureReason {
@@ -1697,7 +1699,8 @@ impl LocalHTLCFailureReason {
 			| Self::ZeroAmount
 			| Self::HTLCMinimum
 			| Self::HTLCMaximum
-			| Self::PeerOffline => UPDATE | 7,
+			| Self::PeerOffline
+			| Self::ChannelBalanceOverdrawn => UPDATE | 7,
 			Self::PermanentChannelFailure | Self::ChannelClosed | Self::OnChainTimeout => PERM | 8,
 			Self::RequiredChannelFeature => PERM | 9,
 			Self::UnknownNextPeer
@@ -1876,7 +1879,8 @@ ser_failure_reasons!(
 	(38, ZeroAmount),
 	(39, HTLCMinimum),
 	(40, HTLCMaximum),
-	(41, PeerOffline)
+	(41, PeerOffline),
+	(42, ChannelBalanceOverdrawn)
 );
 
 impl From<&HTLCFailReason> for HTLCHandlingFailureReason {
@@ -1992,7 +1996,8 @@ impl HTLCFailReason {
 			| LocalHTLCFailureReason::ZeroAmount
 			| LocalHTLCFailureReason::HTLCMinimum
 			| LocalHTLCFailureReason::HTLCMaximum
-			| LocalHTLCFailureReason::PeerOffline => {
+			| LocalHTLCFailureReason::PeerOffline
+			| LocalHTLCFailureReason::ChannelBalanceOverdrawn => {
 				debug_assert_eq!(
 					data.len() - 2,
 					u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize
