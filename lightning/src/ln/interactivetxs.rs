@@ -310,7 +310,7 @@ impl ConstructedTransaction {
 		&self.tx
 	}
 
-	pub fn input_metadata(&self) -> impl Iterator<Item = &TxInMetadata> {
+	fn input_metadata(&self) -> impl Iterator<Item = &TxInMetadata> {
 		self.input_metadata.iter()
 	}
 
@@ -421,7 +421,7 @@ impl ConstructedTransaction {
 			.for_each(|(input, witness)| input.witness = witness);
 	}
 
-	pub fn holder_is_initiator(&self) -> bool {
+	fn holder_is_initiator(&self) -> bool {
 		self.holder_is_initiator
 	}
 
