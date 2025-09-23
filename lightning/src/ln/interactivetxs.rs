@@ -197,14 +197,9 @@ impl Display for AbortReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConstructedTransaction {
 	holder_is_initiator: bool,
-
 	input_metadata: Vec<TxInMetadata>,
 	output_metadata: Vec<TxOutMetadata>,
 	tx: Transaction,
-
-	local_inputs_value_satoshis: u64,
-	remote_inputs_value_satoshis: u64,
-
 	shared_input_index: Option<u32>,
 }
 
@@ -249,9 +244,7 @@ impl_writeable_tlv_based!(ConstructedTransaction, {
 	(3, input_metadata, required),
 	(5, output_metadata, required),
 	(7, tx, required),
-	(9, local_inputs_value_satoshis, required),
-	(11, remote_inputs_value_satoshis, required),
-	(13, shared_input_index, option),
+	(9, shared_input_index, option),
 });
 
 impl ConstructedTransaction {
@@ -270,12 +263,6 @@ impl ConstructedTransaction {
 		{
 			return Err(AbortReason::MissingFundingOutput);
 		}
-
-		let local_inputs_value_satoshis = context
-			.inputs
-			.iter()
-			.fold(0u64, |value, (_, input)| value.saturating_add(input.local_value()));
-		let remote_inputs_value_satoshis = context.remote_inputs_value();
 
 		let satisfaction_weight =
 			Weight::from_wu(context.inputs.iter().fold(0u64, |value, (_, input)| {
@@ -313,14 +300,9 @@ impl ConstructedTransaction {
 
 		Ok(Self {
 			holder_is_initiator: context.holder_is_initiator,
-
 			input_metadata,
 			output_metadata,
 			tx,
-
-			local_inputs_value_satoshis,
-			remote_inputs_value_satoshis,
-
 			shared_input_index,
 		})
 	}
@@ -335,6 +317,26 @@ impl ConstructedTransaction {
 
 	pub fn compute_txid(&self) -> Txid {
 		self.tx().compute_txid()
+	}
+
+	/// Returns the total input value from all local contributions, including the entire shared
+	/// input value if applicable.
+	fn local_contributed_input_value(&self) -> Amount {
+		self.input_metadata
+			.iter()
+			.filter(|input| input.is_local(self.holder_is_initiator))
+			.map(|input| input.prev_output.value)
+			.sum()
+	}
+
+	/// Returns the total input value from all remote contributions, including the entire shared
+	/// input value if applicable.
+	fn remote_contributed_input_value(&self) -> Amount {
+		self.input_metadata
+			.iter()
+			.filter(|input| !input.is_local(self.holder_is_initiator))
+			.map(|input| input.prev_output.value)
+			.sum()
 	}
 
 	/// Adds provided holder witnesses to holder inputs of unsigned transaction.
@@ -1379,11 +1381,13 @@ macro_rules! define_state_transitions {
 				let tx = context.validate_tx()?;
 
 				// Strict ordering prevents deadlocks during tx_signatures exchange
+				let local_contributed_input_value = tx.local_contributed_input_value();
+				let remote_contributed_input_value = tx.remote_contributed_input_value();
 				let holder_sends_tx_signatures_first =
-					if tx.local_inputs_value_satoshis == tx.remote_inputs_value_satoshis {
+					if local_contributed_input_value == remote_contributed_input_value {
 						holder_node_id.serialize() < counterparty_node_id.serialize()
 					} else {
-						tx.local_inputs_value_satoshis < tx.remote_inputs_value_satoshis
+						local_contributed_input_value < remote_contributed_input_value
 					};
 
 				let signing_session = InteractiveTxSigningSession {
@@ -3306,8 +3310,6 @@ mod tests {
 			input_metadata,
 			output_metadata: vec![], // N/A for test
 			tx: transaction.clone(),
-			local_inputs_value_satoshis: 0,  // N/A for test
-			remote_inputs_value_satoshis: 0, // N/A for test
 			shared_input_index: None,
 		};
 
