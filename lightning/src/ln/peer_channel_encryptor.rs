@@ -641,6 +641,11 @@ impl PeerChannelEncryptor {
 /// padding to allow for future encryption/MACing.
 pub struct MessageBuf(Vec<u8>);
 impl MessageBuf {
+	/// The total allocated space for this message
+	pub fn capacity(&self) -> usize {
+		self.0.capacity()
+	}
+
 	/// Creates a new buffer from an encoded message (i.e. the two message-type bytes followed by
 	/// the message contents).
 	///
