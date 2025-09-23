@@ -8568,16 +8568,38 @@ where
 		}
 	}
 
-	fn on_tx_signatures_exchange(&mut self, funding_tx: Transaction) {
+	fn on_tx_signatures_exchange<'a, L: Deref>(
+		&mut self, funding_tx: Transaction, best_block_height: u32,
+		logger: &WithChannelContext<'a, L>,
+	) -> Option<msgs::SpliceLocked>
+	where
+		L::Target: Logger,
+	{
 		debug_assert!(!self.context.channel_state.is_monitor_update_in_progress());
 		debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
 
+		let mut splice_locked = None;
 		if let Some(pending_splice) = self.pending_splice.as_mut() {
 			if let Some(FundingNegotiation::AwaitingSignatures { mut funding }) =
 				pending_splice.funding_negotiation.take()
 			{
 				funding.funding_transaction = Some(funding_tx);
 				pending_splice.negotiated_candidates.push(funding);
+				splice_locked = pending_splice.check_get_splice_locked(
+					&self.context,
+					pending_splice.negotiated_candidates.len() - 1,
+					best_block_height,
+				);
+				if let Some(splice_txid) =
+					splice_locked.as_ref().map(|splice_locked| splice_locked.splice_txid)
+				{
+					log_info!(
+						logger,
+						"Sending 0conf splice_locked txid {} to our peer for channel {}",
+						splice_txid,
+						&self.context.channel_id
+					);
+				}
 			} else {
 				debug_assert!(false);
 			}
@@ -8587,11 +8609,20 @@ where
 			self.context.channel_state =
 				ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 		}
+
+		splice_locked
 	}
 
-	pub fn funding_transaction_signed(
-		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>,
-	) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), APIError> {
+	pub fn funding_transaction_signed<L: Deref>(
+		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>, best_block_height: u32,
+		logger: &L,
+	) -> Result<
+		(Option<msgs::TxSignatures>, Option<msgs::SpliceLocked>, Option<Transaction>),
+		APIError,
+	>
+	where
+		L::Target: Logger,
+	{
 		let signing_session =
 			if let Some(signing_session) = self.context.interactive_tx_signing_session.as_mut() {
 				if let Some(pending_splice) = self.pending_splice.as_ref() {
@@ -8606,9 +8637,9 @@ where
 				}
 
 				if signing_session.holder_tx_signatures().is_some() {
-					// Our `tx_signatures` either should've been the first time we processed them,
-					// or we're waiting for our counterparty to send theirs first.
-					return Ok((None, None));
+					// Our `tx_signatures` either should've been sent the first time we processed
+					// them, or we're waiting for our counterparty to send theirs first.
+					return Ok((None, None, None));
 				}
 
 				signing_session
@@ -8653,17 +8684,31 @@ where
 			.provide_holder_witnesses(tx_signatures, &self.context.secp_ctx)
 			.map_err(|err| APIError::APIMisuseError { err })?;
 
-		if let Some(funding_tx) = funding_tx_opt.clone() {
-			debug_assert!(tx_signatures_opt.is_some());
-			self.on_tx_signatures_exchange(funding_tx);
+		let logger = WithChannelContext::from(logger, &self.context, None);
+		if tx_signatures_opt.is_some() {
+			log_info!(
+				logger,
+				"Sending tx_signatures for interactive funding transaction {funding_txid_signed}"
+			);
 		}
 
-		Ok((tx_signatures_opt, funding_tx_opt))
+		let splice_locked_opt = funding_tx_opt.clone().and_then(|funding_tx| {
+			debug_assert!(tx_signatures_opt.is_some());
+			self.on_tx_signatures_exchange(funding_tx, best_block_height, &logger)
+		});
+
+		Ok((tx_signatures_opt, splice_locked_opt, funding_tx_opt))
 	}
 
-	pub fn tx_signatures(
-		&mut self, msg: &msgs::TxSignatures,
-	) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), ChannelError> {
+	pub fn tx_signatures<L: Deref>(
+		&mut self, msg: &msgs::TxSignatures, best_block_height: u32, logger: &L,
+	) -> Result<
+		(Option<msgs::TxSignatures>, Option<msgs::SpliceLocked>, Option<Transaction>),
+		ChannelError,
+	>
+	where
+		L::Target: Logger,
+	{
 		let signing_session = if let Some(signing_session) =
 			self.context.interactive_tx_signing_session.as_mut()
 		{
@@ -8709,11 +8754,18 @@ where
 		let (holder_tx_signatures_opt, funding_tx_opt) =
 			signing_session.received_tx_signatures(msg).map_err(|msg| ChannelError::Warn(msg))?;
 
-		if let Some(funding_tx) = funding_tx_opt.clone() {
-			self.on_tx_signatures_exchange(funding_tx);
-		}
+		let logger = WithChannelContext::from(logger, &self.context, None);
+		log_info!(
+			logger,
+			"Received tx_signatures for interactive funding transaction {}",
+			msg.tx_hash
+		);
 
-		Ok((holder_tx_signatures_opt, funding_tx_opt))
+		let splice_locked_opt = funding_tx_opt.clone().and_then(|funding_tx| {
+			self.on_tx_signatures_exchange(funding_tx, best_block_height, &logger)
+		});
+
+		Ok((holder_tx_signatures_opt, splice_locked_opt, funding_tx_opt))
 	}
 
 	/// Queues up an outbound update fee by placing it in the holding cell. You should call
@@ -11019,7 +11071,11 @@ where
 					confirmed_funding_index,
 					height,
 				) {
-					log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
+					log_info!(
+						logger, "Sending splice_locked txid {} to our peer for channel {}",
+						splice_locked.splice_txid,
+						&self.context.channel_id
+					);
 
 					let (funding_txo, monitor_update, announcement_sigs, discarded_funding) = chain_node_signer
 						.and_then(|(chain_hash, node_signer, user_config)| {
