@@ -757,12 +757,18 @@ where
 		}
 	}
 
-	/// Used by LSP to provide the client with the intercept scid and
-	/// `cltv_expiry_delta` to include in their invoice. The intercept scid
-	/// must be retrieved from [`ChannelManager::get_intercept_scid`].
+	/// Used by LSP to provide the client with the intercept scid, a unique `user_channel_id`, and
+	/// `cltv_expiry_delta` to include in their invoice.
+	///
+	/// The intercept scid must be retrieved from [`ChannelManager::get_intercept_scid`]. The given
+	/// `user_channel_id` must be locally unique and will eventually be returned via events to be
+	/// used when opening the channel via [`ChannelManager::create_channel`]. Note implementors
+	/// will need to ensure their calls to [`ChannelManager::create_channel`] are idempotent based
+	/// on this identifier.
 	///
 	/// Should be called in response to receiving a [`LSPS2ServiceEvent::BuyRequest`] event.
 	///
+	/// [`ChannelManager::create_channel`]: lightning::ln::channelmanager::ChannelManager::create_channel
 	/// [`ChannelManager::get_intercept_scid`]: lightning::ln::channelmanager::ChannelManager::get_intercept_scid
 	/// [`LSPS2ServiceEvent::BuyRequest`]: crate::lsps2::event::LSPS2ServiceEvent::BuyRequest
 	#[allow(clippy::await_holding_lock)]
@@ -1815,7 +1821,7 @@ where
 		)
 	}
 
-	/// Used by LSP to provide the client with the intercept scid and
+	/// Used by LSP to provide the client with the intercept scid, a unique `user_channel_id`, and
 	/// `cltv_expiry_delta` to include in their invoice.
 	///
 	/// Wraps [`LSPS2ServiceHandler::invoice_parameters_generated`].
