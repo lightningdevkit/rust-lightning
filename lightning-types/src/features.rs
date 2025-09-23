@@ -171,9 +171,9 @@ mod sealed {
 			,,,,,,,,,
 			// Byte 17
 			AnchorZeroFeeCommitmentsStaging,
-			// Byte 18 - 130
-			,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
-			// Byte 131
+			// Byte 18
+			,
+			// Byte 19
 			HtlcHold,
 		]
 	);
@@ -200,14 +200,14 @@ mod sealed {
 			,,,,,,,,,
 			// Byte 17
 			AnchorZeroFeeCommitmentsStaging,
-			// Byte 18 - 31
-			,,,,,,,,,,,,,,
+			// Byte 18
+			,
+			// Byte 19
+			HtlcHold,
+			// Byte 20 - 31
+			,,,,,,,,,,,,
 			// Byte 32
 			DnsResolver,
-			// Byte 33 - 130
-			,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
-			// Byte 131
-			HtlcHold,
 		]
 	);
 	define_context!(ChannelContext, []);
@@ -711,6 +711,17 @@ mod sealed {
 		requires_anchor_zero_fee_commitments
 	);
 	define_feature!(
+		153, // The BOLTs PR uses feature bit 52/53, so add +100 for the experimental bit
+		HtlcHold,
+		[InitContext, NodeContext],
+		"Feature flags for holding HTLCs and forwarding on receipt of an onion message",
+		set_htlc_hold_optional,
+		set_htlc_hold_required,
+		clear_htlc_hold,
+		supports_htlc_hold,
+		requires_htlc_hold
+	);
+	define_feature!(
 		259,
 		DnsResolver,
 		[NodeContext],
@@ -720,17 +731,6 @@ mod sealed {
 		clear_dns_resolution,
 		supports_dns_resolution,
 		requires_dns_resolution
-	);
-	define_feature!(
-		1053, // The BOLTs PR uses feature bit 52/53, so add +1000 for the experimental bit
-		HtlcHold,
-		[InitContext, NodeContext],
-		"Feature flags for holding HTLCs and forwarding on receipt of an onion message",
-		set_htlc_hold_optional,
-		set_htlc_hold_required,
-		clear_htlc_hold,
-		supports_htlc_hold,
-		requires_htlc_hold
 	);
 
 	// Note: update the module-level docs when a new feature bit is added!
