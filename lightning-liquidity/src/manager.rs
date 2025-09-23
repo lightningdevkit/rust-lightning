@@ -200,7 +200,7 @@ pub trait ALiquidityManagerSync {
 		Self::NS,
 		Self::CM,
 		Self::C,
-		Arc<KVStoreSyncWrapper<Self::KS>>,
+		KVStoreSyncWrapper<Self::KS>,
 		Self::TP,
 	>;
 	/// Returns a reference to the actual [`LiquidityManager`] object.
@@ -246,7 +246,7 @@ where
 		Self::NS,
 		Self::CM,
 		Self::C,
-		Arc<KVStoreSyncWrapper<Self::KS>>,
+		KVStoreSyncWrapper<Self::KS>,
 		Self::TP,
 	> {
 		&self.inner
@@ -1036,7 +1036,7 @@ pub struct LiquidityManagerSync<
 	KS::Target: KVStoreSync,
 	TP::Target: TimeProvider,
 {
-	inner: LiquidityManager<ES, NS, CM, C, Arc<KVStoreSyncWrapper<KS>>, TP>,
+	inner: LiquidityManager<ES, NS, CM, C, KVStoreSyncWrapper<KS>, TP>,
 }
 
 #[cfg(feature = "time")]
@@ -1063,7 +1063,7 @@ where
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>,
 	) -> Result<Self, lightning::io::Error> {
-		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store_sync));
+		let kv_store = KVStoreSyncWrapper(kv_store_sync);
 
 		let mut fut = Box::pin(LiquidityManager::new(
 			entropy_source,
@@ -1114,7 +1114,7 @@ where
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
 	) -> Result<Self, lightning::io::Error> {
-		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store_sync));
+		let kv_store = KVStoreSyncWrapper(kv_store_sync);
 		let mut fut = Box::pin(LiquidityManager::new_with_custom_time_provider(
 			entropy_source,
 			node_signer,
@@ -1142,7 +1142,7 @@ where
 	/// Returns a reference to the LSPS0 client-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps0_client_handler`].
-	pub fn lsps0_client_handler(&self) -> &LSPS0ClientHandler<ES, Arc<KVStoreSyncWrapper<KS>>> {
+	pub fn lsps0_client_handler(&self) -> &LSPS0ClientHandler<ES, KVStoreSyncWrapper<KS>> {
 		self.inner.lsps0_client_handler()
 	}
 
@@ -1156,9 +1156,7 @@ where
 	/// Returns a reference to the LSPS1 client-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps1_client_handler`].
-	pub fn lsps1_client_handler(
-		&self,
-	) -> Option<&LSPS1ClientHandler<ES, Arc<KVStoreSyncWrapper<KS>>>> {
+	pub fn lsps1_client_handler(&self) -> Option<&LSPS1ClientHandler<ES, KVStoreSyncWrapper<KS>>> {
 		self.inner.lsps1_client_handler()
 	}
 
@@ -1168,16 +1166,14 @@ where
 	#[cfg(lsps1_service)]
 	pub fn lsps1_service_handler(
 		&self,
-	) -> Option<&LSPS1ServiceHandler<ES, CM, C, Arc<KVStoreSyncWrapper<KS>>>> {
+	) -> Option<&LSPS1ServiceHandler<ES, CM, C, KVStoreSyncWrapper<KS>>> {
 		self.inner.lsps1_service_handler()
 	}
 
 	/// Returns a reference to the LSPS2 client-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps2_client_handler`].
-	pub fn lsps2_client_handler(
-		&self,
-	) -> Option<&LSPS2ClientHandler<ES, Arc<KVStoreSyncWrapper<KS>>>> {
+	pub fn lsps2_client_handler(&self) -> Option<&LSPS2ClientHandler<ES, KVStoreSyncWrapper<KS>>> {
 		self.inner.lsps2_client_handler()
 	}
 
@@ -1186,16 +1182,14 @@ where
 	/// Wraps [`LiquidityManager::lsps2_service_handler`].
 	pub fn lsps2_service_handler<'a>(
 		&'a self,
-	) -> Option<LSPS2ServiceHandlerSync<'a, CM, Arc<KVStoreSyncWrapper<KS>>>> {
+	) -> Option<LSPS2ServiceHandlerSync<'a, CM, KVStoreSyncWrapper<KS>>> {
 		self.inner.lsps2_service_handler.as_ref().map(|r| LSPS2ServiceHandlerSync::from_inner(r))
 	}
 
 	/// Returns a reference to the LSPS5 client-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps5_client_handler`].
-	pub fn lsps5_client_handler(
-		&self,
-	) -> Option<&LSPS5ClientHandler<ES, Arc<KVStoreSyncWrapper<KS>>>> {
+	pub fn lsps5_client_handler(&self) -> Option<&LSPS5ClientHandler<ES, KVStoreSyncWrapper<KS>>> {
 		self.inner.lsps5_client_handler()
 	}
 
@@ -1204,7 +1198,7 @@ where
 	/// Wraps [`LiquidityManager::lsps5_service_handler`].
 	pub fn lsps5_service_handler(
 		&self,
-	) -> Option<&LSPS5ServiceHandler<CM, NS, Arc<KVStoreSyncWrapper<KS>>, TP>> {
+	) -> Option<&LSPS5ServiceHandler<CM, NS, KVStoreSyncWrapper<KS>, TP>> {
 		self.inner.lsps5_service_handler()
 	}
 

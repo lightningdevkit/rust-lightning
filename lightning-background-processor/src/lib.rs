@@ -2779,7 +2779,7 @@ mod tests {
 		let kv_store_sync = Arc::new(
 			Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
 		);
-		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store_sync));
+		let kv_store = KVStoreSyncWrapper(kv_store_sync);
 
 		// Yes, you can unsafe { turn off the borrow checker }
 		let lm_async: &'static LiquidityManager<_, _, _, _, _, _> = unsafe {
@@ -3298,7 +3298,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let kv_store_sync =
 			Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
-		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store_sync));
+		let kv_store = KVStoreSyncWrapper(kv_store_sync);
 
 		// Yes, you can unsafe { turn off the borrow checker }
 		let lm_async: &'static LiquidityManager<_, _, _, _, _, _> = unsafe {
@@ -3523,7 +3523,7 @@ mod tests {
 		let (_, nodes) = create_nodes(1, "test_payment_path_scoring_async");
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let kv_store_sync = Arc::new(Persister::new(data_dir));
-		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store_sync));
+		let kv_store = KVStoreSyncWrapper(kv_store_sync);
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 

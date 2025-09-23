@@ -986,7 +986,7 @@ where
 		Arc<ChangeDestinationSourceSyncWrapper<D>>,
 		E,
 		F,
-		Arc<KVStoreSyncWrapper<K>>,
+		KVStoreSyncWrapper<K>,
 		L,
 		O,
 	>,
@@ -1011,7 +1011,7 @@ where
 		let change_destination_source =
 			Arc::new(ChangeDestinationSourceSyncWrapper::new(change_destination_source));
 
-		let kv_store = Arc::new(KVStoreSyncWrapper(kv_store));
+		let kv_store = KVStoreSyncWrapper(kv_store);
 
 		let sweeper = OutputSweeper::new(
 			best_block,
@@ -1077,7 +1077,7 @@ where
 		Arc<ChangeDestinationSourceSyncWrapper<D>>,
 		E,
 		F,
-		Arc<KVStoreSyncWrapper<K>>,
+		KVStoreSyncWrapper<K>,
 		L,
 		O,
 	> {
