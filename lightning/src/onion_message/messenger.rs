@@ -1620,6 +1620,74 @@ where
 		}
 	}
 
+	fn enqueue_forwarded_onion_message(
+		&self, next_hop: NextMessageHop, onion_message: OnionMessage, log_suffix: fmt::Arguments,
+	) -> Result<(), SendError> {
+		let next_node_id = match next_hop {
+			NextMessageHop::NodeId(pubkey) => pubkey,
+			NextMessageHop::ShortChannelId(scid) => match self.node_id_lookup.next_node_id(scid) {
+				Some(pubkey) => pubkey,
+				None => {
+					log_trace!(self.logger, "Dropping forwarded onion messager: unable to resolve next hop using SCID {} {}", scid, log_suffix);
+					return Err(SendError::GetNodeIdFailed);
+				},
+			},
+		};
+
+		let mut message_recipients = self.message_recipients.lock().unwrap();
+		if outbound_buffer_full(&next_node_id, &message_recipients) {
+			log_trace!(
+				self.logger,
+				"Dropping forwarded onion message to peer {}: outbound buffer full {}",
+				next_node_id,
+				log_suffix
+			);
+			return Err(SendError::BufferFull);
+		}
+
+		#[cfg(fuzzing)]
+		message_recipients
+			.entry(next_node_id)
+			.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()));
+
+		match message_recipients.entry(next_node_id) {
+			hash_map::Entry::Occupied(mut e)
+				if matches!(e.get(), OnionMessageRecipient::ConnectedPeer(..)) =>
+			{
+				e.get_mut().enqueue_message(onion_message);
+				log_trace!(
+					self.logger,
+					"Forwarding an onion message to peer {} {}",
+					next_node_id,
+					log_suffix
+				);
+				Ok(())
+			},
+			_ if self.intercept_messages_for_offline_peers => {
+				log_trace!(
+					self.logger,
+					"Generating OnionMessageIntercepted event for peer {} {}",
+					next_node_id,
+					log_suffix
+				);
+				self.enqueue_intercepted_event(Event::OnionMessageIntercepted {
+					peer_node_id: next_node_id,
+					message: onion_message,
+				});
+				Ok(())
+			},
+			_ => {
+				log_trace!(
+					self.logger,
+					"Dropping forwarded onion message to disconnected peer {} {}",
+					next_node_id,
+					log_suffix
+				);
+				Err(SendError::InvalidFirstHop(next_node_id))
+			},
+		}
+	}
+
 	/// Forwards an [`OnionMessage`] to `peer_node_id`. Useful if we initialized
 	/// the [`OnionMessenger`] with [`Self::new_with_offline_peer_interception`]
 	/// and want to forward a previously intercepted onion message to a peer that
@@ -2204,56 +2272,11 @@ where
 				}
 			},
 			Ok(PeeledOnion::Forward(next_hop, onion_message)) => {
-				let next_node_id = match next_hop {
-					NextMessageHop::NodeId(pubkey) => pubkey,
-					NextMessageHop::ShortChannelId(scid) => {
-						match self.node_id_lookup.next_node_id(scid) {
-							Some(pubkey) => pubkey,
-							None => {
-								log_trace!(self.logger, "Dropping forwarded onion messager: unable to resolve next hop using SCID {}", scid);
-								return;
-							},
-						}
-					},
-				};
-
-				let mut message_recipients = self.message_recipients.lock().unwrap();
-				if outbound_buffer_full(&next_node_id, &message_recipients) {
-					log_trace!(
-						logger,
-						"Dropping forwarded onion message to peer {}: outbound buffer full",
-						next_node_id
-					);
-					return;
-				}
-
-				#[cfg(fuzzing)]
-				message_recipients
-					.entry(next_node_id)
-					.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()));
-
-				match message_recipients.entry(next_node_id) {
-					hash_map::Entry::Occupied(mut e)
-						if matches!(e.get(), OnionMessageRecipient::ConnectedPeer(..)) =>
-					{
-						e.get_mut().enqueue_message(onion_message);
-						log_trace!(logger, "Forwarding an onion message to peer {}", next_node_id);
-					},
-					_ if self.intercept_messages_for_offline_peers => {
-						self.enqueue_intercepted_event(Event::OnionMessageIntercepted {
-							peer_node_id: next_node_id,
-							message: onion_message,
-						});
-					},
-					_ => {
-						log_trace!(
-							logger,
-							"Dropping forwarded onion message to disconnected peer {}",
-							next_node_id
-						);
-						return;
-					},
-				}
+				let _ = self.enqueue_forwarded_onion_message(
+					next_hop,
+					onion_message,
+					format_args!("when forwarding peeled onion message from {}", peer_node_id),
+				);
 			},
 			Err(e) => {
 				log_error!(logger, "Failed to process onion message {:?}", e);
