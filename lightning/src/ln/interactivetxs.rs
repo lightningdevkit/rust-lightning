@@ -7,6 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use crate::chain::transaction::OutPoint;
 use crate::io_extras::sink;
 use crate::prelude::*;
 
@@ -21,8 +22,8 @@ use bitcoin::secp256k1::{Message, PublicKey};
 use bitcoin::sighash::SighashCache;
 use bitcoin::transaction::Version;
 use bitcoin::{
-	sighash, EcdsaSighashType, OutPoint, ScriptBuf, Sequence, TapSighashType, Transaction, TxIn,
-	TxOut, Txid, Weight, Witness, XOnlyPublicKey,
+	sighash, EcdsaSighashType, OutPoint as BitcoinOutPoint, ScriptBuf, Sequence, TapSighashType,
+	Transaction, TxIn, TxOut, Txid, Weight, Witness, XOnlyPublicKey,
 };
 
 use crate::chain::chaininterface::fee_for_weight;
@@ -86,6 +87,13 @@ impl SerialIdExt for SerialId {
 	fn is_for_non_initiator(&self) -> bool {
 		!self.is_for_initiator()
 	}
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct NegotiationError {
+	pub reason: AbortReason,
+	pub contributed_inputs: Vec<BitcoinOutPoint>,
+	pub contributed_outputs: Vec<TxOut>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -336,6 +344,36 @@ impl ConstructedTransaction {
 		Ok(tx)
 	}
 
+	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
+		let contributed_inputs = self
+			.tx
+			.input
+			.into_iter()
+			.zip(self.input_metadata.iter())
+			.enumerate()
+			.filter(|(_, (_, input))| input.is_local(self.holder_is_initiator))
+			.filter(|(index, _)| {
+				self.shared_input_index
+					.map(|shared_index| *index != shared_index as usize)
+					.unwrap_or(true)
+			})
+			.map(|(_, (txin, _))| txin.previous_output)
+			.collect();
+
+		let contributed_outputs = self
+			.tx
+			.output
+			.into_iter()
+			.zip(self.output_metadata.iter())
+			.enumerate()
+			.filter(|(_, (_, output))| output.is_local(self.holder_is_initiator))
+			.filter(|(index, _)| *index != self.shared_output_index as usize)
+			.map(|(_, (txout, _))| txout)
+			.collect();
+
+		NegotiationError { reason, contributed_inputs, contributed_outputs }
+	}
+
 	pub fn tx(&self) -> &Transaction {
 		&self.tx
 	}
@@ -346,6 +384,10 @@ impl ConstructedTransaction {
 
 	pub fn compute_txid(&self) -> Txid {
 		self.tx().compute_txid()
+	}
+
+	fn funding_outpoint(&self) -> OutPoint {
+		OutPoint { txid: self.compute_txid(), index: self.shared_output_index }
 	}
 
 	/// Returns the total input value from all local contributions, including the entire shared
@@ -806,6 +848,10 @@ impl InteractiveTxSigningSession {
 
 		Ok(())
 	}
+
+	pub(crate) fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
+		self.unsigned_tx.into_negotiation_error(reason)
+	}
 }
 
 impl_writeable_tlv_based!(InteractiveTxSigningSession, {
@@ -840,7 +886,7 @@ struct NegotiationContext {
 	/// - For the acceptor:
 	/// The output expected as new funding output. It should be added by the initiator node.
 	shared_funding_output: SharedOwnedOutput,
-	prevtx_outpoints: HashSet<OutPoint>,
+	prevtx_outpoints: HashSet<BitcoinOutPoint>,
 	/// The outputs added so far.
 	outputs: HashMap<SerialId, InteractiveTxOutput>,
 	/// The locktime of the funding transaction.
@@ -990,7 +1036,7 @@ impl NegotiationContext {
 					return Err(AbortReason::DuplicateFundingInput);
 				}
 
-				let previous_output = OutPoint { txid: *shared_txid, vout: msg.prevtx_out };
+				let previous_output = BitcoinOutPoint { txid: *shared_txid, vout: msg.prevtx_out };
 				if previous_output != shared_funding_input.input.previous_output {
 					return Err(AbortReason::UnexpectedFundingInput);
 				}
@@ -1010,7 +1056,7 @@ impl NegotiationContext {
 					return Err(AbortReason::PrevTxOutInvalid);
 				}
 
-				let prev_outpoint = OutPoint { txid, vout: msg.prevtx_out };
+				let prev_outpoint = BitcoinOutPoint { txid, vout: msg.prevtx_out };
 				let txin = TxIn {
 					previous_output: prev_outpoint,
 					sequence: Sequence(msg.sequence),
@@ -1179,7 +1225,7 @@ impl NegotiationContext {
 	) -> Result<(), AbortReason> {
 		let vout = msg.prevtx_out as usize;
 		let (prev_outpoint, input) = if let Some(shared_input_txid) = msg.shared_input_txid {
-			let prev_outpoint = OutPoint { txid: shared_input_txid, vout: msg.prevtx_out };
+			let prev_outpoint = BitcoinOutPoint { txid: shared_input_txid, vout: msg.prevtx_out };
 			if let Some(shared_funding_input) = &self.shared_funding_input {
 				(prev_outpoint, InputOwned::Shared(shared_funding_input.clone()))
 			} else {
@@ -1187,7 +1233,7 @@ impl NegotiationContext {
 			}
 		} else if let Some(prevtx) = &msg.prevtx {
 			let prev_txid = prevtx.compute_txid();
-			let prev_outpoint = OutPoint { txid: prev_txid, vout: msg.prevtx_out };
+			let prev_outpoint = BitcoinOutPoint { txid: prev_txid, vout: msg.prevtx_out };
 			let prev_output = prevtx.output.get(vout).ok_or(AbortReason::PrevTxOutInvalid)?.clone();
 			let txin = TxIn {
 				previous_output: prev_outpoint,
@@ -1610,6 +1656,13 @@ impl InputOwned {
 		}
 	}
 
+	fn into_tx_in(self) -> TxIn {
+		match self {
+			InputOwned::Single(single) => single.input,
+			InputOwned::Shared(shared) => shared.input,
+		}
+	}
+
 	pub fn value(&self) -> u64 {
 		match self {
 			InputOwned::Single(single) => single.prev_output.value.to_sat(),
@@ -1891,8 +1944,7 @@ where
 
 pub(super) enum HandleTxCompleteValue {
 	SendTxMessage(InteractiveTxMessageSend),
-	SendTxComplete(InteractiveTxMessageSend, bool),
-	NegotiationComplete,
+	NegotiationComplete(Option<InteractiveTxMessageSend>, OutPoint),
 }
 
 pub(super) struct InteractiveTxConstructorArgs<'a, ES: Deref>
@@ -1917,7 +1969,7 @@ impl InteractiveTxConstructor {
 	///
 	/// If the holder is the initiator, they need to send the first message which is a `TxAddInput`
 	/// message.
-	pub fn new<ES: Deref>(args: InteractiveTxConstructorArgs<ES>) -> Result<Self, AbortReason>
+	pub fn new<ES: Deref>(args: InteractiveTxConstructorArgs<ES>) -> Result<Self, NegotiationError>
 	where
 		ES::Target: EntropySource,
 	{
@@ -2004,9 +2056,34 @@ impl InteractiveTxConstructor {
 		};
 		// We'll store the first message for the initiator.
 		if is_initiator {
-			constructor.initiator_first_message = Some(constructor.maybe_send_message()?);
+			match constructor.maybe_send_message() {
+				Ok(message) => {
+					constructor.initiator_first_message = Some(message);
+				},
+				Err(reason) => {
+					return Err(constructor.into_negotiation_error(reason));
+				},
+			}
 		}
 		Ok(constructor)
+	}
+
+	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
+		NegotiationError {
+			reason,
+			contributed_inputs: self
+				.inputs_to_contribute
+				.into_iter()
+				.filter(|(_, input)| !input.is_shared())
+				.map(|(_, input)| input.into_tx_in().previous_output)
+				.collect(),
+			contributed_outputs: self
+				.outputs_to_contribute
+				.into_iter()
+				.filter(|(_, output)| !output.is_shared())
+				.map(|(_, output)| output.into_tx_out())
+				.collect(),
+		}
 	}
 
 	pub fn take_initiator_first_message(&mut self) -> Option<InteractiveTxMessageSend> {
@@ -2114,8 +2191,13 @@ impl InteractiveTxConstructor {
 			StateMachine::ReceivedTxComplete(_) => {
 				let msg_send = self.maybe_send_message()?;
 				match &self.state_machine {
-					StateMachine::NegotiationComplete(_) => {
-						Ok(HandleTxCompleteValue::SendTxComplete(msg_send, true))
+					StateMachine::NegotiationComplete(NegotiationComplete(signing_session)) => {
+						let funding_outpoint = signing_session.unsigned_tx.funding_outpoint();
+						debug_assert!(matches!(msg_send, InteractiveTxMessageSend::TxComplete(_)));
+						Ok(HandleTxCompleteValue::NegotiationComplete(
+							Some(msg_send),
+							funding_outpoint,
+						))
 					},
 					StateMachine::SentChangeMsg(_) => {
 						Ok(HandleTxCompleteValue::SendTxMessage(msg_send))
@@ -2126,7 +2208,10 @@ impl InteractiveTxConstructor {
 					},
 				}
 			},
-			StateMachine::NegotiationComplete(_) => Ok(HandleTxCompleteValue::NegotiationComplete),
+			StateMachine::NegotiationComplete(NegotiationComplete(signing_session)) => {
+				let funding_outpoint = signing_session.unsigned_tx.funding_outpoint();
+				Ok(HandleTxCompleteValue::NegotiationComplete(None, funding_outpoint))
+			},
 			_ => {
 				debug_assert!(
 					false,
@@ -2367,9 +2452,9 @@ mod tests {
 			outputs_to_contribute: session.outputs_a,
 		}) {
 			Ok(r) => Some(r),
-			Err(abort_reason) => {
+			Err(e) => {
 				assert_eq!(
-					Some((abort_reason, ErrorCulprit::NodeA)),
+					Some((e.reason, ErrorCulprit::NodeA)),
 					session.expect_error,
 					"Test: {}",
 					session.description
@@ -2406,9 +2491,9 @@ mod tests {
 			outputs_to_contribute: session.outputs_b,
 		}) {
 			Ok(r) => Some(r),
-			Err(abort_reason) => {
+			Err(e) => {
 				assert_eq!(
-					Some((abort_reason, ErrorCulprit::NodeB)),
+					Some((e.reason, ErrorCulprit::NodeB)),
 					session.expect_error,
 					"Test: {}",
 					session.description
@@ -2431,11 +2516,9 @@ mod tests {
 							HandleTxCompleteValue::SendTxMessage(msg_send) => {
 								(Some(msg_send), false)
 							},
-							HandleTxCompleteValue::SendTxComplete(
-								msg_send,
-								negotiation_complete,
-							) => (Some(msg_send), negotiation_complete),
-							HandleTxCompleteValue::NegotiationComplete => (None, true),
+							HandleTxCompleteValue::NegotiationComplete(msg_send, _) => {
+								(msg_send, true)
+							},
 						})
 					},
 				}
