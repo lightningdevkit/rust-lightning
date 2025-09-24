@@ -2070,6 +2070,35 @@ impl KeysManager {
 		self.node_secret
 	}
 
+	/// Gets the set of possible `script_pubkey`s which can appear on chain for our
+	/// non-HTLC-encumbered balance if our counterparty force-closes the channel.
+	///
+	/// Only channels opened or spliced when using a [`KeysManager`] with the
+	/// `v2_remote_key_derivation` argument to [`KeysManager::new`] will close to such scripts,
+	/// other channels will close to a randomly-generated `script_pubkey`.
+	pub fn possible_v2_counterparty_closed_balance_spks<C: Signing>(
+		&self, secp_ctx: &Secp256k1<C>,
+	) -> Vec<ScriptBuf> {
+		let mut res = Vec::with_capacity(usize::from(STATIC_PAYMENT_KEY_COUNT) * 2);
+		let static_remote_key_features = ChannelTypeFeatures::only_static_remote_key();
+		let mut zero_fee_htlc_features = ChannelTypeFeatures::only_static_remote_key();
+		zero_fee_htlc_features.set_anchors_zero_fee_htlc_tx_required();
+		for idx in 0..STATIC_PAYMENT_KEY_COUNT {
+			let key = self
+				.static_payment_key
+				.derive_priv(
+					&self.secp_ctx,
+					&ChildNumber::from_hardened_idx(u32::from(idx)).expect("key space exhausted"),
+				)
+				.expect("Your RNG is busted")
+				.private_key;
+			let pubkey = PublicKey::from_secret_key(secp_ctx, &key);
+			res.push(get_counterparty_payment_script(&static_remote_key_features, &pubkey));
+			res.push(get_counterparty_payment_script(&zero_fee_htlc_features, &pubkey));
+		}
+		res
+	}
+
 	fn derive_payment_key_v2(&self, params: &[u8; 32]) -> SecretKey {
 		let mut eight_bytes = [0; 8];
 		eight_bytes.copy_from_slice(&params[0..8]);
@@ -2170,6 +2199,15 @@ impl KeysManager {
 					{
 						let signer = self.derive_channel_keys(&descriptor.channel_keys_id);
 						keys_cache = Some((signer, descriptor.channel_keys_id));
+					}
+					#[cfg(test)]
+					if self.v2_remote_key_derivation {
+						// In tests, we don't have to deal with upgrades from V1 sighers with
+						// `v2_remote_key_derivation` set, so use this opportunity to test
+						// `possible_v2_counterparty_closed_balance_spks`.
+						let possible_spks =
+							self.possible_v2_counterparty_closed_balance_spks(secp_ctx);
+						assert!(possible_spks.contains(&descriptor.output.script_pubkey));
 					}
 					let witness = keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(
 						&psbt.unsigned_tx,
