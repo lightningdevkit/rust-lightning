@@ -2380,7 +2380,7 @@ impl FundingScope {
 
 		// Rotate the pubkeys using the prev_funding_txid as a tweak
 		let prev_funding_txid = prev_funding.get_funding_txid();
-		let holder_pubkeys = context.holder_pubkeys(prev_funding_txid);
+		let holder_pubkeys = context.new_holder_pubkeys(prev_funding_txid);
 
 		let channel_parameters = &prev_funding.channel_transaction_parameters;
 		let mut post_channel_transaction_parameters = ChannelTransactionParameters {
@@ -3365,7 +3365,7 @@ where
 
 		// TODO(dual_funding): Checks for `funding_feerate_sat_per_1000_weight`?
 
-		let pubkeys = holder_signer.pubkeys(None, &secp_ctx);
+		let pubkeys = holder_signer.new_pubkeys(None, &secp_ctx);
 
 		let funding = FundingScope {
 			value_to_self_msat,
@@ -3603,7 +3603,7 @@ where
 			Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get destination script".to_owned()}),
 		};
 
-		let pubkeys = holder_signer.pubkeys(None, &secp_ctx);
+		let pubkeys = holder_signer.new_pubkeys(None, &secp_ctx);
 		let temporary_channel_id = temporary_channel_id_fn.map(|f| f(&pubkeys))
 			.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
 
@@ -3967,9 +3967,9 @@ where
 	}
 
 	/// Returns holder pubkeys to use for the channel.
-	fn holder_pubkeys(&self, prev_funding_txid: Option<Txid>) -> ChannelPublicKeys {
+	fn new_holder_pubkeys(&self, prev_funding_txid: Option<Txid>) -> ChannelPublicKeys {
 		match &self.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.pubkeys(prev_funding_txid, &self.secp_ctx),
+			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.new_pubkeys(prev_funding_txid, &self.secp_ctx),
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
 			_ => todo!(),
@@ -11553,7 +11553,7 @@ where
 
 		// Rotate the pubkeys using the prev_funding_txid as a tweak
 		let prev_funding_txid = self.funding.get_funding_txid();
-		let funding_pubkey = self.context.holder_pubkeys(prev_funding_txid).funding_pubkey;
+		let funding_pubkey = self.context.new_holder_pubkeys(prev_funding_txid).funding_pubkey;
 
 		Ok(msgs::SpliceInit {
 			channel_id: self.context.channel_id,
@@ -15983,7 +15983,6 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 
 		let signer = InMemorySigner::new(
-			&secp_ctx,
 			SecretKey::from_slice(&<Vec<u8>>::from_hex("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&<Vec<u8>>::from_hex("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
@@ -15997,7 +15996,7 @@ mod tests {
 			[0; 32],
 		);
 
-		let holder_pubkeys = signer.pubkeys(None, &secp_ctx);
+		let holder_pubkeys = signer.new_pubkeys(None, &secp_ctx);
 		assert_eq!(holder_pubkeys.funding_pubkey.serialize()[..],
 				<Vec<u8>>::from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
 		let keys_provider = Keys { signer: signer.clone() };
