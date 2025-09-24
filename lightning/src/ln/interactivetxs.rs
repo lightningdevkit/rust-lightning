@@ -248,6 +248,10 @@ impl_writeable_tlv_based!(ConstructedTransaction, {
 
 impl ConstructedTransaction {
 	fn new(context: NegotiationContext) -> Result<Self, AbortReason> {
+		let remote_inputs_value = context.remote_inputs_value();
+		let remote_outputs_value = context.remote_outputs_value();
+		let remote_weight_contributed = context.remote_weight_contributed();
+
 		let satisfaction_weight =
 			Weight::from_wu(context.inputs.iter().fold(0u64, |value, (_, input)| {
 				value.saturating_add(input.satisfaction_weight().to_wu())
@@ -283,6 +287,29 @@ impl ConstructedTransaction {
 			tx: Transaction { version: Version::TWO, lock_time, input, output },
 			shared_input_index,
 		};
+
+		// The receiving node:
+		// MUST fail the negotiation if:
+		// - the peer's total input satoshis is less than their outputs
+		if remote_inputs_value < remote_outputs_value {
+			return Err(AbortReason::OutputsValueExceedsInputsValue);
+		}
+
+		// - the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee).
+		let remote_fees_contributed = remote_inputs_value.saturating_sub(remote_outputs_value);
+		let required_remote_contribution_fee =
+			fee_for_weight(context.feerate_sat_per_kw, remote_weight_contributed);
+		if remote_fees_contributed < required_remote_contribution_fee {
+			return Err(AbortReason::InsufficientFees);
+		}
+
+		// - there are more than 252 inputs
+		// - there are more than 252 outputs
+		if tx.tx.input.len() > MAX_INPUTS_OUTPUTS_COUNT
+			|| tx.tx.output.len() > MAX_INPUTS_OUTPUTS_COUNT
+		{
+			return Err(AbortReason::ExceededNumberOfInputsOrOutputs);
+		}
 
 		if context.shared_funding_input.is_some() && tx.shared_input_index.is_none() {
 			return Err(AbortReason::MissingFundingInput);
@@ -886,6 +913,18 @@ impl NegotiationContext {
 		)
 	}
 
+	fn remote_weight_contributed(&self) -> u64 {
+		self.remote_inputs_weight()
+			.to_wu()
+			.saturating_add(self.remote_outputs_weight().to_wu())
+			// The receiving node:
+			// - MUST fail the negotiation if
+			//   - if is the non-initiator:
+			//     - the initiator's fees do not cover the common fields (version, segwit marker + flag,
+			//       input count, output count, locktime)
+			.saturating_add(if !self.holder_is_initiator { TX_COMMON_FIELDS_WEIGHT } else { 0 })
+	}
+
 	fn remote_outputs_weight(&self) -> Weight {
 		Weight::from_wu(
 			self.outputs
@@ -1188,52 +1227,6 @@ impl NegotiationContext {
 		self.outputs.remove(&msg.serial_id);
 		Ok(())
 	}
-
-	fn check_counterparty_fees(
-		&self, counterparty_fees_contributed: u64,
-	) -> Result<(), AbortReason> {
-		let mut counterparty_weight_contributed = self
-			.remote_inputs_weight()
-			.to_wu()
-			.saturating_add(self.remote_outputs_weight().to_wu());
-		if !self.holder_is_initiator {
-			// if is the non-initiator:
-			// 	- the initiator's fees do not cover the common fields (version, segwit marker + flag,
-			// 		input count, output count, locktime)
-			counterparty_weight_contributed += TX_COMMON_FIELDS_WEIGHT;
-		}
-		let required_counterparty_contribution_fee =
-			fee_for_weight(self.feerate_sat_per_kw, counterparty_weight_contributed);
-		if counterparty_fees_contributed < required_counterparty_contribution_fee {
-			return Err(AbortReason::InsufficientFees);
-		}
-		Ok(())
-	}
-
-	fn validate_tx(self) -> Result<ConstructedTransaction, AbortReason> {
-		// The receiving node:
-		// MUST fail the negotiation if:
-
-		// - the peer's total input satoshis is less than their outputs
-		let remote_inputs_value = self.remote_inputs_value();
-		let remote_outputs_value = self.remote_outputs_value();
-		if remote_inputs_value < remote_outputs_value {
-			return Err(AbortReason::OutputsValueExceedsInputsValue);
-		}
-
-		// - there are more than 252 inputs
-		// - there are more than 252 outputs
-		if self.inputs.len() > MAX_INPUTS_OUTPUTS_COUNT
-			|| self.outputs.len() > MAX_INPUTS_OUTPUTS_COUNT
-		{
-			return Err(AbortReason::ExceededNumberOfInputsOrOutputs);
-		}
-
-		// - the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee).
-		self.check_counterparty_fees(remote_inputs_value.saturating_sub(remote_outputs_value))?;
-
-		ConstructedTransaction::new(self)
-	}
 }
 
 // The interactive transaction construction protocol allows two peers to collaboratively build a
@@ -1372,7 +1365,7 @@ macro_rules! define_state_transitions {
 				let holder_node_id = context.holder_node_id;
 				let counterparty_node_id = context.counterparty_node_id;
 
-				let tx = context.validate_tx()?;
+				let tx = ConstructedTransaction::new(context)?;
 
 				// Strict ordering prevents deadlocks during tx_signatures exchange
 				let local_contributed_input_value = tx.local_contributed_input_value();
