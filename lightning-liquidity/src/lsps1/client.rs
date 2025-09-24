@@ -141,7 +141,7 @@ where
 			},
 			None => Err(LightningError {
 				err: format!(
-					"Received get_info response from unknown peer: {:?}",
+					"Received get_info response from unknown peer: {}",
 					counterparty_node_id
 				),
 				action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -187,7 +187,7 @@ where
 			None => {
 				return Err(LightningError {
 					err: format!(
-						"Received get_info error response from an unknown counterparty ({:?})",
+						"Received get_info error response from an unknown counterparty {}",
 						counterparty_node_id
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -304,7 +304,7 @@ where
 			None => {
 				return Err(LightningError {
 					err: format!(
-						"Received error response for a create order request from an unknown counterparty ({:?})",
+						"Received error response for a create order request from an unknown counterparty {}",
 						counterparty_node_id
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),

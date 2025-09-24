@@ -227,7 +227,7 @@ where
 			None => {
 				return Err(LightningError {
 					err: format!(
-						"Received get_info response from unknown peer: {:?}",
+						"Received get_info response from unknown peer: {}",
 						counterparty_node_id
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -275,7 +275,7 @@ where
 				Err(lightning_error)
 			},
 			None => {
-				return Err(LightningError { err: format!("Received error response for a get_info request from an unknown counterparty ({:?})",counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+				return Err(LightningError { err: format!("Received error response for a get_info request from an unknown counterparty {}",counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 			},
 		}
 	}
@@ -321,7 +321,7 @@ where
 			None => {
 				return Err(LightningError {
 					err: format!(
-						"Received buy response from unknown peer: {:?}",
+						"Received buy response from unknown peer: {}",
 						counterparty_node_id
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -363,7 +363,13 @@ where
 				Err(lightning_error)
 			},
 			None => {
-				return Err(LightningError { err: format!("Received error response for a buy request from an unknown counterparty ({:?})", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+				return Err(LightningError {
+					err: format!(
+						"Received error response for a buy request from an unknown counterparty {}",
+						counterparty_node_id
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
+				});
 			},
 		}
 	}
@@ -400,7 +406,7 @@ where
 					false,
 					"Client handler received LSPS2 request message. This should never happen."
 				);
-				Err(LightningError { err: format!("Client handler received LSPS2 request message from node {:?}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
+				Err(LightningError { err: format!("Client handler received LSPS2 request message from node {}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
 			},
 		}
 	}

@@ -73,7 +73,7 @@ impl LSPSProtocolMessageHandler for LSPS0ServiceHandler {
 					false,
 					"Service handler received LSPS0 response message. This should never happen."
 				);
-				Err(LightningError { err: format!("Service handler received LSPS0 response message from node {:?}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
+				Err(LightningError { err: format!("Service handler received LSPS0 response message from node {}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
 			},
 		}
 	}

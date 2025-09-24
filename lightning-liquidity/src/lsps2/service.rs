@@ -696,7 +696,7 @@ where
 				}
 			},
 			None => Err(APIError::APIMisuseError {
-				err: format!("No state for the counterparty exists: {:?}", counterparty_node_id),
+				err: format!("No state for the counterparty exists: {}", counterparty_node_id),
 			}),
 		}
 	}
@@ -752,7 +752,7 @@ where
 				}
 			},
 			None => Err(APIError::APIMisuseError {
-				err: format!("No state for the counterparty exists: {:?}", counterparty_node_id),
+				err: format!("No state for the counterparty exists: {}", counterparty_node_id),
 			}),
 		}
 	}
@@ -822,10 +822,7 @@ where
 			},
 			None => {
 				return Err(APIError::APIMisuseError {
-					err: format!(
-						"No state for the counterparty exists: {:?}",
-						counterparty_node_id
-					),
+					err: format!("No state for the counterparty exists: {}", counterparty_node_id),
 				})
 			},
 		};
@@ -1731,7 +1728,7 @@ where
 					false,
 					"Service handler received LSPS2 response message. This should never happen."
 				);
-				Err(LightningError { err: format!("Service handler received LSPS2 response message from node {:?}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
+				Err(LightningError { err: format!("Service handler received LSPS2 response message from node {}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
 			},
 		}
 	}

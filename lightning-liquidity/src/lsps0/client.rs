@@ -109,7 +109,7 @@ where
 					false,
 					"Client handler received LSPS0 request message. This should never happen."
 				);
-				Err(LightningError { err: format!("Client handler received LSPS0 request message from node {:?}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
+				Err(LightningError { err: format!("Client handler received LSPS0 request message from node {}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
 			},
 		}
 	}

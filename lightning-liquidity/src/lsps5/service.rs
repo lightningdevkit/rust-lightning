@@ -677,7 +677,7 @@ where
 					"Service handler received LSPS5 response message. This should never happen."
 				);
 				let err = format!(
-					"Service handler received LSPS5 response message from node {:?}. This should never happen.",
+					"Service handler received LSPS5 response message from node {}. This should never happen.",
 					counterparty_node_id
 				);
 				Err(LightningError { err, action: ErrorAction::IgnoreAndLog(Level::Info) })

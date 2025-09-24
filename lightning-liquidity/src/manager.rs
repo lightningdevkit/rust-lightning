@@ -680,7 +680,7 @@ where
 						lsps0_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS0 request message without LSPS0 service handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError { err: format!("Received LSPS0 request message without LSPS0 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 					},
 				}
 			},
@@ -690,7 +690,7 @@ where
 						lsps1_client_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS1 response message without LSPS1 client handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError { err: format!("Received LSPS1 response message without LSPS1 client handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 					},
 				}
 			},
@@ -701,11 +701,11 @@ where
 						lsps1_service_handler.handle_message(_msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS1 request message without LSPS1 service handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError { err: format!("Received LSPS1 request message without LSPS1 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 					},
 				}
 				#[cfg(not(lsps1_service))]
-				return Err(LightningError { err: format!("Received LSPS1 request message without LSPS1 service handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+				return Err(LightningError { err: format!("Received LSPS1 request message without LSPS1 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 			},
 			LSPSMessage::LSPS2(msg @ LSPS2Message::Response(..)) => {
 				match &self.lsps2_client_handler {
@@ -713,7 +713,7 @@ where
 						lsps2_client_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS2 response message without LSPS2 client handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError { err: format!("Received LSPS2 response message without LSPS2 client handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 					},
 				}
 			},
@@ -723,7 +723,7 @@ where
 						lsps2_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS2 request message without LSPS2 service handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError { err: format!("Received LSPS2 request message without LSPS2 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 					},
 				}
 			},
@@ -733,7 +733,7 @@ where
 						lsps5_client_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS5 response message without LSPS5 client handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError { err: format!("Received LSPS5 response message without LSPS5 client handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 					},
 				}
 			},
@@ -766,7 +766,7 @@ where
 						lsps5_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS5 request message without LSPS5 service handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError { err: format!("Received LSPS5 request message without LSPS5 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 					},
 				}
 			},
