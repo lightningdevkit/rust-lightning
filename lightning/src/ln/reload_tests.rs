@@ -345,6 +345,8 @@ fn test_simple_manager_serialize_deserialize() {
 
 	let (our_payment_preimage, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 	let (_, our_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	fail_payment(&nodes[0], &[&nodes[1]], our_payment_hash);
+	claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
 
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
@@ -353,8 +355,8 @@ fn test_simple_manager_serialize_deserialize() {
 
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
-	fail_payment(&nodes[0], &[&nodes[1]], our_payment_hash);
-	claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+
 }
 
 #[test]
@@ -1419,4 +1421,3 @@ fn test_peer_storage() {
 	let res = std::panic::catch_unwind(|| drop(nodes));
 	assert!(res.is_err());
 }
-
