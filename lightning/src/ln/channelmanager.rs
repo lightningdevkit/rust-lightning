@@ -452,7 +452,7 @@ pub(super) struct PendingAddHTLCInfo {
 	// HTLCs.
 	//
 	// Note that this may be an outbound SCID alias for the associated channel.
-	prev_short_channel_id: u64,
+	prev_outbound_scid_alias: u64,
 	prev_htlc_id: u64,
 	prev_counterparty_node_id: PublicKey,
 	prev_channel_id: ChannelId,
@@ -467,7 +467,7 @@ impl PendingAddHTLCInfo {
 			_ => None,
 		};
 		HTLCPreviousHopData {
-			short_channel_id: self.prev_short_channel_id,
+			prev_outbound_scid_alias: self.prev_outbound_scid_alias,
 			user_channel_id: Some(self.prev_user_channel_id),
 			outpoint: self.prev_funding_outpoint,
 			channel_id: self.prev_channel_id,
@@ -735,14 +735,14 @@ impl Default for OptionalOfferPaymentParams {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Uniquely describes an HTLC by its source. Just the guaranteed-unique subset of [`HTLCSource`].
 pub(crate) enum SentHTLCId {
-	PreviousHopData { short_channel_id: u64, htlc_id: u64 },
+	PreviousHopData { prev_outbound_scid_alias: u64, htlc_id: u64 },
 	OutboundRoute { session_priv: [u8; SECRET_KEY_SIZE] },
 }
 impl SentHTLCId {
 	pub(crate) fn from_source(source: &HTLCSource) -> Self {
 		match source {
 			HTLCSource::PreviousHopData(hop_data) => Self::PreviousHopData {
-				short_channel_id: hop_data.short_channel_id,
+				prev_outbound_scid_alias: hop_data.prev_outbound_scid_alias,
 				htlc_id: hop_data.htlc_id,
 			},
 			HTLCSource::OutboundRoute { session_priv, .. } => {
@@ -753,7 +753,7 @@ impl SentHTLCId {
 }
 impl_writeable_tlv_based_enum!(SentHTLCId,
 	(0, PreviousHopData) => {
-		(0, short_channel_id, required),
+		(0, prev_outbound_scid_alias, required),
 		(2, htlc_id, required),
 	},
 	(2, OutboundRoute) => {
@@ -761,7 +761,7 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 	},
 );
 
-// (src_channel_id, src_counterparty_node_id, src_funding_outpoint, src_chan_id, src_user_chan_id)
+// (src_outbound_scid_alias, src_counterparty_node_id, src_funding_outpoint, src_chan_id, src_user_chan_id)
 type PerSourcePendingForward =
 	(u64, PublicKey, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>);
 
@@ -792,8 +792,7 @@ mod fuzzy_channelmanager {
 	/// Tracks the inbound corresponding to an outbound HTLC
 	#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 	pub struct HTLCPreviousHopData {
-		// Note that this may be an outbound SCID alias for the associated channel.
-		pub short_channel_id: u64,
+		pub prev_outbound_scid_alias: u64,
 		pub user_channel_id: Option<u128>,
 		pub htlc_id: u64,
 		pub incoming_packet_shared_secret: [u8; 32],
@@ -2718,11 +2717,8 @@ pub struct ChannelManager<
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
 
-	/// SCID/SCID Alias -> pending `update_add_htlc`s to decode.
-	///
-	/// Note that because we may have an SCID Alias as the key we can have two entries per channel,
-	/// though in practice we probably won't be receiving HTLCs for a channel both via the alias
-	/// and via the classic SCID.
+	/// Outbound SCID Alias -> pending `update_add_htlc`s to decode.
+	/// We use the scid alias because regular scids may change if a splice occurs.
 	///
 	/// Note that no consistency guarantees are made about the existence of a channel with the
 	/// `short_channel_id` here, nor the `channel_id` in `UpdateAddHTLC`!
@@ -6441,7 +6437,7 @@ where
 	) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let next_hop_scid = {
+		let outbound_scid_alias = {
 			let peer_state_lock = self.per_peer_state.read().unwrap();
 			let peer_state_mutex =
 				peer_state_lock.get(&next_node_id).ok_or_else(|| APIError::ChannelUnavailable {
@@ -6461,10 +6457,7 @@ where
 								),
 							});
 						}
-						funded_chan
-							.funding
-							.get_short_channel_id()
-							.unwrap_or(funded_chan.context.outbound_scid_alias())
+						funded_chan.context.outbound_scid_alias()
 					} else {
 						return Err(APIError::ChannelUnavailable {
 						err: format!(
@@ -6512,7 +6505,7 @@ where
 					blinded,
 					incoming_cltv_expiry,
 					hold_htlc,
-					short_channel_id: next_hop_scid,
+					short_channel_id: outbound_scid_alias,
 				}
 			},
 			_ => unreachable!(), // Only `PendingHTLCRouting::Forward`s are intercepted
@@ -6527,7 +6520,7 @@ where
 		};
 
 		let mut per_source_pending_forward = [(
-			payment.prev_short_channel_id,
+			payment.prev_outbound_scid_alias,
 			payment.prev_counterparty_node_id,
 			payment.prev_funding_outpoint,
 			payment.prev_channel_id,
@@ -6588,11 +6581,12 @@ where
 			}
 		};
 
-		'outer_loop: for (incoming_scid, update_add_htlcs) in decode_update_add_htlcs {
+		'outer_loop: for (incoming_scid_alias, update_add_htlcs) in decode_update_add_htlcs {
 			// If any decoded update_add_htlcs were processed, we need to persist.
 			should_persist = true;
-			let incoming_channel_details_opt =
-				self.do_funded_channel_callback(incoming_scid, |chan: &mut FundedChannel<SP>| {
+			let incoming_channel_details_opt = self.do_funded_channel_callback(
+				incoming_scid_alias,
+				|chan: &mut FundedChannel<SP>| {
 					let counterparty_node_id = chan.context.get_counterparty_node_id();
 					let channel_id = chan.context.channel_id();
 					let funding_txo = chan.funding.get_funding_txo().unwrap();
@@ -6605,7 +6599,8 @@ where
 						user_channel_id,
 						accept_underpaying_htlcs,
 					)
-				});
+				},
+			);
 			let (
 				incoming_counterparty_node_id,
 				incoming_channel_id,
@@ -6674,7 +6669,7 @@ where
 
 				// Process the HTLC on the incoming channel.
 				match self.do_funded_channel_callback(
-					incoming_scid,
+					incoming_scid_alias,
 					|chan: &mut FundedChannel<SP>| {
 						let logger = WithChannelContext::from(
 							&self.logger,
@@ -6747,7 +6742,7 @@ where
 			// Process all of the forwards and failures for the channel in which the HTLCs were
 			// proposed to as a batch.
 			let pending_forwards = (
-				incoming_scid,
+				incoming_scid_alias,
 				incoming_counterparty_node_id,
 				incoming_funding_txo,
 				incoming_channel_id,
@@ -6769,7 +6764,12 @@ where
 						}
 					},
 				};
-				self.forward_htlcs.lock().unwrap().entry(incoming_scid).or_default().push(failure);
+				self.forward_htlcs
+					.lock()
+					.unwrap()
+					.entry(incoming_scid_alias)
+					.or_default()
+					.push(failure);
 				self.pending_events.lock().unwrap().push_back((
 					events::Event::HTLCHandlingFailed {
 						prev_channel_id: incoming_channel_id,
@@ -6906,7 +6906,7 @@ where
 			match forward_info {
 				HTLCForwardInfo::AddHTLC(payment) => {
 					let PendingAddHTLCInfo {
-						prev_short_channel_id,
+						prev_outbound_scid_alias,
 						prev_htlc_id,
 						prev_channel_id,
 						prev_funding_outpoint,
@@ -7021,7 +7021,7 @@ where
 							);
 							match create_res {
 								Ok(info) => phantom_receives.push((
-									prev_short_channel_id,
+									prev_outbound_scid_alias,
 									prev_counterparty_node_id,
 									prev_funding_outpoint,
 									prev_channel_id,
@@ -7118,7 +7118,7 @@ where
 				HTLCForwardInfo::AddHTLC(ref payment) => {
 					let htlc_source = HTLCSource::PreviousHopData(payment.htlc_previous_hop_data());
 					let PendingAddHTLCInfo {
-						prev_short_channel_id,
+						prev_outbound_scid_alias,
 						forward_info:
 							PendingHTLCInfo {
 								payment_hash,
@@ -7212,7 +7212,7 @@ where
 							"alternate"
 						};
 					log_trace!(logger, "Forwarding HTLC from SCID {} with payment_hash {} and next hop SCID {} over {} channel {} with corresponding peer {}",
-						prev_short_channel_id, &payment_hash, short_chan_id, channel_description, optimal_channel.context.channel_id(), &counterparty_node_id);
+						prev_outbound_scid_alias, &payment_hash, short_chan_id, channel_description, optimal_channel.context.channel_id(), &counterparty_node_id);
 					if let Err((reason, msg)) = optimal_channel.queue_add_htlc(
 						*outgoing_amt_msat,
 						*payment_hash,
@@ -7461,9 +7461,10 @@ where
 							let counterparty_node_id = $htlc.prev_hop.counterparty_node_id;
 							let incoming_packet_shared_secret =
 								$htlc.prev_hop.incoming_packet_shared_secret;
+							let prev_outbound_scid_alias = $htlc.prev_hop.prev_outbound_scid_alias;
 							failed_forwards.push((
 								HTLCSource::PreviousHopData(HTLCPreviousHopData {
-									short_channel_id: $htlc.prev_hop.short_channel_id,
+									prev_outbound_scid_alias,
 									user_channel_id: $htlc.prev_hop.user_channel_id,
 									counterparty_node_id,
 									channel_id: prev_channel_id,
@@ -8268,7 +8269,7 @@ where
 				}
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData {
-				ref short_channel_id,
+				ref prev_outbound_scid_alias,
 				ref htlc_id,
 				ref incoming_packet_shared_secret,
 				ref phantom_shared_secret,
@@ -8311,7 +8312,7 @@ where
 				};
 
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
-				match forward_htlcs.entry(*short_channel_id) {
+				match forward_htlcs.entry(*prev_outbound_scid_alias) {
 					hash_map::Entry::Occupied(mut entry) => {
 						entry.get_mut().push(failure);
 					},
@@ -8574,7 +8575,7 @@ where
 	) {
 		let counterparty_node_id = prev_hop.counterparty_node_id.or_else(|| {
 			let short_to_chan_info = self.short_to_chan_info.read().unwrap();
-			short_to_chan_info.get(&prev_hop.short_channel_id).map(|(cp_id, _)| *cp_id)
+			short_to_chan_info.get(&prev_hop.prev_outbound_scid_alias).map(|(cp_id, _)| *cp_id)
 		});
 		let counterparty_node_id = if let Some(node_id) = counterparty_node_id {
 			node_id
@@ -9225,19 +9226,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		);
 
 		let counterparty_node_id = channel.context.get_counterparty_node_id();
-		let short_channel_id = channel.funding.get_short_channel_id().unwrap_or(channel.context.outbound_scid_alias());
+		let outbound_scid_alias = channel.context.outbound_scid_alias();
 
 		let mut htlc_forwards = None;
 		if !pending_forwards.is_empty() {
 			htlc_forwards = Some((
-				short_channel_id, channel.context.get_counterparty_node_id(),
+				outbound_scid_alias, channel.context.get_counterparty_node_id(),
 				channel.funding.get_funding_txo().unwrap(), channel.context.channel_id(),
 				channel.context.get_user_id(), pending_forwards
 			));
 		}
 		let mut decode_update_add_htlcs = None;
 		if !pending_update_adds.is_empty() {
-			decode_update_add_htlcs = Some((short_channel_id, pending_update_adds));
+			decode_update_add_htlcs = Some((outbound_scid_alias, pending_update_adds));
 		}
 
 		if channel.context.is_connected() {
@@ -10846,8 +10847,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn push_decode_update_add_htlcs(&self, mut update_add_htlcs: (u64, Vec<msgs::UpdateAddHTLC>)) {
 		let mut decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
-		let scid = update_add_htlcs.0;
-		match decode_update_add_htlcs.entry(scid) {
+		let src_outbound_scid_alias = update_add_htlcs.0;
+		match decode_update_add_htlcs.entry(src_outbound_scid_alias) {
 			hash_map::Entry::Occupied(mut e) => {
 				e.get_mut().append(&mut update_add_htlcs.1);
 			},
@@ -10860,7 +10861,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	#[inline]
 	fn forward_htlcs(&self, per_source_pending_forwards: &mut [PerSourcePendingForward]) {
 		for &mut (
-			prev_short_channel_id,
+			prev_outbound_scid_alias,
 			prev_counterparty_node_id,
 			prev_funding_outpoint,
 			prev_channel_id,
@@ -10889,7 +10890,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						Some(payment_hash),
 					);
 					let pending_add = PendingAddHTLCInfo {
-						prev_short_channel_id,
+						prev_outbound_scid_alias,
 						prev_counterparty_node_id,
 						prev_funding_outpoint,
 						prev_channel_id,
@@ -15064,7 +15065,7 @@ where
 				log_trace!(logger, "Releasing held htlc with intercept_id {}", intercept_id);
 
 				let mut per_source_pending_forward = [(
-					htlc.prev_short_channel_id,
+					htlc.prev_outbound_scid_alias,
 					htlc.prev_counterparty_node_id,
 					htlc.prev_funding_outpoint,
 					htlc.prev_channel_id,
@@ -15406,7 +15407,7 @@ impl_writeable_tlv_based_enum!(BlindedFailure,
 );
 
 impl_writeable_tlv_based!(HTLCPreviousHopData, {
-	(0, short_channel_id, required),
+	(0, prev_outbound_scid_alias, required),
 	(1, phantom_shared_secret, option),
 	(2, outpoint, required),
 	(3, blinded_failure, option),
@@ -15578,7 +15579,7 @@ impl Writeable for HTLCSource {
 impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	(0, forward_info, required),
 	(1, prev_user_channel_id, (default_value, 0)),
-	(2, prev_short_channel_id, required),
+	(2, prev_outbound_scid_alias, required),
 	(4, prev_htlc_id, required),
 	(6, prev_funding_outpoint, required),
 	// Note that by the time we get past the required read for type 6 above, prev_funding_outpoint will be
@@ -17001,9 +17002,9 @@ where
 								// still have an entry for this HTLC in `forward_htlcs` or
 								// `pending_intercepted_htlcs`, we were apparently not persisted after
 								// the monitor was when forwarding the payment.
-								decode_update_add_htlcs.retain(|scid, update_add_htlcs| {
+								decode_update_add_htlcs.retain(|src_outb_alias, update_add_htlcs| {
 									update_add_htlcs.retain(|update_add_htlc| {
-										let matches = *scid == prev_hop_data.short_channel_id &&
+										let matches = *src_outb_alias == prev_hop_data.prev_outbound_scid_alias &&
 											update_add_htlc.htlc_id == prev_hop_data.htlc_id;
 										if matches {
 											log_info!(logger, "Removing pending to-decode HTLC with hash {} as it was forwarded to the closed channel {}",
@@ -17198,7 +17199,7 @@ where
 									// to replay this claim to get the preimage into the inbound
 									// edge monitor but the channel is closed (and thus we'll
 									// immediately panic if we call claim_funds_from_hop).
-									if short_to_chan_info.get(&prev_hop.short_channel_id).is_none() {
+									if short_to_chan_info.get(&prev_hop.prev_outbound_scid_alias).is_none() {
 										log_error!(args.logger,
 											"We need to replay the HTLC claim for payment_hash {} (preimage {}) but cannot do so as the HTLC was forwarded prior to LDK 0.0.124.\
 											All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
@@ -17324,7 +17325,7 @@ where
 				if htlc.prev_hop.counterparty_node_id.is_some() {
 					continue;
 				}
-				if short_to_chan_info.get(&htlc.prev_hop.short_channel_id).is_some() {
+				if short_to_chan_info.get(&htlc.prev_hop.prev_outbound_scid_alias).is_some() {
 					log_error!(args.logger,
 						"We do not have the required information to claim a pending payment with payment hash {} reliably.\
 						As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
