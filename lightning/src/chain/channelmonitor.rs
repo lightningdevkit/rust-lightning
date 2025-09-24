@@ -5571,6 +5571,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				OnchainEvent::FundingSpendConfirmation { commitment_tx_to_counterparty_output, .. } => {
 					self.funding_spend_confirmed = Some(entry.txid);
 					self.confirmed_commitment_tx_counterparty_output = commitment_tx_to_counterparty_output;
+					if self.alternative_funding_confirmed.is_none() {
+						for funding in self.pending_funding.drain(..) {
+							self.outputs_to_watch.remove(&funding.funding_txid());
+							self.pending_events.push(Event::DiscardFunding {
+								channel_id: self.channel_id,
+								funding_info: crate::events::FundingInfo::OutPoint {
+									outpoint: funding.funding_outpoint(),
+								},
+							});
+						}
+					}
 				},
 				OnchainEvent::AlternativeFundingConfirmation {} => {
 					// An alternative funding transaction has irrevocably confirmed and we're no

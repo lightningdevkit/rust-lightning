@@ -8,10 +8,12 @@
 // licenses.
 
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
-use crate::chain::channelmonitor::ANTI_REORG_DELAY;
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::transaction::OutPoint;
 use crate::events::bump_transaction::sync::WalletSourceSync;
-use crate::events::Event;
+use crate::events::{ClosureReason, Event, FundingInfo, HTLCHandlingFailureType};
 use crate::ln::chan_utils;
+use crate::ln::channelmanager::BREAKDOWN_TIMEOUT;
 use crate::ln::functional_test_utils::*;
 use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -305,7 +307,8 @@ fn lock_splice_after_blocks<'a, 'b, 'c, 'd>(
 		panic!();
 	}
 
-	// Remove the corresponding outputs and transactions the chain source is watching.
+	// Remove the corresponding outputs and transactions the chain source is watching for the
+	// old funding as it is no longer being tracked.
 	node_a
 		.chain_source
 		.remove_watched_txn_and_outputs(prev_funding_outpoint, prev_funding_script.clone());
@@ -394,4 +397,208 @@ fn test_splice_out() {
 	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
 	assert!(htlc_limit_msat < initial_channel_value_sat / 2 * 1000);
 	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
+}
+
+#[derive(PartialEq)]
+enum SpliceStatus {
+	Unconfirmed,
+	Confirmed,
+	Locked,
+}
+
+#[test]
+fn test_splice_commitment_broadcast() {
+	do_test_splice_commitment_broadcast(SpliceStatus::Unconfirmed, false);
+	do_test_splice_commitment_broadcast(SpliceStatus::Unconfirmed, true);
+	do_test_splice_commitment_broadcast(SpliceStatus::Confirmed, false);
+	do_test_splice_commitment_broadcast(SpliceStatus::Confirmed, true);
+	do_test_splice_commitment_broadcast(SpliceStatus::Locked, false);
+	do_test_splice_commitment_broadcast(SpliceStatus::Locked, true);
+}
+
+fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs: bool) {
+	// Tests that we're able to enforce HTLCs onchain during the different stages of a splice.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let config = test_default_anchors_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, initial_funding_tx) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+
+	// We want to have two HTLCs pending to make sure we can claim those sent before and after a
+	// splice negotiation.
+	let payment_amount = 1_000_000;
+	let (preimage1, payment_hash1, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
+	let splice_in_amount = initial_channel_capacity / 2;
+	let initiator_contribution = SpliceContribution::SpliceIn {
+		value: Amount::from_sat(splice_in_amount),
+		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 0).unwrap()],
+		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	};
+	let splice_tx = splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+	let (preimage2, payment_hash2, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
+	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS;
+
+	if splice_status == SpliceStatus::Confirmed || splice_status == SpliceStatus::Locked {
+		mine_transaction(&nodes[0], &splice_tx);
+		mine_transaction(&nodes[1], &splice_tx);
+	}
+	if splice_status == SpliceStatus::Locked {
+		lock_splice_after_blocks(&nodes[0], &nodes[1], channel_id, ANTI_REORG_DELAY - 1);
+	}
+
+	if claim_htlcs {
+		// Claim both HTLCs, but don't do anything with the update message sent since we want to
+		// resolve the HTLCs onchain instead with a single transaction (thanks to anchors).
+		nodes[1].node.claim_funds(preimage1);
+		expect_payment_claimed!(&nodes[1], payment_hash1, payment_amount);
+		nodes[1].node.claim_funds(preimage2);
+		expect_payment_claimed!(&nodes[1], payment_hash2, payment_amount);
+		check_added_monitors(&nodes[1], 2);
+		let _ = get_htlc_update_msgs(&nodes[1], &node_id_0);
+	}
+
+	// Force close the channel. This should broadcast the appropriate commitment transaction based
+	// on the currently confirmed funding.
+	nodes[0]
+		.node
+		.force_close_broadcasting_latest_txn(&channel_id, &node_id_1, "test".to_owned())
+		.unwrap();
+	handle_bump_events(&nodes[0], true, 0);
+	let commitment_tx = {
+		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		let commitment_tx = txn.remove(0);
+		match splice_status {
+			SpliceStatus::Unconfirmed => check_spends!(&commitment_tx, &initial_funding_tx),
+			SpliceStatus::Confirmed | SpliceStatus::Locked => {
+				check_spends!(&commitment_tx, &splice_tx)
+			},
+		}
+		commitment_tx
+	};
+
+	mine_transaction(&nodes[0], &commitment_tx);
+	mine_transaction(&nodes[1], &commitment_tx);
+
+	let closure_reason = ClosureReason::HolderForceClosed {
+		broadcasted_latest_txn: Some(true),
+		message: "test".to_owned(),
+	};
+	let closed_channel_capacity = if splice_status == SpliceStatus::Locked {
+		initial_channel_capacity + splice_in_amount
+	} else {
+		initial_channel_capacity
+	};
+	check_closed_event(&nodes[0], 1, closure_reason, false, &[node_id_1], closed_channel_capacity);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
+
+	let closure_reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[1], 1, closure_reason, false, &[node_id_0], closed_channel_capacity);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+
+	if !claim_htlcs {
+		// If we're supposed to time out the HTLCs, mine enough blocks until the expiration.
+		connect_blocks(&nodes[0], htlc_expiry - nodes[0].best_block_info().1);
+		connect_blocks(&nodes[1], htlc_expiry - nodes[1].best_block_info().1);
+		expect_htlc_handling_failed_destinations!(
+			nodes[1].node.get_and_clear_pending_events(),
+			&[
+				HTLCHandlingFailureType::Receive { payment_hash: payment_hash1 },
+				HTLCHandlingFailureType::Receive { payment_hash: payment_hash2 }
+			]
+		);
+	}
+
+	// We should see either an aggregated HTLC timeout or success transaction spending the valid
+	// commitment transaction we mined earlier.
+	let htlc_claim_tx = if claim_htlcs {
+		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		let htlc_success_tx = txn.remove(0);
+		assert_eq!(htlc_success_tx.input.len(), 2);
+		check_spends!(&htlc_success_tx, &commitment_tx);
+		htlc_success_tx
+	} else {
+		handle_bump_htlc_event(&nodes[0], 1);
+		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		let htlc_timeout_tx = txn.remove(0);
+		// The inputs spent correspond to the fee bump input and the two HTLCs from the commitment
+		// transaction.
+		assert_eq!(htlc_timeout_tx.input.len(), 3);
+		let tx_with_fee_bump_utxo =
+			if splice_status == SpliceStatus::Unconfirmed { &coinbase_tx } else { &splice_tx };
+		check_spends!(&htlc_timeout_tx, &commitment_tx, tx_with_fee_bump_utxo);
+		htlc_timeout_tx
+	};
+
+	mine_transaction(&nodes[0], &htlc_claim_tx);
+	mine_transaction(&nodes[1], &htlc_claim_tx);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	if claim_htlcs {
+		assert_eq!(events.iter().filter(|e| matches!(e, Event::PaymentSent { .. })).count(), 2);
+		assert_eq!(
+			events.iter().filter(|e| matches!(e, Event::PaymentPathSuccessful { .. })).count(),
+			2
+		);
+	} else {
+		assert_eq!(events.iter().filter(|e| matches!(e, Event::PaymentFailed { .. })).count(), 2,);
+		assert_eq!(
+			events.iter().filter(|e| matches!(e, Event::PaymentPathFailed { .. })).count(),
+			2
+		);
+	}
+	check_added_monitors(&nodes[0], 2); // Two `ReleasePaymentComplete` monitor updates
+
+	// When the splice never confirms and we see a commitment transaction broadcast and confirm for
+	// the current funding instead, we should expect to see an `Event::DiscardFunding` for the
+	// splice transaction.
+	if splice_status == SpliceStatus::Unconfirmed {
+		// Remove the corresponding outputs and transactions the chain source is watching for the
+		// splice as it is no longer being tracked.
+		connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32);
+		let (vout, txout) = splice_tx
+			.output
+			.iter()
+			.enumerate()
+			.find(|(_, output)| output.script_pubkey.is_p2wsh())
+			.unwrap();
+		let funding_outpoint = OutPoint { txid: splice_tx.compute_txid(), index: vout as u16 };
+		nodes[0]
+			.chain_source
+			.remove_watched_txn_and_outputs(funding_outpoint, txout.script_pubkey.clone());
+		nodes[1]
+			.chain_source
+			.remove_watched_txn_and_outputs(funding_outpoint, txout.script_pubkey.clone());
+
+		// `SpendableOutputs` events are also included here, but we don't care for them.
+		let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+		assert_eq!(events.len(), if claim_htlcs { 2 } else { 4 }, "{events:?}");
+		if let Event::DiscardFunding { funding_info, .. } = &events[0] {
+			assert_eq!(*funding_info, FundingInfo::OutPoint { outpoint: funding_outpoint });
+		} else {
+			panic!();
+		}
+		let events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+		assert_eq!(events.len(), if claim_htlcs { 2 } else { 1 }, "{events:?}");
+		if let Event::DiscardFunding { funding_info, .. } = &events[0] {
+			assert_eq!(*funding_info, FundingInfo::OutPoint { outpoint: funding_outpoint });
+		} else {
+			panic!();
+		}
+	}
 }
