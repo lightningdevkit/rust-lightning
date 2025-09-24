@@ -248,25 +248,12 @@ impl_writeable_tlv_based!(ConstructedTransaction, {
 
 impl ConstructedTransaction {
 	fn new(context: NegotiationContext) -> Result<Self, AbortReason> {
-		if let Some(shared_funding_input) = &context.shared_funding_input {
-			if !context.inputs.iter().any(|(_, input)| {
-				input.txin().previous_output == shared_funding_input.input.previous_output
-			}) {
-				return Err(AbortReason::MissingFundingInput);
-			}
-		}
-		if !context
-			.outputs
-			.iter()
-			.any(|(_, output)| *output.tx_out() == context.shared_funding_output.tx_out)
-		{
-			return Err(AbortReason::MissingFundingOutput);
-		}
-
 		let satisfaction_weight =
 			Weight::from_wu(context.inputs.iter().fold(0u64, |value, (_, input)| {
 				value.saturating_add(input.satisfaction_weight().to_wu())
 			}));
+
+		let lock_time = context.tx_locktime;
 
 		let mut inputs: Vec<(TxIn, TxInMetadata)> =
 			context.inputs.into_values().map(|input| input.into_txin_and_metadata()).collect();
@@ -275,35 +262,42 @@ impl ConstructedTransaction {
 		inputs.sort_unstable_by_key(|(_, input)| input.serial_id);
 		outputs.sort_unstable_by_key(|(_, output)| output.serial_id);
 
+		let (input, input_metadata): (Vec<TxIn>, Vec<TxInMetadata>) = inputs.into_iter().unzip();
+		let (output, output_metadata): (Vec<TxOut>, Vec<TxOutMetadata>) =
+			outputs.into_iter().unzip();
+
 		let shared_input_index =
 			context.shared_funding_input.as_ref().and_then(|shared_funding_input| {
-				inputs
+				input
 					.iter()
-					.position(|(txin, _)| {
+					.position(|txin| {
 						txin.previous_output == shared_funding_input.input.previous_output
 					})
 					.map(|position| position as u32)
 			});
 
-		let (input, input_metadata): (Vec<TxIn>, Vec<TxInMetadata>) = inputs.into_iter().unzip();
-		let (output, output_metadata): (Vec<TxOut>, Vec<TxOutMetadata>) =
-			outputs.into_iter().unzip();
+		let tx = ConstructedTransaction {
+			holder_is_initiator: context.holder_is_initiator,
+			input_metadata,
+			output_metadata,
+			tx: Transaction { version: Version::TWO, lock_time, input, output },
+			shared_input_index,
+		};
 
-		let tx =
-			Transaction { version: Version::TWO, lock_time: context.tx_locktime, input, output };
+		if context.shared_funding_input.is_some() && tx.shared_input_index.is_none() {
+			return Err(AbortReason::MissingFundingInput);
+		}
 
-		let tx_weight = tx.weight().checked_add(satisfaction_weight).unwrap_or(Weight::MAX);
+		if !tx.tx.output.iter().any(|txout| *txout == context.shared_funding_output.tx_out) {
+			return Err(AbortReason::MissingFundingOutput);
+		}
+
+		let tx_weight = tx.tx.weight().checked_add(satisfaction_weight).unwrap_or(Weight::MAX);
 		if tx_weight > Weight::from_wu(MAX_STANDARD_TX_WEIGHT as u64) {
 			return Err(AbortReason::TransactionTooLarge);
 		}
 
-		Ok(Self {
-			holder_is_initiator: context.holder_is_initiator,
-			input_metadata,
-			output_metadata,
-			tx,
-			shared_input_index,
-		})
+		Ok(tx)
 	}
 
 	pub fn tx(&self) -> &Transaction {
