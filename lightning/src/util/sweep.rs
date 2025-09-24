@@ -19,7 +19,6 @@ use crate::sign::{
 	ChangeDestinationSource, ChangeDestinationSourceSync, ChangeDestinationSourceSyncWrapper,
 	OutputSpender, SpendableOutputDescriptor,
 };
-use crate::sync::Arc;
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 use crate::util::persist::{
@@ -351,47 +350,6 @@ where
 	change_destination_source: D,
 	kv_store: K,
 	logger: L,
-}
-
-impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-	OutputSweeper<B, D, E, F, KVStoreSyncWrapper<K>, L, O>
-where
-	B::Target: BroadcasterInterface,
-	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
-	F::Target: Filter + Send + Sync,
-	K::Target: KVStoreSync,
-	L::Target: Logger,
-	O::Target: OutputSpender,
-{
-	/// Constructs a new [`OutputSweeper`] based on a [`KVStoreSync`].
-	pub fn new_with_kv_store_sync(
-		best_block: BestBlock, broadcaster: B, fee_estimator: E, chain_data_source: Option<F>,
-		output_spender: O, change_destination_source: D, kv_store_sync: K, logger: L,
-	) -> Self {
-		let kv_store = KVStoreSyncWrapper(kv_store_sync);
-
-		Self::new(
-			best_block,
-			broadcaster,
-			fee_estimator,
-			chain_data_source,
-			output_spender,
-			change_destination_source,
-			kv_store,
-			logger,
-		)
-	}
-
-	/// Reads an [`OutputSweeper`] from the given reader and returns it with a synchronous [`KVStoreSync`].
-	pub fn read_with_kv_store_sync<R: io::Read>(
-		reader: &mut R, args: (B, E, Option<F>, O, D, K, L),
-	) -> Result<Self, DecodeError> {
-		let kv_store = KVStoreSyncWrapper(args.5);
-		let args = (args.0, args.1, args.2, args.3, args.4, kv_store, args.6);
-
-		Self::read(reader, args)
-	}
 }
 
 impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
@@ -981,15 +939,8 @@ where
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
-	sweeper: OutputSweeper<
-		B,
-		Arc<ChangeDestinationSourceSyncWrapper<D>>,
-		E,
-		F,
-		KVStoreSyncWrapper<K>,
-		L,
-		O,
-	>,
+	sweeper:
+		OutputSweeper<B, ChangeDestinationSourceSyncWrapper<D>, E, F, KVStoreSyncWrapper<K>, L, O>,
 }
 
 impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
@@ -1009,7 +960,7 @@ where
 		output_spender: O, change_destination_source: D, kv_store: K, logger: L,
 	) -> Self {
 		let change_destination_source =
-			Arc::new(ChangeDestinationSourceSyncWrapper::new(change_destination_source));
+			ChangeDestinationSourceSyncWrapper::new(change_destination_source);
 
 		let kv_store = KVStoreSyncWrapper(kv_store);
 
@@ -1068,19 +1019,17 @@ where
 		self.sweeper.tracked_spendable_outputs()
 	}
 
-	/// Returns the inner async sweeper for testing purposes.
-	#[cfg(any(test, feature = "_test_utils"))]
+	/// Fetch the inner async sweeper.
+	///
+	/// In general you shouldn't have much reason to use this - you have a sync [`KVStore`] backing
+	/// this [`OutputSweeperSync`], fetching an async [`OutputSweeper`] won't accomplish much, all
+	/// the async methods will hang waiting on your sync [`KVStore`] and likely confuse your async
+	/// runtime. This exists primarily for LDK-internal use, including outside of this crate.
+	#[doc(hidden)]
 	pub fn sweeper_async(
 		&self,
-	) -> &OutputSweeper<
-		B,
-		Arc<ChangeDestinationSourceSyncWrapper<D>>,
-		E,
-		F,
-		KVStoreSyncWrapper<K>,
-		L,
-		O,
-	> {
+	) -> &OutputSweeper<B, ChangeDestinationSourceSyncWrapper<D>, E, F, KVStoreSyncWrapper<K>, L, O>
+	{
 		&self.sweeper
 	}
 }

@@ -48,11 +48,9 @@ use lightning::onion_message::messenger::AOnionMessenger;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::routing::utxo::UtxoLookup;
-use lightning::sign::ChangeDestinationSource;
-#[cfg(feature = "std")]
-use lightning::sign::ChangeDestinationSourceSync;
-use lightning::sign::EntropySource;
-use lightning::sign::OutputSpender;
+use lightning::sign::{
+	ChangeDestinationSource, ChangeDestinationSourceSync, EntropySource, OutputSpender,
+};
 use lightning::util::logger::Logger;
 use lightning::util::persist::{
 	KVStore, KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
@@ -61,9 +59,7 @@ use lightning::util::persist::{
 	NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
 	SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
-use lightning::util::sweep::OutputSweeper;
-#[cfg(feature = "std")]
-use lightning::util::sweep::OutputSweeperSync;
+use lightning::util::sweep::{OutputSweeper, OutputSweeperSync};
 #[cfg(feature = "std")]
 use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
@@ -1361,7 +1357,7 @@ pub async fn process_events_async_with_kv_store_sync<
 	D: Deref,
 	O: Deref,
 	K: Deref,
-	OS: Deref<Target = OutputSweeper<T, D, F, CF, KVStoreSyncWrapper<K>, L, O>>,
+	OS: Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>>,
 	S: Deref<Target = SC> + Send + Sync,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
@@ -1386,7 +1382,7 @@ where
 	PM::Target: APeerManager,
 	LM::Target: ALiquidityManager,
 	O::Target: OutputSpender,
-	D::Target: ChangeDestinationSource,
+	D::Target: ChangeDestinationSourceSync,
 	K::Target: KVStoreSync,
 {
 	let kv_store = KVStoreSyncWrapper(kv_store);
@@ -1399,7 +1395,7 @@ where
 		gossip_sync,
 		peer_manager,
 		liquidity_manager,
-		sweeper,
+		sweeper.as_ref().map(|os| os.sweeper_async()),
 		logger,
 		scorer,
 		sleeper,
