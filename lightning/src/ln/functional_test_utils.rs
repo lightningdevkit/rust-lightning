@@ -1372,7 +1372,7 @@ macro_rules! reload_node {
 	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		reload_node!(
 			$node,
-			$crate::util::config::UserConfig::default(),
+			test_default_channel_config(),
 			$chanman_encoded,
 			$monitors_encoded,
 			$persister,
@@ -4331,6 +4331,7 @@ pub fn test_default_channel_config() -> UserConfig {
 	// feerate of 253).
 	default_config.channel_config.max_dust_htlc_exposure =
 		MaxDustHTLCExposure::FeeRateMultiplier(50_000_000 / 253);
+	default_config.reject_inbound_splices = false;
 	default_config
 }
 

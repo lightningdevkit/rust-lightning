@@ -956,6 +956,18 @@ pub struct UserConfig {
 	///
 	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 	pub hold_outbound_htlcs_at_next_hop: bool,
+	/// If this is set to `true`, then inbound channel splice requests will be rejected. This
+	/// ensures backwards compatibility is not broken with LDK versions < 0.2 while a splice is
+	/// pending.
+	///
+	/// Outbound channel splice requests (via [`ChannelManager::splice_channel`], an opt-in API) are
+	/// still allowed as users should be aware of the backwards compatibility risk prior to using
+	/// the functionality.
+	///
+	/// Default value: `true`
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	pub reject_inbound_splices: bool,
 }
 
 impl Default for UserConfig {
@@ -972,6 +984,7 @@ impl Default for UserConfig {
 			enable_dual_funded_channels: false,
 			enable_htlc_hold: false,
 			hold_outbound_htlcs_at_next_hop: false,
+			reject_inbound_splices: true,
 		}
 	}
 }
@@ -994,6 +1007,7 @@ impl Readable for UserConfig {
 			enable_dual_funded_channels: Readable::read(reader)?,
 			hold_outbound_htlcs_at_next_hop: Readable::read(reader)?,
 			enable_htlc_hold: Readable::read(reader)?,
+			reject_inbound_splices: Readable::read(reader)?,
 		})
 	}
 }

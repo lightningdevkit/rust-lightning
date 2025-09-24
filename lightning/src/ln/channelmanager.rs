@@ -11476,6 +11476,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					counterparty_node_id, msg.channel_id,
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
+				if self.config.read().unwrap().reject_inbound_splices {
+					let err = ChannelError::WarnAndDisconnect(
+						"Inbound channel splices are currently not allowed".to_owned()
+					);
+					return Err(MsgHandleErrInternal::from_chan_no_close(err, msg.channel_id));
+				}
+
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
 					let init_res = funded_channel.splice_init(
 						msg, our_funding_contribution, &self.signer_provider, &self.entropy_source,
@@ -15325,16 +15332,15 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	features.set_provide_storage_optional();
 	#[cfg(simple_close)]
 	features.set_simple_close_optional();
+	features.set_quiescence_optional();
+	features.set_splicing_optional();
+
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
 	}
 	if config.enable_dual_funded_channels {
 		features.set_dual_fund_optional();
 	}
-	// Only signal quiescence support in tests for now, as we don't yet support any
-	// quiescent-dependent protocols (e.g., splicing).
-	#[cfg(any(test, fuzzing))]
-	features.set_quiescence_optional();
 
 	if config.channel_handshake_config.negotiate_anchor_zero_fee_commitments {
 		features.set_anchor_zero_fee_commitments_optional();
