@@ -15987,6 +15987,7 @@ mod tests {
 			SecretKey::from_slice(&<Vec<u8>>::from_hex("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&<Vec<u8>>::from_hex("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
+			SecretKey::from_slice(&<Vec<u8>>::from_hex("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&<Vec<u8>>::from_hex("3333333333333333333333333333333333333333333333333333333333333333").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&<Vec<u8>>::from_hex("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
 

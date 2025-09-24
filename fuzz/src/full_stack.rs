@@ -477,7 +477,9 @@ impl SignerProvider for KeyProvider {
 		e = SecretKey::from_slice(&key).unwrap();
 		key[30] = 6 + if inbound { 0 } else { 6 };
 		f = key;
-		let signer = InMemorySigner::new(&secp_ctx, a, b, c, d, e, f, keys_id, keys_id);
+		// We leave both the v1 and v2 derivation to_remote keys the same as there's not any real
+		// reason to fuzz differences here, and it keeps us consistent with past behavior.
+		let signer = InMemorySigner::new(&secp_ctx, a, b, c, c, d, e, f, keys_id, keys_id);
 
 		TestChannelSigner::new_with_revoked(DynSigner::new(signer), state, false, false)
 	}

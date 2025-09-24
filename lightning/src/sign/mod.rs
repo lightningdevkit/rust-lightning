@@ -41,8 +41,8 @@ use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
-	get_revokeable_redeemscript, make_funding_redeemscript, ChannelPublicKeys,
-	ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
+	get_counterparty_payment_script, get_revokeable_redeemscript, make_funding_redeemscript,
+	ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
 	HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
@@ -56,6 +56,7 @@ use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::PaymentPreimage;
 use crate::util::async_poll::AsyncResult;
 use crate::util::ser::{ReadableArgs, Writeable};
@@ -139,6 +140,16 @@ pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
 /// Witness weight for satisying a P2TR key-path spend.
 pub(crate) const P2TR_KEY_PATH_WITNESS_WEIGHT: u64 = 1 /* witness items */
 	+ 1 /* schnorr sig len */ + 64 /* schnorr sig */;
+
+/// If a [`KeysManager`] is built with [`KeysManager::new`] with `v2_remote_key_derivation` set,
+/// the script which we receive funds to on-chain when our counterparty force-closes a channel is
+/// one of this many possible derivation paths.
+///
+/// Keeping this limited allows for scanning the chain to find lost funds if our state is destroyed,
+/// while this being more than a handful provides some privacy by not constantly reusing the same
+/// scripts on-chain across channels.
+// Note that this MUST remain below the maximum BIP 32 derivation paths (2^31)
+pub const STATIC_PAYMENT_KEY_COUNT: u16 = 1000;
 
 /// Information about a spendable output to our "payment key".
 ///
@@ -371,7 +382,7 @@ impl SpendableOutputDescriptor {
 					if let Some(basepoint) = delayed_payment_basepoint.as_ref() {
 						// Required to derive signing key: privkey = basepoint_secret + SHA256(per_commitment_point || basepoint)
 						let add_tweak = basepoint.derive_add_tweak(&per_commitment_point);
-						let payment_key = DelayedPaymentKey(add_public_key_tweak(
+						let delayed_payment_key = DelayedPaymentKey(add_public_key_tweak(
 							secp_ctx,
 							&basepoint.to_public_key(),
 							&add_tweak,
@@ -381,7 +392,7 @@ impl SpendableOutputDescriptor {
 							Some(get_revokeable_redeemscript(
 								&revocation_pubkey,
 								*to_self_delay,
-								&payment_key,
+								&delayed_payment_key,
 							)),
 							Some(add_tweak),
 						)
@@ -1140,8 +1151,12 @@ pub struct InMemorySigner {
 	funding_key: sealed::MaybeTweakedSecretKey,
 	/// Holder secret key for blinded revocation pubkey.
 	pub revocation_base_key: SecretKey,
-	/// Holder secret key used for our balance in counterparty-broadcasted commitment transactions.
-	pub payment_key: SecretKey,
+	/// Holder secret key used for our balance in counterparty-broadcasted commitment transactions,
+	/// old-style derivation.
+	payment_key_v1: SecretKey,
+	/// Holder secret key used for our balance in counterparty-broadcasted commitment transactions,
+	/// new-style derivation.
+	payment_key_v2: SecretKey,
 	/// Holder secret key used in an HTLC transaction.
 	pub delayed_payment_base_key: SecretKey,
 	/// Holder HTLC secret key used in commitment transaction HTLC outputs.
@@ -1160,7 +1175,8 @@ impl PartialEq for InMemorySigner {
 	fn eq(&self, other: &Self) -> bool {
 		self.funding_key == other.funding_key
 			&& self.revocation_base_key == other.revocation_base_key
-			&& self.payment_key == other.payment_key
+			&& self.payment_key_v1 == other.payment_key_v1
+			&& self.payment_key_v2 == other.payment_key_v2
 			&& self.delayed_payment_base_key == other.delayed_payment_base_key
 			&& self.htlc_base_key == other.htlc_base_key
 			&& self.commitment_seed == other.commitment_seed
@@ -1174,7 +1190,8 @@ impl Clone for InMemorySigner {
 		Self {
 			funding_key: self.funding_key.clone(),
 			revocation_base_key: self.revocation_base_key.clone(),
-			payment_key: self.payment_key.clone(),
+			payment_key_v1: self.payment_key_v1.clone(),
+			payment_key_v2: self.payment_key_v2.clone(),
 			delayed_payment_base_key: self.delayed_payment_base_key.clone(),
 			htlc_base_key: self.htlc_base_key.clone(),
 			commitment_seed: self.commitment_seed.clone(),
@@ -1186,24 +1203,57 @@ impl Clone for InMemorySigner {
 }
 
 impl InMemorySigner {
-	/// Creates a new [`InMemorySigner`].
+	#[cfg(any(feature = "_test_utils", test))]
 	pub fn new<C: Signing>(
 		secp_ctx: &Secp256k1<C>, funding_key: SecretKey, revocation_base_key: SecretKey,
-		payment_key: SecretKey, delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey,
-		commitment_seed: [u8; 32], channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
+		payment_key_v1: SecretKey, payment_key_v2: SecretKey, delayed_payment_base_key: SecretKey,
+		htlc_base_key: SecretKey, commitment_seed: [u8; 32], channel_keys_id: [u8; 32],
+		rand_bytes_unique_start: [u8; 32],
 	) -> InMemorySigner {
+		// TODO: Make the key used dynamic
 		let holder_channel_pubkeys = InMemorySigner::make_holder_keys(
 			secp_ctx,
 			&funding_key,
 			&revocation_base_key,
-			&payment_key,
+			&payment_key_v1,
 			&delayed_payment_base_key,
 			&htlc_base_key,
 		);
 		InMemorySigner {
 			funding_key: sealed::MaybeTweakedSecretKey::from(funding_key),
 			revocation_base_key,
-			payment_key,
+			payment_key_v1,
+			payment_key_v2,
+			delayed_payment_base_key,
+			htlc_base_key,
+			commitment_seed,
+			holder_channel_pubkeys,
+			channel_keys_id,
+			entropy_source: RandomBytes::new(rand_bytes_unique_start),
+		}
+	}
+
+	#[cfg(not(any(feature = "_test_utils", test)))]
+	fn new<C: Signing>(
+		secp_ctx: &Secp256k1<C>, funding_key: SecretKey, revocation_base_key: SecretKey,
+		payment_key_v1: SecretKey, payment_key_v2: SecretKey, delayed_payment_base_key: SecretKey,
+		htlc_base_key: SecretKey, commitment_seed: [u8; 32], channel_keys_id: [u8; 32],
+		rand_bytes_unique_start: [u8; 32],
+	) -> InMemorySigner {
+		// TODO: Make the key used dynamic
+		let holder_channel_pubkeys = InMemorySigner::make_holder_keys(
+			secp_ctx,
+			&funding_key,
+			&revocation_base_key,
+			&payment_key_v1,
+			&delayed_payment_base_key,
+			&htlc_base_key,
+		);
+		InMemorySigner {
+			funding_key: sealed::MaybeTweakedSecretKey::from(funding_key),
+			revocation_base_key,
+			payment_key_v1,
+			payment_key_v2,
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
@@ -1264,14 +1314,28 @@ impl InMemorySigner {
 			return Err(());
 		}
 
-		let remotepubkey = bitcoin::PublicKey::new(self.holder_channel_pubkeys.payment_point);
-		let supports_anchors_zero_fee_htlc_tx = descriptor
+		let legacy_default_channel_type = ChannelTypeFeatures::only_static_remote_key();
+		let channel_type_features = descriptor
 			.channel_transaction_parameters
 			.as_ref()
-			.map(|params| params.channel_type_features.supports_anchors_zero_fee_htlc_tx())
-			.unwrap_or(false);
+			.map(|params| &params.channel_type_features)
+			.unwrap_or(&legacy_default_channel_type);
 
-		let witness_script = if supports_anchors_zero_fee_htlc_tx {
+		let payment_point_v1 = PublicKey::from_secret_key(secp_ctx, &self.payment_key_v1);
+		let payment_point_v2 = PublicKey::from_secret_key(secp_ctx, &self.payment_key_v2);
+		let spk_v1 = get_counterparty_payment_script(channel_type_features, &payment_point_v1);
+		let spk_v2 = get_counterparty_payment_script(channel_type_features, &payment_point_v2);
+
+		let (remotepubkey, payment_key) = if spk_v1 == descriptor.output.script_pubkey {
+			(bitcoin::PublicKey::new(payment_point_v1), &self.payment_key_v1)
+		} else {
+			if spk_v2 != descriptor.output.script_pubkey {
+				return Err(());
+			}
+			(bitcoin::PublicKey::new(payment_point_v2), &self.payment_key_v2)
+		};
+
+		let witness_script = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 			chan_utils::get_to_countersigner_keyed_anchor_redeemscript(&remotepubkey.inner)
 		} else {
 			ScriptBuf::new_p2pkh(&remotepubkey.pubkey_hash())
@@ -1286,8 +1350,8 @@ impl InMemorySigner {
 				)
 				.unwrap()[..]
 		);
-		let remotesig = sign_with_aux_rand(secp_ctx, &sighash, &self.payment_key, &self);
-		let payment_script = if supports_anchors_zero_fee_htlc_tx {
+		let remotesig = sign_with_aux_rand(secp_ctx, &sighash, payment_key, &self);
+		let payment_script = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 			witness_script.to_p2wsh()
 		} else {
 			ScriptBuf::new_p2wpkh(&remotepubkey.wpubkey_hash().unwrap())
@@ -1300,7 +1364,7 @@ impl InMemorySigner {
 		let mut witness = Vec::with_capacity(2);
 		witness.push(remotesig.serialize_der().to_vec());
 		witness[0].push(EcdsaSighashType::All as u8);
-		if supports_anchors_zero_fee_htlc_tx {
+		if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 			witness.push(witness_script.to_bytes());
 		} else {
 			witness.push(remotepubkey.to_bytes());
@@ -1874,6 +1938,7 @@ pub struct KeysManager {
 	destination_script: ScriptBuf,
 	shutdown_pubkey: PublicKey,
 	channel_master_key: Xpriv,
+	static_payment_key: Xpriv,
 	channel_child_index: AtomicUsize,
 	peer_storage_key: PeerStorageKey,
 	receive_auth_key: ReceiveAuthKey,
@@ -1915,6 +1980,7 @@ impl KeysManager {
 		const INBOUND_PAYMENT_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 5 };
 		const PEER_STORAGE_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 6 };
 		const RECEIVE_AUTH_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 7 };
+		const STATIC_PAYMENT_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 8 };
 
 		let secp_ctx = Secp256k1::new();
 		// Note that when we aren't serializing the key, network doesn't matter
@@ -1962,6 +2028,10 @@ impl KeysManager {
 					.expect("Your RNG is busted")
 					.private_key;
 
+				let static_payment_key = master_key
+					.derive_priv(&secp_ctx, &STATIC_PAYMENT_KEY_INDEX)
+					.expect("Your RNG is busted");
+
 				let mut rand_bytes_engine = Sha256::engine();
 				rand_bytes_engine.input(&starting_time_secs.to_be_bytes());
 				rand_bytes_engine.input(&starting_time_nanos.to_be_bytes());
@@ -1984,6 +2054,7 @@ impl KeysManager {
 
 					channel_master_key,
 					channel_child_index: AtomicUsize::new(0),
+					static_payment_key,
 
 					entropy_source: RandomBytes::new(rand_bytes_unique_start),
 
@@ -2002,6 +2073,17 @@ impl KeysManager {
 	/// Gets the "node_id" secret key used to sign gossip announcements, decode onion data, etc.
 	pub fn get_node_secret_key(&self) -> SecretKey {
 		self.node_secret
+	}
+
+	fn derive_payment_key_v2(&self, key_idx: u64) -> SecretKey {
+		let idx = key_idx % u64::from(STATIC_PAYMENT_KEY_COUNT);
+		self.static_payment_key
+			.derive_priv(
+				&self.secp_ctx,
+				&ChildNumber::from_hardened_idx(idx as u32).expect("key space exhausted"),
+			)
+			.expect("Your RNG is busted")
+			.private_key
 	}
 
 	/// Derive an old [`EcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
@@ -2044,16 +2126,20 @@ impl KeysManager {
 		}
 		let funding_key = key_step!(b"funding key", commitment_seed);
 		let revocation_base_key = key_step!(b"revocation base key", funding_key);
-		let payment_key = key_step!(b"payment key", revocation_base_key);
-		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key);
+		let payment_key_v1 = key_step!(b"payment key", revocation_base_key);
+		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key_v1);
 		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
 		let prng_seed = self.get_secure_random_bytes();
+
+		let payment_key_v2_idx =
+			u64::from_le_bytes(commitment_seed[..8].try_into().expect("8 bytes"));
 
 		InMemorySigner::new(
 			&self.secp_ctx,
 			funding_key,
 			revocation_base_key,
-			payment_key,
+			payment_key_v1,
+			self.derive_payment_key_v2(payment_key_v2_idx),
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
