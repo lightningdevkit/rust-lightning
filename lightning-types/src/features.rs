@@ -162,14 +162,18 @@ mod sealed {
 			// Byte 4
 			Quiescence | OnionMessages,
 			// Byte 5
-			ProvideStorage | ChannelType | SCIDPrivacy | AnchorZeroFeeCommitments,
+			ProvideStorage | ChannelType | SCIDPrivacy,
 			// Byte 6
 			ZeroConf,
 			// Byte 7
 			Trampoline | SimpleClose | Splice,
-			// Byte 8 - 130
-			,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
-			// Byte 131
+			// Byte 8 - 16
+			,,,,,,,,,
+			// Byte 17
+			AnchorZeroFeeCommitmentsStaging,
+			// Byte 18
+			,
+			// Byte 19
 			HtlcHold,
 		]
 	);
@@ -187,19 +191,23 @@ mod sealed {
 			// Byte 4
 			Quiescence | OnionMessages,
 			// Byte 5
-			ProvideStorage | ChannelType | SCIDPrivacy | AnchorZeroFeeCommitments,
+			ProvideStorage | ChannelType | SCIDPrivacy,
 			// Byte 6
 			ZeroConf | Keysend,
 			// Byte 7
 			Trampoline | SimpleClose | Splice,
-			// Byte 8 - 31
-			,,,,,,,,,,,,,,,,,,,,,,,,
+			// Byte 8 - 16
+			,,,,,,,,,
+			// Byte 17
+			AnchorZeroFeeCommitmentsStaging,
+			// Byte 18
+			,
+			// Byte 19
+			HtlcHold,
+			// Byte 20 - 31
+			,,,,,,,,,,,,
 			// Byte 32
 			DnsResolver,
-			// Byte 33 - 130
-			,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
-			// Byte 131
-			HtlcHold,
 		]
 	);
 	define_context!(ChannelContext, []);
@@ -256,9 +264,13 @@ mod sealed {
 		// Byte 4
 		,
 		// Byte 5
-		SCIDPrivacy | AnchorZeroFeeCommitments,
+		SCIDPrivacy,
 		// Byte 6
 		ZeroConf,
+		// Byte 7 - 16
+		,,,,,,,,,,
+		// Byte 17
+		AnchorZeroFeeCommitmentsStaging,
 	]);
 
 	/// Defines a feature with the given bits for the specified [`Context`]s. The generated trait is
@@ -595,17 +607,6 @@ mod sealed {
 		requires_onion_messages
 	);
 	define_feature!(
-		41,
-		AnchorZeroFeeCommitments,
-		[InitContext, NodeContext, ChannelTypeContext],
-		"Feature flags for `option_zero_fee_commitments`.",
-		set_anchor_zero_fee_commitments_optional,
-		set_anchor_zero_fee_commitments_required,
-		clear_anchor_zero_fee_commitments,
-		supports_anchor_zero_fee_commitments,
-		requires_anchor_zero_fee_commitments
-	);
-	define_feature!(
 		43,
 		ProvideStorage,
 		[InitContext, NodeContext],
@@ -699,6 +700,28 @@ mod sealed {
 	// added which we expect to appear commonly across contexts.
 	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = (63 + 7) / 8;
 	define_feature!(
+		141, // The BOLTs PR uses feature bit 40/41, so add +100 for the experimental bit
+		AnchorZeroFeeCommitmentsStaging,
+		[InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_zero_fee_commitments`.",
+		set_anchor_zero_fee_commitments_optional,
+		set_anchor_zero_fee_commitments_required,
+		clear_anchor_zero_fee_commitments,
+		supports_anchor_zero_fee_commitments,
+		requires_anchor_zero_fee_commitments
+	);
+	define_feature!(
+		153, // The BOLTs PR uses feature bit 52/53, so add +100 for the experimental bit
+		HtlcHold,
+		[InitContext, NodeContext],
+		"Feature flags for holding HTLCs and forwarding on receipt of an onion message",
+		set_htlc_hold_optional,
+		set_htlc_hold_required,
+		clear_htlc_hold,
+		supports_htlc_hold,
+		requires_htlc_hold
+	);
+	define_feature!(
 		259,
 		DnsResolver,
 		[NodeContext],
@@ -708,17 +731,6 @@ mod sealed {
 		clear_dns_resolution,
 		supports_dns_resolution,
 		requires_dns_resolution
-	);
-	define_feature!(
-		1053, // The BOLTs PR uses feature bit 52/53, so add +1000 for the experimental bit
-		HtlcHold,
-		[InitContext, NodeContext],
-		"Feature flags for holding HTLCs and forwarding on receipt of an onion message",
-		set_htlc_hold_optional,
-		set_htlc_hold_required,
-		clear_htlc_hold,
-		supports_htlc_hold,
-		requires_htlc_hold
 	);
 
 	// Note: update the module-level docs when a new feature bit is added!
@@ -1074,7 +1086,7 @@ impl ChannelTypeFeatures {
 	/// Constructs a ChannelTypeFeatures with zero fee commitment anchors support.
 	pub fn anchors_zero_fee_commitments() -> Self {
 		let mut ret = Self::empty();
-		<sealed::ChannelTypeContext as sealed::AnchorZeroFeeCommitments>::set_required_bit(
+		<sealed::ChannelTypeContext as sealed::AnchorZeroFeeCommitmentsStaging>::set_required_bit(
 			&mut ret,
 		);
 		ret
