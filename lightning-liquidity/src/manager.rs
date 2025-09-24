@@ -318,7 +318,7 @@ impl<
 		CM: Deref + Clone,
 		C: Deref + Clone,
 		K: Deref + Clone,
-	> LiquidityManager<ES, NS, CM, C, K, Arc<DefaultTimeProvider>>
+	> LiquidityManager<ES, NS, CM, C, K, DefaultTimeProvider>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -335,7 +335,6 @@ where
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>,
 	) -> Result<Self, lightning::io::Error> {
-		let time_provider = Arc::new(DefaultTimeProvider);
 		Self::new_with_custom_time_provider(
 			entropy_source,
 			node_signer,
@@ -345,7 +344,7 @@ where
 			kv_store,
 			service_config,
 			client_config,
-			time_provider,
+			DefaultTimeProvider,
 		)
 		.await
 	}
@@ -1046,7 +1045,7 @@ impl<
 		CM: Deref + Clone,
 		C: Deref + Clone,
 		KS: Deref + Clone,
-	> LiquidityManagerSync<ES, NS, CM, C, KS, Arc<DefaultTimeProvider>>
+	> LiquidityManagerSync<ES, NS, CM, C, KS, DefaultTimeProvider>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,

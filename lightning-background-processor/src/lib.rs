@@ -1953,7 +1953,7 @@ mod tests {
 		Arc<ChannelManager>,
 		Arc<dyn Filter + Sync + Send>,
 		Arc<Persister>,
-		Arc<DefaultTimeProvider>,
+		DefaultTimeProvider,
 	>;
 
 	struct Node {
