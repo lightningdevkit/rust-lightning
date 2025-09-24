@@ -6699,7 +6699,7 @@ mod tests {
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::script::ShutdownScript;
 	use crate::ln::types::ChannelId;
-	use crate::sign::InMemorySigner;
+	use crate::sign::{ChannelSigner, InMemorySigner};
 	use crate::sync::Arc;
 	use crate::types::features::ChannelTypeFeatures;
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
@@ -6872,7 +6872,6 @@ mod tests {
 		}
 
 		let keys = InMemorySigner::new(
-			&secp_ctx,
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
@@ -6894,7 +6893,7 @@ mod tests {
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
+			holder_pubkeys: keys.new_pubkeys(None, &secp_ctx),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
@@ -7135,7 +7134,6 @@ mod tests {
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 
 		let keys = InMemorySigner::new(
-			&secp_ctx,
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
@@ -7157,7 +7155,7 @@ mod tests {
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
+			holder_pubkeys: keys.new_pubkeys(None, &secp_ctx),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {

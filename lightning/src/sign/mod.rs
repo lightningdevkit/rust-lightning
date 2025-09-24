@@ -270,11 +270,14 @@ pub enum SpendableOutputDescriptor {
 	/// it is an output from an old state which we broadcast (which should never happen).
 	///
 	/// To derive the delayed payment key which is used to sign this input, you must pass the
-	/// holder [`InMemorySigner::delayed_payment_base_key`] (i.e., the private key which corresponds to the
-	/// [`ChannelPublicKeys::delayed_payment_basepoint`] in [`ChannelSigner::pubkeys`]) and the provided
-	/// [`DelayedPaymentOutputDescriptor::per_commitment_point`] to [`chan_utils::derive_private_key`]. The DelayedPaymentKey can be
-	/// generated without the secret key using [`DelayedPaymentKey::from_basepoint`] and only the
-	/// [`ChannelPublicKeys::delayed_payment_basepoint`] which appears in [`ChannelSigner::pubkeys`].
+	/// holder [`InMemorySigner::delayed_payment_base_key`] (i.e., the private key which
+	/// corresponds to the [`ChannelPublicKeys::delayed_payment_basepoint`] in
+	/// [`ChannelSigner::new_pubkeys`]) and the provided
+	/// [`DelayedPaymentOutputDescriptor::per_commitment_point`] to
+	/// [`chan_utils::derive_private_key`]. The DelayedPaymentKey can be generated without the
+	/// secret key using [`DelayedPaymentKey::from_basepoint`] and only the
+	/// [`ChannelPublicKeys::delayed_payment_basepoint`] which appears in
+	/// [`ChannelSigner::new_pubkeys`].
 	///
 	/// To derive the [`DelayedPaymentOutputDescriptor::revocation_pubkey`] provided here (which is
 	/// used in the witness script generation), you must pass the counterparty
@@ -289,7 +292,7 @@ pub enum SpendableOutputDescriptor {
 	/// [`chan_utils::get_revokeable_redeemscript`].
 	DelayedPaymentOutput(DelayedPaymentOutputDescriptor),
 	/// An output spendable exclusively by our payment key (i.e., the private key that corresponds
-	/// to the `payment_point` in [`ChannelSigner::pubkeys`]). The output type depends on the
+	/// to the `payment_point` in [`ChannelSigner::new_pubkeys`]). The output type depends on the
 	/// channel type negotiated.
 	///
 	/// On an anchor outputs channel, the witness in the spending input is:
@@ -789,14 +792,17 @@ pub trait ChannelSigner {
 	/// and pause future signing operations until this validation completes.
 	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()>;
 
-	/// Returns the holder's channel public keys and basepoints.
+	/// Returns a *new* set of holder channel public keys and basepoints. They may be the same as a
+	/// previous value, but are also allowed to change arbitrarily. Signing methods must still
+	/// support signing for any keys which have ever been returned. This should only be called
+	/// either for new channels or new splices.
 	///
 	/// `splice_parent_funding_txid` can be used to compute a tweak to rotate the funding key in the
 	/// 2-of-2 multisig script during a splice. See [`compute_funding_key_tweak`] for an example
 	/// tweak and more details.
 	///
 	/// This method is *not* asynchronous. Instead, the value must be cached locally.
-	fn pubkeys(
+	fn new_pubkeys(
 		&self, splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> ChannelPublicKeys;
 
@@ -1095,7 +1101,7 @@ mod sealed {
 	use bitcoin::secp256k1::{Scalar, SecretKey};
 
 	#[derive(Clone, PartialEq)]
-	pub struct MaybeTweakedSecretKey(SecretKey);
+	pub struct MaybeTweakedSecretKey(pub(super) SecretKey);
 
 	impl From<SecretKey> for MaybeTweakedSecretKey {
 		fn from(value: SecretKey) -> Self {
@@ -1163,8 +1169,6 @@ pub struct InMemorySigner {
 	pub htlc_base_key: SecretKey,
 	/// Commitment seed.
 	pub commitment_seed: [u8; 32],
-	/// Holder public keys and basepoints.
-	pub(crate) holder_channel_pubkeys: ChannelPublicKeys,
 	/// Key derivation parameters.
 	channel_keys_id: [u8; 32],
 	/// A source of random bytes.
@@ -1180,7 +1184,6 @@ impl PartialEq for InMemorySigner {
 			&& self.delayed_payment_base_key == other.delayed_payment_base_key
 			&& self.htlc_base_key == other.htlc_base_key
 			&& self.commitment_seed == other.commitment_seed
-			&& self.holder_channel_pubkeys == other.holder_channel_pubkeys
 			&& self.channel_keys_id == other.channel_keys_id
 	}
 }
@@ -1195,7 +1198,6 @@ impl Clone for InMemorySigner {
 			delayed_payment_base_key: self.delayed_payment_base_key.clone(),
 			htlc_base_key: self.htlc_base_key.clone(),
 			commitment_seed: self.commitment_seed.clone(),
-			holder_channel_pubkeys: self.holder_channel_pubkeys.clone(),
 			channel_keys_id: self.channel_keys_id,
 			entropy_source: RandomBytes::new(self.get_secure_random_bytes()),
 		}
@@ -1204,21 +1206,11 @@ impl Clone for InMemorySigner {
 
 impl InMemorySigner {
 	#[cfg(any(feature = "_test_utils", test))]
-	pub fn new<C: Signing>(
-		secp_ctx: &Secp256k1<C>, funding_key: SecretKey, revocation_base_key: SecretKey,
-		payment_key_v1: SecretKey, payment_key_v2: SecretKey, delayed_payment_base_key: SecretKey,
-		htlc_base_key: SecretKey, commitment_seed: [u8; 32], channel_keys_id: [u8; 32],
-		rand_bytes_unique_start: [u8; 32],
+	pub fn new(
+		funding_key: SecretKey, revocation_base_key: SecretKey, payment_key_v1: SecretKey,
+		payment_key_v2: SecretKey, delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey,
+		commitment_seed: [u8; 32], channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
 	) -> InMemorySigner {
-		// TODO: Make the key used dynamic
-		let holder_channel_pubkeys = InMemorySigner::make_holder_keys(
-			secp_ctx,
-			&funding_key,
-			&revocation_base_key,
-			&payment_key_v1,
-			&delayed_payment_base_key,
-			&htlc_base_key,
-		);
 		InMemorySigner {
 			funding_key: sealed::MaybeTweakedSecretKey::from(funding_key),
 			revocation_base_key,
@@ -1227,28 +1219,17 @@ impl InMemorySigner {
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
-			holder_channel_pubkeys,
 			channel_keys_id,
 			entropy_source: RandomBytes::new(rand_bytes_unique_start),
 		}
 	}
 
 	#[cfg(not(any(feature = "_test_utils", test)))]
-	fn new<C: Signing>(
-		secp_ctx: &Secp256k1<C>, funding_key: SecretKey, revocation_base_key: SecretKey,
-		payment_key_v1: SecretKey, payment_key_v2: SecretKey, delayed_payment_base_key: SecretKey,
-		htlc_base_key: SecretKey, commitment_seed: [u8; 32], channel_keys_id: [u8; 32],
-		rand_bytes_unique_start: [u8; 32],
+	fn new(
+		funding_key: SecretKey, revocation_base_key: SecretKey, payment_key_v1: SecretKey,
+		payment_key_v2: SecretKey, delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey,
+		commitment_seed: [u8; 32], channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
 	) -> InMemorySigner {
-		// TODO: Make the key used dynamic
-		let holder_channel_pubkeys = InMemorySigner::make_holder_keys(
-			secp_ctx,
-			&funding_key,
-			&revocation_base_key,
-			&payment_key_v1,
-			&delayed_payment_base_key,
-			&htlc_base_key,
-		);
 		InMemorySigner {
 			funding_key: sealed::MaybeTweakedSecretKey::from(funding_key),
 			revocation_base_key,
@@ -1257,7 +1238,6 @@ impl InMemorySigner {
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
-			holder_channel_pubkeys,
 			channel_keys_id,
 			entropy_source: RandomBytes::new(rand_bytes_unique_start),
 		}
@@ -1269,22 +1249,6 @@ impl InMemorySigner {
 		let tweak = splice_parent_funding_txid
 			.map(|txid| compute_funding_key_tweak(&self.funding_key.with_tweak(None), &txid));
 		self.funding_key.with_tweak(tweak)
-	}
-
-	fn make_holder_keys<C: Signing>(
-		secp_ctx: &Secp256k1<C>, funding_key: &SecretKey, revocation_base_key: &SecretKey,
-		payment_key: &SecretKey, delayed_payment_base_key: &SecretKey, htlc_base_key: &SecretKey,
-	) -> ChannelPublicKeys {
-		let from_secret = |s: &SecretKey| PublicKey::from_secret_key(secp_ctx, s);
-		ChannelPublicKeys {
-			funding_pubkey: from_secret(&funding_key),
-			revocation_basepoint: RevocationBasepoint::from(from_secret(&revocation_base_key)),
-			payment_point: from_secret(&payment_key),
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(from_secret(
-				&delayed_payment_base_key,
-			)),
-			htlc_basepoint: HtlcBasepoint::from(from_secret(&htlc_base_key)),
-		}
 	}
 
 	/// Sign the single input of `spend_tx` at index `input_idx`, which spends the output described
@@ -1476,10 +1440,21 @@ impl ChannelSigner for InMemorySigner {
 		Ok(())
 	}
 
-	fn pubkeys(
+	fn new_pubkeys(
 		&self, splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> ChannelPublicKeys {
-		let mut pubkeys = self.holder_channel_pubkeys.clone();
+		let from_secret = |s: &SecretKey| PublicKey::from_secret_key(secp_ctx, s);
+		let mut pubkeys = ChannelPublicKeys {
+			funding_pubkey: from_secret(&self.funding_key.0),
+			revocation_basepoint: RevocationBasepoint::from(from_secret(&self.revocation_base_key)),
+			// TODO: Make the payment_key used dynamic
+			payment_point: from_secret(&self.payment_key_v1),
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(from_secret(
+				&self.delayed_payment_base_key,
+			)),
+			htlc_basepoint: HtlcBasepoint::from(from_secret(&self.htlc_base_key)),
+		};
+
 		if splice_parent_funding_txid.is_some() {
 			pubkeys.funding_pubkey =
 				self.funding_key(splice_parent_funding_txid).public_key(secp_ctx);
@@ -2135,7 +2110,6 @@ impl KeysManager {
 			u64::from_le_bytes(commitment_seed[..8].try_into().expect("8 bytes"));
 
 		InMemorySigner::new(
-			&self.secp_ctx,
 			funding_key,
 			revocation_base_key,
 			payment_key_v1,

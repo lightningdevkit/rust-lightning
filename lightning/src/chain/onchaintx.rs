@@ -1287,7 +1287,7 @@ mod tests {
 	};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
 	use crate::ln::functional_test_utils::create_dummy_block;
-	use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, InMemorySigner};
+	use crate::sign::{ChannelDerivationParameters, ChannelSigner, HTLCDescriptor, InMemorySigner};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::util::test_utils::{TestBroadcaster, TestFeeEstimator, TestLogger};
 
@@ -1301,7 +1301,6 @@ mod tests {
 	fn test_broadcast_height() {
 		let secp_ctx = Secp256k1::new();
 		let signer = InMemorySigner::new(
-			&secp_ctx,
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
@@ -1339,7 +1338,7 @@ mod tests {
 		// Use non-anchor channels so that HTLC-Timeouts are broadcast immediately instead of sent
 		// to the user for external funding.
 		let chan_params = ChannelTransactionParameters {
-			holder_pubkeys: signer.holder_channel_pubkeys.clone(),
+			holder_pubkeys: signer.new_pubkeys(None, &secp_ctx),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
