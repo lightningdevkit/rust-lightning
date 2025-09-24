@@ -69,6 +69,8 @@ use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
 
 use lightning_liquidity::ALiquidityManager;
+#[cfg(feature = "std")]
+use lightning_liquidity::ALiquidityManagerSync;
 
 use core::ops::Deref;
 use core::time::Duration;
@@ -424,6 +426,31 @@ pub const NO_LIQUIDITY_MANAGER: Option<
 				CM = &DynChannelManager,
 				Filter = dyn chain::Filter,
 				C = &dyn chain::Filter,
+				KVStore = dyn lightning::util::persist::KVStore,
+				K = &dyn lightning::util::persist::KVStore,
+				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider,
+				TP = &dyn lightning_liquidity::utils::time::TimeProvider,
+			> + Send
+			+ Sync,
+	>,
+> = None;
+
+/// When initializing a background processor without a liquidity manager, this can be used to avoid
+/// specifying a concrete `LiquidityManagerSync` type.
+#[cfg(all(not(c_bindings), feature = "std"))]
+pub const NO_LIQUIDITY_MANAGER_SYNC: Option<
+	Arc<
+		dyn ALiquidityManagerSync<
+				EntropySource = dyn EntropySource,
+				ES = &dyn EntropySource,
+				NodeSigner = dyn lightning::sign::NodeSigner,
+				NS = &dyn lightning::sign::NodeSigner,
+				AChannelManager = DynChannelManager,
+				CM = &DynChannelManager,
+				Filter = dyn chain::Filter,
+				C = &dyn chain::Filter,
+				KVStoreSync = dyn lightning::util::persist::KVStoreSync,
+				KS = &dyn lightning::util::persist::KVStoreSync,
 				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider,
 				TP = &dyn lightning_liquidity::utils::time::TimeProvider,
 			> + Send
@@ -544,31 +571,34 @@ pub(crate) mod futures_util {
 		unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) }
 	}
 
-	enum JoinerResult<E, F: Future<Output = Result<(), E>> + Unpin> {
+	enum JoinerResult<ERR, F: Future<Output = Result<(), ERR>> + Unpin> {
 		Pending(Option<F>),
-		Ready(Result<(), E>),
+		Ready(Result<(), ERR>),
 	}
 
 	pub(crate) struct Joiner<
-		E,
-		A: Future<Output = Result<(), E>> + Unpin,
-		B: Future<Output = Result<(), E>> + Unpin,
-		C: Future<Output = Result<(), E>> + Unpin,
-		D: Future<Output = Result<(), E>> + Unpin,
+		ERR,
+		A: Future<Output = Result<(), ERR>> + Unpin,
+		B: Future<Output = Result<(), ERR>> + Unpin,
+		C: Future<Output = Result<(), ERR>> + Unpin,
+		D: Future<Output = Result<(), ERR>> + Unpin,
+		E: Future<Output = Result<(), ERR>> + Unpin,
 	> {
-		a: JoinerResult<E, A>,
-		b: JoinerResult<E, B>,
-		c: JoinerResult<E, C>,
-		d: JoinerResult<E, D>,
+		a: JoinerResult<ERR, A>,
+		b: JoinerResult<ERR, B>,
+		c: JoinerResult<ERR, C>,
+		d: JoinerResult<ERR, D>,
+		e: JoinerResult<ERR, E>,
 	}
 
 	impl<
-			E,
-			A: Future<Output = Result<(), E>> + Unpin,
-			B: Future<Output = Result<(), E>> + Unpin,
-			C: Future<Output = Result<(), E>> + Unpin,
-			D: Future<Output = Result<(), E>> + Unpin,
-		> Joiner<E, A, B, C, D>
+			ERR,
+			A: Future<Output = Result<(), ERR>> + Unpin,
+			B: Future<Output = Result<(), ERR>> + Unpin,
+			C: Future<Output = Result<(), ERR>> + Unpin,
+			D: Future<Output = Result<(), ERR>> + Unpin,
+			E: Future<Output = Result<(), ERR>> + Unpin,
+		> Joiner<ERR, A, B, C, D, E>
 	{
 		pub(crate) fn new() -> Self {
 			Self {
@@ -576,13 +606,14 @@ pub(crate) mod futures_util {
 				b: JoinerResult::Pending(None),
 				c: JoinerResult::Pending(None),
 				d: JoinerResult::Pending(None),
+				e: JoinerResult::Pending(None),
 			}
 		}
 
 		pub(crate) fn set_a(&mut self, fut: A) {
 			self.a = JoinerResult::Pending(Some(fut));
 		}
-		pub(crate) fn set_a_res(&mut self, res: Result<(), E>) {
+		pub(crate) fn set_a_res(&mut self, res: Result<(), ERR>) {
 			self.a = JoinerResult::Ready(res);
 		}
 		pub(crate) fn set_b(&mut self, fut: B) {
@@ -594,19 +625,23 @@ pub(crate) mod futures_util {
 		pub(crate) fn set_d(&mut self, fut: D) {
 			self.d = JoinerResult::Pending(Some(fut));
 		}
+		pub(crate) fn set_e(&mut self, fut: E) {
+			self.e = JoinerResult::Pending(Some(fut));
+		}
 	}
 
 	impl<
-			E,
-			A: Future<Output = Result<(), E>> + Unpin,
-			B: Future<Output = Result<(), E>> + Unpin,
-			C: Future<Output = Result<(), E>> + Unpin,
-			D: Future<Output = Result<(), E>> + Unpin,
-		> Future for Joiner<E, A, B, C, D>
+			ERR,
+			A: Future<Output = Result<(), ERR>> + Unpin,
+			B: Future<Output = Result<(), ERR>> + Unpin,
+			C: Future<Output = Result<(), ERR>> + Unpin,
+			D: Future<Output = Result<(), ERR>> + Unpin,
+			E: Future<Output = Result<(), ERR>> + Unpin,
+		> Future for Joiner<ERR, A, B, C, D, E>
 	where
-		Joiner<E, A, B, C, D>: Unpin,
+		Joiner<ERR, A, B, C, D, E>: Unpin,
 	{
-		type Output = [Result<(), E>; 4];
+		type Output = [Result<(), ERR>; 5];
 		fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
 			let mut all_complete = true;
 			macro_rules! handle {
@@ -615,7 +650,7 @@ pub(crate) mod futures_util {
 						JoinerResult::Pending(None) => {
 							self.$val = JoinerResult::Ready(Ok(()));
 						},
-						JoinerResult::<E, _>::Pending(Some(ref mut val)) => {
+						JoinerResult::<ERR, _>::Pending(Some(ref mut val)) => {
 							match Pin::new(val).poll(ctx) {
 								Poll::Ready(res) => {
 									self.$val = JoinerResult::Ready(res);
@@ -633,9 +668,10 @@ pub(crate) mod futures_util {
 			handle!(b);
 			handle!(c);
 			handle!(d);
+			handle!(e);
 
 			if all_complete {
-				let mut res = [Ok(()), Ok(()), Ok(()), Ok(())];
+				let mut res = [Ok(()), Ok(()), Ok(()), Ok(()), Ok(())];
 				if let JoinerResult::Ready(ref mut val) = &mut self.a {
 					core::mem::swap(&mut res[0], val);
 				}
@@ -647,6 +683,9 @@ pub(crate) mod futures_util {
 				}
 				if let JoinerResult::Ready(ref mut val) = &mut self.d {
 					core::mem::swap(&mut res[3], val);
+				}
+				if let JoinerResult::Ready(ref mut val) = &mut self.e {
+					core::mem::swap(&mut res[4], val);
 				}
 				Poll::Ready(res)
 			} else {
@@ -731,7 +770,7 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 /// # type P2PGossipSync<UL> = lightning::routing::gossip::P2PGossipSync<Arc<NetworkGraph>, Arc<UL>, Arc<Logger>>;
 /// # type ChannelManager<B, F, FE> = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor<B, F, FE>, B, FE, Logger>;
 /// # type OnionMessenger<B, F, FE> = lightning::onion_message::messenger::OnionMessenger<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<Logger>, Arc<ChannelManager<B, F, FE>>, Arc<lightning::onion_message::messenger::DefaultMessageRouter<Arc<NetworkGraph>, Arc<Logger>, Arc<lightning::sign::KeysManager>>>, Arc<ChannelManager<B, F, FE>>, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler>;
-/// # type LiquidityManager<B, F, FE> = lightning_liquidity::LiquidityManager<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<ChannelManager<B, F, FE>>, Arc<F>, Arc<DefaultTimeProvider>>;
+/// # type LiquidityManager<B, F, FE> = lightning_liquidity::LiquidityManager<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<ChannelManager<B, F, FE>>, Arc<F>, Arc<Store>, Arc<DefaultTimeProvider>>;
 /// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
 /// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger, F, StoreSync>;
 /// # type OutputSweeper<B, D, FE, F, O> = lightning::util::sweep::OutputSweeper<Arc<B>, Arc<D>, Arc<FE>, Arc<F>, Arc<Store>, Arc<Logger>, Arc<O>>;
@@ -976,7 +1015,7 @@ where
 			OptionalSelector { optional_future: None }
 		};
 		let lm_fut = if let Some(lm) = liquidity_manager.as_ref() {
-			let fut = lm.get_lm().get_pending_msgs_future();
+			let fut = lm.get_lm().get_pending_msgs_or_needs_persist_future();
 			OptionalSelector { optional_future: Some(fut) }
 		} else {
 			OptionalSelector { optional_future: None }
@@ -1177,6 +1216,17 @@ where
 			},
 			Some(true) => break,
 			None => {},
+		}
+
+		if let Some(liquidity_manager) = liquidity_manager.as_ref() {
+			log_trace!(logger, "Persisting LiquidityManager...");
+			let fut = async {
+				liquidity_manager.get_lm().persist().await.map_err(|e| {
+					log_error!(logger, "Persisting LiquidityManager failed: {}", e);
+					e
+				})
+			};
+			futures.set_e(Box::pin(fut));
 		}
 
 		// Run persistence tasks in parallel and exit if any of them returns an error.
@@ -1450,7 +1500,7 @@ impl BackgroundProcessor {
 		CM::Target: AChannelManager,
 		OM::Target: AOnionMessenger,
 		PM::Target: APeerManager,
-		LM::Target: ALiquidityManager,
+		LM::Target: ALiquidityManagerSync,
 		D::Target: ChangeDestinationSourceSync,
 		O::Target: 'static + OutputSpender,
 		K::Target: 'static + KVStoreSync,
@@ -1535,7 +1585,7 @@ impl BackgroundProcessor {
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 						&chain_monitor.get_update_future(),
 						&om.get_om().get_update_future(),
-						&lm.get_lm().get_pending_msgs_future(),
+						&lm.get_lm().get_pending_msgs_or_needs_persist_future(),
 					),
 					(Some(om), None) => Sleeper::from_three_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
@@ -1545,7 +1595,7 @@ impl BackgroundProcessor {
 					(None, Some(lm)) => Sleeper::from_three_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 						&chain_monitor.get_update_future(),
-						&lm.get_lm().get_pending_msgs_future(),
+						&lm.get_lm().get_pending_msgs_or_needs_persist_future(),
 					),
 					(None, None) => Sleeper::from_two_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
@@ -1577,6 +1627,13 @@ impl BackgroundProcessor {
 						channel_manager.get_cm().encode(),
 					))?;
 					log_trace!(logger, "Done persisting ChannelManager.");
+				}
+
+				if let Some(liquidity_manager) = liquidity_manager.as_ref() {
+					log_trace!(logger, "Persisting LiquidityManager...");
+					let _ = liquidity_manager.get_lm().persist().map_err(|e| {
+						log_error!(logger, "Persisting LiquidityManager failed: {}", e);
+					});
 				}
 
 				// Note that we want to run a graph prune once not long after startup before
@@ -1793,7 +1850,7 @@ mod tests {
 	use lightning::util::test_utils;
 	use lightning::{get_event, get_event_msg};
 	use lightning_liquidity::utils::time::DefaultTimeProvider;
-	use lightning_liquidity::LiquidityManager;
+	use lightning_liquidity::{ALiquidityManagerSync, LiquidityManagerSync};
 	use lightning_persister::fs_store::FilesystemStore;
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use std::collections::VecDeque;
@@ -1890,11 +1947,12 @@ mod tests {
 		IgnoringMessageHandler,
 	>;
 
-	type LM = LiquidityManager<
+	type LM = LiquidityManagerSync<
 		Arc<KeysManager>,
 		Arc<KeysManager>,
 		Arc<ChannelManager>,
 		Arc<dyn Filter + Sync + Send>,
+		Arc<Persister>,
 		Arc<DefaultTimeProvider>,
 	>;
 
@@ -2342,15 +2400,19 @@ mod tests {
 				Arc::clone(&logger),
 				Arc::clone(&keys_manager),
 			));
-			let liquidity_manager = Arc::new(LiquidityManager::new(
-				Arc::clone(&keys_manager),
-				Arc::clone(&keys_manager),
-				Arc::clone(&manager),
-				None,
-				None,
-				None,
-				None,
-			));
+			let liquidity_manager = Arc::new(
+				LiquidityManagerSync::new(
+					Arc::clone(&keys_manager),
+					Arc::clone(&keys_manager),
+					Arc::clone(&manager),
+					None,
+					None,
+					Arc::clone(&kv_store),
+					None,
+					None,
+				)
+				.unwrap(),
+			);
 			let node = Node {
 				node: manager,
 				p2p_gossip_sync,
@@ -2727,7 +2789,7 @@ mod tests {
 			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].rapid_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
+			Some(nodes[0].liquidity_manager.get_lm_async()),
 			Some(nodes[0].sweeper.sweeper_async()),
 			Arc::clone(&nodes[0].logger),
 			Some(Arc::clone(&nodes[0].scorer)),
@@ -3236,7 +3298,7 @@ mod tests {
 			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].rapid_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
+			Some(nodes[0].liquidity_manager.get_lm_async()),
 			Some(nodes[0].sweeper.sweeper_async()),
 			Arc::clone(&nodes[0].logger),
 			Some(Arc::clone(&nodes[0].scorer)),
@@ -3451,7 +3513,7 @@ mod tests {
 			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
+			Some(nodes[0].liquidity_manager.get_lm_async()),
 			Some(nodes[0].sweeper.sweeper_async()),
 			Arc::clone(&nodes[0].logger),
 			Some(Arc::clone(&nodes[0].scorer)),
@@ -3500,7 +3562,7 @@ mod tests {
 			crate::NO_ONION_MESSENGER,
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			crate::NO_LIQUIDITY_MANAGER,
+			crate::NO_LIQUIDITY_MANAGER_SYNC,
 			Some(Arc::clone(&nodes[0].sweeper)),
 			Arc::clone(&nodes[0].logger),
 			Some(Arc::clone(&nodes[0].scorer)),

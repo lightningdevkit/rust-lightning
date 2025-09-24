@@ -16,6 +16,9 @@ use crate::lsps0::ser::LSPSResponseError;
 
 use super::url_utils::LSPSUrl;
 
+use lightning::ln::msgs::DecodeError;
+use lightning::util::ser::{Readable, Writeable};
+use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
 use lightning_types::string::UntrustedString;
 
 use serde::de::{self, Deserializer, MapAccess, Visitor};
@@ -288,6 +291,20 @@ impl From<LSPS5Error> for LSPSResponseError {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LSPS5AppName(UntrustedString);
 
+impl Writeable for LSPS5AppName {
+	fn write<W: lightning::util::ser::Writer>(
+		&self, writer: &mut W,
+	) -> Result<(), lightning::io::Error> {
+		self.0.write(writer)
+	}
+}
+
+impl Readable for LSPS5AppName {
+	fn read<R: lightning::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self(Readable::read(reader)?))
+	}
+}
+
 impl LSPS5AppName {
 	/// Create a new LSPS5 app name.
 	pub fn new(app_name: String) -> Result<Self, LSPS5Error> {
@@ -430,6 +447,20 @@ impl From<LSPS5WebhookUrl> for String {
 	}
 }
 
+impl Writeable for LSPS5WebhookUrl {
+	fn write<W: lightning::util::ser::Writer>(
+		&self, writer: &mut W,
+	) -> Result<(), lightning::io::Error> {
+		self.0.write(writer)
+	}
+}
+
+impl Readable for LSPS5WebhookUrl {
+	fn read<R: lightning::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self(Readable::read(reader)?))
+	}
+}
+
 /// Parameters for `lsps5.set_webhook` request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SetWebhookRequest {
@@ -491,6 +522,16 @@ pub enum WebhookNotificationMethod {
 	/// Client has onion messages pending.
 	LSPS5OnionMessageIncoming,
 }
+
+impl_writeable_tlv_based_enum!(WebhookNotificationMethod,
+	(0, LSPS5WebhookRegistered) => {},
+	(2, LSPS5PaymentIncoming) => {},
+	(4, LSPS5ExpirySoon) => {
+		(0, timeout, required),
+	},
+	(6, LSPS5LiquidityManagementRequest) => {},
+	(8, LSPS5OnionMessageIncoming) => {},
+);
 
 /// Webhook notification payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -641,6 +682,10 @@ impl<'de> Deserialize<'de> for WebhookNotification {
 		deserializer.deserialize_map(WebhookNotificationVisitor)
 	}
 }
+
+impl_writeable_tlv_based!(WebhookNotification, {
+	(0, method, required),
+});
 
 /// An LSPS5 protocol request.
 #[derive(Clone, Debug, PartialEq, Eq)]

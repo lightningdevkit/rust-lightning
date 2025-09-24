@@ -21,6 +21,7 @@ use bitcoin::secp256k1::PublicKey;
 
 use serde::{Deserialize, Serialize};
 
+use lightning::impl_writeable_tlv_based;
 use lightning::util::scid_utils;
 
 use crate::lsps0::ser::{
@@ -121,6 +122,17 @@ pub struct LSPS2OpeningFeeParams {
 	/// The HMAC used to verify the authenticity of these parameters.
 	pub promise: String,
 }
+
+impl_writeable_tlv_based!(LSPS2OpeningFeeParams, {
+	(0, min_fee_msat, required),
+	(2, proportional, required),
+	(4, valid_until, required),
+	(6, min_lifetime, required),
+	(8, max_client_to_self_delay, required),
+	(10, min_payment_size_msat, required),
+	(12, max_payment_size_msat, required),
+	(14, promise, required),
+});
 
 /// A response to a [`LSPS2GetInfoRequest`]
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

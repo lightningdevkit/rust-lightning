@@ -10,6 +10,7 @@
 //! Contains the main bLIP-52 / LSPS2 client object, [`LSPS2ClientHandler`].
 
 use alloc::string::{String, ToString};
+use lightning::util::persist::KVStore;
 
 use core::default::Default;
 use core::ops::Deref;
@@ -67,25 +68,27 @@ impl PeerState {
 /// opened. Please refer to the [`bLIP-52 / LSPS2 specification`] for more information.
 ///
 /// [`bLIP-52 / LSPS2 specification`]: https://github.com/lightning/blips/blob/master/blip-0052.md#trust-models
-pub struct LSPS2ClientHandler<ES: Deref>
+pub struct LSPS2ClientHandler<ES: Deref, K: Deref + Clone>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	entropy_source: ES,
 	pending_messages: Arc<MessageQueue>,
-	pending_events: Arc<EventQueue>,
+	pending_events: Arc<EventQueue<K>>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 	config: LSPS2ClientConfig,
 }
 
-impl<ES: Deref> LSPS2ClientHandler<ES>
+impl<ES: Deref, K: Deref + Clone> LSPS2ClientHandler<ES, K>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	/// Constructs an `LSPS2ClientHandler`.
 	pub(crate) fn new(
-		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>,
-		config: LSPS2ClientConfig,
+		entropy_source: ES, pending_messages: Arc<MessageQueue>,
+		pending_events: Arc<EventQueue<K>>, config: LSPS2ClientConfig,
 	) -> Self {
 		Self {
 			entropy_source,
@@ -224,7 +227,7 @@ where
 			None => {
 				return Err(LightningError {
 					err: format!(
-						"Received get_info response from unknown peer: {:?}",
+						"Received get_info response from unknown peer: {}",
 						counterparty_node_id
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -272,7 +275,7 @@ where
 				Err(lightning_error)
 			},
 			None => {
-				return Err(LightningError { err: format!("Received error response for a get_info request from an unknown counterparty ({:?})",counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+				return Err(LightningError { err: format!("Received error response for a get_info request from an unknown counterparty {}",counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 			},
 		}
 	}
@@ -318,7 +321,7 @@ where
 			None => {
 				return Err(LightningError {
 					err: format!(
-						"Received buy response from unknown peer: {:?}",
+						"Received buy response from unknown peer: {}",
 						counterparty_node_id
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -360,15 +363,22 @@ where
 				Err(lightning_error)
 			},
 			None => {
-				return Err(LightningError { err: format!("Received error response for a buy request from an unknown counterparty ({:?})", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+				return Err(LightningError {
+					err: format!(
+						"Received error response for a buy request from an unknown counterparty {}",
+						counterparty_node_id
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
+				});
 			},
 		}
 	}
 }
 
-impl<ES: Deref> LSPSProtocolMessageHandler for LSPS2ClientHandler<ES>
+impl<ES: Deref, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS2ClientHandler<ES, K>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS2Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(2);
@@ -396,7 +406,7 @@ where
 					false,
 					"Client handler received LSPS2 request message. This should never happen."
 				);
-				Err(LightningError { err: format!("Client handler received LSPS2 request message from node {:?}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
+				Err(LightningError { err: format!("Client handler received LSPS2 request message from node {}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
 			},
 		}
 	}

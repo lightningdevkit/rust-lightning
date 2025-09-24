@@ -9,12 +9,16 @@
 
 //! Contains the main bLIP-52 / LSPS2 server-side object, [`LSPS2ServiceHandler`].
 
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use lightning::util::persist::KVStore;
 
 use core::cmp::Ordering as CmpOrdering;
+use core::future::Future as StdFuture;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use core::task;
 
 use crate::events::EventQueue;
 use crate::lsps0::ser::{
@@ -28,9 +32,13 @@ use crate::lsps2::utils::{
 	compute_opening_fee, is_expired_opening_fee_params, is_valid_opening_fee_params,
 };
 use crate::message_queue::{MessageQueue, MessageQueueNotifierGuard};
+use crate::persist::{
+	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+};
 use crate::prelude::hash_map::Entry;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
+use crate::utils::async_poll::dummy_waker;
 
 use lightning::events::HTLCHandlingFailureType;
 use lightning::ln::channelmanager::{AChannelManager, FailureCode, InterceptId};
@@ -38,6 +46,8 @@ use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::types::ChannelId;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
+use lightning::util::ser::Writeable;
+use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
 
 use lightning_types::payment::PaymentHash;
 
@@ -372,12 +382,42 @@ impl OutboundJITChannelState {
 	}
 }
 
+impl_writeable_tlv_based_enum!(OutboundJITChannelState,
+	(0, PendingInitialPayment) => {
+		(0, payment_queue, required),
+	},
+	(2, PendingChannelOpen) => {
+		(0, payment_queue, required),
+		(2, opening_fee_msat, required),
+	},
+	(4, PendingPaymentForward) => {
+		(0, payment_queue, required),
+		(2, opening_fee_msat, required),
+		(4, channel_id, required),
+	},
+	(6, PendingPayment) => {
+		(0, payment_queue, required),
+		(2, opening_fee_msat, required),
+		(4, channel_id, required),
+	},
+	(8, PaymentForwarded) => {
+		(0, channel_id, required),
+	},
+);
+
 struct OutboundJITChannel {
 	state: OutboundJITChannelState,
 	user_channel_id: u128,
 	opening_fee_params: LSPS2OpeningFeeParams,
 	payment_size_msat: Option<u64>,
 }
+
+impl_writeable_tlv_based!(OutboundJITChannel, {
+	(0, state, required),
+	(2, user_channel_id, required),
+	(4, opening_fee_params, required),
+	(6, payment_size_msat, option),
+});
 
 impl OutboundJITChannel {
 	fn new(
@@ -429,11 +469,12 @@ impl OutboundJITChannel {
 	}
 }
 
-struct PeerState {
+pub(crate) struct PeerState {
 	outbound_channels_by_intercept_scid: HashMap<u64, OutboundJITChannel>,
 	intercept_scid_by_user_channel_id: HashMap<u128, u64>,
 	intercept_scid_by_channel_id: HashMap<ChannelId, u64>,
 	pending_requests: HashMap<LSPSRequestId, LSPS2Request>,
+	needs_persist: bool,
 }
 
 impl PeerState {
@@ -442,16 +483,19 @@ impl PeerState {
 		let pending_requests = new_hash_map();
 		let intercept_scid_by_user_channel_id = new_hash_map();
 		let intercept_scid_by_channel_id = new_hash_map();
+		let needs_persist = false;
 		Self {
 			outbound_channels_by_intercept_scid,
 			pending_requests,
 			intercept_scid_by_user_channel_id,
 			intercept_scid_by_channel_id,
+			needs_persist,
 		}
 	}
 
 	fn insert_outbound_channel(&mut self, intercept_scid: u64, channel: OutboundJITChannel) {
 		self.outbound_channels_by_intercept_scid.insert(intercept_scid, channel);
+		self.needs_persist |= true;
 	}
 
 	fn prune_expired_request_state(&mut self) {
@@ -470,6 +514,7 @@ impl PeerState {
 				// We abort the flow, and prune any data kept.
 				self.intercept_scid_by_channel_id.retain(|_, iscid| intercept_scid != iscid);
 				self.intercept_scid_by_user_channel_id.retain(|_, iscid| intercept_scid != iscid);
+				self.needs_persist |= true;
 				return false;
 			}
 			true
@@ -491,6 +536,14 @@ impl PeerState {
 		self.pending_requests.is_empty() && self.outbound_channels_by_intercept_scid.is_empty()
 	}
 }
+
+impl_writeable_tlv_based!(PeerState, {
+	(0, outbound_channels_by_intercept_scid, required),
+	(2, intercept_scid_by_user_channel_id, required),
+	(4, intercept_scid_by_channel_id, required),
+	(_unused, pending_requests, (static_value, new_hash_map())),
+	(_unused, needs_persist, (static_value, false)),
+});
 
 macro_rules! get_or_insert_peer_state_entry {
 	($self: ident, $outer_state_lock: expr, $message_queue_notifier: expr, $counterparty_node_id: expr) => {{
@@ -526,13 +579,15 @@ macro_rules! get_or_insert_peer_state_entry {
 }
 
 /// The main object allowing to send and receive bLIP-52 / LSPS2 messages.
-pub struct LSPS2ServiceHandler<CM: Deref>
+pub struct LSPS2ServiceHandler<CM: Deref, K: Deref + Clone>
 where
 	CM::Target: AChannelManager,
+	K::Target: KVStore,
 {
 	channel_manager: CM,
+	kv_store: K,
 	pending_messages: Arc<MessageQueue>,
-	pending_events: Arc<EventQueue>,
+	pending_events: Arc<EventQueue<K>>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 	peer_by_intercept_scid: RwLock<HashMap<u64, PublicKey>>,
 	peer_by_channel_id: RwLock<HashMap<ChannelId, PublicKey>>,
@@ -540,25 +595,55 @@ where
 	config: LSPS2ServiceConfig,
 }
 
-impl<CM: Deref> LSPS2ServiceHandler<CM>
+impl<CM: Deref, K: Deref + Clone> LSPS2ServiceHandler<CM, K>
 where
 	CM::Target: AChannelManager,
+	K::Target: KVStore,
 {
 	/// Constructs a `LSPS2ServiceHandler`.
 	pub(crate) fn new(
-		pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>, channel_manager: CM,
+		per_peer_state: HashMap<PublicKey, Mutex<PeerState>>, pending_messages: Arc<MessageQueue>,
+		pending_events: Arc<EventQueue<K>>, channel_manager: CM, kv_store: K,
 		config: LSPS2ServiceConfig,
-	) -> Self {
-		Self {
+	) -> Result<Self, lightning::io::Error> {
+		let mut peer_by_intercept_scid = new_hash_map();
+		let mut peer_by_channel_id = new_hash_map();
+		for (node_id, peer_state) in per_peer_state.iter() {
+			let peer_state_lock = peer_state.lock().unwrap();
+			for (intercept_scid, _) in peer_state_lock.outbound_channels_by_intercept_scid.iter() {
+				let res = peer_by_intercept_scid.insert(*intercept_scid, *node_id);
+				debug_assert!(res.is_none(), "Intercept SCIDs should never collide");
+				if res.is_some() {
+					return Err(lightning::io::Error::new(
+						lightning::io::ErrorKind::InvalidData,
+						"Failed to read LSPS2 peer state due to data inconsistencies: Intercept SCIDs should never collide",
+					));
+				}
+			}
+
+			for (channel_id, _) in peer_state_lock.intercept_scid_by_channel_id.iter() {
+				let res = peer_by_channel_id.insert(*channel_id, *node_id);
+				debug_assert!(res.is_none(), "Channel IDs should never collide");
+				if res.is_some() {
+					return Err(lightning::io::Error::new(
+							lightning::io::ErrorKind::InvalidData,
+							"Failed to read LSPS2 peer state due to data inconsistencies: Channel IDs should never collide",
+					));
+				}
+			}
+		}
+
+		Ok(Self {
 			pending_messages,
 			pending_events,
-			per_peer_state: RwLock::new(new_hash_map()),
-			peer_by_intercept_scid: RwLock::new(new_hash_map()),
-			peer_by_channel_id: RwLock::new(new_hash_map()),
+			per_peer_state: RwLock::new(per_peer_state),
+			peer_by_intercept_scid: RwLock::new(peer_by_intercept_scid),
+			peer_by_channel_id: RwLock::new(peer_by_channel_id),
 			total_pending_requests: AtomicUsize::new(0),
 			channel_manager,
+			kv_store,
 			config,
-		}
+		})
 	}
 
 	/// Returns a reference to the used config.
@@ -611,7 +696,7 @@ where
 				}
 			},
 			None => Err(APIError::APIMisuseError {
-				err: format!("No state for the counterparty exists: {:?}", counterparty_node_id),
+				err: format!("No state for the counterparty exists: {}", counterparty_node_id),
 			}),
 		}
 	}
@@ -667,27 +752,34 @@ where
 				}
 			},
 			None => Err(APIError::APIMisuseError {
-				err: format!("No state for the counterparty exists: {:?}", counterparty_node_id),
+				err: format!("No state for the counterparty exists: {}", counterparty_node_id),
 			}),
 		}
 	}
 
-	/// Used by LSP to provide the client with the intercept scid and
-	/// `cltv_expiry_delta` to include in their invoice. The intercept scid
-	/// must be retrieved from [`ChannelManager::get_intercept_scid`].
+	/// Used by LSP to provide the client with the intercept scid, a unique `user_channel_id`, and
+	/// `cltv_expiry_delta` to include in their invoice.
+	///
+	/// The intercept scid must be retrieved from [`ChannelManager::get_intercept_scid`]. The given
+	/// `user_channel_id` must be locally unique and will eventually be returned via events to be
+	/// used when opening the channel via [`ChannelManager::create_channel`]. Note implementors
+	/// will need to ensure their calls to [`ChannelManager::create_channel`] are idempotent based
+	/// on this identifier.
 	///
 	/// Should be called in response to receiving a [`LSPS2ServiceEvent::BuyRequest`] event.
 	///
+	/// [`ChannelManager::create_channel`]: lightning::ln::channelmanager::ChannelManager::create_channel
 	/// [`ChannelManager::get_intercept_scid`]: lightning::ln::channelmanager::ChannelManager::get_intercept_scid
 	/// [`LSPS2ServiceEvent::BuyRequest`]: crate::lsps2::event::LSPS2ServiceEvent::BuyRequest
-	pub fn invoice_parameters_generated(
+	#[allow(clippy::await_holding_lock)]
+	pub async fn invoice_parameters_generated(
 		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId, intercept_scid: u64,
 		cltv_expiry_delta: u32, client_trusts_lsp: bool, user_channel_id: u128,
 	) -> Result<(), APIError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
+		let mut should_persist = false;
 
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
@@ -711,6 +803,7 @@ where
 							.insert(user_channel_id, intercept_scid);
 						peer_state_lock
 							.insert_outbound_channel(intercept_scid, outbound_jit_channel);
+						should_persist |= peer_state_lock.needs_persist;
 
 						let response = LSPS2Response::Buy(LSPS2BuyResponse {
 							jit_channel_scid: intercept_scid.into(),
@@ -719,17 +812,35 @@ where
 						});
 						let msg = LSPS2Message::Response(request_id, response).into();
 						message_queue_notifier.enqueue(counterparty_node_id, msg);
-						Ok(())
 					},
-					_ => Err(APIError::APIMisuseError {
-						err: format!("No pending buy request for request_id: {:?}", request_id),
-					}),
+					_ => {
+						return Err(APIError::APIMisuseError {
+							err: format!("No pending buy request for request_id: {:?}", request_id),
+						})
+					},
 				}
 			},
-			None => Err(APIError::APIMisuseError {
-				err: format!("No state for the counterparty exists: {:?}", counterparty_node_id),
-			}),
+			None => {
+				return Err(APIError::APIMisuseError {
+					err: format!("No state for the counterparty exists: {}", counterparty_node_id),
+				})
+			},
+		};
+
+		drop(outer_state_lock);
+
+		if should_persist {
+			self.persist_peer_state(*counterparty_node_id).await.map_err(|e| {
+				APIError::APIMisuseError {
+					err: format!(
+						"Failed to persist peer state for {}: {}",
+						counterparty_node_id, e
+					),
+				}
+			})?;
 		}
+
+		Ok(())
 	}
 
 	/// Forward [`Event::HTLCIntercepted`] event parameters into this function.
@@ -744,11 +855,13 @@ where
 	///
 	/// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
 	/// [`LSPS2ServiceEvent::OpenChannel`]: crate::lsps2::event::LSPS2ServiceEvent::OpenChannel
-	pub fn htlc_intercepted(
+	#[allow(clippy::await_holding_lock)]
+	pub async fn htlc_intercepted(
 		&self, intercept_scid: u64, intercept_id: InterceptId, expected_outbound_amount_msat: u64,
 		payment_hash: PaymentHash,
 	) -> Result<(), APIError> {
 		let event_queue_notifier = self.pending_events.notifier();
+		let mut should_persist = None;
 
 		let peer_by_intercept_scid = self.peer_by_intercept_scid.read().unwrap();
 		if let Some(counterparty_node_id) = peer_by_intercept_scid.get(&intercept_scid) {
@@ -759,6 +872,7 @@ where
 					if let Some(jit_channel) =
 						peer_state.outbound_channels_by_intercept_scid.get_mut(&intercept_scid)
 					{
+						should_persist = Some(*counterparty_node_id);
 						let htlc = InterceptedHTLC {
 							intercept_id,
 							expected_outbound_amount_msat,
@@ -814,6 +928,8 @@ where
 							},
 						}
 					}
+
+					peer_state.needs_persist |= should_persist.is_some();
 				},
 				None => {
 					return Err(APIError::APIMisuseError {
@@ -821,6 +937,19 @@ where
 					});
 				},
 			}
+		}
+
+		drop(peer_by_intercept_scid);
+
+		if let Some(counterparty_node_id) = should_persist {
+			self.persist_peer_state(counterparty_node_id).await.map_err(|e| {
+				APIError::APIMisuseError {
+					err: format!(
+						"Failed to persist peer state for {}: {}",
+						counterparty_node_id, e
+					),
+				}
+			})?;
 		}
 
 		Ok(())
@@ -833,9 +962,10 @@ where
 	/// or if the payment queue is empty
 	///
 	/// [`Event::HTLCHandlingFailed`]: lightning::events::Event::HTLCHandlingFailed
-	pub fn htlc_handling_failed(
+	pub async fn htlc_handling_failed(
 		&self, failure_type: HTLCHandlingFailureType,
 	) -> Result<(), APIError> {
+		let mut should_persist = None;
 		if let HTLCHandlingFailureType::Forward { channel_id, .. } = failure_type {
 			let peer_by_channel_id = self.peer_by_channel_id.read().unwrap();
 			if let Some(counterparty_node_id) = peer_by_channel_id.get(&channel_id) {
@@ -846,6 +976,8 @@ where
 						if let Some(intercept_scid) =
 							peer_state.intercept_scid_by_channel_id.get(&channel_id).copied()
 						{
+							should_persist = Some(*counterparty_node_id);
+
 							if let Some(jit_channel) = peer_state
 								.outbound_channels_by_intercept_scid
 								.get_mut(&intercept_scid)
@@ -883,10 +1015,22 @@ where
 								}
 							}
 						}
+						peer_state.needs_persist |= should_persist.is_some();
 					},
 					None => {},
 				}
 			}
+		}
+
+		if let Some(counterparty_node_id) = should_persist {
+			self.persist_peer_state(counterparty_node_id).await.map_err(|e| {
+				APIError::APIMisuseError {
+					err: format!(
+						"Failed to persist peer state for {}: {}",
+						counterparty_node_id, e
+					),
+				}
+			})?;
 		}
 
 		Ok(())
@@ -903,7 +1047,9 @@ where
 	/// greater or equal to 0.0.107.
 	///
 	/// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
-	pub fn payment_forwarded(&self, next_channel_id: ChannelId) -> Result<(), APIError> {
+	pub async fn payment_forwarded(&self, next_channel_id: ChannelId) -> Result<(), APIError> {
+		let mut should_persist = None;
+
 		if let Some(counterparty_node_id) =
 			self.peer_by_channel_id.read().unwrap().get(&next_channel_id)
 		{
@@ -914,6 +1060,8 @@ where
 					if let Some(intercept_scid) =
 						peer_state.intercept_scid_by_channel_id.get(&next_channel_id).copied()
 					{
+						should_persist = Some(*counterparty_node_id);
+
 						if let Some(jit_channel) =
 							peer_state.outbound_channels_by_intercept_scid.get_mut(&intercept_scid)
 						{
@@ -944,6 +1092,7 @@ where
 							err: format!("No state for for channel id: {}", next_channel_id),
 						});
 					}
+					peer_state.needs_persist |= should_persist.is_some();
 				},
 				None => {
 					return Err(APIError::APIMisuseError {
@@ -951,6 +1100,17 @@ where
 					});
 				},
 			}
+		}
+
+		if let Some(counterparty_node_id) = should_persist {
+			self.persist_peer_state(counterparty_node_id).await.map_err(|e| {
+				APIError::APIMisuseError {
+					err: format!(
+						"Failed to persist peer state for {}: {}",
+						counterparty_node_id, e
+					),
+				}
+			})?;
 		}
 
 		Ok(())
@@ -971,7 +1131,8 @@ where
 	/// open, as it only affects the local LSPS2 state and doesn't affect any channels that
 	/// might already exist on-chain. Any pending channel open attempts must be managed
 	/// separately.
-	pub fn channel_open_abandoned(
+	#[allow(clippy::await_holding_lock)]
+	pub async fn channel_open_abandoned(
 		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
 	) -> Result<(), APIError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -1015,6 +1176,16 @@ where
 		peer_state.intercept_scid_by_user_channel_id.remove(&user_channel_id);
 		peer_state.outbound_channels_by_intercept_scid.remove(&intercept_scid);
 		peer_state.intercept_scid_by_channel_id.retain(|_, &mut scid| scid != intercept_scid);
+		peer_state.needs_persist |= true;
+
+		drop(peer_state);
+		drop(outer_state_lock);
+
+		self.persist_peer_state(*counterparty_node_id).await.map_err(|e| {
+			APIError::APIMisuseError {
+				err: format!("Failed to persist peer state for {}: {}", counterparty_node_id, e),
+			}
+		})?;
 
 		Ok(())
 	}
@@ -1026,7 +1197,8 @@ where
 	/// state so that the payer may try the payment again.
 	///
 	/// [`LSPS2ServiceEvent::OpenChannel`]: crate::lsps2::event::LSPS2ServiceEvent::OpenChannel
-	pub fn channel_open_failed(
+	#[allow(clippy::await_holding_lock)]
+	pub async fn channel_open_failed(
 		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
 	) -> Result<(), APIError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -1070,12 +1242,24 @@ where
 			jit_channel.state = OutboundJITChannelState::PendingInitialPayment {
 				payment_queue: PaymentQueue::new(),
 			};
-			Ok(())
 		} else {
-			Err(APIError::APIMisuseError {
+			return Err(APIError::APIMisuseError {
 				err: "Channel is not in the PendingChannelOpen state.".to_string(),
-			})
+			});
 		}
+
+		peer_state.needs_persist |= true;
+
+		drop(peer_state);
+		drop(outer_state_lock);
+
+		self.persist_peer_state(*counterparty_node_id).await.map_err(|e| {
+			APIError::APIMisuseError {
+				err: format!("Failed to persist peer state for {}: {}", counterparty_node_id, e),
+			}
+		})?;
+
+		Ok(())
 	}
 
 	/// Forward [`Event::ChannelReady`] event parameters into this function.
@@ -1084,9 +1268,11 @@ where
 	/// we need to forward a payment over otherwise it will be ignored.
 	///
 	/// [`Event::ChannelReady`]: lightning::events::Event::ChannelReady
-	pub fn channel_ready(
+	#[allow(clippy::await_holding_lock)]
+	pub async fn channel_ready(
 		&self, user_channel_id: u128, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 	) -> Result<(), APIError> {
+		let mut should_persist = false;
 		{
 			let mut peer_by_channel_id = self.peer_by_channel_id.write().unwrap();
 			peer_by_channel_id.insert(*channel_id, *counterparty_node_id);
@@ -1098,6 +1284,7 @@ where
 				if let Some(intercept_scid) =
 					peer_state.intercept_scid_by_user_channel_id.get(&user_channel_id).copied()
 				{
+					should_persist |= true;
 					peer_state.intercept_scid_by_channel_id.insert(*channel_id, intercept_scid);
 					if let Some(jit_channel) =
 						peer_state.outbound_channels_by_intercept_scid.get_mut(&intercept_scid)
@@ -1146,12 +1333,24 @@ where
 						),
 					});
 				}
+				peer_state.needs_persist |= should_persist;
 			},
 			None => {
 				return Err(APIError::APIMisuseError {
 					err: format!("No counterparty state for: {}", counterparty_node_id),
 				});
 			},
+		}
+
+		if should_persist {
+			self.persist_peer_state(*counterparty_node_id).await.map_err(|e| {
+				APIError::APIMisuseError {
+					err: format!(
+						"Failed to persist peer state for {}: {}",
+						counterparty_node_id, e
+					),
+				}
+			})?;
 		}
 
 		Ok(())
@@ -1404,35 +1603,105 @@ where
 		);
 	}
 
-	pub(crate) fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
-		let mut outer_state_lock = self.per_peer_state.write().unwrap();
-		let is_prunable =
-			if let Some(inner_state_lock) = outer_state_lock.get(&counterparty_node_id) {
-				let mut peer_state_lock = inner_state_lock.lock().unwrap();
-				peer_state_lock.prune_expired_request_state();
-				peer_state_lock.is_prunable()
-			} else {
-				return;
+	async fn persist_peer_state(
+		&self, counterparty_node_id: PublicKey,
+	) -> Result<(), lightning::io::Error> {
+		let fut = {
+			let outer_state_lock = self.per_peer_state.read().unwrap();
+			let encoded = match outer_state_lock.get(&counterparty_node_id) {
+				None => {
+					// We dropped the peer state by now.
+					return Ok(());
+				},
+				Some(entry) => {
+					let mut peer_state_lock = entry.lock().unwrap();
+					if !peer_state_lock.needs_persist {
+						// We already have persisted otherwise by now.
+						return Ok(());
+					} else {
+						peer_state_lock.needs_persist = false;
+						peer_state_lock.encode()
+					}
+				},
 			};
-		if is_prunable {
-			outer_state_lock.remove(&counterparty_node_id);
-		}
+			let key = counterparty_node_id.to_string();
+
+			self.kv_store.write(
+				LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+				LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+				&key,
+				encoded,
+			)
+		};
+
+		fut.await.map_err(|e| {
+			self.per_peer_state
+				.read()
+				.unwrap()
+				.get(&counterparty_node_id)
+				.map(|p| p.lock().unwrap().needs_persist = true);
+			e
+		})
 	}
 
-	#[allow(clippy::bool_comparison)]
-	pub(crate) fn prune_peer_state(&self) {
-		let mut outer_state_lock = self.per_peer_state.write().unwrap();
-		outer_state_lock.retain(|_, inner_state_lock| {
+	pub(crate) async fn persist(&self) -> Result<(), lightning::io::Error> {
+		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
+		// introduce some batching to upper-bound the number of requests inflight at any given
+		// time.
+
+		let mut need_remove = Vec::new();
+		let mut need_persist = Vec::new();
+
+		{
+			let mut outer_state_lock = self.per_peer_state.write().unwrap();
+			outer_state_lock.retain(|counterparty_node_id, inner_state_lock| {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+				peer_state_lock.prune_expired_request_state();
+				let is_prunable = peer_state_lock.is_prunable();
+				if is_prunable {
+					need_remove.push(*counterparty_node_id);
+				} else if peer_state_lock.needs_persist {
+					need_persist.push(*counterparty_node_id);
+				}
+				!is_prunable
+			});
+		}
+
+		for counterparty_node_id in need_persist.into_iter() {
+			debug_assert!(!need_remove.contains(&counterparty_node_id));
+			self.persist_peer_state(counterparty_node_id).await?;
+		}
+
+		for counterparty_node_id in need_remove {
+			let key = counterparty_node_id.to_string();
+			self.kv_store
+				.remove(
+					LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+					LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+					&key,
+					true,
+				)
+				.await?;
+		}
+
+		Ok(())
+	}
+
+	pub(crate) fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
+		let outer_state_lock = self.per_peer_state.write().unwrap();
+		if let Some(inner_state_lock) = outer_state_lock.get(&counterparty_node_id) {
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+			// We clean up the peer state, but leave removing the peer entry to the prune logic in
+			// `persist` which removes it from the store.
 			peer_state_lock.prune_expired_request_state();
-			peer_state_lock.is_prunable() == false
-		});
+		}
 	}
 }
 
-impl<CM: Deref> LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM>
+impl<CM: Deref, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM, K>
 where
 	CM::Target: AChannelManager,
+	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS2Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(2);
@@ -1459,7 +1728,7 @@ where
 					false,
 					"Service handler received LSPS2 response message. This should never happen."
 				);
-				Err(LightningError { err: format!("Service handler received LSPS2 response message from node {:?}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
+				Err(LightningError { err: format!("Service handler received LSPS2 response message from node {}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
 			},
 		}
 	}
@@ -1498,6 +1767,213 @@ fn calculate_amount_to_forward_per_htlc(
 		per_htlc_forwards.push((htlc.intercept_id, amount_to_forward_msat))
 	}
 	per_htlc_forwards
+}
+
+/// A synchroneous wrapper around [`LSPS2ServiceHandler`] to be used in contexts where async is not
+/// available.
+pub struct LSPS2ServiceHandlerSync<'a, CM: Deref, K: Deref + Clone>
+where
+	CM::Target: AChannelManager,
+	K::Target: KVStore,
+{
+	inner: &'a LSPS2ServiceHandler<CM, K>,
+}
+
+impl<'a, CM: Deref, K: Deref + Clone> LSPS2ServiceHandlerSync<'a, CM, K>
+where
+	CM::Target: AChannelManager,
+	K::Target: KVStore,
+{
+	pub(crate) fn from_inner(inner: &'a LSPS2ServiceHandler<CM, K>) -> Self {
+		Self { inner }
+	}
+
+	/// Returns a reference to the used config.
+	///
+	/// Wraps [`LSPS2ServiceHandler::config`].
+	pub fn config(&self) -> &LSPS2ServiceConfig {
+		&self.inner.config
+	}
+
+	/// Used by LSP to inform a client requesting a JIT Channel the token they used is invalid.
+	///
+	/// Wraps [`LSPS2ServiceHandler::invalid_token_provided`].
+	pub fn invalid_token_provided(
+		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId,
+	) -> Result<(), APIError> {
+		self.inner.invalid_token_provided(counterparty_node_id, request_id)
+	}
+
+	/// Used by LSP to provide fee parameters to a client requesting a JIT Channel.
+	///
+	/// Wraps [`LSPS2ServiceHandler::opening_fee_params_generated`].
+	pub fn opening_fee_params_generated(
+		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId,
+		opening_fee_params_menu: Vec<LSPS2RawOpeningFeeParams>,
+	) -> Result<(), APIError> {
+		self.inner.opening_fee_params_generated(
+			counterparty_node_id,
+			request_id,
+			opening_fee_params_menu,
+		)
+	}
+
+	/// Used by LSP to provide the client with the intercept scid, a unique `user_channel_id`, and
+	/// `cltv_expiry_delta` to include in their invoice.
+	///
+	/// Wraps [`LSPS2ServiceHandler::invoice_parameters_generated`].
+	pub fn invoice_parameters_generated(
+		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId, intercept_scid: u64,
+		cltv_expiry_delta: u32, client_trusts_lsp: bool, user_channel_id: u128,
+	) -> Result<(), APIError> {
+		let mut fut = Box::pin(self.inner.invoice_parameters_generated(
+			counterparty_node_id,
+			request_id,
+			intercept_scid,
+			cltv_expiry_delta,
+			client_trusts_lsp,
+			user_channel_id,
+		));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Forward [`Event::HTLCIntercepted`] event parameters into this function.
+	///
+	/// Wraps [`LSPS2ServiceHandler::htlc_intercepted`].
+	///
+	/// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
+	pub fn htlc_intercepted(
+		&self, intercept_scid: u64, intercept_id: InterceptId, expected_outbound_amount_msat: u64,
+		payment_hash: PaymentHash,
+	) -> Result<(), APIError> {
+		let mut fut = Box::pin(self.inner.htlc_intercepted(
+			intercept_scid,
+			intercept_id,
+			expected_outbound_amount_msat,
+			payment_hash,
+		));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Forward [`Event::HTLCHandlingFailed`] event parameter into this function.
+	///
+	/// Wraps [`LSPS2ServiceHandler::htlc_handling_failed`].
+	///
+	/// [`Event::HTLCHandlingFailed`]: lightning::events::Event::HTLCHandlingFailed
+	pub fn htlc_handling_failed(
+		&self, failure_type: HTLCHandlingFailureType,
+	) -> Result<(), APIError> {
+		let mut fut = Box::pin(self.inner.htlc_handling_failed(failure_type));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Forward [`Event::PaymentForwarded`] event parameter into this function.
+	///
+	/// Wraps [`LSPS2ServiceHandler::payment_forwarded`].
+	///
+	/// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
+	pub fn payment_forwarded(&self, next_channel_id: ChannelId) -> Result<(), APIError> {
+		let mut fut = Box::pin(self.inner.payment_forwarded(next_channel_id));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Abandons a pending JIT‐open flow for `user_channel_id`, removing all local state.
+	///
+	/// Wraps [`LSPS2ServiceHandler::channel_open_abandoned`].
+	pub fn channel_open_abandoned(
+		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
+	) -> Result<(), APIError> {
+		let mut fut =
+			Box::pin(self.inner.channel_open_abandoned(counterparty_node_id, user_channel_id));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Used to fail intercepted HTLCs backwards when a channel open attempt ultimately fails.
+	///
+	/// Wraps [`LSPS2ServiceHandler::channel_open_failed`].
+	pub fn channel_open_failed(
+		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
+	) -> Result<(), APIError> {
+		let mut fut =
+			Box::pin(self.inner.channel_open_failed(counterparty_node_id, user_channel_id));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Forward [`Event::ChannelReady`] event parameters into this function.
+	///
+	/// Wraps [`LSPS2ServiceHandler::channel_ready`].
+	///
+	/// [`Event::ChannelReady`]: lightning::events::Event::ChannelReady
+	pub fn channel_ready(
+		&self, user_channel_id: u128, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+	) -> Result<(), APIError> {
+		let mut fut =
+			Box::pin(self.inner.channel_ready(user_channel_id, channel_id, counterparty_node_id));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
 }
 
 #[cfg(test)]

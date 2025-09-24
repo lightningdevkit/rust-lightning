@@ -14,6 +14,8 @@ use alloc::vec::Vec;
 use bitcoin::secp256k1::PublicKey;
 
 /// An event which an bLIP-50 / LSPS0 client may want to take some action in response to.
+///
+/// **Note: ** This event will *not* be persisted across restarts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS0ClientEvent {
 	/// Information from the LSP about the protocols they support.

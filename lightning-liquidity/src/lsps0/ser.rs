@@ -30,7 +30,7 @@ use crate::prelude::HashMap;
 
 use lightning::ln::msgs::{DecodeError, LightningError};
 use lightning::ln::wire;
-use lightning::util::ser::{LengthLimitedRead, LengthReadable, WithoutLength};
+use lightning::util::ser::{LengthLimitedRead, LengthReadable, Readable, WithoutLength, Writeable};
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -217,6 +217,22 @@ impl wire::Type for RawLSPSMessage {
 #[serde(transparent)]
 pub struct LSPSRequestId(pub String);
 
+impl Writeable for LSPSRequestId {
+	fn write<W: lightning::util::ser::Writer>(
+		&self, writer: &mut W,
+	) -> Result<(), lightning::io::Error> {
+		self.0.write(writer)?;
+		Ok(())
+	}
+}
+
+impl Readable for LSPSRequestId {
+	fn read<R: lightning::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let s: String = Readable::read(reader)?;
+		Ok(Self(s))
+	}
+}
+
 /// An object representing datetimes as described in bLIP-50 / LSPS0.
 #[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(transparent)]
@@ -263,6 +279,23 @@ impl FromStr for LSPSDateTime {
 impl Display for LSPSDateTime {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "{}", self.to_rfc3339())
+	}
+}
+
+impl Writeable for LSPSDateTime {
+	fn write<W: lightning::util::ser::Writer>(
+		&self, writer: &mut W,
+	) -> Result<(), lightning::io::Error> {
+		self.to_rfc3339().write(writer)?;
+		Ok(())
+	}
+}
+
+impl Readable for LSPSDateTime {
+	fn read<R: lightning::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let s: String = Readable::read(reader)?;
+		let val = Self::from_str(&s).map_err(|_| lightning::ln::msgs::DecodeError::InvalidValue)?;
+		Ok(val)
 	}
 }
 
@@ -931,5 +964,21 @@ pub(crate) mod u32_fee_rate {
 		let fee_rate_sat_kwu = u32::deserialize(deserializer)?;
 
 		Ok(FeeRate::from_sat_per_kwu(fee_rate_sat_kwu as u64))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	use lightning::io::Cursor;
+
+	#[test]
+	fn datetime_serializaton() {
+		let expected_datetime = LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap();
+		let mut buf = Vec::new();
+		expected_datetime.write(&mut buf).unwrap();
+		let decoded_datetime: LSPSDateTime = Readable::read(&mut Cursor::new(buf)).unwrap();
+		assert_eq!(expected_datetime, decoded_datetime);
 	}
 }

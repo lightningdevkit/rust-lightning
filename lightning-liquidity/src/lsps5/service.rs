@@ -17,16 +17,22 @@ use crate::lsps5::msgs::{
 	SetWebhookRequest, SetWebhookResponse, WebhookNotification, WebhookNotificationMethod,
 };
 use crate::message_queue::MessageQueue;
+use crate::persist::{
+	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+};
 use crate::prelude::*;
 use crate::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use crate::utils::time::TimeProvider;
 
 use bitcoin::secp256k1::PublicKey;
 
+use lightning::impl_writeable_tlv_based;
 use lightning::ln::channelmanager::AChannelManager;
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::sign::NodeSigner;
 use lightning::util::logger::Level;
+use lightning::util::persist::KVStore;
+use lightning::util::ser::Writeable;
 
 use core::ops::Deref;
 use core::time::Duration;
@@ -57,6 +63,14 @@ struct Webhook {
 	// notification cooldowns.
 	last_notification_sent: Option<LSPSDateTime>,
 }
+
+impl_writeable_tlv_based!(Webhook, {
+	(0, _app_name, required),
+	(2, url, required),
+	(4, _counterparty_node_id, required),
+	(6, last_used, required),
+	(8, last_notification_sent, option),
+});
 
 /// Server-side configuration options for LSPS5 Webhook Registration.
 #[derive(Clone, Debug)]
@@ -109,42 +123,48 @@ impl Default for LSPS5ServiceConfig {
 /// [`LSPS5ServiceEvent::SendWebhookNotification`]: super::event::LSPS5ServiceEvent::SendWebhookNotification
 /// [`app_name`]: super::msgs::LSPS5AppName
 /// [`lsps5.webhook_registered`]: super::msgs::WebhookNotificationMethod::LSPS5WebhookRegistered
-pub struct LSPS5ServiceHandler<CM: Deref, NS: Deref, TP: Deref>
+pub struct LSPS5ServiceHandler<CM: Deref, NS: Deref, K: Deref + Clone, TP: Deref>
 where
 	CM::Target: AChannelManager,
 	NS::Target: NodeSigner,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	config: LSPS5ServiceConfig,
 	per_peer_state: RwLock<HashMap<PublicKey, PeerState>>,
-	event_queue: Arc<EventQueue>,
+	event_queue: Arc<EventQueue<K>>,
 	pending_messages: Arc<MessageQueue>,
 	time_provider: TP,
 	channel_manager: CM,
 	node_signer: NS,
+	kv_store: K,
 	last_pruning: Mutex<Option<LSPSDateTime>>,
 }
 
-impl<CM: Deref, NS: Deref, TP: Deref> LSPS5ServiceHandler<CM, NS, TP>
+impl<CM: Deref, NS: Deref, K: Deref + Clone, TP: Deref> LSPS5ServiceHandler<CM, NS, K, TP>
 where
 	CM::Target: AChannelManager,
 	NS::Target: NodeSigner,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	/// Constructs a `LSPS5ServiceHandler` using the given time provider.
 	pub(crate) fn new_with_time_provider(
-		event_queue: Arc<EventQueue>, pending_messages: Arc<MessageQueue>, channel_manager: CM,
-		node_signer: NS, config: LSPS5ServiceConfig, time_provider: TP,
+		peer_states: HashMap<PublicKey, PeerState>, event_queue: Arc<EventQueue<K>>,
+		pending_messages: Arc<MessageQueue>, channel_manager: CM, kv_store: K, node_signer: NS,
+		config: LSPS5ServiceConfig, time_provider: TP,
 	) -> Self {
 		assert!(config.max_webhooks_per_client > 0, "`max_webhooks_per_client` must be > 0");
+		let per_peer_state = RwLock::new(peer_states);
 		Self {
 			config,
-			per_peer_state: RwLock::new(new_hash_map()),
+			per_peer_state,
 			event_queue,
 			pending_messages,
 			time_provider,
 			channel_manager,
 			node_signer,
+			kv_store,
 			last_pruning: Mutex::new(None),
 		}
 	}
@@ -177,6 +197,89 @@ where
 		}
 	}
 
+	async fn persist_peer_state(
+		&self, counterparty_node_id: PublicKey,
+	) -> Result<(), lightning::io::Error> {
+		let fut = {
+			let mut outer_state_lock = self.per_peer_state.write().unwrap();
+			let encoded = match outer_state_lock.get_mut(&counterparty_node_id) {
+				None => {
+					// We dropped the peer state by now.
+					return Ok(());
+				},
+				Some(entry) => {
+					if !entry.needs_persist {
+						// We already have persisted otherwise by now.
+						return Ok(());
+					} else {
+						entry.needs_persist = false;
+						entry.encode()
+					}
+				},
+			};
+
+			let key = counterparty_node_id.to_string();
+
+			self.kv_store.write(
+				LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+				LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+				&key,
+				encoded,
+			)
+		};
+
+		fut.await.map_err(|e| {
+			self.per_peer_state
+				.write()
+				.unwrap()
+				.get_mut(&counterparty_node_id)
+				.map(|p| p.needs_persist = true);
+			e
+		})
+	}
+
+	pub(crate) async fn persist(&self) -> Result<(), lightning::io::Error> {
+		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
+		// introduce some batching to upper-bound the number of requests inflight at any given
+		// time.
+		let mut need_remove = Vec::new();
+		let mut need_persist = Vec::new();
+		{
+			let mut outer_state_lock = self.per_peer_state.write().unwrap();
+			self.check_prune_stale_webhooks(&mut outer_state_lock);
+
+			outer_state_lock.retain(|client_id, peer_state| {
+				let is_prunable = peer_state.is_prunable();
+				let has_open_channel = self.client_has_open_channel(client_id);
+				if is_prunable && !has_open_channel {
+					need_remove.push(*client_id);
+				} else if peer_state.needs_persist {
+					need_persist.push(*client_id);
+				}
+				!is_prunable || has_open_channel
+			});
+		};
+
+		for counterparty_node_id in need_persist.into_iter() {
+			debug_assert!(!need_remove.contains(&counterparty_node_id));
+			self.persist_peer_state(counterparty_node_id).await?;
+		}
+
+		for counterparty_node_id in need_remove {
+			let key = counterparty_node_id.to_string();
+			self.kv_store
+				.remove(
+					LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+					LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+					&key,
+					true,
+				)
+				.await?;
+		}
+
+		Ok(())
+	}
+
 	fn check_prune_stale_webhooks<'a>(
 		&self, outer_state_lock: &mut RwLockWriteGuard<'a, HashMap<PublicKey, PeerState>>,
 	) {
@@ -189,13 +292,11 @@ where
 		});
 
 		if should_prune {
-			outer_state_lock.retain(|client_id, peer_state| {
-				if self.client_has_open_channel(client_id) {
-					// Don't prune clients with open channels
-					return true;
-				}
-				!peer_state.prune_stale_webhooks(now)
-			});
+			for (_, peer_state) in outer_state_lock.iter_mut() {
+				// Prune stale webhooks, but leave removal of the peers states to the prune logic
+				// in `persist` which will remove it from the store.
+				peer_state.prune_stale_webhooks(now)
+			}
 			*last_pruning = Some(now);
 		}
 	}
@@ -224,6 +325,7 @@ where
 				webhook.url = params.webhook.clone();
 				webhook.last_used = now;
 				webhook.last_notification_sent = None;
+				peer_state.needs_persist |= true;
 			}
 		} else {
 			if num_webhooks >= self.config.max_webhooks_per_client as usize {
@@ -540,10 +642,12 @@ where
 	}
 }
 
-impl<CM: Deref, NS: Deref, TP: Deref> LSPSProtocolMessageHandler for LSPS5ServiceHandler<CM, NS, TP>
+impl<CM: Deref, NS: Deref, K: Deref + Clone, TP: Deref> LSPSProtocolMessageHandler
+	for LSPS5ServiceHandler<CM, NS, K, TP>
 where
 	CM::Target: AChannelManager,
 	NS::Target: NodeSigner,
+	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	type ProtocolMessage = LSPS5Message;
@@ -573,7 +677,7 @@ where
 					"Service handler received LSPS5 response message. This should never happen."
 				);
 				let err = format!(
-					"Service handler received LSPS5 response message from node {:?}. This should never happen.",
+					"Service handler received LSPS5 response message from node {}. This should never happen.",
 					counterparty_node_id
 				);
 				Err(LightningError { err, action: ErrorAction::IgnoreAndLog(Level::Info) })
@@ -582,14 +686,18 @@ where
 	}
 }
 
-#[derive(Debug, Default)]
-struct PeerState {
+#[derive(Debug)]
+pub(crate) struct PeerState {
 	webhooks: Vec<(LSPS5AppName, Webhook)>,
+	needs_persist: bool,
 }
 
 impl PeerState {
 	fn webhook_mut(&mut self, name: &LSPS5AppName) -> Option<&mut Webhook> {
-		self.webhooks.iter_mut().find_map(|(n, h)| if n == name { Some(h) } else { None })
+		let res =
+			self.webhooks.iter_mut().find_map(|(n, h)| if n == name { Some(h) } else { None });
+		self.needs_persist |= true;
+		res
 	}
 
 	fn webhooks(&self) -> &Vec<(LSPS5AppName, Webhook)> {
@@ -597,7 +705,9 @@ impl PeerState {
 	}
 
 	fn webhooks_mut(&mut self) -> &mut Vec<(LSPS5AppName, Webhook)> {
-		&mut self.webhooks
+		let res = &mut self.webhooks;
+		self.needs_persist |= true;
+		res
 	}
 
 	fn webhooks_len(&self) -> usize {
@@ -617,6 +727,7 @@ impl PeerState {
 		}
 
 		self.webhooks.push((name, hook));
+		self.needs_persist |= true;
 	}
 
 	fn remove_webhook(&mut self, name: &LSPS5AppName) -> bool {
@@ -629,6 +740,7 @@ impl PeerState {
 				false
 			}
 		});
+		self.needs_persist |= true;
 		removed
 	}
 
@@ -636,14 +748,34 @@ impl PeerState {
 		for (_, h) in self.webhooks.iter_mut() {
 			h.last_notification_sent = None;
 		}
+		self.needs_persist |= true;
 	}
 
 	// Returns whether the entire state is empty and can be pruned.
-	fn prune_stale_webhooks(&mut self, now: LSPSDateTime) -> bool {
+	fn prune_stale_webhooks(&mut self, now: LSPSDateTime) {
 		self.webhooks.retain(|(_, webhook)| {
-			now.duration_since(&webhook.last_used) < MIN_WEBHOOK_RETENTION_DAYS
+			let should_prune = now.duration_since(&webhook.last_used) >= MIN_WEBHOOK_RETENTION_DAYS;
+			if should_prune {
+				self.needs_persist |= true;
+			}
+			!should_prune
 		});
+	}
 
+	fn is_prunable(&mut self) -> bool {
 		self.webhooks.is_empty()
 	}
 }
+
+impl Default for PeerState {
+	fn default() -> Self {
+		let webhooks = Vec::new();
+		let needs_persist = true;
+		Self { webhooks, needs_persist }
+	}
+}
+
+impl_writeable_tlv_based!(PeerState, {
+	(0, webhooks, required_vec),
+	(_unused, needs_persist, (static_value, false)),
+});

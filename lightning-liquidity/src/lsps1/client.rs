@@ -25,6 +25,7 @@ use crate::sync::{Arc, Mutex, RwLock};
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::sign::EntropySource;
 use lightning::util::logger::Level;
+use lightning::util::persist::KVStore;
 
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Address;
@@ -46,25 +47,27 @@ struct PeerState {
 }
 
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
-pub struct LSPS1ClientHandler<ES: Deref>
+pub struct LSPS1ClientHandler<ES: Deref, K: Deref + Clone>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	entropy_source: ES,
 	pending_messages: Arc<MessageQueue>,
-	pending_events: Arc<EventQueue>,
+	pending_events: Arc<EventQueue<K>>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 	config: LSPS1ClientConfig,
 }
 
-impl<ES: Deref> LSPS1ClientHandler<ES>
+impl<ES: Deref, K: Deref + Clone> LSPS1ClientHandler<ES, K>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	/// Constructs an `LSPS1ClientHandler`.
 	pub(crate) fn new(
-		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>,
-		config: LSPS1ClientConfig,
+		entropy_source: ES, pending_messages: Arc<MessageQueue>,
+		pending_events: Arc<EventQueue<K>>, config: LSPS1ClientConfig,
 	) -> Self {
 		Self {
 			entropy_source,
@@ -138,7 +141,7 @@ where
 			},
 			None => Err(LightningError {
 				err: format!(
-					"Received get_info response from unknown peer: {:?}",
+					"Received get_info response from unknown peer: {}",
 					counterparty_node_id
 				),
 				action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -184,7 +187,7 @@ where
 			None => {
 				return Err(LightningError {
 					err: format!(
-						"Received get_info error response from an unknown counterparty ({:?})",
+						"Received get_info error response from an unknown counterparty {}",
 						counterparty_node_id
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -301,7 +304,7 @@ where
 			None => {
 				return Err(LightningError {
 					err: format!(
-						"Received error response for a create order request from an unknown counterparty ({:?})",
+						"Received error response for a create order request from an unknown counterparty {}",
 						counterparty_node_id
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),
@@ -429,9 +432,10 @@ where
 	}
 }
 
-impl<ES: Deref> LSPSProtocolMessageHandler for LSPS1ClientHandler<ES>
+impl<ES: Deref, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS1ClientHandler<ES, K>
 where
 	ES::Target: EntropySource,
+	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS1Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(1);
