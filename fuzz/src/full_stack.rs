@@ -476,7 +476,7 @@ impl SignerProvider for KeyProvider {
 		e = SecretKey::from_slice(&key).unwrap();
 		key[30] = 6 + if inbound { 0 } else { 6 };
 		f = key;
-		let signer = InMemorySigner::new(a, b, c, c, d, e, f, keys_id, keys_id);
+		let signer = InMemorySigner::new(a, b, c, c, true, d, e, f, keys_id, keys_id);
 
 		TestChannelSigner::new_with_revoked(DynSigner::new(signer), state, false, false)
 	}

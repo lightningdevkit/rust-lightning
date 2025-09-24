@@ -1211,7 +1211,7 @@ mod test {
 
 	fn make_dyn_keys_interface(seed: &[u8; 32]) -> DynKeysInterface {
 		let cross_node_seed = [44u8; 32];
-		let inner = PhantomKeysManager::new(&seed, 43, 44, &cross_node_seed);
+		let inner = PhantomKeysManager::new(&seed, 43, 44, &cross_node_seed, true);
 		let dyn_inner = DynPhantomKeysInterface::new(inner);
 		DynKeysInterface::new(Box::new(dyn_inner))
 	}
