@@ -29,10 +29,10 @@ pub(crate) struct EventQueue<K: Deref + Clone>
 where
 	K::Target: KVStore,
 {
-	state: Arc<Mutex<QueueState>>,
-	waker: Arc<Mutex<Option<Waker>>>,
+	state: Mutex<QueueState>,
+	waker: Mutex<Option<Waker>>,
 	#[cfg(feature = "std")]
-	condvar: Arc<crate::sync::Condvar>,
+	condvar: crate::sync::Condvar,
 	kv_store: K,
 	persist_notifier: Arc<Notifier>,
 }
@@ -44,13 +44,13 @@ where
 	pub fn new(
 		queue: VecDeque<LiquidityEvent>, kv_store: K, persist_notifier: Arc<Notifier>,
 	) -> Self {
-		let state = Arc::new(Mutex::new(QueueState { queue, needs_persist: false }));
-		let waker = Arc::new(Mutex::new(None));
+		let state = Mutex::new(QueueState { queue, needs_persist: false });
+		let waker = Mutex::new(None);
 		Self {
 			state,
 			waker,
 			#[cfg(feature = "std")]
-			condvar: Arc::new(crate::sync::Condvar::new()),
+			condvar: crate::sync::Condvar::new(),
 			kv_store,
 			persist_notifier,
 		}
@@ -74,12 +74,7 @@ where
 	}
 
 	pub async fn next_event_async(&self) -> LiquidityEvent {
-		EventFuture {
-			queue_state: Arc::clone(&self.state),
-			waker: Arc::clone(&self.waker),
-			persist_notifier: Arc::clone(&self.persist_notifier),
-		}
-		.await
+		EventFuture(self).await
 	}
 
 	#[cfg(feature = "std")]
@@ -213,31 +208,32 @@ where
 	}
 }
 
-struct EventFuture {
-	queue_state: Arc<Mutex<QueueState>>,
-	waker: Arc<Mutex<Option<Waker>>>,
-	persist_notifier: Arc<Notifier>,
-}
+struct EventFuture<'a, K: Deref + Clone>(&'a EventQueue<K>)
+where
+	K::Target: KVStore;
 
-impl Future for EventFuture {
+impl<K: Deref + Clone> Future for EventFuture<'_, K>
+where
+	K::Target: KVStore,
+{
 	type Output = LiquidityEvent;
 
 	fn poll(
 		self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>,
 	) -> core::task::Poll<Self::Output> {
 		let (res, should_persist_notify) = {
-			let mut state_lock = self.queue_state.lock().unwrap();
+			let mut state_lock = self.0.state.lock().unwrap();
 			if let Some(event) = state_lock.queue.pop_front() {
 				state_lock.needs_persist = true;
 				(Poll::Ready(event), true)
 			} else {
-				*self.waker.lock().unwrap() = Some(cx.waker().clone());
+				*self.0.waker.lock().unwrap() = Some(cx.waker().clone());
 				(Poll::Pending, false)
 			}
 		};
 
 		if should_persist_notify {
-			self.persist_notifier.notify();
+			self.0.persist_notifier.notify();
 		}
 
 		res
