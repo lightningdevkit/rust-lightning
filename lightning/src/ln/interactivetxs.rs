@@ -17,7 +17,6 @@ use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::ecdsa::Signature as BitcoinSignature;
 use bitcoin::key::Secp256k1;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
-use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{Message, PublicKey};
 use bitcoin::sighash::SighashCache;
 use bitcoin::transaction::Version;
@@ -197,30 +196,24 @@ impl Display for AbortReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConstructedTransaction {
 	holder_is_initiator: bool,
-
-	inputs: Vec<NegotiatedTxInput>,
-	outputs: Vec<InteractiveTxOutput>,
-
-	local_inputs_value_satoshis: u64,
-	local_outputs_value_satoshis: u64,
-
-	remote_inputs_value_satoshis: u64,
-	remote_outputs_value_satoshis: u64,
-
-	lock_time: AbsoluteLockTime,
+	input_metadata: Vec<TxInMetadata>,
+	output_metadata: Vec<TxOutMetadata>,
+	tx: Transaction,
 	shared_input_index: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct NegotiatedTxInput {
+pub(crate) struct TxInMetadata {
 	serial_id: SerialId,
-	txin: TxIn,
-	// The weight of the input including an estimate of its witness weight.
-	weight: Weight,
 	prev_output: TxOut,
 }
 
-impl NegotiatedTxInput {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TxOutMetadata {
+	serial_id: SerialId,
+}
+
+impl TxInMetadata {
 	pub(super) fn is_local(&self, holder_is_initiator: bool) -> bool {
 		!is_serial_id_valid_for_counterparty(holder_is_initiator, self.serial_id)
 	}
@@ -230,23 +223,27 @@ impl NegotiatedTxInput {
 	}
 }
 
-impl_writeable_tlv_based!(NegotiatedTxInput, {
+impl TxOutMetadata {
+	pub(super) fn is_local(&self, holder_is_initiator: bool) -> bool {
+		!is_serial_id_valid_for_counterparty(holder_is_initiator, self.serial_id)
+	}
+}
+
+impl_writeable_tlv_based!(TxInMetadata, {
 	(1, serial_id, required),
-	(3, txin, required),
-	(5, weight, required),
-	(7, prev_output, required),
+	(3, prev_output, required),
+});
+
+impl_writeable_tlv_based!(TxOutMetadata, {
+	(1, serial_id, required),
 });
 
 impl_writeable_tlv_based!(ConstructedTransaction, {
 	(1, holder_is_initiator, required),
-	(3, inputs, required),
-	(5, outputs, required),
-	(7, local_inputs_value_satoshis, required),
-	(9, local_outputs_value_satoshis, required),
-	(11, remote_inputs_value_satoshis, required),
-	(13, remote_outputs_value_satoshis, required),
-	(15, lock_time, required),
-	(17, shared_input_index, option),
+	(3, input_metadata, required),
+	(5, output_metadata, required),
+	(7, tx, required),
+	(9, shared_input_index, option),
 });
 
 impl ConstructedTransaction {
@@ -266,105 +263,140 @@ impl ConstructedTransaction {
 			return Err(AbortReason::MissingFundingOutput);
 		}
 
-		let local_inputs_value_satoshis = context
-			.inputs
-			.iter()
-			.fold(0u64, |value, (_, input)| value.saturating_add(input.local_value()));
+		let satisfaction_weight =
+			Weight::from_wu(context.inputs.iter().fold(0u64, |value, (_, input)| {
+				value.saturating_add(input.satisfaction_weight().to_wu())
+			}));
 
-		let local_outputs_value_satoshis = context
-			.outputs
-			.iter()
-			.fold(0u64, |value, (_, output)| value.saturating_add(output.local_value()));
-
-		let remote_inputs_value_satoshis = context.remote_inputs_value();
-		let remote_outputs_value_satoshis = context.remote_outputs_value();
-		let mut inputs: Vec<NegotiatedTxInput> =
-			context.inputs.into_values().map(|tx_input| tx_input.into_negotiated_input()).collect();
-		let mut outputs: Vec<InteractiveTxOutput> = context.outputs.into_values().collect();
-		inputs.sort_unstable_by_key(|input| input.serial_id);
-		outputs.sort_unstable_by_key(|output| output.serial_id);
+		let mut inputs: Vec<(TxIn, TxInMetadata)> =
+			context.inputs.into_values().map(|input| input.into_txin_and_metadata()).collect();
+		let mut outputs: Vec<(TxOut, TxOutMetadata)> =
+			context.outputs.into_values().map(|output| output.into_txout_and_metadata()).collect();
+		inputs.sort_unstable_by_key(|(_, input)| input.serial_id);
+		outputs.sort_unstable_by_key(|(_, output)| output.serial_id);
 
 		let shared_input_index =
 			context.shared_funding_input.as_ref().and_then(|shared_funding_input| {
 				inputs
 					.iter()
-					.position(|input| {
-						input.txin.previous_output == shared_funding_input.input.previous_output
+					.position(|(txin, _)| {
+						txin.previous_output == shared_funding_input.input.previous_output
 					})
 					.map(|position| position as u32)
 			});
 
-		let constructed_tx = Self {
-			holder_is_initiator: context.holder_is_initiator,
+		let (input, input_metadata): (Vec<TxIn>, Vec<TxInMetadata>) = inputs.into_iter().unzip();
+		let (output, output_metadata): (Vec<TxOut>, Vec<TxOutMetadata>) =
+			outputs.into_iter().unzip();
 
-			local_inputs_value_satoshis,
-			local_outputs_value_satoshis,
+		let tx =
+			Transaction { version: Version::TWO, lock_time: context.tx_locktime, input, output };
 
-			remote_inputs_value_satoshis,
-			remote_outputs_value_satoshis,
-
-			inputs,
-			outputs,
-
-			lock_time: context.tx_locktime,
-			shared_input_index,
-		};
-
-		if constructed_tx.weight().to_wu() > MAX_STANDARD_TX_WEIGHT as u64 {
+		let tx_weight = tx.weight().checked_add(satisfaction_weight).unwrap_or(Weight::MAX);
+		if tx_weight > Weight::from_wu(MAX_STANDARD_TX_WEIGHT as u64) {
 			return Err(AbortReason::TransactionTooLarge);
 		}
 
-		Ok(constructed_tx)
+		Ok(Self {
+			holder_is_initiator: context.holder_is_initiator,
+			input_metadata,
+			output_metadata,
+			tx,
+			shared_input_index,
+		})
 	}
 
-	pub fn weight(&self) -> Weight {
-		let inputs_weight = self.inputs.iter().fold(Weight::from_wu(0), |weight, input| {
-			weight.checked_add(input.weight).unwrap_or(Weight::MAX)
-		});
-		let outputs_weight = self.outputs.iter().fold(Weight::from_wu(0), |weight, output| {
-			weight.checked_add(get_output_weight(output.script_pubkey())).unwrap_or(Weight::MAX)
-		});
-		Weight::from_wu(TX_COMMON_FIELDS_WEIGHT)
-			.checked_add(inputs_weight)
-			.and_then(|weight| weight.checked_add(outputs_weight))
-			.unwrap_or(Weight::MAX)
+	pub fn tx(&self) -> &Transaction {
+		&self.tx
 	}
 
-	pub fn build_unsigned_tx(&self) -> Transaction {
-		let ConstructedTransaction { inputs, outputs, .. } = self;
-
-		let input: Vec<TxIn> = inputs.iter().map(|input| input.txin.clone()).collect();
-		let output: Vec<TxOut> = outputs.iter().map(|output| output.tx_out().clone()).collect();
-
-		Transaction { version: Version::TWO, lock_time: self.lock_time, input, output }
-	}
-
-	pub fn outputs(&self) -> impl Iterator<Item = &InteractiveTxOutput> {
-		self.outputs.iter()
-	}
-
-	pub fn inputs(&self) -> impl Iterator<Item = &NegotiatedTxInput> {
-		self.inputs.iter()
+	fn input_metadata(&self) -> impl Iterator<Item = &TxInMetadata> {
+		self.input_metadata.iter()
 	}
 
 	pub fn compute_txid(&self) -> Txid {
-		self.build_unsigned_tx().compute_txid()
+		self.tx().compute_txid()
+	}
+
+	/// Returns the total input value from all local contributions, including the entire shared
+	/// input value if applicable.
+	fn local_contributed_input_value(&self) -> Amount {
+		self.input_metadata
+			.iter()
+			.filter(|input| input.is_local(self.holder_is_initiator))
+			.map(|input| input.prev_output.value)
+			.sum()
+	}
+
+	/// Returns the total input value from all remote contributions, including the entire shared
+	/// input value if applicable.
+	fn remote_contributed_input_value(&self) -> Amount {
+		self.input_metadata
+			.iter()
+			.filter(|input| !input.is_local(self.holder_is_initiator))
+			.map(|input| input.prev_output.value)
+			.sum()
+	}
+
+	fn finalize(
+		&self, holder_tx_signatures: &TxSignatures, counterparty_tx_signatures: &TxSignatures,
+		shared_input_sig: Option<&SharedInputSignature>,
+	) -> Option<Transaction> {
+		let mut tx = self.tx.clone();
+		self.add_local_witnesses(&mut tx, holder_tx_signatures.witnesses.clone());
+		self.add_remote_witnesses(&mut tx, counterparty_tx_signatures.witnesses.clone());
+
+		if let Some(shared_input_index) = self.shared_input_index {
+			let holder_shared_input_sig =
+				holder_tx_signatures.shared_input_signature.or_else(|| {
+					debug_assert!(false);
+					None
+				})?;
+			let counterparty_shared_input_sig =
+				counterparty_tx_signatures.shared_input_signature.or_else(|| {
+					debug_assert!(false);
+					None
+				})?;
+
+			let shared_input_sig = shared_input_sig.or_else(|| {
+				debug_assert!(false);
+				None
+			})?;
+
+			let mut witness = Witness::new();
+			witness.push(Vec::new());
+			let holder_sig = BitcoinSignature::sighash_all(holder_shared_input_sig);
+			let counterparty_sig = BitcoinSignature::sighash_all(counterparty_shared_input_sig);
+			if shared_input_sig.holder_signature_first {
+				witness.push_ecdsa_signature(&holder_sig);
+				witness.push_ecdsa_signature(&counterparty_sig);
+			} else {
+				witness.push_ecdsa_signature(&counterparty_sig);
+				witness.push_ecdsa_signature(&holder_sig);
+			}
+			witness.push(&shared_input_sig.witness_script);
+			tx.input[shared_input_index as usize].witness = witness;
+		}
+
+		Some(tx)
 	}
 
 	/// Adds provided holder witnesses to holder inputs of unsigned transaction.
 	///
 	/// Note that it is assumed that the witness count equals the holder input count.
-	fn add_local_witnesses(&mut self, witnesses: Vec<Witness>) {
-		self.inputs
+	fn add_local_witnesses(&self, transaction: &mut Transaction, witnesses: Vec<Witness>) {
+		transaction
+			.input
 			.iter_mut()
+			.zip(self.input_metadata.iter())
 			.enumerate()
-			.filter(|(_, input)| input.is_local(self.holder_is_initiator))
+			.filter(|(_, (_, input))| input.is_local(self.holder_is_initiator))
 			.filter(|(index, _)| {
 				self.shared_input_index
 					.map(|shared_index| *index != shared_index as usize)
 					.unwrap_or(true)
 			})
-			.map(|(_, input)| &mut input.txin)
+			.map(|(_, (txin, _))| txin)
 			.zip(witnesses)
 			.for_each(|(input, witness)| input.witness = witness);
 	}
@@ -372,22 +404,24 @@ impl ConstructedTransaction {
 	/// Adds counterparty witnesses to counterparty inputs of unsigned transaction.
 	///
 	/// Note that it is assumed that the witness count equals the counterparty input count.
-	fn add_remote_witnesses(&mut self, witnesses: Vec<Witness>) {
-		self.inputs
+	fn add_remote_witnesses(&self, transaction: &mut Transaction, witnesses: Vec<Witness>) {
+		transaction
+			.input
 			.iter_mut()
+			.zip(self.input_metadata.iter())
 			.enumerate()
-			.filter(|(_, input)| !input.is_local(self.holder_is_initiator))
+			.filter(|(_, (_, input))| !input.is_local(self.holder_is_initiator))
 			.filter(|(index, _)| {
 				self.shared_input_index
 					.map(|shared_index| *index != shared_index as usize)
 					.unwrap_or(true)
 			})
-			.map(|(_, input)| &mut input.txin)
+			.map(|(_, (txin, _))| txin)
 			.zip(witnesses)
 			.for_each(|(input, witness)| input.witness = witness);
 	}
 
-	pub fn holder_is_initiator(&self) -> bool {
+	fn holder_is_initiator(&self) -> bool {
 		self.holder_is_initiator
 	}
 
@@ -400,13 +434,11 @@ impl ConstructedTransaction {
 pub(crate) struct SharedInputSignature {
 	holder_signature_first: bool,
 	witness_script: ScriptBuf,
-	counterparty_signature: Option<Signature>,
 }
 
 impl_writeable_tlv_based!(SharedInputSignature, {
 	(1, holder_signature_first, required),
 	(3, witness_script, required),
-	(5, counterparty_signature, required),
 });
 
 /// The InteractiveTxSigningSession coordinates the signing flow of interactively constructed
@@ -421,9 +453,9 @@ pub(crate) struct InteractiveTxSigningSession {
 	unsigned_tx: ConstructedTransaction,
 	holder_sends_tx_signatures_first: bool,
 	has_received_commitment_signed: bool,
-	has_received_tx_signatures: bool,
 	shared_input_signature: Option<SharedInputSignature>,
 	holder_tx_signatures: Option<TxSignatures>,
+	counterparty_tx_signatures: Option<TxSignatures>,
 }
 
 impl InteractiveTxSigningSession {
@@ -440,7 +472,7 @@ impl InteractiveTxSigningSession {
 	}
 
 	pub fn has_received_tx_signatures(&self) -> bool {
-		self.has_received_tx_signatures
+		self.counterparty_tx_signatures.is_some()
 	}
 
 	pub fn holder_tx_signatures(&self) -> &Option<TxSignatures> {
@@ -465,7 +497,7 @@ impl InteractiveTxSigningSession {
 	pub fn received_tx_signatures(
 		&mut self, tx_signatures: &TxSignatures,
 	) -> Result<(Option<TxSignatures>, Option<Transaction>), String> {
-		if self.has_received_tx_signatures {
+		if self.has_received_tx_signatures() {
 			return Err("Already received a tx_signatures message".to_string());
 		}
 		if self.remote_inputs_count() != tx_signatures.witnesses.len() {
@@ -478,11 +510,7 @@ impl InteractiveTxSigningSession {
 			return Err("Unexpected shared input signature".to_string());
 		}
 
-		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses.clone());
-		if let Some(ref mut shared_input_sig) = self.shared_input_signature {
-			shared_input_sig.counterparty_signature = tx_signatures.shared_input_signature.clone();
-		}
-		self.has_received_tx_signatures = true;
+		self.counterparty_tx_signatures = Some(tx_signatures.clone());
 
 		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
 			self.holder_tx_signatures.clone()
@@ -490,14 +518,7 @@ impl InteractiveTxSigningSession {
 			None
 		};
 
-		// Check if the holder has provided its signatures and if so,
-		// return the finalized funding transaction.
-		let funding_tx_opt = if self.holder_tx_signatures.is_some() {
-			Some(self.finalize_funding_tx())
-		} else {
-			// This means we're still waiting for the holder to provide their signatures.
-			None
-		};
+		let funding_tx_opt = self.maybe_finalize_funding_tx();
 
 		Ok((holder_tx_signatures, funding_tx_opt))
 	}
@@ -524,15 +545,15 @@ impl InteractiveTxSigningSession {
 
 		self.verify_interactive_tx_signatures(secp_ctx, &tx_signatures.witnesses)?;
 
-		self.unsigned_tx.add_local_witnesses(tx_signatures.witnesses.clone());
 		self.holder_tx_signatures = Some(tx_signatures);
 
-		let funding_tx_opt = self.has_received_tx_signatures.then(|| self.finalize_funding_tx());
-		let holder_tx_signatures =
-			(self.holder_sends_tx_signatures_first || self.has_received_tx_signatures).then(|| {
-				debug_assert!(self.has_received_commitment_signed);
-				self.holder_tx_signatures.clone().expect("Holder tx_signatures were just provided")
-			});
+		let funding_tx_opt = self.maybe_finalize_funding_tx();
+		let holder_tx_signatures = (self.holder_sends_tx_signatures_first
+			|| self.has_received_tx_signatures())
+		.then(|| {
+			debug_assert!(self.has_received_commitment_signed);
+			self.holder_tx_signatures.clone().expect("Holder tx_signatures were just provided")
+		});
 
 		Ok((holder_tx_signatures, funding_tx_opt))
 	}
@@ -540,7 +561,7 @@ impl InteractiveTxSigningSession {
 	pub fn remote_inputs_count(&self) -> usize {
 		let shared_index = self.unsigned_tx.shared_input_index.as_ref();
 		self.unsigned_tx
-			.inputs
+			.input_metadata
 			.iter()
 			.enumerate()
 			.filter(|(_, input)| !input.is_local(self.unsigned_tx.holder_is_initiator))
@@ -552,7 +573,7 @@ impl InteractiveTxSigningSession {
 
 	pub fn local_inputs_count(&self) -> usize {
 		self.unsigned_tx
-			.inputs
+			.input_metadata
 			.iter()
 			.enumerate()
 			.filter(|(_, input)| input.is_local(self.unsigned_tx.holder_is_initiator))
@@ -567,15 +588,10 @@ impl InteractiveTxSigningSession {
 
 	fn local_outputs_count(&self) -> usize {
 		self.unsigned_tx
-			.outputs
+			.output_metadata
 			.iter()
 			.enumerate()
-			.filter(|(_, output)| {
-				!is_serial_id_valid_for_counterparty(
-					self.unsigned_tx.holder_is_initiator,
-					output.serial_id,
-				)
-			})
+			.filter(|(_, output)| output.is_local(self.unsigned_tx.holder_is_initiator))
 			.count()
 	}
 
@@ -583,75 +599,36 @@ impl InteractiveTxSigningSession {
 		self.local_inputs_count() > 0 || self.local_outputs_count() > 0
 	}
 
-	pub fn shared_input(&self) -> Option<&NegotiatedTxInput> {
-		self.unsigned_tx
-			.shared_input_index
-			.and_then(|shared_input_index| self.unsigned_tx.inputs.get(shared_input_index as usize))
+	pub fn shared_input(&self) -> Option<&TxInMetadata> {
+		self.unsigned_tx.shared_input_index.and_then(|shared_input_index| {
+			self.unsigned_tx.input_metadata.get(shared_input_index as usize)
+		})
 	}
 
-	fn finalize_funding_tx(&mut self) -> Transaction {
-		let lock_time = self.unsigned_tx.lock_time;
-		let ConstructedTransaction { inputs, outputs, shared_input_index, .. } =
-			&mut self.unsigned_tx;
-
-		let mut tx = Transaction {
-			version: Version::TWO,
-			lock_time,
-			input: inputs.iter().cloned().map(|input| input.txin).collect(),
-			output: outputs.iter().cloned().map(|output| output.into_tx_out()).collect(),
-		};
-
-		if let Some(shared_input_index) = shared_input_index {
-			if let Some(holder_shared_input_sig) = self
-				.holder_tx_signatures
-				.as_ref()
-				.and_then(|holder_tx_sigs| holder_tx_sigs.shared_input_signature)
-			{
-				if let Some(ref shared_input_sig) = self.shared_input_signature {
-					if let Some(counterparty_shared_input_sig) =
-						shared_input_sig.counterparty_signature
-					{
-						let mut witness = Witness::new();
-						witness.push(Vec::new());
-						let holder_sig = BitcoinSignature::sighash_all(holder_shared_input_sig);
-						let counterparty_sig =
-							BitcoinSignature::sighash_all(counterparty_shared_input_sig);
-						if shared_input_sig.holder_signature_first {
-							witness.push_ecdsa_signature(&holder_sig);
-							witness.push_ecdsa_signature(&counterparty_sig);
-						} else {
-							witness.push_ecdsa_signature(&counterparty_sig);
-							witness.push_ecdsa_signature(&holder_sig);
-						}
-						witness.push(&shared_input_sig.witness_script);
-						tx.input[*shared_input_index as usize].witness = witness;
-					} else {
-						debug_assert!(false);
-					}
-				} else {
-					debug_assert!(false);
-				}
-			} else {
-				debug_assert!(false);
-			}
-		}
-
-		tx
+	fn maybe_finalize_funding_tx(&mut self) -> Option<Transaction> {
+		let holder_tx_signatures = self.holder_tx_signatures.as_ref()?;
+		let counterparty_tx_signatures = self.counterparty_tx_signatures.as_ref()?;
+		let shared_input_signature = self.shared_input_signature.as_ref();
+		self.unsigned_tx.finalize(
+			holder_tx_signatures,
+			counterparty_tx_signatures,
+			shared_input_signature,
+		)
 	}
 
 	fn verify_interactive_tx_signatures<C: bitcoin::secp256k1::Verification>(
 		&self, secp_ctx: &Secp256k1<C>, witnesses: &Vec<Witness>,
 	) -> Result<(), String> {
 		let unsigned_tx = self.unsigned_tx();
-		let built_tx = unsigned_tx.build_unsigned_tx();
+		let built_tx = unsigned_tx.tx();
 		let prev_outputs: Vec<&TxOut> =
-			unsigned_tx.inputs().map(|input| input.prev_output()).collect::<Vec<_>>();
+			unsigned_tx.input_metadata().map(|input| input.prev_output()).collect::<Vec<_>>();
 		let all_prevouts = sighash::Prevouts::All(&prev_outputs[..]);
 
-		let mut cache = SighashCache::new(&built_tx);
+		let mut cache = SighashCache::new(built_tx);
 
 		let script_pubkeys = unsigned_tx
-			.inputs()
+			.input_metadata()
 			.enumerate()
 			.filter(|(_, input)| input.is_local(unsigned_tx.holder_is_initiator()))
 			.filter(|(index, _)| {
@@ -805,7 +782,7 @@ impl_writeable_tlv_based!(InteractiveTxSigningSession, {
 	(1, unsigned_tx, required),
 	(3, has_received_commitment_signed, required),
 	(5, holder_tx_signatures, required),
-	(7, has_received_tx_signatures, required),
+	(7, counterparty_tx_signatures, required),
 	(9, holder_sends_tx_signatures_first, required),
 	(11, shared_input_signature, required),
 });
@@ -842,16 +819,18 @@ struct NegotiationContext {
 	feerate_sat_per_kw: u32,
 }
 
-pub(crate) fn estimate_input_weight(prev_output: &TxOut) -> Weight {
-	Weight::from_wu(if prev_output.script_pubkey.is_p2wpkh() {
-		P2WPKH_INPUT_WEIGHT_LOWER_BOUND
-	} else if prev_output.script_pubkey.is_p2wsh() {
-		P2WSH_INPUT_WEIGHT_LOWER_BOUND
-	} else if prev_output.script_pubkey.is_p2tr() {
-		P2TR_INPUT_WEIGHT_LOWER_BOUND
-	} else {
-		UNKNOWN_SEGWIT_VERSION_INPUT_WEIGHT_LOWER_BOUND
-	})
+fn estimate_input_satisfaction_weight(prev_output: &TxOut) -> Weight {
+	Weight::from_wu(
+		if prev_output.script_pubkey.is_p2wpkh() {
+			P2WPKH_INPUT_WEIGHT_LOWER_BOUND
+		} else if prev_output.script_pubkey.is_p2wsh() {
+			P2WSH_INPUT_WEIGHT_LOWER_BOUND
+		} else if prev_output.script_pubkey.is_p2tr() {
+			P2TR_INPUT_WEIGHT_LOWER_BOUND
+		} else {
+			UNKNOWN_SEGWIT_VERSION_INPUT_WEIGHT_LOWER_BOUND
+		} - BASE_INPUT_WEIGHT,
+	)
 }
 
 pub(crate) fn get_output_weight(script_pubkey: &ScriptBuf) -> Weight {
@@ -906,7 +885,9 @@ impl NegotiationContext {
 				.iter()
 				.filter(|(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
 				.fold(0u64, |weight, (_, input)| {
-					weight.saturating_add(input.estimate_input_weight().to_wu())
+					weight
+						.saturating_add(BASE_INPUT_WEIGHT)
+						.saturating_add(input.satisfaction_weight().to_wu())
 				}),
 		)
 	}
@@ -998,6 +979,7 @@ impl NegotiationContext {
 						input: txin,
 						prev_tx: prevtx.clone(),
 						prev_output: tx_out.clone(),
+						satisfaction_weight: estimate_input_satisfaction_weight(&tx_out),
 					}),
 					prev_outpoint,
 				)
@@ -1150,7 +1132,9 @@ impl NegotiationContext {
 		}
 	}
 
-	fn sent_tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<(), AbortReason> {
+	fn sent_tx_add_input(
+		&mut self, (msg, satisfaction_weight): (&msgs::TxAddInput, Weight),
+	) -> Result<(), AbortReason> {
 		let vout = msg.prevtx_out as usize;
 		let (prev_outpoint, input) = if let Some(shared_input_txid) = msg.shared_input_txid {
 			let prev_outpoint = OutPoint { txid: shared_input_txid, vout: msg.prevtx_out };
@@ -1168,8 +1152,12 @@ impl NegotiationContext {
 				sequence: Sequence(msg.sequence),
 				..Default::default()
 			};
-			let single_input =
-				SingleOwnedInput { input: txin, prev_tx: prevtx.clone(), prev_output };
+			let single_input = SingleOwnedInput {
+				input: txin,
+				prev_tx: prevtx.clone(),
+				prev_output,
+				satisfaction_weight,
+			};
 			(prev_outpoint, InputOwned::Single(single_input))
 		} else {
 			return Err(AbortReason::MissingPrevTx);
@@ -1385,7 +1373,6 @@ macro_rules! define_state_transitions {
 					.as_ref()
 					.map(|shared_input| SharedInputSignature {
 						holder_signature_first: shared_input.holder_sig_first,
-						counterparty_signature: None,
 						witness_script: shared_input.witness_script.clone(),
 					});
 				let holder_node_id = context.holder_node_id;
@@ -1394,20 +1381,22 @@ macro_rules! define_state_transitions {
 				let tx = context.validate_tx()?;
 
 				// Strict ordering prevents deadlocks during tx_signatures exchange
+				let local_contributed_input_value = tx.local_contributed_input_value();
+				let remote_contributed_input_value = tx.remote_contributed_input_value();
 				let holder_sends_tx_signatures_first =
-					if tx.local_inputs_value_satoshis == tx.remote_inputs_value_satoshis {
+					if local_contributed_input_value == remote_contributed_input_value {
 						holder_node_id.serialize() < counterparty_node_id.serialize()
 					} else {
-						tx.local_inputs_value_satoshis < tx.remote_inputs_value_satoshis
+						local_contributed_input_value < remote_contributed_input_value
 					};
 
 				let signing_session = InteractiveTxSigningSession {
 					unsigned_tx: tx,
 					holder_sends_tx_signatures_first,
 					has_received_commitment_signed: false,
-					has_received_tx_signatures: false,
 					shared_input_signature,
 					holder_tx_signatures: None,
+					counterparty_tx_signatures: None,
 				};
 				Ok(NegotiationComplete(signing_session))
 			}
@@ -1432,7 +1421,7 @@ define_state_transitions!(SENT_MSG_STATE, [
 // State transitions when we have received some messages from our counterparty and we should
 // respond.
 define_state_transitions!(RECEIVED_MSG_STATE, [
-	DATA &msgs::TxAddInput, TRANSITION sent_tx_add_input,
+	DATA (&msgs::TxAddInput, Weight), TRANSITION sent_tx_add_input,
 	DATA &msgs::TxRemoveInput, TRANSITION sent_tx_remove_input,
 	DATA &msgs::TxAddOutput, TRANSITION sent_tx_add_output,
 	DATA &msgs::TxRemoveOutput, TRANSITION sent_tx_remove_output
@@ -1499,7 +1488,7 @@ impl StateMachine {
 	}
 
 	// TxAddInput
-	define_state_machine_transitions!(sent_tx_add_input, &msgs::TxAddInput, [
+	define_state_machine_transitions!(sent_tx_add_input, (&msgs::TxAddInput, Weight), [
 		FROM ReceivedChangeMsg, TO SentChangeMsg,
 		FROM ReceivedTxComplete, TO SentChangeMsg
 	]);
@@ -1566,6 +1555,7 @@ struct SingleOwnedInput {
 	input: TxIn,
 	prev_tx: Transaction,
 	prev_output: TxOut,
+	satisfaction_weight: Weight,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1658,13 +1648,13 @@ impl InputOwned {
 		}
 	}
 
-	fn estimate_input_weight(&self) -> Weight {
+	fn satisfaction_weight(&self) -> Weight {
 		match self {
-			InputOwned::Single(single) => estimate_input_weight(&single.prev_output),
+			InputOwned::Single(single) => single.satisfaction_weight,
 			// TODO(taproot): Needs to consider different weights based on channel type
-			InputOwned::Shared(_) => Weight::from_wu(
-				BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
-			),
+			InputOwned::Shared(_) => {
+				Weight::from_wu(EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT)
+			},
 		}
 	}
 
@@ -1778,12 +1768,6 @@ pub(crate) struct InteractiveTxOutput {
 	output: OutputOwned,
 }
 
-impl_writeable_tlv_based!(InteractiveTxOutput, {
-	(1, serial_id, required),
-	(3, added_by, required),
-	(5, output, required),
-});
-
 impl InteractiveTxOutput {
 	pub fn tx_out(&self) -> &TxOut {
 		self.output.tx_out()
@@ -1807,6 +1791,11 @@ impl InteractiveTxOutput {
 
 	pub fn script_pubkey(&self) -> &ScriptBuf {
 		&self.output.tx_out().script_pubkey
+	}
+
+	fn into_txout_and_metadata(self) -> (TxOut, TxOutMetadata) {
+		let txout = self.output.into_tx_out();
+		(txout, TxOutMetadata { serial_id: self.serial_id })
 	}
 }
 
@@ -1835,14 +1824,13 @@ impl InteractiveTxInput {
 		self.input.remote_value(self.added_by)
 	}
 
-	pub fn estimate_input_weight(&self) -> Weight {
-		self.input.estimate_input_weight()
+	pub fn satisfaction_weight(&self) -> Weight {
+		self.input.satisfaction_weight()
 	}
 
-	fn into_negotiated_input(self) -> NegotiatedTxInput {
-		let weight = self.input.estimate_input_weight();
+	fn into_txin_and_metadata(self) -> (TxIn, TxInMetadata) {
 		let (txin, prev_output) = self.input.into_tx_in_with_prev_output();
-		NegotiatedTxInput { serial_id: self.serial_id, txin, weight, prev_output }
+		(txin, TxInMetadata { serial_id: self.serial_id, prev_output })
 	}
 }
 
@@ -1920,7 +1908,7 @@ where
 	pub feerate_sat_per_kw: u32,
 	pub is_initiator: bool,
 	pub funding_tx_locktime: AbsoluteLockTime,
-	pub inputs_to_contribute: Vec<(TxIn, Transaction)>,
+	pub inputs_to_contribute: Vec<FundingTxInput>,
 	pub shared_funding_input: Option<SharedOwnedInput>,
 	pub shared_funding_output: SharedOwnedOutput,
 	pub outputs_to_contribute: Vec<TxOut>,
@@ -1959,21 +1947,18 @@ impl InteractiveTxConstructor {
 			shared_funding_output.clone(),
 		);
 
-		// Check for the existence of prevouts'
-		for (txin, tx) in inputs_to_contribute.iter() {
-			let vout = txin.previous_output.vout as usize;
-			if tx.output.get(vout).is_none() {
-				return Err(AbortReason::PrevTxOutInvalid);
-			}
-		}
 		let mut inputs_to_contribute: Vec<(SerialId, InputOwned)> = inputs_to_contribute
 			.into_iter()
-			.map(|(txin, tx)| {
+			.map(|FundingTxInput { utxo, sequence, prevtx: prev_tx }| {
 				let serial_id = generate_holder_serial_id(entropy_source, is_initiator);
-				let vout = txin.previous_output.vout as usize;
-				let prev_output = tx.output.get(vout).unwrap().clone(); // checked above
-				let input =
-					InputOwned::Single(SingleOwnedInput { input: txin, prev_tx: tx, prev_output });
+				let txin = TxIn { previous_output: utxo.outpoint, sequence, ..Default::default() };
+				let prev_output = utxo.output;
+				let input = InputOwned::Single(SingleOwnedInput {
+					input: txin,
+					prev_tx,
+					prev_output,
+					satisfaction_weight: Weight::from_wu(utxo.satisfaction_weight),
+				});
 				(serial_id, input)
 			})
 			.collect();
@@ -2029,6 +2014,7 @@ impl InteractiveTxConstructor {
 		// We first attempt to send inputs we want to add, then outputs. Once we are done sending
 		// them both, then we always send tx_complete.
 		if let Some((serial_id, input)) = self.inputs_to_contribute.pop() {
+			let satisfaction_weight = input.satisfaction_weight();
 			let msg = match input {
 				InputOwned::Single(single) => msgs::TxAddInput {
 					channel_id: self.channel_id,
@@ -2047,7 +2033,7 @@ impl InteractiveTxConstructor {
 					shared_input_txid: Some(shared.input.previous_output.txid),
 				},
 			};
-			do_state_transition!(self, sent_tx_add_input, &msg)?;
+			do_state_transition!(self, sent_tx_add_input, (&msg, satisfaction_weight))?;
 			Ok(InteractiveTxMessageSend::TxAddInput(msg))
 		} else if let Some((serial_id, output)) = self.outputs_to_contribute.pop() {
 			let msg = msgs::TxAddOutput {
@@ -2234,9 +2220,9 @@ mod tests {
 	use core::ops::Deref;
 
 	use super::{
-		get_output_weight, AddingRole, ConstructedTransaction, InteractiveTxOutput,
-		InteractiveTxSigningSession, NegotiatedTxInput, OutputOwned, P2TR_INPUT_WEIGHT_LOWER_BOUND,
-		P2WPKH_INPUT_WEIGHT_LOWER_BOUND, P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
+		get_output_weight, ConstructedTransaction, InteractiveTxSigningSession, TxInMetadata,
+		P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
+		P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
 	};
 
 	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
@@ -2283,12 +2269,12 @@ mod tests {
 
 	struct TestSession {
 		description: &'static str,
-		inputs_a: Vec<(TxIn, Transaction)>,
+		inputs_a: Vec<FundingTxInput>,
 		a_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_a: (TxOut, u64),
 		outputs_a: Vec<TxOut>,
-		inputs_b: Vec<(TxIn, Transaction)>,
+		inputs_b: Vec<FundingTxInput>,
 		b_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_b: (TxOut, u64),
@@ -2558,20 +2544,22 @@ mod tests {
 		}
 	}
 
-	fn generate_inputs(outputs: &[TestOutput]) -> Vec<(TxIn, Transaction)> {
+	fn generate_inputs(outputs: &[TestOutput]) -> Vec<FundingTxInput> {
 		let tx = generate_tx(outputs);
-		let txid = tx.compute_txid();
-		tx.output
+		outputs
 			.iter()
 			.enumerate()
-			.map(|(idx, _)| {
-				let txin = TxIn {
-					previous_output: OutPoint { txid, vout: idx as u32 },
-					script_sig: Default::default(),
-					sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-					witness: Default::default(),
-				};
-				(txin, tx.clone())
+			.map(|(idx, output)| match output {
+				TestOutput::P2WPKH(_) => {
+					FundingTxInput::new_p2wpkh(tx.clone(), idx as u32).unwrap()
+				},
+				TestOutput::P2WSH(_) => {
+					FundingTxInput::new_p2wsh(tx.clone(), idx as u32, Weight::from_wu(42)).unwrap()
+				},
+				TestOutput::P2TR(_) => {
+					FundingTxInput::new_p2tr_key_spend(tx.clone(), idx as u32).unwrap()
+				},
+				TestOutput::P2PKH(_) => FundingTxInput::new_p2pkh(tx.clone(), idx as u32).unwrap(),
 			})
 			.collect()
 	}
@@ -2619,37 +2607,26 @@ mod tests {
 		(generate_txout(&TestOutput::P2WSH(value)), local_value)
 	}
 
-	fn generate_fixed_number_of_inputs(count: u16) -> Vec<(TxIn, Transaction)> {
+	fn generate_fixed_number_of_inputs(count: u16) -> Vec<FundingTxInput> {
 		// Generate transactions with a total `count` number of outputs such that no transaction has a
 		// serialized length greater than u16::MAX.
 		let max_outputs_per_prevtx = 1_500;
 		let mut remaining = count;
-		let mut inputs: Vec<(TxIn, Transaction)> = Vec::with_capacity(count as usize);
+		let mut inputs: Vec<FundingTxInput> = Vec::with_capacity(count as usize);
 
 		while remaining > 0 {
 			let tx_output_count = remaining.min(max_outputs_per_prevtx);
 			remaining -= tx_output_count;
 
-			// Use unique locktime for each tx so outpoints are different across transactions
-			let tx = generate_tx_with_locktime(
-				&vec![TestOutput::P2WPKH(1_000_000); tx_output_count as usize],
-				(1337 + remaining).into(),
-			);
-			let txid = tx.compute_txid();
+			let outputs = vec![TestOutput::P2WPKH(1_000_000); tx_output_count as usize];
 
-			let mut temp: Vec<(TxIn, Transaction)> = tx
-				.output
+			// Use unique locktime for each tx so outpoints are different across transactions
+			let tx = generate_tx_with_locktime(&outputs, (1337 + remaining).into());
+
+			let mut temp: Vec<FundingTxInput> = outputs
 				.iter()
 				.enumerate()
-				.map(|(idx, _)| {
-					let input = TxIn {
-						previous_output: OutPoint { txid, vout: idx as u32 },
-						script_sig: Default::default(),
-						sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-						witness: Default::default(),
-					};
-					(input, tx.clone())
-				})
+				.map(|(idx, _)| FundingTxInput::new_p2wpkh(tx.clone(), idx as u32).unwrap())
 				.collect();
 
 			inputs.append(&mut temp);
@@ -2860,13 +2837,11 @@ mod tests {
 		});
 
 		let tx = generate_tx(&[TestOutput::P2WPKH(1_000_000)]);
-		let invalid_sequence_input = TxIn {
-			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
-			..Default::default()
-		};
+		let mut invalid_sequence_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
+		invalid_sequence_input.set_sequence(Default::default());
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Invalid input sequence from initiator",
-			inputs_a: vec![(invalid_sequence_input, tx.clone())],
+			inputs_a: vec![invalid_sequence_input],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 1_000_000),
 			outputs_a: vec![],
@@ -2876,14 +2851,10 @@ mod tests {
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::IncorrectInputSequenceValue, ErrorCulprit::NodeA)),
 		});
-		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
-			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			..Default::default()
-		};
+		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Duplicate prevout from initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone()), (duplicate_input, tx.clone())],
+			inputs_a: vec![duplicate_input.clone(), duplicate_input],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 1_000_000),
 			outputs_a: vec![],
@@ -2894,35 +2865,27 @@ mod tests {
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeB)),
 		});
 		// Non-initiator uses same prevout as initiator.
-		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
-			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			..Default::default()
-		};
+		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_a: vec![duplicate_input.clone()],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 905_000),
 			outputs_a: vec![],
-			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_b: vec![duplicate_input],
 			b_shared_input: None,
 			shared_output_b: generate_funding_txout(1_000_000, 95_000),
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 		});
-		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
-			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			..Default::default()
-		};
+		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_a: vec![duplicate_input.clone()],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 1_000_000),
 			outputs_a: vec![],
-			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_b: vec![duplicate_input],
 			b_shared_input: None,
 			shared_output_b: generate_funding_txout(1_000_000, 0),
 			outputs_b: vec![],
@@ -3331,42 +3294,22 @@ mod tests {
 	fn do_verify_tx_signatures(
 		transaction: Transaction, prev_outputs: Vec<TxOut>,
 	) -> Result<(), String> {
-		let inputs: Vec<NegotiatedTxInput> = transaction
-			.input
-			.iter()
-			.cloned()
-			.zip(prev_outputs.into_iter())
+		let input_metadata: Vec<TxInMetadata> = prev_outputs
+			.into_iter()
 			.enumerate()
-			.map(|(idx, (txin, prev_output))| {
-				NegotiatedTxInput {
+			.map(|(idx, prev_output)| {
+				TxInMetadata {
 					serial_id: idx as u64, // even values will be holder (initiator in this test)
-					txin,
-					weight: Weight::from_wu(0), // N/A for test
 					prev_output,
 				}
 			})
 			.collect();
 
-		let outputs: Vec<InteractiveTxOutput> = transaction
-			.output
-			.iter()
-			.cloned()
-			.map(|txout| InteractiveTxOutput {
-				serial_id: 0, // N/A for test
-				added_by: AddingRole::Local,
-				output: OutputOwned::Single(txout),
-			})
-			.collect();
-
 		let unsigned_tx = ConstructedTransaction {
 			holder_is_initiator: true,
-			inputs,
-			outputs,
-			local_inputs_value_satoshis: 0,   // N/A for test
-			local_outputs_value_satoshis: 0,  // N/A for test
-			remote_inputs_value_satoshis: 0,  // N/A for test
-			remote_outputs_value_satoshis: 0, // N/A for test
-			lock_time: transaction.lock_time,
+			input_metadata,
+			output_metadata: vec![], // N/A for test
+			tx: transaction.clone(),
 			shared_input_index: None,
 		};
 
@@ -3376,9 +3319,9 @@ mod tests {
 			unsigned_tx,
 			holder_sends_tx_signatures_first: false, // N/A for test
 			has_received_commitment_signed: false,   // N/A for test
-			has_received_tx_signatures: false,       // N/A for test
 			shared_input_signature: None,
 			holder_tx_signatures: None,
+			counterparty_tx_signatures: None,
 		}
 		.verify_interactive_tx_signatures(
 			&secp_ctx,

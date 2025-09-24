@@ -6059,8 +6059,8 @@ where
 	{
 		let mut output_index = None;
 		let expected_spk = funding.get_funding_redeemscript().to_p2wsh();
-		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
-			if outp.script_pubkey() == &expected_spk && outp.value() == funding.get_value_satoshis() {
+		for (idx, outp) in signing_session.unsigned_tx().tx().output.iter().enumerate() {
+			if outp.script_pubkey == expected_spk && outp.value.to_sat() == funding.get_value_satoshis() {
 				if output_index.is_some() {
 					return Err(AbortReason::DuplicateFundingOutput);
 				}
@@ -6566,14 +6566,6 @@ impl FundingNegotiationContext {
 			}
 		}
 
-		let funding_inputs = self
-			.our_funding_inputs
-			.into_iter()
-			.map(|FundingTxInput { utxo, sequence, prevtx }| {
-				(TxIn { previous_output: utxo.outpoint, sequence, ..Default::default() }, prevtx)
-			})
-			.collect();
-
 		let constructor_args = InteractiveTxConstructorArgs {
 			entropy_source,
 			holder_node_id,
@@ -6582,7 +6574,7 @@ impl FundingNegotiationContext {
 			feerate_sat_per_kw: self.funding_feerate_sat_per_1000_weight,
 			is_initiator: self.is_initiator,
 			funding_tx_locktime: self.funding_tx_locktime,
-			inputs_to_contribute: funding_inputs,
+			inputs_to_contribute: self.our_funding_inputs,
 			shared_funding_input: self.shared_funding_input,
 			shared_funding_output: SharedOwnedOutput::new(
 				shared_funding_output,
@@ -8617,7 +8609,7 @@ where
 				return Err(APIError::APIMisuseError { err });
 			};
 
-		let tx = signing_session.unsigned_tx().build_unsigned_tx();
+		let tx = signing_session.unsigned_tx().tx();
 		if funding_txid_signed != tx.compute_txid() {
 			return Err(APIError::APIMisuseError {
 				err: "Transaction was malleated prior to signing".to_owned(),
@@ -8629,7 +8621,7 @@ where
 				let sig = match &self.context.holder_signer {
 					ChannelSignerType::Ecdsa(signer) => signer.sign_splice_shared_input(
 						&self.funding.channel_transaction_parameters,
-						&tx,
+						tx,
 						splice_input_index as usize,
 						&self.context.secp_ctx,
 					),
@@ -13649,12 +13641,6 @@ where
 			value: Amount::from_sat(funding.get_value_satoshis()),
 			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
 		};
-		let inputs_to_contribute = our_funding_inputs
-			.into_iter()
-			.map(|FundingTxInput { utxo, sequence, prevtx }| {
-				(TxIn { previous_output: utxo.outpoint, sequence, ..Default::default() }, prevtx)
-			})
-			.collect();
 
 		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
 			InteractiveTxConstructorArgs {
@@ -13665,7 +13651,7 @@ where
 				feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 				funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
 				is_initiator: false,
-				inputs_to_contribute,
+				inputs_to_contribute: our_funding_inputs,
 				shared_funding_input: None,
 				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_contribution_sats),
 				outputs_to_contribute: funding_negotiation_context.our_funding_outputs.clone(),

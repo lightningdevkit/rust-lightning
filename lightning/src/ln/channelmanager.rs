@@ -9338,7 +9338,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		{
 			if signing_session.has_local_contribution() {
 				let mut pending_events = self.pending_events.lock().unwrap();
-				let unsigned_transaction = signing_session.unsigned_tx().build_unsigned_tx();
+				let unsigned_transaction = signing_session.unsigned_tx().tx().clone();
 				let event_action = (
 					Event::FundingTransactionReadyForSigning {
 						unsigned_transaction,
