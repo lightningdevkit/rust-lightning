@@ -222,7 +222,7 @@ mod test {
 		) -> Result<OnionMessagePath, ()> {
 			Ok(OnionMessagePath {
 				destination,
-				first_node_addresses: None,
+				first_node_addresses: Vec::new(),
 				intermediate_nodes: Vec::new(),
 			})
 		}

@@ -210,7 +210,7 @@ where
 /// #         Ok(OnionMessagePath {
 /// #             intermediate_nodes: vec![hop_node_id1, hop_node_id2],
 /// #             destination,
-/// #             first_node_addresses: None,
+/// #             first_node_addresses: Vec::new(),
 /// #         })
 /// #     }
 /// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
@@ -681,7 +681,7 @@ where
 			Ok(OnionMessagePath {
 				intermediate_nodes: vec![],
 				destination,
-				first_node_addresses: None,
+				first_node_addresses: vec![],
 			})
 		} else {
 			let node_details = network_graph
@@ -695,11 +695,19 @@ where
 				Some((features, addresses))
 					if features.supports_onion_messages() && addresses.len() > 0 =>
 				{
-					let first_node_addresses = Some(addresses.to_vec());
 					Ok(OnionMessagePath {
 						intermediate_nodes: vec![],
 						destination,
-						first_node_addresses,
+						first_node_addresses: addresses.to_vec(),
+					})
+				},
+				None => {
+					// If the destination is an unannounced node, they may be a known peer that is offline and
+					// can be woken by the sender.
+					Ok(OnionMessagePath {
+						intermediate_nodes: vec![],
+						destination,
+						first_node_addresses: vec![],
 					})
 				},
 				_ => Err(()),
@@ -841,9 +849,9 @@ pub struct OnionMessagePath {
 
 	/// Addresses that may be used to connect to [`OnionMessagePath::first_node`].
 	///
-	/// Only needs to be set if a connection to the node is required. [`OnionMessenger`] may use
-	/// this to initiate such a connection.
-	pub first_node_addresses: Option<Vec<SocketAddress>>,
+	/// Only needs to be filled in if a connection to the node is required and it is not a known peer.
+	/// [`OnionMessenger`] may use this to initiate such a connection.
+	pub first_node_addresses: Vec<SocketAddress>,
 }
 
 impl OnionMessagePath {
@@ -1021,7 +1029,7 @@ pub fn create_onion_message_resolving_destination<
 	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 	network_graph: &ReadOnlyNetworkGraph, secp_ctx: &Secp256k1<secp256k1::All>,
 	mut path: OnionMessagePath, contents: T, reply_path: Option<BlindedMessagePath>,
-) -> Result<(PublicKey, OnionMessage, Option<Vec<SocketAddress>>), SendError>
+) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -1054,7 +1062,7 @@ pub fn create_onion_message<ES: Deref, NS: Deref, NL: Deref, T: OnionMessageCont
 	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 	secp_ctx: &Secp256k1<secp256k1::All>, path: OnionMessagePath, contents: T,
 	reply_path: Option<BlindedMessagePath>,
-) -> Result<(PublicKey, OnionMessage, Option<Vec<SocketAddress>>), SendError>
+) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -1515,7 +1523,7 @@ where
 			// If this onion message is being treated as a forward, we shouldn't pathfind to the next hop.
 			OnionMessagePath {
 				intermediate_nodes: Vec::new(),
-				first_node_addresses: None,
+				first_node_addresses: Vec::new(),
 				destination,
 			}
 		} else {
@@ -1633,8 +1641,7 @@ where
 	}
 
 	fn enqueue_outbound_onion_message(
-		&self, onion_message: OnionMessage, first_node_id: PublicKey,
-		addresses: Option<Vec<SocketAddress>>,
+		&self, onion_message: OnionMessage, first_node_id: PublicKey, addresses: Vec<SocketAddress>,
 	) -> Result<SendSuccess, SendError> {
 		let mut message_recipients = self.message_recipients.lock().unwrap();
 		if outbound_buffer_full(&first_node_id, &message_recipients) {
@@ -1642,14 +1649,11 @@ where
 		}
 
 		match message_recipients.entry(first_node_id) {
-			hash_map::Entry::Vacant(e) => match addresses {
-				None => Err(SendError::InvalidFirstHop(first_node_id)),
-				Some(addresses) => {
-					e.insert(OnionMessageRecipient::pending_connection(addresses))
-						.enqueue_message(onion_message);
-					self.event_notifier.notify();
-					Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
-				},
+			hash_map::Entry::Vacant(e) => {
+				e.insert(OnionMessageRecipient::pending_connection(addresses))
+					.enqueue_message(onion_message);
+				self.event_notifier.notify();
+				Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
 			},
 			hash_map::Entry::Occupied(mut e) => {
 				e.get_mut().enqueue_message(onion_message);

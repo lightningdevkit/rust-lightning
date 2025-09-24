@@ -419,7 +419,7 @@ fn two_unblinded_hops() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![nodes[1].node_id],
 		destination: Destination::Node(nodes[2].node_id),
-		first_node_addresses: None,
+		first_node_addresses: Vec::new(),
 	};
 
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
@@ -494,7 +494,7 @@ fn two_unblinded_two_blinded() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![nodes[1].node_id, nodes[2].node_id],
 		destination: Destination::BlindedPath(blinded_path),
-		first_node_addresses: None,
+		first_node_addresses: Vec::new(),
 	};
 
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
@@ -660,7 +660,7 @@ fn too_big_packet_error() {
 	let path = OnionMessagePath {
 		intermediate_nodes: hops,
 		destination: Destination::Node(hop_node_id),
-		first_node_addresses: None,
+		first_node_addresses: Vec::new(),
 	};
 	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap_err();
 	assert_eq!(err, SendError::TooBigPacket);
@@ -822,7 +822,7 @@ fn reply_path() {
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![nodes[1].node_id, nodes[2].node_id],
 		destination: Destination::Node(nodes[3].node_id),
-		first_node_addresses: None,
+		first_node_addresses: Vec::new(),
 	};
 	let intermediate_nodes = [
 		MessageForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
@@ -959,7 +959,7 @@ fn many_hops() {
 	let path = OnionMessagePath {
 		intermediate_nodes,
 		destination: Destination::Node(nodes[num_nodes - 1].node_id),
-		first_node_addresses: None,
+		first_node_addresses: Vec::new(),
 	};
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[num_nodes - 1].custom_message_handler.expect_message(TestCustomMessage::Pong);
@@ -1012,6 +1012,29 @@ fn requests_peer_connection_for_buffered_messages() {
 	connect_peers(&nodes[0], &nodes[1]);
 	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_some());
 	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_none());
+
+	// Buffer an onion message for a disconnected node who is not in the network graph.
+	disconnect_peers(&nodes[0], &nodes[2]);
+
+	let message = TestCustomMessage::Ping;
+	let destination = Destination::Node(nodes[2].node_id);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+	nodes[0].messenger.send_onion_message(message.clone(), instructions.clone()).unwrap();
+
+	// Check that a ConnectionNeeded event for the peer is provided
+	let events = release_events(&nodes[0]);
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::ConnectionNeeded { node_id, addresses } => {
+			assert_eq!(*node_id, nodes[2].node_id);
+			assert!(addresses.is_empty());
+		},
+		e => panic!("Unexpected event: {:?}", e),
+	}
+
+	// Release the buffered onion message when reconnected
+	connect_peers(&nodes[0], &nodes[2]);
+	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[2].node_id).is_some());
 }
 
 #[test]

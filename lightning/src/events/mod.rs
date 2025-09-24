@@ -972,7 +972,9 @@ pub enum Event {
 	ConnectionNeeded {
 		/// The node id for the node needing a connection.
 		node_id: PublicKey,
-		/// Sockets for connecting to the node.
+		/// Sockets for connecting to the node, if available. We don't require these addresses to be
+		/// present in case the node id corresponds to a known peer that is offline and can be awoken,
+		/// such as via the LSPS5 protocol.
 		addresses: Vec<msgs::SocketAddress>,
 	},
 	/// Indicates a [`Bolt12Invoice`] in response to an [`InvoiceRequest`] or a [`Refund`] was

@@ -102,7 +102,7 @@ impl MessageRouter for TestMessageRouter {
 	fn find_path(
 		&self, _sender: PublicKey, _peers: Vec<PublicKey>, destination: Destination,
 	) -> Result<OnionMessagePath, ()> {
-		Ok(OnionMessagePath { intermediate_nodes: vec![], destination, first_node_addresses: None })
+		Ok(OnionMessagePath { intermediate_nodes: vec![], destination, first_node_addresses: vec![] })
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
