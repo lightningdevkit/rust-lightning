@@ -1827,6 +1827,8 @@ pub(super) struct InteractiveTxConstructor {
 	channel_id: ChannelId,
 	inputs_to_contribute: Vec<(SerialId, InputOwned)>,
 	outputs_to_contribute: Vec<(SerialId, OutputOwned)>,
+	next_input_index: Option<usize>,
+	next_output_index: Option<usize>,
 }
 
 #[allow(clippy::enum_variant_names)] // Clippy doesn't like the repeated `Tx` prefix here
@@ -1979,12 +1981,17 @@ impl InteractiveTxConstructor {
 		// In the same manner and for the same rationale as the inputs above, we'll shuffle the outputs.
 		outputs_to_contribute.sort_unstable_by_key(|(serial_id, _)| *serial_id);
 
+		let next_input_index = (!inputs_to_contribute.is_empty()).then_some(0);
+		let next_output_index = (!outputs_to_contribute.is_empty()).then_some(0);
+
 		let mut constructor = Self {
 			state_machine,
 			initiator_first_message: None,
 			channel_id,
 			inputs_to_contribute,
 			outputs_to_contribute,
+			next_input_index,
+			next_output_index,
 		};
 		// We'll store the first message for the initiator.
 		if is_initiator {
@@ -1998,22 +2005,24 @@ impl InteractiveTxConstructor {
 	}
 
 	fn maybe_send_message(&mut self) -> Result<InteractiveTxMessageSend, AbortReason> {
+		let channel_id = self.channel_id;
+
 		// We first attempt to send inputs we want to add, then outputs. Once we are done sending
 		// them both, then we always send tx_complete.
-		if let Some((serial_id, input)) = self.inputs_to_contribute.pop() {
+		if let Some((serial_id, input)) = self.next_input_to_contribute() {
 			let satisfaction_weight = input.satisfaction_weight();
 			let msg = match input {
 				InputOwned::Single(single) => msgs::TxAddInput {
-					channel_id: self.channel_id,
-					serial_id,
-					prevtx: Some(single.prev_tx),
+					channel_id,
+					serial_id: *serial_id,
+					prevtx: Some(single.prev_tx.clone()),
 					prevtx_out: single.input.previous_output.vout,
 					sequence: single.input.sequence.to_consensus_u32(),
 					shared_input_txid: None,
 				},
 				InputOwned::Shared(shared) => msgs::TxAddInput {
-					channel_id: self.channel_id,
-					serial_id,
+					channel_id,
+					serial_id: *serial_id,
 					prevtx: None,
 					prevtx_out: shared.input.previous_output.vout,
 					sequence: shared.input.sequence.to_consensus_u32(),
@@ -2022,19 +2031,41 @@ impl InteractiveTxConstructor {
 			};
 			do_state_transition!(self, sent_tx_add_input, (&msg, satisfaction_weight))?;
 			Ok(InteractiveTxMessageSend::TxAddInput(msg))
-		} else if let Some((serial_id, output)) = self.outputs_to_contribute.pop() {
+		} else if let Some((serial_id, output)) = self.next_output_to_contribute() {
 			let msg = msgs::TxAddOutput {
-				channel_id: self.channel_id,
-				serial_id,
+				channel_id,
+				serial_id: *serial_id,
 				sats: output.tx_out().value.to_sat(),
 				script: output.tx_out().script_pubkey.clone(),
 			};
 			do_state_transition!(self, sent_tx_add_output, &msg)?;
 			Ok(InteractiveTxMessageSend::TxAddOutput(msg))
 		} else {
-			let msg = msgs::TxComplete { channel_id: self.channel_id };
+			let msg = msgs::TxComplete { channel_id };
 			do_state_transition!(self, sent_tx_complete, &msg)?;
 			Ok(InteractiveTxMessageSend::TxComplete(msg))
+		}
+	}
+
+	fn next_input_to_contribute(&mut self) -> Option<&(SerialId, InputOwned)> {
+		match self.next_input_index {
+			Some(index) => {
+				self.next_input_index =
+					index.checked_add(1).filter(|index| *index < self.inputs_to_contribute.len());
+				self.inputs_to_contribute.get(index)
+			},
+			None => None,
+		}
+	}
+
+	fn next_output_to_contribute(&mut self) -> Option<&(SerialId, OutputOwned)> {
+		match self.next_output_index {
+			Some(index) => {
+				self.next_output_index =
+					index.checked_add(1).filter(|index| *index < self.outputs_to_contribute.len());
+				self.outputs_to_contribute.get(index)
+			},
+			None => None,
 		}
 	}
 
