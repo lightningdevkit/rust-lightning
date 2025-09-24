@@ -302,7 +302,6 @@ fn create_static_invoice_builder<'a>(
 			payment_secret,
 			relative_expiry_secs,
 			recipient.node.list_usable_channels(),
-			recipient.node.test_get_peers_for_blinded_path(),
 		)
 		.unwrap()
 }
@@ -3299,6 +3298,90 @@ fn async_payment_mpp() {
 
 	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
 	claim_payment_along_route(ClaimAlongRouteArgs::new(sender, expected_route, keysend_preimage));
+}
+
+#[test]
+fn fallback_to_one_hop_release_htlc_path() {
+	// Check that if the sender's LSP's message router fails to find a blinded path when creating a
+	// path for the release_held_htlc message, they will fall back to manually creating a 1-hop
+	// blinded path.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+
+	let (sender_cfg, recipient_cfg) = (often_offline_node_cfg(), often_offline_node_cfg());
+	let mut sender_lsp_cfg = test_default_channel_config();
+	sender_lsp_cfg.enable_htlc_hold = true;
+	let mut invoice_server_cfg = test_default_channel_config();
+	invoice_server_cfg.accept_forwards_to_priv_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		4,
+		&node_cfgs,
+		&[Some(sender_cfg), Some(sender_lsp_cfg), Some(invoice_server_cfg), Some(recipient_cfg)],
+	);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+	// Make sure all nodes are at the same block height
+	let node_max_height =
+		nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
+	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], node_max_height - nodes[3].best_block_info().1);
+	let sender = &nodes[0];
+	let sender_lsp = &nodes[1];
+	let invoice_server = &nodes[2];
+	let recipient = &nodes[3];
+
+	let amt_msat = 5000;
+	let (static_invoice, peer_node_id, static_invoice_om) =
+		build_async_offer_and_init_payment(amt_msat, &nodes);
+
+	// Force the sender_lsp's call to MessageRouter::create_blinded_paths to fail so it has to fall
+	// back to a 1-hop blinded path when creating the paths for its revoke_and_ack message.
+	sender_lsp.message_router.create_blinded_paths_res_override.lock().unwrap().1 = Some(Err(()));
+
+	let payment_hash =
+		lock_in_htlc_for_static_invoice(&static_invoice_om, peer_node_id, sender, sender_lsp);
+
+	// Check that we actually had to fall back to a 1-hop path.
+	assert!(sender_lsp.message_router.create_blinded_paths_res_override.lock().unwrap().0 > 0);
+	sender_lsp.message_router.create_blinded_paths_res_override.lock().unwrap().1 = None;
+
+	sender_lsp.node.process_pending_htlc_forwards();
+	let (peer_id, held_htlc_om) =
+		extract_held_htlc_available_oms(sender, &[sender_lsp, invoice_server, recipient])
+			.pop()
+			.unwrap();
+	recipient.onion_messenger.handle_onion_message(peer_id, &held_htlc_om);
+
+	// The release_htlc OM should go straight to the sender's LSP since they created a 1-hop blinded
+	// path to themselves for receiving it.
+	let release_htlc_om = recipient
+		.onion_messenger
+		.next_onion_message_for_peer(sender_lsp.node.get_our_node_id())
+		.unwrap();
+	sender_lsp
+		.onion_messenger
+		.handle_onion_message(recipient.node.get_our_node_id(), &release_htlc_om);
+
+	sender_lsp.node.process_pending_htlc_forwards();
+	let mut events = sender_lsp.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&invoice_server.node.get_our_node_id(), &mut events);
+	check_added_monitors!(sender_lsp, 1);
+
+	let path: &[&Node] = &[invoice_server, recipient];
+	let args = PassAlongPathArgs::new(sender_lsp, path, amt_msat, payment_hash, ev);
+	let claimable_ev = do_pass_along_path(args).unwrap();
+
+	let route: &[&[&Node]] = &[&[sender_lsp, invoice_server, recipient]];
+	let keysend_preimage = extract_payment_preimage(&claimable_ev);
+	let (res, _) =
+		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
+	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
 
 #[test]

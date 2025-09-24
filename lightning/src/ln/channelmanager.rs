@@ -5441,12 +5441,10 @@ where
 	}
 
 	fn check_refresh_async_receive_offer_cache(&self, timer_tick_occurred: bool) {
-		let peers = self.get_peers_for_blinded_path();
 		let channels = self.list_usable_channels();
 		let entropy = &*self.entropy_source;
 		let router = &*self.router;
 		let refresh_res = self.flow.check_refresh_async_receive_offer_cache(
-			peers,
 			channels,
 			entropy,
 			router,
@@ -5534,10 +5532,7 @@ where
 					);
 				}
 			} else {
-				let reply_path = HeldHtlcReplyPath::ToUs {
-					payment_id,
-					peers: self.get_peers_for_blinded_path(),
-				};
+				let reply_path = HeldHtlcReplyPath::ToUs { payment_id };
 				let enqueue_held_htlc_available_res =
 					self.flow.enqueue_held_htlc_available(invoice, reply_path);
 				if enqueue_held_htlc_available_res.is_err() {
@@ -8077,6 +8072,8 @@ where
 
 			should_persist
 		});
+
+		self.flow.set_peers(self.get_peers_for_blinded_path());
 	}
 
 	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect
@@ -10427,16 +10424,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						emit_initial_channel_ready_event!(pending_events, chan);
 					}
 
-					Ok(())
 				} else {
 					try_channel_entry!(self, peer_state, Err(ChannelError::close(
 						"Got a channel_ready message for an unfunded channel!".into())), chan_entry)
 				}
 			},
 			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		}
+		core::mem::drop(peer_state_lock);
+		core::mem::drop(per_peer_state);
+
+		self.flow.set_peers(self.get_peers_for_blinded_path());
+		Ok(())
 	}
 
 	fn internal_shutdown(
@@ -10530,6 +10531,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			self.fail_htlc_backwards_internal(&source, &hash, &reason, receiver, None);
 		}
 
+		self.flow.set_peers(self.get_peers_for_blinded_path());
 		Ok(())
 	}
 
@@ -12257,9 +12259,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
-		let builder = $self.flow.create_offer_builder(
-			&*$self.entropy_source, $self.get_peers_for_blinded_path()
-		)?;
+		let builder = $self.flow.create_offer_builder(&*$self.entropy_source)?;
 
 		Ok(builder.into())
 	}
@@ -12282,9 +12282,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	where
 		ME::Target: MessageRouter,
 	{
-		let builder = $self.flow.create_offer_builder_using_router(
-			router, &*$self.entropy_source, $self.get_peers_for_blinded_path()
-		)?;
+		let builder = $self.flow.create_offer_builder_using_router(router, &*$self.entropy_source)?;
 
 		Ok(builder.into())
 	}
@@ -12338,8 +12336,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let entropy = &*$self.entropy_source;
 
 		let builder = $self.flow.create_refund_builder(
-			entropy, amount_msats, absolute_expiry,
-			payment_id, $self.get_peers_for_blinded_path()
+			entropy, amount_msats, absolute_expiry, payment_id
 		)?;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop($self);
@@ -12382,8 +12379,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let entropy = &*$self.entropy_source;
 
 		let builder = $self.flow.create_refund_builder_using_router(
-			router, entropy, amount_msats, absolute_expiry,
-			payment_id, $self.get_peers_for_blinded_path()
+			router, entropy, amount_msats, absolute_expiry, payment_id
 		)?;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop($self);
@@ -12455,8 +12451,7 @@ where
 	pub fn set_paths_to_static_invoice_server(
 		&self, paths_to_static_invoice_server: Vec<BlindedMessagePath>,
 	) -> Result<(), ()> {
-		let peers = self.get_peers_for_blinded_path();
-		self.flow.set_paths_to_static_invoice_server(paths_to_static_invoice_server, peers)?;
+		self.flow.set_paths_to_static_invoice_server(paths_to_static_invoice_server)?;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		Ok(())
@@ -12636,10 +12631,7 @@ where
 		let invoice_request = builder.build_and_sign()?;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		self.flow.enqueue_invoice_request(
-			invoice_request.clone(), payment_id, nonce,
-			self.get_peers_for_blinded_path()
-		)?;
+		self.flow.enqueue_invoice_request(invoice_request.clone(), payment_id, nonce,)?;
 
 		let retryable_invoice_request = RetryableInvoiceRequest {
 			invoice_request: invoice_request.clone(),
@@ -12694,7 +12686,7 @@ where
 
 				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
 
-				self.flow.enqueue_invoice(invoice.clone(), refund, self.get_peers_for_blinded_path())?;
+				self.flow.enqueue_invoice(invoice.clone(), refund)?;
 
 				Ok(invoice)
 			},
@@ -12758,14 +12750,7 @@ where
 			optional_params.payer_note,
 		)?;
 
-		self.flow
-			.enqueue_dns_onion_message(
-				onion_message,
-				context,
-				dns_resolvers,
-				self.get_peers_for_blinded_path(),
-			)
-			.map_err(|_| ())
+		self.flow.enqueue_dns_onion_message(onion_message, context, dns_resolvers).map_err(|_| ())
 	}
 
 	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
@@ -12906,8 +12891,7 @@ where
 	pub fn blinded_paths_for_async_recipient(
 		&self, recipient_id: Vec<u8>, relative_expiry: Option<Duration>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let peers = self.get_peers_for_blinded_path();
-		self.flow.blinded_paths_for_async_recipient(recipient_id, relative_expiry, peers)
+		self.flow.blinded_paths_for_async_recipient(recipient_id, relative_expiry)
 	}
 
 	pub(super) fn duration_since_epoch(&self) -> Duration {
@@ -12939,11 +12923,6 @@ where
 					.and_then(|funded_channel| funded_channel.get_inbound_scid()),
 			})
 			.collect::<Vec<_>>()
-	}
-
-	#[cfg(test)]
-	pub(super) fn test_get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
-		self.get_peers_for_blinded_path()
 	}
 
 	#[cfg(test)]
@@ -13391,6 +13370,8 @@ where
 		for (err, counterparty_node_id) in failed_channels.drain(..) {
 			let _ = handle_error!(self, err, counterparty_node_id);
 		}
+
+		self.flow.set_peers(self.get_peers_for_blinded_path());
 	}
 
 	#[rustfmt::skip]
@@ -13503,6 +13484,7 @@ where
 		// until we have some peer connection(s) to receive onion messages over, so as a minor optimization
 		// refresh the cache when a peer connects.
 		self.check_refresh_async_receive_offer_cache(false);
+		self.flow.set_peers(self.get_peers_for_blinded_path());
 		res
 	}
 
@@ -14725,9 +14707,8 @@ where
 		{
 			let RetryableInvoiceRequest { invoice_request, nonce, .. } = retryable_invoice_request;
 
-			let peers = self.get_peers_for_blinded_path();
 			let enqueue_invreq_res =
-				self.flow.enqueue_invoice_request(invoice_request, payment_id, nonce, peers);
+				self.flow.enqueue_invoice_request(invoice_request, payment_id, nonce);
 			if enqueue_invreq_res.is_err() {
 				log_warn!(
 					self.logger,
@@ -14935,9 +14916,8 @@ where
 		&self, message: OfferPathsRequest, context: AsyncPaymentsContext,
 		responder: Option<Responder>,
 	) -> Option<(OfferPaths, ResponseInstruction)> {
-		let peers = self.get_peers_for_blinded_path();
 		let (message, reply_path_context) =
-			match self.flow.handle_offer_paths_request(&message, context, peers) {
+			match self.flow.handle_offer_paths_request(&message, context) {
 				Some(msg) => msg,
 				None => return None,
 			};
@@ -14955,7 +14935,6 @@ where
 			message,
 			context,
 			responder.clone(),
-			self.get_peers_for_blinded_path(),
 			self.list_usable_channels(),
 			&*self.entropy_source,
 			&*self.router,
