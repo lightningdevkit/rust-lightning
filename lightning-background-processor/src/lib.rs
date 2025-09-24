@@ -2313,7 +2313,8 @@ mod tests {
 			let scorer = Arc::new(LockingWrapper::new(TestScorer::new()));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let seed = [i as u8; 32];
-			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
+			let keys_manager =
+				Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos(), true));
 			let router = Arc::new(DefaultRouter::new(
 				Arc::clone(&network_graph),
 				Arc::clone(&logger),
@@ -2329,7 +2330,8 @@ mod tests {
 			let kv_store =
 				Arc::new(Persister::new(format!("{}_persister_{}", &persist_dir, i).into()));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
-			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
+			let keys_manager =
+				Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos(), true));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(
 				Some(Arc::clone(&chain_source)),
 				Arc::clone(&tx_broadcaster),

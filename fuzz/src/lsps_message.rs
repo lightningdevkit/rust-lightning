@@ -39,7 +39,7 @@ pub fn do_test(data: &[u8]) {
 	let scorer = Arc::new(LockingWrapper::new(TestScorer::new()));
 	let now = Duration::from_secs(genesis_block.header.time as u64);
 	let seed = sha256::Hash::hash(b"lsps-message-seed").to_byte_array();
-	let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
+	let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos(), true));
 	let router = Arc::new(DefaultRouter::new(
 		Arc::clone(&network_graph),
 		Arc::clone(&logger),

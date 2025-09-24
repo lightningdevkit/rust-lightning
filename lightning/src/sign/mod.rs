@@ -141,9 +141,9 @@ pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
 pub(crate) const P2TR_KEY_PATH_WITNESS_WEIGHT: u64 = 1 /* witness items */
 	+ 1 /* schnorr sig len */ + 64 /* schnorr sig */;
 
-/// If a [`KeysManager`] is built with [`KeysManager::new`] with `v2_remote_key_derivation` set,
-/// the script which we receive funds to on-chain when our counterparty force-closes a channel is
-/// one of this many possible derivation paths.
+/// If a [`KeysManager`] is built with [`KeysManager::new`] with `v2_remote_key_derivation` set
+/// (and for all channels after they've been spliced), the script which we receive funds to on-chain
+/// when our counterparty force-closes a channel is one of this many possible derivation paths.
 ///
 /// Keeping this limited allows for scanning the chain to find lost funds if our state is destroyed,
 /// while this being more than a handful provides some privacy by not constantly reusing the same
@@ -1163,6 +1163,8 @@ pub struct InMemorySigner {
 	/// Holder secret key used for our balance in counterparty-broadcasted commitment transactions,
 	/// new-style derivation.
 	payment_key_v2: SecretKey,
+	/// Which of [`Self::payment_key_v1`] and [`Self::payment_key_v2`] to use by default.
+	v2_remote_key_derivation: bool,
 	/// Holder secret key used in an HTLC transaction.
 	pub delayed_payment_base_key: SecretKey,
 	/// Holder HTLC secret key used in commitment transaction HTLC outputs.
@@ -1181,6 +1183,7 @@ impl PartialEq for InMemorySigner {
 			&& self.revocation_base_key == other.revocation_base_key
 			&& self.payment_key_v1 == other.payment_key_v1
 			&& self.payment_key_v2 == other.payment_key_v2
+			&& self.v2_remote_key_derivation == other.v2_remote_key_derivation
 			&& self.delayed_payment_base_key == other.delayed_payment_base_key
 			&& self.htlc_base_key == other.htlc_base_key
 			&& self.commitment_seed == other.commitment_seed
@@ -1195,6 +1198,7 @@ impl Clone for InMemorySigner {
 			revocation_base_key: self.revocation_base_key.clone(),
 			payment_key_v1: self.payment_key_v1.clone(),
 			payment_key_v2: self.payment_key_v2.clone(),
+			v2_remote_key_derivation: self.v2_remote_key_derivation,
 			delayed_payment_base_key: self.delayed_payment_base_key.clone(),
 			htlc_base_key: self.htlc_base_key.clone(),
 			commitment_seed: self.commitment_seed.clone(),
@@ -1208,14 +1212,16 @@ impl InMemorySigner {
 	#[cfg(any(feature = "_test_utils", test))]
 	pub fn new(
 		funding_key: SecretKey, revocation_base_key: SecretKey, payment_key_v1: SecretKey,
-		payment_key_v2: SecretKey, delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey,
-		commitment_seed: [u8; 32], channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
+		payment_key_v2: SecretKey, v2_remote_key_derivation: bool,
+		delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey, commitment_seed: [u8; 32],
+		channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
 	) -> InMemorySigner {
 		InMemorySigner {
 			funding_key: sealed::MaybeTweakedSecretKey::from(funding_key),
 			revocation_base_key,
 			payment_key_v1,
 			payment_key_v2,
+			v2_remote_key_derivation,
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
@@ -1227,14 +1233,16 @@ impl InMemorySigner {
 	#[cfg(not(any(feature = "_test_utils", test)))]
 	fn new(
 		funding_key: SecretKey, revocation_base_key: SecretKey, payment_key_v1: SecretKey,
-		payment_key_v2: SecretKey, delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey,
-		commitment_seed: [u8; 32], channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
+		payment_key_v2: SecretKey, v2_remote_key_derivation: bool,
+		delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey, commitment_seed: [u8; 32],
+		channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
 	) -> InMemorySigner {
 		InMemorySigner {
 			funding_key: sealed::MaybeTweakedSecretKey::from(funding_key),
 			revocation_base_key,
 			payment_key_v1,
 			payment_key_v2,
+			v2_remote_key_derivation,
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
@@ -1443,12 +1451,17 @@ impl ChannelSigner for InMemorySigner {
 	fn new_pubkeys(
 		&self, splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> ChannelPublicKeys {
+		// Because splices always break downgrades, we go ahead and always use the new derivation
+		// here as its just much better.
+		let use_v2_derivation =
+			self.v2_remote_key_derivation || splice_parent_funding_txid.is_some();
+		let payment_key =
+			if use_v2_derivation { &self.payment_key_v2 } else { &self.payment_key_v1 };
 		let from_secret = |s: &SecretKey| PublicKey::from_secret_key(secp_ctx, s);
 		let mut pubkeys = ChannelPublicKeys {
 			funding_pubkey: from_secret(&self.funding_key.0),
 			revocation_basepoint: RevocationBasepoint::from(from_secret(&self.revocation_base_key)),
-			// TODO: Make the payment_key used dynamic
-			payment_point: from_secret(&self.payment_key_v1),
+			payment_point: from_secret(payment_key),
 			delayed_payment_basepoint: DelayedPaymentBasepoint::from(from_secret(
 				&self.delayed_payment_base_key,
 			)),
@@ -1914,6 +1927,7 @@ pub struct KeysManager {
 	shutdown_pubkey: PublicKey,
 	channel_master_key: Xpriv,
 	static_payment_key: Xpriv,
+	v2_remote_key_derivation: bool,
 	channel_child_index: AtomicUsize,
 	peer_storage_key: PeerStorageKey,
 	receive_auth_key: ReceiveAuthKey,
@@ -1945,8 +1959,16 @@ impl KeysManager {
 	/// [`ChannelMonitor`] data, though a current copy of [`ChannelMonitor`] data is also required
 	/// for any channel, and some on-chain during-closing funds.
 	///
+	/// If `v2_remote_key_derivation` is set, the `script_pubkey`s which receive funds on-chain when
+	/// our counterparty force-closes will be one of a static set of [`STATIC_PAYMENT_KEY_COUNT`]*2
+	/// possible `script_pubkey`s. This only applies to new or spliced channels, however if this is
+	/// set you *MUST NOT* downgrade to a version of LDK prior to 0.2.
+	///
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
-	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32) -> Self {
+	pub fn new(
+		seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32,
+		v2_remote_key_derivation: bool,
+	) -> Self {
 		// Constants for key derivation path indices used in this function.
 		const NODE_SECRET_INDEX: ChildNumber = ChildNumber::Hardened { index: 0 };
 		const DESTINATION_SCRIPT_INDEX: ChildNumber = ChildNumber::Hardened { index: 1 };
@@ -2029,7 +2051,9 @@ impl KeysManager {
 
 					channel_master_key,
 					channel_child_index: AtomicUsize::new(0),
+
 					static_payment_key,
+					v2_remote_key_derivation,
 
 					entropy_source: RandomBytes::new(rand_bytes_unique_start),
 
@@ -2114,6 +2138,7 @@ impl KeysManager {
 			revocation_base_key,
 			payment_key_v1,
 			self.derive_payment_key_v2(payment_key_v2_idx),
+			self.v2_remote_key_derivation,
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
@@ -2517,8 +2542,8 @@ impl PhantomKeysManager {
 	/// that is shared across all nodes that intend to participate in [phantom node payments]
 	/// together.
 	///
-	/// See [`KeysManager::new`] for more information on `seed`, `starting_time_secs`, and
-	/// `starting_time_nanos`.
+	/// See [`KeysManager::new`] for more information on `seed`, `starting_time_secs`,
+	/// `starting_time_nanos`, and `v2_remote_key_derivation`.
 	///
 	/// `cross_node_seed` must be the same across all phantom payment-receiving nodes and also the
 	/// same across restarts, or else inbound payments may fail.
@@ -2526,9 +2551,14 @@ impl PhantomKeysManager {
 	/// [phantom node payments]: PhantomKeysManager
 	pub fn new(
 		seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32,
-		cross_node_seed: &[u8; 32],
+		cross_node_seed: &[u8; 32], v2_remote_key_derivation: bool,
 	) -> Self {
-		let inner = KeysManager::new(seed, starting_time_secs, starting_time_nanos);
+		let inner = KeysManager::new(
+			seed,
+			starting_time_secs,
+			starting_time_nanos,
+			v2_remote_key_derivation,
+		);
 		let (inbound_key, phantom_key) = hkdf_extract_expand_twice(
 			b"LDK Inbound and Phantom Payment Key Expansion",
 			cross_node_seed,
@@ -2606,7 +2636,8 @@ pub mod benches {
 	pub fn bench_get_secure_random_bytes(bench: &mut Criterion) {
 		let seed = [0u8; 32];
 		let now = Duration::from_secs(genesis_block(Network::Testnet).header.time as u64);
-		let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_micros()));
+		let keys_manager =
+			Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_micros(), true));
 
 		let mut handles = Vec::new();
 		let mut stops = Vec::new();

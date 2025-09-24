@@ -1893,7 +1893,7 @@ pub static SIGNER_FACTORY: MutGlobal<Arc<dyn TestSignerFactory>> =
 pub trait TestSignerFactory: Send + Sync {
 	/// Make a dynamic signer
 	fn make_signer(
-		&self, seed: &[u8; 32], now: Duration,
+		&self, seed: &[u8; 32], now: Duration, v2_remote_key_derivation: bool,
 	) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>>;
 }
 
@@ -1902,9 +1902,15 @@ struct DefaultSignerFactory();
 
 impl TestSignerFactory for DefaultSignerFactory {
 	fn make_signer(
-		&self, seed: &[u8; 32], now: Duration,
+		&self, seed: &[u8; 32], now: Duration, v2_remote_key_derivation: bool,
 	) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>> {
-		let phantom = sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed);
+		let phantom = sign::PhantomKeysManager::new(
+			seed,
+			now.as_secs(),
+			now.subsec_nanos(),
+			seed,
+			v2_remote_key_derivation,
+		);
 		let dphantom = DynPhantomKeysInterface::new(phantom);
 		let backing = Box::new(dphantom) as Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>>;
 		backing
@@ -1912,15 +1918,7 @@ impl TestSignerFactory for DefaultSignerFactory {
 }
 
 impl TestKeysInterface {
-	pub fn new(seed: &[u8; 32], network: Network) -> Self {
-		#[cfg(feature = "std")]
-		let factory = SIGNER_FACTORY.get();
-
-		#[cfg(not(feature = "std"))]
-		let factory = DefaultSignerFactory();
-
-		let now = Duration::from_secs(genesis_block(network).header.time as u64);
-		let backing = factory.make_signer(seed, now);
+	fn build(backing: Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>>) -> Self {
 		Self {
 			backing: DynKeysInterface::new(backing),
 			override_random_bytes: Mutex::new(None),
@@ -1932,6 +1930,30 @@ impl TestKeysInterface {
 			next_signer_disabled_ops: Mutex::new(new_hash_set()),
 			override_next_keys_id: Mutex::new(None),
 		}
+	}
+
+	pub fn new(seed: &[u8; 32], network: Network) -> Self {
+		#[cfg(feature = "std")]
+		let factory = SIGNER_FACTORY.get();
+
+		#[cfg(not(feature = "std"))]
+		let factory = DefaultSignerFactory();
+
+		let now = Duration::from_secs(genesis_block(network).header.time as u64);
+		let backing = factory.make_signer(seed, now, true);
+		Self::build(backing)
+	}
+
+	pub fn with_v1_remote_key_derivation(seed: &[u8; 32], network: Network) -> Self {
+		#[cfg(feature = "std")]
+		let factory = SIGNER_FACTORY.get();
+
+		#[cfg(not(feature = "std"))]
+		let factory = DefaultSignerFactory();
+
+		let now = Duration::from_secs(genesis_block(network).header.time as u64);
+		let backing = factory.make_signer(seed, now, false);
+		Self::build(backing)
 	}
 
 	/// Sets an expectation that [`sign::SignerProvider::get_shutdown_scriptpubkey`] is

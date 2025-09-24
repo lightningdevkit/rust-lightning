@@ -222,7 +222,7 @@ where
 /// # }
 /// # let seed = [42u8; 32];
 /// # let time = Duration::from_secs(123456);
-/// # let keys_manager = KeysManager::new(&seed, time.as_secs(), time.subsec_nanos());
+/// # let keys_manager = KeysManager::new(&seed, time.as_secs(), time.subsec_nanos(), true);
 /// # let logger = Arc::new(FakeLogger {});
 /// # let node_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 /// # let secp_ctx = Secp256k1::new();

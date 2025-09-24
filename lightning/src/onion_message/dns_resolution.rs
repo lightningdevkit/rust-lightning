@@ -561,7 +561,7 @@ mod tests {
 	#[test]
 	#[cfg(feature = "dnssec")]
 	fn test_expiry() {
-		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0);
+		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0, true);
 		let resolver = OMNameResolver::new(42, 42);
 		let name = HumanReadableName::new("user", "example.com").unwrap();
 
