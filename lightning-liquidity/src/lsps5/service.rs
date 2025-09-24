@@ -20,6 +20,7 @@ use crate::message_queue::MessageQueue;
 use crate::persist::{
 	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
 };
+use crate::prelude::hash_map::Entry;
 use crate::prelude::*;
 use crate::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use crate::utils::time::TimeProvider;
@@ -220,6 +221,8 @@ where
 
 			let key = counterparty_node_id.to_string();
 
+			// Begin the write with the `per_peer_state` write lock held to avoid racing with
+			// potentially-in-flight `persist` calls writing state for the same peer.
 			self.kv_store.write(
 				LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 				LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -244,11 +247,12 @@ where
 		// time.
 		let mut need_remove = Vec::new();
 		let mut need_persist = Vec::new();
-		{
-			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			self.check_prune_stale_webhooks(&mut outer_state_lock);
 
-			outer_state_lock.retain(|client_id, peer_state| {
+		self.check_prune_stale_webhooks(&mut self.per_peer_state.write().unwrap());
+		{
+			let outer_state_lock = self.per_peer_state.read().unwrap();
+
+			for (client_id, peer_state) in outer_state_lock.iter() {
 				let is_prunable = peer_state.is_prunable();
 				let has_open_channel = self.client_has_open_channel(client_id);
 				if is_prunable && !has_open_channel {
@@ -256,24 +260,48 @@ where
 				} else if peer_state.needs_persist {
 					need_persist.push(*client_id);
 				}
-				!is_prunable || has_open_channel
-			});
-		};
-
-		for counterparty_node_id in need_persist.into_iter() {
-			debug_assert!(!need_remove.contains(&counterparty_node_id));
-			self.persist_peer_state(counterparty_node_id).await?;
+			}
 		}
 
-		for counterparty_node_id in need_remove {
-			let key = counterparty_node_id.to_string();
-			self.kv_store
-				.remove(
-					LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-					LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
-					&key,
-				)
-				.await?;
+		for client_id in need_persist.into_iter() {
+			debug_assert!(!need_remove.contains(&client_id));
+			self.persist_peer_state(client_id).await?;
+		}
+
+		for client_id in need_remove {
+			let mut future_opt = None;
+			{
+				// We need to take the `per_peer_state` write lock to remove an entry, but also
+				// have to hold it until after the `remove` call returns (but not through
+				// future completion) to ensure that writes for the peer's state are
+				// well-ordered with other `persist_peer_state` calls even across the removal
+				// itself.
+				let mut per_peer_state = self.per_peer_state.write().unwrap();
+				if let Entry::Occupied(mut entry) = per_peer_state.entry(client_id) {
+					let state = entry.get_mut();
+					if state.is_prunable() && !self.client_has_open_channel(&client_id) {
+						entry.remove();
+						let key = client_id.to_string();
+						future_opt = Some(self.kv_store.remove(
+							LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+							LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+							&key,
+						));
+					} else {
+						// If the peer was re-added, force a re-persist of the current state.
+						state.needs_persist = true;
+					}
+				} else {
+					// This should never happen, we can only have one `persist` call
+					// in-progress at once and map entries are only removed by it.
+					debug_assert!(false);
+				}
+			}
+			if let Some(future) = future_opt {
+				future.await?;
+			} else {
+				self.persist_peer_state(client_id).await?;
+			}
 		}
 
 		Ok(())
@@ -761,7 +789,7 @@ impl PeerState {
 		});
 	}
 
-	fn is_prunable(&mut self) -> bool {
+	fn is_prunable(&self) -> bool {
 		self.webhooks.is_empty()
 	}
 }
