@@ -102,7 +102,7 @@ impl MessageRouter for TestMessageRouter {
 	fn find_path(
 		&self, _sender: PublicKey, _peers: Vec<PublicKey>, destination: Destination,
 	) -> Result<OnionMessagePath, ()> {
-		Ok(OnionMessagePath { intermediate_nodes: vec![], destination, first_node_addresses: None })
+		Ok(OnionMessagePath { intermediate_nodes: vec![], destination, first_node_addresses: vec![] })
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
@@ -430,7 +430,7 @@ mod tests {
 		super::do_test(&<Vec<u8>>::from_hex(two_unblinded_hops_om).unwrap(), &logger);
 		{
 			let log_entries = logger.lines.lock().unwrap();
-			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(), "Forwarding an onion message to peer 020202020202020202020202020202020202020202020202020202020202020202".to_string())), Some(&1));
+			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(), "Forwarding an onion message to peer 020202020202020202020202020202020202020202020202020202020202020202 when forwarding peeled onion message from 020000000000000000000000000000000000000000000000000000000000000002".to_string())), Some(&1));
 		}
 
 		let two_unblinded_two_blinded_om = "\
@@ -471,7 +471,7 @@ mod tests {
 		super::do_test(&<Vec<u8>>::from_hex(two_unblinded_two_blinded_om).unwrap(), &logger);
 		{
 			let log_entries = logger.lines.lock().unwrap();
-			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(), "Forwarding an onion message to peer 020202020202020202020202020202020202020202020202020202020202020202".to_string())), Some(&1));
+			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(), "Forwarding an onion message to peer 020202020202020202020202020202020202020202020202020202020202020202 when forwarding peeled onion message from 020000000000000000000000000000000000000000000000000000000000000002".to_string())), Some(&1));
 		}
 
 		let three_blinded_om = "\
@@ -512,7 +512,7 @@ mod tests {
 		super::do_test(&<Vec<u8>>::from_hex(three_blinded_om).unwrap(), &logger);
 		{
 			let log_entries = logger.lines.lock().unwrap();
-			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(), "Forwarding an onion message to peer 020202020202020202020202020202020202020202020202020202020202020202".to_string())), Some(&1));
+			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(), "Forwarding an onion message to peer 020202020202020202020202020202020202020202020202020202020202020202 when forwarding peeled onion message from 020000000000000000000000000000000000000000000000000000000000000002".to_string())), Some(&1));
 		}
 	}
 }

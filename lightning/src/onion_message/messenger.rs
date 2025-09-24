@@ -210,7 +210,7 @@ where
 /// #         Ok(OnionMessagePath {
 /// #             intermediate_nodes: vec![hop_node_id1, hop_node_id2],
 /// #             destination,
-/// #             first_node_addresses: None,
+/// #             first_node_addresses: Vec::new(),
 /// #         })
 /// #     }
 /// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
@@ -490,6 +490,21 @@ pub enum MessageSendInstructions {
 		/// The instructions provided by the [`Responder`].
 		instructions: ResponseInstruction,
 	},
+	/// Indicates that this onion message did not originate from our node and is being forwarded
+	/// through us from another node on the network to the destination.
+	///
+	/// We separate out this case because forwarded onion messages are treated differently from
+	/// outbound onion messages initiated by our node. Outbounds are buffered internally, whereas, for
+	/// DoS protection, forwards should never be buffered internally and instead will either be
+	/// dropped or generate an [`Event::OnionMessageIntercepted`] if the next-hop node is
+	/// disconnected.
+	ForwardedMessage {
+		/// The destination where we need to send the forwarded onion message.
+		destination: Destination,
+		/// The reply path which should be included in the message, that terminates at the original
+		/// sender of this forwarded message.
+		reply_path: Option<BlindedMessagePath>,
+	},
 }
 
 /// A trait defining behavior for routing an [`OnionMessage`].
@@ -666,7 +681,7 @@ where
 			Ok(OnionMessagePath {
 				intermediate_nodes: vec![],
 				destination,
-				first_node_addresses: None,
+				first_node_addresses: vec![],
 			})
 		} else {
 			let node_details = network_graph
@@ -680,11 +695,19 @@ where
 				Some((features, addresses))
 					if features.supports_onion_messages() && addresses.len() > 0 =>
 				{
-					let first_node_addresses = Some(addresses.to_vec());
 					Ok(OnionMessagePath {
 						intermediate_nodes: vec![],
 						destination,
-						first_node_addresses,
+						first_node_addresses: addresses.to_vec(),
+					})
+				},
+				None => {
+					// If the destination is an unannounced node, they may be a known peer that is offline and
+					// can be woken by the sender.
+					Ok(OnionMessagePath {
+						intermediate_nodes: vec![],
+						destination,
+						first_node_addresses: vec![],
 					})
 				},
 				_ => Err(()),
@@ -826,9 +849,9 @@ pub struct OnionMessagePath {
 
 	/// Addresses that may be used to connect to [`OnionMessagePath::first_node`].
 	///
-	/// Only needs to be set if a connection to the node is required. [`OnionMessenger`] may use
-	/// this to initiate such a connection.
-	pub first_node_addresses: Option<Vec<SocketAddress>>,
+	/// Only needs to be filled in if a connection to the node is required and it is not a known peer.
+	/// [`OnionMessenger`] may use this to initiate such a connection.
+	pub first_node_addresses: Vec<SocketAddress>,
 }
 
 impl OnionMessagePath {
@@ -1006,7 +1029,7 @@ pub fn create_onion_message_resolving_destination<
 	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 	network_graph: &ReadOnlyNetworkGraph, secp_ctx: &Secp256k1<secp256k1::All>,
 	mut path: OnionMessagePath, contents: T, reply_path: Option<BlindedMessagePath>,
-) -> Result<(PublicKey, OnionMessage, Option<Vec<SocketAddress>>), SendError>
+) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -1039,7 +1062,7 @@ pub fn create_onion_message<ES: Deref, NS: Deref, NL: Deref, T: OnionMessageCont
 	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 	secp_ctx: &Secp256k1<secp256k1::All>, path: OnionMessagePath, contents: T,
 	reply_path: Option<BlindedMessagePath>,
-) -> Result<(PublicKey, OnionMessage, Option<Vec<SocketAddress>>), SendError>
+) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -1467,6 +1490,7 @@ where
 	fn send_onion_message_internal<T: OnionMessageContents>(
 		&self, contents: T, instructions: MessageSendInstructions, log_suffix: fmt::Arguments,
 	) -> Result<SendSuccess, SendError> {
+		let is_forward = matches!(instructions, MessageSendInstructions::ForwardedMessage { .. });
 		let (destination, reply_path) = match instructions {
 			MessageSendInstructions::WithSpecifiedReplyPath { destination, reply_path } => {
 				(destination, Some(reply_path))
@@ -1490,14 +1514,52 @@ where
 			| MessageSendInstructions::ForReply {
 				instructions: ResponseInstruction { destination, context: None },
 			} => (destination, None),
+			MessageSendInstructions::ForwardedMessage { destination, reply_path } => {
+				(destination, reply_path)
+			},
 		};
 
-		let mut logger = WithContext::from(&self.logger, None, None, None);
-		let result = self.find_path(destination).and_then(|path| {
-			let first_hop = path.intermediate_nodes.get(0).map(|p| *p);
-			logger = WithContext::from(&self.logger, first_hop, None, None);
-			self.enqueue_onion_message(path, contents, reply_path, log_suffix)
-		});
+		let path = if is_forward {
+			// If this onion message is being treated as a forward, we shouldn't pathfind to the next hop.
+			OnionMessagePath {
+				intermediate_nodes: Vec::new(),
+				first_node_addresses: Vec::new(),
+				destination,
+			}
+		} else {
+			self.find_path(destination).map_err(|e| {
+				log_trace!(self.logger, "Failed to find path {}", log_suffix);
+				e
+			})?
+		};
+		let first_hop = path.intermediate_nodes.get(0).map(|p| *p);
+		let logger = WithContext::from(&self.logger, first_hop, None, None);
+
+		log_trace!(logger, "Constructing onion message {}: {:?}", log_suffix, contents);
+		let (first_node_id, onion_message, addresses) = create_onion_message(
+			&self.entropy_source,
+			&self.node_signer,
+			&self.node_id_lookup,
+			&self.secp_ctx,
+			path,
+			contents,
+			reply_path,
+		)
+		.map_err(|e| {
+			log_warn!(logger, "Failed to create onion message with {:?} {}", e, log_suffix);
+			e
+		})?;
+
+		let result = if is_forward {
+			self.enqueue_forwarded_onion_message(
+				NextMessageHop::NodeId(first_node_id),
+				onion_message,
+				log_suffix,
+			)
+			.map(|()| SendSuccess::Buffered)
+		} else {
+			self.enqueue_outbound_onion_message(onion_message, first_node_id, addresses)
+		};
 
 		match result.as_ref() {
 			Err(SendError::GetNodeIdFailed) => {
@@ -1578,36 +1640,20 @@ where
 			.map_err(|_| SendError::PathNotFound)
 	}
 
-	fn enqueue_onion_message<T: OnionMessageContents>(
-		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedMessagePath>,
-		log_suffix: fmt::Arguments,
+	fn enqueue_outbound_onion_message(
+		&self, onion_message: OnionMessage, first_node_id: PublicKey, addresses: Vec<SocketAddress>,
 	) -> Result<SendSuccess, SendError> {
-		log_trace!(self.logger, "Constructing onion message {}: {:?}", log_suffix, contents);
-
-		let (first_node_id, onion_message, addresses) = create_onion_message(
-			&self.entropy_source,
-			&self.node_signer,
-			&self.node_id_lookup,
-			&self.secp_ctx,
-			path,
-			contents,
-			reply_path,
-		)?;
-
 		let mut message_recipients = self.message_recipients.lock().unwrap();
 		if outbound_buffer_full(&first_node_id, &message_recipients) {
 			return Err(SendError::BufferFull);
 		}
 
 		match message_recipients.entry(first_node_id) {
-			hash_map::Entry::Vacant(e) => match addresses {
-				None => Err(SendError::InvalidFirstHop(first_node_id)),
-				Some(addresses) => {
-					e.insert(OnionMessageRecipient::pending_connection(addresses))
-						.enqueue_message(onion_message);
-					self.event_notifier.notify();
-					Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
-				},
+			hash_map::Entry::Vacant(e) => {
+				e.insert(OnionMessageRecipient::pending_connection(addresses))
+					.enqueue_message(onion_message);
+				self.event_notifier.notify();
+				Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
 			},
 			hash_map::Entry::Occupied(mut e) => {
 				e.get_mut().enqueue_message(onion_message);
@@ -1616,6 +1662,74 @@ where
 				} else {
 					Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
 				}
+			},
+		}
+	}
+
+	fn enqueue_forwarded_onion_message(
+		&self, next_hop: NextMessageHop, onion_message: OnionMessage, log_suffix: fmt::Arguments,
+	) -> Result<(), SendError> {
+		let next_node_id = match next_hop {
+			NextMessageHop::NodeId(pubkey) => pubkey,
+			NextMessageHop::ShortChannelId(scid) => match self.node_id_lookup.next_node_id(scid) {
+				Some(pubkey) => pubkey,
+				None => {
+					log_trace!(self.logger, "Dropping forwarded onion messager: unable to resolve next hop using SCID {} {}", scid, log_suffix);
+					return Err(SendError::GetNodeIdFailed);
+				},
+			},
+		};
+
+		let mut message_recipients = self.message_recipients.lock().unwrap();
+		if outbound_buffer_full(&next_node_id, &message_recipients) {
+			log_trace!(
+				self.logger,
+				"Dropping forwarded onion message to peer {}: outbound buffer full {}",
+				next_node_id,
+				log_suffix
+			);
+			return Err(SendError::BufferFull);
+		}
+
+		#[cfg(fuzzing)]
+		message_recipients
+			.entry(next_node_id)
+			.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()));
+
+		match message_recipients.entry(next_node_id) {
+			hash_map::Entry::Occupied(mut e)
+				if matches!(e.get(), OnionMessageRecipient::ConnectedPeer(..)) =>
+			{
+				e.get_mut().enqueue_message(onion_message);
+				log_trace!(
+					self.logger,
+					"Forwarding an onion message to peer {} {}",
+					next_node_id,
+					log_suffix
+				);
+				Ok(())
+			},
+			_ if self.intercept_messages_for_offline_peers => {
+				log_trace!(
+					self.logger,
+					"Generating OnionMessageIntercepted event for peer {} {}",
+					next_node_id,
+					log_suffix
+				);
+				self.enqueue_intercepted_event(Event::OnionMessageIntercepted {
+					peer_node_id: next_node_id,
+					message: onion_message,
+				});
+				Ok(())
+			},
+			_ => {
+				log_trace!(
+					self.logger,
+					"Dropping forwarded onion message to disconnected peer {} {}",
+					next_node_id,
+					log_suffix
+				);
+				Err(SendError::InvalidFirstHop(next_node_id))
 			},
 		}
 	}
@@ -1645,7 +1759,16 @@ where
 	pub fn send_onion_message_using_path<T: OnionMessageContents>(
 		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedMessagePath>,
 	) -> Result<SendSuccess, SendError> {
-		self.enqueue_onion_message(path, contents, reply_path, format_args!(""))
+		let (first_node_id, onion_message, addresses) = create_onion_message(
+			&self.entropy_source,
+			&self.node_signer,
+			&self.node_id_lookup,
+			&self.secp_ctx,
+			path,
+			contents,
+			reply_path,
+		)?;
+		self.enqueue_outbound_onion_message(onion_message, first_node_id, addresses)
 	}
 
 	pub(crate) fn peel_onion_message(
@@ -2204,56 +2327,11 @@ where
 				}
 			},
 			Ok(PeeledOnion::Forward(next_hop, onion_message)) => {
-				let next_node_id = match next_hop {
-					NextMessageHop::NodeId(pubkey) => pubkey,
-					NextMessageHop::ShortChannelId(scid) => {
-						match self.node_id_lookup.next_node_id(scid) {
-							Some(pubkey) => pubkey,
-							None => {
-								log_trace!(self.logger, "Dropping forwarded onion messager: unable to resolve next hop using SCID {}", scid);
-								return;
-							},
-						}
-					},
-				};
-
-				let mut message_recipients = self.message_recipients.lock().unwrap();
-				if outbound_buffer_full(&next_node_id, &message_recipients) {
-					log_trace!(
-						logger,
-						"Dropping forwarded onion message to peer {}: outbound buffer full",
-						next_node_id
-					);
-					return;
-				}
-
-				#[cfg(fuzzing)]
-				message_recipients
-					.entry(next_node_id)
-					.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()));
-
-				match message_recipients.entry(next_node_id) {
-					hash_map::Entry::Occupied(mut e)
-						if matches!(e.get(), OnionMessageRecipient::ConnectedPeer(..)) =>
-					{
-						e.get_mut().enqueue_message(onion_message);
-						log_trace!(logger, "Forwarding an onion message to peer {}", next_node_id);
-					},
-					_ if self.intercept_messages_for_offline_peers => {
-						self.enqueue_intercepted_event(Event::OnionMessageIntercepted {
-							peer_node_id: next_node_id,
-							message: onion_message,
-						});
-					},
-					_ => {
-						log_trace!(
-							logger,
-							"Dropping forwarded onion message to disconnected peer {}",
-							next_node_id
-						);
-						return;
-					},
-				}
+				let _ = self.enqueue_forwarded_onion_message(
+					next_hop,
+					onion_message,
+					format_args!("when forwarding peeled onion message from {}", peer_node_id),
+				);
 			},
 			Err(e) => {
 				log_error!(logger, "Failed to process onion message {:?}", e);

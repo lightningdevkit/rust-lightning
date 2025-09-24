@@ -2887,6 +2887,21 @@ fn async_payment_e2e() {
 		.into_iter()
 		.find_map(|ev| {
 			if let Event::OnionMessageIntercepted { message, .. } = ev {
+				// At least one of the intercepted onion messages will be an invoice request that the
+				// invoice server is attempting to forward to the recipient, ignore that as we're testing
+				// the static invoice flow
+				let peeled_onion = recipient.onion_messenger.peel_onion_message(&message).unwrap();
+				if matches!(
+					peeled_onion,
+					PeeledOnion::Offers(OffersMessage::InvoiceRequest { .. }, _, _)
+				) {
+					return None;
+				}
+
+				assert!(matches!(
+					peeled_onion,
+					PeeledOnion::AsyncPayments(AsyncPaymentsMessage::HeldHtlcAvailable(_), _, _)
+				));
 				Some(message)
 			} else {
 				None

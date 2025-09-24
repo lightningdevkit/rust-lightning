@@ -169,6 +169,11 @@ pub struct ServeStaticInvoice {
 	/// [`Bolt12Invoice`] if the recipient is online at the time. Use this path to forward the
 	/// [`InvoiceRequest`] to the async recipient.
 	///
+	/// This path's [`BlindedMessagePath::introduction_node`] MUST be set to the static invoice server
+	/// node or one of its peers. This is because, for DoS protection, invoice requests forwarded over
+	/// this path are treated by the server node like any other onion message forward and the server
+	/// will not directly connect to the introduction node if they are not already peers.
+	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub forward_invoice_request_path: BlindedMessagePath,
