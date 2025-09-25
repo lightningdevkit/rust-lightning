@@ -32,11 +32,8 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::{secp256k1, Transaction, Witness};
 
 use crate::blinded_path::message::BlindedMessagePath;
-use crate::blinded_path::payment::{
-	BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, UnauthenticatedReceiveTlvs,
-};
+use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::payment::{BlindedTrampolineTlvs, TrampolineForwardTlvs};
-use crate::ln::channelmanager::Verification;
 use crate::ln::onion_utils;
 use crate::ln::types::ChannelId;
 use crate::offers::invoice_request::InvoiceRequest;
@@ -3695,17 +3692,9 @@ where
 						return Err(DecodeError::InvalidValue);
 					}
 
-					let ReceiveTlvs { tlvs, authentication: (hmac, nonce) } = receive_tlvs;
-					let expanded_key = node_signer.get_expanded_key();
-					if tlvs.verify_for_offer_payment(hmac, nonce, &expanded_key).is_err() {
-						return Err(DecodeError::InvalidValue);
-					}
+					let ReceiveTlvs { payment_secret, payment_constraints, payment_context } =
+						receive_tlvs;
 
-					let UnauthenticatedReceiveTlvs {
-						payment_secret,
-						payment_constraints,
-						payment_context,
-					} = tlvs;
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT {
 						return Err(DecodeError::InvalidValue);
 					}
@@ -3855,17 +3844,9 @@ where
 						return Err(DecodeError::InvalidValue);
 					}
 
-					let ReceiveTlvs { tlvs, authentication: (hmac, nonce) } = receive_tlvs;
-					let expanded_key = node_signer.get_expanded_key();
-					if tlvs.verify_for_offer_payment(hmac, nonce, &expanded_key).is_err() {
-						return Err(DecodeError::InvalidValue);
-					}
+					let ReceiveTlvs { payment_secret, payment_constraints, payment_context } =
+						receive_tlvs;
 
-					let UnauthenticatedReceiveTlvs {
-						payment_secret,
-						payment_constraints,
-						payment_context,
-					} = tlvs;
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT {
 						return Err(DecodeError::InvalidValue);
 					}

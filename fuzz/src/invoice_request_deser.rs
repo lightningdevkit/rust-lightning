@@ -12,13 +12,12 @@ use bitcoin::secp256k1::{self, Keypair, Parity, PublicKey, Secp256k1, SecretKey}
 use core::convert::TryFrom;
 use lightning::blinded_path::payment::{
 	BlindedPaymentPath, Bolt12OfferContext, ForwardTlvs, PaymentConstraints, PaymentContext,
-	PaymentForwardNode, PaymentRelay, UnauthenticatedReceiveTlvs,
+	PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 };
 use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
-use lightning::offers::nonce::Nonce;
 use lightning::offers::offer::OfferId;
 use lightning::offers::parse::Bolt12SemanticError;
 use lightning::sign::{EntropySource, ReceiveAuthKey};
@@ -84,7 +83,6 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 ) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
 	let expanded_key = ExpandedKey::new([42; 32]);
 	let entropy_source = Randomness {};
-	let nonce = Nonce::from_entropy_source(&entropy_source);
 	let receive_auth_key = ReceiveAuthKey([41; 32]);
 
 	let invoice_request_fields =
@@ -107,7 +105,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 		offer_id: OfferId([42; 32]),
 		invoice_request: invoice_request_fields,
 	});
-	let payee_tlvs = UnauthenticatedReceiveTlvs {
+	let payee_tlvs = ReceiveTlvs {
 		payment_secret: PaymentSecret([42; 32]),
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: 1_000_000,
@@ -115,7 +113,6 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 		},
 		payment_context,
 	};
-	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 	let intermediate_nodes = [PaymentForwardNode {
 		tlvs: ForwardTlvs {
 			short_channel_id: 43,
@@ -125,7 +122,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 				fee_base_msat: 1,
 			},
 			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: payee_tlvs.tlvs().payment_constraints.max_cltv_expiry + 40,
+				max_cltv_expiry: payee_tlvs.payment_constraints.max_cltv_expiry + 40,
 				htlc_minimum_msat: 100,
 			},
 			features: BlindedHopFeatures::empty(),
