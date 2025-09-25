@@ -90,6 +90,11 @@ cargo check -p lightning-block-sync --verbose --color always --features rpc-clie
 cargo test -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
 cargo check -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
 
+echo -e "\n\nChecking and testing lightning-persister with features"
+cargo test -p lightning-persister --verbose --color always --features tokio
+cargo check -p lightning-persister --verbose --color always --features tokio
+cargo doc -p lightning-persister --document-private-items --features tokio
+
 echo -e "\n\nTest Custom Message Macros"
 cargo test -p lightning-custom-message --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean

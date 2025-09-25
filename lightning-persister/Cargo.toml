@@ -13,6 +13,9 @@ edition = "2021"
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+tokio = ["dep:tokio"]
+
 [dependencies]
 bitcoin = "0.32.2"
 lightning = { version = "0.2.0", path = "../lightning" }
