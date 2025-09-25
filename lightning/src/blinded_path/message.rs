@@ -587,6 +587,20 @@ pub enum AsyncPaymentsContext {
 		/// An identifier for the HTLC that should be released by us as the sender's always-online
 		/// channel counterparty to the often-offline recipient.
 		intercept_id: InterceptId,
+		/// The short channel id alias corresponding to the to-be-released inbound HTLC, to help locate
+		/// the HTLC internally if the [`ReleaseHeldHtlc`] races our node decoding the held HTLC's
+		/// onion.
+		///
+		/// We use the outbound scid alias because it is stable even if the channel splices, unlike
+		/// regular short channel ids.
+		///
+		/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+		prev_outbound_scid_alias: u64,
+		/// The id of the to-be-released HTLC, to help locate the HTLC internally if the
+		/// [`ReleaseHeldHtlc`] races our node decoding the held HTLC's onion.
+		///
+		/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+		htlc_id: u64,
 	},
 }
 
@@ -645,6 +659,8 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	},
 	(6, ReleaseHeldHtlc) => {
 		(0, intercept_id, required),
+		(2, prev_outbound_scid_alias, required),
+		(4, htlc_id, required),
 	},
 );
 

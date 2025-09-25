@@ -1227,14 +1227,17 @@ where
 	///
 	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
 	pub fn path_for_release_held_htlc<ES: Deref>(
-		&self, intercept_id: InterceptId, entropy: ES,
+		&self, intercept_id: InterceptId, prev_outbound_scid_alias: u64, htlc_id: u64, entropy: ES,
 	) -> BlindedMessagePath
 	where
 		ES::Target: EntropySource,
 	{
 		// In the future, we should support multi-hop paths here.
-		let context =
-			MessageContext::AsyncPayments(AsyncPaymentsContext::ReleaseHeldHtlc { intercept_id });
+		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::ReleaseHeldHtlc {
+			intercept_id,
+			prev_outbound_scid_alias,
+			htlc_id,
+		});
 		let num_dummy_hops = PADDED_PATH_LENGTH.saturating_sub(1);
 		BlindedMessagePath::new_with_dummy_hops(
 			&[],

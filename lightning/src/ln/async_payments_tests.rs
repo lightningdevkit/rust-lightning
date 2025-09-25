@@ -3364,3 +3364,70 @@ fn fail_held_htlcs_when_cfg_unset() {
 		PaymentFailureReason::RetriesExhausted,
 	);
 }
+
+#[test]
+fn release_htlc_races_htlc_onion_decode() {
+	// Test that an async sender's LSP will release held HTLCs even if they receive the
+	// release_held_htlc message before they have a chance to process the held HTLC's onion. This was
+	// previously broken.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+
+	let (sender_cfg, recipient_cfg) = (often_offline_node_cfg(), often_offline_node_cfg());
+	let mut sender_lsp_cfg = test_default_channel_config();
+	sender_lsp_cfg.enable_htlc_hold = true;
+	let mut invoice_server_cfg = test_default_channel_config();
+	invoice_server_cfg.accept_forwards_to_priv_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		4,
+		&node_cfgs,
+		&[Some(sender_cfg), Some(sender_lsp_cfg), Some(invoice_server_cfg), Some(recipient_cfg)],
+	);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+	unify_blockheight_across_nodes(&nodes);
+	let sender = &nodes[0];
+	let sender_lsp = &nodes[1];
+	let invoice_server = &nodes[2];
+	let recipient = &nodes[3];
+
+	let amt_msat = 5000;
+	let (static_invoice, peer_id, static_invoice_om) =
+		build_async_offer_and_init_payment(amt_msat, &nodes);
+	let payment_hash =
+		lock_in_htlc_for_static_invoice(&static_invoice_om, peer_id, sender, sender_lsp);
+
+	// The LSP has not transitioned the HTLC to the intercepts map internally because
+	// process_pending_htlc_forwards has not been called.
+	let (peer_id, held_htlc_om) =
+		extract_held_htlc_available_oms(sender, &[sender_lsp, invoice_server, recipient])
+			.pop()
+			.unwrap();
+	recipient.onion_messenger.handle_onion_message(peer_id, &held_htlc_om);
+
+	// Extract the release_htlc_om and ensure the sender's LSP will release the HTLC on the next call
+	// to process_pending_htlc_forwards, even though the HTLC was not yet officially intercepted when
+	// the release message arrived.
+	let (peer_id, release_htlc_om) =
+		extract_release_htlc_oms(recipient, &[sender, sender_lsp, invoice_server]).pop().unwrap();
+	sender_lsp.onion_messenger.handle_onion_message(peer_id, &release_htlc_om);
+
+	sender_lsp.node.process_pending_htlc_forwards();
+	let mut events = sender_lsp.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&invoice_server.node.get_our_node_id(), &mut events);
+	check_added_monitors!(sender_lsp, 1);
+
+	let path: &[&Node] = &[invoice_server, recipient];
+	let args = PassAlongPathArgs::new(sender_lsp, path, amt_msat, payment_hash, ev);
+	let claimable_ev = do_pass_along_path(args).unwrap();
+
+	let route: &[&[&Node]] = &[&[sender_lsp, invoice_server, recipient]];
+	let keysend_preimage = extract_payment_preimage(&claimable_ev);
+	let (res, _) =
+		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
+	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
+}
