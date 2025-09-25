@@ -10,6 +10,7 @@
 //! Tests which test upgrading from previous versions of LDK or downgrading to previous versions of
 //! LDK.
 
+use lightning_0_1::events::ClosureReason as ClosureReason_0_1;
 use lightning_0_1::get_monitor as get_monitor_0_1;
 use lightning_0_1::ln::functional_test_utils as lightning_0_1_utils;
 use lightning_0_1::util::ser::Writeable as _;
@@ -28,9 +29,18 @@ use lightning_0_0_125::ln::msgs::ChannelMessageHandler as _;
 use lightning_0_0_125::routing::router as router_0_0_125;
 use lightning_0_0_125::util::ser::Writeable as _;
 
+use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
+use lightning::events::{ClosureReason, Event};
 use lightning::ln::functional_test_utils::*;
+use lightning::sign::OutputSpender;
 
 use lightning_types::payment::PaymentPreimage;
+
+use bitcoin::opcodes;
+use bitcoin::script::Builder;
+use bitcoin::secp256k1::Secp256k1;
+
+use std::sync::Arc;
 
 #[test]
 fn simple_upgrade() {
@@ -212,4 +222,80 @@ fn test_125_dangling_post_update_actions() {
 	// Finally, reload the node in the latest LDK. This previously failed.
 	let config = test_default_channel_config();
 	reload_node!(nodes[3], config, &node_d_ser, &[&mon_ser], persister, chain_mon, node);
+}
+
+#[test]
+fn test_0_1_legacy_remote_key_derivation() {
+	// Test that a channel opened with a v1/legacy `remote_key` derivation will be properly spent
+	// even after upgrading and opting into the new v2 derivation for new channels.
+	let (node_a_ser, node_b_ser, mon_a_ser, mon_b_ser, commitment_tx, channel_id);
+	let node_a_blocks;
+	{
+		let chanmon_cfgs = lightning_0_1_utils::create_chanmon_cfgs(2);
+		let node_cfgs = lightning_0_1_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = lightning_0_1_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = lightning_0_1_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let node_a_id = nodes[0].node.get_our_node_id();
+
+		let chan_id = lightning_0_1_utils::create_announced_chan_between_nodes(&nodes, 0, 1).2;
+		channel_id = chan_id.0;
+
+		let err = "".to_owned();
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, err).unwrap();
+		commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(commitment_tx.len(), 1);
+
+		lightning_0_1_utils::check_added_monitors(&nodes[1], 1);
+		let reason = ClosureReason_0_1::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		lightning_0_1_utils::check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
+		lightning_0_1_utils::check_closed_broadcast(&nodes[1], 1, true);
+
+		node_a_ser = nodes[0].node.encode();
+		node_b_ser = nodes[1].node.encode();
+		mon_a_ser = get_monitor_0_1!(nodes[0], chan_id).encode();
+		mon_b_ser = get_monitor_0_1!(nodes[1], chan_id).encode();
+
+		node_a_blocks = Arc::clone(&nodes[0].blocks);
+	}
+
+	// Create a dummy node to reload over with the 0.1 state
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_a, persister_b, chain_mon_a, chain_mon_b);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let (node_a, node_b);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let config = test_default_channel_config();
+	let a_mons = &[&mon_a_ser[..]];
+	reload_node!(nodes[0], config.clone(), &node_a_ser, a_mons, persister_a, chain_mon_a, node_a);
+	reload_node!(nodes[1], config, &node_b_ser, &[&mon_b_ser], persister_b, chain_mon_b, node_b);
+
+	nodes[0].blocks = node_a_blocks;
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	mine_transaction(&nodes[0], &commitment_tx[0]);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 100_000);
+	check_added_monitors(&nodes[0], 1);
+	check_closed_broadcast(&nodes[0], 1, false);
+
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	let mut spendable_event = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(spendable_event.len(), 1);
+	if let Event::SpendableOutputs { outputs, channel_id: ev_id } = spendable_event.pop().unwrap() {
+		assert_eq!(ev_id.unwrap().0, channel_id);
+		assert_eq!(outputs.len(), 1);
+		let spk = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script();
+		let spend_tx = nodes[0]
+			.keys_manager
+			.backing
+			.spend_spendable_outputs(&[&outputs[0]], Vec::new(), spk, 253, None, &Secp256k1::new())
+			.unwrap();
+		check_spends!(spend_tx, commitment_tx[0]);
+	} else {
+		panic!("Wrong event");
+	}
 }
