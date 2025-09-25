@@ -200,6 +200,7 @@ pub(crate) struct ConstructedTransaction {
 	output_metadata: Vec<TxOutMetadata>,
 	tx: Transaction,
 	shared_input_index: Option<u32>,
+	shared_output_index: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -244,6 +245,7 @@ impl_writeable_tlv_based!(ConstructedTransaction, {
 	(5, output_metadata, required),
 	(7, tx, required),
 	(9, shared_input_index, option),
+	(11, shared_output_index, required),
 });
 
 impl ConstructedTransaction {
@@ -280,12 +282,19 @@ impl ConstructedTransaction {
 					.map(|position| position as u32)
 			});
 
+		let shared_output_index = output
+			.iter()
+			.position(|txout| *txout == context.shared_funding_output.tx_out)
+			.map(|position| position as u16)
+			.unwrap_or(u16::MAX);
+
 		let tx = ConstructedTransaction {
 			holder_is_initiator: context.holder_is_initiator,
 			input_metadata,
 			output_metadata,
 			tx: Transaction { version: Version::TWO, lock_time, input, output },
 			shared_input_index,
+			shared_output_index,
 		};
 
 		// The receiving node:
@@ -315,7 +324,7 @@ impl ConstructedTransaction {
 			return Err(AbortReason::MissingFundingInput);
 		}
 
-		if !tx.tx.output.iter().any(|txout| *txout == context.shared_funding_output.tx_out) {
+		if tx.shared_output_index == u16::MAX {
 			return Err(AbortReason::MissingFundingOutput);
 		}
 
@@ -3329,6 +3338,7 @@ mod tests {
 			output_metadata: vec![], // N/A for test
 			tx: transaction.clone(),
 			shared_input_index: None,
+			shared_output_index: 0,
 		};
 
 		let secp_ctx = Secp256k1::new();
