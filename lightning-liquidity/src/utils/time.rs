@@ -12,6 +12,11 @@ pub trait TimeProvider {
 }
 
 /// Default time provider using the system clock.
+///
+/// You likely don't need to use this directly, it is used automatically with
+/// [`LiquidityManager::new`]
+///
+/// [`LiquidityManager::new`]: crate::manager::LiquidityManager::new
 #[derive(Clone, Debug)]
 #[cfg(feature = "time")]
 pub struct DefaultTimeProvider;
@@ -21,5 +26,12 @@ impl TimeProvider for DefaultTimeProvider {
 	fn duration_since_epoch(&self) -> Duration {
 		use std::time::{SystemTime, UNIX_EPOCH};
 		SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before Unix epoch")
+	}
+}
+#[cfg(feature = "time")]
+impl core::ops::Deref for DefaultTimeProvider {
+	type Target = Self;
+	fn deref(&self) -> &Self {
+		self
 	}
 }

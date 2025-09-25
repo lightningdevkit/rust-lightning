@@ -1052,12 +1052,11 @@ pub trait ChangeDestinationSourceSync {
 }
 
 /// A wrapper around [`ChangeDestinationSource`] to allow for async calls.
-#[cfg(any(test, feature = "_test_utils"))]
+///
+/// You should likely never use this directly but rather allow LDK to build this when required to
+/// build higher-level sync wrappers.
+#[doc(hidden)]
 pub struct ChangeDestinationSourceSyncWrapper<T: Deref>(T)
-where
-	T::Target: ChangeDestinationSourceSync;
-#[cfg(not(any(test, feature = "_test_utils")))]
-pub(crate) struct ChangeDestinationSourceSyncWrapper<T: Deref>(T)
 where
 	T::Target: ChangeDestinationSourceSync;
 
@@ -1077,6 +1076,16 @@ where
 	fn get_change_destination_script<'a>(&self) -> AsyncResult<'a, ScriptBuf> {
 		let script = self.0.get_change_destination_script();
 		Box::pin(async move { script })
+	}
+}
+
+impl<T: Deref> Deref for ChangeDestinationSourceSyncWrapper<T>
+where
+	T::Target: ChangeDestinationSourceSync,
+{
+	type Target = Self;
+	fn deref(&self) -> &Self {
+		self
 	}
 }
 

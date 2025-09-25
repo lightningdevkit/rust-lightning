@@ -139,6 +139,7 @@ pub trait KVStoreSync {
 
 /// A wrapper around a [`KVStoreSync`] that implements the [`KVStore`] trait. It is not necessary to use this type
 /// directly.
+#[derive(Clone)]
 pub struct KVStoreSyncWrapper<K: Deref>(pub K)
 where
 	K::Target: KVStoreSync;
