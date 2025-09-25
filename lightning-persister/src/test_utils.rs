@@ -40,7 +40,7 @@ pub(crate) fn do_read_write_remove_list_persist<K: KVStoreSync + RefUnwindSafe>(
 	let read_data = kv_store.read(primary_namespace, secondary_namespace, key).unwrap();
 	assert_eq!(data, &*read_data);
 
-	kv_store.remove(primary_namespace, secondary_namespace, key, false).unwrap();
+	kv_store.remove(primary_namespace, secondary_namespace, key).unwrap();
 
 	let listed_keys = kv_store.list(primary_namespace, secondary_namespace).unwrap();
 	assert_eq!(listed_keys.len(), 0);
@@ -57,7 +57,7 @@ pub(crate) fn do_read_write_remove_list_persist<K: KVStoreSync + RefUnwindSafe>(
 	let read_data = kv_store.read(&max_chars, &max_chars, &max_chars).unwrap();
 	assert_eq!(data, &*read_data);
 
-	kv_store.remove(&max_chars, &max_chars, &max_chars, false).unwrap();
+	kv_store.remove(&max_chars, &max_chars, &max_chars).unwrap();
 
 	let listed_keys = kv_store.list(&max_chars, &max_chars).unwrap();
 	assert_eq!(listed_keys.len(), 0);

@@ -272,7 +272,6 @@ where
 					LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 					LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
 					&key,
-					true,
 				)
 				.await?;
 		}
