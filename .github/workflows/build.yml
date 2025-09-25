@@ -287,3 +287,5 @@ jobs:
           rustup component add rustfmt
       - name: Run rustfmt checks
         run: cargo fmt --check
+      - name: Run rustfmt checks on lightning-tests
+        run: cd lightning-tests && cargo fmt --check
