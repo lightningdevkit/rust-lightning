@@ -593,6 +593,7 @@ where
 	peer_by_channel_id: RwLock<HashMap<ChannelId, PublicKey>>,
 	total_pending_requests: AtomicUsize,
 	config: LSPS2ServiceConfig,
+	persistence_in_flight: AtomicUsize,
 }
 
 impl<CM: Deref, K: Deref + Clone> LSPS2ServiceHandler<CM, K>
@@ -640,6 +641,7 @@ where
 			peer_by_intercept_scid: RwLock::new(peer_by_intercept_scid),
 			peer_by_channel_id: RwLock::new(peer_by_channel_id),
 			total_pending_requests: AtomicUsize::new(0),
+			persistence_in_flight: AtomicUsize::new(0),
 			channel_manager,
 			kv_store,
 			config,
@@ -1645,64 +1647,80 @@ where
 		// introduce some batching to upper-bound the number of requests inflight at any given
 		// time.
 
-		let mut need_remove = Vec::new();
-		let mut need_persist = Vec::new();
-
-		{
-			// First build a list of peers to persist and prune with the read lock. This allows
-			// us to avoid the write lock unless we actually need to remove a node.
-			let outer_state_lock = self.per_peer_state.read().unwrap();
-			for (counterparty_node_id, inner_state_lock) in outer_state_lock.iter() {
-				let mut peer_state_lock = inner_state_lock.lock().unwrap();
-				peer_state_lock.prune_expired_request_state();
-				let is_prunable = peer_state_lock.is_prunable();
-				if is_prunable {
-					need_remove.push(*counterparty_node_id);
-				} else if peer_state_lock.needs_persist {
-					need_persist.push(*counterparty_node_id);
-				}
-			}
+		if self.persistence_in_flight.fetch_add(1, Ordering::AcqRel) > 0 {
+			// If we're not the first event processor to get here, just return early, the increment
+			// we just did will be treated as "go around again" at the end.
+			return Ok(());
 		}
 
-		for counterparty_node_id in need_persist.into_iter() {
-			debug_assert!(!need_remove.contains(&counterparty_node_id));
-			self.persist_peer_state(counterparty_node_id).await?;
-		}
+		loop {
+			let mut need_remove = Vec::new();
+			let mut need_persist = Vec::new();
 
-		for counterparty_node_id in need_remove {
-			let mut future_opt = None;
 			{
-				// We need to take the `per_peer_state` write lock to remove an entry, but also
-				// have to hold it until after the `remove` call returns (but not through
-				// future completion) to ensure that writes for the peer's state are
-				// well-ordered with other `persist_peer_state` calls even across the removal
-				// itself.
-				let mut per_peer_state = self.per_peer_state.write().unwrap();
-				if let Entry::Occupied(mut entry) = per_peer_state.entry(counterparty_node_id) {
-					let state = entry.get_mut().get_mut().unwrap();
-					if state.is_prunable() {
-						entry.remove();
-						let key = counterparty_node_id.to_string();
-						future_opt = Some(self.kv_store.remove(
-							LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-							LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
-							&key,
-						));
-					} else {
-						// If the peer got new state, force a re-persist of the current state.
-						state.needs_persist = true;
+				// First build a list of peers to persist and prune with the read lock. This allows
+				// us to avoid the write lock unless we actually need to remove a node.
+				let outer_state_lock = self.per_peer_state.read().unwrap();
+				for (counterparty_node_id, inner_state_lock) in outer_state_lock.iter() {
+					let mut peer_state_lock = inner_state_lock.lock().unwrap();
+					peer_state_lock.prune_expired_request_state();
+					let is_prunable = peer_state_lock.is_prunable();
+					if is_prunable {
+						need_remove.push(*counterparty_node_id);
+					} else if peer_state_lock.needs_persist {
+						need_persist.push(*counterparty_node_id);
 					}
-				} else {
-					// This should never happen, we can only have one `persist` call
-					// in-progress at once and map entries are only removed by it.
-					debug_assert!(false);
 				}
 			}
-			if let Some(future) = future_opt {
-				future.await?;
-			} else {
+
+			for counterparty_node_id in need_persist.into_iter() {
+				debug_assert!(!need_remove.contains(&counterparty_node_id));
 				self.persist_peer_state(counterparty_node_id).await?;
 			}
+
+			for counterparty_node_id in need_remove {
+				let mut future_opt = None;
+				{
+					// We need to take the `per_peer_state` write lock to remove an entry, but also
+					// have to hold it until after the `remove` call returns (but not through
+					// future completion) to ensure that writes for the peer's state are
+					// well-ordered with other `persist_peer_state` calls even across the removal
+					// itself.
+					let mut per_peer_state = self.per_peer_state.write().unwrap();
+					if let Entry::Occupied(mut entry) = per_peer_state.entry(counterparty_node_id) {
+						let state = entry.get_mut().get_mut().unwrap();
+						if state.is_prunable() {
+							entry.remove();
+							let key = counterparty_node_id.to_string();
+							future_opt = Some(self.kv_store.remove(
+								LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+								LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+								&key,
+							));
+						} else {
+							// If the peer got new state, force a re-persist of the current state.
+							state.needs_persist = true;
+						}
+					} else {
+						// This should never happen, we can only have one `persist` call
+						// in-progress at once and map entries are only removed by it.
+						debug_assert!(false);
+					}
+				}
+				if let Some(future) = future_opt {
+					future.await?;
+				} else {
+					self.persist_peer_state(counterparty_node_id).await?;
+				}
+			}
+
+			if self.persistence_in_flight.fetch_sub(1, Ordering::AcqRel) != 1 {
+				// If another thread incremented the state while we were running we should go
+				// around again, but only once.
+				self.persistence_in_flight.store(1, Ordering::Release);
+				continue;
+			}
+			break;
 		}
 
 		Ok(())
