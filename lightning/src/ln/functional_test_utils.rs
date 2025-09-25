@@ -1573,6 +1573,14 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
 	initiator_config: Option<UserConfig>,
 ) -> (bitcoin::Transaction, ChannelId) {
+	open_zero_conf_channel_with_value(initiator, receiver, initiator_config, 100_000, 10_001)
+}
+
+// Receiver must have been initialized with manually_accept_inbound_channels set to true.
+pub fn open_zero_conf_channel_with_value<'a, 'b, 'c, 'd>(
+	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
+	initiator_config: Option<UserConfig>, channel_value_sat: u64, push_msat: u64,
+) -> (bitcoin::Transaction, ChannelId) {
 	let initiator_channels = initiator.node.list_usable_channels().len();
 	let receiver_channels = receiver.node.list_usable_channels().len();
 
@@ -1581,7 +1589,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(
 
 	initiator
 		.node
-		.create_channel(receiver_node_id, 100_000, 10_001, 42, None, initiator_config)
+		.create_channel(receiver_node_id, channel_value_sat, push_msat, 42, None, initiator_config)
 		.unwrap();
 	let open_channel =
 		get_event_msg!(initiator, MessageSendEvent::SendOpenChannel, receiver_node_id);
@@ -1610,7 +1618,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(
 	initiator.node.handle_accept_channel(receiver_node_id, &accept_channel);
 
 	let (temporary_channel_id, tx, _) =
-		create_funding_transaction(&initiator, &receiver_node_id, 100_000, 42);
+		create_funding_transaction(&initiator, &receiver_node_id, channel_value_sat, 42);
 	initiator
 		.node
 		.funding_transaction_generated(temporary_channel_id, receiver_node_id, tx.clone())
