@@ -9366,6 +9366,10 @@ where
 			return Err(ChannelError::close("Peer sent a loose channel_reestablish not after reconnect".to_owned()));
 		}
 
+		// A node:
+		//   - if `next_commitment_number` is zero:
+		//     - MUST immediately fail the channel and broadcast any relevant latest commitment
+		//       transaction.
 		if msg.next_local_commitment_number == 0
 			|| msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER
 			|| msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER
@@ -9437,9 +9441,10 @@ where
 		let mut tx_signatures = None;
 		let mut tx_abort = None;
 
-		// if next_funding is set:
+		// A receiving node:
+		//   - if the `next_funding` TLV is set:
 		if let Some(next_funding) = &msg.next_funding {
-			// - if `next_funding` matches the latest interactive funding transaction
+			// - if `next_funding_txid` matches the latest interactive funding transaction
 			//   or the current channel funding transaction:
 			if let Some(session) = &self.context.interactive_tx_signing_session {
 				let our_next_funding_txid = session.unsigned_tx().compute_txid();
@@ -9454,8 +9459,12 @@ where
 					self.context.expecting_peer_commitment_signed = true;
 				}
 
-				// TODO(splicing): Add comment for spec requirements
-				if next_funding.should_retransmit(msgs::NextFundingFlag::CommitmentSigned) {
+				// - if it has not received `tx_signatures` for that funding transaction:
+				//   - if the `commitment_signed` bit is set in `retransmit_flags`:
+				if !session.has_received_tx_signatures()
+					&& next_funding.should_retransmit(msgs::NextFundingFlag::CommitmentSigned)
+				{
+					// - MUST retransmit its `commitment_signed` for that funding transaction.
 					let funding = self
 						.pending_splice
 						.as_ref()
@@ -9591,6 +9600,13 @@ where
 		let is_awaiting_remote_revoke = self.context.channel_state.is_awaiting_remote_revoke();
 		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.context.counterparty_next_commitment_transaction_number + if is_awaiting_remote_revoke { 1 } else { 0 };
 
+		// A node:
+		//   - if `next_commitment_number` is 1 in both the `channel_reestablish` it
+		//     sent and received:
+		//     - MUST retransmit `channel_ready`.
+		//   - otherwise:
+		//     - MUST NOT retransmit `channel_ready`, but MAY send `channel_ready` with
+		//       a different `short_channel_id` `alias` field.
 		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.next_transaction_number() == 1 {
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
 			self.get_channel_ready(logger)
@@ -11293,26 +11309,31 @@ where
 	}
 
 	fn maybe_get_next_funding(&self) -> Option<msgs::NextFunding> {
-		// If we've sent `commtiment_signed` for an interactively constructed transaction
-		// during a signing session, but have not received `tx_signatures` we MUST set `next_funding`
-		// to the txid of that interactive transaction, else we MUST NOT set it.
+		// The sending node:
+		//   - if it has sent `commitment_signed` for an interactive transaction construction but
+		//     it has not received `tx_signatures`:
 		self.context
 			.interactive_tx_signing_session
 			.as_ref()
 			.filter(|session| !session.has_received_tx_signatures())
 			.map(|signing_session| {
+				// - MUST include the `next_funding` TLV.
+				// - MUST set `next_funding_txid` to the txid of that interactive transaction.
 				let mut next_funding = msgs::NextFunding {
 					txid: signing_session.unsigned_tx().compute_txid(),
 					retransmit_flags: 0,
 				};
 
-				// TODO(splicing): Add comment for spec requirements
+				// - if it has not received `commitment_signed` for this `next_funding_txid`:
+				//   - MUST set the `commitment_signed` bit in `retransmit_flags`.
 				if !signing_session.has_received_commitment_signed() {
 					next_funding.retransmit(msgs::NextFundingFlag::CommitmentSigned);
 				}
 
 				next_funding
 			})
+		//   - otherwise:
+		//     - MUST NOT include the `next_funding` TLV.
 	}
 
 	fn maybe_get_my_current_funding_locked(&self) -> Option<msgs::FundingLocked> {
