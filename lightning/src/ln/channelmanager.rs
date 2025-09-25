@@ -4675,14 +4675,6 @@ where
 		// Look for the channel
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if !chan_phase_entry.get().context().is_connected() {
-					// TODO: We should probably support this, but right now `splice_channel` refuses when
-					// the peer is disconnected, so we just check it here.
-					return Err(APIError::ChannelUnavailable {
-						err: "Cannot initiate splice while peer is disconnected".to_owned(),
-					});
-				}
-
 				let locktime = locktime.unwrap_or_else(|| self.current_best_block().height);
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
@@ -6245,10 +6237,20 @@ where
 							.map(|input| input.witness)
 							.filter(|witness| !witness.is_empty())
 							.collect();
-						match chan.funding_transaction_signed(txid, witnesses) {
-							Ok((Some(tx_signatures), funding_tx_opt)) => {
+						let best_block_height = self.best_block.read().unwrap().height;
+						match chan.funding_transaction_signed(
+							txid,
+							witnesses,
+							best_block_height,
+							&self.logger,
+						) {
+							Ok((Some(tx_signatures), splice_locked_opt, funding_tx_opt)) => {
 								if let Some(funding_tx) = funding_tx_opt {
-									self.broadcast_interactive_funding(chan, &funding_tx);
+									self.broadcast_interactive_funding(
+										chan,
+										&funding_tx,
+										&self.logger,
+									);
 								}
 								peer_state.pending_msg_events.push(
 									MessageSendEvent::SendTxSignatures {
@@ -6256,6 +6258,14 @@ where
 										msg: tx_signatures,
 									},
 								);
+								if let Some(splice_locked) = splice_locked_opt {
+									peer_state.pending_msg_events.push(
+										MessageSendEvent::SendSpliceLocked {
+											node_id: *counterparty_node_id,
+											msg: splice_locked,
+										},
+									);
+								}
 								return NotifyOption::DoPersist;
 							},
 							Err(err) => {
@@ -6293,8 +6303,14 @@ where
 	}
 
 	fn broadcast_interactive_funding(
-		&self, channel: &mut FundedChannel<SP>, funding_tx: &Transaction,
+		&self, channel: &mut FundedChannel<SP>, funding_tx: &Transaction, logger: &L,
 	) {
+		let logger = WithChannelContext::from(logger, channel.context(), None);
+		log_info!(
+			logger,
+			"Broadcasting signed interactive funding transaction {}",
+			funding_tx.compute_txid()
+		);
 		self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
@@ -9334,6 +9350,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if let Some(signing_session) = (!channel.is_awaiting_monitor_update())
 			.then(|| ())
 			.and_then(|_| channel.context.interactive_tx_signing_session.as_mut())
+			.filter(|signing_session| signing_session.has_received_commitment_signed())
 			.filter(|signing_session| signing_session.holder_tx_signatures().is_none())
 		{
 			if signing_session.has_local_contribution() {
@@ -9354,20 +9371,26 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 			} else {
 				let txid = signing_session.unsigned_tx().compute_txid();
-				match channel.funding_transaction_signed(txid, vec![]) {
-					Ok((Some(tx_signatures), funding_tx_opt)) => {
+				let best_block_height = self.best_block.read().unwrap().height;
+				match channel.funding_transaction_signed(txid, vec![], best_block_height, &self.logger) {
+					Ok((tx_signatures_opt, splice_locked_opt, funding_tx_opt)) => {
 						if let Some(funding_tx) = funding_tx_opt {
-							self.broadcast_interactive_funding(channel, &funding_tx);
+							self.broadcast_interactive_funding(channel, &funding_tx, &self.logger);
 						}
 						if channel.context.is_connected() {
-							pending_msg_events.push(MessageSendEvent::SendTxSignatures {
-								node_id: counterparty_node_id,
-								msg: tx_signatures,
-							});
+							if let Some(tx_signatures) = tx_signatures_opt {
+								pending_msg_events.push(MessageSendEvent::SendTxSignatures {
+									node_id: counterparty_node_id,
+									msg: tx_signatures,
+								});
+							}
+							if let Some(splice_locked) = splice_locked_opt {
+								pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+									node_id: counterparty_node_id,
+									msg: splice_locked,
+								});
+							}
 						}
-					},
-					Ok((None, _)) => {
-						debug_assert!(false, "If our tx_signatures is empty, then we should send it first!");
 					},
 					Err(err) => {
 						log_warn!(logger, "Failed signing interactive funding transaction: {err:?}");
@@ -10315,19 +10338,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
-						let (tx_signatures_opt, funding_tx_opt) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg), chan_entry);
+						let best_block_height = self.best_block.read().unwrap().height;
+						let (tx_signatures_opt, splice_locked_opt, funding_tx_opt) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg, best_block_height, &self.logger), chan_entry);
 						if let Some(tx_signatures) = tx_signatures_opt {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
 								msg: tx_signatures,
 							});
 						}
+						if let Some(splice_locked) = splice_locked_opt {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+								node_id: *counterparty_node_id,
+								msg: splice_locked,
+							});
+						}
 						if let Some(ref funding_tx) = funding_tx_opt {
-							self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
-							{
-								let mut pending_events = self.pending_events.lock().unwrap();
-								emit_channel_pending_event!(pending_events, chan);
-							}
+							self.broadcast_interactive_funding(chan, funding_tx, &self.logger);
 						}
 					},
 					None => {
