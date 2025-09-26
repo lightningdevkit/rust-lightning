@@ -5497,8 +5497,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if should_broadcast_commitment {
 			let (mut claimables, mut outputs) =
 				self.generate_claimable_outpoints_and_watch_outputs(None);
-			claimable_outpoints.append(&mut claimables);
-			watch_outputs.append(&mut outputs);
+			if !self.is_manual_broadcast || self.funding_seen_onchain {
+				claimable_outpoints.append(&mut claimables);
+				watch_outputs.append(&mut outputs);
+			}
 		}
 
 		self.block_confirmed(height, block_hash, txn_matched, watch_outputs, claimable_outpoints, &broadcaster, &fee_estimator, logger)
@@ -5532,13 +5534,18 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		log_trace!(logger, "Processing {} matched transactions for block at height {}.", txn_matched.len(), conf_height);
 		debug_assert!(self.best_block.height >= conf_height);
 
-		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
-		if let Some(payment_hash) = should_broadcast {
-			let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
-			let (mut new_outpoints, mut new_outputs) =
-				self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
-			claimable_outpoints.append(&mut new_outpoints);
-			watch_outputs.append(&mut new_outputs);
+		// Only generate claims if we haven't already done so (e.g., in transactions_confirmed).
+		if claimable_outpoints.is_empty() {
+			let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
+			if let Some(payment_hash) = should_broadcast {
+				let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+				let (mut new_outpoints, mut new_outputs) =
+					self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
+				if !self.is_manual_broadcast || self.funding_seen_onchain {
+					claimable_outpoints.append(&mut new_outpoints);
+					watch_outputs.append(&mut new_outputs);
+				}
+			}
 		}
 
 		// Find which on-chain events have reached their confirmation threshold.
