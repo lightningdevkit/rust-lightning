@@ -3985,17 +3985,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
+		let reason = ClosureReason::HolderForceClosed {
+			broadcasted_latest_txn: Some(true),
+			message: "ChannelMonitor-initiated commitment transaction broadcast".to_owned(),
+		};
+		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
 		// In manual-broadcast mode, if `require_funding_seen` is true and we have not yet observed
 		// the funding transaction on-chain, do not queue any transactions.
 		if require_funding_seen && self.is_manual_broadcast && !self.funding_seen_onchain {
 			log_info!(logger, "Not broadcasting holder commitment for manual-broadcast channel before funding appears on-chain");
 			return;
 		}
-		let reason = ClosureReason::HolderForceClosed {
-			broadcasted_latest_txn: Some(true),
-			message: "ChannelMonitor-initiated commitment transaction broadcast".to_owned(),
-		};
-		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.update_claims_view_from_requests(
 			claimable_outpoints, self.best_block.height, self.best_block.height, broadcaster,
