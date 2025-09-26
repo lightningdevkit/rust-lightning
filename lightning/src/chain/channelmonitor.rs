@@ -3985,7 +3985,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 			claimable_outpoints.append(&mut new_outpoints);
 		}
-		(claimable_outpoints, watch_outputs)
+		// In manual-broadcast mode, if we have not yet observed the funding transaction on-chain,
+		// return empty vectors.
+		if self.is_manual_broadcast && !self.funding_seen_onchain {
+			return (Vec::new(), Vec::new());
+		} else {
+			(claimable_outpoints, watch_outputs)
+		}
 	}
 
 	#[rustfmt::skip]
@@ -5634,13 +5640,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		log_trace!(logger, "Processing {} matched transactions for block at height {}.", txn_matched.len(), conf_height);
 		debug_assert!(self.best_block.height >= conf_height);
 
-		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
-		if let Some(payment_hash) = should_broadcast {
-			let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
-			let (mut new_outpoints, mut new_outputs) =
-				self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
-			claimable_outpoints.append(&mut new_outpoints);
-			watch_outputs.append(&mut new_outputs);
+		// Only generate claims if we haven't already done so (e.g., in transactions_confirmed).
+		if claimable_outpoints.is_empty() {
+			let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
+			if let Some(payment_hash) = should_broadcast {
+				let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+				let (mut new_outpoints, mut new_outputs) =
+					self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
+				claimable_outpoints.append(&mut new_outpoints);
+				watch_outputs.append(&mut new_outputs);
+			}
 		}
 
 		// Find which on-chain events have reached their confirmation threshold.
