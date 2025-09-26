@@ -835,6 +835,11 @@ pub enum Balance {
 		/// When multiple candidates exist, the last one reflects the balance of the
 		/// latest splice/RBF attempt, while the first reflects the balance prior to the splice
 		/// occurring.
+		///
+		/// Entries remain in this vec until the pending splice has reached [`ANTI_REORG_DELAY`]
+		/// confirmations, at which point any conflicts will be removed. Once a splice confirms
+		/// [`Self::ClaimableOnChannelClose::confirmed_balance_candidate_index`] will point to the
+		/// confirmed entry, even if it has fewer than [`ANTI_REORG_DELAY`] confirmations.
 		balance_candidates: Vec<HolderCommitmentTransactionBalance>,
 		/// The index within [`Balance::ClaimableOnChannelClose::balance_candidates`] for the
 		/// balance according to the current onchain state of the channel. This can be helpful when
