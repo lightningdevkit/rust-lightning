@@ -6988,6 +6988,621 @@ mod tests {
 	}
 
 	#[test]
+	fn test_manual_broadcast_skips_commitment_until_funding_seen() {
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(TestLogger::new());
+		let broadcaster = Arc::new(TestBroadcaster::new(Network::Testnet));
+		let fee_estimator = Arc::new(TestFeeEstimator::new(253));
+
+		let dummy_key =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+
+		let keys = InMemorySigner::new(
+			&secp_ctx,
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			[41; 32],
+			[0; 32],
+			[0; 32],
+		);
+
+		let counterparty_pubkeys = ChannelPublicKeys {
+			funding_pubkey: PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[44; 32]).unwrap(),
+			),
+			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[45; 32]).unwrap(),
+			)),
+			payment_point: PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[46; 32]).unwrap(),
+			),
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[47; 32]).unwrap(),
+			)),
+			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[48; 32]).unwrap(),
+			)),
+		};
+		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
+		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
+		let channel_parameters = ChannelTransactionParameters {
+			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
+			holder_selected_contest_delay: 66,
+			is_outbound_from_holder: true,
+			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+				pubkeys: counterparty_pubkeys,
+				selected_contest_delay: 67,
+			}),
+			funding_outpoint: Some(funding_outpoint),
+			splice_parent_funding_txid: None,
+			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+			channel_value_satoshis: 0,
+		};
+		let shutdown_pubkey =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey);
+		let best_block = BestBlock::from_network(Network::Testnet);
+		let monitor = ChannelMonitor::new(
+			Secp256k1::new(),
+			keys,
+			Some(shutdown_script.into_inner()),
+			0,
+			&ScriptBuf::new(),
+			&channel_parameters,
+			true,
+			0,
+			HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
+			best_block,
+			dummy_key,
+			channel_id,
+			true,
+		);
+
+		let payment_hash = PaymentHash([7; 32]);
+		let htlc = HTLCOutputInCommitment {
+			offered: true,
+			amount_msat: 1000,
+			cltv_expiry: 1,
+			payment_hash,
+			transaction_output_index: Some(0),
+		};
+		let commit_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, vec![htlc.clone()]);
+		let dummy_sig = crate::crypto::utils::sign(
+			&secp_ctx,
+			&bitcoin::secp256k1::Message::from_digest([42; 32]),
+			&SecretKey::from_slice(&[42; 32]).unwrap(),
+		);
+		let dummy_source = HTLCSource::dummy();
+		monitor.provide_latest_holder_commitment_tx(
+			commit_tx,
+			&vec![(htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))],
+		);
+
+		// Advance height beyond expiry. no commitment should be broadcast.
+		let prev_hash = monitor.current_best_block().block_hash;
+		{
+			let mut blocks = broadcaster.blocks.lock().unwrap();
+			blocks.push((create_dummy_block(prev_hash, 0, vec![]), 10));
+		}
+		let header = create_dummy_header(prev_hash, 0);
+		monitor.best_block_updated(
+			&header,
+			10,
+			Arc::clone(&broadcaster),
+			Arc::clone(&fee_estimator),
+			&logger,
+		);
+		assert!(broadcaster.txn_broadcast().is_empty());
+
+		// Now simulate seeing funding on-chain. ensure the
+		// monitor proceeds to broadcast upon next height update.
+		{
+			let mut inner = monitor.inner.lock().unwrap();
+			inner.funding_seen_onchain = true;
+		}
+		{
+			let mut blocks = broadcaster.blocks.lock().unwrap();
+			blocks.push((create_dummy_block(header.block_hash(), 1, vec![]), 11));
+		}
+		let header2 = create_dummy_header(header.block_hash(), 1);
+		monitor.best_block_updated(
+			&header2,
+			11,
+			Arc::clone(&broadcaster),
+			Arc::clone(&fee_estimator),
+			&logger,
+		);
+		assert!(!broadcaster.txn_broadcast().is_empty());
+	}
+
+	#[test]
+	fn test_manual_broadcast_detects_funding_and_broadcasts_on_timeout() {
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(TestLogger::new());
+		let broadcaster = Arc::new(TestBroadcaster::new(Network::Testnet));
+		let fee_estimator = TestFeeEstimator::new(253);
+
+		let dummy_key =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+
+		let keys = InMemorySigner::new(
+			&secp_ctx,
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			[41; 32],
+			[0; 32],
+			[0; 32],
+		);
+
+		let counterparty_pubkeys = ChannelPublicKeys {
+			funding_pubkey: PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[44; 32]).unwrap(),
+			),
+			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[45; 32]).unwrap(),
+			)),
+			payment_point: PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[46; 32]).unwrap(),
+			),
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[47; 32]).unwrap(),
+			)),
+			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[48; 32]).unwrap(),
+			)),
+		};
+
+		let fake_prevout = bitcoin::OutPoint { txid: Txid::all_zeros(), vout: 0 };
+		let funding_script = {
+			let holder_pubkeys = keys.holder_channel_pubkeys.clone();
+			let redeem = chan_utils::make_funding_redeemscript(
+				&holder_pubkeys.funding_pubkey,
+				&counterparty_pubkeys.funding_pubkey,
+			);
+			redeem.to_p2wsh()
+		};
+		let funding_tx = Transaction {
+			version: Version(2),
+			lock_time: LockTime::ZERO,
+			input: vec![TxIn {
+				previous_output: fake_prevout,
+				script_sig: ScriptBuf::new(),
+				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+				witness: Witness::new(),
+			}],
+			output: vec![TxOut {
+				script_pubkey: funding_script.clone(),
+				value: Amount::from_sat(1000),
+			}],
+		};
+		let funding_txid = funding_tx.compute_txid();
+		let funding_outpoint = OutPoint { txid: funding_txid, index: 0 };
+
+		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
+		let channel_parameters = ChannelTransactionParameters {
+			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
+			holder_selected_contest_delay: 66,
+			is_outbound_from_holder: true,
+			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+				pubkeys: counterparty_pubkeys,
+				selected_contest_delay: 67,
+			}),
+			funding_outpoint: Some(funding_outpoint),
+			splice_parent_funding_txid: None,
+			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+			channel_value_satoshis: 0,
+		};
+		let shutdown_pubkey =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey);
+		let best_block = BestBlock::from_network(Network::Testnet);
+		let monitor = ChannelMonitor::new(
+			Secp256k1::new(),
+			keys,
+			Some(shutdown_script.into_inner()),
+			0,
+			&ScriptBuf::new(),
+			&channel_parameters,
+			true,
+			0,
+			HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
+			best_block,
+			dummy_key,
+			channel_id,
+			true,
+		);
+
+		let payment_hash = PaymentHash([9; 32]);
+		let htlc = HTLCOutputInCommitment {
+			offered: true,
+			amount_msat: 1000,
+			cltv_expiry: 1,
+			payment_hash,
+			transaction_output_index: Some(0),
+		};
+		let commit_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, vec![htlc.clone()]);
+		let dummy_sig = crate::crypto::utils::sign(
+			&secp_ctx,
+			&bitcoin::secp256k1::Message::from_digest([42; 32]),
+			&SecretKey::from_slice(&[42; 32]).unwrap(),
+		);
+		let dummy_source = HTLCSource::dummy();
+		monitor.provide_latest_holder_commitment_tx(
+			commit_tx,
+			&vec![(htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))],
+		);
+
+		// Advance height beyond expiry. no broadcast should occur.
+		let prev_hash = monitor.current_best_block().block_hash;
+		{
+			let mut blocks = broadcaster.blocks.lock().unwrap();
+			blocks.push((create_dummy_block(prev_hash, 0, vec![]), 10));
+		}
+		let header = create_dummy_header(prev_hash, 0);
+		monitor.best_block_updated(&header, 10, &*broadcaster, &fee_estimator, &logger);
+		assert!(broadcaster.txn_broadcast().is_empty());
+		{
+			let inner = monitor.inner.lock().unwrap();
+			assert!(!inner.funding_seen_onchain);
+		}
+
+		// Now confirm the funding transaction via transactions_confirmed.
+		let fund_block = create_dummy_block(header.block_hash(), 1, vec![funding_tx.clone()]);
+		let txdata: Vec<(usize, &Transaction)> =
+			fund_block.txdata.iter().map(|t| (0usize, t)).collect();
+		monitor.transactions_confirmed(
+			&fund_block.header,
+			&txdata,
+			11,
+			&*broadcaster,
+			&fee_estimator,
+			&logger,
+		);
+		{
+			let inner = monitor.inner.lock().unwrap();
+			assert!(inner.funding_seen_onchain);
+		}
+
+		// Next height update should allow broadcast.
+		{
+			let mut blocks = broadcaster.blocks.lock().unwrap();
+			blocks.push((create_dummy_block(fund_block.block_hash(), 2, vec![]), 12));
+		}
+		let header2 = create_dummy_header(fund_block.block_hash(), 2);
+		monitor.best_block_updated(&header2, 12, &*broadcaster, &fee_estimator, &logger);
+		assert!(!broadcaster.txn_broadcast().is_empty());
+	}
+
+	#[test]
+	fn test_manual_broadcast_no_bump_events_before_funding_seen() {
+		use crate::events::Event;
+		use crate::types::features::ChannelTypeFeatures;
+
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(TestLogger::new());
+		let broadcaster = Arc::new(TestBroadcaster::new(Network::Testnet));
+		let fee_estimator = TestFeeEstimator::new(253);
+
+		let dummy_key =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+
+		let keys = InMemorySigner::new(
+			&secp_ctx,
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			[41; 32],
+			[0; 32],
+			[0; 32],
+		);
+
+		let counterparty_pubkeys = ChannelPublicKeys {
+			funding_pubkey: PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[44; 32]).unwrap(),
+			),
+			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[45; 32]).unwrap(),
+			)),
+			payment_point: PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[46; 32]).unwrap(),
+			),
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[47; 32]).unwrap(),
+			)),
+			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[48; 32]).unwrap(),
+			)),
+		};
+
+		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
+		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
+		let channel_parameters = ChannelTransactionParameters {
+			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
+			holder_selected_contest_delay: 66,
+			is_outbound_from_holder: true,
+			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+				pubkeys: counterparty_pubkeys,
+				selected_contest_delay: 67,
+			}),
+			funding_outpoint: Some(funding_outpoint),
+			splice_parent_funding_txid: None,
+			channel_type_features: ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+			channel_value_satoshis: 1_000_000,
+		};
+
+		let shutdown_pubkey =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey);
+		let best_block = BestBlock::from_network(Network::Testnet);
+		let monitor = ChannelMonitor::new(
+			Secp256k1::new(),
+			keys,
+			Some(shutdown_script.into_inner()),
+			0,
+			&ScriptBuf::new(),
+			&channel_parameters,
+			true,
+			0,
+			HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
+			best_block,
+			dummy_key,
+			channel_id,
+			true,
+		);
+
+		let payment_hash = PaymentHash([7; 32]);
+		let htlc = HTLCOutputInCommitment {
+			offered: true,
+			amount_msat: 1000,
+			cltv_expiry: 1,
+			payment_hash,
+			transaction_output_index: Some(0),
+		};
+		let commit_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, vec![htlc.clone()]);
+		let dummy_sig = crate::crypto::utils::sign(
+			&secp_ctx,
+			&bitcoin::secp256k1::Message::from_digest([42; 32]),
+			&SecretKey::from_slice(&[42; 32]).unwrap(),
+		);
+		let dummy_source = HTLCSource::dummy();
+		monitor.provide_latest_holder_commitment_tx(
+			commit_tx,
+			&vec![(htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))],
+		);
+
+		// Advance height beyond expiry, there must be no bump events emitted.
+		let prev_hash = monitor.current_best_block().block_hash;
+		{
+			let mut blocks = broadcaster.blocks.lock().unwrap();
+			blocks.push((create_dummy_block(prev_hash, 0, vec![]), 10));
+		}
+		let header = create_dummy_header(prev_hash, 0);
+		monitor.best_block_updated(&header, 10, &*broadcaster, &fee_estimator, &logger);
+		let events = monitor.get_and_clear_pending_events();
+		assert!(
+			events.iter().all(|e| !matches!(e, Event::BumpTransaction(_))),
+			"No BumpTransaction events should be emitted before funding is seen on-chain"
+		);
+	}
+
+	#[test]
+	fn test_manual_broadcast_reorg_resets_funding_seen() {
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(TestLogger::new());
+		let broadcaster = Arc::new(TestBroadcaster::new(Network::Testnet));
+		let fee_estimator = TestFeeEstimator::new(253);
+
+		let dummy_key =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+
+		let keys = InMemorySigner::new(
+			&secp_ctx,
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			[41; 32],
+			[0; 32],
+			[0; 32],
+		);
+
+		let counterparty_pubkeys = ChannelPublicKeys {
+			funding_pubkey: PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[44; 32]).unwrap(),
+			),
+			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[45; 32]).unwrap(),
+			)),
+			payment_point: PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[46; 32]).unwrap(),
+			),
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[47; 32]).unwrap(),
+			)),
+			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[48; 32]).unwrap(),
+			)),
+		};
+
+		let funding_script = {
+			let holder_pubkeys = keys.holder_channel_pubkeys.clone();
+			let redeem = chan_utils::make_funding_redeemscript(
+				&holder_pubkeys.funding_pubkey,
+				&counterparty_pubkeys.funding_pubkey,
+			);
+			redeem.to_p2wsh()
+		};
+		let funding_tx = Transaction {
+			version: Version(2),
+			lock_time: LockTime::ZERO,
+			input: vec![TxIn {
+				previous_output: bitcoin::OutPoint { txid: Txid::all_zeros(), vout: 0 },
+				script_sig: ScriptBuf::new(),
+				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+				witness: Witness::new(),
+			}],
+			output: vec![TxOut {
+				script_pubkey: funding_script.clone(),
+				value: Amount::from_sat(1000),
+			}],
+		};
+		let funding_txid = funding_tx.compute_txid();
+		let funding_outpoint = OutPoint { txid: funding_txid, index: 0 };
+
+		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
+		let channel_parameters = ChannelTransactionParameters {
+			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
+			holder_selected_contest_delay: 66,
+			is_outbound_from_holder: true,
+			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+				pubkeys: counterparty_pubkeys,
+				selected_contest_delay: 67,
+			}),
+			funding_outpoint: Some(funding_outpoint),
+			splice_parent_funding_txid: None,
+			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+			channel_value_satoshis: 0,
+		};
+		let shutdown_pubkey =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey);
+		let best_block = BestBlock::from_network(Network::Testnet);
+		let monitor = ChannelMonitor::new(
+			Secp256k1::new(),
+			keys,
+			Some(shutdown_script.into_inner()),
+			0,
+			&ScriptBuf::new(),
+			&channel_parameters,
+			true,
+			0,
+			HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
+			best_block,
+			dummy_key,
+			channel_id,
+			true,
+		);
+
+		let payment_hash = PaymentHash([3; 32]);
+		let htlc = HTLCOutputInCommitment {
+			offered: true,
+			amount_msat: 1000,
+			cltv_expiry: 1,
+			payment_hash,
+			transaction_output_index: Some(0),
+		};
+		let commit_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, vec![htlc.clone()]);
+		let dummy_sig = crate::crypto::utils::sign(
+			&secp_ctx,
+			&bitcoin::secp256k1::Message::from_digest([42; 32]),
+			&SecretKey::from_slice(&[42; 32]).unwrap(),
+		);
+		let dummy_source = HTLCSource::dummy();
+		monitor.provide_latest_holder_commitment_tx(
+			commit_tx,
+			&vec![(htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))],
+		);
+
+		// Bump height past expiry. no broadcast yet since funding not seen.
+		let prev_hash = monitor.current_best_block().block_hash;
+		{
+			let mut blocks = broadcaster.blocks.lock().unwrap();
+			blocks.push((create_dummy_block(prev_hash, 0, vec![]), 10));
+		}
+		monitor.best_block_updated(
+			&create_dummy_header(prev_hash, 0),
+			10,
+			&*broadcaster,
+			&fee_estimator,
+			&logger,
+		);
+		assert!(broadcaster.txn_broadcast().is_empty());
+
+		// Confirm funding, then immediately unconfirm it before a height update. gating should reset.
+		let fund_block = create_dummy_block(prev_hash, 1, vec![funding_tx.clone()]);
+		let txdata: Vec<(usize, &Transaction)> =
+			fund_block.txdata.iter().map(|t| (0usize, t)).collect();
+		monitor.transactions_confirmed(
+			&fund_block.header,
+			&txdata,
+			11,
+			&*broadcaster,
+			&fee_estimator,
+			&logger,
+		);
+		monitor.transaction_unconfirmed(&funding_txid, &*broadcaster, &fee_estimator, &logger);
+
+		// Next height update should still NOT broadcast since funding was unconfirmed.
+		{
+			let mut blocks = broadcaster.blocks.lock().unwrap();
+			blocks.push((create_dummy_block(fund_block.block_hash(), 2, vec![]), 12));
+		}
+		monitor.best_block_updated(
+			&create_dummy_header(fund_block.block_hash(), 2),
+			12,
+			&*broadcaster,
+			&fee_estimator,
+			&logger,
+		);
+		let _ = broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert!(broadcaster.txn_broadcast().is_empty());
+
+		// Reconfirm funding, then height update should allow broadcast now.
+		let re_block = create_dummy_block(fund_block.block_hash(), 3, vec![funding_tx.clone()]);
+		let txdata2: Vec<(usize, &Transaction)> =
+			re_block.txdata.iter().map(|t| (0usize, t)).collect();
+		monitor.transactions_confirmed(
+			&re_block.header,
+			&txdata2,
+			13,
+			&*broadcaster,
+			&fee_estimator,
+			&logger,
+		);
+		{
+			let mut blocks = broadcaster.blocks.lock().unwrap();
+			blocks.push((create_dummy_block(re_block.block_hash(), 4, vec![]), 14));
+		}
+		monitor.best_block_updated(
+			&create_dummy_header(re_block.block_hash(), 4),
+			14,
+			&*broadcaster,
+			&fee_estimator,
+			&logger,
+		);
+		assert!(!broadcaster.txn_broadcast().is_empty());
+	}
+
+	#[test]
 	fn test_funding_spend_refuses_updates() {
 		do_test_funding_spend_refuses_updates(true);
 		do_test_funding_spend_refuses_updates(false);
@@ -7352,7 +7967,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
 			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id, false
+			best_block, dummy_key, channel_id, false,
 		);
 
 		let chan_id = monitor.inner.lock().unwrap().channel_id();
