@@ -5285,12 +5285,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		if self.is_manual_broadcast && !funding_seen_before && self.funding_seen_onchain && self.holder_tx_signed
 		{
-			self.queue_latest_holder_commitment_txn_for_broadcast(
-				&broadcaster,
-				fee_estimator,
-				logger,
-				true,
-			);
+			should_broadcast_commitment = true;
 		}
 		'tx_iter: for tx in &txn_matched {
 			let txid = tx.compute_txid();
