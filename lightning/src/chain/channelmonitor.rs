@@ -1202,6 +1202,19 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	funding: FundingScope,
 	pending_funding: Vec<FundingScope>,
 
+	/// True if this channel was configured for manual funding broadcasts. Monitors written by
+	/// versions prior to LDK 0.2 load with `false` until a new update persists it.
+	is_manual_broadcast: bool,
+	/// True once we've observed either funding transaction on-chain. Older monitors prior to LDK 0.2
+	/// assume this is `true` when absent during upgrade so holder broadcasts aren't gated unexpectedly.
+	/// In manual-broadcast channels we also use this to trigger deferred holder
+	/// broadcasts once the funding transaction finally appears on-chain.
+	///
+	/// Note: This tracks whether the funding transaction was ever broadcast, not whether it is
+	/// currently confirmed. It is never reset, even if the funding transaction is unconfirmed due
+	/// to a reorg.
+	funding_seen_onchain: bool,
+
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,
 
@@ -1740,6 +1753,8 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(32, channel_monitor.pending_funding, optional_vec),
 		(33, channel_monitor.htlcs_resolved_to_user, required),
 		(34, channel_monitor.alternative_funding_confirmed, option),
+		(35, channel_monitor.is_manual_broadcast, required),
+		(37, channel_monitor.funding_seen_onchain, required),
 	});
 
 	Ok(())
@@ -1868,6 +1883,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		commitment_transaction_number_obscure_factor: u64,
 		initial_holder_commitment_tx: HolderCommitmentTransaction, best_block: BestBlock,
 		counterparty_node_id: PublicKey, channel_id: ChannelId,
+		is_manual_broadcast: bool,
 	) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
@@ -1913,6 +1929,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				prev_holder_commitment_tx: None,
 			},
 			pending_funding: vec![],
+
+			is_manual_broadcast,
+			funding_seen_onchain: false,
 
 			latest_update_id: 0,
 			commitment_transaction_number_obscure_factor,
@@ -6562,6 +6581,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut channel_parameters = None;
 		let mut pending_funding = None;
 		let mut alternative_funding_confirmed = None;
+		let mut is_manual_broadcast = RequiredWrapper(None);
+		let mut funding_seen_onchain = RequiredWrapper(None);
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6582,6 +6603,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(32, pending_funding, optional_vec),
 			(33, htlcs_resolved_to_user, option),
 			(34, alternative_funding_confirmed, option),
+			(35, is_manual_broadcast, (default_value, false)),
+			(37, funding_seen_onchain, (default_value, true)),
 		});
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
@@ -6695,6 +6718,10 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				prev_holder_commitment_tx,
 			},
 			pending_funding: pending_funding.unwrap_or(vec![]),
+			is_manual_broadcast: is_manual_broadcast.0.unwrap(),
+			// Older monitors prior to LDK 0.2 assume this is `true` when absent
+			// during upgrade so holder broadcasts aren't gated unexpectedly.
+			funding_seen_onchain: funding_seen_onchain.0.unwrap(),
 
 			latest_update_id,
 			commitment_transaction_number_obscure_factor,
