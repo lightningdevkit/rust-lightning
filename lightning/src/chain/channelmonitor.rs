@@ -7380,7 +7380,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
 			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id, false
+			best_block, dummy_key, channel_id, false,
 		);
 
 		let chan_id = monitor.inner.lock().unwrap().channel_id();
