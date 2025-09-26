@@ -2346,6 +2346,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// close channel with their commitment transaction after a substantial amount of time. Best
 	/// may be to contact the other node operator out-of-band to coordinate other options available
 	/// to you.
+	///
+	/// Note: For channels using manual funding broadcast (see
+	/// [`crate::ln::channelmanager::ChannelManager::funding_transaction_generated_manual_broadcast`]),
+	/// automatic broadcasts are suppressed until the funding transaction has been observed on-chain.
+	/// Calling this method overrides that suppression and queues the latest holder commitment
+	/// transaction for broadcast even if the funding has not yet been seen on-chain. This may result
+	/// in unconfirmable transactions being broadcast or [`Event::BumpTransaction`] notifications for
+	/// transactions that cannot be confirmed until the funding transaction is visible.
+	///
+	/// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 	pub fn broadcast_latest_holder_commitment_txn<B: Deref, F: Deref, L: Deref>(
 		&self, broadcaster: &B, fee_estimator: &F, logger: &L,
 	) where
@@ -2356,10 +2366,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let fee_estimator = LowerBoundedFeeEstimator::new(&**fee_estimator);
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
+
 		inner.queue_latest_holder_commitment_txn_for_broadcast(
 			broadcaster,
 			&fee_estimator,
 			&logger,
+			false,
 		);
 	}
 
@@ -3977,8 +3989,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	#[rustfmt::skip]
+	/// Note: For channels where the funding transaction is being manually managed (see
+	/// [`crate::ln::channelmanager::ChannelManager::funding_transaction_generated_manual_broadcast`]),
+	/// this method returns without queuing any transactions until the funding transaction has been
+	/// observed on-chain, unless `require_funding_seen` is `false`. This prevents attempting to
+	/// broadcast unconfirmable holder commitment transactions before the funding is visible.
+	/// See also [`ChannelMonitor::broadcast_latest_holder_commitment_txn`].
+	///
+	/// [`ChannelMonitor::broadcast_latest_holder_commitment_txn`]: crate::chain::channelmonitor::ChannelMonitor::broadcast_latest_holder_commitment_txn
 	pub(crate) fn queue_latest_holder_commitment_txn_for_broadcast<B: Deref, F: Deref, L: Deref>(
-		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>
+		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>, require_funding_seen: bool,
 	)
 	where
 		B::Target: BroadcasterInterface,
@@ -3990,6 +4010,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			message: "ChannelMonitor-initiated commitment transaction broadcast".to_owned(),
 		};
 		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
+		// In manual-broadcast mode, if `require_funding_seen` is true and we have not yet observed
+		// the funding transaction on-chain, do not queue any transactions.
+		if require_funding_seen && self.is_manual_broadcast && !self.funding_seen_onchain {
+			log_info!(logger, "Not broadcasting holder commitment for manual-broadcast channel before funding appears on-chain");
+			return;
+		}
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.update_claims_view_from_requests(
 			claimable_outpoints, self.best_block.height, self.best_block.height, broadcaster,
@@ -4304,7 +4330,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
 							continue;
 						}
-						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger);
+						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger, true);
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
 						log_error!(logger, "    in channel monitor for channel {}!", &self.channel_id());
@@ -5852,7 +5878,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// Only attempt to broadcast the new commitment after the `block_disconnected` call above so that
 		// it doesn't get removed from the set of pending claims.
 		if should_broadcast_commitment {
-			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, &bounded_fee_estimator, logger);
+			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, &bounded_fee_estimator, logger, true);
 		}
 
 		self.best_block = fork_point;
@@ -5913,7 +5939,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// Only attempt to broadcast the new commitment after the `transaction_unconfirmed` call above so
 		//  that it doesn't get removed from the set of pending claims.
 		if should_broadcast_commitment {
-			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, fee_estimator, logger);
+			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, fee_estimator, logger, true);
 		}
 	}
 
@@ -7078,7 +7104,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
 			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id,
+			best_block, dummy_key, channel_id, false,
 		);
 
 		let nondust_htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
@@ -7339,7 +7365,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
 			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id,
+			best_block, dummy_key, channel_id, false
 		);
 
 		let chan_id = monitor.inner.lock().unwrap().channel_id();
