@@ -1196,6 +1196,14 @@ pub(crate) struct ShutdownResult {
 	pub(crate) splice_funding_failed: Option<SpliceFundingFailed>,
 }
 
+/// The result of a peer disconnection.
+pub(crate) struct DisconnectResult {
+	pub(crate) is_resumable: bool,
+	/// If a splice was in progress when the channel was shut down, this contains
+	/// the splice funding information for emitting a SpliceFailed event.
+	pub(crate) splice_funding_failed: Option<SpliceFundingFailed>,
+}
+
 /// Tracks the transaction number, along with current and next commitment points.
 /// This consolidates the logic to advance our commitment number and request new
 /// commitment points from our signer.
@@ -1588,11 +1596,15 @@ where
 	/// Should be called when the peer is disconnected. Returns true if the channel can be resumed
 	/// when the peer reconnects (via [`Self::peer_connected_get_handshake`]). If not, the channel
 	/// must be immediately closed.
-	#[rustfmt::skip]
-	pub fn peer_disconnected_is_resumable<L: Deref>(&mut self, logger: &L) -> bool where L::Target: Logger {
-		match &mut self.phase {
+	pub fn peer_disconnected_is_resumable<L: Deref>(&mut self, logger: &L) -> DisconnectResult
+	where
+		L::Target: Logger,
+	{
+		let is_resumable = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::Funded(chan) => chan.remove_uncommitted_htlcs_and_mark_paused(logger).is_ok(),
+			ChannelPhase::Funded(chan) => {
+				chan.remove_uncommitted_htlcs_and_mark_paused(logger).is_ok()
+			},
 			// If we get disconnected and haven't yet committed to a funding
 			// transaction, we can replay the `open_channel` on reconnection, so don't
 			// bother dropping the channel here. However, if we already committed to
@@ -1602,7 +1614,40 @@ where
 			ChannelPhase::UnfundedOutboundV1(chan) => chan.is_resumable(),
 			ChannelPhase::UnfundedInboundV1(_) => false,
 			ChannelPhase::UnfundedV2(_) => false,
-		}
+		};
+
+		let splice_funding_failed = if let ChannelPhase::Funded(chan) = &mut self.phase {
+			// Reset any quiescence-related state as it is implicitly terminated once disconnected.
+			if matches!(chan.context.channel_state, ChannelState::ChannelReady(_)) {
+				if chan.quiescent_action.is_some() {
+					// If we were trying to get quiescent, try again after reconnection.
+					chan.context.channel_state.set_awaiting_quiescence();
+				}
+				chan.context.channel_state.clear_local_stfu_sent();
+				chan.context.channel_state.clear_remote_stfu_sent();
+				if chan.should_reset_pending_splice_state() {
+					// If there was a pending splice negotiation that failed due to disconnecting, we
+					// also take the opportunity to clean up our state.
+					let splice_funding_failed = chan.reset_pending_splice_state();
+					debug_assert!(!chan.context.channel_state.is_quiescent());
+					splice_funding_failed
+				} else if !chan.has_pending_splice_awaiting_signatures() {
+					// We shouldn't be quiescent anymore upon reconnecting if:
+					// - We were in quiescence but a splice/RBF was never negotiated or
+					// - We were in quiescence but the splice negotiation failed due to disconnecting
+					chan.context.channel_state.clear_quiescent();
+					None
+				} else {
+					None
+				}
+			} else {
+				None
+			}
+		} else {
+			None
+		};
+
+		DisconnectResult { is_resumable, splice_funding_failed }
 	}
 
 	/// Should be called when the peer re-connects, returning an initial message which we should
@@ -6837,38 +6882,40 @@ where
 	}
 
 	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
-		let splice_funding_failed =
-			if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-				if self.should_reset_pending_splice_state() {
-					self.reset_pending_splice_state()
-				} else {
-					match self.quiescent_action.take() {
-						Some(QuiescentAction::Splice(instructions)) => {
-							self.context.channel_state.clear_awaiting_quiescence();
-							let (inputs, outputs) =
-								instructions.into_contributed_inputs_and_outputs();
-							Some(SpliceFundingFailed {
-								funding_txo: None,
-								channel_type: None,
-								contributed_inputs: inputs,
-								contributed_outputs: outputs,
-							})
-						},
-						#[cfg(any(test, fuzzing))]
-						Some(quiescent_action) => {
-							self.quiescent_action = Some(quiescent_action);
-							None
-						},
-						None => None,
-					}
-				}
-			} else {
-				None
-			};
+		let splice_funding_failed = self.maybe_fail_splice_negotiation();
 
 		let mut shutdown_result = self.context.force_shutdown(&self.funding, closure_reason);
 		shutdown_result.splice_funding_failed = splice_funding_failed;
 		shutdown_result
+	}
+
+	fn maybe_fail_splice_negotiation(&mut self) -> Option<SpliceFundingFailed> {
+		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
+			if self.should_reset_pending_splice_state() {
+				self.reset_pending_splice_state()
+			} else {
+				match self.quiescent_action.take() {
+					Some(QuiescentAction::Splice(instructions)) => {
+						self.context.channel_state.clear_awaiting_quiescence();
+						let (inputs, outputs) = instructions.into_contributed_inputs_and_outputs();
+						Some(SpliceFundingFailed {
+							funding_txo: None,
+							channel_type: None,
+							contributed_inputs: inputs,
+							contributed_outputs: outputs,
+						})
+					},
+					#[cfg(any(test, fuzzing))]
+					Some(quiescent_action) => {
+						self.quiescent_action = Some(quiescent_action);
+						None
+					},
+					None => None,
+				}
+			}
+		} else {
+			None
+		}
 	}
 
 	fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
@@ -9127,27 +9174,6 @@ where
 				// commitment_signed, we need to move it back to Committed and they can re-send
 				// the update upon reconnection.
 				htlc.state = OutboundHTLCState::Committed;
-			}
-		}
-
-		// Reset any quiescence-related state as it is implicitly terminated once disconnected.
-		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			if self.quiescent_action.is_some() {
-				// If we were trying to get quiescent, try again after reconnection.
-				self.context.channel_state.set_awaiting_quiescence();
-			}
-			self.context.channel_state.clear_local_stfu_sent();
-			self.context.channel_state.clear_remote_stfu_sent();
-			if self.should_reset_pending_splice_state() {
-				// If there was a pending splice negotiation that failed due to disconnecting, we
-				// also take the opportunity to clean up our state.
-				self.reset_pending_splice_state();
-				debug_assert!(!self.context.channel_state.is_quiescent());
-			} else if !self.has_pending_splice_awaiting_signatures() {
-				// We shouldn't be quiescent anymore upon reconnecting if:
-				// - We were in quiescence but a splice/RBF was never negotiated or
-				// - We were in quiescence but the splice negotiation failed due to disconnecting
-				self.context.channel_state.clear_quiescent();
 			}
 		}
 
@@ -11823,9 +11849,9 @@ where
 			.map_err(|e| APIError::APIMisuseError { err: e.to_owned() })
 	}
 
-	fn send_splice_init(
-		&mut self, instructions: SpliceInstructions,
-	) -> Result<msgs::SpliceInit, String> {
+	fn send_splice_init(&mut self, instructions: SpliceInstructions) -> msgs::SpliceInit {
+		debug_assert!(self.pending_splice.is_none());
+
 		let SpliceInstructions {
 			adjusted_funding_contribution,
 			our_funding_inputs,
@@ -11834,15 +11860,6 @@ where
 			funding_feerate_per_kw,
 			locktime,
 		} = instructions;
-
-		// Check if a splice has been initiated already.
-		// Note: only a single outstanding splice is supported (per spec)
-		if self.pending_splice.is_some() {
-			return Err(format!(
-				"Channel {} cannot be spliced, as it has already a splice pending",
-				self.context.channel_id(),
-			));
-		}
 
 		let prev_funding_input = self.funding.to_splice_funding_input();
 		let context = FundingNegotiationContext {
@@ -11867,14 +11884,14 @@ where
 		let prev_funding_txid = self.funding.get_funding_txid();
 		let funding_pubkey = self.context.holder_pubkeys(prev_funding_txid).funding_pubkey;
 
-		Ok(msgs::SpliceInit {
+		msgs::SpliceInit {
 			channel_id: self.context.channel_id,
 			funding_contribution_satoshis: adjusted_funding_contribution.to_sat(),
 			funding_feerate_per_kw,
 			locktime,
 			funding_pubkey,
 			require_confirmed_inputs: None,
-		})
+		}
 	}
 
 	#[cfg(test)]
@@ -13045,10 +13062,20 @@ where
 						"Internal Error: Didn't have anything to do after reaching quiescence".to_owned()
 					));
 				},
-				Some(QuiescentAction::Splice(_instructions)) => {
-					return self.send_splice_init(_instructions)
-						.map(|splice_init| Some(StfuResponse::SpliceInit(splice_init)))
-						.map_err(|e| ChannelError::WarnAndDisconnect(e.to_owned()));
+				Some(QuiescentAction::Splice(instructions)) => {
+					if self.pending_splice.is_some() {
+						self.quiescent_action = Some(QuiescentAction::Splice(instructions));
+
+						return Err(ChannelError::WarnAndDisconnect(
+							format!(
+								"Channel {} cannot be spliced as it already has a splice pending",
+								self.context.channel_id(),
+							),
+						));
+					}
+
+					let splice_init = self.send_splice_init(instructions);
+					return Ok(Some(StfuResponse::SpliceInit(splice_init)));
 				},
 				#[cfg(any(test, fuzzing))]
 				Some(QuiescentAction::DoNothing) => {

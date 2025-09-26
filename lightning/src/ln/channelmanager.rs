@@ -59,9 +59,9 @@ use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 #[cfg(any(test, fuzzing))]
 use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::{
-	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, FundedChannel,
-	FundingTxSigned, InboundV1Channel, OutboundV1Channel, PendingV2Channel, ReconnectionMsg,
-	ShutdownResult, SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch,
+	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
+	FundedChannel, FundingTxSigned, InboundV1Channel, OutboundV1Channel, PendingV2Channel,
+	ReconnectionMsg, ShutdownResult, SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch,
 	WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
@@ -13575,107 +13575,136 @@ where
 
 	#[rustfmt::skip]
 	fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(
-			self, || NotifyOption::SkipPersistHandleEvents);
-		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
-		let mut per_peer_state = self.per_peer_state.write().unwrap();
-		let remove_peer = {
-			log_debug!(
-				WithContext::from(&self.logger, Some(counterparty_node_id), None, None),
-				"Marking channels with {} disconnected and generating channel_updates.",
-				log_pubkey!(counterparty_node_id)
-			);
-			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
-				let pending_msg_events = &mut peer_state.pending_msg_events;
-				peer_state.channel_by_id.retain(|_, chan| {
-					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
-					if chan.peer_disconnected_is_resumable(&&logger) {
-						return true;
-					}
-					// Clean up for removal.
-					let reason = ClosureReason::DisconnectedPeer;
-					let err = ChannelError::Close((reason.to_string(), reason));
-					let (_, e) = convert_channel_err!(self, peer_state, err, chan);
-					failed_channels.push((Err(e), counterparty_node_id));
-					false
-				});
-				// Note that we don't bother generating any events for pre-accept channels -
-				// they're not considered "channels" yet from the PoV of our events interface.
-				peer_state.inbound_channel_request_by_id.clear();
-				pending_msg_events.retain(|msg| {
-					match msg {
-						// V1 Channel Establishment
-						&MessageSendEvent::SendAcceptChannel { .. } => false,
-						&MessageSendEvent::SendOpenChannel { .. } => false,
-						&MessageSendEvent::SendFundingCreated { .. } => false,
-						&MessageSendEvent::SendFundingSigned { .. } => false,
-						// V2 Channel Establishment
-						&MessageSendEvent::SendAcceptChannelV2 { .. } => false,
-						&MessageSendEvent::SendOpenChannelV2 { .. } => false,
-						// Common Channel Establishment
-						&MessageSendEvent::SendChannelReady { .. } => false,
-						&MessageSendEvent::SendAnnouncementSignatures { .. } => false,
-						// Quiescence
-						&MessageSendEvent::SendStfu { .. } => false,
-						// Splicing
-						&MessageSendEvent::SendSpliceInit { .. } => false,
-						&MessageSendEvent::SendSpliceAck { .. } => false,
-						&MessageSendEvent::SendSpliceLocked { .. } => false,
-						// Interactive Transaction Construction
-						&MessageSendEvent::SendTxAddInput { .. } => false,
-						&MessageSendEvent::SendTxAddOutput { .. } => false,
-						&MessageSendEvent::SendTxRemoveInput { .. } => false,
-						&MessageSendEvent::SendTxRemoveOutput { .. } => false,
-						&MessageSendEvent::SendTxComplete { .. } => false,
-						&MessageSendEvent::SendTxSignatures { .. } => false,
-						&MessageSendEvent::SendTxInitRbf { .. } => false,
-						&MessageSendEvent::SendTxAckRbf { .. } => false,
-						&MessageSendEvent::SendTxAbort { .. } => false,
-						// Channel Operations
-						&MessageSendEvent::UpdateHTLCs { .. } => false,
-						&MessageSendEvent::SendRevokeAndACK { .. } => false,
-						&MessageSendEvent::SendClosingSigned { .. } => false,
-						&MessageSendEvent::SendClosingComplete { .. } => false,
-						&MessageSendEvent::SendClosingSig { .. } => false,
-						&MessageSendEvent::SendShutdown { .. } => false,
-						&MessageSendEvent::SendChannelReestablish { .. } => false,
-						&MessageSendEvent::HandleError { .. } => false,
-						// Gossip
-						&MessageSendEvent::SendChannelAnnouncement { .. } => false,
-						&MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
-						// [`ChannelManager::pending_broadcast_events`] holds the [`BroadcastChannelUpdate`]
-						// This check here is to ensure exhaustivity.
-						&MessageSendEvent::BroadcastChannelUpdate { .. } => {
-							debug_assert!(false, "This event shouldn't have been here");
-							false
-						},
-						&MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
-						&MessageSendEvent::SendChannelUpdate { .. } => false,
-						&MessageSendEvent::SendChannelRangeQuery { .. } => false,
-						&MessageSendEvent::SendShortIdsQuery { .. } => false,
-						&MessageSendEvent::SendReplyChannelRange { .. } => false,
-						&MessageSendEvent::SendGossipTimestampFilter { .. } => false,
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let mut splice_failed_events = Vec::new();
+			let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
+			let mut per_peer_state = self.per_peer_state.write().unwrap();
+			let remove_peer = {
+				log_debug!(
+					WithContext::from(&self.logger, Some(counterparty_node_id), None, None),
+					"Marking channels with {} disconnected and generating channel_updates.",
+					log_pubkey!(counterparty_node_id)
+				);
+				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+					let peer_state = &mut *peer_state_lock;
+					let pending_msg_events = &mut peer_state.pending_msg_events;
+					peer_state.channel_by_id.retain(|_, chan| {
+						let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
+						let DisconnectResult { is_resumable, splice_funding_failed } =
+							chan.peer_disconnected_is_resumable(&&logger);
 
-						// Peer Storage
-						&MessageSendEvent::SendPeerStorage { .. } => false,
-						&MessageSendEvent::SendPeerStorageRetrieval { .. } => false,
-					}
-				});
-				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
-				peer_state.is_connected = false;
-				peer_state.ok_to_remove(true)
-			} else { debug_assert!(false, "Unconnected peer disconnected"); true }
-		};
-		if remove_peer {
-			per_peer_state.remove(&counterparty_node_id);
-		}
-		mem::drop(per_peer_state);
+						if let Some(splice_funding_failed) = splice_funding_failed {
+							splice_failed_events.push(events::Event::SpliceFailed {
+								channel_id: chan.context().channel_id(),
+								counterparty_node_id,
+								user_channel_id: chan.context().get_user_id(),
+								abandoned_funding_txo: splice_funding_failed.funding_txo,
+								channel_type: splice_funding_failed.channel_type,
+								contributed_inputs: splice_funding_failed.contributed_inputs,
+								contributed_outputs: splice_funding_failed.contributed_outputs,
+							});
+						}
 
-		for (err, counterparty_node_id) in failed_channels.drain(..) {
-			let _ = handle_error!(self, err, counterparty_node_id);
-		}
+						if is_resumable {
+							return true;
+						}
+
+						// Clean up for removal.
+						let reason = ClosureReason::DisconnectedPeer;
+						let err = ChannelError::Close((reason.to_string(), reason));
+						let (_, e) = convert_channel_err!(self, peer_state, err, chan);
+						failed_channels.push((Err(e), counterparty_node_id));
+						false
+					});
+					// Note that we don't bother generating any events for pre-accept channels -
+					// they're not considered "channels" yet from the PoV of our events interface.
+					peer_state.inbound_channel_request_by_id.clear();
+					pending_msg_events.retain(|msg| {
+						match msg {
+							// V1 Channel Establishment
+							&MessageSendEvent::SendAcceptChannel { .. } => false,
+							&MessageSendEvent::SendOpenChannel { .. } => false,
+							&MessageSendEvent::SendFundingCreated { .. } => false,
+							&MessageSendEvent::SendFundingSigned { .. } => false,
+							// V2 Channel Establishment
+							&MessageSendEvent::SendAcceptChannelV2 { .. } => false,
+							&MessageSendEvent::SendOpenChannelV2 { .. } => false,
+							// Common Channel Establishment
+							&MessageSendEvent::SendChannelReady { .. } => false,
+							&MessageSendEvent::SendAnnouncementSignatures { .. } => false,
+							// Quiescence
+							&MessageSendEvent::SendStfu { .. } => false,
+							// Splicing
+							&MessageSendEvent::SendSpliceInit { .. } => false,
+							&MessageSendEvent::SendSpliceAck { .. } => false,
+							&MessageSendEvent::SendSpliceLocked { .. } => false,
+							// Interactive Transaction Construction
+							&MessageSendEvent::SendTxAddInput { .. } => false,
+							&MessageSendEvent::SendTxAddOutput { .. } => false,
+							&MessageSendEvent::SendTxRemoveInput { .. } => false,
+							&MessageSendEvent::SendTxRemoveOutput { .. } => false,
+							&MessageSendEvent::SendTxComplete { .. } => false,
+							&MessageSendEvent::SendTxSignatures { .. } => false,
+							&MessageSendEvent::SendTxInitRbf { .. } => false,
+							&MessageSendEvent::SendTxAckRbf { .. } => false,
+							&MessageSendEvent::SendTxAbort { .. } => false,
+							// Channel Operations
+							&MessageSendEvent::UpdateHTLCs { .. } => false,
+							&MessageSendEvent::SendRevokeAndACK { .. } => false,
+							&MessageSendEvent::SendClosingSigned { .. } => false,
+							&MessageSendEvent::SendClosingComplete { .. } => false,
+							&MessageSendEvent::SendClosingSig { .. } => false,
+							&MessageSendEvent::SendShutdown { .. } => false,
+							&MessageSendEvent::SendChannelReestablish { .. } => false,
+							&MessageSendEvent::HandleError { .. } => false,
+							// Gossip
+							&MessageSendEvent::SendChannelAnnouncement { .. } => false,
+							&MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
+							// [`ChannelManager::pending_broadcast_events`] holds the [`BroadcastChannelUpdate`]
+							// This check here is to ensure exhaustivity.
+							&MessageSendEvent::BroadcastChannelUpdate { .. } => {
+								debug_assert!(false, "This event shouldn't have been here");
+								false
+							},
+							&MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
+							&MessageSendEvent::SendChannelUpdate { .. } => false,
+							&MessageSendEvent::SendChannelRangeQuery { .. } => false,
+							&MessageSendEvent::SendShortIdsQuery { .. } => false,
+							&MessageSendEvent::SendReplyChannelRange { .. } => false,
+							&MessageSendEvent::SendGossipTimestampFilter { .. } => false,
+
+							// Peer Storage
+							&MessageSendEvent::SendPeerStorage { .. } => false,
+							&MessageSendEvent::SendPeerStorageRetrieval { .. } => false,
+						}
+					});
+					debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
+					peer_state.is_connected = false;
+					peer_state.ok_to_remove(true)
+				} else { debug_assert!(false, "Unconnected peer disconnected"); true }
+			};
+			if remove_peer {
+				per_peer_state.remove(&counterparty_node_id);
+			}
+			mem::drop(per_peer_state);
+
+			let persist = if splice_failed_events.is_empty() {
+				NotifyOption::SkipPersistHandleEvents
+			} else {
+				let mut pending_events = self.pending_events.lock().unwrap();
+				for event in splice_failed_events {
+					pending_events.push_back((event, None));
+				}
+				NotifyOption::DoPersist
+			};
+
+			for (err, counterparty_node_id) in failed_channels.drain(..) {
+				let _ = handle_error!(self, err, counterparty_node_id);
+			}
+
+			persist
+		});
 	}
 
 	#[rustfmt::skip]
