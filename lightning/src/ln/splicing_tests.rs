@@ -401,6 +401,8 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 	} else {
 		nodes[0].node.peer_disconnected(node_id_1);
 		nodes[1].node.peer_disconnected(node_id_0);
+
+		let _event = get_event!(nodes[0], Event::SpliceFailed);
 	}
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
@@ -466,6 +468,8 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 	} else {
 		nodes[0].node.peer_disconnected(node_id_1);
 		nodes[1].node.peer_disconnected(node_id_0);
+
+		let _event = get_event!(nodes[0], Event::SpliceFailed);
 	}
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);

@@ -59,9 +59,10 @@ use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 #[cfg(any(test, fuzzing))]
 use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::{
-	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, FundedChannel,
-	InboundV1Channel, OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult,
-	SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
+	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
+	FundedChannel, InboundV1Channel, OutboundV1Channel, PendingV2Channel, ReconnectionMsg,
+	ShutdownResult, SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch,
+	WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::SpliceContribution;
@@ -13447,8 +13448,8 @@ where
 
 	#[rustfmt::skip]
 	fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(
-			self, || NotifyOption::SkipPersistHandleEvents);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+		let mut persist = NotifyOption::SkipPersistHandleEvents;
 		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut per_peer_state = self.per_peer_state.write().unwrap();
 		let remove_peer = {
@@ -13461,11 +13462,29 @@ where
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
+				let pending_events = &mut self.pending_events.lock().unwrap();
 				peer_state.channel_by_id.retain(|_, chan| {
 					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
-					if chan.peer_disconnected_is_resumable(&&logger) {
+					let DisconnectResult { is_resumable, splice_funding_failed } =
+						chan.peer_disconnected_is_resumable(&&logger);
+
+					if let Some(splice_funding_failed) = splice_funding_failed {
+						pending_events.push_back((events::Event::SpliceFailed {
+							channel_id: chan.context().channel_id(),
+							counterparty_node_id,
+							user_channel_id: chan.context().get_user_id(),
+							funding_txo: splice_funding_failed.funding_txo,
+							channel_type: splice_funding_failed.channel_type,
+							contributed_inputs: splice_funding_failed.contributed_inputs,
+							contributed_outputs: splice_funding_failed.contributed_outputs,
+						}, None));
+						persist = NotifyOption::DoPersist;
+					}
+
+					if is_resumable {
 						return true;
 					}
+
 					// Clean up for removal.
 					let reason = ClosureReason::DisconnectedPeer;
 					let err = ChannelError::Close((reason.to_string(), reason));
@@ -13548,6 +13567,9 @@ where
 		for (err, counterparty_node_id) in failed_channels.drain(..) {
 			let _ = handle_error!(self, err, counterparty_node_id);
 		}
+
+		persist
+		});
 	}
 
 	#[rustfmt::skip]
