@@ -828,55 +828,6 @@ pub enum SpendingDelay {
 }
 
 impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-	ReadableArgs<(B, E, Option<F>, O, D, K, L)> for OutputSweeper<B, D, E, F, K, L, O>
-where
-	B::Target: BroadcasterInterface,
-	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
-	F::Target: Filter + Sync + Send,
-	K::Target: KVStore,
-	L::Target: Logger,
-	O::Target: OutputSpender,
-{
-	#[inline]
-	fn read<R: io::Read>(
-		reader: &mut R, args: (B, E, Option<F>, O, D, K, L),
-	) -> Result<Self, DecodeError> {
-		let (
-			broadcaster,
-			fee_estimator,
-			chain_data_source,
-			output_spender,
-			change_destination_source,
-			kv_store,
-			logger,
-		) = args;
-		let state = SweeperState::read(reader)?;
-		let best_block = state.best_block;
-
-		if let Some(filter) = chain_data_source.as_ref() {
-			for output_info in &state.outputs {
-				let watched_output = output_info.to_watched_output(best_block.block_hash);
-				filter.register_output(watched_output);
-			}
-		}
-
-		let sweeper_state = Mutex::new(state);
-		Ok(Self {
-			sweeper_state,
-			pending_sweep: AtomicBool::new(false),
-			broadcaster,
-			fee_estimator,
-			chain_data_source,
-			output_spender,
-			change_destination_source,
-			kv_store,
-			logger,
-		})
-	}
-}
-
-impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
 	ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BestBlock, OutputSweeper<B, D, E, F, K, L, O>)
 where
 	B::Target: BroadcasterInterface,
