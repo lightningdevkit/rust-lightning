@@ -977,21 +977,6 @@ where
 		Self { sweeper }
 	}
 
-	/// Regenerates and broadcasts the spending transaction for any outputs that are pending. Wraps
-	/// [`OutputSweeper::regenerate_and_broadcast_spend_if_necessary`].
-	pub fn regenerate_and_broadcast_spend_if_necessary(&self) -> Result<(), ()> {
-		let mut fut = Box::pin(self.sweeper.regenerate_and_broadcast_spend_if_necessary());
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
-		match fut.as_mut().poll(&mut ctx) {
-			task::Poll::Ready(result) => result,
-			task::Poll::Pending => {
-				// In a sync context, we can't wait for the future to complete.
-				unreachable!("OutputSweeper::regenerate_and_broadcast_spend_if_necessary should not be pending in a sync context");
-			},
-		}
-	}
-
 	/// Wrapper around [`OutputSweeper::track_spendable_outputs`].
 	pub fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
@@ -1019,6 +1004,27 @@ where
 		self.sweeper.tracked_spendable_outputs()
 	}
 
+	/// Gets the latest best block which was connected either via [`Listen`] or [`Confirm`]
+	/// interfaces.
+	pub fn current_best_block(&self) -> BestBlock {
+		self.sweeper.current_best_block()
+	}
+
+	/// Regenerates and broadcasts the spending transaction for any outputs that are pending. Wraps
+	/// [`OutputSweeper::regenerate_and_broadcast_spend_if_necessary`].
+	pub fn regenerate_and_broadcast_spend_if_necessary(&self) -> Result<(), ()> {
+		let mut fut = Box::pin(self.sweeper.regenerate_and_broadcast_spend_if_necessary());
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("OutputSweeper::regenerate_and_broadcast_spend_if_necessary should not be pending in a sync context");
+			},
+		}
+	}
+
 	/// Fetch the inner async sweeper.
 	///
 	/// In general you shouldn't have much reason to use this - you have a sync [`KVStore`] backing
@@ -1031,6 +1037,28 @@ where
 	) -> &OutputSweeper<B, ChangeDestinationSourceSyncWrapper<D>, E, F, KVStoreSyncWrapper<K>, L, O>
 	{
 		&self.sweeper
+	}
+}
+
+impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref> Listen
+	for OutputSweeperSync<B, D, E, F, K, L, O>
+where
+	B::Target: BroadcasterInterface,
+	D::Target: ChangeDestinationSourceSync,
+	E::Target: FeeEstimator,
+	F::Target: Filter + Sync + Send,
+	K::Target: KVStoreSync,
+	L::Target: Logger,
+	O::Target: OutputSpender,
+{
+	fn filtered_block_connected(
+		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
+	) {
+		self.sweeper.filtered_block_connected(header, txdata, height);
+	}
+
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		self.sweeper.blocks_disconnected(fork_point);
 	}
 }
 
@@ -1061,5 +1089,31 @@ where
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		self.sweeper.get_relevant_txids()
+	}
+}
+
+impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
+	ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BestBlock, OutputSweeperSync<B, D, E, F, K, L, O>)
+where
+	B::Target: BroadcasterInterface,
+	D::Target: ChangeDestinationSourceSync,
+	E::Target: FeeEstimator,
+	F::Target: Filter + Sync + Send,
+	K::Target: KVStoreSync,
+	L::Target: Logger,
+	O::Target: OutputSpender,
+{
+	#[inline]
+	fn read<R: io::Read>(
+		reader: &mut R, args: (B, E, Option<F>, O, D, K, L),
+	) -> Result<Self, DecodeError> {
+		let (a, b, c, d, change_destination_source, kv_store, e) = args;
+		let change_destination_source =
+			ChangeDestinationSourceSyncWrapper::new(change_destination_source);
+		let kv_store = KVStoreSyncWrapper(kv_store);
+		let args = (a, b, c, d, change_destination_source, kv_store, e);
+		let (best_block, sweeper) =
+			<(BestBlock, OutputSweeper<_, _, _, _, _, _, _>)>::read(reader, args)?;
+		Ok((best_block, OutputSweeperSync { sweeper }))
 	}
 }
