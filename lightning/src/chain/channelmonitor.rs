@@ -5842,6 +5842,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								assert_eq!(&bitcoin::Address::p2wsh(&ScriptBuf::from(input.witness.last().unwrap().to_vec()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
 							} else if _script_pubkey.is_p2wpkh() {
 								assert_eq!(&bitcoin::Address::p2wpkh(&bitcoin::CompressedPublicKey(bitcoin::PublicKey::from_slice(&input.witness.last().unwrap()).unwrap().inner), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
+							} else if _script_pubkey == &chan_utils::shared_anchor_script_pubkey() {
+								assert!(input.witness.is_empty());
 							} else { panic!(); }
 						}
 						return true;

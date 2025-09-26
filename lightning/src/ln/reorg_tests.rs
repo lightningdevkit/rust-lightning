@@ -815,7 +815,7 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 	assert_eq!(htlc_preimage_tx.input[0].witness.second_to_last().unwrap(), &payment_preimage.0[..]);
 }
 
-fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_counterparty_commitment: bool) {
+fn do_test_retries_own_commitment_broadcast_after_reorg(keyed_anchors: bool, p2a_anchor: bool, revoked_counterparty_commitment: bool) {
 	// Tests that a node will retry broadcasting its own commitment after seeing a confirmed
 	// counterparty commitment be reorged out.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
@@ -824,15 +824,16 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	}
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
-	if anchors {
-		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		config.manually_accept_inbound_channels = true;
-	}
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let persister;
 	let new_chain_monitor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config.clone())]);
 	let nodes_1_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
 
@@ -840,18 +841,11 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	let (_, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	if revoked_counterparty_commitment {
-		// Trigger a fee update such that we advance the state. We will have B broadcast its state
-		// without the fee update.
+		// Trigger a new commitment by routing a dummy HTLC. We will have B broadcast the previous commitment.
 		let serialized_node = nodes[1].node.encode();
 		let serialized_monitor = get_monitor!(nodes[1], chan_id).encode();
 
-		*chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap() += 1;
-		nodes[0].node.timer_tick_occurred();
-		check_added_monitors!(nodes[0], 1);
-
-		let fee_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), &fee_update.update_fee.unwrap());
-		commitment_signed_dance!(nodes[1], nodes[0], fee_update.commitment_signed, false);
+		let _ = route_payment(&nodes[0], &[&nodes[1]], 1000);
 
 		reload_node!(
 			nodes[1], config, &serialized_node, &[&serialized_monitor], persister, new_chain_monitor, nodes_1_deserialized
@@ -864,13 +858,19 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 	check_closed_event(&nodes[0], 1, reason, false, &[nodes[1].node.get_our_node_id()], 100_000);
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		handle_bump_close_event(&nodes[0]);
 	}
 
 	{
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
-		if anchors {
+		if p2a_anchor {
+			assert_eq!(txn.len(), 2);
+			let anchor_tx = txn.pop().unwrap();
+			let commitment_tx_a = txn.pop().unwrap();
+			check_spends!(commitment_tx_a, funding_tx);
+			check_spends!(anchor_tx, commitment_tx_a, coinbase_tx);
+		} else if keyed_anchors {
 			assert_eq!(txn.len(), 1);
 			let commitment_tx_a = txn.pop().unwrap();
 			check_spends!(commitment_tx_a, funding_tx);
@@ -893,31 +893,42 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[1], 1, reason, false, &[nodes[0].node.get_our_node_id()], 100_000);
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		handle_bump_close_event(&nodes[1]);
 	}
 
-	let commitment_b = {
+	let commitment_b = if p2a_anchor {
+		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 2);
+		let anchor_tx = txn.pop().unwrap();
+		let tx = txn.pop().unwrap();
+		check_spends!(tx, funding_tx);
+		check_spends!(anchor_tx, tx, coinbase_tx);
+		// Confirm B's commitment, A should now broadcast an HTLC timeout for commitment B.
+		mine_transactions(&nodes[0], &[&tx, &anchor_tx]);
+		tx
+
+	} else {
 		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
 		let tx = txn.pop().unwrap();
 		check_spends!(tx, funding_tx);
+		// Confirm B's commitment, A should now broadcast an HTLC timeout for commitment B.
+		mine_transaction(&nodes[0], &tx);
 		tx
 	};
 
-	// Confirm B's commitment, A should now broadcast an HTLC timeout for commitment B.
-	mine_transaction(&nodes[0], &commitment_b);
 	{
 		if nodes[0].connect_style.borrow().updates_best_block_first() {
 			// `commitment_a` is rebroadcast because the best block was updated prior to seeing
 			// `commitment_b`.
-			if anchors {
+			if keyed_anchors || p2a_anchor {
 				handle_bump_close_event(&nodes[0]);
 				let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 				assert_eq!(txn.len(), 3);
 				check_spends!(txn[0], commitment_b);
 				check_spends!(txn[1], funding_tx);
-				check_spends!(txn[2], txn[1]);  // Anchor output spend transaction.
+				check_spends!(txn[2], txn[1], coinbase_tx);  // Anchor output spend transaction.
 			} else {
 				let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 				assert_eq!(txn.len(), 2);
@@ -934,15 +945,15 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	// blocks, one to get us back to the original height, and another to retry our pending claims.
 	disconnect_blocks(&nodes[0], 1);
 	connect_blocks(&nodes[0], 2);
-	if anchors {
+	if keyed_anchors || p2a_anchor {
 		handle_bump_close_event(&nodes[0]);
 	}
 	{
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
-		if anchors {
+		if keyed_anchors || p2a_anchor {
 			assert_eq!(txn.len(), 2);
 			check_spends!(txn[0], funding_tx);
-			check_spends!(txn[1], txn[0]);  // Anchor output spend.
+			check_spends!(txn[1], txn[0], coinbase_tx);  // Anchor output spend.
 		} else {
 			assert_eq!(txn.len(), 2);
 			check_spends!(txn[0], txn[1]); // HTLC timeout A
@@ -954,13 +965,15 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 
 #[test]
 fn test_retries_own_commitment_broadcast_after_reorg() {
-	do_test_retries_own_commitment_broadcast_after_reorg(false, false);
-	do_test_retries_own_commitment_broadcast_after_reorg(false, true);
-	do_test_retries_own_commitment_broadcast_after_reorg(true, false);
-	do_test_retries_own_commitment_broadcast_after_reorg(true, true);
+	do_test_retries_own_commitment_broadcast_after_reorg(false, false, false);
+	do_test_retries_own_commitment_broadcast_after_reorg(false, false, true);
+	do_test_retries_own_commitment_broadcast_after_reorg(true, false, false);
+	do_test_retries_own_commitment_broadcast_after_reorg(true, false, true);
+	do_test_retries_own_commitment_broadcast_after_reorg(false, true, false);
+	do_test_retries_own_commitment_broadcast_after_reorg(false, true, true);
 }
 
-fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
+fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool, p2a_anchor: bool) {
 	// Previously, we had a bug where if there were two HTLCs which expired at different heights,
 	// and a counterparty commitment transaction confirmed spending both of them, we'd continually
 	// rebroadcast attempted HTLC claims against the higher-expiry HTLC forever.
@@ -970,8 +983,9 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
 	// This test relies on being able to consolidate HTLC claims into a single transaction, which
 	// requires anchors:
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	config.manually_accept_inbound_channels = true;
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1020,29 +1034,56 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
 	handle_bump_close_event(&nodes[1]);
 
 	let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
-	assert_eq!(txn.len(), 1);
-	let commitment_tx = txn.pop().unwrap();
-	check_spends!(commitment_tx, funding_tx);
+	let (commitment_tx, anchor_tx) = if p2a_anchor {
+		assert_eq!(txn.len(), 2);
+		let anchor_tx = txn.pop().unwrap();
+		let commitment_tx = txn.pop().unwrap();
+		check_spends!(commitment_tx, funding_tx);
+		check_spends!(anchor_tx, commitment_tx, coinbase_tx);
+		(commitment_tx, Some(anchor_tx))
+	} else {
+		assert_eq!(txn.len(), 1);
+		let commitment_tx = txn.pop().unwrap();
+		check_spends!(commitment_tx, funding_tx);
+		(commitment_tx, None)
+	};
 
-	mine_transaction(&nodes[0], &commitment_tx);
+	if let Some(ref a_tx) = anchor_tx {
+		mine_transactions(&nodes[0], &[&commitment_tx, a_tx]);
+	} else {
+		mine_transaction(&nodes[0], &commitment_tx);
+	}
 	check_closed_broadcast(&nodes[0], 1, false);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 10_000_000);
 	check_added_monitors(&nodes[0], 1);
 
-	mine_transaction(&nodes[1], &commitment_tx);
+	if let Some(ref a_tx) = anchor_tx {
+		mine_transactions(&nodes[1], &[&commitment_tx, a_tx]);
+	} else {
+		mine_transaction(&nodes[1], &commitment_tx);
+	}
 	handle_bump_events(&nodes[1], nodes[1].connect_style.borrow().updates_best_block_first(), 1);
 
 	let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
 	if nodes[1].connect_style.borrow().updates_best_block_first() {
 		assert_eq!(txn.len(), 3, "{txn:?}");
-		check_spends!(txn[0], funding_tx);
-		check_spends!(txn[1], txn[0]);  // Anchor output spend.
+		if p2a_anchor {
+			check_spends!(txn[0], funding_tx);
+			check_spends!(txn[1], txn[0], anchor_tx.as_ref().unwrap());  // Anchor output spend.
+		} else {
+			check_spends!(txn[0], funding_tx);
+			check_spends!(txn[1], txn[0], coinbase_tx);  // Anchor output spend.
+		}
 	} else {
 		assert_eq!(txn.len(), 1, "{txn:?}");
 	}
 	let bs_htlc_spend_tx = txn.pop().unwrap();
-	check_spends!(bs_htlc_spend_tx, commitment_tx, coinbase_tx);
+	if p2a_anchor {
+		check_spends!(bs_htlc_spend_tx, commitment_tx, anchor_tx.as_ref().unwrap());
+	} else {
+		check_spends!(bs_htlc_spend_tx, commitment_tx, coinbase_tx);
+	}
 
 	// Now connect blocks until the first HTLC expires
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
@@ -1177,8 +1218,13 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool) {
 
 #[test]
 fn test_split_htlc_expiry_tracking() {
-	do_test_split_htlc_expiry_tracking(true, true);
-	do_test_split_htlc_expiry_tracking(false, true);
-	do_test_split_htlc_expiry_tracking(true, false);
-	do_test_split_htlc_expiry_tracking(false, false);
+	do_test_split_htlc_expiry_tracking(true, true, false);
+	do_test_split_htlc_expiry_tracking(false, true, false);
+	do_test_split_htlc_expiry_tracking(true, false, false);
+	do_test_split_htlc_expiry_tracking(false, false, false);
+
+	do_test_split_htlc_expiry_tracking(true, true, true);
+	do_test_split_htlc_expiry_tracking(false, true, true);
+	do_test_split_htlc_expiry_tracking(true, false, true);
+	do_test_split_htlc_expiry_tracking(false, false, true);
 }
