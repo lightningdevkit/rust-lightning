@@ -1188,10 +1188,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	pending_funding: Vec<FundingScope>,
 
 	/// True if this channel was configured for manual funding broadcasts. Monitors written by
-	/// versions prior to introducing the flag will load with `false` until a new update persists it.
+	/// versions prior to LDK 0.2 load with `false` until a new update persists it.
 	is_manual_broadcast: bool,
-	/// True once we've observed either funding transaction on-chain. Older monitors assume
-	/// this is `true` when absent during upgrade so holder broadcasts aren't gated unexpectedly.
+	/// True once we've observed either funding transaction on-chain. Older monitors prior to LDK 0.2
+	/// assume this is `true` when absent during upgrade so holder broadcasts aren't gated unexpectedly.
 	/// In manual-broadcast channels we also use this to trigger deferred holder
 	/// broadcasts once the funding transaction finally appears on-chain.
 	funding_seen_onchain: bool,
@@ -6660,7 +6660,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			},
 			pending_funding: pending_funding.unwrap_or(vec![]),
 			is_manual_broadcast: is_manual_broadcast.unwrap_or(false),
-			// Assume "seen" when absent to prevent gating holder broadcasts after upgrade.
+			// Older monitors prior to LDK 0.2 assume this is `true` when absent 
+			// during upgrade so holder broadcasts aren't gated unexpectedly.
 			funding_seen_onchain: funding_seen_onchain.unwrap_or(true),
 
 			latest_update_id,
