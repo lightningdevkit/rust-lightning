@@ -426,6 +426,8 @@ pub const NO_LIQUIDITY_MANAGER: Option<
 				K = &dyn lightning::util::persist::KVStore,
 				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider,
 				TP = &dyn lightning_liquidity::utils::time::TimeProvider,
+				BroadcasterInterface = dyn lightning::chain::chaininterface::BroadcasterInterface,
+				T = &dyn BroadcasterInterface,
 			> + Send
 			+ Sync,
 	>,
@@ -449,6 +451,8 @@ pub const NO_LIQUIDITY_MANAGER_SYNC: Option<
 				KS = &dyn lightning::util::persist::KVStoreSync,
 				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider,
 				TP = &dyn lightning_liquidity::utils::time::TimeProvider,
+				BroadcasterInterface = dyn lightning::chain::chaininterface::BroadcasterInterface,
+				T = &dyn BroadcasterInterface,
 			> + Send
 			+ Sync,
 	>,
@@ -766,7 +770,7 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 /// # type P2PGossipSync<UL> = lightning::routing::gossip::P2PGossipSync<Arc<NetworkGraph>, Arc<UL>, Arc<Logger>>;
 /// # type ChannelManager<B, F, FE> = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor<B, F, FE>, B, FE, Logger>;
 /// # type OnionMessenger<B, F, FE> = lightning::onion_message::messenger::OnionMessenger<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<Logger>, Arc<ChannelManager<B, F, FE>>, Arc<lightning::onion_message::messenger::DefaultMessageRouter<Arc<NetworkGraph>, Arc<Logger>, Arc<lightning::sign::KeysManager>>>, Arc<ChannelManager<B, F, FE>>, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler>;
-/// # type LiquidityManager<B, F, FE> = lightning_liquidity::LiquidityManager<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<ChannelManager<B, F, FE>>, Arc<F>, Arc<Store>, Arc<DefaultTimeProvider>>;
+/// # type LiquidityManager<B, F, FE> = lightning_liquidity::LiquidityManager<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<ChannelManager<B, F, FE>>, Arc<F>, Arc<Store>, Arc<DefaultTimeProvider>, Arc<B>>;
 /// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
 /// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger, F, StoreSync>;
 /// # type OutputSweeper<B, D, FE, F, O> = lightning::util::sweep::OutputSweeper<Arc<B>, Arc<D>, Arc<FE>, Arc<F>, Arc<Store>, Arc<Logger>, Arc<O>>;
@@ -1950,6 +1954,7 @@ mod tests {
 		Arc<dyn Filter + Sync + Send>,
 		Arc<Persister>,
 		DefaultTimeProvider,
+		Arc<test_utils::TestBroadcaster>,
 	>;
 
 	struct Node {
@@ -2404,6 +2409,7 @@ mod tests {
 					None,
 					None,
 					Arc::clone(&kv_store),
+					Arc::clone(&tx_broadcaster),
 					None,
 					None,
 				)
@@ -2778,10 +2784,10 @@ mod tests {
 		let kv_store = KVStoreSyncWrapper(kv_store_sync);
 
 		// Yes, you can unsafe { turn off the borrow checker }
-		let lm_async: &'static LiquidityManager<_, _, _, _, _, _> = unsafe {
+		let lm_async: &'static LiquidityManager<_, _, _, _, _, _, _> = unsafe {
 			&*(nodes[0].liquidity_manager.get_lm_async()
-				as *const LiquidityManager<_, _, _, _, _, _>)
-				as &'static LiquidityManager<_, _, _, _, _, _>
+				as *const LiquidityManager<_, _, _, _, _, _, _>)
+				as &'static LiquidityManager<_, _, _, _, _, _, _>
 		};
 		let sweeper_async: &'static OutputSweeper<_, _, _, _, _, _, _> = unsafe {
 			&*(nodes[0].sweeper.sweeper_async() as *const OutputSweeper<_, _, _, _, _, _, _>)
@@ -3297,10 +3303,10 @@ mod tests {
 		let kv_store = KVStoreSyncWrapper(kv_store_sync);
 
 		// Yes, you can unsafe { turn off the borrow checker }
-		let lm_async: &'static LiquidityManager<_, _, _, _, _, _> = unsafe {
+		let lm_async: &'static LiquidityManager<_, _, _, _, _, _, _> = unsafe {
 			&*(nodes[0].liquidity_manager.get_lm_async()
-				as *const LiquidityManager<_, _, _, _, _, _>)
-				as &'static LiquidityManager<_, _, _, _, _, _>
+				as *const LiquidityManager<_, _, _, _, _, _, _>)
+				as &'static LiquidityManager<_, _, _, _, _, _, _>
 		};
 		let sweeper_async: &'static OutputSweeper<_, _, _, _, _, _, _> = unsafe {
 			&*(nodes[0].sweeper.sweeper_async() as *const OutputSweeper<_, _, _, _, _, _, _>)
@@ -3524,10 +3530,10 @@ mod tests {
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 
 		// Yes, you can unsafe { turn off the borrow checker }
-		let lm_async: &'static LiquidityManager<_, _, _, _, _, _> = unsafe {
+		let lm_async: &'static LiquidityManager<_, _, _, _, _, _, _> = unsafe {
 			&*(nodes[0].liquidity_manager.get_lm_async()
-				as *const LiquidityManager<_, _, _, _, _, _>)
-				as &'static LiquidityManager<_, _, _, _, _, _>
+				as *const LiquidityManager<_, _, _, _, _, _, _>)
+				as &'static LiquidityManager<_, _, _, _, _, _, _>
 		};
 		let sweeper_async: &'static OutputSweeper<_, _, _, _, _, _, _> = unsafe {
 			&*(nodes[0].sweeper.sweeper_async() as *const OutputSweeper<_, _, _, _, _, _, _>)

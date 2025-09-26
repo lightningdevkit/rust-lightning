@@ -84,6 +84,7 @@ pub fn do_test(data: &[u8]) {
 		None::<Arc<dyn Filter + Send + Sync>>,
 		None,
 		kv_store,
+		Arc::clone(&tx_broadcaster),
 		None,
 		None,
 	).unwrap());
