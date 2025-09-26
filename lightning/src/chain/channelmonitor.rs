@@ -2327,19 +2327,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// close channel with their commitment transaction after a substantial amount of time. Best
 	/// may be to contact the other node operator out-of-band to coordinate other options available
 	/// to you.
-	#[rustfmt::skip]
 	pub fn broadcast_latest_holder_commitment_txn<B: Deref, F: Deref, L: Deref>(
-		&self, broadcaster: &B, fee_estimator: &F, logger: &L
-	)
-	where
+		&self, broadcaster: &B, fee_estimator: &F, logger: &L,
+	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
-		L::Target: Logger
+		L::Target: Logger,
 	{
 		let mut inner = self.inner.lock().unwrap();
 		let fee_estimator = LowerBoundedFeeEstimator::new(&**fee_estimator);
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
-		inner.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &fee_estimator, &logger);
+		inner.queue_latest_holder_commitment_txn_for_broadcast(
+			broadcaster,
+			&fee_estimator,
+			&logger,
+		);
 	}
 
 	/// Unsafe test-only version of `broadcast_latest_holder_commitment_txn` used by our test framework
