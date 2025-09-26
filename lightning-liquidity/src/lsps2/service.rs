@@ -166,9 +166,9 @@ impl TrustModel {
 		}
 	}
 
-	fn get_funding_tx(&self) -> Option<Transaction> {
+	fn get_funding_tx(&self) -> Option<&Transaction> {
 		match self {
-			TrustModel::ClientTrustsLsp { funding_tx, .. } => funding_tx.clone(),
+			TrustModel::ClientTrustsLsp { funding_tx, .. } => funding_tx.as_ref(),
 			_ => None,
 		}
 	}
@@ -581,7 +581,7 @@ impl OutboundJITChannel {
 		}
 	}
 
-	fn get_funding_tx(&self) -> Option<Transaction> {
+	fn get_funding_tx(&self) -> Option<&Transaction> {
 		self.trust_model.get_funding_tx()
 	}
 
@@ -2028,7 +2028,7 @@ where
 		}
 
 		if let Some(funding_tx) = jit_channel.get_funding_tx() {
-			self.tx_broadcaster.broadcast_transactions(&[&funding_tx]);
+			self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
 		}
 	}
 }
