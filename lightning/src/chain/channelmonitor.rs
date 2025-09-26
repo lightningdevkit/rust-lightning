@@ -5260,6 +5260,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
+		let funding_seen_before = self.funding_seen_onchain;
 		let txn_matched = self.filter_block(txdata);
 		for tx in &txn_matched {
 			let mut output_val = Amount::ZERO;
@@ -5281,6 +5282,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let mut watch_outputs = Vec::new();
 		let mut claimable_outpoints = Vec::new();
+
+		if self.is_manual_broadcast && !funding_seen_before && self.funding_seen_onchain && self.holder_tx_signed
+		{
+			should_broadcast_commitment = true;
+		}
 		'tx_iter: for tx in &txn_matched {
 			let txid = tx.compute_txid();
 			log_trace!(logger, "Transaction {} confirmed in block {}", txid , block_hash);
