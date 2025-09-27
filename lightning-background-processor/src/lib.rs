@@ -331,52 +331,60 @@ fn update_scorer<'a, S: Deref<Target = SC> + Send + Sync, SC: 'a + WriteableScor
 	true
 }
 
+#[cfg(all(not(c_bindings), feature = "std"))]
+type ScorerWrapper<T> = std::sync::RwLock<T>;
+
+#[cfg(all(not(c_bindings), not(feature = "std")))]
+type ScorerWrapper<T> = core::cell::RefCell<T>;
+
 #[cfg(not(c_bindings))]
 type DynRouter = lightning::routing::router::DefaultRouter<
-	&'static NetworkGraph<&'static dyn Logger>,
-	&'static dyn Logger,
-	&'static dyn EntropySource,
-	&'static core::cell::RefCell<
+	&'static NetworkGraph<&'static (dyn Logger + Send + Sync)>,
+	&'static (dyn Logger + Send + Sync),
+	&'static (dyn EntropySource + Send + Sync),
+	&'static ScorerWrapper<
 		lightning::routing::scoring::ProbabilisticScorer<
-			&'static NetworkGraph<&'static dyn Logger>,
-			&'static dyn Logger,
+			&'static NetworkGraph<&'static (dyn Logger + Send + Sync)>,
+			&'static (dyn Logger + Send + Sync),
 		>,
 	>,
 	lightning::routing::scoring::ProbabilisticScoringFeeParameters,
 	lightning::routing::scoring::ProbabilisticScorer<
-		&'static NetworkGraph<&'static dyn Logger>,
-		&'static dyn Logger,
+		&'static NetworkGraph<&'static (dyn Logger + Send + Sync)>,
+		&'static (dyn Logger + Send + Sync),
 	>,
 >;
 
 #[cfg(not(c_bindings))]
 type DynMessageRouter = lightning::onion_message::messenger::DefaultMessageRouter<
-	&'static NetworkGraph<&'static dyn Logger>,
-	&'static dyn Logger,
-	&'static dyn EntropySource,
+	&'static NetworkGraph<&'static (dyn Logger + Send + Sync)>,
+	&'static (dyn Logger + Send + Sync),
+	&'static (dyn EntropySource + Send + Sync),
 >;
 
 #[cfg(all(not(c_bindings), not(taproot)))]
-type DynSignerProvider =
-	dyn lightning::sign::SignerProvider<EcdsaSigner = lightning::sign::InMemorySigner>;
+type DynSignerProvider = dyn lightning::sign::SignerProvider<EcdsaSigner = lightning::sign::InMemorySigner>
+	+ Send
+	+ Sync;
 
 #[cfg(all(not(c_bindings), taproot))]
-type DynSignerProvider = dyn lightning::sign::SignerProvider<
+type DynSignerProvider = (dyn lightning::sign::SignerProvider<
 	EcdsaSigner = lightning::sign::InMemorySigner,
 	TaprootSigner = lightning::sign::InMemorySigner,
->;
+> + Send
+     + Sync);
 
 #[cfg(not(c_bindings))]
 type DynChannelManager = lightning::ln::channelmanager::ChannelManager<
-	&'static dyn chain::Watch<lightning::sign::InMemorySigner>,
-	&'static dyn BroadcasterInterface,
-	&'static dyn EntropySource,
-	&'static dyn lightning::sign::NodeSigner,
+	&'static (dyn chain::Watch<lightning::sign::InMemorySigner> + Send + Sync),
+	&'static (dyn BroadcasterInterface + Send + Sync),
+	&'static (dyn EntropySource + Send + Sync),
+	&'static (dyn lightning::sign::NodeSigner + Send + Sync),
 	&'static DynSignerProvider,
-	&'static dyn FeeEstimator,
+	&'static (dyn FeeEstimator + Send + Sync),
 	&'static DynRouter,
 	&'static DynMessageRouter,
-	&'static dyn Logger,
+	&'static (dyn Logger + Send + Sync),
 >;
 
 /// When initializing a background processor without an onion messenger, this can be used to avoid
@@ -385,12 +393,12 @@ type DynChannelManager = lightning::ln::channelmanager::ChannelManager<
 pub const NO_ONION_MESSENGER: Option<
 	Arc<
 		dyn AOnionMessenger<
-				EntropySource = dyn EntropySource,
-				ES = &dyn EntropySource,
-				NodeSigner = dyn lightning::sign::NodeSigner,
-				NS = &dyn lightning::sign::NodeSigner,
-				Logger = dyn Logger,
-				L = &'static dyn Logger,
+				EntropySource = dyn EntropySource + Send + Sync,
+				ES = &(dyn EntropySource + Send + Sync),
+				NodeSigner = dyn lightning::sign::NodeSigner + Send + Sync,
+				NS = &(dyn lightning::sign::NodeSigner + Send + Sync),
+				Logger = dyn Logger + Send + Sync,
+				L = &'static (dyn Logger + Send + Sync),
 				NodeIdLookUp = DynChannelManager,
 				NL = &'static DynChannelManager,
 				MessageRouter = DynMessageRouter,
@@ -414,20 +422,22 @@ pub const NO_ONION_MESSENGER: Option<
 pub const NO_LIQUIDITY_MANAGER: Option<
 	Arc<
 		dyn ALiquidityManager<
-				EntropySource = dyn EntropySource,
-				ES = &dyn EntropySource,
-				NodeSigner = dyn lightning::sign::NodeSigner,
-				NS = &dyn lightning::sign::NodeSigner,
+				EntropySource = dyn EntropySource + Send + Sync,
+				ES = &(dyn EntropySource + Send + Sync),
+				NodeSigner = dyn lightning::sign::NodeSigner + Send + Sync,
+				NS = &(dyn lightning::sign::NodeSigner + Send + Sync),
 				AChannelManager = DynChannelManager,
 				CM = &DynChannelManager,
-				Filter = dyn chain::Filter,
-				C = &dyn chain::Filter,
-				KVStore = dyn lightning::util::persist::KVStore,
-				K = &dyn lightning::util::persist::KVStore,
-				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider,
-				TP = &dyn lightning_liquidity::utils::time::TimeProvider,
-				BroadcasterInterface = dyn lightning::chain::chaininterface::BroadcasterInterface,
-				T = &dyn BroadcasterInterface,
+				Filter = dyn chain::Filter + Send + Sync,
+				C = &(dyn chain::Filter + Send + Sync),
+				KVStore = dyn lightning::util::persist::KVStore + Send + Sync,
+				K = &(dyn lightning::util::persist::KVStore + Send + Sync),
+				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider + Send + Sync,
+				TP = &(dyn lightning_liquidity::utils::time::TimeProvider + Send + Sync),
+				BroadcasterInterface = dyn lightning::chain::chaininterface::BroadcasterInterface
+				                           + Send
+				                           + Sync,
+				T = &(dyn BroadcasterInterface + Send + Sync),
 			> + Send
 			+ Sync,
 	>,
@@ -439,20 +449,22 @@ pub const NO_LIQUIDITY_MANAGER: Option<
 pub const NO_LIQUIDITY_MANAGER_SYNC: Option<
 	Arc<
 		dyn ALiquidityManagerSync<
-				EntropySource = dyn EntropySource,
-				ES = &dyn EntropySource,
-				NodeSigner = dyn lightning::sign::NodeSigner,
-				NS = &dyn lightning::sign::NodeSigner,
+				EntropySource = dyn EntropySource + Send + Sync,
+				ES = &(dyn EntropySource + Send + Sync),
+				NodeSigner = dyn lightning::sign::NodeSigner + Send + Sync,
+				NS = &(dyn lightning::sign::NodeSigner + Send + Sync),
 				AChannelManager = DynChannelManager,
 				CM = &DynChannelManager,
-				Filter = dyn chain::Filter,
-				C = &dyn chain::Filter,
-				KVStoreSync = dyn lightning::util::persist::KVStoreSync,
-				KS = &dyn lightning::util::persist::KVStoreSync,
-				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider,
-				TP = &dyn lightning_liquidity::utils::time::TimeProvider,
-				BroadcasterInterface = dyn lightning::chain::chaininterface::BroadcasterInterface,
-				T = &dyn BroadcasterInterface,
+				Filter = dyn chain::Filter + Send + Sync,
+				C = &(dyn chain::Filter + Send + Sync),
+				KVStoreSync = dyn lightning::util::persist::KVStoreSync + Send + Sync,
+				KS = &(dyn lightning::util::persist::KVStoreSync + Send + Sync),
+				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider + Send + Sync,
+				TP = &(dyn lightning_liquidity::utils::time::TimeProvider + Send + Sync),
+				BroadcasterInterface = dyn lightning::chain::chaininterface::BroadcasterInterface
+				                           + Send
+				                           + Sync,
+				T = &(dyn BroadcasterInterface + Send + Sync),
 			> + Send
 			+ Sync,
 	>,
@@ -3582,15 +3594,13 @@ mod tests {
 		r2.unwrap()
 	}
 
-	#[test]
+	#[tokio::test]
 	#[cfg(not(c_bindings))]
-	fn test_no_consts() {
+	async fn test_no_consts() {
 		// Compile-test the NO_* constants can be used.
 		let (_, nodes) = create_nodes(1, "test_no_consts");
-		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir));
 		let bg_processor = BackgroundProcessor::start(
-			persister,
+			Arc::clone(&nodes[0].kv_store),
 			move |_: Event| Ok(()),
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
@@ -3606,5 +3616,39 @@ mod tests {
 		if !std::thread::panicking() {
 			bg_processor.stop().unwrap();
 		}
+
+		let kv_store = KVStoreSyncWrapper(Arc::clone(&nodes[0].kv_store));
+		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
+		let sweeper_async: &'static OutputSweeper<_, _, _, _, _, _, _> = unsafe {
+			&*(nodes[0].sweeper.sweeper_async() as *const OutputSweeper<_, _, _, _, _, _, _>)
+				as &'static OutputSweeper<_, _, _, _, _, _, _>
+		};
+		let bp_future = super::process_events_async(
+			kv_store,
+			move |_: Event| async move { Ok(()) },
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			crate::NO_ONION_MESSENGER,
+			nodes[0].no_gossip_sync(),
+			Arc::clone(&nodes[0].peer_manager),
+			crate::NO_LIQUIDITY_MANAGER,
+			Some(sweeper_async),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
+			move |dur: Duration| {
+				let mut exit_receiver = exit_receiver.clone();
+				Box::pin(async move {
+					tokio::select! {
+						_ = tokio::time::sleep(dur) => false,
+						_ = exit_receiver.changed() => true,
+					}
+				})
+			},
+			false,
+			|| Some(Duration::ZERO),
+		);
+		let t1 = tokio::spawn(bp_future);
+		exit_sender.send(()).unwrap();
+		t1.await.unwrap().unwrap();
 	}
 }
