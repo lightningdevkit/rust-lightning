@@ -1041,7 +1041,7 @@ pub trait ChangeDestinationSource {
 	///
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds controlled to the same user.
-	fn get_change_destination_script<'a>(&self) -> AsyncResult<'a, ScriptBuf>;
+	fn get_change_destination_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf>;
 }
 
 /// A synchronous helper trait that describes an on-chain wallet capable of returning a (change) destination script.
@@ -1073,7 +1073,7 @@ impl<T: Deref> ChangeDestinationSource for ChangeDestinationSourceSyncWrapper<T>
 where
 	T::Target: ChangeDestinationSourceSync,
 {
-	fn get_change_destination_script<'a>(&self) -> AsyncResult<'a, ScriptBuf> {
+	fn get_change_destination_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf> {
 		let script = self.0.get_change_destination_script();
 		Box::pin(async move { script })
 	}
