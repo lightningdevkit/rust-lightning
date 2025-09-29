@@ -199,7 +199,7 @@ pub(crate) struct ConstructedTransaction {
 	input_metadata: Vec<TxInMetadata>,
 	output_metadata: Vec<TxOutMetadata>,
 	tx: Transaction,
-	shared_input_index: Option<u32>,
+	shared_input_index: Option<u16>,
 	shared_output_index: u16,
 }
 
@@ -279,7 +279,7 @@ impl ConstructedTransaction {
 					.position(|txin| {
 						txin.previous_output == shared_funding_input.input.previous_output
 					})
-					.map(|position| position as u32)
+					.map(|position| position as u16)
 			});
 
 		let shared_output_index = output
@@ -455,7 +455,7 @@ impl ConstructedTransaction {
 		self.holder_is_initiator
 	}
 
-	pub fn shared_input_index(&self) -> Option<u32> {
+	pub fn shared_input_index(&self) -> Option<u16> {
 		self.shared_input_index
 	}
 }
