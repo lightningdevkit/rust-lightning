@@ -5501,11 +5501,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 
 		if should_broadcast_commitment {
-			let (mut claimables, mut outputs) =
-				self.generate_claimable_outpoints_and_watch_outputs(None);
-			if !self.is_manual_broadcast || self.funding_seen_onchain {
-				claimable_outpoints.append(&mut claimables);
-				watch_outputs.append(&mut outputs);
+			// Only generate claims immediately if block_confirmed 
+			// won't also generate them to avoid duplicate registrations.
+			let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
+			if should_broadcast.is_none() {
+				let (mut claimables, mut outputs) =
+					self.generate_claimable_outpoints_and_watch_outputs(None);
+				if !self.is_manual_broadcast || self.funding_seen_onchain {
+					claimable_outpoints.append(&mut claimables);
+					watch_outputs.append(&mut outputs);
+				}
 			}
 		}
 
