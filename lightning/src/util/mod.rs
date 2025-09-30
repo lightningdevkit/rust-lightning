@@ -20,6 +20,7 @@ pub mod mut_global;
 
 pub mod anchor_channel_reserves;
 
+pub mod async_poll;
 #[cfg(fuzzing)]
 pub mod base32;
 #[cfg(not(fuzzing))]
@@ -33,7 +34,6 @@ pub mod ser;
 pub mod sweep;
 pub mod wakers;
 
-pub(crate) mod async_poll;
 pub(crate) mod atomic_counter;
 pub(crate) mod byte_utils;
 pub mod hash_tables;
