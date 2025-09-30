@@ -8605,6 +8605,12 @@ where
 						.unwrap_or(false));
 				}
 
+				if signing_session.holder_tx_signatures().is_some() {
+					// Our `tx_signatures` either should've been the first time we processed them,
+					// or we're waiting for our counterparty to send theirs first.
+					return Ok((None, None));
+				}
+
 				signing_session
 			} else {
 				let err =
@@ -8864,7 +8870,18 @@ where
 			}
 			self.context.channel_state.clear_local_stfu_sent();
 			self.context.channel_state.clear_remote_stfu_sent();
-			self.context.channel_state.clear_quiescent();
+			if self
+				.context
+				.interactive_tx_signing_session
+				.as_ref()
+				.map(|signing_session| {
+					signing_session.has_received_tx_signatures()
+						&& signing_session.holder_tx_signatures().is_some()
+				})
+				.unwrap_or(true)
+			{
+				self.context.channel_state.clear_quiescent();
+			}
 		}
 
 		self.context.channel_state.set_peer_disconnected();
@@ -11317,6 +11334,11 @@ where
 			.as_ref()
 			.filter(|session| !session.has_received_tx_signatures())
 			.map(|signing_session| {
+				debug_assert_eq!(
+					self.pending_splice.is_some(),
+					self.context.channel_state.is_quiescent()
+				);
+
 				// - MUST include the `next_funding` TLV.
 				// - MUST set `next_funding_txid` to the txid of that interactive transaction.
 				let mut next_funding = msgs::NextFunding {
@@ -13896,7 +13918,18 @@ where
 					}
 					channel_state.clear_local_stfu_sent();
 					channel_state.clear_remote_stfu_sent();
-					channel_state.clear_quiescent();
+					if self
+						.context
+						.interactive_tx_signing_session
+						.as_ref()
+						.map(|signing_session| {
+							signing_session.has_received_tx_signatures()
+								&& signing_session.holder_tx_signatures().is_some()
+						})
+						.unwrap_or(true)
+					{
+						channel_state.clear_quiescent();
+					}
 				},
 				ChannelState::FundingNegotiated(_)
 					if self.context.interactive_tx_signing_session.is_some() => {},
