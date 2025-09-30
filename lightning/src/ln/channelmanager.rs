@@ -1601,6 +1601,8 @@ where
 	/// the highest `update_id` of all the pending in-flight updates (note that any pending updates
 	/// not yet applied sitting in [`ChannelManager::pending_background_events`] will also be
 	/// considered as they are also in [`Self::in_flight_monitor_updates`]).
+	///
+	/// Note that channels which were closed prior to LDK 0.1 may have a value here of `u64::MAX`.
 	closed_channel_monitor_update_ids: BTreeMap<ChannelId, u64>,
 	/// The peer is currently connected (i.e. we've seen a
 	/// [`BaseMessageHandler::peer_connected`] and no corresponding
@@ -13262,7 +13264,8 @@ where
 						.closed_channel_monitor_update_ids
 						.get_mut(&channel_id)
 						.expect("Channels originating a payment resolution must have a monitor");
-					*update_id += 1;
+					// Note that for channels closed pre-0.1, the latest update_id is `u64::MAX`.
+					*update_id = update_id.saturating_add(1);
 
 					let update = ChannelMonitorUpdate {
 						update_id: *update_id,
@@ -16523,7 +16526,9 @@ where
 					should_queue_fc_update = !monitor.no_further_updates_allowed();
 					let mut latest_update_id = monitor.get_latest_update_id();
 					if should_queue_fc_update {
-						latest_update_id += 1;
+						// Note that for channels closed pre-0.1, the latest update_id is
+						// `u64::MAX`.
+						latest_update_id = latest_update_id.saturating_add(1);
 					}
 					per_peer_state
 						.entry(counterparty_node_id)
@@ -17170,7 +17175,9 @@ where
 											.closed_channel_monitor_update_ids
 											.get_mut(channel_id)
 											.expect("Channels originating a preimage must have a monitor");
-										*update_id += 1;
+										// Note that for channels closed pre-0.1, the latest
+										// update_id is `u64::MAX`.
+										*update_id = update_id.saturating_add(1);
 
 										pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
 											counterparty_node_id: monitor.get_counterparty_node_id(),
