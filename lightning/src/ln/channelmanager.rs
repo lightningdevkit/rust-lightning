@@ -3654,7 +3654,7 @@ macro_rules! handle_post_close_monitor_update {
 			WithContext::from(&$self.logger, Some($counterparty_node_id), Some($channel_id), None);
 		let in_flight_updates;
 		let idx;
-		handle_new_monitor_update!(
+		handle_new_monitor_update_internal!(
 			$self,
 			$funding_txo,
 			$update,
@@ -3664,7 +3664,6 @@ macro_rules! handle_post_close_monitor_update {
 			$counterparty_node_id,
 			in_flight_updates,
 			idx,
-			_internal_outer,
 			{
 				// If we get a monitor update for a closed channel
 				let _ = in_flight_updates.remove(idx);
@@ -3693,7 +3692,7 @@ macro_rules! handle_new_monitor_update_todo_name {
 		let counterparty_node_id = $chan_context.get_counterparty_node_id();
 		let in_flight_updates;
 		let idx;
-		handle_new_monitor_update!(
+		handle_new_monitor_update_internal!(
 			$self,
 			$funding_txo,
 			$update,
@@ -3703,7 +3702,6 @@ macro_rules! handle_new_monitor_update_todo_name {
 			counterparty_node_id,
 			in_flight_updates,
 			idx,
-			_internal_outer,
 			{
 				let _ = in_flight_updates.remove(idx);
 			}
@@ -3711,11 +3709,11 @@ macro_rules! handle_new_monitor_update_todo_name {
 	}};
 }
 
-macro_rules! handle_new_monitor_update {
+macro_rules! handle_new_monitor_update_internal {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $logger: expr,
 		$chan_id: expr, $counterparty_node_id: expr, $in_flight_updates: ident, $update_idx: ident,
-		_internal_outer, $completed: expr
+		$completed: expr
 	) => {{
 		$in_flight_updates = &mut $peer_state
 			.in_flight_monitor_updates
@@ -3760,6 +3758,9 @@ macro_rules! handle_new_monitor_update {
 			false
 		}
 	}};
+}
+
+macro_rules! handle_new_monitor_update {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
 		$per_peer_state_lock: expr, $chan: expr
@@ -3769,7 +3770,7 @@ macro_rules! handle_new_monitor_update {
 		let counterparty_node_id = $chan.context.get_counterparty_node_id();
 		let in_flight_updates;
 		let idx;
-		handle_new_monitor_update!(
+		handle_new_monitor_update_internal!(
 			$self,
 			$funding_txo,
 			$update,
@@ -3779,7 +3780,6 @@ macro_rules! handle_new_monitor_update {
 			counterparty_node_id,
 			in_flight_updates,
 			idx,
-			_internal_outer,
 			{
 				let _ = in_flight_updates.remove(idx);
 				if in_flight_updates.is_empty() && $chan.blocked_monitor_updates_pending() == 0 {
