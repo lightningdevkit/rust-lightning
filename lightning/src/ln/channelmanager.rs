@@ -3628,38 +3628,50 @@ macro_rules! handle_monitor_update_completion {
 	} }
 }
 
+/// Returns whether the monitor update is completed, `false` if the update is in-progress.
+fn handle_monitor_update_res<CM: AChannelManager, LG: Logger>(
+	cm: &CM, update_res: ChannelMonitorUpdateStatus, channel_id: ChannelId, logger: LG,
+) -> bool {
+	debug_assert!(cm.get_cm().background_events_processed_since_startup.load(Ordering::Acquire));
+	match update_res {
+		ChannelMonitorUpdateStatus::UnrecoverableError => {
+			let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
+			log_error!(logger, "{}", err_str);
+			panic!("{}", err_str);
+		},
+		ChannelMonitorUpdateStatus::InProgress => {
+			#[cfg(not(any(test, feature = "_externalize_tests")))]
+			if cm.get_cm().monitor_update_type.swap(1, Ordering::Relaxed) == 2 {
+				panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
+			}
+			log_debug!(logger, "ChannelMonitor update for {} in flight, holding messages until the update completes.",
+				channel_id);
+			false
+		},
+		ChannelMonitorUpdateStatus::Completed => {
+			#[cfg(not(any(test, feature = "_externalize_tests")))]
+			if cm.get_cm().monitor_update_type.swap(2, Ordering::Relaxed) == 1 {
+				panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
+			}
+			true
+		},
+	}
+}
+
 macro_rules! handle_new_monitor_update {
-	($self: ident, $update_res: expr, $logger: expr, $channel_id: expr, _internal, $completed: expr) => { {
-		debug_assert!($self.background_events_processed_since_startup.load(Ordering::Acquire));
-		match $update_res {
-			ChannelMonitorUpdateStatus::UnrecoverableError => {
-				let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
-				log_error!($logger, "{}", err_str);
-				panic!("{}", err_str);
-			},
-			ChannelMonitorUpdateStatus::InProgress => {
-				#[cfg(not(any(test, feature = "_externalize_tests")))]
-				if $self.monitor_update_type.swap(1, Ordering::Relaxed) == 2 {
-					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
-				}
-				log_debug!($logger, "ChannelMonitor update for {} in flight, holding messages until the update completes.",
-					$channel_id);
-				false
-			},
-			ChannelMonitorUpdateStatus::Completed => {
-				#[cfg(not(any(test, feature = "_externalize_tests")))]
-				if $self.monitor_update_type.swap(2, Ordering::Relaxed) == 1 {
-					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
-				}
-				$completed;
-				true
-			},
-		}
-	} };
 	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, INITIAL_MONITOR) => {
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
-		handle_new_monitor_update!($self, $update_res, logger, $chan.context.channel_id(), _internal,
-			handle_monitor_update_completion!($self, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan))
+		let update_completed =
+			handle_monitor_update_res($self, $update_res, $chan.context.channel_id(), logger);
+		if update_completed {
+			handle_monitor_update_completion!(
+				$self,
+				$peer_state_lock,
+				$peer_state,
+				$per_peer_state_lock,
+				$chan
+			);
+		}
 	};
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $logger: expr,
@@ -3682,7 +3694,11 @@ macro_rules! handle_new_monitor_update {
 		if $self.background_events_processed_since_startup.load(Ordering::Acquire) {
 			let update_res =
 				$self.chain_monitor.update_channel($chan_id, &$in_flight_updates[$update_idx]);
-			handle_new_monitor_update!($self, update_res, $logger, $chan_id, _internal, $completed)
+			let update_completed = handle_monitor_update_res($self, update_res, $chan_id, $logger);
+			if update_completed {
+				$completed;
+			}
+			update_completed
 		} else {
 			// We blindly assume that the ChannelMonitorUpdate will be regenerated on startup if we
 			// fail to persist it. This is a fairly safe assumption, however, since anything we do
