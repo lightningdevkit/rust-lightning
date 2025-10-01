@@ -7,6 +7,7 @@ use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent};
 use crate::util::errors::APIError;
+use crate::util::ser::Writeable;
 use crate::util::test_channel_signer::SignerOp;
 
 #[test]
@@ -698,4 +699,63 @@ fn test_quiescence_during_disconnection() {
 	do_test_quiescence_during_disconnection(true, false);
 	do_test_quiescence_during_disconnection(false, true);
 	do_test_quiescence_during_disconnection(true, true);
+}
+
+#[test]
+fn test_quiescence_termination_on_disconnect() {
+	do_test_quiescence_termination_on_disconnect(false);
+	do_test_quiescence_termination_on_disconnect(true);
+}
+
+fn do_test_quiescence_termination_on_disconnect(reload: bool) {
+	// Tests that we terminate quiescence on disconnect if there's no quiescence protocol taking place.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_0a, persister_1a);
+	let (chain_monitor_0a, chain_monitor_1a);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let (node_0a, node_1a);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	nodes[0].node.maybe_propose_quiescence(&node_id_1, &channel_id).unwrap();
+
+	let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu);
+	let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu);
+
+	if reload {
+		let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
+		reload_node!(
+			nodes[0],
+			&nodes[0].node.encode(),
+			&[&encoded_monitor_0],
+			persister_0a,
+			chain_monitor_0a,
+			node_0a
+		);
+		let encoded_monitor_1 = get_monitor!(nodes[1], channel_id).encode();
+		reload_node!(
+			nodes[1],
+			&nodes[1].node.encode(),
+			&[&encoded_monitor_1],
+			persister_1a,
+			chain_monitor_1a,
+			node_1a
+		);
+	} else {
+		nodes[0].node.peer_disconnected(node_id_1);
+		nodes[1].node.peer_disconnected(node_id_0);
+	}
+
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_nodes(reconnect_args);
+
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 }

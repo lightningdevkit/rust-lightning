@@ -1686,27 +1686,20 @@ where
 		let logger = WithChannelContext::from(logger, &self.context(), None);
 		log_info!(logger, "Failed interactive transaction negotiation: {reason}");
 
-		let _interactive_tx_constructor = match &mut self.phase {
+		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => None,
+			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {},
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
-				pending_v2_channel.interactive_tx_constructor.take()
+				pending_v2_channel.interactive_tx_constructor.take();
 			},
-			ChannelPhase::Funded(funded_channel) => funded_channel
-				.pending_splice
-				.as_mut()
-				.and_then(|pending_splice| pending_splice.funding_negotiation.take())
-				.and_then(|funding_negotiation| {
-					if let FundingNegotiation::ConstructingTransaction {
-						interactive_tx_constructor,
-						..
-					} = funding_negotiation
-					{
-						Some(interactive_tx_constructor)
-					} else {
-						None
-					}
-				}),
+			ChannelPhase::Funded(funded_channel) => {
+				if funded_channel.should_reset_pending_splice_funding_negotiation().unwrap_or(true)
+				{
+					funded_channel.reset_pending_splice_state();
+				} else {
+					debug_assert!(false, "We should never fail an interactive funding negotiation once we're exchanging tx_signatures");
+				}
+			},
 		};
 
 		reason.into_tx_abort_msg(self.context().channel_id)
@@ -1818,11 +1811,11 @@ where
 	where
 		L::Target: Logger,
 	{
-		// This checks for and resets the interactive negotiation state by `take()`ing it from the channel.
-		// The existence of the `tx_constructor` indicates that we have not moved into the signing
-		// phase for this interactively constructed transaction and hence we have not exchanged
-		// `tx_signatures`. Either way, we never close the channel upon receiving a `tx_abort`:
-		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L574-L576
+		// If we have not sent a `tx_abort` message for this negotiation previously, we need to echo
+		// back a tx_abort message according to the spec:
+		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
+		// For rationale why we echo back `tx_abort`:
+		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
 		let should_ack = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
@@ -1832,19 +1825,27 @@ where
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
 				pending_v2_channel.interactive_tx_constructor.take().is_some()
 			},
-			ChannelPhase::Funded(funded_channel) => funded_channel
-				.pending_splice
-				.as_mut()
-				.and_then(|pending_splice| pending_splice.funding_negotiation.take())
-				.is_some(),
+			ChannelPhase::Funded(funded_channel) => {
+				if let Some(should_reset) =
+					funded_channel.should_reset_pending_splice_funding_negotiation()
+				{
+					if should_reset {
+						// We may have still tracked the pending funding negotiation state, so we
+						// should ack with our own `tx_abort`.
+						funded_channel.reset_pending_splice_state()
+					} else {
+						return Err(ChannelError::close(
+							"Received tx_abort while awaiting tx_signatures exchange".to_owned(),
+						));
+					}
+				} else {
+					// We were not tracking the pending funding negotiation state anymore, likely
+					// due to a disconnection or already having sent our own `tx_abort`.
+					false
+				}
+			},
 		};
 
-		// NOTE: Since at this point we have not sent a `tx_abort` message for this negotiation
-		// previously (tx_constructor was `Some`), we need to echo back a tx_abort message according
-		// to the spec:
-		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
-		// For rationale why we echo back `tx_abort`:
-		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
 		Ok(should_ack.then(|| {
 			let logger = WithChannelContext::from(logger, &self.context(), None);
 			let reason =
@@ -2554,6 +2555,15 @@ impl FundingNegotiation {
 }
 
 impl PendingFunding {
+	fn can_abandon_funding_negotiation(&self) -> bool {
+		self.funding_negotiation
+			.as_ref()
+			.map(|funding_negotiation| {
+				!matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. })
+			})
+			.unwrap_or(true)
+	}
+
 	fn check_get_splice_locked<SP: Deref>(
 		&mut self, context: &ChannelContext<SP>, confirmed_funding_index: usize, height: u32,
 	) -> Option<msgs::SpliceLocked>
@@ -6739,6 +6749,45 @@ where
 		)
 	}
 
+	/// Returns `None` if there is no [`FundedChannel::pending_splice`], otherwise a boolean
+	/// indicating whether we should reset the splice's [`PendingFunding::funding_negotiation`].
+	fn should_reset_pending_splice_funding_negotiation(&self) -> Option<bool> {
+		self.pending_splice.as_ref().map(|pending_splice| {
+			if pending_splice.can_abandon_funding_negotiation() {
+				true
+			} else {
+				self.context
+					.interactive_tx_signing_session
+					.as_ref()
+					.map(|signing_session| !signing_session.has_received_commitment_signed())
+					.unwrap_or_else(|| {
+						debug_assert!(false);
+						false
+					})
+			}
+		})
+	}
+
+	fn should_reset_pending_splice_state(&self) -> bool {
+		self.should_reset_pending_splice_funding_negotiation().unwrap_or(true)
+			&& self.pending_funding().is_empty()
+	}
+
+	fn reset_pending_splice_state(&mut self) -> bool {
+		debug_assert!(self.should_reset_pending_splice_funding_negotiation().unwrap_or(true));
+		self.context.channel_state.clear_quiescent();
+		self.context.interactive_tx_signing_session.take();
+		let has_funding_negotiation = self
+			.pending_splice
+			.as_mut()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.take())
+			.is_some();
+		if self.should_reset_pending_splice_state() {
+			self.pending_splice.take();
+		}
+		has_funding_negotiation
+	}
+
 	#[rustfmt::skip]
 	fn check_remote_fee<F: Deref, L: Deref>(
 		channel_type: &ChannelTypeFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
@@ -8864,7 +8913,14 @@ where
 			}
 			self.context.channel_state.clear_local_stfu_sent();
 			self.context.channel_state.clear_remote_stfu_sent();
-			self.context.channel_state.clear_quiescent();
+			if self.should_reset_pending_splice_funding_negotiation().unwrap_or(true) {
+				// If we were in quiescence but a splice was never negotiated, or the negotiation
+				// failed due to disconnecting, we shouldn't be quiescent anymore upon reconnecting.
+				// If there was a pending splice negotiation that has failed due to disconnecting,
+				// we also take the opportunity to clean up our state.
+				self.reset_pending_splice_state();
+				debug_assert!(!self.context.channel_state.is_quiescent());
+			}
 		}
 
 		self.context.channel_state.set_peer_disconnected();
@@ -13896,7 +13952,12 @@ where
 					}
 					channel_state.clear_local_stfu_sent();
 					channel_state.clear_remote_stfu_sent();
-					channel_state.clear_quiescent();
+					if self.should_reset_pending_splice_funding_negotiation().unwrap_or(true) {
+						// If we were in quiescence but a splice was never negotiated, or the
+						// negotiation failed due to disconnecting, we shouldn't be quiescent
+						// anymore upon reconnecting.
+						channel_state.clear_quiescent();
+					}
 				},
 				ChannelState::FundingNegotiated(_)
 					if self.context.interactive_tx_signing_session.is_some() => {},
@@ -14259,6 +14320,20 @@ where
 		let holder_commitment_point_next = self.holder_commitment_point.next_point();
 		let holder_commitment_point_pending_next = self.holder_commitment_point.pending_next_point;
 
+		let interactive_tx_signing_session =
+			if self.should_reset_pending_splice_funding_negotiation().unwrap_or(false) {
+				None
+			} else {
+				self.context.interactive_tx_signing_session.as_ref()
+			};
+		let pending_splice = if self.should_reset_pending_splice_state() {
+			None
+		} else {
+			// We don't have to worry about resetting the pending `FundingNegotiation` because we
+			// can only read `FundingNegotiation::AwaitingSignatures` variants anyway.
+			self.pending_splice.as_ref()
+		};
+
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -14302,12 +14377,12 @@ where
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
 			(55, removed_htlc_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_attribution_data, optional_vec), // Added in 0.2
-			(58, self.context.interactive_tx_signing_session, option), // Added in 0.2
+			(58, interactive_tx_signing_session, option), // Added in 0.2
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
 			(63, holder_commitment_point_current, option), // Added in 0.2
-			(64, self.pending_splice, option), // Added in 0.2
+			(64, pending_splice, option), // Added in 0.2
 			(65, self.quiescent_action, option), // Added in 0.2
 			(67, pending_outbound_held_htlc_flags, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags, optional_vec), // Added in 0.2
@@ -14970,6 +15045,15 @@ where
 				},
 			}
 		};
+
+		if let Some(funding_negotiation) = pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+		{
+			if !matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. }) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
 
 		Ok(FundedChannel {
 			funding: FundingScope {
