@@ -3729,8 +3729,11 @@ macro_rules! handle_new_monitor_update_internal {
 				$in_flight_updates.len() - 1
 			});
 		if $self.background_events_processed_since_startup.load(Ordering::Acquire) {
-			let update_res =
-				$self.chain_monitor.update_channel($chan_id, &$in_flight_updates[$update_idx]);
+			let update_res = $self.chain_monitor.update_channel(
+				$chan_id,
+				&$in_flight_updates[$update_idx],
+				None,
+			);
 			let update_completed = $self.handle_monitor_update_res(update_res, $chan_id, $logger);
 			if update_completed {
 				$completed;

@@ -143,7 +143,7 @@ fn test_monitor_and_persister_update_fail() {
 				// Check that the persister returns InProgress (and will never actually complete)
 				// as the monitor update errors.
 				if let ChannelMonitorUpdateStatus::InProgress =
-					chain_mon.chain_monitor.update_channel(chan.2, &update)
+					chain_mon.chain_monitor.update_channel(chan.2, &update, None)
 				{
 				} else {
 					panic!("Expected monitor paused");
@@ -158,7 +158,7 @@ fn test_monitor_and_persister_update_fail() {
 				// Apply the monitor update to the original ChainMonitor, ensuring the
 				// ChannelManager and ChannelMonitor aren't out of sync.
 				assert_eq!(
-					nodes[0].chain_monitor.update_channel(chan.2, &update),
+					nodes[0].chain_monitor.update_channel(chan.2, &update, None),
 					ChannelMonitorUpdateStatus::Completed
 				);
 			} else {
@@ -4961,10 +4961,10 @@ fn native_async_persist() {
 
 	// Now test two async `ChannelMonitorUpdate`s in flight at once, completing them in-order but
 	// separately.
-	let update_status = async_chain_monitor.update_channel(chan_id, &updates[0]);
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[0], None);
 	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
 
-	let update_status = async_chain_monitor.update_channel(chan_id, &updates[1]);
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[1], None);
 	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
 
 	persist_futures.poll_futures();
@@ -5010,10 +5010,10 @@ fn native_async_persist() {
 	// Finally, test two async `ChanelMonitorUpdate`s in flight at once, completing them
 	// out-of-order and ensuring that no `MonitorEvent::Completed` is generated until they are both
 	// completed (and that it marks both as completed when it is generated).
-	let update_status = async_chain_monitor.update_channel(chan_id, &updates[2]);
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[2], None);
 	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
 
-	let update_status = async_chain_monitor.update_channel(chan_id, &updates[3]);
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[3], None);
 	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
 
 	persist_futures.poll_futures();

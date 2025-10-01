@@ -180,7 +180,7 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	/// [`Writeable::write`]: crate::util::ser::Writeable::write
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, monitor_update: Option<&ChannelMonitorUpdate>,
-		monitor: &ChannelMonitor<ChannelSigner>,
+		encoded_channel: Option<&[u8]>, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> ChannelMonitorUpdateStatus;
 	/// Prevents the channel monitor from being loaded on startup.
 	///
@@ -320,6 +320,7 @@ where
 
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, monitor_update: Option<&ChannelMonitorUpdate>,
+		encoded_channel: Option<&[u8]>,
 		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
 	) -> ChannelMonitorUpdateStatus {
 		self.persister.spawn_async_update_persisted_channel(monitor_name, monitor_update, monitor);
@@ -579,8 +580,12 @@ where
 			// `ChannelMonitorUpdate` after a channel persist for a channel with the same
 			// `latest_update_id`.
 			let _pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
-			match self.persister.update_persisted_channel(monitor.persistence_key(), None, monitor)
-			{
+			match self.persister.update_persisted_channel(
+				monitor.persistence_key(),
+				None,
+				None,
+				monitor,
+			) {
 				ChannelMonitorUpdateStatus::Completed => log_trace!(
 					logger,
 					"Finished syncing Channel Monitor for channel {} for block-data",
@@ -943,6 +948,7 @@ where
 			if needs_persistence {
 				self.persister.update_persisted_channel(
 					monitor_holder.monitor.persistence_key(),
+					None,
 					None,
 					&monitor_holder.monitor,
 				);
@@ -1392,7 +1398,7 @@ where
 	}
 
 	fn update_channel(
-		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
+		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate, encoded_channel: Option<&[u8]>,
 	) -> ChannelMonitorUpdateStatus {
 		// `ChannelMonitorUpdate`'s `channel_id` is `None` prior to 0.0.121 and all channels in those
 		// versions are V1-established. For 0.0.121+ the `channel_id` fields is always `Some`.
@@ -1445,12 +1451,14 @@ where
 					self.persister.update_persisted_channel(
 						monitor.persistence_key(),
 						None,
+						None,
 						monitor,
 					)
 				} else {
 					self.persister.update_persisted_channel(
 						monitor.persistence_key(),
 						Some(update),
+						None,
 						monitor,
 					)
 				};

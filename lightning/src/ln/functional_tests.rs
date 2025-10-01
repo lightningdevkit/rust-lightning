@@ -7259,11 +7259,11 @@ pub fn test_update_err_monitor_lockdown() {
 				&node_cfgs[0].logger,
 			) {
 				assert_eq!(
-					watchtower.chain_monitor.update_channel(chan_1.2, &update),
+					watchtower.chain_monitor.update_channel(chan_1.2, &update, None),
 					ChannelMonitorUpdateStatus::InProgress
 				);
 				assert_eq!(
-					nodes[0].chain_monitor.update_channel(chan_1.2, &update),
+					nodes[0].chain_monitor.update_channel(chan_1.2, &update, None),
 					ChannelMonitorUpdateStatus::Completed
 				);
 			} else {
@@ -7416,15 +7416,15 @@ pub fn test_concurrent_monitor_claim() {
 			) {
 				// Watchtower Alice should already have seen the block and reject the update
 				assert_eq!(
-					watchtower_alice.chain_monitor.update_channel(chan_1.2, &update),
+					watchtower_alice.chain_monitor.update_channel(chan_1.2, &update, None),
 					ChannelMonitorUpdateStatus::InProgress
 				);
 				assert_eq!(
-					watchtower_bob.chain_monitor.update_channel(chan_1.2, &update),
+					watchtower_bob.chain_monitor.update_channel(chan_1.2, &update, None),
 					ChannelMonitorUpdateStatus::Completed
 				);
 				assert_eq!(
-					nodes[0].chain_monitor.update_channel(chan_1.2, &update),
+					nodes[0].chain_monitor.update_channel(chan_1.2, &update, None),
 					ChannelMonitorUpdateStatus::Completed
 				);
 			} else {

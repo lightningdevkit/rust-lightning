@@ -326,7 +326,7 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	fn update_channel(
-		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
+		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate, encoded_channel: Option<&[u8]>,
 	) -> ChannelMonitorUpdateStatus;
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new

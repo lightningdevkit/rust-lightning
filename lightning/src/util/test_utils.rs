@@ -580,7 +580,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	}
 
 	fn update_channel(
-		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
+		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate, encoded_channel: Option<&[u8]>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		#[cfg(feature = "std")]
 		if let Some(blocker) = &*self.write_blocker.lock().unwrap() {
@@ -614,7 +614,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 			.lock()
 			.unwrap()
 			.insert(channel_id, (update.update_id, update.update_id));
-		let update_res = self.chain_monitor.update_channel(channel_id, update);
+		let update_res = self.chain_monitor.update_channel(channel_id, update, encoded_channel);
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let monitor = self.chain_monitor.get_monitor(channel_id).unwrap();
@@ -744,9 +744,9 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
-		data: &ChannelMonitor<Signer>,
+		encoded_channel: Option<&[u8]>, data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let res = self.persister.update_persisted_channel(monitor_name, update, data);
+		let res = self.persister.update_persisted_channel(monitor_name, update, None, data);
 
 		if let Some(update) = update {
 			let commitment_txs = data.counterparty_commitment_txs_from_update(update);
@@ -830,7 +830,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister 
 
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
-		_data: &ChannelMonitor<Signer>,
+		encoded_channel: Option<&[u8]>, _data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		let mut ret = chain::ChannelMonitorUpdateStatus::Completed;
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
