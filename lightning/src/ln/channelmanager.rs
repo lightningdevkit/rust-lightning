@@ -3675,6 +3675,44 @@ macro_rules! handle_initial_monitor {
 	};
 }
 
+macro_rules! handle_post_close_monitor_update {
+	(
+		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
+		$per_peer_state_lock: expr, $counterparty_node_id: expr, $channel_id: expr
+	) => {{
+		let logger =
+			WithContext::from(&$self.logger, Some($counterparty_node_id), Some($channel_id), None);
+		let in_flight_updates;
+		let idx;
+		handle_new_monitor_update!(
+			$self,
+			$funding_txo,
+			$update,
+			$peer_state,
+			logger,
+			$channel_id,
+			$counterparty_node_id,
+			in_flight_updates,
+			idx,
+			_internal_outer,
+			{
+				let _ = in_flight_updates.remove(idx);
+				if in_flight_updates.is_empty() {
+					let update_actions = $peer_state
+						.monitor_update_blocked_actions
+						.remove(&$channel_id)
+						.unwrap_or(Vec::new());
+
+					mem::drop($peer_state_lock);
+					mem::drop($per_peer_state_lock);
+
+					$self.handle_monitor_update_completion_actions(update_actions);
+				}
+			}
+		)
+	}};
+}
+
 macro_rules! handle_new_monitor_update {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $logger: expr,
@@ -3746,41 +3784,6 @@ macro_rules! handle_new_monitor_update {
 			_internal_outer,
 			{
 				let _ = in_flight_updates.remove(idx);
-			}
-		)
-	}};
-	(
-		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
-		$per_peer_state_lock: expr, $counterparty_node_id: expr, $channel_id: expr, POST_CHANNEL_CLOSE
-	) => {{
-		let logger =
-			WithContext::from(&$self.logger, Some($counterparty_node_id), Some($channel_id), None);
-		let in_flight_updates;
-		let idx;
-		handle_new_monitor_update!(
-			$self,
-			$funding_txo,
-			$update,
-			$peer_state,
-			logger,
-			$channel_id,
-			$counterparty_node_id,
-			in_flight_updates,
-			idx,
-			_internal_outer,
-			{
-				let _ = in_flight_updates.remove(idx);
-				if in_flight_updates.is_empty() {
-					let update_actions = $peer_state
-						.monitor_update_blocked_actions
-						.remove(&$channel_id)
-						.unwrap_or(Vec::new());
-
-					mem::drop($peer_state_lock);
-					mem::drop($per_peer_state_lock);
-
-					$self.handle_monitor_update_completion_actions(update_actions);
-				}
 			}
 		)
 	}};
@@ -4494,9 +4497,9 @@ where
 			hash_map::Entry::Vacant(_) => {},
 		}
 
-		handle_new_monitor_update!(
+		handle_post_close_monitor_update!(
 			self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state,
-			counterparty_node_id, channel_id, POST_CHANNEL_CLOSE
+			counterparty_node_id, channel_id
 		);
 	}
 
@@ -8955,7 +8958,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				.push(action);
 		}
 
-		handle_new_monitor_update!(
+		handle_post_close_monitor_update!(
 			self,
 			prev_hop.funding_txo,
 			preimage_update,
@@ -8963,8 +8966,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			peer_state,
 			per_peer_state,
 			prev_hop.counterparty_node_id,
-			chan_id,
-			POST_CHANNEL_CLOSE
+			chan_id
 		);
 	}
 
@@ -13345,7 +13347,7 @@ where
 						};
 						self.pending_background_events.lock().unwrap().push(event);
 					} else {
-						handle_new_monitor_update!(
+						handle_post_close_monitor_update!(
 							self,
 							channel_funding_outpoint,
 							update,
@@ -13353,8 +13355,7 @@ where
 							peer_state,
 							per_peer_state,
 							counterparty_node_id,
-							channel_id,
-							POST_CHANNEL_CLOSE
+							channel_id
 						);
 					}
 				},
