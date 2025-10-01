@@ -9693,12 +9693,18 @@ where
 
 		// A node:
 		//   - if `next_commitment_number` is 1 in both the `channel_reestablish` it
-		//     sent and received:
+		//     sent and received, and none of those `channel_reestablish` messages
+		//     contain `my_current_funding_locked` or `next_funding` for a splice transaction:
 		//     - MUST retransmit `channel_ready`.
 		//   - otherwise:
 		//     - MUST NOT retransmit `channel_ready`, but MAY send `channel_ready` with
 		//       a different `short_channel_id` `alias` field.
-		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.next_transaction_number() == 1 {
+		let both_sides_on_initial_commitment_number = msg.next_local_commitment_number == 1
+			&& INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.next_transaction_number() == 1;
+		let channel_ready = if both_sides_on_initial_commitment_number
+			&& self.pending_splice.is_none()
+			&& self.funding.channel_transaction_parameters.splice_parent_funding_txid.is_none()
+		{
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
 			self.get_channel_ready(logger)
 		} else { None };
