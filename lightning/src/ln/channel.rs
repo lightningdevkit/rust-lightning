@@ -60,7 +60,8 @@ use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::interactivetxs::{
 	calculate_change_output_value, get_output_weight, AbortReason, HandleTxCompleteValue,
 	InteractiveTxConstructor, InteractiveTxConstructorArgs, InteractiveTxMessageSend,
-	InteractiveTxSigningSession, SharedOwnedInput, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
+	InteractiveTxSigningSession, NegotiationError, SharedOwnedInput, SharedOwnedOutput,
+	TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
@@ -1787,20 +1788,22 @@ where
 
 		let (interactive_tx_msg_send, negotiation_complete) = match tx_complete_action {
 			HandleTxCompleteValue::SendTxMessage(interactive_tx_msg_send) => {
-				(Some(interactive_tx_msg_send), false)
+				(Some(interactive_tx_msg_send), None)
 			},
-			HandleTxCompleteValue::SendTxComplete(
+			HandleTxCompleteValue::NegotiationComplete(
 				interactive_tx_msg_send,
-				negotiation_complete,
-			) => (Some(interactive_tx_msg_send), negotiation_complete),
-			HandleTxCompleteValue::NegotiationComplete => (None, true),
+				funding_outpoint,
+			) => (interactive_tx_msg_send, Some(funding_outpoint)),
 		};
-		if !negotiation_complete {
+
+		let funding_outpoint = if let Some(funding_outpoint) = negotiation_complete {
+			funding_outpoint
+		} else {
 			return Ok((interactive_tx_msg_send, None));
-		}
+		};
 
 		let commitment_signed = self
-			.funding_tx_constructed(logger)
+			.funding_tx_constructed(funding_outpoint, logger)
 			.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))?;
 		Ok((interactive_tx_msg_send, Some(commitment_signed)))
 	}
@@ -1891,13 +1894,13 @@ where
 	}
 
 	fn funding_tx_constructed<L: Deref>(
-		&mut self, logger: &L,
+		&mut self, funding_outpoint: OutPoint, logger: &L,
 	) -> Result<msgs::CommitmentSigned, AbortReason>
 	where
 		L::Target: Logger,
 	{
 		let logger = WithChannelContext::from(logger, self.context(), None);
-		match &mut self.phase {
+		let (interactive_tx_constructor, commitment_signed) = match &mut self.phase {
 			ChannelPhase::UnfundedV2(chan) => {
 				debug_assert_eq!(
 					chan.context.channel_state,
@@ -1907,52 +1910,73 @@ where
 					),
 				);
 
-				let signing_session = chan
+				let interactive_tx_constructor = chan
 					.interactive_tx_constructor
 					.take()
-					.expect("PendingV2Channel::interactive_tx_constructor should be set")
-					.into_signing_session();
+					.expect("PendingV2Channel::interactive_tx_constructor should be set");
 				let commitment_signed = chan.context.funding_tx_constructed(
 					&mut chan.funding,
-					signing_session,
+					funding_outpoint,
 					false,
 					chan.unfunded_context.transaction_number(),
 					&&logger,
 				)?;
 
-				return Ok(commitment_signed);
+				(interactive_tx_constructor, commitment_signed)
 			},
 			ChannelPhase::Funded(chan) => {
 				if let Some(pending_splice) = chan.pending_splice.as_mut() {
-					if let Some(funding_negotiation) = pending_splice.funding_negotiation.take() {
-						if let FundingNegotiation::ConstructingTransaction {
-							mut funding,
-							interactive_tx_constructor,
-						} = funding_negotiation
-						{
-							let signing_session = interactive_tx_constructor.into_signing_session();
-							let commitment_signed = chan.context.funding_tx_constructed(
+					pending_splice
+						.funding_negotiation
+						.take()
+						.and_then(|funding_negotiation| {
+							if let FundingNegotiation::ConstructingTransaction {
+								funding,
+								interactive_tx_constructor,
+							} = funding_negotiation
+							{
+								Some((funding, interactive_tx_constructor))
+							} else {
+								// Replace the taken state for later error handling
+								pending_splice.funding_negotiation = Some(funding_negotiation);
+								None
+							}
+						})
+						.ok_or_else(|| {
+							AbortReason::InternalError(
+								"Got a tx_complete message in an invalid state",
+							)
+						})
+						.and_then(|(mut funding, interactive_tx_constructor)| {
+							match chan.context.funding_tx_constructed(
 								&mut funding,
-								signing_session,
+								funding_outpoint,
 								true,
 								chan.holder_commitment_point.next_transaction_number(),
 								&&logger,
-							)?;
-
-							pending_splice.funding_negotiation =
-								Some(FundingNegotiation::AwaitingSignatures { funding });
-
-							return Ok(commitment_signed);
-						} else {
-							// Replace the taken state
-							pending_splice.funding_negotiation = Some(funding_negotiation);
-						}
-					}
+							) {
+								Ok(commitment_signed) => {
+									// Advance the state
+									pending_splice.funding_negotiation =
+										Some(FundingNegotiation::AwaitingSignatures { funding });
+									Ok((interactive_tx_constructor, commitment_signed))
+								},
+								Err(e) => {
+									// Restore the taken state for later error handling
+									pending_splice.funding_negotiation =
+										Some(FundingNegotiation::ConstructingTransaction {
+											funding,
+											interactive_tx_constructor,
+										});
+									Err(e)
+								},
+							}
+						})?
+				} else {
+					return Err(AbortReason::InternalError(
+						"Got a tx_complete message in an invalid state",
+					));
 				}
-
-				return Err(AbortReason::InternalError(
-					"Got a tx_complete message in an invalid state",
-				));
 			},
 			_ => {
 				debug_assert!(false);
@@ -1960,7 +1984,11 @@ where
 					"Got a tx_complete message in an invalid phase",
 				));
 			},
-		}
+		};
+
+		let signing_session = interactive_tx_constructor.into_signing_session();
+		self.context_mut().interactive_tx_signing_session = Some(signing_session);
+		Ok(commitment_signed)
 	}
 
 	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
@@ -6061,30 +6089,13 @@ where
 
 	#[rustfmt::skip]
 	fn funding_tx_constructed<L: Deref>(
-		&mut self, funding: &mut FundingScope, signing_session: InteractiveTxSigningSession,
-		is_splice: bool, holder_commitment_transaction_number: u64, logger: &L
+		&mut self, funding: &mut FundingScope, funding_outpoint: OutPoint, is_splice: bool,
+		holder_commitment_transaction_number: u64, logger: &L,
 	) -> Result<msgs::CommitmentSigned, AbortReason>
 	where
 		L::Target: Logger
 	{
-		let mut output_index = None;
-		let expected_spk = funding.get_funding_redeemscript().to_p2wsh();
-		for (idx, outp) in signing_session.unsigned_tx().tx().output.iter().enumerate() {
-			if outp.script_pubkey == expected_spk && outp.value.to_sat() == funding.get_value_satoshis() {
-				if output_index.is_some() {
-					return Err(AbortReason::DuplicateFundingOutput);
-				}
-				output_index = Some(idx as u16);
-			}
-		}
-		let outpoint = if let Some(output_index) = output_index {
-			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
-		} else {
-			return Err(AbortReason::MissingFundingOutput);
-		};
-		funding
-			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
-		self.interactive_tx_signing_session = Some(signing_session);
+		funding.channel_transaction_parameters.funding_outpoint = Some(funding_outpoint);
 
 		if is_splice {
 			debug_assert_eq!(
@@ -6101,7 +6112,6 @@ where
 			Some(commitment_signed) => commitment_signed,
 			// TODO(splicing): Support async signing
 			None => {
-				funding.channel_transaction_parameters.funding_outpoint = None;
 				return Err(AbortReason::InternalError("Failed to compute commitment_signed signatures"));
 			},
 		};
@@ -6177,8 +6187,6 @@ where
 		SP::Target: SignerProvider,
 		L::Target: Logger,
 	{
-		debug_assert!(self.interactive_tx_signing_session.is_some());
-
 		let signatures = self.get_initial_counterparty_commitment_signatures(funding, logger);
 		if let Some((signature, htlc_signatures)) = signatures {
 			log_info!(
@@ -6518,9 +6526,9 @@ impl FundingNegotiationContext {
 	/// Prepare and start interactive transaction negotiation.
 	/// If error occurs, it is caused by our side, not the counterparty.
 	fn into_interactive_tx_constructor<SP: Deref, ES: Deref>(
-		self, context: &ChannelContext<SP>, funding: &FundingScope, signer_provider: &SP,
+		mut self, context: &ChannelContext<SP>, funding: &FundingScope, signer_provider: &SP,
 		entropy_source: &ES, holder_node_id: PublicKey,
-	) -> Result<InteractiveTxConstructor, AbortReason>
+	) -> Result<InteractiveTxConstructor, NegotiationError>
 	where
 		SP::Target: SignerProvider,
 		ES::Target: EntropySource,
@@ -6546,25 +6554,32 @@ impl FundingNegotiationContext {
 
 		// Optionally add change output
 		let change_value_opt = if self.our_funding_contribution > SignedAmount::ZERO {
-			calculate_change_output_value(
+			match calculate_change_output_value(
 				&self,
 				self.shared_funding_input.is_some(),
 				&shared_funding_output.script_pubkey,
 				context.holder_dust_limit_satoshis,
-			)?
+			) {
+				Ok(change_value_opt) => change_value_opt,
+				Err(reason) => {
+					return Err(self.into_negotiation_error(reason));
+				},
+			}
 		} else {
 			None
 		};
-
-		let mut funding_outputs = self.our_funding_outputs;
 
 		if let Some(change_value) = change_value_opt {
 			let change_script = if let Some(script) = self.change_script {
 				script
 			} else {
-				signer_provider
-					.get_destination_script(context.channel_keys_id)
-					.map_err(|_err| AbortReason::InternalError("Error getting change script"))?
+				match signer_provider.get_destination_script(context.channel_keys_id) {
+					Ok(script) => script,
+					Err(_) => {
+						let reason = AbortReason::InternalError("Error getting change script");
+						return Err(self.into_negotiation_error(reason));
+					},
+				}
 			};
 			let mut change_output =
 				TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
@@ -6575,7 +6590,7 @@ impl FundingNegotiationContext {
 			// Check dust limit again
 			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
 				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
-				funding_outputs.push(change_output);
+				self.our_funding_outputs.push(change_output);
 			}
 		}
 
@@ -6593,9 +6608,18 @@ impl FundingNegotiationContext {
 				shared_funding_output,
 				funding.value_to_self_msat / 1000,
 			),
-			outputs_to_contribute: funding_outputs,
+			outputs_to_contribute: self.our_funding_outputs,
 		};
 		InteractiveTxConstructor::new(constructor_args)
+	}
+
+	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
+		let contributed_inputs =
+			self.our_funding_inputs.into_iter().map(|input| input.utxo.outpoint).collect();
+
+		let contributed_outputs = self.our_funding_outputs;
+
+		NegotiationError { reason, contributed_inputs, contributed_outputs }
 	}
 }
 
@@ -13737,8 +13761,8 @@ where
 				outputs_to_contribute: funding_negotiation_context.our_funding_outputs.clone(),
 			}
 		).map_err(|err| {
-			let reason = ClosureReason::ProcessingError { err: err.to_string() };
-			ChannelError::Close((err.to_string(), reason))
+			let reason = ClosureReason::ProcessingError { err: err.reason.to_string() };
+			ChannelError::Close((err.reason.to_string(), reason))
 		})?);
 
 		let unfunded_context = UnfundedChannelContext {
