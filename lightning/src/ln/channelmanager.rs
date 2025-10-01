@@ -3271,8 +3271,8 @@ macro_rules! locked_close_channel {
 	}};
 	($self: ident, $peer_state: expr, $funded_chan: expr, $shutdown_res_mut: expr, FUNDED) => {{
 		if let Some((_, funding_txo, _, update)) = $shutdown_res_mut.monitor_update.take() {
-			handle_new_monitor_update!($self, funding_txo, update, $peer_state,
-				$funded_chan.context, REMAIN_LOCKED_UPDATE_ACTIONS_PROCESSED_LATER);
+			handle_new_monitor_update_actions_deferred!($self, funding_txo, update, $peer_state,
+				$funded_chan.context);
 		}
 		// If there's a possibility that we need to generate further monitor updates for this
 		// channel, we need to store the last update_id of it. However, we don't want to insert
@@ -3713,6 +3713,42 @@ macro_rules! handle_post_close_monitor_update {
 	}};
 }
 
+/// Handles a new monitor update without dropping peer_state locks and calling
+/// [`ChannelManager::handle_monitor_update_completion_actions`] if the monitor update completed
+/// synchronously.
+///
+/// Useful because monitor updates need to be handled in the same mutex where the channel generated
+/// them (otherwise they can end up getting applied out-of-order) but it's not always possible to
+/// drop the aforementioned peer state locks at a given callsite. In this situation, use this macro
+/// to apply the monitor update immediately and handle the monitor update completion actions at a
+/// later time.
+macro_rules! handle_new_monitor_update_actions_deferred {
+	(
+		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $chan_context: expr
+	) => {{
+		let logger = WithChannelContext::from(&$self.logger, &$chan_context, None);
+		let chan_id = $chan_context.channel_id();
+		let counterparty_node_id = $chan_context.get_counterparty_node_id();
+		let in_flight_updates;
+		let idx;
+		handle_new_monitor_update!(
+			$self,
+			$funding_txo,
+			$update,
+			$peer_state,
+			logger,
+			chan_id,
+			counterparty_node_id,
+			in_flight_updates,
+			idx,
+			_internal_outer,
+			{
+				let _ = in_flight_updates.remove(idx);
+			}
+		)
+	}};
+}
+
 macro_rules! handle_new_monitor_update {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $logger: expr,
@@ -3761,31 +3797,6 @@ macro_rules! handle_new_monitor_update {
 			$self.pending_background_events.lock().unwrap().push(event);
 			false
 		}
-	}};
-	(
-		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $chan_context: expr,
-		REMAIN_LOCKED_UPDATE_ACTIONS_PROCESSED_LATER
-	) => {{
-		let logger = WithChannelContext::from(&$self.logger, &$chan_context, None);
-		let chan_id = $chan_context.channel_id();
-		let counterparty_node_id = $chan_context.get_counterparty_node_id();
-		let in_flight_updates;
-		let idx;
-		handle_new_monitor_update!(
-			$self,
-			$funding_txo,
-			$update,
-			$peer_state,
-			logger,
-			chan_id,
-			counterparty_node_id,
-			in_flight_updates,
-			idx,
-			_internal_outer,
-			{
-				let _ = in_flight_updates.remove(idx);
-			}
-		)
 	}};
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
@@ -14039,13 +14050,12 @@ where
 											insert_short_channel_id!(short_to_chan_info, funded_channel);
 
 											if let Some(monitor_update) = monitor_update_opt {
-												handle_new_monitor_update!(
+												handle_new_monitor_update_actions_deferred!(
 													self,
 													funding_txo,
 													monitor_update,
 													peer_state,
-													funded_channel.context,
-													REMAIN_LOCKED_UPDATE_ACTIONS_PROCESSED_LATER
+													funded_channel.context
 												);
 												to_process_monitor_update_actions.push((
 													counterparty_node_id, channel_id
