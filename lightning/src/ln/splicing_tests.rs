@@ -414,9 +414,9 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 		)
 		.unwrap();
 
-	// Attempt a splice negotiation that only goes up to exchanging `tx_complete`. Reconnecting
-	// should implicitly abort the negotiation and reset the splice state such that we're able to
-	// retry another splice later.
+	// Attempt a splice negotiation that ends mid-construction of the funding transaction.
+	// Reconnecting should implicitly abort the negotiation and reset the splice state such that
+	// we're able to retry another splice later.
 	let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
 	nodes[1].node.handle_stfu(node_id_0, &stfu);
 	let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
@@ -427,18 +427,9 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
 	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
 
-	let new_funding_script = chan_utils::make_funding_redeemscript(
-		&splice_init.funding_pubkey,
-		&splice_ack.funding_pubkey,
-	)
-	.to_p2wsh();
-	let _ = complete_interactive_funding_negotiation(
-		&nodes[0],
-		&nodes[1],
-		channel_id,
-		contribution.clone(),
-		new_funding_script,
-	);
+	let tx_add_input = get_event_msg!(nodes[0], MessageSendEvent::SendTxAddInput, node_id_1);
+	nodes[1].node.handle_tx_add_input(node_id_0, &tx_add_input);
+	let _ = get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, node_id_0);
 
 	if reload {
 		let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
