@@ -3658,8 +3658,8 @@ fn handle_monitor_update_res<CM: AChannelManager, LG: Logger>(
 	}
 }
 
-macro_rules! handle_new_monitor_update {
-	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, INITIAL_MONITOR) => {
+macro_rules! handle_initial_monitor {
+	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => {
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
 		let update_completed =
 			handle_monitor_update_res($self, $update_res, $chan.context.channel_id(), logger);
@@ -3673,6 +3673,9 @@ macro_rules! handle_new_monitor_update {
 			);
 		}
 	};
+}
+
+macro_rules! handle_new_monitor_update {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $logger: expr,
 		$chan_id: expr, $counterparty_node_id: expr, $in_flight_updates: ident, $update_idx: ident,
@@ -10115,8 +10118,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 
 					if let Some(funded_chan) = e.insert(Channel::from(chan)).as_funded_mut() {
-						handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
-							per_peer_state, funded_chan, INITIAL_MONITOR);
+						handle_initial_monitor!(self, persist_state, peer_state_lock, peer_state,
+							per_peer_state, funded_chan);
 					} else {
 						unreachable!("This must be a funded channel as we just inserted it.");
 					}
@@ -10279,7 +10282,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					})
 				{
 					Ok((funded_chan, persist_status)) => {
-						handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, funded_chan, INITIAL_MONITOR);
+						handle_initial_monitor!(self, persist_status, peer_state_lock, peer_state, per_peer_state, funded_chan);
 						Ok(())
 					},
 					Err(e) => try_channel_entry!(self, peer_state, Err(e), chan_entry),
@@ -10904,8 +10907,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					if let Some(monitor) = monitor_opt {
 						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
-							handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
-								per_peer_state, chan, INITIAL_MONITOR);
+							handle_initial_monitor!(self, persist_state, peer_state_lock, peer_state,
+								per_peer_state, chan);
 						} else {
 							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 							log_error!(logger, "Persisting initial ChannelMonitor failed, implying the channel ID was duplicated");
