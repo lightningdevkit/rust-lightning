@@ -2155,6 +2155,10 @@ impl TestWalletSource {
 		self.utxos.lock().unwrap().retain(|utxo| utxo.outpoint != outpoint);
 	}
 
+	pub fn clear_utxos(&self) {
+		self.utxos.lock().unwrap().clear();
+	}
+
 	pub fn sign_tx(
 		&self, mut tx: Transaction,
 	) -> Result<Transaction, bitcoin::sighash::P2wpkhError> {
