@@ -21,7 +21,9 @@ use crate::events::{
 	ClaimedHTLC, ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PathFailure,
 	PaymentFailureReason, PaymentPurpose,
 };
-use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC};
+use crate::ln::chan_utils::{
+	commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, TRUC_MAX_WEIGHT,
+};
 use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
 	RAACommitmentOrder, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA,
@@ -58,6 +60,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as _;
 use bitcoin::locktime::absolute::{LockTime, LOCK_TIME_THRESHOLD};
 use bitcoin::network::Network;
+use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::pow::CompactTarget;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
@@ -406,6 +409,30 @@ pub fn provide_anchor_reserves<'a, 'b, 'c>(nodes: &[Node<'a, 'b, 'c>]) -> Transa
 			value: Amount::ONE_BTC,
 			script_pubkey: node.wallet_source.get_change_script().unwrap(),
 		});
+	}
+	let tx = Transaction {
+		version: TxVersion::TWO,
+		lock_time: LockTime::from_height(nodes[0].best_block_info().1).unwrap(),
+		input: vec![TxIn { ..Default::default() }],
+		output,
+	};
+	let height = nodes[0].best_block_info().1 + 1;
+	let block = create_dummy_block(nodes[0].best_block_hash(), height, vec![tx.clone()]);
+	for node in nodes {
+		do_connect_block_with_consistency_checks(node, block.clone(), false);
+	}
+	tx
+}
+
+pub fn provide_anchor_utxo_reserves<'a, 'b, 'c>(
+	nodes: &[Node<'a, 'b, 'c>], utxos: usize, amount: Amount,
+) -> Transaction {
+	let mut output = Vec::with_capacity(nodes.len());
+	for node in nodes {
+		let script_pubkey = node.wallet_source.get_change_script().unwrap();
+		for _ in 0..utxos {
+			output.push(TxOut { value: amount, script_pubkey: script_pubkey.clone() });
+		}
 	}
 	let tx = Transaction {
 		version: TxVersion::TWO,
@@ -1941,6 +1968,11 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(
 pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 	tx: &Transaction, get_output: F,
 ) {
+	if tx.version == TxVersion::non_standard(3) {
+		assert!(tx.weight().to_wu() <= TRUC_MAX_WEIGHT);
+	} else {
+		assert!(tx.weight().to_wu() <= MAX_STANDARD_TX_WEIGHT as u64);
+	}
 	let mut p2a_output_below_dust = false;
 	let mut has_p2a_output = false;
 	for outp in tx.output.iter() {
