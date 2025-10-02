@@ -16,7 +16,7 @@ use crate::chain::Watch;
 use crate::chain::channelmonitor::{Balance, BalanceSource, ChannelMonitorUpdateStep, HolderCommitmentTransactionBalance, ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
-use crate::events::bump_transaction::{BumpTransactionEvent};
+use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
@@ -1431,6 +1431,7 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	let _b_htlc_msgs = get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
 
 	connect_blocks(&nodes[0], htlc_cltv_timeout + 1 - 10);
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), "".to_string()).unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 
@@ -1455,7 +1456,7 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	});
 	assert!(failed_payments.is_empty());
 	match &events[0] {
-		Event::ChannelClosed { reason: ClosureReason::HTLCsTimedOut { .. }, .. } => {},
+		Event::ChannelClosed { reason: ClosureReason::HolderForceClosed { .. }, .. } => {},
 		_ => panic!(),
 	}
 
@@ -2520,28 +2521,36 @@ fn do_test_yield_anchors_events(have_htlcs: bool, p2a_anchor: bool) {
 	// allowing the consumer to provide additional fees to the commitment transaction to be
 	// broadcast. Once the commitment transaction confirms, events for the HTLC resolution should be
 	// emitted by LDK, such that the consumer can attach fees to the zero fee HTLC transactions.
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let mut anchors_config = test_default_channel_config();
 	anchors_config.channel_handshake_config.announce_for_forwarding = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	anchors_config.manually_accept_inbound_channels = true;
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config)]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone()), Some(anchors_config.clone()), Some(anchors_config)]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = provide_anchor_reserves(&nodes);
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(
 		&nodes, 0, 1, 1_000_000, 500_000_000
 	);
+	let (_, _, _chan_2_id, _funding_tx) = create_announced_chan_between_nodes_with_value(
+		&nodes, 2, 1, 1_000_000, 500_000_000
+	);
+	let (_, _, _chan_3_id, _funding_tx) = create_announced_chan_between_nodes_with_value(
+		&nodes, 3, 0, 1_000_000, 500_000_000
+	);
+
+
 	let mut payment_preimage_1 = None;
 	let mut payment_hash_1 = None;
 	let mut payment_preimage_2 = None;
 	let mut payment_hash_2 = None;
 	if have_htlcs {
-		let (preimage_1, hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-		let (preimage_2, hash_2, ..) = route_payment(&nodes[1], &[&nodes[0]], 2_000_000);
+		let (preimage_1, hash_1, ..) = route_payment(&nodes[3], &[&nodes[0], &nodes[1]], 1_000_000);
+		let (preimage_2, hash_2, ..) = route_payment(&nodes[2], &[&nodes[1], &nodes[0]], 2_000_000);
 		payment_preimage_1 = Some(preimage_1);
 		payment_hash_1 = Some(hash_1);
 		payment_preimage_2 = Some(preimage_2);
@@ -2691,10 +2700,14 @@ fn do_test_yield_anchors_events(have_htlcs: bool, p2a_anchor: bool) {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
-	let conditions = PaymentFailedConditions::new().from_mon_update();
-	expect_payment_failed_conditions(&nodes[0], payment_hash_1.unwrap(), false, conditions);
-
 	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32);
+
+	expect_and_process_pending_htlcs_and_htlc_handling_failed(
+		&nodes[0],
+		&[HTLCHandlingFailureType::Forward { node_id: Some(nodes[1].node.get_our_node_id()), channel_id: chan_id }],
+	);
+	check_added_monitors(&nodes[0], 1);
+	let _ = get_htlc_update_msgs!(nodes[0], nodes[3].node.get_our_node_id());
 
 	let holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(holder_events.len(), 3);

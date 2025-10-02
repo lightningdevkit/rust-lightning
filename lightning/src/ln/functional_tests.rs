@@ -706,9 +706,12 @@ pub fn channel_monitor_network_test() {
 	// confusing us in the following tests.
 	let chan_3_mon = nodes[3].chain_monitor.chain_monitor.remove_monitor(&chan_3.2);
 
+	// Create another channel from 2 -> 3 to route HTLC to timeout
+	create_announced_chan_between_nodes(&nodes, 2, 3);
+
 	// One pending HTLC to time out:
 	let (payment_preimage_2, payment_hash_2, ..) =
-		route_payment(&nodes[3], &[&nodes[4]], 3_000_000);
+		route_payment(&nodes[2], &[&nodes[3], &nodes[4]], 3_000_000);
 	// CLTV expires at TEST_FINAL_CLTV + 1 (current height) + 1 (added in send_payment for
 	// buffer space).
 
@@ -747,8 +750,20 @@ pub fn channel_monitor_network_test() {
 
 		// Claim the payment on nodes[4], giving it knowledge of the preimage
 		claim_funds!(nodes[4], nodes[3], payment_preimage_2, payment_hash_2);
+		let chan_id = chan_4.2;
+		let channel =
+			nodes[4].node.list_channels().iter().find(|c| c.channel_id == chan_id).unwrap().clone();
+		let htlc_expiry = channel
+			.pending_inbound_htlcs
+			.iter()
+			.find(|inbound_htlc| inbound_htlc.payment_hash == payment_hash_2)
+			.unwrap()
+			.cltv_expiry;
 
-		connect_blocks(&nodes[4], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + 2);
+		connect_blocks(
+			&nodes[4],
+			htlc_expiry - nodes[4].best_block_info().1 - CLTV_CLAIM_BUFFER + 2,
+		);
 		let events = nodes[4].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 		let close_chan_update_2 = match events[1] {
@@ -777,15 +792,16 @@ pub fn channel_monitor_network_test() {
 	let node_id_3 = node_d_id;
 	nodes[3].gossip_sync.handle_channel_update(Some(node_id_4), &close_chan_update_2).unwrap();
 	nodes[4].gossip_sync.handle_channel_update(Some(node_id_3), &close_chan_update_1).unwrap();
-	assert_eq!(nodes[3].node.list_channels().len(), 0);
+	// Here nodes[3] should only have its channel with nodes[2]
+	assert_eq!(nodes[3].node.list_channels().len(), 1);
 	assert_eq!(nodes[4].node.list_channels().len(), 0);
 
 	assert_eq!(
 		nodes[3].chain_monitor.chain_monitor.watch_channel(chan_3.2, chan_3_mon),
 		Ok(ChannelMonitorUpdateStatus::Completed)
 	);
-	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash_2) };
-	check_closed_event!(nodes[3], 1, reason, [node_id_4], 100000);
+	let closure_reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash_2) };
+	check_closed_event!(nodes[3], 1, closure_reason, [node_id_4], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -4918,42 +4934,52 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 }
 
 fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
+	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let _chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	let (route, payment_hash, _, payment_secret) =
-		get_route_and_payment_hash!(nodes[0], nodes[1], if use_dust { 50000 } else { 3000000 });
+		get_route_and_payment_hash!(nodes[0], nodes[2], if use_dust { 50000 } else { 3000000 });
 	let onion = RecipientOnionFields::secret_only(payment_secret);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors!(nodes[0], 1);
+	let update_0 = get_htlc_update_msgs!(nodes[0], node_b_id);
 
-	let _as_update = get_htlc_update_msgs!(nodes[0], node_b_id);
+	nodes[1].node.handle_update_add_htlc(node_a_id, &update_0.update_add_htlcs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
+	nodes[1].node.process_pending_htlc_forwards();
+	check_added_monitors!(nodes[1], 1);
 
-	// As far as A is concerned, the HTLC is now present only in the latest remote commitment
-	// transaction, however it is not in A's latest local commitment, so we can just broadcast that
+	let _bs_update = get_htlc_update_msgs!(nodes[1], node_c_id);
+
+	// As far as B is concerned, the HTLC is now present only in the latest remote commitment
+	// transaction, however it is not in B's latest local commitment, so we can just broadcast that
 	// to "time out" the HTLC.
 
-	let starting_block = nodes[1].best_block_info();
+	let starting_block = nodes[2].best_block_info();
 	let mut block = create_dummy_block(starting_block.0, 42, Vec::new());
 
 	for _ in
 		starting_block.1 + 1..TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + starting_block.1 + 2
 	{
-		connect_block(&nodes[0], &block);
+		connect_block(&nodes[1], &block);
 		block.header.prev_blockhash = block.block_hash();
 	}
-	test_txn_broadcast(&nodes[0], &chan, None, HTLCType::NONE);
-	check_closed_broadcast!(nodes[0], true);
-	check_added_monitors(&nodes[0], 1);
+
+	test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::NONE);
+	check_closed_broadcast!(nodes[1], true);
+	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event!(nodes[1], 1, reason, [node_c_id], 100000);
 }
 
 fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no_close: bool) {
@@ -4964,54 +4990,62 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
 
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let _chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	// Fail the payment, but don't deliver A's final RAA, resulting in the HTLC only being present
-	// in B's previous (unrevoked) commitment transaction, but none of A's commitment transactions.
+	// Fail the payment, but don't deliver B's final RAA, resulting in the HTLC only being present
+	// in C's previous (unrevoked) commitment transaction, but none of B's commitment transactions.
 	// Also optionally test that we *don't* fail the channel in case the commitment transaction was
 	// actually revoked.
 	let htlc_value = if use_dust { 50000 } else { 3000000 };
-	let (_, our_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], htlc_value);
-	nodes[1].node.fail_htlc_backwards(&our_payment_hash);
+	let (_, our_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], htlc_value);
+	nodes[2].node.fail_htlc_backwards(&our_payment_hash);
 	expect_and_process_pending_htlcs_and_htlc_handling_failed(
-		&nodes[1],
+		&nodes[2],
 		&[HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }],
 	);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[2], 1);
 
-	let bs_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
-	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_updates.update_fail_htlcs[0]);
-	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_updates.commitment_signed);
-	check_added_monitors(&nodes[0], 1);
-	let as_updates = get_revoke_commit_msgs!(nodes[0], node_b_id);
-	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_updates.0);
+	let c_updates_to_b = get_htlc_update_msgs!(nodes[2], node_b_id);
+	nodes[1].node.handle_update_fail_htlc(node_c_id, &c_updates_to_b.update_fail_htlcs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &c_updates_to_b.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
-	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_updates.1);
-	check_added_monitors(&nodes[1], 1);
-	let bs_revoke_and_ack = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
+	let b_updates_to_c = get_revoke_commit_msgs!(nodes[1], node_c_id);
+	nodes[2].node.handle_revoke_and_ack(node_b_id, &b_updates_to_c.0);
+	check_added_monitors(&nodes[2], 1);
+	nodes[2].node.handle_commitment_signed_batch_test(node_b_id, &b_updates_to_c.1);
+	check_added_monitors(&nodes[2], 1);
+	let cs_revoke_and_ack = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, node_b_id);
 
 	if check_revoke_no_close {
-		nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_revoke_and_ack);
-		check_added_monitors(&nodes[0], 1);
+		nodes[1].node.handle_revoke_and_ack(node_c_id, &cs_revoke_and_ack);
+		check_added_monitors(&nodes[1], 1);
 	}
 
-	let starting_block = nodes[1].best_block_info();
+	let starting_block = nodes[2].best_block_info();
 	let mut block = create_dummy_block(starting_block.0, 42, Vec::new());
 	for _ in
 		starting_block.1 + 1..TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + CHAN_CONFIRM_DEPTH + 2
 	{
-		connect_block(&nodes[0], &block);
+		connect_block(&nodes[1], &block);
 		block.header.prev_blockhash = block.block_hash();
 	}
 	if !check_revoke_no_close {
-		test_txn_broadcast(&nodes[0], &chan, None, HTLCType::NONE);
-		check_closed_broadcast!(nodes[0], true);
-		check_added_monitors(&nodes[0], 1);
+		test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::NONE);
+		check_closed_broadcast!(nodes[1], true);
+		check_added_monitors(&nodes[1], 1);
 		let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(our_payment_hash) };
-		check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+		check_closed_event!(nodes[1], 1, reason, [node_c_id], 100000);
 	} else {
-		expect_payment_failed!(nodes[0], our_payment_hash, true);
+		// Check we get a forwarding failure when the commitment transaction was revoked.
+		expect_and_process_pending_htlcs_and_htlc_handling_failed(
+			&nodes[1],
+			&[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }],
+		);
+		check_added_monitors(&nodes[1], 1);
+		let _ = get_htlc_update_msgs!(nodes[1], node_a_id);
 	}
 }
 
@@ -7200,7 +7234,8 @@ pub fn test_update_err_monitor_lockdown() {
 	// Route a HTLC from node 0 to node 1 (but don't settle)
 	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
 
-	// Copy ChainMonitor to simulate a watchtower and update block height of node 0 until its ChannelMonitor timeout HTLC onchain
+	// Copy ChainMonitor to simulate a watchtower and trigger broadcast of local commitment
+	// transaction.
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	let logger = test_utils::TestLogger::with_id(format!("node {}", 0));
 	let persister = test_utils::TestPersister::new();
@@ -7236,6 +7271,11 @@ pub fn test_update_err_monitor_lockdown() {
 	// transaction lock time requirements here.
 	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize(200, (block.clone(), 200));
 	watchtower.chain_monitor.block_connected(&block, 200);
+	watchtower.chain_monitor.get_monitor(chan_1.2).unwrap().broadcast_latest_holder_commitment_txn(
+		&&chanmon_cfgs[0].tx_broadcaster,
+		&nodes[0].fee_estimator,
+		&nodes[0].logger,
+	);
 
 	// Try to update ChannelMonitor
 	nodes[1].node.claim_funds(preimage);
@@ -7286,22 +7326,25 @@ pub fn test_concurrent_monitor_claim() {
 	// the latest state N+1, Alice rejects state N+1, but Bob has already broadcast it,
 	// state N+1 confirms. Alice claims output from state N+1.
 
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	// Create some initial channel
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let _ = create_announced_chan_between_nodes(&nodes, 2, 0);
 
 	// Rebalance the network to generate htlc in the two directions
+	send_payment(&nodes[2], &[&nodes[0]], 10_000_000);
 	send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
 
-	// Route a HTLC from node 0 to node 1 (but don't settle)
-	let (_, payment_hash_timeout, ..) = route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
+	// Route a HTLC from 2 -> 0 -> 1 (but don't settle)
+	let (_, payment_hash_timeout, ..) =
+		route_payment(&nodes[2], &[&nodes[0], &nodes[1]], 9_000_000);
 
 	// Copy ChainMonitor to simulate watchtower Alice and update block height her ChannelMonitor timeout HTLC onchain
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
@@ -7340,11 +7383,18 @@ pub fn test_concurrent_monitor_claim() {
 	let block = create_dummy_block(BlockHash::all_zeros(), 42, Vec::new());
 	// Make Alice aware of enough blocks that it doesn't think we're violating transaction lock time
 	// requirements here.
-	const HTLC_TIMEOUT_BROADCAST: u32 =
-		CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS;
-	let next_block = (block.clone(), HTLC_TIMEOUT_BROADCAST);
-	alice_broadcaster.blocks.lock().unwrap().resize((HTLC_TIMEOUT_BROADCAST) as usize, next_block);
-	watchtower_alice.chain_monitor.block_connected(&block, HTLC_TIMEOUT_BROADCAST);
+	let channel =
+		nodes[0].node.list_channels().iter().find(|c| c.channel_id == chan_1.2).unwrap().clone();
+	let htlc_expiry = channel
+		.pending_outbound_htlcs
+		.iter()
+		.find(|outbound_htlc| outbound_htlc.payment_hash == payment_hash_timeout)
+		.unwrap()
+		.cltv_expiry;
+	let htlc_timeout: u32 = htlc_expiry + LATENCY_GRACE_PERIOD_BLOCKS;
+	let next_block = (block.clone(), htlc_timeout);
+	alice_broadcaster.blocks.lock().unwrap().resize((htlc_timeout) as usize, next_block);
+	watchtower_alice.chain_monitor.block_connected(&block, htlc_timeout);
 
 	// Watchtower Alice should have broadcast a commitment/HTLC-timeout
 	{
@@ -7388,7 +7438,7 @@ pub fn test_concurrent_monitor_claim() {
 		watchtower
 	};
 	let block = create_dummy_block(BlockHash::all_zeros(), 42, Vec::new());
-	watchtower_bob.chain_monitor.block_connected(&block, HTLC_TIMEOUT_BROADCAST - 1);
+	watchtower_bob.chain_monitor.block_connected(&block, htlc_timeout - 1);
 
 	// Route another payment to generate another update with still previous HTLC pending
 	let (route, payment_hash, _, payment_secret) =
@@ -7438,10 +7488,9 @@ pub fn test_concurrent_monitor_claim() {
 	check_added_monitors(&nodes[0], 1);
 
 	//// Provide one more block to watchtower Bob, expect broadcast of commitment and HTLC-Timeout
-	watchtower_bob.chain_monitor.block_connected(
-		&create_dummy_block(BlockHash::all_zeros(), 42, Vec::new()),
-		HTLC_TIMEOUT_BROADCAST,
-	);
+	watchtower_bob
+		.chain_monitor
+		.block_connected(&create_dummy_block(BlockHash::all_zeros(), 42, Vec::new()), htlc_timeout);
 
 	// Watchtower Bob should have broadcast a commitment/HTLC-timeout
 	let bob_state_y;
@@ -7452,7 +7501,7 @@ pub fn test_concurrent_monitor_claim() {
 	};
 
 	// We confirm Bob's state Y on Alice, she should broadcast a HTLC-timeout
-	let height = HTLC_TIMEOUT_BROADCAST + 1;
+	let height = htlc_timeout + 1;
 	connect_blocks(&nodes[0], height - nodes[0].best_block_info().1);
 	check_closed_broadcast(&nodes[0], 1, true);
 	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash_timeout) };

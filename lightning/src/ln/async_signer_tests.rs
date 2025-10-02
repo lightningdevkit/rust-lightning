@@ -1014,6 +1014,12 @@ fn do_test_async_holder_signatures(keyed_anchors: bool, p2a_anchor: bool, remote
 		// We'll connect blocks until the sender has to go onchain to time out the HTLC.
 		connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 
+		let closure_reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+		nodes[0]
+			.node
+			.force_close_broadcasting_latest_txn(&chan_id, &node_b_id, closure_reason.to_string())
+			.unwrap();
+
 		// No transaction should be broadcast since the signer is not available yet.
 		assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
 		assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
@@ -1076,7 +1082,11 @@ fn do_test_async_holder_signatures(keyed_anchors: bool, p2a_anchor: bool, remote
 	let closure_reason = if remote_commitment {
 		ClosureReason::CommitmentTxConfirmed
 	} else {
-		ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) }
+		let closure_reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+		ClosureReason::HolderForceClosed {
+			broadcasted_latest_txn: Some(true),
+			message: closure_reason.to_string(),
+		}
 	};
 	check_closed_event(&nodes[0], 1, closure_reason, false, &[node_b_id], 100_000);
 

@@ -118,6 +118,11 @@ fn test_monitor_and_persister_update_fail() {
 	chain_mon
 		.chain_monitor
 		.block_connected(&create_dummy_block(BlockHash::all_zeros(), 42, Vec::new()), 200);
+	chain_mon.chain_monitor.get_monitor(chan.2).unwrap().broadcast_latest_holder_commitment_txn(
+		&&tx_broadcaster,
+		&nodes[0].fee_estimator,
+		&nodes[0].logger,
+	);
 
 	// Try to update ChannelMonitor
 	nodes[1].node.claim_funds(preimage);
