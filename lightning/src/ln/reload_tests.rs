@@ -919,6 +919,70 @@ fn test_partial_claim_before_restart() {
 	do_test_partial_claim_before_restart(true, true);
 }
 
+#[test]
+fn test_no_fc_outgoing_payment() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
+	let mut intercept_forwards_config = test_default_channel_config();
+	intercept_forwards_config.accept_intercept_htlcs = true;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), None]);
+	let nodes_0_deserialized;
+
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let _chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
+
+	// Send payment from 0 -> 1 -> 2 that will be failed back
+	let (_, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 10_000);
+
+	nodes[2].node.fail_htlc_backwards(&payment_hash);
+	expect_and_process_pending_htlcs_and_htlc_handling_failed(
+		&nodes[2],
+		&[HTLCHandlingFailureType::Receive { payment_hash }]
+	);
+	check_added_monitors!(nodes[2], 1);
+
+	// After committing the HTLCs, fail it back from 2 -> 1
+	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	assert_eq!(updates.update_fail_htlcs.len(), 1);
+
+	nodes[1].node.handle_update_fail_htlc(nodes[2].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[1], nodes[2], &updates.commitment_signed, true);
+
+	let _updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+
+	// Disconnect the peers before failing from 1 -> 0
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id_1).encode();
+	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+
+	// While disconnected, connect blocks such that it goes past HTLC expiry. When nodes reconnect instead of FC the
+	// channel, check that the HTLC was failed and channel is still open.
+	let channel = nodes[0].node.list_channels().iter().find(|c| c.channel_id == chan_id_1).unwrap().clone();
+	let htlc_expiry = channel.pending_outbound_htlcs.iter().find(|outbound_htlc| outbound_htlc.payment_hash == payment_hash).unwrap().cltv_expiry;
+	let blocks_to_connect = 200;
+	connect_blocks(&nodes[0], htlc_expiry - nodes[0].best_block_info().1 + blocks_to_connect);
+	connect_blocks(&nodes[1], htlc_expiry - nodes[1].best_block_info().1 + blocks_to_connect);
+
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.pending_htlc_fails.0 = 1;
+	reconnect_nodes(reconnect_args);
+
+	expect_payment_failed!(nodes[0], payment_hash, true);
+
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	assert_eq!(nodes[1].node.list_channels().len(), 2);
+
+	assert_eq!(nodes[0].node.list_channels().iter().find(|chan| chan.channel_id == chan_id_1).unwrap().pending_outbound_htlcs.len(), 0);
+	assert_eq!(nodes[1].node.list_channels().iter().find(|chan| chan.channel_id == chan_id_1).unwrap().pending_inbound_htlcs.len(), 0);
+}
+
 fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_htlc: bool, use_intercept: bool) {
 	if !use_cs_commitment { assert!(!claim_htlc); }
 	// If we go to forward a payment, and the ChannelMonitor persistence completes, but the

@@ -5899,26 +5899,39 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// chain when our counterparty is waiting for expiration to off-chain fail an HTLC
 					// we give ourselves a few blocks of headroom after expiration before going
 					// on-chain for an expired HTLC.
-					let htlc_outbound = $holder_tx == htlc.offered;
-					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height) ||
-					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
-						log_info!(logger, "Force-closing channel due to {} HTLC timeout - HTLC with payment hash {} expires at {}", if htlc_outbound { "outbound" } else { "inbound"}, htlc.payment_hash, htlc.cltv_expiry);
-						return Some(htlc.payment_hash);
+					let htlc_outbound = $holder_tx == htlc.0.offered;
+					let has_incoming = if htlc_outbound {
+						if let Some(source) = htlc.1.as_deref() {
+							match *source {
+								HTLCSource::OutboundRoute { .. } => false,
+								HTLCSource::PreviousHopData(_) => true,
+							}
+						} else {
+							panic!("Every offered non-dust HTLC should have a corresponding source");
+						}
+					} else {
+						true
+					};
+					if (htlc_outbound && has_incoming && htlc.0.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height) ||
+					   (htlc_outbound && !has_incoming && htlc.0.cltv_expiry + 2016 <= height) ||
+					   (!htlc_outbound && htlc.0.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.0.payment_hash)) {
+						log_info!(logger, "Force-closing channel due to {} HTLC timeout - HTLC with payment hash {} expires at {}", if htlc_outbound { "outbound" } else { "inbound"}, htlc.0.payment_hash, htlc.0.cltv_expiry);
+						return Some(htlc.0.payment_hash);
 					}
 				}
 			}
 		}
 
-		scan_commitment!(holder_commitment_htlcs!(self, CURRENT), true);
+		scan_commitment!(holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES), true);
 
 		if let Some(ref txid) = self.funding.current_counterparty_commitment_txid {
 			if let Some(ref htlc_outputs) = self.funding.counterparty_claimable_outpoints.get(txid) {
-				scan_commitment!(htlc_outputs.iter().map(|&(ref a, _)| a), false);
+				scan_commitment!(htlc_outputs.iter(), false);
 			}
 		}
 		if let Some(ref txid) = self.funding.prev_counterparty_commitment_txid {
 			if let Some(ref htlc_outputs) = self.funding.counterparty_claimable_outpoints.get(txid) {
-				scan_commitment!(htlc_outputs.iter().map(|&(ref a, _)| a), false);
+				scan_commitment!(htlc_outputs.iter(), false);
 			}
 		}
 
