@@ -5501,16 +5501,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 
 		if should_broadcast_commitment {
-			// Only generate claims immediately if block_confirmed 
-			// won't also generate them to avoid duplicate registrations.
-			let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
-			if should_broadcast.is_none() {
-				let (mut claimables, mut outputs) =
-					self.generate_claimable_outpoints_and_watch_outputs(None);
-				if !self.is_manual_broadcast || self.funding_seen_onchain {
-					claimable_outpoints.append(&mut claimables);
-					watch_outputs.append(&mut outputs);
-				}
+			let (mut claimables, mut outputs) =
+				self.generate_claimable_outpoints_and_watch_outputs(None);
+			if !self.is_manual_broadcast || self.funding_seen_onchain {
+				claimable_outpoints.append(&mut claimables);
+				watch_outputs.append(&mut outputs);
 			}
 		}
 
@@ -5545,14 +5540,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		log_trace!(logger, "Processing {} matched transactions for block at height {}.", txn_matched.len(), conf_height);
 		debug_assert!(self.best_block.height >= conf_height);
 
-		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
-		if let Some(payment_hash) = should_broadcast {
-			let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
-			let (mut new_outpoints, mut new_outputs) =
-				self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
-			if !self.is_manual_broadcast || self.funding_seen_onchain {
-				claimable_outpoints.append(&mut new_outpoints);
-				watch_outputs.append(&mut new_outputs);
+		// Only generate claims if we haven't already done so (e.g., in transactions_confirmed).
+		if claimable_outpoints.is_empty() && watch_outputs.is_empty() {
+			let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
+			if let Some(payment_hash) = should_broadcast {
+				let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+				let (mut new_outpoints, mut new_outputs) =
+					self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
+				if !self.is_manual_broadcast || self.funding_seen_onchain {
+					claimable_outpoints.append(&mut new_outpoints);
+					watch_outputs.append(&mut new_outputs);
+				}
 			}
 		}
 
