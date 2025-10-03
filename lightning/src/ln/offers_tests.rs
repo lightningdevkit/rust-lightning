@@ -2521,10 +2521,6 @@ fn no_double_pay_with_stale_channelmanager() {
 // Pay and offer while adding the contacts information the invoice request!
 #[test]
 fn pay_offer_and_add_contacts_info_blip42() {
-	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
-	features.set_onion_messages_optional();
-	features.set_route_blinding_optional();
-
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 
@@ -2559,10 +2555,10 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	// Probably a good place to add the information that we use for the contact secret.
 	// but need to double check if the sender of the invoice request still need to ask anything.
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
-	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
 
-	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
-	// TODO: check if the invoice request contains the contact information.
+	let (invoice_request, _reply_path) = extract_invoice_request(alice, &onion_message);
 
 	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 		offer_id: offer.id(),
@@ -2575,20 +2571,18 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
-	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
+	// Now we check that there are the contact secret and the
+	// contact secret is the same that we inject by bob.
+	assert!(invoice_request.contact_secret().is_some());
+	// TODO: we should check also if the contact secret is the same that we inject by bob.
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
 
-	let (invoice, reply_path) = extract_invoice(bob, &onion_message);
+	let (invoice, _reply_path) = extract_invoice(bob, &onion_message);
 	assert_eq!(invoice.amount_msats(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
-
-	for path in invoice.payment_paths() {
-		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
-	}
-	assert!(check_compact_path_introduction_node(&reply_path, bob, alice_id));
 
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);

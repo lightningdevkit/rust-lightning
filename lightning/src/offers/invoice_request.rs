@@ -187,7 +187,7 @@ macro_rules! invoice_request_builder_methods { (
 		InvoiceRequestContentsWithoutPayerSigningPubkey {
 			payer: PayerContents(metadata), offer, chain: None, amount_msats: None,
 			features: InvoiceRequestFeatures::empty(), quantity: None, payer_note: None,
-			offer_from_hrn: None,
+			offer_from_hrn: None, invreq_contact_secret: None,
 			#[cfg(test)]
 			experimental_bar: None,
 		}
@@ -253,6 +253,18 @@ macro_rules! invoice_request_builder_methods { (
 	/// Successive calls to this method will override the previous setting.
 	pub fn sourced_from_human_readable_name($($self_mut)* $self: $self_type, hrn: HumanReadableName) -> $return_type {
 		$self.invoice_request.offer_from_hrn = Some(hrn);
+		$return_value
+	}
+
+	/// Sets the contact secret for BLIP-42 contact authentication.
+	///
+	/// This will include the primary secret from the [`ContactSecrets`] in the invoice request.
+	///
+	/// Successive calls to this method will override the previous setting.
+	///
+	/// [`ContactSecrets`]: crate::offers::contacts::ContactSecrets
+	pub fn contact_secrets($($self_mut)* $self: $self_type, contact_secrets: crate::offers::contacts::ContactSecrets) -> $return_type {
+		$self.invoice_request.invreq_contact_secret = Some(contact_secrets.primary_secret().to_vec());
 		$return_value
 	}
 
@@ -691,6 +703,7 @@ pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
 	quantity: Option<u64>,
 	payer_note: Option<String>,
 	offer_from_hrn: Option<HumanReadableName>,
+	invreq_contact_secret: Option<Vec<u8>>,
 	#[cfg(test)]
 	experimental_bar: Option<u64>,
 }
@@ -751,6 +764,11 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	/// builder to indicate the original [`HumanReadableName`] which was resolved.
 	pub fn offer_from_hrn(&$self) -> &Option<HumanReadableName> {
 		$contents.offer_from_hrn()
+	}
+
+	/// Returns the contact secret if present in the invoice request.
+	pub fn contact_secret(&$self) -> Option<&[u8]> {
+		$contents.contact_secret()
 	}
 } }
 
@@ -1184,6 +1202,10 @@ impl InvoiceRequestContents {
 		&self.inner.offer_from_hrn
 	}
 
+	pub(super) fn contact_secret(&self) -> Option<&[u8]> {
+		self.inner.invreq_contact_secret.as_ref().map(|secret| secret.as_slice())
+	}
+
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef<'_> {
 		let (payer, offer, mut invoice_request, experimental_offer, experimental_invoice_request) =
 			self.inner.as_tlv_stream();
@@ -1230,7 +1252,7 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 		};
 
 		let experimental_invoice_request = ExperimentalInvoiceRequestTlvStreamRef {
-			invreq_contact_secret: None,
+			invreq_contact_secret: self.invreq_contact_secret.as_ref(),
 			invreq_payer_offer: None,
 			invreq_payer_bip_353_name: None,
 			#[cfg(test)]
@@ -1471,7 +1493,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 			},
 			experimental_offer_tlv_stream,
 			ExperimentalInvoiceRequestTlvStream {
-				invreq_contact_secret: _,
+				invreq_contact_secret,
 				invreq_payer_offer: _,
 				invreq_payer_bip_353_name: _,
 				#[cfg(test)]
@@ -1517,6 +1539,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 				quantity,
 				payer_note,
 				offer_from_hrn,
+				invreq_contact_secret,
 				#[cfg(test)]
 				experimental_bar,
 			},

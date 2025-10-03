@@ -92,6 +92,7 @@ use crate::ln::outbound_payment::{
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
+use crate::offers::contacts::ContactSecrets;
 use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};
 use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
@@ -728,6 +729,9 @@ pub struct OptionalOfferPaymentParams {
 	/// will ultimately fail once all pending paths have failed (generating an
 	/// [`Event::PaymentFailed`]).
 	pub retry_strategy: Retry,
+	/// Contact secrets to include in the invoice request for BLIP-42 contact management.
+	/// If provided, these secrets will be used to establish a contact relationship with the recipient.
+	pub contact_secrects: Option<ContactSecrets>,
 }
 
 impl Default for OptionalOfferPaymentParams {
@@ -739,6 +743,7 @@ impl Default for OptionalOfferPaymentParams {
 			retry_strategy: Retry::Timeout(core::time::Duration::from_secs(2)),
 			#[cfg(not(feature = "std"))]
 			retry_strategy: Retry::Attempts(3),
+			contact_secrects: None,
 		}
 	}
 }
@@ -12944,6 +12949,7 @@ where
 			payment_id,
 			None,
 			create_pending_payment_fn,
+			optional_params.contact_secrects,
 		)
 	}
 
@@ -12973,6 +12979,7 @@ where
 			payment_id,
 			Some(offer.hrn),
 			create_pending_payment_fn,
+			optional_params.contact_secrects,
 		)
 	}
 
@@ -13015,6 +13022,7 @@ where
 			payment_id,
 			None,
 			create_pending_payment_fn,
+			optional_params.contact_secrects,
 		)
 	}
 
@@ -13023,6 +13031,7 @@ where
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
 		payer_note: Option<String>, payment_id: PaymentId,
 		human_readable_name: Option<HumanReadableName>, create_pending_payment: CPP,
+		contacts: Option<ContactSecrets>,
 	) -> Result<(), Bolt12SemanticError> {
 		let entropy = &*self.entropy_source;
 		let nonce = Nonce::from_entropy_source(entropy);
@@ -13047,6 +13056,17 @@ where
 			None => builder,
 			Some(hrn) => builder.sourced_from_human_readable_name(hrn),
 		};
+
+		let builder = if let Some(secrets) = contacts.as_ref() {
+			builder.contact_secrets(secrets.clone())
+		} else {
+			builder
+		};
+		// Create a minimal offer for BLIP-42 contact exchange (just node_id, no description/paths)
+		// TODO: Create a better minimal offer with a single blinded path hop for privacy,
+		// while keeping the size small enough to fit in the onion packet.
+		let payer_offer = self.create_offer_builder()?.build()?;
+		let builder = builder.payer_offer(&payer_offer);
 
 		let invoice_request = builder.build_and_sign()?;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -15649,7 +15669,7 @@ where
 								self.pending_outbound_payments
 									.received_offer(payment_id, Some(retryable_invoice_request))
 									.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
-						});
+						}, None);
 					if offer_pay_res.is_err() {
 						// The offer we tried to pay is the canonical current offer for the name we
 						// wanted to pay. If we can't pay it, there's no way to recover so fail the
