@@ -41,6 +41,8 @@ use crate::util::logger::Logger;
 use bitcoin::amount::Amount;
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::ecdsa::Signature;
@@ -983,7 +985,7 @@ where
 			// Our estimate should be within a 1% error margin of the actual weight and we should
 			// never underestimate.
 			assert!(expected_signed_tx_weight >= signed_tx_weight);
-			assert!(expected_signed_tx_weight * 99 / 100 <= signed_tx_weight);
+			assert!(expected_signed_tx_weight * 98 / 100 <= signed_tx_weight);
 
 			let expected_signed_tx_fee =
 				fee_for_weight(target_feerate_sat_per_1000_weight, signed_tx_weight);
@@ -1045,20 +1047,63 @@ where
 					log_bytes!(claim_id.0),
 					log_iter!(htlc_descriptors.iter().map(|d| d.outpoint()))
 				);
-				self.handle_htlc_resolution(
-					*claim_id,
-					*target_feerate_sat_per_1000_weight,
-					htlc_descriptors,
-					*tx_lock_time,
-				)
-				.await
-				.unwrap_or_else(|_| {
-					log_error!(
+				let channel_type = &htlc_descriptors[0]
+					.channel_derivation_parameters
+					.transaction_parameters
+					.channel_type_features;
+				let htlc_chunks_size = if channel_type.supports_anchor_zero_fee_commitments() {
+					// Cap the size of transactions claiming `HolderHTLCOutput` in 0FC channels.
+					// Otherwise, we could hit the max 10_000vB size limit on V3 transactions
+					// (BIP 431 rule 4).
+					25
+				} else {
+					htlc_descriptors.len()
+				};
+				for htlc_descriptors in htlc_descriptors.chunks(htlc_chunks_size) {
+					let utxo_id = if channel_type.supports_anchor_zero_fee_commitments() {
+						// Generate a new claim_id to map a user-provided utxo to this
+						// particular set of HTLCs via `select_confirmed_utxos`; matches the
+						// scheme used in `onchain`.
+						//
+						// In rare cases, a HTLC set can change if a counterparty claims a
+						// subset of the HTLCs in the set. In that case we regenerate a new set
+						// of HTLCs, a new claim_id, and ask the user for a new UTXO to confirm
+						// this new set. Users should be able to provide the UTXO that was
+						// previously assigned to the now double-spent transaction to confirm
+						// this new set.
+						let mut engine = Sha256::engine();
+						for htlc in htlc_descriptors {
+							engine.input(&htlc.commitment_txid.to_byte_array());
+							engine
+								.input(&htlc.htlc.transaction_output_index.unwrap().to_be_bytes());
+						}
+						ClaimId(Sha256::from_engine(engine).to_byte_array())
+					} else {
+						// Non-0FC channels batch the full set of HTLCs in the claim into a
+						// single transaction, so we re-use the claim_id as the UTXO id here.
+						*claim_id
+					};
+					log_info!(
 						self.logger,
-						"Failed bumping HTLC transaction fee for commitment {}",
-						htlc_descriptors[0].commitment_txid
+						"Batch transaction assigned to UTXO id {} contains these HTLCs: {}",
+						log_bytes!(utxo_id.0),
+						log_iter!(htlc_descriptors.iter().map(|d| d.outpoint()))
 					);
-				});
+					self.handle_htlc_resolution(
+						utxo_id,
+						*target_feerate_sat_per_1000_weight,
+						htlc_descriptors,
+						*tx_lock_time,
+					)
+					.await
+					.unwrap_or_else(|_| {
+						log_error!(
+							self.logger,
+							"Failed bumping HTLC transaction fee for commitment {}",
+							htlc_descriptors[0].commitment_txid
+						);
+					});
+				}
 			},
 		}
 	}
