@@ -277,6 +277,9 @@ pub enum PendingHTLCRouting {
 		/// provide the onion shared secret used to decrypt the next level of forwarding
 		/// instructions.
 		phantom_shared_secret: Option<[u8; 32]>,
+		/// If the onion had trampoline forwarding instruction to our node.
+		/// This will provice the onion shared secret to encrypt error packets to the sender.
+		trampoline_shared_secret: Option<[u8; 32]>,
 		/// Custom TLVs which were set by the sender.
 		///
 		/// For HTLCs received by LDK, this will ultimately be exposed in
@@ -466,6 +469,13 @@ impl PendingAddHTLCInfo {
 			PendingHTLCRouting::Receive { phantom_shared_secret, .. } => phantom_shared_secret,
 			_ => None,
 		};
+		let trampoline_shared_secret = match self.forward_info.routing {
+			PendingHTLCRouting::Receive { trampoline_shared_secret, .. } => {
+				trampoline_shared_secret
+			},
+			_ => None,
+		};
+
 		HTLCPreviousHopData {
 			prev_outbound_scid_alias: self.prev_outbound_scid_alias,
 			user_channel_id: Some(self.prev_user_channel_id),
@@ -475,6 +485,7 @@ impl PendingAddHTLCInfo {
 			htlc_id: self.prev_htlc_id,
 			incoming_packet_shared_secret: self.forward_info.incoming_shared_secret,
 			phantom_shared_secret,
+			trampoline_shared_secret,
 			blinded_failure: self.forward_info.routing.blinded_failure(),
 			cltv_expiry: self.forward_info.routing.incoming_cltv_expiry(),
 		}
@@ -797,6 +808,7 @@ mod fuzzy_channelmanager {
 		pub htlc_id: u64,
 		pub incoming_packet_shared_secret: [u8; 32],
 		pub phantom_shared_secret: Option<[u8; 32]>,
+		pub trampoline_shared_secret: Option<[u8; 32]>,
 		pub blinded_failure: Option<BlindedFailure>,
 		pub channel_id: ChannelId,
 
@@ -7424,6 +7436,7 @@ where
 						mut onion_fields,
 						has_recipient_created_payment_secret,
 						invoice_request_opt,
+						trampoline_shared_secret,
 					) = match routing {
 						PendingHTLCRouting::Receive {
 							payment_data,
@@ -7431,6 +7444,7 @@ where
 							payment_context,
 							incoming_cltv_expiry,
 							phantom_shared_secret,
+							trampoline_shared_secret,
 							custom_tlvs,
 							requires_blinded_error: _,
 						} => {
@@ -7449,6 +7463,7 @@ where
 								onion_fields,
 								true,
 								None,
+								trampoline_shared_secret,
 							)
 						},
 						PendingHTLCRouting::ReceiveKeysend {
@@ -7478,6 +7493,7 @@ where
 								onion_fields,
 								has_recipient_created_payment_secret,
 								invoice_request,
+								None,
 							)
 						},
 						_ => {
@@ -7526,6 +7542,7 @@ where
 									htlc_id: $htlc.prev_hop.htlc_id,
 									incoming_packet_shared_secret,
 									phantom_shared_secret,
+									trampoline_shared_secret,
 									blinded_failure,
 									cltv_expiry: Some(cltv_expiry),
 								}),
@@ -8327,6 +8344,7 @@ where
 				ref htlc_id,
 				ref incoming_packet_shared_secret,
 				ref phantom_shared_secret,
+				ref trampoline_shared_secret,
 				outpoint: _,
 				ref blinded_failure,
 				ref channel_id,
@@ -8339,6 +8357,7 @@ where
 					&payment_hash,
 					onion_error
 				);
+				let secondary_shared_secret = trampoline_shared_secret.or(*phantom_shared_secret);
 				let failure = match blinded_failure {
 					Some(BlindedFailure::FromIntroductionNode) => {
 						let blinded_onion_error = HTLCFailReason::reason(
@@ -8347,7 +8366,7 @@ where
 						);
 						let err_packet = blinded_onion_error.get_encrypted_failure_packet(
 							incoming_packet_shared_secret,
-							phantom_shared_secret,
+							&secondary_shared_secret,
 						);
 						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
 					},
@@ -8359,7 +8378,7 @@ where
 					None => {
 						let err_packet = onion_error.get_encrypted_failure_packet(
 							incoming_packet_shared_secret,
-							phantom_shared_secret,
+							&secondary_shared_secret,
 						);
 						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
 					},
@@ -15374,6 +15393,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(5, custom_tlvs, optional_vec),
 		(7, requires_blinded_error, (default_value, false)),
 		(9, payment_context, option),
+		(11, trampoline_shared_secret, option),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
@@ -15502,6 +15522,7 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	// filled in, so we can safely unwrap it here.
 	(9, channel_id, (default_value, ChannelId::v1_from_funding_outpoint(outpoint.0.unwrap()))),
 	(11, counterparty_node_id, option),
+	(13, trampoline_shared_secret, option),
 });
 
 impl Writeable for ClaimableHTLC {
