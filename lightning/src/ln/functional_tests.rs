@@ -9703,3 +9703,40 @@ pub fn test_multi_post_event_actions() {
 	do_test_multi_post_event_actions(true);
 	do_test_multi_post_event_actions(false);
 }
+
+#[xtest(feature = "_externalize_tests")]
+fn test_stale_force_close_with_identical_htlcs() {
+	// Test that when two identical HTLCs are relayed and force-closes
+	// with a stale state, that we fail both HTLCs back immediately.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let chan_a_b = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let _chan_b_c = create_announced_chan_between_nodes(&nodes, 1, 2);
+	let _chan_b_d = create_announced_chan_between_nodes(&nodes, 1, 3);
+
+	// Capture a stale state snapshot before adding any HTLCs
+	let stale_tx = get_local_commitment_txn!(nodes[0], chan_a_b.2)[0].clone();
+
+	// Create two identical HTLCs
+	let (payment_preimage, payment_hash, ..) =
+		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 10_000);
+
+	*nodes[0].network_payment_count.borrow_mut() -= 1;
+	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[1], &[&nodes[3]], 10_000);
+
+	assert_eq!(payment_hash, payment_hash_2);
+	assert_eq!(payment_preimage, payment_preimage_2);
+
+	mine_transaction(&nodes[1], &stale_tx);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	let failed_events_count =
+		events.iter().filter(|e| matches!(e, Event::HTLCHandlingFailed { .. })).count();
+	assert_eq!(failed_events_count, 2);
+
+	check_added_monitors!(&nodes[1], 1);
+	nodes[1].node.get_and_clear_pending_msg_events();
+}

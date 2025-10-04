@@ -1356,7 +1356,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// a downstream channel force-close remaining unconfirmed by the time the upstream timeout
 	/// expires. This is used to tell us we already generated an event to fail this HTLC back
 	/// during a previous block scan.
-	failed_back_htlc_ids: HashSet<SentHTLCId>,
+	failed_back_htlc_ids: HashMap<SentHTLCId, u64>,
 
 	// The auxiliary HTLC data associated with a holder commitment transaction. This includes
 	// non-dust HTLC sources, along with dust HTLCs and their sources. Note that this assumes any
@@ -1956,7 +1956,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			initial_counterparty_commitment_tx: None,
 			balances_empty_height: None,
 
-			failed_back_htlc_ids: new_hash_set(),
+			failed_back_htlc_ids: new_hash_map(),
 
 			// There are never any HTLCs in the initial commitment transaction
 			current_holder_htlc_data: CommitmentHTLCData::new(),
@@ -5523,7 +5523,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut matured_htlcs = Vec::new();
 
 		// Produce actionable events from on-chain events having reached their threshold.
-		for entry in onchain_events_reaching_threshold_conf {
+		for entry in onchain_events_reaching_threshold_conf.clone() {
 			match entry.event {
 				OnchainEvent::HTLCUpdate { source, payment_hash, htlc_value_satoshis, commitment_tx_output_idx } => {
 					// Check for duplicate HTLC resolutions.
@@ -5601,6 +5601,81 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
+		// Immediate fail-back on stale force-close, regardless of expiry or whether we're allowed to send further updates.
+		let current_counterparty_htlcs = if let Some(txid) = self.funding.current_counterparty_commitment_txid {
+			if let Some(htlc_outputs) = self.funding.counterparty_claimable_outpoints.get(&txid) {
+				Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+			} else { None }
+		} else { None }.into_iter().flatten();
+
+		let prev_counterparty_htlcs = if let Some(txid) = self.funding.prev_counterparty_commitment_txid {
+			if let Some(htlc_outputs) = self.funding.counterparty_claimable_outpoints.get(&txid) {
+				Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+			} else { None }
+		} else { None }.into_iter().flatten();
+
+		let htlcs = holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES)
+			.chain(current_counterparty_htlcs)
+			.chain(prev_counterparty_htlcs);
+
+		// To correctly handle duplicate HTLCs, we first count all expected instances from
+		// the commitment transactions.
+		let mut expected_htlc_counts: HashMap<SentHTLCId, u64> = new_hash_map();
+		for (_, source_opt) in htlcs.clone() {
+			if let Some(source) = source_opt {
+				*expected_htlc_counts.entry(SentHTLCId::from_source(source)).or_default() += 1;
+			}
+		}
+
+		// Get a lookup of all HTLCs the monitor is currently tracking on-chain.
+		let monitor_htlc_sources: HashSet<&HTLCSource> = onchain_events_reaching_threshold_conf
+			.iter()
+			.filter_map(|event_entry| match &event_entry.event {
+				OnchainEvent::HTLCUpdate { source, .. } => Some(source),
+				_ => None,
+			})
+			.collect();
+
+		// Group all in-flight HTLCs by payment hash to handle duplicates correctly.
+		let mut htlcs_by_hash: HashMap<PaymentHash, Vec<(&HTLCOutputInCommitment, &HTLCSource)>> = new_hash_map();
+		for (htlc, source_opt) in htlcs {
+			if let Some(source) = source_opt {
+				htlcs_by_hash.entry(htlc.payment_hash).or_default().push((htlc, source));
+			}
+		}
+
+		for (payment_hash, htlc_group) in htlcs_by_hash {
+			// If any HTLC in this group is missing from the monitor's on-chain view,
+			// it indicates a stale state was used. We must fail back the entire group.
+			let is_any_htlc_missing = htlc_group
+				.iter()
+				.any(|(_, source)| !monitor_htlc_sources.contains(source));
+			if is_any_htlc_missing {
+				log_info!(logger,
+					"Detected stale force-close. Failing back HTLCs for hash {}.",
+					&payment_hash);
+				for (htlc, source) in htlc_group {
+					let htlc_id = SentHTLCId::from_source(source);
+					let already_failed_count = *self.failed_back_htlc_ids.get(&htlc_id).unwrap_or(&0);
+					let expected_count = *expected_htlc_counts.get(&htlc_id).unwrap_or(&0);
+
+					// Only fail back if we haven't already failed all expected instances.
+					if already_failed_count < expected_count {
+						log_error!(logger,
+							"Failing back HTLC for payment {} due to stale close.",
+							log_bytes!(payment_hash.0));
+						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+							source: source.clone(),
+							payment_preimage: None,
+							payment_hash,
+							htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+						}));
+						*self.failed_back_htlc_ids.entry(htlc_id).or_default() += 1;
+					}
+				}
+			}
+		}
+
 		if self.no_further_updates_allowed() {
 			// Fail back HTLCs on backwards channels if they expire within
 			// `LATENCY_GRACE_PERIOD_BLOCKS` blocks and the channel is closed (i.e. we're at a
@@ -5646,7 +5721,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				if duplicate_event {
 					continue;
 				}
-				if !self.failed_back_htlc_ids.insert(SentHTLCId::from_source(source)) {
+				let htlc_id = SentHTLCId::from_source(source);
+				if *self.failed_back_htlc_ids.get(&htlc_id).unwrap_or(&0) > 0 {
 					continue;
 				}
 				if !duplicate_event {
@@ -5659,6 +5735,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_hash: htlc.payment_hash,
 						htlc_value_satoshis: Some(htlc.amount_msat / 1000),
 					}));
+					*self.failed_back_htlc_ids.entry(htlc_id).or_default() += 1;
 				}
 			}
 		}
@@ -6650,7 +6727,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			initial_counterparty_commitment_info,
 			initial_counterparty_commitment_tx,
 			balances_empty_height,
-			failed_back_htlc_ids: new_hash_set(),
+			failed_back_htlc_ids: new_hash_map(),
 
 			current_holder_htlc_data,
 			prev_holder_htlc_data,
