@@ -23,7 +23,7 @@ use crate::blinded_path::message::{
 };
 use crate::blinded_path::payment::{
 	AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext,
-	PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs,
+	PaymentConstraints, PaymentContext, ReceiveTlvs,
 };
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 
@@ -319,18 +319,16 @@ where
 
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
-	fn create_blinded_payment_paths<ES: Deref, R: Deref>(
-		&self, router: &R, entropy_source: ES, usable_channels: Vec<ChannelDetails>,
-		amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext,
+	fn create_blinded_payment_paths<R: Deref>(
+		&self, router: &R, usable_channels: Vec<ChannelDetails>, amount_msats: Option<u64>,
+		payment_secret: PaymentSecret, payment_context: PaymentContext,
 		relative_expiry_seconds: u32,
 	) -> Result<Vec<BlindedPaymentPath>, ()>
 	where
-		ES::Target: EntropySource,
 		R::Target: Router,
 	{
-		let expanded_key = &self.inbound_payment_key;
-		let entropy = &*entropy_source;
 		let secp_ctx = &self.secp_ctx;
+		let receive_auth_key = self.receive_auth_key;
 
 		let payee_node_id = self.get_our_node_id();
 
@@ -341,16 +339,15 @@ where
 			.saturating_add(LATENCY_GRACE_PERIOD_BLOCKS)
 			.saturating_add(self.best_block.read().unwrap().height);
 
-		let payee_tlvs = UnauthenticatedReceiveTlvs {
+		let payee_tlvs = ReceiveTlvs {
 			payment_secret,
 			payment_constraints: PaymentConstraints { max_cltv_expiry, htlc_minimum_msat: 1 },
 			payment_context,
 		};
-		let nonce = Nonce::from_entropy_source(entropy);
-		let payee_tlvs = payee_tlvs.authenticate(nonce, expanded_key);
 
 		router.create_blinded_payment_paths(
 			payee_node_id,
+			receive_auth_key,
 			usable_channels,
 			payee_tlvs,
 			amount_msats,
@@ -361,18 +358,16 @@ where
 	#[cfg(test)]
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
-	pub(crate) fn test_create_blinded_payment_paths<ES: Deref, R: Deref>(
-		&self, router: &R, entropy_source: ES, usable_channels: Vec<ChannelDetails>,
-		amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext,
+	pub(crate) fn test_create_blinded_payment_paths<R: Deref>(
+		&self, router: &R, usable_channels: Vec<ChannelDetails>, amount_msats: Option<u64>,
+		payment_secret: PaymentSecret, payment_context: PaymentContext,
 		relative_expiry_seconds: u32,
 	) -> Result<Vec<BlindedPaymentPath>, ()>
 	where
-		ES::Target: EntropySource,
 		R::Target: Router,
 	{
 		self.create_blinded_payment_paths(
 			router,
-			entropy_source,
 			usable_channels,
 			amount_msats,
 			payment_secret,
@@ -814,17 +809,15 @@ where
 
 	/// Creates a [`StaticInvoiceBuilder`] from the corresponding [`Offer`] and [`Nonce`] that were
 	/// created via [`Self::create_async_receive_offer_builder`].
-	pub fn create_static_invoice_builder<'a, ES: Deref, R: Deref>(
-		&self, router: &R, entropy_source: ES, offer: &'a Offer, offer_nonce: Nonce,
-		payment_secret: PaymentSecret, relative_expiry_secs: u32,
-		usable_channels: Vec<ChannelDetails>, peers: Vec<MessageForwardNode>,
+	pub fn create_static_invoice_builder<'a, R: Deref>(
+		&self, router: &R, offer: &'a Offer, offer_nonce: Nonce, payment_secret: PaymentSecret,
+		relative_expiry_secs: u32, usable_channels: Vec<ChannelDetails>,
+		peers: Vec<MessageForwardNode>,
 	) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError>
 	where
-		ES::Target: EntropySource,
 		R::Target: Router,
 	{
 		let expanded_key = &self.inbound_payment_key;
-		let entropy = &*entropy_source;
 		let secp_ctx = &self.secp_ctx;
 
 		let payment_context =
@@ -840,7 +833,6 @@ where
 		let payment_paths = self
 			.create_blinded_payment_paths(
 				router,
-				entropy,
 				usable_channels,
 				amount_msat,
 				payment_secret,
@@ -908,7 +900,6 @@ where
 		let payment_paths = self
 			.create_blinded_payment_paths(
 				router,
-				entropy,
 				usable_channels,
 				Some(amount_msats),
 				payment_secret,
@@ -947,17 +938,15 @@ where
 	/// An [`OffersMessage::InvoiceError`] will be generated if:
 	/// - We fail to generate valid payment paths to include in the [`Bolt12Invoice`].
 	/// - We fail to generate a valid signed [`Bolt12Invoice`] for the [`InvoiceRequest`].
-	pub fn create_response_for_invoice_request<ES: Deref, NS: Deref, R: Deref>(
-		&self, signer: &NS, router: &R, entropy_source: ES,
-		invoice_request: VerifiedInvoiceRequest, amount_msats: u64, payment_hash: PaymentHash,
-		payment_secret: PaymentSecret, usable_channels: Vec<ChannelDetails>,
+	pub fn create_response_for_invoice_request<NS: Deref, R: Deref>(
+		&self, signer: &NS, router: &R, invoice_request: VerifiedInvoiceRequest, amount_msats: u64,
+		payment_hash: PaymentHash, payment_secret: PaymentSecret,
+		usable_channels: Vec<ChannelDetails>,
 	) -> (OffersMessage, Option<MessageContext>)
 	where
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		R::Target: Router,
 	{
-		let entropy = &*entropy_source;
 		let secp_ctx = &self.secp_ctx;
 
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
@@ -969,7 +958,6 @@ where
 
 		let payment_paths = match self.create_blinded_payment_paths(
 			router,
-			entropy,
 			usable_channels,
 			Some(amount_msats),
 			payment_secret,
@@ -1332,12 +1320,11 @@ where
 	/// the cache can self-regulate the number of messages sent out.
 	///
 	/// Errors if we failed to create blinded reply paths when sending an [`OfferPathsRequest`] message.
-	pub fn check_refresh_async_receive_offer_cache<ES: Deref, R: Deref>(
-		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
-		router: R, timer_tick_occurred: bool,
+	pub fn check_refresh_async_receive_offer_cache<R: Deref>(
+		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, router: R,
+		timer_tick_occurred: bool,
 	) -> Result<(), ()>
 	where
-		ES::Target: EntropySource,
 		R::Target: Router,
 	{
 		// Terminate early if this node does not intend to receive async payments.
@@ -1351,7 +1338,7 @@ where
 		self.check_refresh_async_offers(peers.clone(), timer_tick_occurred)?;
 
 		if timer_tick_occurred {
-			self.check_refresh_static_invoices(peers, usable_channels, entropy, router);
+			self.check_refresh_static_invoices(peers, usable_channels, router);
 		}
 
 		Ok(())
@@ -1408,11 +1395,9 @@ where
 
 	/// Enqueue onion messages that will used to request invoice refresh from the static invoice
 	/// server, based on the offers provided by the cache.
-	fn check_refresh_static_invoices<ES: Deref, R: Deref>(
-		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
-		router: R,
+	fn check_refresh_static_invoices<R: Deref>(
+		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, router: R,
 	) where
-		ES::Target: EntropySource,
 		R::Target: Router,
 	{
 		let mut serve_static_invoice_msgs = Vec::new();
@@ -1427,7 +1412,6 @@ where
 					offer_nonce,
 					peers.clone(),
 					usable_channels.clone(),
-					&*entropy,
 					&*router,
 				) {
 					Ok((invoice, path)) => (invoice, path),
@@ -1593,7 +1577,6 @@ where
 			offer_nonce,
 			peers,
 			usable_channels,
-			&*entropy,
 			router,
 		) {
 			Ok(res) => res,
@@ -1628,12 +1611,11 @@ where
 
 	/// Creates a [`StaticInvoice`] and a blinded path for the server to forward invoice requests from
 	/// payers to our node.
-	fn create_static_invoice_for_server<ES: Deref, R: Deref>(
+	fn create_static_invoice_for_server<R: Deref>(
 		&self, offer: &Offer, offer_nonce: Nonce, peers: Vec<MessageForwardNode>,
-		usable_channels: Vec<ChannelDetails>, entropy: ES, router: R,
+		usable_channels: Vec<ChannelDetails>, router: R,
 	) -> Result<(StaticInvoice, BlindedMessagePath), ()>
 	where
-		ES::Target: EntropySource,
 		R::Target: Router,
 	{
 		let expanded_key = &self.inbound_payment_key;
@@ -1660,7 +1642,6 @@ where
 		let invoice = self
 			.create_static_invoice_builder(
 				&router,
-				&*entropy,
 				&offer,
 				offer_nonce,
 				payment_secret,

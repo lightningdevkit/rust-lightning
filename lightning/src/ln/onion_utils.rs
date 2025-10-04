@@ -1680,6 +1680,8 @@ pub enum LocalHTLCFailureReason {
 	PeerOffline,
 	/// The HTLC was failed because the channel balance was overdrawn.
 	ChannelBalanceOverdrawn,
+	/// Received payload with unauthenticated payload.
+	UnauthenticatedPayload,
 }
 
 impl LocalHTLCFailureReason {
@@ -1721,6 +1723,7 @@ impl LocalHTLCFailureReason {
 			Self::InvalidOnionPayload | Self::InvalidTrampolinePayload => PERM | 22,
 			Self::MPPTimeout => 23,
 			Self::InvalidOnionBlinding => BADONION | PERM | 24,
+			Self::UnauthenticatedPayload => BADONION | PERM | 25,
 			Self::UnknownFailureCode { code } => *code,
 		}
 	}
@@ -1880,7 +1883,8 @@ ser_failure_reasons!(
 	(39, HTLCMinimum),
 	(40, HTLCMaximum),
 	(41, PeerOffline),
-	(42, ChannelBalanceOverdrawn)
+	(42, ChannelBalanceOverdrawn),
+	(43, UnauthenticatedPayload)
 );
 
 impl From<&HTLCFailReason> for HTLCHandlingFailureReason {
@@ -2042,6 +2046,7 @@ impl HTLCFailReason {
 			| LocalHTLCFailureReason::InvalidTrampolinePayload => debug_assert!(data.len() <= 11),
 			LocalHTLCFailureReason::MPPTimeout => debug_assert!(data.is_empty()),
 			LocalHTLCFailureReason::InvalidOnionBlinding => debug_assert_eq!(data.len(), 32),
+			LocalHTLCFailureReason::UnauthenticatedPayload => debug_assert!(data.is_empty()),
 			LocalHTLCFailureReason::UnknownFailureCode { code } => {
 				// We set some bogus BADONION failure codes in tests, so allow unknown BADONION.
 				if code & BADONION == 0 {
