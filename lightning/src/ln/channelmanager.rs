@@ -13262,7 +13262,7 @@ where
 						.closed_channel_monitor_update_ids
 						.get_mut(&channel_id)
 						.expect("Channels originating a payment resolution must have a monitor");
-					*update_id += 1;
+					*update_id = update_id.saturating_add(1);
 
 					let update = ChannelMonitorUpdate {
 						update_id: *update_id,
@@ -16523,7 +16523,7 @@ where
 					should_queue_fc_update = !monitor.no_further_updates_allowed();
 					let mut latest_update_id = monitor.get_latest_update_id();
 					if should_queue_fc_update {
-						latest_update_id += 1;
+						latest_update_id = latest_update_id.saturating_add(1);
 					}
 					per_peer_state
 						.entry(counterparty_node_id)
@@ -17170,7 +17170,7 @@ where
 											.closed_channel_monitor_update_ids
 											.get_mut(channel_id)
 											.expect("Channels originating a preimage must have a monitor");
-										*update_id += 1;
+										*update_id = update_id.saturating_add(1);
 
 										pending_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
 											counterparty_node_id: monitor.get_counterparty_node_id(),
