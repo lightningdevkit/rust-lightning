@@ -146,7 +146,7 @@ fn complete_future(this: &Arc<Mutex<FutureState>>) -> bool {
 		state.callbacks_made = true;
 	}
 	for (_, waker) in state.std_future_callbacks.drain(..) {
-		waker.0.wake_by_ref();
+		waker.0.wake();
 	}
 	for callback in state.callbacks_with_state.drain(..) {
 		(callback)(this);
