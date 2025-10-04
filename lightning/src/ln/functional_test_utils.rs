@@ -3067,6 +3067,21 @@ pub fn expect_channel_ready_event<'a, 'b, 'c, 'd>(
 	}
 }
 
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
+	node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey,
+) -> ChannelId {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		crate::events::Event::SplicePending { channel_id, counterparty_node_id, .. } => {
+			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
+			*channel_id
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
 pub fn expect_probe_successful_events(
 	node: &Node, mut probe_results: Vec<(PaymentHash, PaymentId)>,
 ) {
