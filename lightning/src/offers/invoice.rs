@@ -1819,6 +1819,7 @@ mod tests {
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::invoice_request::{
 		ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequestTlvStreamRef,
+		InvoiceRequestVerifiedFromOffer,
 	};
 	use crate::offers::merkle::{self, SignError, SignatureTlvStreamRef, TaggedHash, TlvStream};
 	use crate::offers::nonce::Nonce;
@@ -2235,42 +2236,31 @@ mod tests {
 				.build_and_sign()
 				.unwrap();
 
-		if let Err(e) = invoice_request
+		let verified_request = invoice_request
 			.clone()
 			.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx)
-			.unwrap()
-			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now())
-			.unwrap()
-			.build_and_sign(&secp_ctx)
-		{
-			panic!("error building invoice: {:?}", e);
+			.unwrap();
+
+		match verified_request {
+			InvoiceRequestVerifiedFromOffer::DerivedKeys(req) => {
+				let invoice = req
+					.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now())
+					.unwrap()
+					.build_and_sign(&secp_ctx);
+
+				if let Err(e) = invoice {
+					panic!("error building invoice: {:?}", e);
+				}
+			},
+			InvoiceRequestVerifiedFromOffer::ExplicitKeys(_) => {
+				panic!("expected invoice request with keys");
+			},
 		}
 
 		let expanded_key = ExpandedKey::new([41; 32]);
 		assert!(invoice_request
 			.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx)
 			.is_err());
-
-		let invoice_request =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
-				.amount_msats(1000)
-				// Omit the path so that node_id is used for the signing pubkey instead of deriving it
-				.experimental_foo(42)
-				.build()
-				.unwrap()
-				.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
-				.unwrap()
-				.build_and_sign()
-				.unwrap();
-
-		match invoice_request
-			.verify_using_metadata(&expanded_key, &secp_ctx)
-			.unwrap()
-			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now())
-		{
-			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidMetadata),
-		}
 	}
 
 	#[test]
