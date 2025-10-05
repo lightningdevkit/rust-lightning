@@ -13867,8 +13867,12 @@ where
 			// payments which are still in-flight via their on-chain state.
 			// We only rebuild the pending payments map if we were most recently serialized by
 			// 0.0.102+
+			//
+			// First we rebuild all pending payments, then separately re-claim and re-fail pending
+			// payments. This avoids edge-cases around MPP payments resulting in redundant actions.
 			for (_, monitor) in args.channel_monitors.iter() {
 				let counterparty_opt = outpoint_to_peer.get(&monitor.get_funding_txo().0);
+				// outpoint_to_peer missing the funding outpoint implies the channel is closed
 				if counterparty_opt.is_none() {
 					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
 						let logger = WithChannelMonitor::from(&args.logger, monitor, Some(htlc.payment_hash));
@@ -13885,6 +13889,11 @@ where
 							);
 						}
 					}
+				}
+			}
+			for (_, monitor) in args.channel_monitors.iter() {
+				let counterparty_opt = outpoint_to_peer.get(&monitor.get_funding_txo().0);
+				if counterparty_opt.is_none() {
 					for (htlc_source, (htlc, preimage_opt)) in monitor.get_all_current_outbound_htlcs() {
 						let logger = WithChannelMonitor::from(&args.logger, monitor, Some(htlc.payment_hash));
 						match htlc_source {
