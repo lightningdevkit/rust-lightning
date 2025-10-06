@@ -5189,11 +5189,12 @@ where
 						);
 						match break_channel_entry!(self, peer_state, send_res, chan_entry) {
 							Some(monitor_update) => {
+								let encoded_channel = chan.encode();
 								let ok = handle_new_monitor_update!(
 									self,
 									funding_txo,
 									monitor_update,
-									None,
+									Some(&encoded_channel),
 									peer_state_lock,
 									peer_state,
 									per_peer_state,
@@ -8768,11 +8769,12 @@ where
 									.or_insert_with(Vec::new)
 									.push(raa_blocker);
 							}
+							let encoded_chan = chan.encode();
 							handle_new_monitor_update!(
 								self,
 								prev_hop.funding_txo,
 								monitor_update,
-								None,
+								Some(&encoded_chan),
 								peer_state_lock,
 								peer_state,
 								per_peer_state,
@@ -10932,7 +10934,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							try_channel_entry!(self, peer_state, Err(err), chan_entry)
 						}
 					} else if let Some(monitor_update) = monitor_update_opt {
-						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, None, peer_state_lock,
+						let encoded_chan = chan.encode();
+						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, Some(&encoded_chan), peer_state_lock,
 							peer_state, per_peer_state, chan);
 					}
 				}
@@ -10963,8 +10966,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					);
 
 					if let Some(monitor_update) = monitor_update_opt {
+						let encoded_chan = chan.encode();
 						handle_new_monitor_update!(
-							self, funding_txo.unwrap(), monitor_update, None, peer_state_lock, peer_state,
+							self, funding_txo.unwrap(), monitor_update, Some(&encoded_chan), peer_state_lock, peer_state,
 							per_peer_state, chan
 						);
 					}
@@ -11210,7 +11214,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if let Some(monitor_update) = monitor_update_opt {
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
-							handle_new_monitor_update!(self, funding_txo, monitor_update, None,
+							let encoded_chan = chan.encode();
+							handle_new_monitor_update!(self, funding_txo, monitor_update, Some(&encoded_chan),
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 						(htlcs_to_fail, static_invoices)
@@ -11877,12 +11882,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 						if let Some(monitor_update) = monitor_opt {
 							has_monitor_update = true;
-
+							let encoded_channel = chan.encode();
 							handle_new_monitor_update!(
 								self,
 								funding_txo.unwrap(),
 								monitor_update,
-								None,
+								Some(&encoded_channel),
 								peer_state_lock,
 								peer_state,
 								per_peer_state,
@@ -13288,7 +13293,8 @@ where
 						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
 							log_debug!(logger, "Unlocking monitor updating for channel {} and updating monitor",
 								channel_id);
-							handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update,None,
+							let encoded_chan = chan.encode();
+							handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update, Some(&encoded_chan),
 								peer_state_lck, peer_state, per_peer_state, chan);
 							if further_update_exists {
 								// If there are more `ChannelMonitorUpdate`s to process, restart at the
