@@ -2167,8 +2167,7 @@ fn offer_cache_round_trip_ser() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let payee_node_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan_id =
-		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0).0.channel_id;
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let server = &nodes[0];
 	let recipient = &nodes[1];
 
@@ -2188,12 +2187,10 @@ fn offer_cache_round_trip_ser() {
 	// offers.
 	let cached_offers_pre_ser = recipient.node.flow.test_get_async_receive_offers();
 	let config = test_default_channel_config();
-	let serialized_monitor = get_monitor!(recipient, chan_id).encode();
-	reload_node!(
+	reload_node_and_monitors!(
 		nodes[1],
 		config,
 		recipient.node.encode(),
-		&[&serialized_monitor],
 		persister,
 		chain_monitor,
 		payee_node_deserialized
