@@ -1451,14 +1451,14 @@ where
 					self.persister.update_persisted_channel(
 						monitor.persistence_key(),
 						None,
-						None,
+						encoded_channel,
 						monitor,
 					)
 				} else {
 					self.persister.update_persisted_channel(
 						monitor.persistence_key(),
 						Some(update),
-						None,
+						encoded_channel,
 						monitor,
 					)
 				};
