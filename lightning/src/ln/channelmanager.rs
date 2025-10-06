@@ -3734,7 +3734,7 @@ macro_rules! handle_new_monitor_update_internal {
 			let update_res = $self.chain_monitor.update_channel(
 				$chan_id,
 				&$in_flight_updates[$update_idx],
-				None,
+				$channel,
 			);
 			let update_completed = $self.handle_monitor_update_res(update_res, $chan_id, $logger);
 			if update_completed {
@@ -3767,7 +3767,7 @@ macro_rules! handle_new_monitor_update_internal {
 
 macro_rules! handle_new_monitor_update {
 	(
-		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
+		$self: ident, $funding_txo: expr, $update: expr, $channel: expr, $peer_state_lock: expr, $peer_state: expr,
 		$per_peer_state_lock: expr, $chan: expr
 	) => {{
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
@@ -3779,7 +3779,7 @@ macro_rules! handle_new_monitor_update {
 			$self,
 			$funding_txo,
 			$update,
-			None,
+			$channel,
 			$peer_state,
 			logger,
 			chan_id,
@@ -4343,7 +4343,7 @@ where
 
 						// Update the monitor with the shutdown script if necessary.
 						if let Some(monitor_update) = monitor_update_opt.take() {
-							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
+							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update, None,
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 					} else {
@@ -4467,7 +4467,7 @@ where
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					handle_new_monitor_update!(self, funding_txo,
-						monitor_update, peer_state_lock, peer_state, per_peer_state, chan);
+						monitor_update, None, peer_state_lock, peer_state, per_peer_state, chan);
 					return;
 				} else {
 					debug_assert!(false, "We shouldn't have an update for a non-funded channel");
@@ -5193,6 +5193,7 @@ where
 									self,
 									funding_txo,
 									monitor_update,
+									None,
 									peer_state_lock,
 									peer_state,
 									per_peer_state,
@@ -8771,6 +8772,7 @@ where
 								self,
 								prev_hop.funding_txo,
 								monitor_update,
+								None,
 								peer_state_lock,
 								peer_state,
 								per_peer_state,
@@ -10622,6 +10624,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								self,
 								funding_txo_opt.unwrap(),
 								monitor_update,
+								None,
 								peer_state_lock,
 								peer_state,
 								per_peer_state,
@@ -10929,7 +10932,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							try_channel_entry!(self, peer_state, Err(err), chan_entry)
 						}
 					} else if let Some(monitor_update) = monitor_update_opt {
-						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
+						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, None, peer_state_lock,
 							peer_state, per_peer_state, chan);
 					}
 				}
@@ -10961,7 +10964,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 					if let Some(monitor_update) = monitor_update_opt {
 						handle_new_monitor_update!(
-							self, funding_txo.unwrap(), monitor_update, peer_state_lock, peer_state,
+							self, funding_txo.unwrap(), monitor_update, None, peer_state_lock, peer_state,
 							per_peer_state, chan
 						);
 					}
@@ -11207,7 +11210,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if let Some(monitor_update) = monitor_update_opt {
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
-							handle_new_monitor_update!(self, funding_txo, monitor_update,
+							handle_new_monitor_update!(self, funding_txo, monitor_update, None,
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 						(htlcs_to_fail, static_invoices)
@@ -11688,6 +11691,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								self,
 								splice_promotion.funding_txo,
 								monitor_update,
+								None,
 								peer_state_lock,
 								peer_state,
 								per_peer_state,
@@ -11878,6 +11882,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								self,
 								funding_txo.unwrap(),
 								monitor_update,
+								None,
 								peer_state_lock,
 								peer_state,
 								per_peer_state,
@@ -13283,7 +13288,7 @@ where
 						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
 							log_debug!(logger, "Unlocking monitor updating for channel {} and updating monitor",
 								channel_id);
-							handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update,
+							handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update,None,
 								peer_state_lck, peer_state, per_peer_state, chan);
 							if further_update_exists {
 								// If there are more `ChannelMonitorUpdate`s to process, restart at the
