@@ -1382,6 +1382,38 @@ macro_rules! reload_node {
 	};
 }
 
+#[cfg(test)]
+macro_rules! reload_node_and_monitors {
+	($node: expr, $new_config: expr, $chanman_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+		let monitors_serialized = {
+			let monitor_map = $node.chain_monitor.persisted_monitors.lock().unwrap();
+			monitor_map.values().cloned().collect::<Vec<_>>()
+		};
+		let monitors_serialized_ref: Vec<&[u8]> =
+			monitors_serialized.iter().map(|v| v.as_slice()).collect();
+
+		reload_node!(
+			$node,
+			$new_config,
+			$chanman_encoded,
+			&monitors_serialized_ref,
+			$persister,
+			$new_chain_monitor,
+			$new_channelmanager
+		);
+	};
+	($node: expr, $chanman_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+		reload_node_and_monitors!(
+			$node,
+			$crate::util::config::UserConfig::default(),
+			$chanman_encoded,
+			$persister,
+			$new_chain_monitor,
+			$new_channelmanager
+		);
+	};
+}
+
 pub fn create_funding_transaction<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, expected_counterparty_node_id: &PublicKey, expected_chan_value: u64,
 	expected_user_chan_id: u128,

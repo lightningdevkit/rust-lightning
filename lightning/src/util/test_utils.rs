@@ -486,6 +486,8 @@ pub struct TestChainMonitor<'a> {
 	pub expect_monitor_round_trip_fail: Mutex<Option<ChannelId>>,
 	#[cfg(feature = "std")]
 	pub write_blocker: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+	/// The latest persisted monitor for each channel.
+	pub persisted_monitors: Mutex<HashMap<ChannelId, Vec<u8>>>,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(
@@ -511,6 +513,7 @@ impl<'a> TestChainMonitor<'a> {
 			expect_monitor_round_trip_fail: Mutex::new(None),
 			#[cfg(feature = "std")]
 			write_blocker: Mutex::new(None),
+			persisted_monitors: Mutex::new(new_hash_map()),
 		}
 	}
 
@@ -564,6 +567,9 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		// monitor to a serialized copy and get he same one back.
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
+
+		self.persisted_monitors.lock().unwrap().insert(channel_id, w.0.clone());
+
 		let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0),
 			(self.keys_manager, self.keys_manager),
@@ -620,6 +626,9 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		let monitor = self.chain_monitor.get_monitor(channel_id).unwrap();
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
+
+		self.persisted_monitors.lock().unwrap().insert(channel_id, w.0.clone());
+
 		let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0),
 			(self.keys_manager, self.keys_manager),

@@ -2613,7 +2613,7 @@ fn do_automatic_retries(test: AutoRetry) {
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
 
-	let channel_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let channel_id_2 = create_announced_chan_between_nodes(&nodes, 2, 1).2;
 
 	// Marshall data to send the payment
@@ -2801,8 +2801,7 @@ fn do_automatic_retries(test: AutoRetry) {
 
 		// Restart the node and ensure that ChannelManager does not use its remaining retry attempt
 		let node_encoded = nodes[0].node.encode();
-		let mon_ser = get_monitor!(nodes[0], channel_id_1).encode();
-		reload_node!(nodes[0], node_encoded, &[&mon_ser], persister, chain_monitor, node_a_reload);
+		reload_node_and_monitors!(nodes[0], node_encoded, persister, chain_monitor, node_a_reload);
 
 		nodes[0].node.process_pending_htlc_forwards();
 		// Make sure we don't retry again.

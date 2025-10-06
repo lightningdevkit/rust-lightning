@@ -3244,7 +3244,7 @@ fn test_event_replay_causing_monitor_replay() {
 	let node_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
 
 	let payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 1_000_000).0;
 
@@ -3262,9 +3262,7 @@ fn test_event_replay_causing_monitor_replay() {
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, true /* expected post-event monitor update*/);
 	assert!(nodes[0].node.get_and_clear_needs_persistence());
 
-	let serialized_monitor = get_monitor!(nodes[0], chan.2).encode();
-	reload_node!(nodes[0], &serialized_channel_manager, &[&serialized_monitor], persister, new_chain_monitor, node_deserialized);
-
+	reload_node_and_monitors!(nodes[0], &serialized_channel_manager, persister, new_chain_monitor, node_deserialized);
 	// Expect the `PaymentSent` to get replayed, this time without the duplicate monitor update
 	expect_payment_sent(&nodes[0], payment_preimage, None, false, false /* expected post-event monitor update*/);
 }
@@ -3363,7 +3361,7 @@ fn test_claim_event_never_handled() {
 
 	let init_node_ser = nodes[1].node.encode();
 
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	// Send the payment we'll ultimately test the PaymentClaimed event for.
 	let (preimage_a, payment_hash_a, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
@@ -3392,10 +3390,7 @@ fn test_claim_event_never_handled() {
 
 	// Finally, reload node B with an empty `ChannelManager` and check that we get the
 	// `PaymentClaimed` event.
-	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan.2).encode();
-	let mons = &[&chan_0_monitor_serialized[..]];
-	reload_node!(nodes[1], &init_node_ser, mons, persister, new_chain_mon, nodes_1_reload);
-
+	reload_node_and_monitors!(nodes[1], &init_node_ser, persister, new_chain_mon, nodes_1_reload);
 	expect_payment_claimed!(nodes[1], payment_hash_a, 1_000_000);
 	// The reload logic spuriously generates a redundant payment preimage-containing
 	// `ChannelMonitorUpdate`.

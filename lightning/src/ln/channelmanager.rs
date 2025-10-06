@@ -19066,10 +19066,9 @@ mod tests {
 		*chanmgr_fwd_htlcs = forward_htlcs.clone();
 		core::mem::drop(chanmgr_fwd_htlcs);
 
-		reload_node!(nodes[0], nodes[0].node.encode(), &[], persister, chain_monitor, deserialized_chanmgr);
+		reload_node_and_monitors!(nodes[0], nodes[0].node.encode(), persister, chain_monitor, deserialized_chanmgr);
 
-		let mut deserialized_fwd_htlcs = nodes[0].node.forward_htlcs.lock().unwrap();
-		for scid in [scid_1, scid_2].iter() {
+		let mut deserialized_fwd_htlcs = nodes[0].node.forward_htlcs.lock().unwrap();		for scid in [scid_1, scid_2].iter() {
 			let deserialized_htlcs = deserialized_fwd_htlcs.remove(scid).unwrap();
 			assert_eq!(forward_htlcs.remove(scid).unwrap(), deserialized_htlcs);
 		}
