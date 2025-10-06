@@ -3658,6 +3658,7 @@ macro_rules! handle_post_close_monitor_update {
 			$self,
 			$funding_txo,
 			$update,
+			None,
 			$peer_state,
 			logger,
 			$channel_id,
@@ -3696,6 +3697,7 @@ macro_rules! handle_new_monitor_update_todo_name {
 			$self,
 			$funding_txo,
 			$update,
+			None,
 			$peer_state,
 			logger,
 			chan_id,
@@ -3711,7 +3713,7 @@ macro_rules! handle_new_monitor_update_todo_name {
 
 macro_rules! handle_new_monitor_update_internal {
 	(
-		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $logger: expr,
+		$self: ident, $funding_txo: expr, $update: expr, $channel: expr, $peer_state: expr, $logger: expr,
 		$chan_id: expr, $counterparty_node_id: expr, $in_flight_updates: ident, $update_idx: ident,
 		$completed: expr
 	) => {{
@@ -3777,6 +3779,7 @@ macro_rules! handle_new_monitor_update {
 			$self,
 			$funding_txo,
 			$update,
+			None,
 			$peer_state,
 			logger,
 			chan_id,
