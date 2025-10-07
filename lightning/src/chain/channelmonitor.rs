@@ -1059,11 +1059,21 @@ impl Readable for IrrevocablyResolvedHTLC {
 /// You MUST ensure that no ChannelMonitors for a given channel anywhere contain out-of-date
 /// information and are actively monitoring the chain.
 ///
-/// Note that the deserializer is only implemented for (BlockHash, ChannelMonitor), which
-/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
-/// the "reorg path" (ie disconnecting blocks until you find a common ancestor from both the
-/// returned block hash and the the current chain and then reconnecting blocks to get to the
-/// best chain) upon deserializing the object!
+/// Like the [`ChannelManager`], deserialization is implemented for `(BlockHash, ChannelMonitor)`,
+/// providing you with the last block hash which was connected before shutting down. You must begin
+/// syncing the chain from that point, disconnecting and connecting blocks as required to get to
+/// the best chain on startup. Note that all [`ChannelMonitor`]s passed to a [`ChainMonitor`] must
+/// by synced as of the same block, so syncing must happen prior to [`ChainMonitor`]
+/// initialization.
+///
+/// For those loading potentially-ancient [`ChannelMonitor`]s, deserialization is also implemented
+/// for `Option<(BlockHash, ChannelMonitor)>`. LDK can no longer deserialize a [`ChannelMonitor`]
+/// that was first created in LDK prior to 0.0.110 and last updated prior to LDK 0.0.119. In such
+/// cases, the `Option<(..)>` deserialization option may return `Ok(None)` rather than failing to
+/// deserialize, allowing you to differentiate between the two cases.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 pub struct ChannelMonitor<Signer: EcdsaChannelSigner> {
 	pub(crate) inner: Mutex<ChannelMonitorImpl<Signer>>,
 }
@@ -6252,6 +6262,18 @@ const MAX_ALLOC_SIZE: usize = 64 * 1024;
 impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
 	for (BlockHash, ChannelMonitor<SP::EcdsaSigner>)
 {
+	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
+		match <Option<Self>>::read(reader, args) {
+			Ok(Some(res)) => Ok(res),
+			Ok(None) => Err(DecodeError::UnknownRequiredFeature),
+			Err(e) => Err(e),
+		}
+	}
+}
+
+impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
+	for Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>
+{
 	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
@@ -6528,11 +6550,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let channel_id = channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(outpoint));
-		if counterparty_node_id.is_none() {
-			panic!("Found monitor for channel {} with no updates since v0.0.118.\
-				These monitors are no longer supported.\
-				To continue, run a v0.1 release, send/route a payment over the channel or close it.", channel_id);
-		}
 
 		let (current_holder_commitment_tx, current_holder_htlc_data) = {
 			let holder_commitment_tx = onchain_tx_handler.current_holder_commitment_tx();
@@ -6586,7 +6603,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				(None, None)
 			};
 
-		Ok((best_block.block_hash, ChannelMonitor::from_impl(ChannelMonitorImpl {
+		let dummy_node_id = PublicKey::from_slice(&[2; 33]).unwrap();
+		let monitor = ChannelMonitor::from_impl(ChannelMonitorImpl {
 			funding: FundingScope {
 				channel_parameters,
 
@@ -6646,7 +6664,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			spendable_txids_confirmed: spendable_txids_confirmed.unwrap(),
 
 			best_block,
-			counterparty_node_id: counterparty_node_id.unwrap(),
+			counterparty_node_id: counterparty_node_id.unwrap_or(dummy_node_id),
 			initial_counterparty_commitment_info,
 			initial_counterparty_commitment_tx,
 			balances_empty_height,
@@ -6658,7 +6676,20 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			alternative_funding_confirmed,
 
 			written_by_0_1_or_later,
-		})))
+		});
+
+		if counterparty_node_id.is_none() {
+			if (holder_tx_signed || lockdown_from_offchain) && monitor.get_claimable_balances().is_empty() {
+				// If the monitor is no longer readable, but it is a candidate for archiving,
+				// return Ok(None) to allow it to be skipped and not loaded.
+				return Ok(None);
+			} else {
+				panic!("Found monitor for channel {channel_id} with no updates since v0.0.118. \
+					These monitors are no longer supported. \
+					To continue, run a v0.1 release, send/route a payment over the channel or close it.");
+			}
+		}
+		Ok(Some((best_block.block_hash, monitor)))
 	}
 }
 
