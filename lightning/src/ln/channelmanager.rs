@@ -4686,7 +4686,7 @@ where
 			);
 			res = result;
 			match res {
-				Ok(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(_) => NotifyOption::DoPersist,
 				Err(_) => NotifyOption::SkipPersistNoEvents,
 			}
 		});
