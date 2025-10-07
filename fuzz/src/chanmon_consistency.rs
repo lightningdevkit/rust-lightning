@@ -171,7 +171,11 @@ impl Writer for VecWriter {
 /// Note that such "being persisted" `ChannelMonitor`s are stored in `ChannelManager` and will
 /// simply be replayed on startup.
 struct LatestMonitorState {
-	/// The latest monitor id which we told LDK we've persisted
+	/// The latest monitor id which we told LDK we've persisted.
+	///
+	/// Note that there may still be earlier pending monitor updates in [`Self::pending_monitors`]
+	/// which we haven't yet completed. We're allowed to reload with those as well, at least until
+	/// they're completed.
 	persisted_monitor_id: u64,
 	/// The latest serialized `ChannelMonitor` that we told LDK we persisted.
 	persisted_monitor: Vec<u8>,
@@ -726,18 +730,18 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 		let mut monitors = new_hash_map();
 		let mut old_monitors = old_monitors.latest_monitors.lock().unwrap();
 		for (channel_id, mut prev_state) in old_monitors.drain() {
-			let serialized_mon = if use_old_mons % 3 == 0 {
+			let (mon_id, serialized_mon) = if use_old_mons % 3 == 0 {
 				// Reload with the oldest `ChannelMonitor` (the one that we already told
 				// `ChannelManager` we finished persisting).
-				prev_state.persisted_monitor
+				(prev_state.persisted_monitor_id, prev_state.persisted_monitor)
 			} else if use_old_mons % 3 == 1 {
 				// Reload with the second-oldest `ChannelMonitor`
-				let old_mon = prev_state.persisted_monitor;
-				prev_state.pending_monitors.drain(..).next().map(|(_, v)| v).unwrap_or(old_mon)
+				let old_mon = (prev_state.persisted_monitor_id, prev_state.persisted_monitor);
+				prev_state.pending_monitors.drain(..).next().unwrap_or(old_mon)
 			} else {
 				// Reload with the newest `ChannelMonitor`
-				let old_mon = prev_state.persisted_monitor;
-				prev_state.pending_monitors.pop().map(|(_, v)| v).unwrap_or(old_mon)
+				let old_mon = (prev_state.persisted_monitor_id, prev_state.persisted_monitor);
+				prev_state.pending_monitors.pop().unwrap_or(old_mon)
 			};
 			// Use a different value of `use_old_mons` if we have another monitor (only for node B)
 			// by shifting `use_old_mons` one in base-3.
@@ -750,6 +754,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			monitors.insert(channel_id, mon.1);
 			// Update the latest `ChannelMonitor` state to match what we just told LDK.
 			prev_state.persisted_monitor = serialized_mon;
+			prev_state.persisted_monitor_id = mon_id;
 			// Wipe any `ChannelMonitor`s which we never told LDK we finished persisting,
 			// considering them discarded. LDK should replay these for us as they're stored in
 			// the `ChannelManager`.
