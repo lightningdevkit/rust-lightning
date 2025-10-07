@@ -3693,3 +3693,85 @@ fn test_lost_timeout_monitor_events() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, false);
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, true);
 }
+
+#[test]
+fn test_ladder_preimage_htlc_claims() {
+	// Tests that when we learn of a preimage via a monitor update we only claim HTLCs with the
+	// corresponding payment hash. This test is a reproduction of a scenario that happened in
+	// production where the second HTLC claim also included the first HTLC (even though it was
+	// already claimed) resulting in an invalid claim transaction.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+
+	let (payment_preimage1, payment_hash1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage2, payment_hash2, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &node_id_1, "test".to_string()).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	check_closed_broadcast(&nodes[0], 1, true);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	check_closed_event(&nodes[0], 1, reason, false, &[node_id_1], 1_000_000);
+
+	let commitment_tx = {
+		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		txn.remove(0)
+	};
+	mine_transaction(&nodes[0], &commitment_tx);
+	mine_transaction(&nodes[1], &commitment_tx);
+
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false, &[node_id_0], 1_000_000);
+
+	nodes[1].node.claim_funds(payment_preimage1);
+	expect_payment_claimed!(&nodes[1], payment_hash1, 1_000_000);
+	check_added_monitors(&nodes[1], 1);
+
+	let (htlc1, htlc_claim_tx1) = {
+		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		let htlc_claim_tx = txn.remove(0);
+		assert_eq!(htlc_claim_tx.input.len(), 1);
+		check_spends!(htlc_claim_tx, commitment_tx);
+		(htlc_claim_tx.input[0].previous_output, htlc_claim_tx)
+	};
+	mine_transaction(&nodes[0], &htlc_claim_tx1);
+	mine_transaction(&nodes[1], &htlc_claim_tx1);
+
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	expect_payment_sent(&nodes[0], payment_preimage1, None, true, false);
+	check_added_monitors(&nodes[0], 1);
+
+	nodes[1].node.claim_funds(payment_preimage2);
+	expect_payment_claimed!(&nodes[1], payment_hash2, 1_000_000);
+	check_added_monitors(&nodes[1], 1);
+
+	let (htlc2, htlc_claim_tx2) = {
+		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1, "{:?}", txn.iter().map(|tx| tx.compute_txid()).collect::<Vec<_>>());
+		let htlc_claim_tx = txn.remove(0);
+		assert_eq!(htlc_claim_tx.input.len(), 1);
+		check_spends!(htlc_claim_tx, commitment_tx);
+		(htlc_claim_tx.input[0].previous_output, htlc_claim_tx)
+	};
+	assert_ne!(htlc1, htlc2);
+
+	mine_transaction(&nodes[0], &htlc_claim_tx2);
+	mine_transaction(&nodes[1], &htlc_claim_tx2);
+
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	expect_payment_sent(&nodes[0], payment_preimage2, None, true, false);
+	check_added_monitors(&nodes[0], 1);
+}
