@@ -3739,8 +3739,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	/// Returns the HTLC claim package templates and the counterparty output info
-	fn get_counterparty_output_claim_info(&self, commitment_number: u64, commitment_txid: Txid, tx: Option<&Transaction>, per_commitment_option: Option<&Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>, confirmation_height: Option<u32>)
-	-> (Vec<PackageTemplate>, CommitmentTxCounterpartyOutputInfo) {
+	fn get_counterparty_output_claim_info(
+		&self, commitment_number: u64, commitment_txid: Txid,
+		tx: Option<&Transaction>,
+		per_commitment_option: Option<&Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>,
+		confirmation_height: Option<u32>,
+	) -> (Vec<PackageTemplate>, CommitmentTxCounterpartyOutputInfo) {
 		let mut claimable_outpoints = Vec::new();
 		let mut to_counterparty_output_info: CommitmentTxCounterpartyOutputInfo = None;
 
@@ -3768,13 +3772,23 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		if let Some(transaction) = tx {
 			let revocation_pubkey = RevocationKey::from_basepoint(
-				&self.onchain_tx_handler.secp_ctx,  &self.holder_revocation_basepoint, &per_commitment_point);
+				&self.onchain_tx_handler.secp_ctx,
+				&self.holder_revocation_basepoint,
+				&per_commitment_point,
+			);
 
-			let delayed_key = DelayedPaymentKey::from_basepoint(&self.onchain_tx_handler.secp_ctx, &self.counterparty_commitment_params.counterparty_delayed_payment_base_key, &per_commitment_point);
+			let delayed_key = DelayedPaymentKey::from_basepoint(
+				&self.onchain_tx_handler.secp_ctx,
+				&self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
+				&per_commitment_point,
+			);
 
-			let revokeable_p2wsh = chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
+			let revokeable_p2wsh = chan_utils::get_revokeable_redeemscript(
+				&revocation_pubkey,
 				self.counterparty_commitment_params.on_counterparty_tx_csv,
-				&delayed_key).to_p2wsh();
+				&delayed_key,
+			)
+			.to_p2wsh();
 			for (idx, outp) in transaction.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
 					to_counterparty_output_info =
@@ -3783,33 +3797,57 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		for  &(ref htlc, _) in per_commitment_claimable_data.iter() {
+		for &(ref htlc, _) in per_commitment_claimable_data.iter() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				if let Some(transaction) = tx {
-					if transaction_output_index as usize >= transaction.output.len() ||
-						transaction.output[transaction_output_index as usize].value != htlc.to_bitcoin_amount() {
-							// per_commitment_data is corrupt or our commitment signing key leaked!
-							return (claimable_outpoints, to_counterparty_output_info);
-						}
+					if transaction_output_index as usize >= transaction.output.len()
+						|| transaction.output[transaction_output_index as usize].value
+							!= htlc.to_bitcoin_amount()
+					{
+						// per_commitment_data is corrupt or our commitment signing key leaked!
+						return (claimable_outpoints, to_counterparty_output_info);
+					}
 				}
-				let preimage = if htlc.offered { if let Some((p, _)) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
+				let preimage = if htlc.offered {
+					if let Some((p, _)) = self.payment_preimages.get(&htlc.payment_hash) {
+						Some(*p)
+					} else {
+						None
+					}
+				} else {
+					None
+				};
 				if preimage.is_some() || !htlc.offered {
 					let counterparty_htlc_outp = if htlc.offered {
 						PackageSolvingData::CounterpartyOfferedHTLCOutput(
-							CounterpartyOfferedHTLCOutput::build(*per_commitment_point,
+							CounterpartyOfferedHTLCOutput::build(
+								*per_commitment_point,
 								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
 								self.counterparty_commitment_params.counterparty_htlc_base_key,
-								preimage.unwrap(), htlc.clone(), self.onchain_tx_handler.channel_type_features().clone(),
-								confirmation_height))
+								preimage.unwrap(),
+								htlc.clone(),
+								self.onchain_tx_handler.channel_type_features().clone(),
+								confirmation_height,
+							),
+						)
 					} else {
 						PackageSolvingData::CounterpartyReceivedHTLCOutput(
-							CounterpartyReceivedHTLCOutput::build(*per_commitment_point,
+							CounterpartyReceivedHTLCOutput::build(
+								*per_commitment_point,
 								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
 								self.counterparty_commitment_params.counterparty_htlc_base_key,
-								htlc.clone(), self.onchain_tx_handler.channel_type_features().clone(),
-								confirmation_height))
+								htlc.clone(),
+								self.onchain_tx_handler.channel_type_features().clone(),
+								confirmation_height,
+							),
+						)
 					};
-					let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry);
+					let counterparty_package = PackageTemplate::build_package(
+						commitment_txid,
+						transaction_output_index,
+						counterparty_htlc_outp,
+						htlc.cltv_expiry,
+					);
 					claimable_outpoints.push(counterparty_package);
 				}
 			}
