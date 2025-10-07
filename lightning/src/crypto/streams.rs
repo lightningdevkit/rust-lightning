@@ -130,7 +130,10 @@ impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32])> for ChaChaDualPolyRea
 		let readable: T = Readable::read(&mut chacha_stream)?;
 		while chacha_stream.read.bytes_remain() {
 			let mut buf = [0; 256];
-			chacha_stream.read(&mut buf)?;
+			if chacha_stream.read(&mut buf)? == 0 {
+				// Reached EOF
+				return Err(DecodeError::ShortRead);
+			}
 		}
 
 		let read_len = chacha_stream.read_len;
@@ -343,5 +346,21 @@ mod tests {
 		// Test that our stream adapters work as expected with the TLV macros.
 		// This also serves to test the `option: $trait` variant of the `_decode_tlv` ser macro.
 		do_chacha_stream_adapters_ser_macros().unwrap()
+	}
+
+	#[test]
+	fn short_read_chacha_dual_read_adapter() {
+		// Previously, if we attempted to read from a ChaChaDualPolyReadAdapter but the object
+		// being read is shorter than the available buffer while the buffer passed to
+		// ChaChaDualPolyReadAdapter itself always thinks it has room, we'd end up
+		// infinite-looping as we didn't handle `Read::read`'s 0 return values at EOF.
+		let mut stream = &[0; 1024][..];
+		let mut too_long_stream = FixedLengthReader::new(&mut stream, 2048);
+		let keys = ([42; 32], [99; 32]);
+		let res = super::ChaChaDualPolyReadAdapter::<u8>::read(&mut too_long_stream, keys);
+		match res {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e, DecodeError::ShortRead),
+		}
 	}
 }
