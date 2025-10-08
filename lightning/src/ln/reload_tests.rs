@@ -429,6 +429,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
 		channel_monitors: node_0_stale_monitors.iter().map(|monitor| { (monitor.channel_id(), monitor) }).collect(),
+		funded_channels: new_hash_map(),
 	}) { } else {
 		panic!("If the monitor(s) are stale, this indicates a bug and we should get an Err return");
 	};
@@ -447,6 +448,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
 		channel_monitors: node_0_monitors.iter().map(|monitor| { (monitor.channel_id(), monitor) }).collect(),
+		funded_channels: new_hash_map(),
 	}).unwrap();
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());

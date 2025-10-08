@@ -16248,6 +16248,8 @@ pub struct ChannelManagerReadArgs<
 	/// This is not exported to bindings users because we have no HashMap bindings
 	pub channel_monitors:
 		HashMap<ChannelId, &'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
+
+	pub funded_channels: HashMap<ChannelId, FundedChannel<SP>>,
 }
 
 impl<
@@ -16281,6 +16283,7 @@ where
 		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
 		config: UserConfig,
 		mut channel_monitors: Vec<&'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
+		mut funded_channels: Vec<FundedChannel<SP>>,
 	) -> Self {
 		Self {
 			entropy_source,
@@ -16295,6 +16298,9 @@ where
 			config,
 			channel_monitors: hash_map_from_iter(
 				channel_monitors.drain(..).map(|monitor| (monitor.channel_id(), monitor)),
+			),
+			funded_channels: hash_map_from_iter(
+				funded_channels.drain(..).map(|chan| (chan.context.channel_id(), chan)),
 			),
 		}
 	}
