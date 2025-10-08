@@ -438,6 +438,8 @@ pub enum Currency {
 	Bitcoin,
 
 	/// Bitcoin testnet
+	///
+	/// Note this will also be used for invoices on [`Network::Testnet4`].
 	BitcoinTestnet,
 
 	/// Bitcoin regtest
@@ -455,12 +457,9 @@ impl From<Network> for Currency {
 		match network {
 			Network::Bitcoin => Currency::Bitcoin,
 			Network::Testnet => Currency::BitcoinTestnet,
+			Network::Testnet4 => Currency::BitcoinTestnet,
 			Network::Regtest => Currency::Regtest,
 			Network::Signet => Currency::Signet,
-			_ => {
-				debug_assert!(false, "Need to handle new rust-bitcoin network type");
-				Currency::Regtest
-			},
 		}
 	}
 }
@@ -1624,6 +1623,9 @@ impl Bolt11Invoice {
 	}
 
 	/// Returns the network for which the invoice was issued
+	///
+	/// **Caution**: On Testnet4, this method will return [`Network::Testnet`]` rather than
+	/// [`Network::Testnet4`].
 	///
 	/// This is not exported to bindings users, see [`Self::currency`] instead.
 	pub fn network(&self) -> Network {
