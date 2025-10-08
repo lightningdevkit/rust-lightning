@@ -20,6 +20,75 @@ pub(crate) enum ResultFuture<F: Future<Output = O> + Unpin, O> {
 	Ready(O),
 }
 
+pub(crate) struct TwoFutureJoiner<
+	AO,
+	BO,
+	AF: Future<Output = AO> + Unpin,
+	BF: Future<Output = BO> + Unpin,
+> {
+	a: Option<ResultFuture<AF, AO>>,
+	b: Option<ResultFuture<BF, BO>>,
+}
+
+impl<AO, BO, AF: Future<Output = AO> + Unpin, BF: Future<Output = BO> + Unpin>
+	TwoFutureJoiner<AO, BO, AF, BF>
+{
+	pub fn new(future_a: AF, future_b: BF) -> Self {
+		Self { a: Some(ResultFuture::Pending(future_a)), b: Some(ResultFuture::Pending(future_b)) }
+	}
+}
+
+impl<AO, BO, AF: Future<Output = AO> + Unpin, BF: Future<Output = BO> + Unpin> Future
+	for TwoFutureJoiner<AO, BO, AF, BF>
+{
+	type Output = (AO, BO);
+	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<(AO, BO)> {
+		let mut have_pending_futures = false;
+		// SAFETY: While we are pinned, we can't get direct access to our internal state because we
+		// aren't `Unpin`. However, we don't actually need the `Pin` - we only use it below on the
+		// `Future` in the `ResultFuture::Pending` case, and the `Future` is bound by `Unpin`.
+		// Thus, the `Pin` is not actually used, and its safe to bypass it and access the inner
+		// reference directly.
+		let state = unsafe { &mut self.get_unchecked_mut() };
+		macro_rules! poll_future {
+			($future: ident) => {
+				match state.$future {
+					Some(ResultFuture::Pending(ref mut fut)) => match Pin::new(fut).poll(cx) {
+						Poll::Ready(res) => {
+							state.$future = Some(ResultFuture::Ready(res));
+						},
+						Poll::Pending => {
+							have_pending_futures = true;
+						},
+					},
+					Some(ResultFuture::Ready(_)) => {},
+					None => {
+						debug_assert!(false, "Future polled after Ready");
+						return Poll::Pending;
+					},
+				}
+			};
+		}
+		poll_future!(a);
+		poll_future!(b);
+
+		if have_pending_futures {
+			Poll::Pending
+		} else {
+			Poll::Ready((
+				match state.a.take() {
+					Some(ResultFuture::Ready(a)) => a,
+					_ => unreachable!(),
+				},
+				match state.b.take() {
+					Some(ResultFuture::Ready(b)) => b,
+					_ => unreachable!(),
+				},
+			))
+		}
+	}
+}
+
 pub(crate) struct MultiResultFuturePoller<F: Future<Output = O> + Unpin, O> {
 	futures_state: Vec<ResultFuture<F, O>>,
 }
