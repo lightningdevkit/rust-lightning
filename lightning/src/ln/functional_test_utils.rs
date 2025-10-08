@@ -1314,7 +1314,7 @@ pub fn _reload_node<'a, 'b, 'c>(
 	let mut channels_read = new_hash_map();
 	for encoded in channels_encoded {
 		let mut channel_read = &encoded[..];
-		let mut channel: FundedChannel<&test_utils::TestKeysInterface> = FundedChannel::read(
+		let channel: FundedChannel<&test_utils::TestKeysInterface> = FundedChannel::read(
 			&mut channel_read,
 			(
 				&node.keys_manager,
