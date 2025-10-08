@@ -15,26 +15,31 @@ use core::marker::Unpin;
 use core::pin::Pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-pub(crate) enum ResultFuture<F: Future<Output = Result<(), E>>, E: Unpin> {
+pub(crate) enum ResultFuture<F: Future<Output = O> + Unpin, O> {
 	Pending(F),
-	Ready(Result<(), E>),
+	Ready(O),
 }
 
-pub(crate) struct MultiResultFuturePoller<F: Future<Output = Result<(), E>> + Unpin, E: Unpin> {
-	futures_state: Vec<ResultFuture<F, E>>,
+pub(crate) struct MultiResultFuturePoller<F: Future<Output = O> + Unpin, O> {
+	futures_state: Vec<ResultFuture<F, O>>,
 }
 
-impl<F: Future<Output = Result<(), E>> + Unpin, E: Unpin> MultiResultFuturePoller<F, E> {
-	pub fn new(futures_state: Vec<ResultFuture<F, E>>) -> Self {
+impl<F: Future<Output = O> + Unpin, O> MultiResultFuturePoller<F, O> {
+	pub fn new(futures_state: Vec<ResultFuture<F, O>>) -> Self {
 		Self { futures_state }
 	}
 }
 
-impl<F: Future<Output = Result<(), E>> + Unpin, E: Unpin> Future for MultiResultFuturePoller<F, E> {
-	type Output = Vec<Result<(), E>>;
-	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<Result<(), E>>> {
+impl<F: Future<Output = O> + Unpin, O> Future for MultiResultFuturePoller<F, O> {
+	type Output = Vec<O>;
+	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<O>> {
 		let mut have_pending_futures = false;
-		let futures_state = &mut self.get_mut().futures_state;
+		// SAFETY: While we are pinned, we can't get direct access to `futures_state` because we
+		// aren't `Unpin`. However, we don't actually need the `Pin` - we only use it below on the
+		// `Future` in the `ResultFuture::Pending` case, and the `Future` is bound by `Unpin`.
+		// Thus, the `Pin` is not actually used, and its safe to bypass it and access the inner
+		// reference directly.
+		let futures_state = unsafe { &mut self.get_unchecked_mut().futures_state };
 		for state in futures_state.iter_mut() {
 			match state {
 				ResultFuture::Pending(ref mut fut) => match Pin::new(fut).poll(cx) {

@@ -34,7 +34,9 @@ use crate::chain::transaction::OutPoint;
 use crate::ln::types::ChannelId;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::sync::Mutex;
-use crate::util::async_poll::{dummy_waker, MaybeSend, MaybeSync};
+use crate::util::async_poll::{
+	dummy_waker, MaybeSend, MaybeSync, MultiResultFuturePoller, ResultFuture,
+};
 use crate::util::logger::Logger;
 use crate::util::native_async::FutureSpawner;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
@@ -875,11 +877,16 @@ where
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
-		let mut res = Vec::with_capacity(monitor_list.len());
+		let mut futures = Vec::with_capacity(monitor_list.len());
 		for monitor_key in monitor_list {
-			let result =
-				self.0.maybe_read_channel_monitor_with_updates(monitor_key.as_str()).await?;
-			if let Some(read_res) = result {
+			futures.push(ResultFuture::Pending(Box::pin(async move {
+				self.0.maybe_read_channel_monitor_with_updates(monitor_key.as_str()).await
+			})));
+		}
+		let future_results = MultiResultFuturePoller::new(futures).await;
+		let mut res = Vec::with_capacity(future_results.len());
+		for result in future_results {
+			if let Some(read_res) = result? {
 				res.push(read_res);
 			}
 		}
