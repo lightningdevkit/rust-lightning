@@ -2100,6 +2100,22 @@ impl InteractiveTxConstructor {
 		(contributed_inputs, contributed_outputs)
 	}
 
+	pub(super) fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
+		let contributed_inputs = self
+			.inputs_to_contribute
+			.iter()
+			.filter(|(_, input)| !input.is_shared())
+			.map(|(_, input)| input.tx_in().previous_output)
+			.collect();
+		let contributed_outputs = self
+			.outputs_to_contribute
+			.iter()
+			.filter(|(_, output)| !output.is_shared())
+			.map(|(_, output)| output.tx_out().clone())
+			.collect();
+		(contributed_inputs, contributed_outputs)
+	}
+
 	pub fn is_initiator(&self) -> bool {
 		self.is_initiator
 	}

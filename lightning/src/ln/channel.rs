@@ -6732,6 +6732,13 @@ impl FundingNegotiationContext {
 		let contributed_outputs = self.our_funding_outputs;
 		(contributed_inputs, contributed_outputs)
 	}
+
+	fn to_contributed_inputs_and_outputs(&self) -> (Vec<bitcoin::OutPoint>, Vec<TxOut>) {
+		let contributed_inputs =
+			self.our_funding_inputs.iter().map(|input| input.utxo.outpoint).collect();
+		let contributed_outputs = self.our_funding_outputs.clone();
+		(contributed_inputs, contributed_outputs)
+	}
 }
 
 // Holder designates channel data owned for the benefit of the user client.
@@ -6865,6 +6872,45 @@ pub struct SpliceFundingFailed {
 	pub contributed_outputs: Vec<bitcoin::TxOut>,
 }
 
+macro_rules! maybe_create_splice_funding_failed {
+	($pending_splice: expr, $get: ident, $contributed_inputs_and_outputs: ident) => {{
+		$pending_splice
+			.and_then(|pending_splice| pending_splice.funding_negotiation.$get())
+			.filter(|funding_negotiation| funding_negotiation.is_initiator())
+			.map(|funding_negotiation| {
+				let funding_txo = funding_negotiation
+					.as_funding()
+					.and_then(|funding| funding.get_funding_txo())
+					.map(|txo| txo.into_bitcoin_outpoint());
+
+				let channel_type = funding_negotiation
+					.as_funding()
+					.map(|funding| funding.get_channel_type().clone());
+
+				let (contributed_inputs, contributed_outputs) = match funding_negotiation {
+					FundingNegotiation::AwaitingAck { context } => {
+						context.$contributed_inputs_and_outputs()
+					},
+					FundingNegotiation::ConstructingTransaction {
+						interactive_tx_constructor,
+						..
+					} => interactive_tx_constructor.$contributed_inputs_and_outputs(),
+					FundingNegotiation::AwaitingSignatures { .. } => {
+						debug_assert!(false);
+						(Vec::new(), Vec::new())
+					},
+				};
+
+				SpliceFundingFailed {
+					funding_txo,
+					channel_type,
+					contributed_inputs,
+					contributed_outputs,
+				}
+			})
+	}};
+}
+
 pub struct SpliceFundingPromotion {
 	pub funding_txo: OutPoint,
 	pub monitor_update: Option<ChannelMonitorUpdate>,
@@ -6977,48 +7023,29 @@ where
 		debug_assert!(self.context.interactive_tx_signing_session.is_none());
 		self.context.channel_state.clear_quiescent();
 
-		let splice_funding_failed = self
-			.pending_splice
-			.as_mut()
-			.and_then(|pending_splice| pending_splice.funding_negotiation.take())
-			.filter(|funding_negotiation| funding_negotiation.is_initiator())
-			.map(|funding_negotiation| {
-				let funding_txo = funding_negotiation
-					.as_funding()
-					.and_then(|funding| funding.get_funding_txo())
-					.map(|txo| txo.into_bitcoin_outpoint());
-
-				let channel_type = funding_negotiation
-					.as_funding()
-					.map(|funding| funding.get_channel_type().clone());
-
-				let (contributed_inputs, contributed_outputs) = match funding_negotiation {
-					FundingNegotiation::AwaitingAck { context } => {
-						context.into_contributed_inputs_and_outputs()
-					},
-					FundingNegotiation::ConstructingTransaction {
-						interactive_tx_constructor,
-						..
-					} => interactive_tx_constructor.into_contributed_inputs_and_outputs(),
-					FundingNegotiation::AwaitingSignatures { .. } => {
-						debug_assert!(false);
-						(Vec::new(), Vec::new())
-					},
-				};
-
-				SpliceFundingFailed {
-					funding_txo,
-					channel_type,
-					contributed_inputs,
-					contributed_outputs,
-				}
-			});
+		let splice_funding_failed = maybe_create_splice_funding_failed!(
+			self.pending_splice.as_mut(),
+			take,
+			into_contributed_inputs_and_outputs
+		);
 
 		if self.pending_funding().is_empty() {
 			self.pending_splice.take();
 		}
 
 		splice_funding_failed
+	}
+
+	pub(super) fn maybe_splice_funding_failed(&self) -> Option<SpliceFundingFailed> {
+		if !self.should_reset_pending_splice_state() {
+			return None;
+		}
+
+		maybe_create_splice_funding_failed!(
+			self.pending_splice.as_ref(),
+			as_ref,
+			to_contributed_inputs_and_outputs
+		)
 	}
 
 	#[rustfmt::skip]

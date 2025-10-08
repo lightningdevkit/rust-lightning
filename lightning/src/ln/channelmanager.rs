@@ -16142,7 +16142,32 @@ where
 			}
 		}
 
-		let events = self.pending_events.lock().unwrap();
+
+		// Since some FundingNegotiation variants are not persisted, any splice in such state must
+		// be failed upon reload. However, as the necessary information for the SpliceFailed event
+		// is not persisted, the event itself needs to be persisted even though it hasn't been
+		// emitted yet. These are removed after the events are written.
+		let mut events = self.pending_events.lock().unwrap();
+		let event_count = events.len();
+		for peer_state in peer_states.iter() {
+			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
+				if let Some(splice_funding_failed) = chan.maybe_splice_funding_failed() {
+					events.push_back((
+						events::Event::SpliceFailed {
+							channel_id: chan.context.channel_id(),
+							counterparty_node_id: chan.context.get_counterparty_node_id(),
+							user_channel_id: chan.context.get_user_id(),
+							abandoned_funding_txo: splice_funding_failed.funding_txo,
+							channel_type: splice_funding_failed.channel_type,
+							contributed_inputs: splice_funding_failed.contributed_inputs,
+							contributed_outputs: splice_funding_failed.contributed_outputs,
+						},
+						None,
+					));
+				}
+			}
+		}
+
 		// LDK versions prior to 0.0.115 don't support post-event actions, thus if there's no
 		// actions at all, skip writing the required TLV. Otherwise, pre-0.0.115 versions will
 		// refuse to read the new ChannelManager.
@@ -16258,6 +16283,9 @@ where
 			(19, peer_storage_dir, optional_vec),
 			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
 		});
+
+		// Remove the SpliceFailed events added earlier.
+		events.truncate(event_count);
 
 		Ok(())
 	}
