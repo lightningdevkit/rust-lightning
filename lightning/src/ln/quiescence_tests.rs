@@ -755,6 +755,7 @@ fn do_test_quiescence_termination_on_disconnect(reload: bool) {
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.send_channel_ready = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
 	reconnect_nodes(reconnect_args);
 
 	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);

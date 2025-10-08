@@ -1694,8 +1694,7 @@ where
 				pending_v2_channel.interactive_tx_constructor.take();
 			},
 			ChannelPhase::Funded(funded_channel) => {
-				if funded_channel.should_reset_pending_splice_funding_negotiation().unwrap_or(true)
-				{
+				if funded_channel.should_reset_pending_splice_state() {
 					funded_channel.reset_pending_splice_state();
 				} else {
 					debug_assert!(false, "We should never fail an interactive funding negotiation once we're exchanging tx_signatures");
@@ -1829,18 +1828,15 @@ where
 				pending_v2_channel.interactive_tx_constructor.take().is_some()
 			},
 			ChannelPhase::Funded(funded_channel) => {
-				if let Some(should_reset) =
-					funded_channel.should_reset_pending_splice_funding_negotiation()
-				{
-					if should_reset {
-						// We may have still tracked the pending funding negotiation state, so we
-						// should ack with our own `tx_abort`.
-						funded_channel.reset_pending_splice_state()
-					} else {
-						return Err(ChannelError::close(
-							"Received tx_abort while awaiting tx_signatures exchange".to_owned(),
-						));
-					}
+				if funded_channel.has_pending_splice_awaiting_signatures() {
+					return Err(ChannelError::close(
+						"Received tx_abort while awaiting tx_signatures exchange".to_owned(),
+					));
+				}
+				if funded_channel.should_reset_pending_splice_state() {
+					let has_funding_negotiation = funded_channel.reset_pending_splice_state();
+					debug_assert!(has_funding_negotiation);
+					true
 				} else {
 					// We were not tracking the pending funding negotiation state anymore, likely
 					// due to a disconnection or already having sent our own `tx_abort`.
@@ -2583,13 +2579,17 @@ impl FundingNegotiation {
 }
 
 impl PendingFunding {
-	fn can_abandon_funding_negotiation(&self) -> bool {
+	fn can_abandon_state(&self) -> bool {
 		self.funding_negotiation
 			.as_ref()
 			.map(|funding_negotiation| {
 				!matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. })
 			})
-			.unwrap_or(true)
+			.unwrap_or_else(|| {
+				let has_negotiated_candidates = !self.negotiated_candidates.is_empty();
+				debug_assert!(has_negotiated_candidates);
+				!has_negotiated_candidates
+			})
 	}
 
 	fn check_get_splice_locked<SP: Deref>(
@@ -6773,40 +6773,35 @@ where
 		)
 	}
 
-	/// Returns `None` if there is no [`FundedChannel::pending_splice`], otherwise a boolean
-	/// indicating whether we should reset the splice's [`PendingFunding::funding_negotiation`].
-	fn should_reset_pending_splice_funding_negotiation(&self) -> Option<bool> {
-		self.pending_splice.as_ref().map(|pending_splice| {
-			if pending_splice.can_abandon_funding_negotiation() {
-				true
-			} else {
-				self.context
-					.interactive_tx_signing_session
-					.as_ref()
-					.map(|signing_session| !signing_session.has_received_commitment_signed())
-					.unwrap_or_else(|| {
-						debug_assert!(false);
-						false
-					})
-			}
-		})
+	fn has_pending_splice_awaiting_signatures(&self) -> bool {
+		self.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+			.map(|funding_negotiation| {
+				matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. })
+			})
+			.unwrap_or(false)
 	}
 
+	/// Returns a boolean indicating whether we should reset the splice's
+	/// [`PendingFunding::funding_negotiation`].
 	fn should_reset_pending_splice_state(&self) -> bool {
-		self.should_reset_pending_splice_funding_negotiation().unwrap_or(true)
-			&& self.pending_funding().is_empty()
+		self.pending_splice
+			.as_ref()
+			.map(|pending_splice| pending_splice.can_abandon_state())
+			.unwrap_or(false)
 	}
 
 	fn reset_pending_splice_state(&mut self) -> bool {
-		debug_assert!(self.should_reset_pending_splice_funding_negotiation().unwrap_or(true));
+		debug_assert!(self.should_reset_pending_splice_state());
+		debug_assert!(self.context.interactive_tx_signing_session.is_none());
 		self.context.channel_state.clear_quiescent();
-		self.context.interactive_tx_signing_session.take();
 		let has_funding_negotiation = self
 			.pending_splice
 			.as_mut()
 			.and_then(|pending_splice| pending_splice.funding_negotiation.take())
 			.is_some();
-		if self.should_reset_pending_splice_state() {
+		if self.pending_funding().is_empty() {
 			self.pending_splice.take();
 		}
 		has_funding_negotiation
@@ -8678,8 +8673,19 @@ where
 						.unwrap_or(false));
 				}
 
+				if signing_session.holder_tx_signatures().is_some() {
+					// Our `tx_signatures` either should've been the first time we processed them,
+					// or we're waiting for our counterparty to send theirs first.
+					return Ok((None, None));
+				}
+
 				signing_session
 			} else {
+				if Some(funding_txid_signed) == self.funding.get_funding_txid() {
+					// We may be handling a duplicate call and the funding was already locked so we
+					// no longer have the signing session present.
+					return Ok((None, None));
+				}
 				let err =
 					format!("Channel {} not expecting funding signatures", self.context.channel_id);
 				return Err(APIError::APIMisuseError { err });
@@ -8937,13 +8943,16 @@ where
 			}
 			self.context.channel_state.clear_local_stfu_sent();
 			self.context.channel_state.clear_remote_stfu_sent();
-			if self.should_reset_pending_splice_funding_negotiation().unwrap_or(true) {
-				// If we were in quiescence but a splice was never negotiated, or the negotiation
-				// failed due to disconnecting, we shouldn't be quiescent anymore upon reconnecting.
-				// If there was a pending splice negotiation that has failed due to disconnecting,
-				// we also take the opportunity to clean up our state.
+			if self.should_reset_pending_splice_state() {
+				// If there was a pending splice negotiation that failed due to disconnecting, we
+				// also take the opportunity to clean up our state.
 				self.reset_pending_splice_state();
 				debug_assert!(!self.context.channel_state.is_quiescent());
+			} else if !self.has_pending_splice_awaiting_signatures() {
+				// We shouldn't be quiescent anymore upon reconnecting if:
+				// - We were in quiescence but a splice/RBF was never negotiated or
+				// - We were in quiescence but the splice negotiation failed due to disconnecting
+				self.context.channel_state.clear_quiescent();
 			}
 		}
 
@@ -9682,12 +9691,18 @@ where
 
 		// A node:
 		//   - if `next_commitment_number` is 1 in both the `channel_reestablish` it
-		//     sent and received:
+		//     sent and received, and none of those `channel_reestablish` messages
+		//     contain `my_current_funding_locked` or `next_funding` for a splice transaction:
 		//     - MUST retransmit `channel_ready`.
 		//   - otherwise:
 		//     - MUST NOT retransmit `channel_ready`, but MAY send `channel_ready` with
 		//       a different `short_channel_id` `alias` field.
-		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.next_transaction_number() == 1 {
+		let both_sides_on_initial_commitment_number = msg.next_local_commitment_number == 1
+			&& INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.next_transaction_number() == 1;
+		let channel_ready = if both_sides_on_initial_commitment_number
+			&& self.pending_splice.is_none()
+			&& self.funding.channel_transaction_parameters.splice_parent_funding_txid.is_none()
+		{
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
 			self.get_channel_ready(logger)
 		} else { None };
@@ -13976,10 +13991,13 @@ where
 					}
 					channel_state.clear_local_stfu_sent();
 					channel_state.clear_remote_stfu_sent();
-					if self.should_reset_pending_splice_funding_negotiation().unwrap_or(true) {
-						// If we were in quiescence but a splice was never negotiated, or the
-						// negotiation failed due to disconnecting, we shouldn't be quiescent
-						// anymore upon reconnecting.
+					if self.should_reset_pending_splice_state()
+						|| !self.has_pending_splice_awaiting_signatures()
+					{
+						// We shouldn't be quiescent anymore upon reconnecting if:
+						// - We were in quiescence but a splice/RBF was never negotiated or
+						// - We were in quiescence but the splice negotiation failed due to
+						// disconnecting
 						channel_state.clear_quiescent();
 					}
 				},
@@ -14344,19 +14362,10 @@ where
 		let holder_commitment_point_next = self.holder_commitment_point.next_point();
 		let holder_commitment_point_pending_next = self.holder_commitment_point.pending_next_point;
 
-		let interactive_tx_signing_session =
-			if self.should_reset_pending_splice_funding_negotiation().unwrap_or(false) {
-				None
-			} else {
-				self.context.interactive_tx_signing_session.as_ref()
-			};
-		let pending_splice = if self.should_reset_pending_splice_state() {
-			None
-		} else {
-			// We don't have to worry about resetting the pending `FundingNegotiation` because we
-			// can only read `FundingNegotiation::AwaitingSignatures` variants anyway.
-			self.pending_splice.as_ref()
-		};
+		// We don't have to worry about resetting the pending `FundingNegotiation` because we
+		// can only read `FundingNegotiation::AwaitingSignatures` variants anyway.
+		let pending_splice =
+			self.pending_splice.as_ref().filter(|_| !self.should_reset_pending_splice_state());
 
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
@@ -14401,7 +14410,7 @@ where
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
 			(55, removed_htlc_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_attribution_data, optional_vec), // Added in 0.2
-			(58, interactive_tx_signing_session, option), // Added in 0.2
+			(58, self.context.interactive_tx_signing_session, option), // Added in 0.2
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 			(60, self.context.historical_scids, optional_vec), // Added in 0.2
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
