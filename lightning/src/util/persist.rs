@@ -36,7 +36,7 @@ use crate::ln::types::ChannelId;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::sync::Mutex;
 use crate::util::async_poll::{
-	dummy_waker, MaybeSend, MaybeSync, MultiResultFuturePoller, ResultFuture,
+	dummy_waker, MaybeSend, MaybeSync, MultiResultFuturePoller, ResultFuture, TwoFutureJoiner,
 };
 use crate::util::logger::Logger;
 use crate::util::native_async::FutureSpawner;
@@ -576,15 +576,6 @@ fn poll_sync_future<F: Future>(future: F) -> F::Output {
 /// list channel monitors themselves and load channels individually using
 /// [`MonitorUpdatingPersister::read_channel_monitor_with_updates`].
 ///
-/// ## EXTREMELY IMPORTANT
-///
-/// It is extremely important that your [`KVStoreSync::read`] implementation uses the
-/// [`io::ErrorKind::NotFound`] variant correctly: that is, when a file is not found, and _only_ in
-/// that circumstance (not when there is really a permissions error, for example). This is because
-/// neither channel monitor reading function lists updates. Instead, either reads the monitor, and
-/// using its stored `update_id`, synthesizes update storage keys, and tries them in sequence until
-/// one is not found. All _other_ errors will be bubbled up in the function's [`Result`].
-///
 /// # Pruning stale channel updates
 ///
 /// Stale updates are pruned when the consolidation threshold is reached according to `maximum_pending_updates`.
@@ -658,10 +649,6 @@ where
 	}
 
 	/// Reads all stored channel monitors, along with any stored updates for them.
-	///
-	/// It is extremely important that your [`KVStoreSync::read`] implementation uses the
-	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
-	/// documentation for [`MonitorUpdatingPersister`].
 	pub fn read_all_channel_monitors_with_updates(
 		&self,
 	) -> Result<
@@ -672,10 +659,6 @@ where
 	}
 
 	/// Read a single channel monitor, along with any stored updates for it.
-	///
-	/// It is extremely important that your [`KVStoreSync::read`] implementation uses the
-	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
-	/// documentation for [`MonitorUpdatingPersister`].
 	///
 	/// For `monitor_key`, channel storage keys can be the channel's funding [`OutPoint`], with an
 	/// underscore `_` between txid and index for v1 channels. For example, given:
@@ -877,10 +860,6 @@ where
 	/// If you can move this object into an `Arc`, consider using
 	/// [`Self::read_all_channel_monitors_with_updates_parallel`] to parallelize the CPU-bound
 	/// deserialization as well.
-	///
-	/// It is extremely important that your [`KVStore::read`] implementation uses the
-	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
-	/// documentation for [`MonitorUpdatingPersister`].
 	pub async fn read_all_channel_monitors_with_updates(
 		&self,
 	) -> Result<
@@ -915,10 +894,6 @@ where
 	/// Because [`FutureSpawner`] requires that the spawned future be `'static` (matching `tokio`
 	/// and other multi-threaded runtime requirements), this method requires that `self` be an
 	/// `Arc` that can live for `'static` and be sent and accessed across threads.
-	///
-	/// It is extremely important that your [`KVStore::read`] implementation uses the
-	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
-	/// documentation for [`MonitorUpdatingPersister`].
 	pub async fn read_all_channel_monitors_with_updates_parallel(
 		self: &Arc<Self>,
 	) -> Result<
@@ -958,10 +933,6 @@ where
 	}
 
 	/// Read a single channel monitor, along with any stored updates for it.
-	///
-	/// It is extremely important that your [`KVStoreSync::read`] implementation uses the
-	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
-	/// documentation for [`MonitorUpdatingPersister`].
 	///
 	/// For `monitor_key`, channel storage keys can be the channel's funding [`OutPoint`], with an
 	/// underscore `_` between txid and index for v1 channels. For example, given:
@@ -1121,40 +1092,37 @@ where
 		io::Error,
 	> {
 		let monitor_name = MonitorName::from_str(monitor_key)?;
-		let read_res = self.maybe_read_monitor(&monitor_name, monitor_key).await?;
-		let (block_hash, monitor) = match read_res {
+		let read_future = pin!(self.maybe_read_monitor(&monitor_name, monitor_key));
+		let list_future = pin!(self
+			.kv_store
+			.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key));
+		let (read_res, list_res) = TwoFutureJoiner::new(read_future, list_future).await;
+		let (block_hash, monitor) = match read_res? {
 			Some(res) => res,
 			None => return Ok(None),
 		};
-		let mut current_update_id = monitor.get_latest_update_id();
-		// TODO: Parallelize this loop by speculatively reading a batch of updates
-		loop {
-			current_update_id = match current_update_id.checked_add(1) {
-				Some(next_update_id) => next_update_id,
-				None => break,
-			};
-			let update_name = UpdateName::from(current_update_id);
-			let update = match self.read_monitor_update(monitor_key, &update_name).await {
-				Ok(update) => update,
-				Err(err) if err.kind() == io::ErrorKind::NotFound => {
-					// We can't find any more updates, so we are done.
-					break;
-				},
-				Err(err) => return Err(err),
-			};
-
-			monitor
-				.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger)
-				.map_err(|e| {
-				log_error!(
-					self.logger,
-					"Monitor update failed. monitor: {} update: {} reason: {:?}",
-					monitor_key,
-					update_name.as_str(),
-					e
-				);
-				io::Error::new(io::ErrorKind::Other, "Monitor update failed")
-			})?;
+		let current_update_id = monitor.get_latest_update_id();
+		let updates: Result<Vec<_>, _> =
+			list_res?.into_iter().map(|name| UpdateName::new(name)).collect();
+		let mut updates = updates?;
+		updates.sort_unstable();
+		// TODO: Parallelize this loop
+		for update_name in updates {
+			if update_name.0 > current_update_id {
+				let update = self.read_monitor_update(monitor_key, &update_name).await?;
+				monitor
+					.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger)
+					.map_err(|e| {
+						log_error!(
+							self.logger,
+							"Monitor update failed. monitor: {} update: {} reason: {:?}",
+							monitor_key,
+							update_name.as_str(),
+							e
+						);
+						io::Error::new(io::ErrorKind::Other, "Monitor update failed")
+					})?;
+			}
 		}
 		Ok(Some((block_hash, monitor)))
 	}
@@ -1529,7 +1497,7 @@ impl core::fmt::Display for MonitorName {
 /// let monitor_name = "some_monitor_name";
 /// let storage_key = format!("channel_monitor_updates/{}/{}", monitor_name, update_name.as_str());
 /// ```
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UpdateName(pub u64, String);
 
 impl UpdateName {
