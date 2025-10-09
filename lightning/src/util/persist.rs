@@ -372,7 +372,7 @@ where
 		CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 	)? {
-		match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>::read(
+		match <Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>>::read(
 			&mut io::Cursor::new(kv_store.read(
 				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -380,7 +380,7 @@ where
 			)?),
 			(&*entropy_source, &*signer_provider),
 		) {
-			Ok((block_hash, channel_monitor)) => {
+			Ok(Some((block_hash, channel_monitor))) => {
 				let monitor_name = MonitorName::from_str(&stored_key)?;
 				if channel_monitor.persistence_key() != monitor_name {
 					return Err(io::Error::new(
@@ -391,6 +391,7 @@ where
 
 				res.push((block_hash, channel_monitor));
 			},
+			Ok(None) => {},
 			Err(_) => {
 				return Err(io::Error::new(
 					io::ErrorKind::InvalidData,
@@ -783,9 +784,12 @@ where
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
 		let mut res = Vec::with_capacity(monitor_list.len());
-		// TODO: Parallelize this loop
 		for monitor_key in monitor_list {
-			res.push(self.read_channel_monitor_with_updates(monitor_key.as_str()).await?)
+			let result =
+				self.0.maybe_read_channel_monitor_with_updates(monitor_key.as_str()).await?;
+			if let Some(read_res) = result {
+				res.push(read_res);
+			}
 		}
 		Ok(res)
 	}
@@ -923,8 +927,29 @@ where
 		&self, monitor_key: &str,
 	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	{
+		match self.maybe_read_channel_monitor_with_updates(monitor_key).await? {
+			Some(res) => Ok(res),
+			None => Err(io::Error::new(
+				io::ErrorKind::InvalidData,
+				"ChannelMonitor was stale, with no updates since LDK 0.0.118. \
+						It cannot be read by modern versions of LDK, though also does not contain any funds left to sweep. \
+						You should manually delete it instead",
+			)),
+		}
+	}
+
+	async fn maybe_read_channel_monitor_with_updates(
+		&self, monitor_key: &str,
+	) -> Result<
+		Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
+		io::Error,
+	> {
 		let monitor_name = MonitorName::from_str(monitor_key)?;
-		let (block_hash, monitor) = self.read_monitor(&monitor_name, monitor_key).await?;
+		let read_res = self.maybe_read_monitor(&monitor_name, monitor_key).await?;
+		let (block_hash, monitor) = match read_res {
+			Some(res) => res,
+			None => return Ok(None),
+		};
 		let mut current_update_id = monitor.get_latest_update_id();
 		// TODO: Parallelize this loop by speculatively reading a batch of updates
 		loop {
@@ -955,14 +980,16 @@ where
 				io::Error::new(io::ErrorKind::Other, "Monitor update failed")
 			})?;
 		}
-		Ok((block_hash, monitor))
+		Ok(Some((block_hash, monitor)))
 	}
 
 	/// Read a channel monitor.
-	async fn read_monitor(
+	async fn maybe_read_monitor(
 		&self, monitor_name: &MonitorName, monitor_key: &str,
-	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
-	{
+	) -> Result<
+		Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
+		io::Error,
+	> {
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let monitor_bytes = self.kv_store.read(primary, secondary, monitor_key).await?;
@@ -971,11 +998,12 @@ where
 		if monitor_cursor.get_ref().starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL) {
 			monitor_cursor.set_position(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() as u64);
 		}
-		match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>::read(
+		match <Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>>::read(
 			&mut monitor_cursor,
 			(&*self.entropy_source, &*self.signer_provider),
 		) {
-			Ok((blockhash, channel_monitor)) => {
+			Ok(None) => Ok(None),
+			Ok(Some((blockhash, channel_monitor))) => {
 				if channel_monitor.persistence_key() != *monitor_name {
 					log_error!(
 						self.logger,
@@ -987,7 +1015,7 @@ where
 						"ChannelMonitor was stored under the wrong key",
 					))
 				} else {
-					Ok((blockhash, channel_monitor))
+					Ok(Some((blockhash, channel_monitor)))
 				}
 			},
 			Err(e) => {
@@ -1027,9 +1055,14 @@ where
 		let monitor_keys = self.kv_store.list(primary, secondary).await?;
 		for monitor_key in monitor_keys {
 			let monitor_name = MonitorName::from_str(&monitor_key)?;
-			let (_, current_monitor) = self.read_monitor(&monitor_name, &monitor_key).await?;
-			let latest_update_id = current_monitor.get_latest_update_id();
-			self.cleanup_stale_updates_for_monitor_to(&monitor_key, latest_update_id).await?;
+			let maybe_monitor = self.maybe_read_monitor(&monitor_name, &monitor_key).await?;
+			if let Some((_, current_monitor)) = maybe_monitor {
+				let latest_update_id = current_monitor.get_latest_update_id();
+				self.cleanup_stale_updates_for_monitor_to(&monitor_key, latest_update_id).await?;
+			} else {
+				// TODO: Also clean up super stale monitors (created pre-0.0.110 and last updated
+				// pre-0.0.119).
+			}
 		}
 		Ok(())
 	}
