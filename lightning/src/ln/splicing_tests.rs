@@ -508,6 +508,66 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 }
 
 #[test]
+fn test_config_reject_inbound_splices() {
+	// Tests that nodes with `reject_inbound_splices` properly reject inbound splices but still
+	// allow outbound ones.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.reject_inbound_splices = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 50_000_000);
+
+	let contribution = SpliceContribution::SpliceOut {
+		outputs: vec![TxOut {
+			value: Amount::from_sat(1_000),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		}],
+	};
+	nodes[0]
+		.node
+		.splice_channel(
+			&channel_id,
+			&node_id_1,
+			contribution.clone(),
+			FEERATE_FLOOR_SATS_PER_KW,
+			None,
+		)
+		.unwrap();
+
+	let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu);
+	let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	if let MessageSendEvent::HandleError { action, .. } = &msg_events[0] {
+		assert!(matches!(action, msgs::ErrorAction::DisconnectPeerWithWarning { .. }));
+	} else {
+		panic!("Expected MessageSendEvent::HandleError");
+	}
+
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
+
+	let _ = splice_channel(&nodes[1], &nodes[0], channel_id, contribution);
+}
+
+#[test]
 fn test_splice_in() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
