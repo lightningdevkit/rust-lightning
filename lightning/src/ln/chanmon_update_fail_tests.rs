@@ -3503,11 +3503,7 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	if completion_mode == BlockedUpdateComplMode::AtReload {
 		let node_ser = nodes[1].node.encode();
-		let chan_mon_0 = get_monitor!(nodes[1], chan_id_1).encode();
-		let chan_mon_1 = get_monitor!(nodes[1], chan_id_2).encode();
-
-		let mons = &[&chan_mon_0[..], &chan_mon_1[..]];
-		reload_node!(nodes[1], &node_ser, mons, persister, new_chain_mon, nodes_1_reload);
+		reload_node_and_monitors!(nodes[1], &node_ser, persister, new_chain_mon, nodes_1_reload);
 
 		nodes[0].node.peer_disconnected(node_b_id);
 		nodes[2].node.peer_disconnected(node_b_id);
@@ -4036,10 +4032,8 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	// Finally, reload node B and check that after we call `process_pending_events` once we realize
 	// we've completed the A<->B preimage-including monitor update and so can release the B<->C
 	// preimage-removing monitor update.
-	let mon_ab = get_monitor!(nodes[1], chan_id_ab).encode();
-	let mon_bc = get_monitor!(nodes[1], chan_id_bc).encode();
 	let manager_b = nodes[1].node.encode();
-	reload_node!(nodes[1], &manager_b, &[&mon_ab, &mon_bc], persister, chain_mon, node_b_reload);
+	reload_node_and_monitors!(nodes[1], &manager_b, persister, chain_mon, node_b_reload);
 
 	let msg = "Channel force-closed".to_owned();
 	if close_during_reload {
@@ -4391,10 +4385,13 @@ fn do_test_partial_claim_mon_update_compl_actions(reload_a: bool, reload_b: bool
 		// reload once the HTLCs for the first payment have been removed and the monitors
 		// completed.
 		let node_ser = nodes[3].node.encode();
-		let chan_3_monitor_serialized = get_monitor!(nodes[3], chan_3_id).encode();
-		let chan_4_monitor_serialized = get_monitor!(nodes[3], chan_4_id).encode();
-		let mons = &[&chan_3_monitor_serialized[..], &chan_4_monitor_serialized[..]];
-		reload_node!(nodes[3], &node_ser, mons, persister_2, new_chain_mon_2, nodes_3_reload_2);
+		reload_node_and_monitors!(
+			nodes[3],
+			&node_ser,
+			persister_2,
+			new_chain_mon_2,
+			nodes_3_reload_2
+		);
 		check_added_monitors(&nodes[3], 0);
 
 		nodes[1].node.peer_disconnected(node_d_id);
