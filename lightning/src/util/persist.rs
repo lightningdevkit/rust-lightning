@@ -1106,23 +1106,27 @@ where
 			list_res?.into_iter().map(|name| UpdateName::new(name)).collect();
 		let mut updates = updates?;
 		updates.sort_unstable();
-		// TODO: Parallelize this loop
-		for update_name in updates {
-			if update_name.0 > current_update_id {
-				let update = self.read_monitor_update(monitor_key, &update_name).await?;
-				monitor
-					.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger)
-					.map_err(|e| {
-						log_error!(
-							self.logger,
-							"Monitor update failed. monitor: {} update: {} reason: {:?}",
-							monitor_key,
-							update_name.as_str(),
-							e
-						);
-						io::Error::new(io::ErrorKind::Other, "Monitor update failed")
-					})?;
-			}
+		let updates_to_load = updates.iter().filter(|update| update.0 > current_update_id);
+		let mut update_futures = Vec::with_capacity(updates_to_load.clone().count());
+		for update_name in updates_to_load {
+			update_futures.push(ResultFuture::Pending(Box::pin(async move {
+				(update_name, self.read_monitor_update(monitor_key, update_name).await)
+			})));
+		}
+		for (update_name, update_res) in MultiResultFuturePoller::new(update_futures).await {
+			let update = update_res?;
+			monitor
+				.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger)
+				.map_err(|e| {
+				log_error!(
+					self.logger,
+					"Monitor update failed. monitor: {} update: {} reason: {:?}",
+					monitor_key,
+					update_name.as_str(),
+					e
+				);
+				io::Error::new(io::ErrorKind::Other, "Monitor update failed")
+			})?;
 		}
 		Ok(Some((block_hash, monitor)))
 	}
