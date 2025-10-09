@@ -12,6 +12,7 @@
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
+use crate::blinded_path::message::MAX_DUMMY_HOPS_COUNT;
 use crate::blinded_path::utils::{self, BlindedPathWithPadding};
 use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
 use crate::crypto::streams::ChaChaDualPolyReadAdapter;
@@ -124,6 +125,32 @@ impl BlindedPaymentPath {
 	where
 		ES::Target: EntropySource,
 	{
+		BlindedPaymentPath::new_with_dummy_hops(
+			intermediate_nodes,
+			payee_node_id,
+			0,
+			receive_auth_key,
+			payee_tlvs,
+			htlc_maximum_msat,
+			min_final_cltv_expiry_delta,
+			entropy_source,
+			secp_ctx,
+		)
+	}
+
+	/// Same as [`BlindedPaymentPath::new`], but allows specifying a number of dummy hops.
+	///
+	/// Note:
+	/// At most [`MAX_DUMMY_HOPS_COUNT`] dummy hops can be added to the blinded path.
+	pub fn new_with_dummy_hops<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
+		dummy_hop_count: usize, receive_auth_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs,
+		htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16, entropy_source: ES,
+		secp_ctx: &Secp256k1<T>,
+	) -> Result<Self, ()>
+	where
+		ES::Target: EntropySource,
+	{
 		let introduction_node = IntroductionNode::NodeId(
 			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id),
 		);
@@ -145,6 +172,7 @@ impl BlindedPaymentPath {
 					secp_ctx,
 					intermediate_nodes,
 					payee_node_id,
+					dummy_hop_count,
 					payee_tlvs,
 					&blinding_secret,
 					receive_auth_key,
@@ -654,15 +682,19 @@ pub(crate) const PAYMENT_PADDING_ROUND_OFF: usize = 30;
 /// Construct blinded payment hops for the given `intermediate_nodes` and payee info.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
-	payee_tlvs: ReceiveTlvs, session_priv: &SecretKey, local_node_receive_key: ReceiveAuthKey,
+	dummy_hop_count: usize, payee_tlvs: ReceiveTlvs, session_priv: &SecretKey,
+	local_node_receive_key: ReceiveAuthKey,
 ) -> Vec<BlindedHop> {
+	let dummy_count = core::cmp::min(dummy_hop_count, MAX_DUMMY_HOPS_COUNT);
 	let pks = intermediate_nodes
 		.iter()
 		.map(|node| (node.node_id, None))
+		.chain(core::iter::repeat((payee_node_id, Some(local_node_receive_key))).take(dummy_count))
 		.chain(core::iter::once((payee_node_id, Some(local_node_receive_key))));
 	let tlvs = intermediate_nodes
 		.iter()
 		.map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
+		.chain((0..dummy_count).map(|_| BlindedPaymentTlvsRef::Dummy(&PaymentDummyTlv)))
 		.chain(core::iter::once(BlindedPaymentTlvsRef::Receive(&payee_tlvs)));
 
 	let path = pks.zip(
