@@ -32,7 +32,7 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::{secp256k1, Transaction, Witness};
 
 use crate::blinded_path::message::BlindedMessagePath;
-use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentTlvs, DummyTlvs, ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::payment::{BlindedTrampolineTlvs, TrampolineForwardTlvs};
 use crate::ln::onion_utils;
 use crate::ln::types::ChannelId;
@@ -2336,6 +2336,11 @@ mod fuzzy_internal_msgs {
 		pub intro_node_blinding_point: Option<PublicKey>,
 		pub next_blinding_override: Option<PublicKey>,
 	}
+	pub struct InboundOnionDummyPayload {
+		pub payment_relay: PaymentRelay,
+		pub payment_constraints: PaymentConstraints,
+		pub intro_node_blinding_point: Option<PublicKey>,
+	}
 	pub struct InboundOnionBlindedReceivePayload {
 		pub sender_intended_htlc_amt_msat: u64,
 		pub total_msat: u64,
@@ -2355,6 +2360,7 @@ mod fuzzy_internal_msgs {
 		Receive(InboundOnionReceivePayload),
 		BlindedForward(InboundOnionBlindedForwardPayload),
 		BlindedReceive(InboundOnionBlindedReceivePayload),
+		Dummy(InboundOnionDummyPayload),
 	}
 
 	pub struct InboundTrampolineForwardPayload {
@@ -3692,6 +3698,25 @@ where
 						features,
 						intro_node_blinding_point,
 						next_blinding_override,
+					}))
+				},
+				ChaChaDualPolyReadAdapter {
+					readable:
+						BlindedPaymentTlvs::Dummy(DummyTlvs { payment_relay, payment_constraints }),
+					used_aad,
+				} => {
+					if amt.is_some()
+						|| cltv_value.is_some() || total_msat.is_some()
+						|| keysend_preimage.is_some()
+						|| invoice_request.is_some()
+						|| !used_aad
+					{
+						return Err(DecodeError::InvalidValue);
+					}
+					Ok(Self::Dummy(InboundOnionDummyPayload {
+						payment_relay,
+						payment_constraints,
+						intro_node_blinding_point,
 					}))
 				},
 				ChaChaDualPolyReadAdapter {

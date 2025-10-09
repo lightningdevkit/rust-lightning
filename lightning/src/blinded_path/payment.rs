@@ -328,6 +328,37 @@ pub struct TrampolineForwardTlvs {
 	pub next_blinding_override: Option<PublicKey>,
 }
 
+/// TLVs carried by a dummy hop within a blinded payment path.
+///
+/// Dummy hops do not correspond to real forwarding decisions, but are processed
+/// identically to real hops at the protocol level. The TLVs contained here define
+/// the relay requirements and constraints that must be satisfied for the payment
+/// to continue through this hop.
+///
+/// By enforcing realistic relay semantics on dummy hops, the payment path remains
+/// indistinguishable from a fully real route with respect to fees, CLTV deltas, and
+/// validation behavior.
+#[derive(Clone, Copy)]
+pub struct DummyTlvs {
+	/// Relay requirements (fees and CLTV delta) that must be satisfied when
+	/// processing this dummy hop.
+	pub payment_relay: PaymentRelay,
+	/// Constraints that apply to the payment when relaying over this dummy hop.
+	pub payment_constraints: PaymentConstraints,
+}
+
+impl Default for DummyTlvs {
+	fn default() -> Self {
+		let payment_relay =
+			PaymentRelay { cltv_expiry_delta: 0, fee_proportional_millionths: 0, fee_base_msat: 0 };
+
+		let payment_constraints =
+			PaymentConstraints { max_cltv_expiry: u32::MAX, htlc_minimum_msat: 0 };
+
+		Self { payment_relay, payment_constraints }
+	}
+}
+
 /// Data to construct a [`BlindedHop`] for receiving a payment. This payload is custom to LDK and
 /// may not be valid if received by another lightning implementation.
 #[derive(Clone, Debug)]
@@ -346,6 +377,8 @@ pub struct ReceiveTlvs {
 pub(crate) enum BlindedPaymentTlvs {
 	/// This blinded payment data is for a forwarding node.
 	Forward(ForwardTlvs),
+	/// This blinded payment data is dummy and is to be peeled by receiving node.
+	Dummy(DummyTlvs),
 	/// This blinded payment data is for the receiving node.
 	Receive(ReceiveTlvs),
 }
@@ -363,13 +396,14 @@ pub(crate) enum BlindedTrampolineTlvs {
 // Used to include forward and receive TLVs in the same iterator for encoding.
 enum BlindedPaymentTlvsRef<'a> {
 	Forward(&'a ForwardTlvs),
+	Dummy(&'a DummyTlvs),
 	Receive(&'a ReceiveTlvs),
 }
 
 /// Parameters for relaying over a given [`BlindedHop`].
 ///
 /// [`BlindedHop`]: crate::blinded_path::BlindedHop
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaymentRelay {
 	/// Number of blocks subtracted from an incoming HTLC's `cltv_expiry` for this [`BlindedHop`].
 	pub cltv_expiry_delta: u16,
@@ -383,7 +417,7 @@ pub struct PaymentRelay {
 /// Constraints for relaying over a given [`BlindedHop`].
 ///
 /// [`BlindedHop`]: crate::blinded_path::BlindedHop
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaymentConstraints {
 	/// The maximum total CLTV that is acceptable when relaying a payment over this [`BlindedHop`].
 	pub max_cltv_expiry: u32,
@@ -512,6 +546,17 @@ impl Writeable for TrampolineForwardTlvs {
 	}
 }
 
+impl Writeable for DummyTlvs {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		encode_tlv_stream!(w, {
+			(10, self.payment_relay, required),
+			(12, self.payment_constraints, required),
+			(65539, (), required),
+		});
+		Ok(())
+	}
+}
+
 // Note: The `authentication` TLV field was removed in LDK v0.3 following
 // the introduction of `ReceiveAuthKey`-based authentication for inbound
 // `BlindedPaymentPaths`s. Because we do not support receiving to those
@@ -532,6 +577,7 @@ impl<'a> Writeable for BlindedPaymentTlvsRef<'a> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
 			Self::Forward(tlvs) => tlvs.write(w)?,
+			Self::Dummy(tlvs) => tlvs.write(w)?,
 			Self::Receive(tlvs) => tlvs.write(w)?,
 		}
 		Ok(())
@@ -552,28 +598,41 @@ impl Readable for BlindedPaymentTlvs {
 			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
 			(65537, payment_context, option),
+			(65539, is_dummy, option)
 		});
 
-		if let Some(short_channel_id) = scid {
-			if payment_secret.is_some() {
-				return Err(DecodeError::InvalidValue);
-			}
-			Ok(BlindedPaymentTlvs::Forward(ForwardTlvs {
-				short_channel_id,
-				payment_relay: payment_relay.ok_or(DecodeError::InvalidValue)?,
-				payment_constraints: payment_constraints.0.unwrap(),
-				next_blinding_override,
-				features: features.unwrap_or_else(BlindedHopFeatures::empty),
-			}))
-		} else {
-			if payment_relay.is_some() || features.is_some() {
-				return Err(DecodeError::InvalidValue);
-			}
-			Ok(BlindedPaymentTlvs::Receive(ReceiveTlvs {
-				payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
-				payment_constraints: payment_constraints.0.unwrap(),
-				payment_context: payment_context.ok_or(DecodeError::InvalidValue)?,
-			}))
+		match (
+			scid,
+			next_blinding_override,
+			payment_relay,
+			features,
+			payment_secret,
+			payment_context,
+			is_dummy,
+		) {
+			(Some(short_channel_id), next_override, Some(relay), features, None, None, None) => {
+				Ok(BlindedPaymentTlvs::Forward(ForwardTlvs {
+					short_channel_id,
+					payment_relay: relay,
+					payment_constraints: payment_constraints.0.unwrap(),
+					next_blinding_override: next_override,
+					features: features.unwrap_or_else(BlindedHopFeatures::empty),
+				}))
+			},
+			(None, None, None, None, Some(secret), Some(context), None) => {
+				Ok(BlindedPaymentTlvs::Receive(ReceiveTlvs {
+					payment_secret: secret,
+					payment_constraints: payment_constraints.0.unwrap(),
+					payment_context: context,
+				}))
+			},
+			(None, None, Some(relay), None, None, None, Some(())) => {
+				Ok(BlindedPaymentTlvs::Dummy(DummyTlvs {
+					payment_relay: relay,
+					payment_constraints: payment_constraints.0.unwrap(),
+				}))
+			},
+			_ => return Err(DecodeError::InvalidValue),
 		}
 	}
 }

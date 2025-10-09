@@ -5105,6 +5105,20 @@ where
 			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
 				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
 			},
+			onion_utils::Hop::Dummy { .. } => {
+				debug_assert!(
+					false,
+					"Reached unreachable dummy-hop HTLC. Dummy hops are peeled in \
+					`process_pending_update_add_htlcs`, and the resulting HTLC is \
+					re-enqueued for processing. Hitting this means the peel-and-requeue \
+					step was missed."
+				);
+				return Err(InboundHTLCErr {
+					msg: "Failed to decode update add htlc onion",
+					reason: LocalHTLCFailureReason::InvalidOnionPayload,
+					err_data: Vec::new(),
+				})
+			},
 			onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
 			},

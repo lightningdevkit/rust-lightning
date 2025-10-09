@@ -2223,6 +2223,17 @@ pub(crate) enum Hop {
 		/// Bytes of the onion packet we're forwarding.
 		new_packet_bytes: [u8; ONION_DATA_LEN],
 	},
+	/// This onion payload is dummy, and needs to be peeled by us.
+	Dummy {
+		/// Blinding point for introduction-node dummy hops.
+		dummy_hop_data: msgs::InboundOnionDummyPayload,
+		/// Shared secret for decrypting the next-hop public key.
+		shared_secret: SharedSecret,
+		/// HMAC of the next hop's onion packet.
+		next_hop_hmac: [u8; 32],
+		/// Onion packet bytes after this dummy layer is peeled.
+		new_packet_bytes: [u8; ONION_DATA_LEN],
+	},
 	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
 	/// verifying the incoming payment.
 	Receive {
@@ -2277,6 +2288,7 @@ impl Hop {
 		match self {
 			Hop::Forward { shared_secret, .. } => shared_secret,
 			Hop::BlindedForward { shared_secret, .. } => shared_secret,
+			Hop::Dummy { shared_secret, .. } => shared_secret,
 			Hop::TrampolineForward { outer_shared_secret, .. } => outer_shared_secret,
 			Hop::TrampolineBlindedForward { outer_shared_secret, .. } => outer_shared_secret,
 			Hop::Receive { shared_secret, .. } => shared_secret,
