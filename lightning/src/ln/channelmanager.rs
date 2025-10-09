@@ -4663,17 +4663,33 @@ where
 		}
 	}
 
-	/// Initiate a splice, to change the channel capacity of an existing funded channel.
-	/// After completion of splicing, the funding transaction will be replaced by a new one, spending the old funding transaction,
-	/// with optional extra inputs (splice-in) and/or extra outputs (splice-out or change).
-	/// TODO(splicing): Implementation is currently incomplete.
+	/// Initiate a splice in order to add value to (splice-in) or remove value from (splice-out)
+	/// the channel. This will spend the channel's funding transaction output, effectively replacing
+	/// it with a new one.
 	///
-	/// Note: Currently only splice-in is supported (increase in channel capacity), splice-out is not.
+	/// # Arguments
 	///
-	/// - `our_funding_contribution_satoshis`: the amount contributed by us to the channel. This will increase our channel balance.
-	/// - `our_funding_inputs`: the funding inputs provided by us. If our contribution is positive, our funding inputs must cover at least that amount.
-	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
-	/// - `locktime`: Optional locktime for the new funding transaction. If None, set to the current block height.
+	/// Provide a `contribution` to determine if value is spliced in or out. The splice initiator is
+	/// responsible for paying fees for common fields, shared inputs, and shared outputs along with
+	/// any contributed inputs and outputs. Fees are determined using `funding_feerate_per_kw` and
+	/// must be covered by the supplied inputs for splice-in or the channel balance for splice-out.
+	///
+	/// An optional `locktime` for the funding transaction may be specified. If not given, the
+	/// current best block height is used.
+	///
+	/// # Events
+	///
+	/// Once the funding transaction has been constructed, an [`Event::SplicePending`] will be
+	/// emitted. At this point, any inputs contributed to the splice can only be re-spent if an
+	/// [`Event::DiscardFunding`] is seen.
+	///
+	/// If any failures occur while negotiating the funding transaction, an [`Event::SpliceFailed`]
+	/// will be emitted. Any contributed inputs no longer used will be included here and thus can
+	/// be re-spent.
+	///
+	/// Once the splice has been locked by both counterparties, an [`Event::ChannelReady`] will be
+	/// emitted with the new funding output. At this point, a new splice can be negotiated by
+	/// calling `splice_channel` again on this channel.
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
