@@ -8,23 +8,44 @@
 //! environment.
 
 #[cfg(all(test, feature = "std"))]
-use crate::sync::Mutex;
+use crate::sync::{Arc, Mutex};
 use crate::util::async_poll::{MaybeSend, MaybeSync};
 
 #[cfg(all(test, not(feature = "std")))]
+use alloc::rc::Rc;
+
+#[cfg(all(test, not(feature = "std")))]
 use core::cell::RefCell;
+#[cfg(test)]
+use core::convert::Infallible;
 use core::future::Future;
 #[cfg(test)]
 use core::pin::Pin;
+#[cfg(test)]
+use core::task::{Context, Poll};
 
-/// A generic trait which is able to spawn futures in the background.
+/// A generic trait which is able to spawn futures to be polled in the background.
+///
+/// When the spawned future completes, the returned [`Self::SpawnedFutureResult`] should resolve
+/// with the output of the spawned future.
+///
+/// Spawned futures must be polled independently in the background even if the returned
+/// [`Self::SpawnedFutureResult`] is dropped without being polled. This matches the semantics of
+/// `tokio::spawn`.
 ///
 /// This is not exported to bindings users as async is only supported in Rust.
 pub trait FutureSpawner: MaybeSend + MaybeSync + 'static {
+	/// The error type of [`Self::SpawnedFutureResult`]. This can be used to indicate that the
+	/// spawned future was cancelled or panicked.
+	type E;
+	/// The result of [`Self::spawn`], a future which completes when the spawned future completes.
+	type SpawnedFutureResult<O>: Future<Output = Result<O, Self::E>> + Unpin;
 	/// Spawns the given future as a background task.
 	///
 	/// This method MUST NOT block on the given future immediately.
-	fn spawn<T: Future<Output = ()> + MaybeSend + 'static>(&self, future: T);
+	fn spawn<O: MaybeSend + 'static, T: Future<Output = O> + MaybeSend + 'static>(
+		&self, future: T,
+	) -> Self::SpawnedFutureResult<O>;
 }
 
 #[cfg(test)]
@@ -38,6 +59,77 @@ impl<F: Future<Output = ()> + MaybeSend + 'static> MaybeSendableFuture for F {}
 pub(crate) struct FutureQueue(Mutex<Vec<Pin<Box<dyn MaybeSendableFuture>>>>);
 #[cfg(all(test, not(feature = "std")))]
 pub(crate) struct FutureQueue(RefCell<Vec<Pin<Box<dyn MaybeSendableFuture>>>>);
+
+/// A simple future which can be completed later. Used to implement [`FutureQueue`].
+#[cfg(all(test, feature = "std"))]
+pub struct FutureQueueCompletion<O>(Arc<Mutex<Option<O>>>);
+#[cfg(all(test, not(feature = "std")))]
+pub struct FutureQueueCompletion<O>(Rc<RefCell<Option<O>>>);
+
+#[cfg(all(test, feature = "std"))]
+impl<O> FutureQueueCompletion<O> {
+	fn new() -> Self {
+		Self(Arc::new(Mutex::new(None)))
+	}
+
+	fn complete(&self, o: O) {
+		*self.0.lock().unwrap() = Some(o);
+	}
+}
+
+#[cfg(all(test, feature = "std"))]
+impl<O> Clone for FutureQueueCompletion<O> {
+	fn clone(&self) -> Self {
+		#[cfg(all(test, feature = "std"))]
+		{
+			Self(Arc::clone(&self.0))
+		}
+		#[cfg(all(test, not(feature = "std")))]
+		{
+			Self(Rc::clone(&self.0))
+		}
+	}
+}
+
+#[cfg(all(test, not(feature = "std")))]
+impl<O> FutureQueueCompletion<O> {
+	fn new() -> Self {
+		Self(Rc::new(RefCell::new(None)))
+	}
+
+	fn complete(&self, o: O) {
+		*self.0.borrow_mut() = Some(o);
+	}
+}
+
+#[cfg(all(test, not(feature = "std")))]
+impl<O> Clone for FutureQueueCompletion<O> {
+	fn clone(&self) -> Self {
+		Self(self.0.clone())
+	}
+}
+
+#[cfg(all(test, feature = "std"))]
+impl<O> Future for FutureQueueCompletion<O> {
+	type Output = Result<O, Infallible>;
+	fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<O, Infallible>> {
+		match Pin::into_inner(self).0.lock().unwrap().take() {
+			None => Poll::Pending,
+			Some(o) => Poll::Ready(Ok(o)),
+		}
+	}
+}
+
+#[cfg(all(test, not(feature = "std")))]
+impl<O> Future for FutureQueueCompletion<O> {
+	type Output = Result<O, Infallible>;
+	fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<O, Infallible>> {
+		match Pin::into_inner(self).0.borrow_mut().take() {
+			None => Poll::Pending,
+			Some(o) => Poll::Ready(Ok(o)),
+		}
+	}
+}
 
 #[cfg(test)]
 impl FutureQueue {
@@ -74,7 +166,6 @@ impl FutureQueue {
 			futures = self.0.borrow_mut();
 		}
 		futures.retain_mut(|fut| {
-			use core::task::{Context, Poll};
 			let waker = crate::util::async_poll::dummy_waker();
 			match fut.as_mut().poll(&mut Context::from_waker(&waker)) {
 				Poll::Ready(()) => false,
@@ -86,7 +177,16 @@ impl FutureQueue {
 
 #[cfg(test)]
 impl FutureSpawner for FutureQueue {
-	fn spawn<T: Future<Output = ()> + MaybeSend + 'static>(&self, future: T) {
+	type E = Infallible;
+	type SpawnedFutureResult<O> = FutureQueueCompletion<O>;
+	fn spawn<O: MaybeSend + 'static, F: Future<Output = O> + MaybeSend + 'static>(
+		&self, f: F,
+	) -> FutureQueueCompletion<O> {
+		let completion = FutureQueueCompletion::new();
+		let compl_ref = completion.clone();
+		let future = async move {
+			compl_ref.complete(f.await);
+		};
 		#[cfg(feature = "std")]
 		{
 			self.0.lock().unwrap().push(Box::pin(future));
@@ -95,6 +195,7 @@ impl FutureSpawner for FutureQueue {
 		{
 			self.0.borrow_mut().push(Box::pin(future));
 		}
+		completion
 	}
 }
 
@@ -102,7 +203,16 @@ impl FutureSpawner for FutureQueue {
 impl<D: core::ops::Deref<Target = FutureQueue> + MaybeSend + MaybeSync + 'static> FutureSpawner
 	for D
 {
-	fn spawn<T: Future<Output = ()> + MaybeSend + 'static>(&self, future: T) {
+	type E = Infallible;
+	type SpawnedFutureResult<O> = FutureQueueCompletion<O>;
+	fn spawn<O: MaybeSend + 'static, F: Future<Output = O> + MaybeSend + 'static>(
+		&self, f: F,
+	) -> FutureQueueCompletion<O> {
+		let completion = FutureQueueCompletion::new();
+		let compl_ref = completion.clone();
+		let future = async move {
+			compl_ref.complete(f.await);
+		};
 		#[cfg(feature = "std")]
 		{
 			self.0.lock().unwrap().push(Box::pin(future));
@@ -111,5 +221,6 @@ impl<D: core::ops::Deref<Target = FutureQueue> + MaybeSend + MaybeSync + 'static
 		{
 			self.0.borrow_mut().push(Box::pin(future));
 		}
+		completion
 	}
 }
