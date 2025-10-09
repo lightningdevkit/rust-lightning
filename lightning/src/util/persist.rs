@@ -16,6 +16,7 @@ use alloc::sync::Arc;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::{BlockHash, Txid};
 
+use core::convert::Infallible;
 use core::future::Future;
 use core::mem;
 use core::ops::Deref;
@@ -407,7 +408,11 @@ where
 
 struct PanicingSpawner;
 impl FutureSpawner for PanicingSpawner {
-	fn spawn<T: Future<Output = ()> + MaybeSend + 'static>(&self, _: T) {
+	type E = Infallible;
+	type SpawnedFutureResult<O> = Box<dyn Future<Output = Result<O, Infallible>> + Unpin>;
+	fn spawn<O, T: Future<Output = O> + MaybeSend + 'static>(
+		&self, _: T,
+	) -> Self::SpawnedFutureResult<O> {
 		unreachable!();
 	}
 }
@@ -865,7 +870,7 @@ where
 		let future = inner.persist_new_channel(monitor_name, monitor);
 		let channel_id = monitor.channel_id();
 		let completion = (monitor.channel_id(), monitor.get_latest_update_id());
-		self.0.future_spawner.spawn(async move {
+		let _ = self.0.future_spawner.spawn(async move {
 			match future.await {
 				Ok(()) => inner.async_completed_updates.lock().unwrap().push(completion),
 				Err(e) => {
@@ -893,7 +898,7 @@ where
 			None
 		};
 		let inner = Arc::clone(&self.0);
-		self.0.future_spawner.spawn(async move {
+		let _ = self.0.future_spawner.spawn(async move {
 			match future.await {
 				Ok(()) => if let Some(completion) = completion {
 					inner.async_completed_updates.lock().unwrap().push(completion);
@@ -910,7 +915,7 @@ where
 
 	pub(crate) fn spawn_async_archive_persisted_channel(&self, monitor_name: MonitorName) {
 		let inner = Arc::clone(&self.0);
-		self.0.future_spawner.spawn(async move {
+		let _ = self.0.future_spawner.spawn(async move {
 			inner.archive_persisted_channel(monitor_name).await;
 		});
 	}
