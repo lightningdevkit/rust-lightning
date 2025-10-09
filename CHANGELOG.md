@@ -178,6 +178,31 @@ funds-lockup denial-of-service issue for anchor channels.
  * Various denial-of-service issues in the formerly-alpha `lightning-liquidity`
    crate have been addressed (#3436, #3493).
 
+In total, this release features 198 files changed, 29662 insertions, 11371
+deletions in 444 commits since 0.0.125 from 21 authors, in alphabetical order:
+
+ * Alec Chen
+ * Andrei
+ * Arik Sosman
+ * Carla Kirk-Cohen
+ * Duncan Dean
+ * Elias Rohrer
+ * G8XSU
+ * Ian Slane
+ * Jeffrey Czyz
+ * Leo Nash
+ * Matt Corallo
+ * Matt Morehouse
+ * Matthew Rheaume
+ * Mirebella
+ * Valentine Wallace
+ * Vincenzo Palazzo
+ * Willem Van Lint
+ * elsirion
+ * olegkubrakov
+ * optout
+ * shaavan
+
 
 # 0.0.125 - Oct 14, 2024 - "Delayed Beta Testing"
 
