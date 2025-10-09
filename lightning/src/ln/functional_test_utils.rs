@@ -4871,6 +4871,13 @@ macro_rules! handle_chan_reestablish_msgs {
 			had_channel_update = true;
 		}
 
+		let mut stfu = None;
+		if let Some(&MessageSendEvent::SendStfu { ref node_id, ref msg }) = msg_events.get(idx) {
+			idx += 1;
+			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+			stfu = Some(msg.clone());
+		}
+
 		let mut revoke_and_ack = None;
 		let mut commitment_update = None;
 		let order = if let Some(ev) = msg_events.get(idx) {
@@ -4946,7 +4953,15 @@ macro_rules! handle_chan_reestablish_msgs {
 
 		assert_eq!(msg_events.len(), idx, "{msg_events:?}");
 
-		(channel_ready, revoke_and_ack, commitment_update, order, announcement_sigs, tx_signatures)
+		(
+			channel_ready,
+			revoke_and_ack,
+			commitment_update,
+			order,
+			announcement_sigs,
+			tx_signatures,
+			stfu,
+		)
 	}};
 }
 
@@ -4955,6 +4970,7 @@ pub struct ReconnectArgs<'a, 'b, 'c, 'd> {
 	pub node_b: &'a Node<'b, 'c, 'd>,
 	pub send_channel_ready: (bool, bool),
 	pub send_announcement_sigs: (bool, bool),
+	pub send_stfu: (bool, bool),
 	pub send_interactive_tx_commit_sig: (bool, bool),
 	pub send_interactive_tx_sigs: (bool, bool),
 	pub expect_renegotiated_funding_locked_monitor_update: (bool, bool),
@@ -4977,6 +4993,7 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 			node_b,
 			send_channel_ready: (false, false),
 			send_announcement_sigs: (false, false),
+			send_stfu: (false, false),
 			send_interactive_tx_commit_sig: (false, false),
 			send_interactive_tx_sigs: (false, false),
 			expect_renegotiated_funding_locked_monitor_update: (false, false),
@@ -5000,6 +5017,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		node_b,
 		send_channel_ready,
 		send_announcement_sigs,
+		send_stfu,
 		send_interactive_tx_commit_sig,
 		send_interactive_tx_sigs,
 		expect_renegotiated_funding_locked_monitor_update,
@@ -5118,6 +5136,12 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		} else {
 			assert!(chan_msgs.4.is_none());
 		}
+		if send_stfu.0 {
+			let stfu = chan_msgs.6.take().unwrap();
+			node_a.node.handle_stfu(node_b_id, &stfu);
+		} else {
+			assert!(chan_msgs.6.is_none());
+		}
 		if send_interactive_tx_commit_sig.0 {
 			assert!(chan_msgs.1.is_none());
 			let commitment_update = chan_msgs.2.take().unwrap();
@@ -5223,6 +5247,12 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			}
 		} else {
 			assert!(chan_msgs.4.is_none());
+		}
+		if send_stfu.1 {
+			let stfu = chan_msgs.6.take().unwrap();
+			node_b.node.handle_stfu(node_a_id, &stfu);
+		} else {
+			assert!(chan_msgs.6.is_none());
 		}
 		if send_interactive_tx_commit_sig.1 {
 			assert!(chan_msgs.1.is_none());
