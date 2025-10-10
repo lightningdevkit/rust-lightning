@@ -110,6 +110,7 @@ jobs:
         run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tx-sync-tests.sh
 
   coverage:
+    needs: fuzz
     strategy:
       fail-fast: false
     runs-on: self-hosted
@@ -133,6 +134,11 @@ jobs:
           # Maybe if codecov wasn't broken we wouldn't need to do this...
           ./codecov --verbose upload-process --disable-search --fail-on-error -f target/codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'tests'
           cargo clean
+      - name: Download honggfuzz corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: hfuzz-corpus
+          path: fuzz/hfuzz_workspace
       - name: Run fuzz coverage generation
         run: |
           ./contrib/generate_fuzz_coverage.sh --output-dir `pwd` --output-codecov-json
@@ -268,6 +274,11 @@ jobs:
           cargo clean
       - name: Run fuzzers
         run: cd fuzz && ./ci-fuzz.sh && cd ..
+      - name: Upload honggfuzz corpus
+        uses: actions/upload-artifact@v4
+        with:
+          name: hfuzz-corpus
+          path: fuzz/hfuzz_workspace
 
   linting:
     runs-on: ubuntu-latest
