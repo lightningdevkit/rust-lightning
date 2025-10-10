@@ -41,8 +41,8 @@ use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
-	get_revokeable_redeemscript, make_funding_redeemscript, ChannelPublicKeys,
-	ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
+	get_countersigner_payment_script, get_revokeable_redeemscript, make_funding_redeemscript,
+	ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
 	HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
@@ -56,6 +56,7 @@ use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::PaymentPreimage;
 use crate::util::async_poll::AsyncResult;
 use crate::util::ser::{ReadableArgs, Writeable};
@@ -139,6 +140,16 @@ pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
 /// Witness weight for satisying a P2TR key-path spend.
 pub(crate) const P2TR_KEY_PATH_WITNESS_WEIGHT: u64 = 1 /* witness items */
 	+ 1 /* schnorr sig len */ + 64 /* schnorr sig */;
+
+/// If a [`KeysManager`] is built with [`KeysManager::new`] with `v2_remote_key_derivation` set
+/// (and for all channels after they've been spliced), the script which we receive funds to on-chain
+/// when our counterparty force-closes a channel is one of this many possible derivation paths.
+///
+/// Keeping this limited allows for scanning the chain to find lost funds if our state is destroyed,
+/// while this being more than a handful provides some privacy by not constantly reusing the same
+/// scripts on-chain across channels.
+// Note that this MUST remain below the maximum BIP 32 derivation paths (2^31)
+pub const STATIC_PAYMENT_KEY_COUNT: u16 = 1000;
 
 /// Information about a spendable output to our "payment key".
 ///
@@ -259,11 +270,14 @@ pub enum SpendableOutputDescriptor {
 	/// it is an output from an old state which we broadcast (which should never happen).
 	///
 	/// To derive the delayed payment key which is used to sign this input, you must pass the
-	/// holder [`InMemorySigner::delayed_payment_base_key`] (i.e., the private key which corresponds to the
-	/// [`ChannelPublicKeys::delayed_payment_basepoint`] in [`ChannelSigner::pubkeys`]) and the provided
-	/// [`DelayedPaymentOutputDescriptor::per_commitment_point`] to [`chan_utils::derive_private_key`]. The DelayedPaymentKey can be
-	/// generated without the secret key using [`DelayedPaymentKey::from_basepoint`] and only the
-	/// [`ChannelPublicKeys::delayed_payment_basepoint`] which appears in [`ChannelSigner::pubkeys`].
+	/// holder [`InMemorySigner::delayed_payment_base_key`] (i.e., the private key which
+	/// corresponds to the [`ChannelPublicKeys::delayed_payment_basepoint`] in
+	/// [`ChannelSigner::new_pubkeys`]) and the provided
+	/// [`DelayedPaymentOutputDescriptor::per_commitment_point`] to
+	/// [`chan_utils::derive_private_key`]. The DelayedPaymentKey can be generated without the
+	/// secret key using [`DelayedPaymentKey::from_basepoint`] and only the
+	/// [`ChannelPublicKeys::delayed_payment_basepoint`] which appears in
+	/// [`ChannelSigner::new_pubkeys`].
 	///
 	/// To derive the [`DelayedPaymentOutputDescriptor::revocation_pubkey`] provided here (which is
 	/// used in the witness script generation), you must pass the counterparty
@@ -278,7 +292,7 @@ pub enum SpendableOutputDescriptor {
 	/// [`chan_utils::get_revokeable_redeemscript`].
 	DelayedPaymentOutput(DelayedPaymentOutputDescriptor),
 	/// An output spendable exclusively by our payment key (i.e., the private key that corresponds
-	/// to the `payment_point` in [`ChannelSigner::pubkeys`]). The output type depends on the
+	/// to the `payment_point` in [`ChannelSigner::new_pubkeys`]). The output type depends on the
 	/// channel type negotiated.
 	///
 	/// On an anchor outputs channel, the witness in the spending input is:
@@ -371,7 +385,7 @@ impl SpendableOutputDescriptor {
 					if let Some(basepoint) = delayed_payment_basepoint.as_ref() {
 						// Required to derive signing key: privkey = basepoint_secret + SHA256(per_commitment_point || basepoint)
 						let add_tweak = basepoint.derive_add_tweak(&per_commitment_point);
-						let payment_key = DelayedPaymentKey(add_public_key_tweak(
+						let delayed_payment_key = DelayedPaymentKey(add_public_key_tweak(
 							secp_ctx,
 							&basepoint.to_public_key(),
 							&add_tweak,
@@ -381,7 +395,7 @@ impl SpendableOutputDescriptor {
 							Some(get_revokeable_redeemscript(
 								&revocation_pubkey,
 								*to_self_delay,
-								&payment_key,
+								&delayed_payment_key,
 							)),
 							Some(add_tweak),
 						)
@@ -778,14 +792,17 @@ pub trait ChannelSigner {
 	/// and pause future signing operations until this validation completes.
 	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()>;
 
-	/// Returns the holder's channel public keys and basepoints.
+	/// Returns a *new* set of holder channel public keys and basepoints. They may be the same as a
+	/// previous value, but are also allowed to change arbitrarily. Signing methods must still
+	/// support signing for any keys which have ever been returned. This should only be called
+	/// either for new channels or new splices.
 	///
 	/// `splice_parent_funding_txid` can be used to compute a tweak to rotate the funding key in the
 	/// 2-of-2 multisig script during a splice. See [`compute_funding_key_tweak`] for an example
 	/// tweak and more details.
 	///
 	/// This method is *not* asynchronous. Instead, the value must be cached locally.
-	fn pubkeys(
+	fn new_pubkeys(
 		&self, splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> ChannelPublicKeys;
 
@@ -1093,7 +1110,7 @@ mod sealed {
 	use bitcoin::secp256k1::{Scalar, SecretKey};
 
 	#[derive(Clone, PartialEq)]
-	pub struct MaybeTweakedSecretKey(SecretKey);
+	pub struct MaybeTweakedSecretKey(pub(super) SecretKey);
 
 	impl From<SecretKey> for MaybeTweakedSecretKey {
 		fn from(value: SecretKey) -> Self {
@@ -1149,16 +1166,20 @@ pub struct InMemorySigner {
 	funding_key: sealed::MaybeTweakedSecretKey,
 	/// Holder secret key for blinded revocation pubkey.
 	pub revocation_base_key: SecretKey,
-	/// Holder secret key used for our balance in counterparty-broadcasted commitment transactions.
-	pub payment_key: SecretKey,
+	/// Holder secret key used for our balance in counterparty-broadcasted commitment transactions,
+	/// old-style derivation.
+	payment_key_v1: SecretKey,
+	/// Holder secret key used for our balance in counterparty-broadcasted commitment transactions,
+	/// new-style derivation.
+	payment_key_v2: SecretKey,
+	/// Which of [`Self::payment_key_v1`] and [`Self::payment_key_v2`] to use by default.
+	v2_remote_key_derivation: bool,
 	/// Holder secret key used in an HTLC transaction.
 	pub delayed_payment_base_key: SecretKey,
 	/// Holder HTLC secret key used in commitment transaction HTLC outputs.
 	pub htlc_base_key: SecretKey,
 	/// Commitment seed.
 	pub commitment_seed: [u8; 32],
-	/// Holder public keys and basepoints.
-	pub(crate) holder_channel_pubkeys: ChannelPublicKeys,
 	/// Key derivation parameters.
 	channel_keys_id: [u8; 32],
 	/// A source of random bytes.
@@ -1169,11 +1190,12 @@ impl PartialEq for InMemorySigner {
 	fn eq(&self, other: &Self) -> bool {
 		self.funding_key == other.funding_key
 			&& self.revocation_base_key == other.revocation_base_key
-			&& self.payment_key == other.payment_key
+			&& self.payment_key_v1 == other.payment_key_v1
+			&& self.payment_key_v2 == other.payment_key_v2
+			&& self.v2_remote_key_derivation == other.v2_remote_key_derivation
 			&& self.delayed_payment_base_key == other.delayed_payment_base_key
 			&& self.htlc_base_key == other.htlc_base_key
 			&& self.commitment_seed == other.commitment_seed
-			&& self.holder_channel_pubkeys == other.holder_channel_pubkeys
 			&& self.channel_keys_id == other.channel_keys_id
 	}
 }
@@ -1183,11 +1205,12 @@ impl Clone for InMemorySigner {
 		Self {
 			funding_key: self.funding_key.clone(),
 			revocation_base_key: self.revocation_base_key.clone(),
-			payment_key: self.payment_key.clone(),
+			payment_key_v1: self.payment_key_v1.clone(),
+			payment_key_v2: self.payment_key_v2.clone(),
+			v2_remote_key_derivation: self.v2_remote_key_derivation,
 			delayed_payment_base_key: self.delayed_payment_base_key.clone(),
 			htlc_base_key: self.htlc_base_key.clone(),
 			commitment_seed: self.commitment_seed.clone(),
-			holder_channel_pubkeys: self.holder_channel_pubkeys.clone(),
 			channel_keys_id: self.channel_keys_id,
 			entropy_source: RandomBytes::new(self.get_secure_random_bytes()),
 		}
@@ -1195,28 +1218,43 @@ impl Clone for InMemorySigner {
 }
 
 impl InMemorySigner {
-	/// Creates a new [`InMemorySigner`].
-	pub fn new<C: Signing>(
-		secp_ctx: &Secp256k1<C>, funding_key: SecretKey, revocation_base_key: SecretKey,
-		payment_key: SecretKey, delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey,
-		commitment_seed: [u8; 32], channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
+	#[cfg(any(feature = "_test_utils", test))]
+	pub fn new(
+		funding_key: SecretKey, revocation_base_key: SecretKey, payment_key_v1: SecretKey,
+		payment_key_v2: SecretKey, v2_remote_key_derivation: bool,
+		delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey, commitment_seed: [u8; 32],
+		channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
 	) -> InMemorySigner {
-		let holder_channel_pubkeys = InMemorySigner::make_holder_keys(
-			secp_ctx,
-			&funding_key,
-			&revocation_base_key,
-			&payment_key,
-			&delayed_payment_base_key,
-			&htlc_base_key,
-		);
 		InMemorySigner {
 			funding_key: sealed::MaybeTweakedSecretKey::from(funding_key),
 			revocation_base_key,
-			payment_key,
+			payment_key_v1,
+			payment_key_v2,
+			v2_remote_key_derivation,
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
-			holder_channel_pubkeys,
+			channel_keys_id,
+			entropy_source: RandomBytes::new(rand_bytes_unique_start),
+		}
+	}
+
+	#[cfg(not(any(feature = "_test_utils", test)))]
+	fn new(
+		funding_key: SecretKey, revocation_base_key: SecretKey, payment_key_v1: SecretKey,
+		payment_key_v2: SecretKey, v2_remote_key_derivation: bool,
+		delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey, commitment_seed: [u8; 32],
+		channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
+	) -> InMemorySigner {
+		InMemorySigner {
+			funding_key: sealed::MaybeTweakedSecretKey::from(funding_key),
+			revocation_base_key,
+			payment_key_v1,
+			payment_key_v2,
+			v2_remote_key_derivation,
+			delayed_payment_base_key,
+			htlc_base_key,
+			commitment_seed,
 			channel_keys_id,
 			entropy_source: RandomBytes::new(rand_bytes_unique_start),
 		}
@@ -1228,22 +1266,6 @@ impl InMemorySigner {
 		let tweak = splice_parent_funding_txid
 			.map(|txid| compute_funding_key_tweak(&self.funding_key.with_tweak(None), &txid));
 		self.funding_key.with_tweak(tweak)
-	}
-
-	fn make_holder_keys<C: Signing>(
-		secp_ctx: &Secp256k1<C>, funding_key: &SecretKey, revocation_base_key: &SecretKey,
-		payment_key: &SecretKey, delayed_payment_base_key: &SecretKey, htlc_base_key: &SecretKey,
-	) -> ChannelPublicKeys {
-		let from_secret = |s: &SecretKey| PublicKey::from_secret_key(secp_ctx, s);
-		ChannelPublicKeys {
-			funding_pubkey: from_secret(&funding_key),
-			revocation_basepoint: RevocationBasepoint::from(from_secret(&revocation_base_key)),
-			payment_point: from_secret(&payment_key),
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(from_secret(
-				&delayed_payment_base_key,
-			)),
-			htlc_basepoint: HtlcBasepoint::from(from_secret(&htlc_base_key)),
-		}
 	}
 
 	/// Sign the single input of `spend_tx` at index `input_idx`, which spends the output described
@@ -1273,14 +1295,28 @@ impl InMemorySigner {
 			return Err(());
 		}
 
-		let remotepubkey = bitcoin::PublicKey::new(self.holder_channel_pubkeys.payment_point);
-		let supports_anchors_zero_fee_htlc_tx = descriptor
+		let legacy_default_channel_type = ChannelTypeFeatures::only_static_remote_key();
+		let channel_type_features = descriptor
 			.channel_transaction_parameters
 			.as_ref()
-			.map(|params| params.channel_type_features.supports_anchors_zero_fee_htlc_tx())
-			.unwrap_or(false);
+			.map(|params| &params.channel_type_features)
+			.unwrap_or(&legacy_default_channel_type);
 
-		let witness_script = if supports_anchors_zero_fee_htlc_tx {
+		let payment_point_v1 = PublicKey::from_secret_key(secp_ctx, &self.payment_key_v1);
+		let payment_point_v2 = PublicKey::from_secret_key(secp_ctx, &self.payment_key_v2);
+		let spk_v1 = get_countersigner_payment_script(channel_type_features, &payment_point_v1);
+		let spk_v2 = get_countersigner_payment_script(channel_type_features, &payment_point_v2);
+
+		let (remotepubkey, payment_key) = if spk_v1 == descriptor.output.script_pubkey {
+			(bitcoin::PublicKey::new(payment_point_v1), &self.payment_key_v1)
+		} else {
+			if spk_v2 != descriptor.output.script_pubkey {
+				return Err(());
+			}
+			(bitcoin::PublicKey::new(payment_point_v2), &self.payment_key_v2)
+		};
+
+		let witness_script = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 			chan_utils::get_to_countersigner_keyed_anchor_redeemscript(&remotepubkey.inner)
 		} else {
 			ScriptBuf::new_p2pkh(&remotepubkey.pubkey_hash())
@@ -1295,8 +1331,8 @@ impl InMemorySigner {
 				)
 				.unwrap()[..]
 		);
-		let remotesig = sign_with_aux_rand(secp_ctx, &sighash, &self.payment_key, &self);
-		let payment_script = if supports_anchors_zero_fee_htlc_tx {
+		let remotesig = sign_with_aux_rand(secp_ctx, &sighash, payment_key, &self);
+		let payment_script = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 			witness_script.to_p2wsh()
 		} else {
 			ScriptBuf::new_p2wpkh(&remotepubkey.wpubkey_hash().unwrap())
@@ -1309,7 +1345,7 @@ impl InMemorySigner {
 		let mut witness = Vec::with_capacity(2);
 		witness.push(remotesig.serialize_der().to_vec());
 		witness[0].push(EcdsaSighashType::All as u8);
-		if supports_anchors_zero_fee_htlc_tx {
+		if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 			witness.push(witness_script.to_bytes());
 		} else {
 			witness.push(remotepubkey.to_bytes());
@@ -1421,10 +1457,26 @@ impl ChannelSigner for InMemorySigner {
 		Ok(())
 	}
 
-	fn pubkeys(
+	fn new_pubkeys(
 		&self, splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> ChannelPublicKeys {
-		let mut pubkeys = self.holder_channel_pubkeys.clone();
+		// Because splices always break downgrades, we go ahead and always use the new derivation
+		// here as its just much better.
+		let use_v2_derivation =
+			self.v2_remote_key_derivation || splice_parent_funding_txid.is_some();
+		let payment_key =
+			if use_v2_derivation { &self.payment_key_v2 } else { &self.payment_key_v1 };
+		let from_secret = |s: &SecretKey| PublicKey::from_secret_key(secp_ctx, s);
+		let mut pubkeys = ChannelPublicKeys {
+			funding_pubkey: from_secret(&self.funding_key.0),
+			revocation_basepoint: RevocationBasepoint::from(from_secret(&self.revocation_base_key)),
+			payment_point: from_secret(payment_key),
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(from_secret(
+				&self.delayed_payment_base_key,
+			)),
+			htlc_basepoint: HtlcBasepoint::from(from_secret(&self.htlc_base_key)),
+		};
+
 		if splice_parent_funding_txid.is_some() {
 			pubkeys.funding_pubkey =
 				self.funding_key(splice_parent_funding_txid).public_key(secp_ctx);
@@ -1883,6 +1935,8 @@ pub struct KeysManager {
 	destination_script: ScriptBuf,
 	shutdown_pubkey: PublicKey,
 	channel_master_key: Xpriv,
+	static_payment_key: Xpriv,
+	v2_remote_key_derivation: bool,
 	channel_child_index: AtomicUsize,
 	peer_storage_key: PeerStorageKey,
 	receive_auth_key: ReceiveAuthKey,
@@ -1914,8 +1968,16 @@ impl KeysManager {
 	/// [`ChannelMonitor`] data, though a current copy of [`ChannelMonitor`] data is also required
 	/// for any channel, and some on-chain during-closing funds.
 	///
+	/// If `v2_remote_key_derivation` is set, the `script_pubkey`s which receive funds on-chain when
+	/// our counterparty force-closes will be one of a static set of [`STATIC_PAYMENT_KEY_COUNT`]*2
+	/// possible `script_pubkey`s. This only applies to new or spliced channels, however if this is
+	/// set you *MUST NOT* downgrade to a version of LDK prior to 0.2.
+	///
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
-	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32) -> Self {
+	pub fn new(
+		seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32,
+		v2_remote_key_derivation: bool,
+	) -> Self {
 		// Constants for key derivation path indices used in this function.
 		const NODE_SECRET_INDEX: ChildNumber = ChildNumber::Hardened { index: 0 };
 		const DESTINATION_SCRIPT_INDEX: ChildNumber = ChildNumber::Hardened { index: 1 };
@@ -1924,6 +1986,7 @@ impl KeysManager {
 		const INBOUND_PAYMENT_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 5 };
 		const PEER_STORAGE_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 6 };
 		const RECEIVE_AUTH_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 7 };
+		const STATIC_PAYMENT_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 8 };
 
 		let secp_ctx = Secp256k1::new();
 		// Note that when we aren't serializing the key, network doesn't matter
@@ -1971,6 +2034,10 @@ impl KeysManager {
 					.expect("Your RNG is busted")
 					.private_key;
 
+				let static_payment_key = master_key
+					.derive_priv(&secp_ctx, &STATIC_PAYMENT_KEY_INDEX)
+					.expect("Your RNG is busted");
+
 				let mut rand_bytes_engine = Sha256::engine();
 				rand_bytes_engine.input(&starting_time_secs.to_be_bytes());
 				rand_bytes_engine.input(&starting_time_nanos.to_be_bytes());
@@ -1994,6 +2061,9 @@ impl KeysManager {
 					channel_master_key,
 					channel_child_index: AtomicUsize::new(0),
 
+					static_payment_key,
+					v2_remote_key_derivation,
+
 					entropy_source: RandomBytes::new(rand_bytes_unique_start),
 
 					seed: *seed,
@@ -2011,6 +2081,51 @@ impl KeysManager {
 	/// Gets the "node_id" secret key used to sign gossip announcements, decode onion data, etc.
 	pub fn get_node_secret_key(&self) -> SecretKey {
 		self.node_secret
+	}
+
+	/// Gets the set of possible `script_pubkey`s which can appear on chain for our
+	/// non-HTLC-encumbered balance if our counterparty force-closes a channel.
+	///
+	/// If you've lost all data except your seed, asking your peers nicely to force-close the
+	/// chanels they had with you (and hoping they don't broadcast a stale state and that there are
+	/// no pending HTLCs in the latest state) and scanning the chain for these `script_pubkey`s can
+	/// allow you to recover (some of) your funds.
+	///
+	/// Only channels opened when using a [`KeysManager`] with the `v2_remote_key_derivation`
+	/// argument to [`KeysManager::new`] set, or any spliced channels will close to such scripts,
+	/// other channels will close to a randomly-generated `script_pubkey`.
+	pub fn possible_v2_counterparty_closed_balance_spks<C: Signing>(
+		&self, secp_ctx: &Secp256k1<C>,
+	) -> Vec<ScriptBuf> {
+		let mut res = Vec::with_capacity(usize::from(STATIC_PAYMENT_KEY_COUNT) * 2);
+		let static_remote_key_features = ChannelTypeFeatures::only_static_remote_key();
+		let mut zero_fee_htlc_features = ChannelTypeFeatures::only_static_remote_key();
+		zero_fee_htlc_features.set_anchors_zero_fee_htlc_tx_required();
+		for idx in 0..STATIC_PAYMENT_KEY_COUNT {
+			let key = self
+				.static_payment_key
+				.derive_priv(
+					&self.secp_ctx,
+					&ChildNumber::from_hardened_idx(u32::from(idx)).expect("key space exhausted"),
+				)
+				.expect("Your RNG is busted")
+				.private_key;
+			let pubkey = PublicKey::from_secret_key(secp_ctx, &key);
+			res.push(get_countersigner_payment_script(&static_remote_key_features, &pubkey));
+			res.push(get_countersigner_payment_script(&zero_fee_htlc_features, &pubkey));
+		}
+		res
+	}
+
+	fn derive_payment_key_v2(&self, key_idx: u64) -> SecretKey {
+		let idx = key_idx % u64::from(STATIC_PAYMENT_KEY_COUNT);
+		self.static_payment_key
+			.derive_priv(
+				&self.secp_ctx,
+				&ChildNumber::from_hardened_idx(idx as u32).expect("key space exhausted"),
+			)
+			.expect("Your RNG is busted")
+			.private_key
 	}
 
 	/// Derive an old [`EcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
@@ -2053,16 +2168,20 @@ impl KeysManager {
 		}
 		let funding_key = key_step!(b"funding key", commitment_seed);
 		let revocation_base_key = key_step!(b"revocation base key", funding_key);
-		let payment_key = key_step!(b"payment key", revocation_base_key);
-		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key);
+		let payment_key_v1 = key_step!(b"payment key", revocation_base_key);
+		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key_v1);
 		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
 		let prng_seed = self.get_secure_random_bytes();
 
+		let payment_key_v2_idx =
+			u64::from_le_bytes(commitment_seed[..8].try_into().expect("8 bytes"));
+
 		InMemorySigner::new(
-			&self.secp_ctx,
 			funding_key,
 			revocation_base_key,
-			payment_key,
+			payment_key_v1,
+			self.derive_payment_key_v2(payment_key_v2_idx),
+			self.v2_remote_key_derivation,
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
@@ -2099,6 +2218,15 @@ impl KeysManager {
 					{
 						let signer = self.derive_channel_keys(&descriptor.channel_keys_id);
 						keys_cache = Some((signer, descriptor.channel_keys_id));
+					}
+					#[cfg(test)]
+					if self.v2_remote_key_derivation {
+						// In tests, we don't have to deal with upgrades from V1 signers with
+						// `v2_remote_key_derivation` set, so use this opportunity to test
+						// `possible_v2_counterparty_closed_balance_spks`.
+						let possible_spks =
+							self.possible_v2_counterparty_closed_balance_spks(secp_ctx);
+						assert!(possible_spks.contains(&descriptor.output.script_pubkey));
 					}
 					let witness = keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(
 						&psbt.unsigned_tx,
@@ -2466,8 +2594,8 @@ impl PhantomKeysManager {
 	/// that is shared across all nodes that intend to participate in [phantom node payments]
 	/// together.
 	///
-	/// See [`KeysManager::new`] for more information on `seed`, `starting_time_secs`, and
-	/// `starting_time_nanos`.
+	/// See [`KeysManager::new`] for more information on `seed`, `starting_time_secs`,
+	/// `starting_time_nanos`, and `v2_remote_key_derivation`.
 	///
 	/// `cross_node_seed` must be the same across all phantom payment-receiving nodes and also the
 	/// same across restarts, or else inbound payments may fail.
@@ -2475,9 +2603,14 @@ impl PhantomKeysManager {
 	/// [phantom node payments]: PhantomKeysManager
 	pub fn new(
 		seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32,
-		cross_node_seed: &[u8; 32],
+		cross_node_seed: &[u8; 32], v2_remote_key_derivation: bool,
 	) -> Self {
-		let inner = KeysManager::new(seed, starting_time_secs, starting_time_nanos);
+		let inner = KeysManager::new(
+			seed,
+			starting_time_secs,
+			starting_time_nanos,
+			v2_remote_key_derivation,
+		);
 		let (inbound_key, phantom_key) = hkdf_extract_expand_twice(
 			b"LDK Inbound and Phantom Payment Key Expansion",
 			cross_node_seed,
@@ -2555,7 +2688,8 @@ pub mod benches {
 	pub fn bench_get_secure_random_bytes(bench: &mut Criterion) {
 		let seed = [0u8; 32];
 		let now = Duration::from_secs(genesis_block(Network::Testnet).header.time as u64);
-		let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_micros()));
+		let keys_manager =
+			Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_micros(), true));
 
 		let mut handles = Vec::new();
 		let mut stops = Vec::new();

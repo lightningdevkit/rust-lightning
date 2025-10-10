@@ -221,10 +221,10 @@ impl ChannelSigner for TestChannelSigner {
 		Ok(())
 	}
 
-	fn pubkeys(
+	fn new_pubkeys(
 		&self, splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> ChannelPublicKeys {
-		self.inner.pubkeys(splice_parent_funding_txid, secp_ctx)
+		self.inner.new_pubkeys(splice_parent_funding_txid, secp_ctx)
 	}
 
 	fn channel_keys_id(&self) -> [u8; 32] {

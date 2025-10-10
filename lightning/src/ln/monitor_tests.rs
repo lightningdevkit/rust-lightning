@@ -2318,7 +2318,7 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	let node1_key_id = <[u8; 32]>::from_hex("0000000000000000000000004D49E5DAD000D6201F116BAFD379F1D61DF161B9").unwrap();
 	let predefined_keys_ids = Some(vec![node0_key_id, node1_key_id]);
 
-	let chanmon_cfgs = create_chanmon_cfgs_with_keys(2, predefined_keys_ids);
+	let chanmon_cfgs = create_chanmon_cfgs_with_legacy_keys(2, predefined_keys_ids);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let persister;
 	let new_chain_monitor;
@@ -2467,7 +2467,9 @@ fn do_test_monitor_rebroadcast_pending_claims(keyed_anchors: bool, p2a_anchor: b
 		if should_bump {
 			assert!(htlc_tx_feerate > prev_htlc_tx_feerate.take().unwrap());
 		} else if let Some(prev_feerate) = prev_htlc_tx_feerate.take() {
-			assert_eq!(htlc_tx_feerate, prev_feerate);
+			// Feerates may fluctuate marginally based on signature size
+			assert!(htlc_tx_feerate >= prev_feerate - 1);
+			assert!(htlc_tx_feerate <= prev_feerate + 1);
 		}
 		prev_htlc_tx_feerate = Some(htlc_tx_feerate);
 		Some(htlc_tx)

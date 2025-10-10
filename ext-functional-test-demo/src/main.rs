@@ -16,7 +16,7 @@ mod tests {
 
 	impl TestSignerFactory for BrokenSignerFactory {
 		fn make_signer(
-			&self, _seed: &[u8; 32], _now: Duration,
+			&self, _seed: &[u8; 32], _now: Duration, _v2_remote_key_derivation: bool,
 		) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>> {
 			panic!()
 		}

@@ -4192,10 +4192,10 @@ pub fn fail_payment<'a, 'b, 'c>(
 }
 
 pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
-	create_chanmon_cfgs_with_keys(node_count, None)
+	create_chanmon_cfgs_with_legacy_keys(node_count, None)
 }
 
-pub fn create_chanmon_cfgs_with_keys(
+pub fn create_chanmon_cfgs_with_legacy_keys(
 	node_count: usize, predefined_keys_ids: Option<Vec<[u8; 32]>>,
 ) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
@@ -4206,7 +4206,12 @@ pub fn create_chanmon_cfgs_with_keys(
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
 		let persister = test_utils::TestPersister::new();
 		let seed = [i as u8; 32];
-		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+		let keys_manager = if predefined_keys_ids.is_some() {
+			// Use legacy (V1) remote_key derivation for tests using legacy key sets.
+			test_utils::TestKeysInterface::with_v1_remote_key_derivation(&seed, Network::Testnet)
+		} else {
+			test_utils::TestKeysInterface::new(&seed, Network::Testnet)
+		};
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 
 		// Set predefined keys_id if provided

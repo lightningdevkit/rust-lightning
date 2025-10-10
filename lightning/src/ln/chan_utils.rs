@@ -641,9 +641,9 @@ pub fn get_revokeable_redeemscript(revocation_key: &RevocationKey, contest_delay
 	res
 }
 
-/// Returns the script for the counterparty's output on a holder's commitment transaction based on
-/// the channel type.
-pub fn get_counterparty_payment_script(
+/// Returns the script for the countersigner's (i.e. non-broadcaster's) output on a commitment
+/// transaction based on the channel type.
+pub fn get_countersigner_payment_script(
 	channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey,
 ) -> ScriptBuf {
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
@@ -1018,11 +1018,11 @@ pub struct ChannelTransactionParameters {
 	/// If a channel was funded with transaction A, and later spliced with transaction B, this field
 	/// tracks the txid of transaction A.
 	///
-	/// See [`compute_funding_key_tweak`] and [`ChannelSigner::pubkeys`] for more context on how
+	/// See [`compute_funding_key_tweak`] and [`ChannelSigner::new_pubkeys`] for more context on how
 	/// this may be used.
 	///
 	/// [`compute_funding_key_tweak`]: crate::sign::compute_funding_key_tweak
-	/// [`ChannelSigner::pubkeys`]: crate::sign::ChannelSigner::pubkeys
+	/// [`ChannelSigner::new_pubkeys`]: crate::sign::ChannelSigner::new_pubkeys
 	pub splice_parent_funding_txid: Option<Txid>,
 	/// This channel's type, as negotiated during channel open. For old objects where this field
 	/// wasn't serialized, it will default to static_remote_key at deserialization.
@@ -2245,8 +2245,8 @@ mod tests {
 			let counterparty_signer = keys_provider.derive_channel_signer(keys_provider.generate_channel_keys_id(true, 1));
 			let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 			let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
-			let holder_pubkeys = signer.pubkeys(None, &secp_ctx);
-			let counterparty_pubkeys = counterparty_signer.pubkeys(None, &secp_ctx).clone();
+			let holder_pubkeys = signer.new_pubkeys(None, &secp_ctx);
+			let counterparty_pubkeys = counterparty_signer.new_pubkeys(None, &secp_ctx).clone();
 			let channel_parameters = ChannelTransactionParameters {
 				holder_pubkeys: holder_pubkeys.clone(),
 				holder_selected_contest_delay: 0,

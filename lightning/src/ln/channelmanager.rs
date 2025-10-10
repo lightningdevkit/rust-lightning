@@ -19181,7 +19181,7 @@ pub mod bench {
 		config.channel_handshake_config.minimum_depth = 1;
 
 		let seed_a = [1u8; 32];
-		let keys_manager_a = KeysManager::new(&seed_a, 42, 42);
+		let keys_manager_a = KeysManager::new(&seed_a, 42, 42, true);
 		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a, &keys_manager_a, keys_manager_a.get_peer_storage_key());
 		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &message_router, &logger_a, &keys_manager_a, &keys_manager_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
@@ -19191,7 +19191,7 @@ pub mod bench {
 
 		let logger_b = test_utils::TestLogger::with_id("node a".to_owned());
 		let seed_b = [2u8; 32];
-		let keys_manager_b = KeysManager::new(&seed_b, 42, 42);
+		let keys_manager_b = KeysManager::new(&seed_b, 42, 42, true);
 		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b, &keys_manager_b, keys_manager_b.get_peer_storage_key());
 		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &message_router, &logger_b, &keys_manager_b, &keys_manager_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
