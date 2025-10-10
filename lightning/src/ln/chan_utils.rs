@@ -637,9 +637,9 @@ pub fn get_revokeable_redeemscript(revocation_key: &RevocationKey, contest_delay
 	res
 }
 
-/// Returns the script for the counterparty's output on a holder's commitment transaction based on
-/// the channel type.
-pub fn get_counterparty_payment_script(
+/// Returns the script for the countersigner's (i.e. non-broadcaster's) output on a commitment
+/// transaction based on the channel type.
+pub fn get_countersigner_payment_script(
 	channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey,
 ) -> ScriptBuf {
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {

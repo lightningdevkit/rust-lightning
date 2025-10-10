@@ -1857,7 +1857,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let holder_pubkeys = &channel_parameters.holder_pubkeys;
-		let counterparty_payment_script = chan_utils::get_counterparty_payment_script(
+		let counterparty_payment_script = chan_utils::get_countersigner_payment_script(
 			&channel_parameters.channel_type_features, &holder_pubkeys.payment_point
 		);
 

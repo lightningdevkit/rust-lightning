@@ -41,7 +41,7 @@ use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
-	get_counterparty_payment_script, get_revokeable_redeemscript, make_funding_redeemscript,
+	get_countersigner_payment_script, get_revokeable_redeemscript, make_funding_redeemscript,
 	ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
 	HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
@@ -1295,8 +1295,8 @@ impl InMemorySigner {
 
 		let payment_point_v1 = PublicKey::from_secret_key(secp_ctx, &self.payment_key_v1);
 		let payment_point_v2 = PublicKey::from_secret_key(secp_ctx, &self.payment_key_v2);
-		let spk_v1 = get_counterparty_payment_script(channel_type_features, &payment_point_v1);
-		let spk_v2 = get_counterparty_payment_script(channel_type_features, &payment_point_v2);
+		let spk_v1 = get_countersigner_payment_script(channel_type_features, &payment_point_v1);
+		let spk_v2 = get_countersigner_payment_script(channel_type_features, &payment_point_v2);
 
 		let (remotepubkey, payment_key) = if spk_v1 == descriptor.output.script_pubkey {
 			(bitcoin::PublicKey::new(payment_point_v1), &self.payment_key_v1)
@@ -2102,8 +2102,8 @@ impl KeysManager {
 				.expect("Your RNG is busted")
 				.private_key;
 			let pubkey = PublicKey::from_secret_key(secp_ctx, &key);
-			res.push(get_counterparty_payment_script(&static_remote_key_features, &pubkey));
-			res.push(get_counterparty_payment_script(&zero_fee_htlc_features, &pubkey));
+			res.push(get_countersigner_payment_script(&static_remote_key_features, &pubkey));
+			res.push(get_countersigner_payment_script(&zero_fee_htlc_features, &pubkey));
 		}
 		res
 	}
