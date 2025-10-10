@@ -59,9 +59,10 @@ use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 #[cfg(any(test, fuzzing))]
 use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::{
-	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, FundedChannel,
-	InboundV1Channel, OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult,
-	StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
+	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
+	FundedChannel, FundingTxSigned, InboundV1Channel, OutboundV1Channel, PendingV2Channel,
+	ReconnectionMsg, ShutdownResult, SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch,
+	WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::SpliceContribution;
@@ -931,6 +932,7 @@ struct MsgHandleErrInternal {
 	err: msgs::LightningError,
 	closes_channel: bool,
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
+	tx_abort: Option<msgs::TxAbort>,
 }
 impl MsgHandleErrInternal {
 	fn send_err_msg_no_close(err: String, channel_id: ChannelId) -> Self {
@@ -943,11 +945,12 @@ impl MsgHandleErrInternal {
 			},
 			closes_channel: false,
 			shutdown_finish: None,
+			tx_abort: None,
 		}
 	}
 
 	fn from_no_close(err: msgs::LightningError) -> Self {
-		Self { err, closes_channel: false, shutdown_finish: None }
+		Self { err, closes_channel: false, shutdown_finish: None, tx_abort: None }
 	}
 
 	fn from_finish_shutdown(
@@ -967,10 +970,15 @@ impl MsgHandleErrInternal {
 			err: LightningError { err, action },
 			closes_channel: true,
 			shutdown_finish: Some((shutdown_res, channel_update)),
+			tx_abort: None,
 		}
 	}
 
 	fn from_chan_no_close(err: ChannelError, channel_id: ChannelId) -> Self {
+		let tx_abort = match &err {
+			&ChannelError::Abort(reason) => Some(reason.into_tx_abort_msg(channel_id)),
+			_ => None,
+		};
 		let err = match err {
 			ChannelError::Warn(msg) => LightningError {
 				err: msg.clone(),
@@ -988,6 +996,9 @@ impl MsgHandleErrInternal {
 			ChannelError::Ignore(msg) => {
 				LightningError { err: msg, action: msgs::ErrorAction::IgnoreError }
 			},
+			ChannelError::Abort(reason) => {
+				LightningError { err: reason.to_string(), action: msgs::ErrorAction::IgnoreError }
+			},
 			ChannelError::Close((msg, _)) | ChannelError::SendError(msg) => LightningError {
 				err: msg.clone(),
 				action: msgs::ErrorAction::SendErrorMessage {
@@ -995,7 +1006,7 @@ impl MsgHandleErrInternal {
 				},
 			},
 		};
-		Self { err, closes_channel: false, shutdown_finish: None }
+		Self { err, closes_channel: false, shutdown_finish: None, tx_abort }
 	}
 
 	fn dont_send_error_message(&mut self) {
@@ -3210,7 +3221,7 @@ macro_rules! handle_error {
 
 		match $internal {
 			Ok(msg) => Ok(msg),
-			Err(MsgHandleErrInternal { err, shutdown_finish, .. }) => {
+			Err(MsgHandleErrInternal { err, shutdown_finish, tx_abort, .. }) => {
 				let mut msg_event = None;
 
 				if let Some((shutdown_res, update_option)) = shutdown_finish {
@@ -3233,6 +3244,12 @@ macro_rules! handle_error {
 				}
 
 				if let msgs::ErrorAction::IgnoreError = err.action {
+					if let Some(tx_abort) = tx_abort {
+						msg_event = Some(MessageSendEvent::SendTxAbort {
+							node_id: $counterparty_node_id,
+							msg: tx_abort,
+						});
+					}
 				} else {
 					msg_event = Some(MessageSendEvent::HandleError {
 						node_id: $counterparty_node_id,
@@ -3329,6 +3346,9 @@ macro_rules! convert_channel_err {
 			},
 			ChannelError::Ignore(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id))
+			},
+			ChannelError::Abort(reason) => {
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Abort(reason), $channel_id))
 			},
 			ChannelError::Close((msg, reason)) => {
 				let (mut shutdown_res, chan_update) = $close(reason);
@@ -4516,6 +4536,18 @@ where
 				last_local_balance_msat: Some(shutdown_res.last_local_balance_msat),
 			}, None));
 
+			if let Some(splice_funding_failed) = shutdown_res.splice_funding_failed.take() {
+				pending_events.push_back((events::Event::SpliceFailed {
+					channel_id: shutdown_res.channel_id,
+					counterparty_node_id: shutdown_res.counterparty_node_id,
+					user_channel_id: shutdown_res.user_channel_id,
+					abandoned_funding_txo: splice_funding_failed.funding_txo,
+					channel_type: splice_funding_failed.channel_type,
+					contributed_inputs: splice_funding_failed.contributed_inputs,
+					contributed_outputs: splice_funding_failed.contributed_outputs,
+				}, None));
+			}
+
 			if let Some(transaction) = shutdown_res.unbroadcasted_funding_tx {
 				let funding_info = if shutdown_res.is_manual_broadcast {
 					FundingInfo::OutPoint {
@@ -4631,17 +4663,33 @@ where
 		}
 	}
 
-	/// Initiate a splice, to change the channel capacity of an existing funded channel.
-	/// After completion of splicing, the funding transaction will be replaced by a new one, spending the old funding transaction,
-	/// with optional extra inputs (splice-in) and/or extra outputs (splice-out or change).
-	/// TODO(splicing): Implementation is currently incomplete.
+	/// Initiate a splice in order to add value to (splice-in) or remove value from (splice-out)
+	/// the channel. This will spend the channel's funding transaction output, effectively replacing
+	/// it with a new one.
 	///
-	/// Note: Currently only splice-in is supported (increase in channel capacity), splice-out is not.
+	/// # Arguments
 	///
-	/// - `our_funding_contribution_satoshis`: the amount contributed by us to the channel. This will increase our channel balance.
-	/// - `our_funding_inputs`: the funding inputs provided by us. If our contribution is positive, our funding inputs must cover at least that amount.
-	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
-	/// - `locktime`: Optional locktime for the new funding transaction. If None, set to the current block height.
+	/// Provide a `contribution` to determine if value is spliced in or out. The splice initiator is
+	/// responsible for paying fees for common fields, shared inputs, and shared outputs along with
+	/// any contributed inputs and outputs. Fees are determined using `funding_feerate_per_kw` and
+	/// must be covered by the supplied inputs for splice-in or the channel balance for splice-out.
+	///
+	/// An optional `locktime` for the funding transaction may be specified. If not given, the
+	/// current best block height is used.
+	///
+	/// # Events
+	///
+	/// Once the funding transaction has been constructed, an [`Event::SplicePending`] will be
+	/// emitted. At this point, any inputs contributed to the splice can only be re-spent if an
+	/// [`Event::DiscardFunding`] is seen.
+	///
+	/// If any failures occur while negotiating the funding transaction, an [`Event::SpliceFailed`]
+	/// will be emitted. Any contributed inputs no longer used will be included here and thus can
+	/// be re-spent.
+	///
+	/// Once the splice has been locked by both counterparties, an [`Event::ChannelReady`] will be
+	/// emitted with the new funding output. At this point, a new splice can be negotiated by
+	/// calling `splice_channel` again on this channel.
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
@@ -4654,7 +4702,7 @@ where
 			);
 			res = result;
 			match res {
-				Ok(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(_) => NotifyOption::DoPersist,
 				Err(_) => NotifyOption::SkipPersistNoEvents,
 			}
 		});
@@ -4710,6 +4758,94 @@ where
 					Err(APIError::ChannelUnavailable {
 						err: format!(
 							"Channel with id {} is not funded, cannot splice it",
+							channel_id
+						),
+					})
+				}
+			},
+			hash_map::Entry::Vacant(_) => Err(APIError::ChannelUnavailable {
+				err: format!(
+					"Channel with id {} not found for the passed counterparty node_id {}",
+					channel_id, counterparty_node_id,
+				),
+			}),
+		}
+	}
+
+	#[cfg(test)]
+	pub(crate) fn abandon_splice(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+	) -> Result<(), APIError> {
+		let mut res = Ok(());
+		PersistenceNotifierGuard::optionally_notify(self, || {
+			let result = self.internal_abandon_splice(channel_id, counterparty_node_id);
+			res = result;
+			match res {
+				Ok(_) => NotifyOption::SkipPersistHandleEvents,
+				Err(_) => NotifyOption::SkipPersistNoEvents,
+			}
+		});
+		res
+	}
+
+	#[cfg(test)]
+	fn internal_abandon_splice(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+	) -> Result<(), APIError> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex = match per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			APIError::ChannelUnavailable {
+				err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
+			}
+		}) {
+			Ok(p) => p,
+			Err(e) => return Err(e),
+		};
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		// Look for the channel
+		match peer_state.channel_by_id.entry(*channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				if !chan_phase_entry.get().context().is_connected() {
+					// TODO: We should probably support this, but right now `splice_channel` refuses when
+					// the peer is disconnected, so we just check it here.
+					return Err(APIError::ChannelUnavailable {
+						err: "Cannot abandon splice while peer is disconnected".to_owned(),
+					});
+				}
+
+				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+					let (tx_abort, splice_funding_failed) = chan.abandon_splice()?;
+
+					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
+						node_id: *counterparty_node_id,
+						msg: tx_abort,
+					});
+
+					if let Some(splice_funding_failed) = splice_funding_failed {
+						let pending_events = &mut self.pending_events.lock().unwrap();
+						pending_events.push_back((
+							events::Event::SpliceFailed {
+								channel_id: *channel_id,
+								counterparty_node_id: *counterparty_node_id,
+								user_channel_id: chan.context.get_user_id(),
+								abandoned_funding_txo: splice_funding_failed.funding_txo,
+								channel_type: splice_funding_failed.channel_type,
+								contributed_inputs: splice_funding_failed.contributed_inputs,
+								contributed_outputs: splice_funding_failed.contributed_outputs,
+							},
+							None,
+						));
+					}
+
+					Ok(())
+				} else {
+					Err(APIError::ChannelUnavailable {
+						err: format!(
+							"Channel with id {} is not funded, cannot abandon splice",
 							channel_id
 						),
 					})
@@ -6298,9 +6434,25 @@ where
 							.filter(|witness| !witness.is_empty())
 							.collect();
 						match chan.funding_transaction_signed(txid, witnesses) {
-							Ok((Some(tx_signatures), funding_tx_opt)) => {
-								if let Some(funding_tx) = funding_tx_opt {
+							Ok(FundingTxSigned {
+								tx_signatures: Some(tx_signatures),
+								funding_tx,
+								splice_negotiated,
+							}) => {
+								if let Some(funding_tx) = funding_tx {
 									self.broadcast_interactive_funding(chan, &funding_tx);
+								}
+								if let Some(splice_negotiated) = splice_negotiated {
+									self.pending_events.lock().unwrap().push_back((
+										events::Event::SplicePending {
+											channel_id: *channel_id,
+											counterparty_node_id: *counterparty_node_id,
+											user_channel_id: chan.context.get_user_id(),
+											new_funding_txo: splice_negotiated.funding_txo,
+											channel_type: splice_negotiated.channel_type,
+										},
+										None,
+									));
 								}
 								peer_state.pending_msg_events.push(
 									MessageSendEvent::SendTxSignatures {
@@ -6314,7 +6466,13 @@ where
 								result = Err(err);
 								return NotifyOption::SkipPersistNoEvents;
 							},
-							_ => {
+							Ok(FundingTxSigned {
+								tx_signatures: None,
+								funding_tx,
+								splice_negotiated,
+							}) => {
+								debug_assert!(funding_tx.is_none());
+								debug_assert!(splice_negotiated.is_none());
 								return NotifyOption::SkipPersistNoEvents;
 							},
 						}
@@ -9413,10 +9571,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			} else {
 				let txid = signing_session.unsigned_tx().compute_txid();
 				match channel.funding_transaction_signed(txid, vec![]) {
-					Ok((Some(tx_signatures), funding_tx_opt)) => {
-						if let Some(funding_tx) = funding_tx_opt {
+					Ok(FundingTxSigned { tx_signatures: Some(tx_signatures), funding_tx, splice_negotiated }) => {
+						if let Some(funding_tx) = funding_tx {
 							self.broadcast_interactive_funding(channel, &funding_tx);
 						}
+
+						if let Some(splice_negotiated) = splice_negotiated {
+							self.pending_events.lock().unwrap().push_back((
+								events::Event::SplicePending {
+									channel_id: channel.context.channel_id(),
+									counterparty_node_id,
+									user_channel_id: channel.context.get_user_id(),
+									new_funding_txo: splice_negotiated.funding_txo,
+									channel_type: splice_negotiated.channel_type,
+								},
+								None,
+							));
+						}
+
 						if channel.context.is_connected() {
 							pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: counterparty_node_id,
@@ -9424,7 +9596,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							});
 						}
 					},
-					Ok((None, _)) => {
+					Ok(FundingTxSigned { tx_signatures: None, .. }) => {
 						debug_assert!(false, "If our tx_signatures is empty, then we should send it first!");
 					},
 					Err(err) => {
@@ -10234,11 +10406,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	fn internal_tx_msg<
-		HandleTxMsgFn: Fn(&mut Channel<SP>) -> Result<InteractiveTxMessageSend, msgs::TxAbort>,
+		HandleTxMsgFn: Fn(
+			&mut Channel<SP>,
+		) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)>,
 	>(
 		&self, counterparty_node_id: &PublicKey, channel_id: ChannelId,
 		tx_msg_handler: HandleTxMsgFn,
-	) -> Result<(), MsgHandleErrInternal> {
+	) -> Result<NotifyOption, MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 			debug_assert!(false);
@@ -10252,17 +10426,28 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let channel = chan_entry.get_mut();
-				let msg_send_event = match tx_msg_handler(channel) {
-					Ok(msg_send) => msg_send.into_msg_send_event(*counterparty_node_id),
-					Err(tx_abort) => {
-						MessageSendEvent::SendTxAbort {
-							node_id: *counterparty_node_id,
-							msg: tx_abort,
-						}
+				match tx_msg_handler(channel) {
+					Ok(msg_send) => {
+						let msg_send_event = msg_send.into_msg_send_event(*counterparty_node_id);
+						peer_state.pending_msg_events.push(msg_send_event);
+						Ok(NotifyOption::SkipPersistHandleEvents)
 					},
-				};
-				peer_state.pending_msg_events.push(msg_send_event);
-				Ok(())
+					Err((error, splice_funding_failed)) => {
+						if let Some(splice_funding_failed) = splice_funding_failed {
+							let pending_events = &mut self.pending_events.lock().unwrap();
+							pending_events.push_back((events::Event::SpliceFailed {
+								channel_id,
+								counterparty_node_id: *counterparty_node_id,
+								user_channel_id: channel.context().get_user_id(),
+								abandoned_funding_txo: splice_funding_failed.funding_txo,
+								channel_type: splice_funding_failed.channel_type.clone(),
+								contributed_inputs: splice_funding_failed.contributed_inputs,
+								contributed_outputs: splice_funding_failed.contributed_outputs,
+							}, None));
+						}
+						Err(MsgHandleErrInternal::from_chan_no_close(error, channel_id))
+					},
+				}
 			},
 			hash_map::Entry::Vacant(_) => {
 				Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
@@ -10275,7 +10460,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_add_input(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput,
-	) -> Result<(), MsgHandleErrInternal> {
+	) -> Result<NotifyOption, MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_add_input(msg, &self.logger)
 		})
@@ -10283,7 +10468,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_add_output(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput,
-	) -> Result<(), MsgHandleErrInternal> {
+	) -> Result<NotifyOption, MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_add_output(msg, &self.logger)
 		})
@@ -10291,7 +10476,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_remove_input(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput,
-	) -> Result<(), MsgHandleErrInternal> {
+	) -> Result<NotifyOption, MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_remove_input(msg, &self.logger)
 		})
@@ -10299,14 +10484,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_remove_output(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput,
-	) -> Result<(), MsgHandleErrInternal> {
+	) -> Result<NotifyOption, MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_remove_output(msg, &self.logger)
 		})
 	}
 
 	#[rustfmt::skip]
-	fn internal_tx_complete(&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete) -> Result<(), MsgHandleErrInternal> {
+	fn internal_tx_complete(&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete) -> Result<NotifyOption, MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
 			.ok_or_else(|| {
@@ -10322,6 +10507,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let chan = chan_entry.get_mut();
 				match chan.tx_complete(msg, &self.logger) {
 					Ok((interactive_tx_msg_send, commitment_signed)) => {
+						let persist = if interactive_tx_msg_send.is_some() || commitment_signed.is_some() {
+							NotifyOption::SkipPersistHandleEvents
+						} else {
+							NotifyOption::SkipPersistNoEvents
+						};
 						if let Some(interactive_tx_msg_send) = interactive_tx_msg_send {
 							let msg_send_event = interactive_tx_msg_send.into_msg_send_event(counterparty_node_id);
 							peer_state.pending_msg_events.push(msg_send_event);
@@ -10340,15 +10530,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								},
 							});
 						}
+						Ok(persist)
 					},
-					Err(tx_abort) => {
-						peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
-							node_id: counterparty_node_id,
-							msg: tx_abort,
-						});
+					Err((error, splice_funding_failed)) => {
+						if let Some(splice_funding_failed) = splice_funding_failed {
+							let pending_events = &mut self.pending_events.lock().unwrap();
+							pending_events.push_back((events::Event::SpliceFailed {
+								channel_id: msg.channel_id,
+								counterparty_node_id,
+								user_channel_id: chan.context().get_user_id(),
+								abandoned_funding_txo: splice_funding_failed.funding_txo,
+								channel_type: splice_funding_failed.channel_type.clone(),
+								contributed_inputs: splice_funding_failed.contributed_inputs,
+								contributed_outputs: splice_funding_failed.contributed_outputs,
+							}, None));
+						}
+						Err(MsgHandleErrInternal::from_chan_no_close(error, msg.channel_id))
 					},
 				}
-				Ok(())
 			},
 			hash_map::Entry::Vacant(_) => {
 				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -10373,19 +10572,32 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
-						let (tx_signatures_opt, funding_tx_opt) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg), chan_entry);
-						if let Some(tx_signatures) = tx_signatures_opt {
+						let FundingTxSigned { tx_signatures, funding_tx, splice_negotiated } =
+							try_channel_entry!(self, peer_state, chan.tx_signatures(msg), chan_entry);
+						if let Some(tx_signatures) = tx_signatures {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
 								msg: tx_signatures,
 							});
 						}
-						if let Some(ref funding_tx) = funding_tx_opt {
+						if let Some(ref funding_tx) = funding_tx {
 							self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
 							{
 								let mut pending_events = self.pending_events.lock().unwrap();
 								emit_channel_pending_event!(pending_events, chan);
 							}
+						}
+						if let Some(splice_negotiated) = splice_negotiated {
+							self.pending_events.lock().unwrap().push_back((
+								events::Event::SplicePending {
+									channel_id: msg.channel_id,
+									counterparty_node_id: *counterparty_node_id,
+									user_channel_id: chan.context.get_user_id(),
+									new_funding_txo: splice_negotiated.funding_txo,
+									channel_type: splice_negotiated.channel_type,
+								},
+								None,
+							));
 						}
 					},
 					None => {
@@ -10405,7 +10617,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	#[rustfmt::skip]
 	fn internal_tx_abort(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAbort)
-	-> Result<(), MsgHandleErrInternal> {
+	-> Result<NotifyOption, MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
@@ -10419,13 +10631,35 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let res = chan_entry.get_mut().tx_abort(msg, &self.logger);
-				if let Some(msg) = try_channel_entry!(self, peer_state, res, chan_entry) {
+				let (tx_abort, splice_failed) = try_channel_entry!(self, peer_state, res, chan_entry);
+
+				let persist = if tx_abort.is_some() || splice_failed.is_some() {
+					NotifyOption::DoPersist
+				} else {
+					NotifyOption::SkipPersistNoEvents
+				};
+
+				if let Some(tx_abort_msg) = tx_abort {
 					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
 						node_id: *counterparty_node_id,
-						msg,
+						msg: tx_abort_msg,
 					});
 				}
-				Ok(())
+
+				if let Some(splice_funding_failed) = splice_failed {
+					let pending_events = &mut self.pending_events.lock().unwrap();
+					pending_events.push_back((events::Event::SpliceFailed {
+						channel_id: msg.channel_id,
+						counterparty_node_id: *counterparty_node_id,
+						user_channel_id: chan_entry.get().context().get_user_id(),
+						abandoned_funding_txo: splice_funding_failed.funding_txo,
+						channel_type: splice_funding_failed.channel_type,
+						contributed_inputs: splice_funding_failed.contributed_inputs,
+						contributed_outputs: splice_funding_failed.contributed_outputs,
+					}, None));
+				}
+
+				Ok(persist)
 			},
 			hash_map::Entry::Vacant(_) => {
 				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -11337,7 +11571,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	#[rustfmt::skip]
-	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<NotifyOption, MsgHandleErrInternal> {
+	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
 		let (inferred_splice_locked, need_lnd_workaround) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -11448,10 +11682,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		if let Some(splice_locked) = inferred_splice_locked {
 			self.internal_splice_locked(counterparty_node_id, &splice_locked)?;
-			return Ok(NotifyOption::DoPersist);
 		}
 
-		Ok(NotifyOption::SkipPersistHandleEvents)
+		Ok(())
 	}
 
 	/// Handle incoming splice request, transition channel to splice-pending (unless some check fails).
@@ -13358,107 +13591,136 @@ where
 
 	#[rustfmt::skip]
 	fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(
-			self, || NotifyOption::SkipPersistHandleEvents);
-		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
-		let mut per_peer_state = self.per_peer_state.write().unwrap();
-		let remove_peer = {
-			log_debug!(
-				WithContext::from(&self.logger, Some(counterparty_node_id), None, None),
-				"Marking channels with {} disconnected and generating channel_updates.",
-				log_pubkey!(counterparty_node_id)
-			);
-			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
-				let pending_msg_events = &mut peer_state.pending_msg_events;
-				peer_state.channel_by_id.retain(|_, chan| {
-					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
-					if chan.peer_disconnected_is_resumable(&&logger) {
-						return true;
-					}
-					// Clean up for removal.
-					let reason = ClosureReason::DisconnectedPeer;
-					let err = ChannelError::Close((reason.to_string(), reason));
-					let (_, e) = convert_channel_err!(self, peer_state, err, chan);
-					failed_channels.push((Err(e), counterparty_node_id));
-					false
-				});
-				// Note that we don't bother generating any events for pre-accept channels -
-				// they're not considered "channels" yet from the PoV of our events interface.
-				peer_state.inbound_channel_request_by_id.clear();
-				pending_msg_events.retain(|msg| {
-					match msg {
-						// V1 Channel Establishment
-						&MessageSendEvent::SendAcceptChannel { .. } => false,
-						&MessageSendEvent::SendOpenChannel { .. } => false,
-						&MessageSendEvent::SendFundingCreated { .. } => false,
-						&MessageSendEvent::SendFundingSigned { .. } => false,
-						// V2 Channel Establishment
-						&MessageSendEvent::SendAcceptChannelV2 { .. } => false,
-						&MessageSendEvent::SendOpenChannelV2 { .. } => false,
-						// Common Channel Establishment
-						&MessageSendEvent::SendChannelReady { .. } => false,
-						&MessageSendEvent::SendAnnouncementSignatures { .. } => false,
-						// Quiescence
-						&MessageSendEvent::SendStfu { .. } => false,
-						// Splicing
-						&MessageSendEvent::SendSpliceInit { .. } => false,
-						&MessageSendEvent::SendSpliceAck { .. } => false,
-						&MessageSendEvent::SendSpliceLocked { .. } => false,
-						// Interactive Transaction Construction
-						&MessageSendEvent::SendTxAddInput { .. } => false,
-						&MessageSendEvent::SendTxAddOutput { .. } => false,
-						&MessageSendEvent::SendTxRemoveInput { .. } => false,
-						&MessageSendEvent::SendTxRemoveOutput { .. } => false,
-						&MessageSendEvent::SendTxComplete { .. } => false,
-						&MessageSendEvent::SendTxSignatures { .. } => false,
-						&MessageSendEvent::SendTxInitRbf { .. } => false,
-						&MessageSendEvent::SendTxAckRbf { .. } => false,
-						&MessageSendEvent::SendTxAbort { .. } => false,
-						// Channel Operations
-						&MessageSendEvent::UpdateHTLCs { .. } => false,
-						&MessageSendEvent::SendRevokeAndACK { .. } => false,
-						&MessageSendEvent::SendClosingSigned { .. } => false,
-						&MessageSendEvent::SendClosingComplete { .. } => false,
-						&MessageSendEvent::SendClosingSig { .. } => false,
-						&MessageSendEvent::SendShutdown { .. } => false,
-						&MessageSendEvent::SendChannelReestablish { .. } => false,
-						&MessageSendEvent::HandleError { .. } => false,
-						// Gossip
-						&MessageSendEvent::SendChannelAnnouncement { .. } => false,
-						&MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
-						// [`ChannelManager::pending_broadcast_events`] holds the [`BroadcastChannelUpdate`]
-						// This check here is to ensure exhaustivity.
-						&MessageSendEvent::BroadcastChannelUpdate { .. } => {
-							debug_assert!(false, "This event shouldn't have been here");
-							false
-						},
-						&MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
-						&MessageSendEvent::SendChannelUpdate { .. } => false,
-						&MessageSendEvent::SendChannelRangeQuery { .. } => false,
-						&MessageSendEvent::SendShortIdsQuery { .. } => false,
-						&MessageSendEvent::SendReplyChannelRange { .. } => false,
-						&MessageSendEvent::SendGossipTimestampFilter { .. } => false,
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let mut splice_failed_events = Vec::new();
+			let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
+			let mut per_peer_state = self.per_peer_state.write().unwrap();
+			let remove_peer = {
+				log_debug!(
+					WithContext::from(&self.logger, Some(counterparty_node_id), None, None),
+					"Marking channels with {} disconnected and generating channel_updates.",
+					log_pubkey!(counterparty_node_id)
+				);
+				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+					let peer_state = &mut *peer_state_lock;
+					let pending_msg_events = &mut peer_state.pending_msg_events;
+					peer_state.channel_by_id.retain(|_, chan| {
+						let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
+						let DisconnectResult { is_resumable, splice_funding_failed } =
+							chan.peer_disconnected_is_resumable(&&logger);
 
-						// Peer Storage
-						&MessageSendEvent::SendPeerStorage { .. } => false,
-						&MessageSendEvent::SendPeerStorageRetrieval { .. } => false,
-					}
-				});
-				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
-				peer_state.is_connected = false;
-				peer_state.ok_to_remove(true)
-			} else { debug_assert!(false, "Unconnected peer disconnected"); true }
-		};
-		if remove_peer {
-			per_peer_state.remove(&counterparty_node_id);
-		}
-		mem::drop(per_peer_state);
+						if let Some(splice_funding_failed) = splice_funding_failed {
+							splice_failed_events.push(events::Event::SpliceFailed {
+								channel_id: chan.context().channel_id(),
+								counterparty_node_id,
+								user_channel_id: chan.context().get_user_id(),
+								abandoned_funding_txo: splice_funding_failed.funding_txo,
+								channel_type: splice_funding_failed.channel_type,
+								contributed_inputs: splice_funding_failed.contributed_inputs,
+								contributed_outputs: splice_funding_failed.contributed_outputs,
+							});
+						}
 
-		for (err, counterparty_node_id) in failed_channels.drain(..) {
-			let _ = handle_error!(self, err, counterparty_node_id);
-		}
+						if is_resumable {
+							return true;
+						}
+
+						// Clean up for removal.
+						let reason = ClosureReason::DisconnectedPeer;
+						let err = ChannelError::Close((reason.to_string(), reason));
+						let (_, e) = convert_channel_err!(self, peer_state, err, chan);
+						failed_channels.push((Err(e), counterparty_node_id));
+						false
+					});
+					// Note that we don't bother generating any events for pre-accept channels -
+					// they're not considered "channels" yet from the PoV of our events interface.
+					peer_state.inbound_channel_request_by_id.clear();
+					pending_msg_events.retain(|msg| {
+						match msg {
+							// V1 Channel Establishment
+							&MessageSendEvent::SendAcceptChannel { .. } => false,
+							&MessageSendEvent::SendOpenChannel { .. } => false,
+							&MessageSendEvent::SendFundingCreated { .. } => false,
+							&MessageSendEvent::SendFundingSigned { .. } => false,
+							// V2 Channel Establishment
+							&MessageSendEvent::SendAcceptChannelV2 { .. } => false,
+							&MessageSendEvent::SendOpenChannelV2 { .. } => false,
+							// Common Channel Establishment
+							&MessageSendEvent::SendChannelReady { .. } => false,
+							&MessageSendEvent::SendAnnouncementSignatures { .. } => false,
+							// Quiescence
+							&MessageSendEvent::SendStfu { .. } => false,
+							// Splicing
+							&MessageSendEvent::SendSpliceInit { .. } => false,
+							&MessageSendEvent::SendSpliceAck { .. } => false,
+							&MessageSendEvent::SendSpliceLocked { .. } => false,
+							// Interactive Transaction Construction
+							&MessageSendEvent::SendTxAddInput { .. } => false,
+							&MessageSendEvent::SendTxAddOutput { .. } => false,
+							&MessageSendEvent::SendTxRemoveInput { .. } => false,
+							&MessageSendEvent::SendTxRemoveOutput { .. } => false,
+							&MessageSendEvent::SendTxComplete { .. } => false,
+							&MessageSendEvent::SendTxSignatures { .. } => false,
+							&MessageSendEvent::SendTxInitRbf { .. } => false,
+							&MessageSendEvent::SendTxAckRbf { .. } => false,
+							&MessageSendEvent::SendTxAbort { .. } => false,
+							// Channel Operations
+							&MessageSendEvent::UpdateHTLCs { .. } => false,
+							&MessageSendEvent::SendRevokeAndACK { .. } => false,
+							&MessageSendEvent::SendClosingSigned { .. } => false,
+							&MessageSendEvent::SendClosingComplete { .. } => false,
+							&MessageSendEvent::SendClosingSig { .. } => false,
+							&MessageSendEvent::SendShutdown { .. } => false,
+							&MessageSendEvent::SendChannelReestablish { .. } => false,
+							&MessageSendEvent::HandleError { .. } => false,
+							// Gossip
+							&MessageSendEvent::SendChannelAnnouncement { .. } => false,
+							&MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
+							// [`ChannelManager::pending_broadcast_events`] holds the [`BroadcastChannelUpdate`]
+							// This check here is to ensure exhaustivity.
+							&MessageSendEvent::BroadcastChannelUpdate { .. } => {
+								debug_assert!(false, "This event shouldn't have been here");
+								false
+							},
+							&MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
+							&MessageSendEvent::SendChannelUpdate { .. } => false,
+							&MessageSendEvent::SendChannelRangeQuery { .. } => false,
+							&MessageSendEvent::SendShortIdsQuery { .. } => false,
+							&MessageSendEvent::SendReplyChannelRange { .. } => false,
+							&MessageSendEvent::SendGossipTimestampFilter { .. } => false,
+
+							// Peer Storage
+							&MessageSendEvent::SendPeerStorage { .. } => false,
+							&MessageSendEvent::SendPeerStorageRetrieval { .. } => false,
+						}
+					});
+					debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
+					peer_state.is_connected = false;
+					peer_state.ok_to_remove(true)
+				} else { debug_assert!(false, "Unconnected peer disconnected"); true }
+			};
+			if remove_peer {
+				per_peer_state.remove(&counterparty_node_id);
+			}
+			mem::drop(per_peer_state);
+
+			let persist = if splice_failed_events.is_empty() {
+				NotifyOption::SkipPersistHandleEvents
+			} else {
+				let mut pending_events = self.pending_events.lock().unwrap();
+				for event in splice_failed_events {
+					pending_events.push_back((event, None));
+				}
+				NotifyOption::DoPersist
+			};
+
+			for (err, counterparty_node_id) in failed_channels.drain(..) {
+				let _ = handle_error!(self, err, counterparty_node_id);
+			}
+
+			persist
+		});
 	}
 
 	#[rustfmt::skip]
@@ -14570,16 +14832,9 @@ where
 	fn handle_channel_reestablish(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelReestablish,
 	) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
-			let res = self.internal_channel_reestablish(&counterparty_node_id, msg);
-			let persist = match &res {
-				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
-				Err(_) => NotifyOption::SkipPersistHandleEvents,
-				Ok(persist) => *persist,
-			};
-			let _ = handle_error!(self, res, counterparty_node_id);
-			persist
-		});
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let res = self.internal_channel_reestablish(&counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	#[rustfmt::skip]
@@ -14700,57 +14955,62 @@ where
 	}
 
 	fn handle_tx_add_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput) {
-		// Note that we never need to persist the updated ChannelManager for an inbound
-		// tx_add_input message - interactive transaction construction does not need to
-		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_add_input(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(_) => NotifyOption::DoPersist,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 
 	fn handle_tx_add_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput) {
-		// Note that we never need to persist the updated ChannelManager for an inbound
-		// tx_add_output message - interactive transaction construction does not need to
-		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_add_output(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(_) => NotifyOption::DoPersist,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 
 	fn handle_tx_remove_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput) {
-		// Note that we never need to persist the updated ChannelManager for an inbound
-		// tx_remove_input message - interactive transaction construction does not need to
-		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_remove_input(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(_) => NotifyOption::DoPersist,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 
 	fn handle_tx_remove_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput) {
-		// Note that we never need to persist the updated ChannelManager for an inbound
-		// tx_remove_output message - interactive transaction construction does not need to
-		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_remove_output(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(_) => NotifyOption::DoPersist,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 
 	fn handle_tx_complete(&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete) {
-		// Note that we never need to persist the updated ChannelManager for an inbound
-		// tx_complete message - interactive transaction construction does not need to
-		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_complete(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(_) => NotifyOption::DoPersist,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 
@@ -14782,8 +15042,13 @@ where
 		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_tx_abort(&counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(persist) => *persist,
+			};
 			let _ = handle_error!(self, res, counterparty_node_id);
-			NotifyOption::SkipPersistHandleEvents
+			persist
 		});
 	}
 
@@ -15893,7 +16158,32 @@ where
 			}
 		}
 
-		let events = self.pending_events.lock().unwrap();
+
+		// Since some FundingNegotiation variants are not persisted, any splice in such state must
+		// be failed upon reload. However, as the necessary information for the SpliceFailed event
+		// is not persisted, the event itself needs to be persisted even though it hasn't been
+		// emitted yet. These are removed after the events are written.
+		let mut events = self.pending_events.lock().unwrap();
+		let event_count = events.len();
+		for peer_state in peer_states.iter() {
+			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
+				if let Some(splice_funding_failed) = chan.maybe_splice_funding_failed() {
+					events.push_back((
+						events::Event::SpliceFailed {
+							channel_id: chan.context.channel_id(),
+							counterparty_node_id: chan.context.get_counterparty_node_id(),
+							user_channel_id: chan.context.get_user_id(),
+							abandoned_funding_txo: splice_funding_failed.funding_txo,
+							channel_type: splice_funding_failed.channel_type,
+							contributed_inputs: splice_funding_failed.contributed_inputs,
+							contributed_outputs: splice_funding_failed.contributed_outputs,
+						},
+						None,
+					));
+				}
+			}
+		}
+
 		// LDK versions prior to 0.0.115 don't support post-event actions, thus if there's no
 		// actions at all, skip writing the required TLV. Otherwise, pre-0.0.115 versions will
 		// refuse to read the new ChannelManager.
@@ -16009,6 +16299,9 @@ where
 			(19, peer_storage_dir, optional_vec),
 			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
 		});
+
+		// Remove the SpliceFailed events added earlier.
+		events.truncate(event_count);
 
 		Ok(())
 	}

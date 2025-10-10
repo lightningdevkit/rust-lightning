@@ -1054,6 +1054,29 @@ pub fn get_err_msg(node: &Node, recipient: &PublicKey) -> msgs::ErrorMessage {
 	}
 }
 
+/// Get a warning message from the pending events queue.
+pub fn get_warning_msg(node: &Node, recipient: &PublicKey) -> msgs::WarningMessage {
+	let events = node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::DisconnectPeerWithWarning { ref msg },
+			ref node_id,
+		} => {
+			assert_eq!(node_id, recipient);
+			(*msg).clone()
+		},
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::SendWarningMessage { ref msg, .. },
+			ref node_id,
+		} => {
+			assert_eq!(node_id, recipient);
+			msg.clone()
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
 /// Get a specific event from the pending events queue.
 #[macro_export]
 macro_rules! get_event {
@@ -2128,6 +2151,7 @@ pub struct ExpectedCloseEvent {
 	pub channel_id: Option<ChannelId>,
 	pub counterparty_node_id: Option<PublicKey>,
 	pub discard_funding: bool,
+	pub splice_failed: bool,
 	pub reason: Option<ClosureReason>,
 	pub channel_funding_txo: Option<OutPoint>,
 	pub user_channel_id: Option<u128>,
@@ -2142,6 +2166,7 @@ impl ExpectedCloseEvent {
 			channel_id: Some(channel_id),
 			counterparty_node_id: None,
 			discard_funding,
+			splice_failed: false,
 			reason: Some(reason),
 			channel_funding_txo: None,
 			user_channel_id: None,
@@ -2153,8 +2178,14 @@ impl ExpectedCloseEvent {
 pub fn check_closed_events(node: &Node, expected_close_events: &[ExpectedCloseEvent]) {
 	let closed_events_count = expected_close_events.len();
 	let discard_events_count = expected_close_events.iter().filter(|e| e.discard_funding).count();
+	let splice_events_count = expected_close_events.iter().filter(|e| e.splice_failed).count();
 	let events = node.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), closed_events_count + discard_events_count, "{:?}", events);
+	assert_eq!(
+		events.len(),
+		closed_events_count + discard_events_count + splice_events_count,
+		"{:?}",
+		events
+	);
 	for expected_event in expected_close_events {
 		assert!(events.iter().any(|e| matches!(
 			e,
@@ -2184,6 +2215,10 @@ pub fn check_closed_events(node: &Node, expected_close_events: &[ExpectedCloseEv
 		events.iter().filter(|e| matches!(e, Event::DiscardFunding { .. },)).count(),
 		discard_events_count
 	);
+	assert_eq!(
+		events.iter().filter(|e| matches!(e, Event::SpliceFailed { .. },)).count(),
+		splice_events_count
+	);
 }
 
 /// Check that a channel's closing channel events has been issued
@@ -2205,6 +2240,7 @@ pub fn check_closed_event(
 			channel_id: None,
 			counterparty_node_id: Some(*node_id),
 			discard_funding: is_check_discard_funding,
+			splice_failed: false,
 			reason: Some(expected_reason.clone()),
 			channel_funding_txo: None,
 			user_channel_id: None,
@@ -3062,6 +3098,21 @@ pub fn expect_channel_ready_event<'a, 'b, 'c, 'd>(
 	match events[0] {
 		crate::events::Event::ChannelReady { ref counterparty_node_id, .. } => {
 			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
+	node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey,
+) -> ChannelId {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		crate::events::Event::SplicePending { channel_id, counterparty_node_id, .. } => {
+			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
+			*channel_id
 		},
 		_ => panic!("Unexpected event"),
 	}
