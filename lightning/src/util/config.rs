@@ -927,6 +927,7 @@ pub struct UserConfig {
 	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	pub manually_handle_bolt12_invoices: bool,
+	#[cfg(dual_funding)]
 	/// If this is set to `true`, dual-funded channels will be enabled.
 	///
 	/// Default value: `false`
@@ -981,6 +982,7 @@ impl Default for UserConfig {
 			manually_accept_inbound_channels: false,
 			accept_intercept_htlcs: false,
 			manually_handle_bolt12_invoices: false,
+			#[cfg(dual_funding)]
 			enable_dual_funded_channels: false,
 			enable_htlc_hold: false,
 			hold_outbound_htlcs_at_next_hop: false,
@@ -995,19 +997,32 @@ impl Default for UserConfig {
 #[cfg(fuzzing)]
 impl Readable for UserConfig {
 	fn read<R: crate::io::Read>(reader: &mut R) -> Result<Self, crate::ln::msgs::DecodeError> {
+		let channel_handshake_config = Readable::read(reader)?;
+		let channel_handshake_limits = Readable::read(reader)?;
+		let channel_config = Readable::read(reader)?;
+		let accept_forwards_to_priv_channels = Readable::read(reader)?;
+		let accept_inbound_channels = Readable::read(reader)?;
+		let manually_accept_inbound_channels = Readable::read(reader)?;
+		let accept_intercept_htlcs = Readable::read(reader)?;
+		let manually_handle_bolt12_invoices = Readable::read(reader)?;
+		let _enable_dual_funded_channels: bool = Readable::read(reader)?;
+		let hold_outbound_htlcs_at_next_hop = Readable::read(reader)?;
+		let enable_htlc_hold = Readable::read(reader)?;
+		let reject_inbound_splices = Readable::read(reader)?;
 		Ok(Self {
-			channel_handshake_config: Readable::read(reader)?,
-			channel_handshake_limits: Readable::read(reader)?,
-			channel_config: Readable::read(reader)?,
-			accept_forwards_to_priv_channels: Readable::read(reader)?,
-			accept_inbound_channels: Readable::read(reader)?,
-			manually_accept_inbound_channels: Readable::read(reader)?,
-			accept_intercept_htlcs: Readable::read(reader)?,
-			manually_handle_bolt12_invoices: Readable::read(reader)?,
-			enable_dual_funded_channels: Readable::read(reader)?,
-			hold_outbound_htlcs_at_next_hop: Readable::read(reader)?,
-			enable_htlc_hold: Readable::read(reader)?,
-			reject_inbound_splices: Readable::read(reader)?,
+			channel_handshake_config,
+			channel_handshake_limits,
+			channel_config,
+			accept_forwards_to_priv_channels,
+			accept_inbound_channels,
+			manually_accept_inbound_channels,
+			accept_intercept_htlcs,
+			manually_handle_bolt12_invoices,
+			#[cfg(dual_funding)]
+			enable_dual_funded_channels: _enable_dual_funded_channels,
+			hold_outbound_htlcs_at_next_hop,
+			enable_htlc_hold,
+			reject_inbound_splices,
 		})
 	}
 }
