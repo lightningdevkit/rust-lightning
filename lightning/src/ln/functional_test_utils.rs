@@ -674,6 +674,11 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				panic!("Had {} excess added monitors on node {}", added_monitors.len(), self.logger.id);
 			}
 
+			let raa_blockers = self.node.get_and_clear_pending_raa_blockers();
+			if !raa_blockers.is_empty() {
+				panic!( "Had excess RAA blockers on node {}: {:?}", self.logger.id, raa_blockers);
+			}
+
 			// Check that if we serialize the network graph, we can deserialize it again.
 			let network_graph = {
 				let mut w = test_utils::TestVecWriter(Vec::new());
@@ -2327,10 +2332,14 @@ macro_rules! expect_payment_claimed {
 	}
 }
 
-pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
-	expected_payment_preimage: PaymentPreimage, expected_fee_msat_opt: Option<Option<u64>>,
-	expect_per_path_claims: bool, expect_post_ev_mon_update: bool,
+pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(
+	node: &H, expected_payment_preimage: PaymentPreimage,
+	expected_fee_msat_opt: Option<Option<u64>>, expect_per_path_claims: bool,
+	expect_post_ev_mon_update: bool,
 ) {
+	if expect_post_ev_mon_update {
+		check_added_monitors(node, 0);
+	}
 	let events = node.node().get_and_clear_pending_events();
 	let expected_payment_hash = PaymentHash(
 		bitcoin::hashes::sha256::Hash::hash(&expected_payment_preimage.0).to_byte_array());
@@ -2530,6 +2539,7 @@ pub struct PaymentFailedConditions<'a> {
 	pub(crate) expected_blamed_scid: Option<u64>,
 	pub(crate) expected_blamed_chan_closed: Option<bool>,
 	pub(crate) expected_mpp_parts_remain: bool,
+	pub(crate) from_mon_update: bool,
 }
 
 impl<'a> PaymentFailedConditions<'a> {
@@ -2539,6 +2549,7 @@ impl<'a> PaymentFailedConditions<'a> {
 			expected_blamed_scid: None,
 			expected_blamed_chan_closed: None,
 			expected_mpp_parts_remain: false,
+			from_mon_update: false,
 		}
 	}
 	pub fn mpp_parts_remain(mut self) -> Self {
@@ -2555,6 +2566,10 @@ impl<'a> PaymentFailedConditions<'a> {
 	}
 	pub fn expected_htlc_error_data(mut self, code: u16, data: &'a [u8]) -> Self {
 		self.expected_htlc_error_data = Some((code, data));
+		self
+	}
+	pub fn from_mon_update(mut self) -> Self {
+		self.from_mon_update = true;
 		self
 	}
 }
@@ -2642,8 +2657,19 @@ pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
 	node: &'a Node<'b, 'c, 'd>, expected_payment_hash: PaymentHash, expected_payment_failed_permanently: bool,
 	conditions: PaymentFailedConditions<'e>
 ) {
+	if conditions.from_mon_update {
+		check_added_monitors(node, 0);
+	}
 	let events = node.node.get_and_clear_pending_events();
-	expect_payment_failed_conditions_event(events, expected_payment_hash, expected_payment_failed_permanently, conditions);
+	if conditions.from_mon_update {
+		check_added_monitors(node, 1);
+	}
+	expect_payment_failed_conditions_event(
+		events,
+		expected_payment_hash,
+		expected_payment_failed_permanently,
+		conditions,
+	);
 }
 
 pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_paths: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) -> PaymentId {
