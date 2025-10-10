@@ -2983,8 +2983,7 @@ impl_writeable_msg!(CommitmentSigned, {
 	signature,
 	htlc_signatures
 }, {
-	// TOOD(splicing): Change this to 1 once the spec is finalized
-	(1001, funding_txid, option),
+	(1, funding_txid, option),
 });
 
 #[cfg(taproot)]
@@ -2993,9 +2992,8 @@ impl_writeable_msg!(CommitmentSigned, {
 	signature,
 	htlc_signatures
 }, {
+	(1, funding_txid, option),
 	(2, partial_signature_with_nonce, option),
-	// TOOD(splicing): Change this to 1 and reorder once the spec is finalized
-	(1001, funding_txid, option),
 });
 
 impl_writeable!(DecodedOnionErrorPacket, {
@@ -5959,7 +5957,7 @@ mod tests {
 		} else {
 			target_value += "0000";
 		}
-		target_value += "fd03e9"; // Type (funding_txid)
+		target_value += "01"; // Type (funding_txid)
 		target_value += "20"; // Length (funding_txid)
 		target_value += "6e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2"; // Value
 		assert_eq!(encoded_value.as_hex().to_string(), target_value);
