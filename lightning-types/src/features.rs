@@ -166,7 +166,7 @@ mod sealed {
 			// Byte 6
 			ZeroConf,
 			// Byte 7
-			Trampoline | SimpleClose | Splice,
+			Trampoline | SimpleClose | SpliceProduction,
 			// Byte 8 - 16
 			,,,,,,,,,
 			// Byte 17
@@ -174,7 +174,7 @@ mod sealed {
 			// Byte 18
 			,
 			// Byte 19
-			HtlcHold,
+			HtlcHold | SplicePrototype,
 		]
 	);
 	define_context!(
@@ -195,7 +195,7 @@ mod sealed {
 			// Byte 6
 			ZeroConf | Keysend,
 			// Byte 7
-			Trampoline | SimpleClose | Splice,
+			Trampoline | SimpleClose | SpliceProduction,
 			// Byte 8 - 16
 			,,,,,,,,,
 			// Byte 17
@@ -203,7 +203,7 @@ mod sealed {
 			// Byte 18
 			,
 			// Byte 19
-			HtlcHold,
+			HtlcHold | SplicePrototype,
 			// Byte 20 - 31
 			,,,,,,,,,,,,
 			// Byte 32
@@ -687,14 +687,14 @@ mod sealed {
 	);
 	define_feature!(
 		63,
-		Splice,
+		SpliceProduction,
 		[InitContext, NodeContext],
 		"Feature flags for channel splicing.",
-		set_splicing_optional,
-		set_splicing_required,
-		clear_splicing,
-		supports_splicing,
-		requires_splicing
+		set_splicing_production_optional,
+		set_splicing_production_required,
+		clear_splicing_production,
+		supports_splicing_production,
+		requires_splicing_production
 	);
 	// By default, allocate enough bytes to cover up to Splice. Update this as new features are
 	// added which we expect to appear commonly across contexts.
@@ -720,6 +720,17 @@ mod sealed {
 		clear_htlc_hold,
 		supports_htlc_hold,
 		requires_htlc_hold
+	);
+	define_feature!(
+		155, // Splice prototype feature bit as listed in https://github.com/lightning/bolts/issues/605#issuecomment-877237519.
+		SplicePrototype,
+		[InitContext, NodeContext],
+		"Feature flags for channel splicing.",
+		set_splicing_optional,
+		set_splicing_required,
+		clear_splicing,
+		supports_splicing,
+		requires_splicing
 	);
 	define_feature!(
 		259,
@@ -1431,7 +1442,7 @@ mod tests {
 			// - option_channel_type | option_scid_alias
 			// - option_zeroconf
 			// - option_simple_close | option_splice
-			assert_eq!(node_features.flags.len(), 8);
+			assert_eq!(node_features.flags.len(), 20);
 			assert_eq!(node_features.flags[0], 0b00000001);
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b10001010);
@@ -1439,7 +1450,19 @@ mod tests {
 			assert_eq!(node_features.flags[4], 0b10001000);
 			assert_eq!(node_features.flags[5], 0b10100000);
 			assert_eq!(node_features.flags[6], 0b00001000);
-			assert_eq!(node_features.flags[7], 0b10100000);
+			assert_eq!(node_features.flags[7], 0b00100000);
+			assert_eq!(node_features.flags[8], 0b00000000);
+			assert_eq!(node_features.flags[9], 0b00000000);
+			assert_eq!(node_features.flags[10], 0b00000000);
+			assert_eq!(node_features.flags[11], 0b00000000);
+			assert_eq!(node_features.flags[12], 0b00000000);
+			assert_eq!(node_features.flags[13], 0b00000000);
+			assert_eq!(node_features.flags[14], 0b00000000);
+			assert_eq!(node_features.flags[15], 0b00000000);
+			assert_eq!(node_features.flags[16], 0b00000000);
+			assert_eq!(node_features.flags[17], 0b00000000);
+			assert_eq!(node_features.flags[18], 0b00000000);
+			assert_eq!(node_features.flags[19], 0b00001000);
 		}
 
 		// Check that cleared flags are kept blank when converting back:
