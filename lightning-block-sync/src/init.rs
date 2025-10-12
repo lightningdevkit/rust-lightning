@@ -2,10 +2,9 @@
 //! from disk.
 
 use crate::poll::{ChainPoller, Validate, ValidatedBlockHeader};
-use crate::{BlockSource, BlockSourceResult, Cache, ChainNotifier, UnboundedCache};
+use crate::{BlockSource, BlockSourceResult, ChainNotifier, HeaderCache};
 
 use bitcoin::block::Header;
-use bitcoin::hash_types::BlockHash;
 use bitcoin::network::Network;
 
 use lightning::chain;
@@ -142,7 +141,7 @@ pub async fn synchronize_listeners<
 >(
 	block_source: B, network: Network,
 	mut chain_listeners: Vec<(BestBlock, &L)>,
-) -> BlockSourceResult<(UnboundedCache, ValidatedBlockHeader)>
+) -> BlockSourceResult<(HeaderCache, ValidatedBlockHeader)>
 where
 	B::Target: BlockSource,
 {
@@ -153,7 +152,7 @@ where
 	let mut chain_listeners_at_height = Vec::new();
 	let mut most_common_ancestor = None;
 	let mut most_connected_blocks = Vec::new();
-	let mut header_cache = UnboundedCache::new();
+	let mut header_cache = HeaderCache::new();
 	for (old_best_block, chain_listener) in chain_listeners.drain(..) {
 		// Disconnect any stale blocks, but keep them in the cache for the next iteration.
 		let (common_ancestor, connected_blocks) = {
