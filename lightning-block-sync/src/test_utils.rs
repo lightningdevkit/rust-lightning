@@ -104,6 +104,18 @@ impl Blockchain {
 		block_header.validate(block_hash).unwrap()
 	}
 
+	pub fn best_block_at_height(&self, height: usize) -> BestBlock {
+		let mut previous_blocks = [None; 12];
+		for (i, height) in (0..height).rev().take(12).enumerate() {
+			previous_blocks[i] = Some(self.blocks[height].block_hash());
+		}
+		BestBlock {
+			height: height as u32,
+			block_hash: self.blocks[height].block_hash(),
+			previous_blocks,
+		}
+	}
+
 	fn at_height_unvalidated(&self, height: usize) -> BlockHeaderData {
 		assert!(!self.blocks.is_empty());
 		assert!(height < self.blocks.len());
@@ -121,6 +133,11 @@ impl Blockchain {
 	pub fn tip(&self) -> ValidatedBlockHeader {
 		assert!(!self.blocks.is_empty());
 		self.at_height(self.blocks.len() - 1)
+	}
+
+	pub fn best_block(&self) -> BestBlock {
+		assert!(!self.blocks.is_empty());
+		self.best_block_at_height(self.blocks.len() - 1)
 	}
 
 	pub fn disconnect_tip(&mut self) -> Option<Block> {
