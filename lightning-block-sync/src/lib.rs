@@ -202,9 +202,11 @@ pub trait Cache {
 	/// disconnected later if needed.
 	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader);
 
-	/// Called when a block has been disconnected from the best chain. Once disconnected, a block's
-	/// header is no longer needed and thus can be removed.
-	fn block_disconnected(&mut self, block_hash: &BlockHash) -> Option<ValidatedBlockHeader>;
+	/// Called when blocks have been disconnected from the best chain. Only the fork point
+	/// (best comon ancestor) is provided.
+	///
+	/// Once disconnected, a block's header is no longer needed and thus can be removed.
+	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader);
 }
 
 /// Unbounded cache of block headers keyed by block hash.
@@ -219,8 +221,8 @@ impl Cache for UnboundedCache {
 		self.insert(block_hash, block_header);
 	}
 
-	fn block_disconnected(&mut self, block_hash: &BlockHash) -> Option<ValidatedBlockHeader> {
-		self.remove(block_hash)
+	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader) {
+		self.retain(|_, block_info| block_info.height < fork_point.height);
 	}
 }
 
@@ -315,9 +317,6 @@ struct ChainDifference {
 	/// If there are any disconnected blocks, this is where the chain forked.
 	common_ancestor: ValidatedBlockHeader,
 
-	/// Blocks that were disconnected from the chain since the last poll.
-	disconnected_blocks: Vec<ValidatedBlockHeader>,
-
 	/// Blocks that were connected to the chain since the last poll.
 	connected_blocks: Vec<ValidatedBlockHeader>,
 }
@@ -341,7 +340,9 @@ where
 			.find_difference(new_header, old_header, chain_poller)
 			.await
 			.map_err(|e| (e, None))?;
-		self.disconnect_blocks(difference.disconnected_blocks);
+		if difference.common_ancestor != *old_header {
+			self.disconnect_blocks(difference.common_ancestor);
+		}
 		self.connect_blocks(difference.common_ancestor, difference.connected_blocks, chain_poller)
 			.await
 	}
@@ -354,7 +355,6 @@ where
 		&self, current_header: ValidatedBlockHeader, prev_header: &ValidatedBlockHeader,
 		chain_poller: &mut P,
 	) -> BlockSourceResult<ChainDifference> {
-		let mut disconnected_blocks = Vec::new();
 		let mut connected_blocks = Vec::new();
 		let mut current = current_header;
 		let mut previous = *prev_header;
@@ -369,7 +369,6 @@ where
 			let current_height = current.height;
 			let previous_height = previous.height;
 			if current_height <= previous_height {
-				disconnected_blocks.push(previous);
 				previous = self.look_up_previous_header(chain_poller, &previous).await?;
 			}
 			if current_height >= previous_height {
@@ -379,7 +378,7 @@ where
 		}
 
 		let common_ancestor = current;
-		Ok(ChainDifference { common_ancestor, disconnected_blocks, connected_blocks })
+		Ok(ChainDifference { common_ancestor, connected_blocks })
 	}
 
 	/// Returns the previous header for the given header, either by looking it up in the cache or
@@ -394,16 +393,10 @@ where
 	}
 
 	/// Notifies the chain listeners of disconnected blocks.
-	fn disconnect_blocks(&mut self, disconnected_blocks: Vec<ValidatedBlockHeader>) {
-		for header in disconnected_blocks.iter() {
-			if let Some(cached_header) = self.header_cache.block_disconnected(&header.block_hash) {
-				assert_eq!(cached_header, *header);
-			}
-		}
-		if let Some(block) = disconnected_blocks.last() {
-			let fork_point = BestBlock::new(block.header.prev_blockhash, block.height - 1);
-			self.chain_listener.blocks_disconnected(fork_point);
-		}
+	fn disconnect_blocks(&mut self, fork_point: ValidatedBlockHeader) {
+		self.header_cache.blocks_disconnected(&fork_point);
+		let best_block = BestBlock::new(fork_point.block_hash, fork_point.height);
+		self.chain_listener.blocks_disconnected(best_block);
 	}
 
 	/// Notifies the chain listeners of connected blocks.
