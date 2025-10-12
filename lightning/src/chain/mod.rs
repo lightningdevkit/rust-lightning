@@ -18,7 +18,9 @@ use bitcoin::network::Network;
 use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::secp256k1::PublicKey;
 
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
+use crate::chain::channelmonitor::{
+	ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, ANTI_REORG_DELAY,
+};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -43,13 +45,20 @@ pub struct BestBlock {
 	pub block_hash: BlockHash,
 	/// The height at which the block was confirmed.
 	pub height: u32,
+	/// Previous blocks immediately before [`Self::block_hash`], in reverse chronological order.
+	///
+	/// These ensure we can find the fork point of a reorg if our block source no longer has the
+	/// previous best tip after a restart.
+	pub previous_blocks: [Option<BlockHash>; ANTI_REORG_DELAY as usize * 2],
 }
 
 impl BestBlock {
 	/// Constructs a `BestBlock` that represents the genesis block at height 0 of the given
 	/// network.
 	pub fn from_network(network: Network) -> Self {
-		BestBlock { block_hash: genesis_block(network).header.block_hash(), height: 0 }
+		let block_hash = genesis_block(network).header.block_hash();
+		let previous_blocks = [None; ANTI_REORG_DELAY as usize * 2];
+		BestBlock { block_hash, height: 0, previous_blocks }
 	}
 
 	/// Returns a `BestBlock` as identified by the given block hash and height.
@@ -57,13 +66,75 @@ impl BestBlock {
 	/// This is not exported to bindings users directly as the bindings auto-generate an
 	/// equivalent `new`.
 	pub fn new(block_hash: BlockHash, height: u32) -> Self {
-		BestBlock { block_hash, height }
+		let previous_blocks = [None; ANTI_REORG_DELAY as usize * 2];
+		BestBlock { block_hash, height, previous_blocks }
+	}
+
+	/// Advances to a new block at height [`Self::height`] + 1.
+	pub fn advance(&mut self, new_hash: BlockHash) {
+		// Shift all block hashes to the right (making room for the old tip at index 0)
+		for i in (1..self.previous_blocks.len()).rev() {
+			self.previous_blocks[i] = self.previous_blocks[i - 1];
+		}
+
+		// The old tip becomes the new index 0 (tip-1)
+		self.previous_blocks[0] = Some(self.block_hash);
+
+		// Update to the new tip
+		self.block_hash = new_hash;
+		self.height += 1;
+	}
+
+	/// Returns the block hash at the given height, if available in our history.
+	pub fn get_hash_at_height(&self, height: u32) -> Option<BlockHash> {
+		if height > self.height {
+			return None;
+		}
+		if height == self.height {
+			return Some(self.block_hash);
+		}
+
+		// offset = 1 means we want tip-1, which is block_hashes[0]
+		// offset = 2 means we want tip-2, which is block_hashes[1], etc.
+		let offset = self.height.saturating_sub(height) as usize;
+		if offset >= 1 && offset <= self.previous_blocks.len() {
+			self.previous_blocks[offset - 1]
+		} else {
+			None
+		}
+	}
+
+	/// Find the most recent common ancestor between two BestBlocks by searching their block hash
+	/// histories.
+	///
+	/// Returns the common block hash and height, or None if no common block is found in the
+	/// available histories.
+	pub fn find_common_ancestor(&self, other: &BestBlock) -> Option<(BlockHash, u32)> {
+		// First check if either tip matches
+		if self.block_hash == other.block_hash && self.height == other.height {
+			return Some((self.block_hash, self.height));
+		}
+
+		// Check all heights covered by self's history
+		let min_height = self.height.saturating_sub(self.previous_blocks.len() as u32);
+		for check_height in (min_height..=self.height).rev() {
+			if let Some(self_hash) = self.get_hash_at_height(check_height) {
+				if let Some(other_hash) = other.get_hash_at_height(check_height) {
+					if self_hash == other_hash {
+						return Some((self_hash, check_height));
+					}
+				}
+			}
+		}
+		None
 	}
 }
 
 impl_writeable_tlv_based!(BestBlock, {
 	(0, block_hash, required),
+	(1, previous_blocks_read, (legacy, [Option<BlockHash>; ANTI_REORG_DELAY as usize * 2], |us: &BestBlock| Some(us.previous_blocks))),
 	(2, height, required),
+	(unused, previous_blocks, (static_value, previous_blocks_read.unwrap_or([None; ANTI_REORG_DELAY as usize * 2]))),
 });
 
 /// The `Listen` trait is used to notify when blocks have been connected or disconnected from the
