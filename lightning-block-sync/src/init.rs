@@ -117,8 +117,8 @@ where
 /// 	let mut cache = UnboundedCache::new();
 /// 	let mut monitor_listener = (monitor, &*tx_broadcaster, &*fee_estimator, &*logger);
 /// 	let listeners = vec![
-/// 		(monitor_best_block.block_hash, &monitor_listener as &dyn chain::Listen),
-/// 		(manager_best_block.block_hash, &manager as &dyn chain::Listen),
+/// 		(monitor_best_block, &monitor_listener as &dyn chain::Listen),
+/// 		(manager_best_block, &manager as &dyn chain::Listen),
 /// 	];
 /// 	let chain_tip = init::synchronize_listeners(
 /// 		block_source, Network::Bitcoin, &mut cache, listeners).await.unwrap();
@@ -143,39 +143,28 @@ pub async fn synchronize_listeners<
 	L: chain::Listen + ?Sized,
 >(
 	block_source: B, network: Network, header_cache: &mut C,
-	mut chain_listeners: Vec<(BlockHash, &L)>,
+	mut chain_listeners: Vec<(BestBlock, &L)>,
 ) -> BlockSourceResult<ValidatedBlockHeader>
 where
 	B::Target: BlockSource,
 {
 	let best_header = validate_best_block_header(&*block_source).await?;
 
-	// Fetch the header for the block hash paired with each listener.
-	let mut chain_listeners_with_old_headers = Vec::new();
-	for (old_block_hash, chain_listener) in chain_listeners.drain(..) {
-		let old_header = match header_cache.look_up(&old_block_hash) {
-			Some(header) => *header,
-			None => {
-				block_source.get_header(&old_block_hash, None).await?.validate(old_block_hash)?
-			},
-		};
-		chain_listeners_with_old_headers.push((old_header, chain_listener))
-	}
-
 	// Find differences and disconnect blocks for each listener individually.
 	let mut chain_poller = ChainPoller::new(block_source, network);
 	let mut chain_listeners_at_height = Vec::new();
 	let mut most_common_ancestor = None;
 	let mut most_connected_blocks = Vec::new();
-	for (old_header, chain_listener) in chain_listeners_with_old_headers.drain(..) {
+	for (old_best_block, chain_listener) in chain_listeners.drain(..) {
 		// Disconnect any stale blocks, but keep them in the cache for the next iteration.
 		let header_cache = &mut ReadOnlyCache(header_cache);
 		let (common_ancestor, connected_blocks) = {
 			let chain_listener = &DynamicChainListener(chain_listener);
 			let mut chain_notifier = ChainNotifier { header_cache, chain_listener };
-			let difference =
-				chain_notifier.find_difference(best_header, &old_header, &mut chain_poller).await?;
-			if difference.common_ancestor != old_header {
+			let difference = chain_notifier
+				.find_difference_from_best_block(best_header, old_best_block, &mut chain_poller)
+				.await?;
+			if difference.common_ancestor.block_hash != old_best_block.block_hash {
 				chain_notifier.disconnect_blocks(difference.common_ancestor);
 			}
 			(difference.common_ancestor, difference.connected_blocks)
@@ -281,9 +270,9 @@ mod tests {
 		let listener_3 = MockChainListener::new().expect_block_connected(*chain.at_height(4));
 
 		let listeners = vec![
-			(chain.at_height(1).block_hash, &listener_1 as &dyn chain::Listen),
-			(chain.at_height(2).block_hash, &listener_2 as &dyn chain::Listen),
-			(chain.at_height(3).block_hash, &listener_3 as &dyn chain::Listen),
+			(chain.best_block_at_height(1), &listener_1 as &dyn chain::Listen),
+			(chain.best_block_at_height(2), &listener_2 as &dyn chain::Listen),
+			(chain.best_block_at_height(3), &listener_3 as &dyn chain::Listen),
 		];
 		let mut cache = chain.header_cache(0..=4);
 		match synchronize_listeners(&chain, Network::Bitcoin, &mut cache, listeners).await {
@@ -313,9 +302,9 @@ mod tests {
 			.expect_block_connected(*main_chain.at_height(4));
 
 		let listeners = vec![
-			(fork_chain_1.tip().block_hash, &listener_1 as &dyn chain::Listen),
-			(fork_chain_2.tip().block_hash, &listener_2 as &dyn chain::Listen),
-			(fork_chain_3.tip().block_hash, &listener_3 as &dyn chain::Listen),
+			(fork_chain_1.best_block(), &listener_1 as &dyn chain::Listen),
+			(fork_chain_2.best_block(), &listener_2 as &dyn chain::Listen),
+			(fork_chain_3.best_block(), &listener_3 as &dyn chain::Listen),
 		];
 		let mut cache = fork_chain_1.header_cache(2..=4);
 		cache.extend(fork_chain_2.header_cache(3..=4));
@@ -350,9 +339,9 @@ mod tests {
 			.expect_block_connected(*main_chain.at_height(4));
 
 		let listeners = vec![
-			(fork_chain_1.tip().block_hash, &listener_1 as &dyn chain::Listen),
-			(fork_chain_2.tip().block_hash, &listener_2 as &dyn chain::Listen),
-			(fork_chain_3.tip().block_hash, &listener_3 as &dyn chain::Listen),
+			(fork_chain_1.best_block(), &listener_1 as &dyn chain::Listen),
+			(fork_chain_2.best_block(), &listener_2 as &dyn chain::Listen),
+			(fork_chain_3.best_block(), &listener_3 as &dyn chain::Listen),
 		];
 		let mut cache = fork_chain_1.header_cache(2..=4);
 		cache.extend(fork_chain_2.header_cache(3..=4));
@@ -368,18 +357,18 @@ mod tests {
 		let main_chain = Blockchain::default().with_height(2);
 		let fork_chain = main_chain.fork_at_height(1);
 		let new_tip = main_chain.tip();
-		let old_tip = fork_chain.tip();
+		let old_best_block = fork_chain.best_block();
 
 		let listener = MockChainListener::new()
 			.expect_blocks_disconnected(*fork_chain.at_height(1))
 			.expect_block_connected(*new_tip);
 
-		let listeners = vec![(old_tip.block_hash, &listener as &dyn chain::Listen)];
+		let listeners = vec![(old_best_block, &listener as &dyn chain::Listen)];
 		let mut cache = fork_chain.header_cache(2..=2);
 		match synchronize_listeners(&main_chain, Network::Bitcoin, &mut cache, listeners).await {
 			Ok(_) => {
 				assert!(cache.contains_key(&new_tip.block_hash));
-				assert!(cache.contains_key(&old_tip.block_hash));
+				assert!(cache.contains_key(&old_best_block.block_hash));
 			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
