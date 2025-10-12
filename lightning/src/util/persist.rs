@@ -870,6 +870,14 @@ where
 
 	/// Reads all stored channel monitors, along with any stored updates for them.
 	///
+	/// While the reads themselves are performed in parallel, deserializing the
+	/// [`ChannelMonitor`]s is not. For large [`ChannelMonitor`]s actively used for forwarding,
+	/// this may substantially limit the parallelism of this method.
+	///
+	/// If you can move this object into an `Arc`, consider using
+	/// [`Self::read_all_channel_monitors_with_updates_parallel`] to parallelize the CPU-bound
+	/// deserialization as well.
+	///
 	/// It is extremely important that your [`KVStore::read`] implementation uses the
 	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
 	/// documentation for [`MonitorUpdatingPersister`].
@@ -893,6 +901,57 @@ where
 		for result in future_results {
 			if let Some(read_res) = result? {
 				res.push(read_res);
+			}
+		}
+		Ok(res)
+	}
+
+	/// Reads all stored channel monitors, along with any stored updates for them, in parallel.
+	///
+	/// Because deserializing large [`ChannelMonitor`]s from forwarding nodes is often CPU-bound,
+	/// this version of [`Self::read_all_channel_monitors_with_updates`] uses the [`FutureSpawner`]
+	/// to parallelize deserialization as well as the IO operations.
+	///
+	/// Because [`FutureSpawner`] requires that the spawned future be `'static` (matching `tokio`
+	/// and other multi-threaded runtime requirements), this method requires that `self` be an
+	/// `Arc` that can live for `'static` and be sent and accessed across threads.
+	///
+	/// It is extremely important that your [`KVStore::read`] implementation uses the
+	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
+	/// documentation for [`MonitorUpdatingPersister`].
+	pub async fn read_all_channel_monitors_with_updates_parallel(
+		self: &Arc<Self>,
+	) -> Result<
+		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
+		io::Error,
+	>
+	where
+		K: MaybeSend + MaybeSync + 'static,
+		L: MaybeSend + MaybeSync + 'static,
+		ES: MaybeSend + MaybeSync + 'static,
+		SP: MaybeSend + MaybeSync + 'static,
+		BI: MaybeSend + MaybeSync + 'static,
+		FE: MaybeSend + MaybeSync + 'static,
+		<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend,
+	{
+		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
+		let mut futures = Vec::with_capacity(monitor_list.len());
+		for monitor_key in monitor_list {
+			let us = Arc::clone(&self);
+			futures.push(ResultFuture::Pending(self.0.future_spawner.spawn(async move {
+				us.0.maybe_read_channel_monitor_with_updates(monitor_key.as_str()).await
+			})));
+		}
+		let future_results = MultiResultFuturePoller::new(futures).await;
+		let mut res = Vec::with_capacity(future_results.len());
+		for result in future_results {
+			match result {
+				Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Future was cancelled")),
+				Ok(Err(e)) => return Err(e),
+				Ok(Ok(Some(read_res))) => res.push(read_res),
+				Ok(Ok(None)) => {},
 			}
 		}
 		Ok(res)
