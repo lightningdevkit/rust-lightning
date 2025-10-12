@@ -175,7 +175,9 @@ where
 			let mut chain_notifier = ChainNotifier { header_cache, chain_listener };
 			let difference =
 				chain_notifier.find_difference(best_header, &old_header, &mut chain_poller).await?;
-			chain_notifier.disconnect_blocks(difference.disconnected_blocks);
+			if difference.common_ancestor != old_header {
+				chain_notifier.disconnect_blocks(difference.common_ancestor);
+			}
 			(difference.common_ancestor, difference.connected_blocks)
 		};
 
@@ -215,9 +217,7 @@ impl<'a, C: Cache> Cache for ReadOnlyCache<'a, C> {
 		unreachable!()
 	}
 
-	fn block_disconnected(&mut self, _block_hash: &BlockHash) -> Option<ValidatedBlockHeader> {
-		None
-	}
+	fn blocks_disconnected(&mut self, _fork_point: &ValidatedBlockHeader) {}
 }
 
 /// Wrapper for supporting dynamically sized chain listeners.
