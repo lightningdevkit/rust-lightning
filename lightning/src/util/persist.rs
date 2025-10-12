@@ -14,7 +14,7 @@
 use alloc::sync::Arc;
 
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::{BlockHash, Txid};
+use bitcoin::Txid;
 
 use core::convert::Infallible;
 use core::future::Future;
@@ -32,6 +32,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::Persist;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::chain::transaction::OutPoint;
+use crate::chain::BestBlock;
 use crate::ln::types::ChannelId;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::sync::Mutex;
@@ -447,7 +448,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 /// Read previously persisted [`ChannelMonitor`]s from the store.
 pub fn read_channel_monitors<K: Deref, ES: Deref, SP: Deref>(
 	kv_store: K, entropy_source: ES, signer_provider: SP,
-) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, io::Error>
+) -> Result<Vec<(BestBlock, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, io::Error>
 where
 	K::Target: KVStoreSync,
 	ES::Target: EntropySource + Sized,
@@ -459,7 +460,7 @@ where
 		CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 	)? {
-		match <Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>>::read(
+		match <Option<(BestBlock, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>>::read(
 			&mut io::Cursor::new(kv_store.read(
 				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -467,7 +468,7 @@ where
 			)?),
 			(&*entropy_source, &*signer_provider),
 		) {
-			Ok(Some((block_hash, channel_monitor))) => {
+			Ok(Some((best_block, channel_monitor))) => {
 				let monitor_name = MonitorName::from_str(&stored_key)?;
 				if channel_monitor.persistence_key() != monitor_name {
 					return Err(io::Error::new(
@@ -476,7 +477,7 @@ where
 					));
 				}
 
-				res.push((block_hash, channel_monitor));
+				res.push((best_block, channel_monitor));
 			},
 			Ok(None) => {},
 			Err(_) => {
@@ -652,7 +653,7 @@ where
 	pub fn read_all_channel_monitors_with_updates(
 		&self,
 	) -> Result<
-		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
+		Vec<(BestBlock, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
 		io::Error,
 	> {
 		poll_sync_future(self.0.read_all_channel_monitors_with_updates())
@@ -675,7 +676,7 @@ where
 	/// function to accomplish this. Take care to limit the number of parallel readers.
 	pub fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
-	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
+	) -> Result<(BestBlock, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	{
 		poll_sync_future(self.0.read_channel_monitor_with_updates(monitor_key))
 	}
@@ -859,7 +860,7 @@ where
 	pub async fn read_all_channel_monitors_with_updates(
 		&self,
 	) -> Result<
-		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
+		Vec<(BestBlock, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
 		io::Error,
 	> {
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
@@ -893,7 +894,7 @@ where
 	pub async fn read_all_channel_monitors_with_updates_parallel(
 		self: &Arc<Self>,
 	) -> Result<
-		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
+		Vec<(BestBlock, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
 		io::Error,
 	> where
 		K: MaybeSend + MaybeSync + 'static,
@@ -944,7 +945,7 @@ where
 	/// function to accomplish this. Take care to limit the number of parallel readers.
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
-	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
+	) -> Result<(BestBlock, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	{
 		self.0.read_channel_monitor_with_updates(monitor_key).await
 	}
@@ -1064,7 +1065,7 @@ where
 {
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
-	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
+	) -> Result<(BestBlock, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	{
 		match self.maybe_read_channel_monitor_with_updates(monitor_key).await? {
 			Some(res) => Ok(res),
@@ -1083,7 +1084,7 @@ where
 	async fn maybe_read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
 	) -> Result<
-		Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
+		Option<(BestBlock, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
 		io::Error,
 	> {
 		let monitor_name = MonitorName::from_str(monitor_key)?;
@@ -1092,7 +1093,7 @@ where
 			.kv_store
 			.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key));
 		let (read_res, list_res) = TwoFutureJoiner::new(read_future, list_future).await;
-		let (block_hash, monitor) = match read_res? {
+		let (best_block, monitor) = match read_res? {
 			Some(res) => res,
 			None => return Ok(None),
 		};
@@ -1123,14 +1124,14 @@ where
 				io::Error::new(io::ErrorKind::Other, "Monitor update failed")
 			})?;
 		}
-		Ok(Some((block_hash, monitor)))
+		Ok(Some((best_block, monitor)))
 	}
 
 	/// Read a channel monitor.
 	async fn maybe_read_monitor(
 		&self, monitor_name: &MonitorName, monitor_key: &str,
 	) -> Result<
-		Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
+		Option<(BestBlock, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
 		io::Error,
 	> {
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
@@ -1141,12 +1142,12 @@ where
 		if monitor_cursor.get_ref().starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL) {
 			monitor_cursor.set_position(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() as u64);
 		}
-		match <Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>>::read(
+		match <Option<(BestBlock, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>>::read(
 			&mut monitor_cursor,
 			(&*self.entropy_source, &*self.signer_provider),
 		) {
 			Ok(None) => Ok(None),
-			Ok(Some((blockhash, channel_monitor))) => {
+			Ok(Some((best_block, channel_monitor))) => {
 				if channel_monitor.persistence_key() != *monitor_name {
 					log_error!(
 						self.logger,
@@ -1158,7 +1159,7 @@ where
 						"ChannelMonitor was stored under the wrong key",
 					))
 				} else {
-					Ok(Some((blockhash, channel_monitor)))
+					Ok(Some((best_block, channel_monitor)))
 				}
 			},
 			Err(e) => {
@@ -1337,7 +1338,7 @@ where
 	async fn archive_persisted_channel(&self, monitor_name: MonitorName) {
 		let monitor_key = monitor_name.to_string();
 		let monitor = match self.read_channel_monitor_with_updates(&monitor_key).await {
-			Ok((_block_hash, monitor)) => monitor,
+			Ok((_best_block, monitor)) => monitor,
 			Err(_) => return,
 		};
 		let primary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
