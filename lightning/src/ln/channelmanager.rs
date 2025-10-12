@@ -1922,7 +1922,6 @@ impl<
 /// detailed in the [`ChannelManagerReadArgs`] documentation.
 ///
 /// ```
-/// use bitcoin::BlockHash;
 /// use bitcoin::network::Network;
 /// use lightning::chain::BestBlock;
 /// # use lightning::chain::channelmonitor::ChannelMonitor;
@@ -1971,8 +1970,8 @@ impl<
 ///     entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster,
 ///     router, message_router, logger, config, channel_monitors.iter().collect(),
 /// );
-/// let (block_hash, channel_manager) =
-///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
+/// let (best_block, channel_manager) =
+///     <(BestBlock, ChannelManager<_, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
 ///
 /// // Update the ChannelManager and ChannelMonitors with the latest chain data
 /// // ...
@@ -2539,7 +2538,7 @@ impl<
 /// [`read`], those channels will be force-closed based on the `ChannelMonitor` state and no funds
 /// will be lost (modulo on-chain transaction fees).
 ///
-/// Note that the deserializer is only implemented for `(`[`BlockHash`]`, `[`ChannelManager`]`)`, which
+/// Note that the deserializer is only implemented for `(`[`BestBlock`]`, `[`ChannelManager`]`)`, which
 /// tells you the last block hash which was connected. You should get the best block tip before using the manager.
 /// See [`chain::Listen`] and [`chain::Confirm`] for more details.
 ///
@@ -2606,7 +2605,6 @@ impl<
 /// [`peer_disconnected`]: msgs::BaseMessageHandler::peer_disconnected
 /// [`funding_created`]: msgs::FundingCreated
 /// [`funding_transaction_generated`]: Self::funding_transaction_generated
-/// [`BlockHash`]: bitcoin::hash_types::BlockHash
 /// [`update_channel`]: chain::Watch::update_channel
 /// [`ChannelUpdate`]: msgs::ChannelUpdate
 /// [`read`]: ReadableArgs::read
@@ -17617,7 +17615,7 @@ impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
 /// is:
 /// 1) Deserialize all stored [`ChannelMonitor`]s.
 /// 2) Deserialize the [`ChannelManager`] by filling in this struct and calling:
-///    `<(BlockHash, ChannelManager)>::read(reader, args)`
+///    `<(BestBlock, ChannelManager)>::read(reader, args)`
 ///    This may result in closing some channels if the [`ChannelMonitor`] is newer than the stored
 ///    [`ChannelManager`] state to ensure no loss of funds. Thus, transactions may be broadcasted.
 /// 3) If you are not fetching full blocks, register all relevant [`ChannelMonitor`] outpoints the
@@ -17807,14 +17805,14 @@ impl<
 		MR: MessageRouter,
 		L: Logger + Clone,
 	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
+	for (BestBlock, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
 {
 	fn read<Reader: io::Read>(
 		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
 	) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) =
-			<(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
-		Ok((blockhash, Arc::new(chan_manager)))
+		let (best_block, chan_manager) =
+			<(BestBlock, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
+		Ok((best_block, Arc::new(chan_manager)))
 	}
 }
 
@@ -17830,7 +17828,7 @@ impl<
 		MR: MessageRouter,
 		L: Logger + Clone,
 	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
+	for (BestBlock, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
 {
 	fn read<Reader: io::Read>(
 		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
@@ -17875,7 +17873,7 @@ impl<
 	pub(super) fn from_channel_manager_data(
 		data: ChannelManagerData<SP>,
 		mut args: ChannelManagerReadArgs<'_, M, T, ES, NS, SP, F, R, MR, L>,
-	) -> Result<(BlockHash, Self), DecodeError> {
+	) -> Result<(BestBlock, Self), DecodeError> {
 		let ChannelManagerData {
 			chain_hash,
 			best_block_height,
@@ -19459,7 +19457,7 @@ impl<
 		//TODO: Broadcast channel update for closed channels, but only after we've made a
 		//connection or two.
 
-		Ok((best_block_hash, channel_manager))
+		Ok((best_block, channel_manager))
 	}
 }
 
