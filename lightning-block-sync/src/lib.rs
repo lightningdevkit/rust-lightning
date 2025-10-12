@@ -337,7 +337,7 @@ where
 		chain_poller: &mut P,
 	) -> Result<(), (BlockSourceError, Option<ValidatedBlockHeader>)> {
 		let difference = self
-			.find_difference(new_header, old_header, chain_poller)
+			.find_difference_from_header(new_header, old_header, chain_poller)
 			.await
 			.map_err(|e| (e, None))?;
 		if difference.common_ancestor != *old_header {
@@ -348,10 +348,51 @@ where
 	}
 
 	/// Returns the changes needed to produce the chain with `current_header` as its tip from the
+	/// chain with `prev_best_block` as its tip.
+	///
+	/// First resolves `prev_best_block` to a `ValidatedBlockHeader` using the `previous_blocks`
+	/// field as fallback if needed, then finds the common ancestor.
+	async fn find_difference_from_best_block<P: Poll>(
+		&self, current_header: ValidatedBlockHeader, prev_best_block: BestBlock,
+		chain_poller: &mut P,
+	) -> BlockSourceResult<ChainDifference> {
+		// Try to resolve the header for the previous best block. First try the block_hash,
+		// then fall back to previous_blocks if that fails.
+		let cur_tip = core::iter::once((0, &prev_best_block.block_hash));
+		let prev_tips =
+			prev_best_block.previous_blocks.iter().enumerate().filter_map(|(idx, hash_opt)| {
+				if let Some(block_hash) = hash_opt {
+					Some((idx as u32 + 1, block_hash))
+				} else {
+					None
+				}
+			});
+		let mut found_header = None;
+		for (height_diff, block_hash) in cur_tip.chain(prev_tips) {
+			if let Some(header) = self.header_cache.look_up(block_hash) {
+				found_header = Some(*header);
+				break;
+			}
+			let height = prev_best_block.height.checked_sub(height_diff).ok_or(
+				BlockSourceError::persistent("BestBlock had more previous_blocks than its height"),
+			)?;
+			if let Ok(header) = chain_poller.get_header(block_hash, Some(height)).await {
+				found_header = Some(header);
+				break;
+			}
+		}
+		let found_header = found_header.ok_or_else(|| {
+			BlockSourceError::persistent("could not resolve any block from BestBlock")
+		})?;
+
+		self.find_difference_from_header(current_header, &found_header, chain_poller).await
+	}
+
+	/// Returns the changes needed to produce the chain with `current_header` as its tip from the
 	/// chain with `prev_header` as its tip.
 	///
 	/// Walks backwards from `current_header` and `prev_header`, finding the common ancestor.
-	async fn find_difference<P: Poll>(
+	async fn find_difference_from_header<P: Poll>(
 		&self, current_header: ValidatedBlockHeader, prev_header: &ValidatedBlockHeader,
 		chain_poller: &mut P,
 	) -> BlockSourceResult<ChainDifference> {
