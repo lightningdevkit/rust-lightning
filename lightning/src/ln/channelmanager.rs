@@ -15887,7 +15887,7 @@ impl<
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self, || -> NotifyOption { NotifyOption::DoPersist });
-		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
+		self.best_block.write().unwrap().update_for_new_tip(block_hash, height);
 
 		let mut min_anchor_feerate = None;
 		let mut min_non_anchor_feerate = None;
@@ -18215,6 +18215,7 @@ impl<
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
+			(23, self.best_block.read().unwrap().previous_blocks, required),
 		});
 
 		// Remove the SpliceFailed and DiscardFunding events added earlier.
@@ -18284,8 +18285,7 @@ impl Readable for AmountlessClaimablePaymentHTLCOnion {
 // This is an internal DTO used in the two-stage deserialization process.
 pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	chain_hash: ChainHash,
-	best_block_height: u32,
-	best_block_hash: BlockHash,
+	best_block: BestBlock,
 	channels: Vec<FundedChannel<SP>>,
 	claimable_payments: HashMap<PaymentHash, ClaimablePayment>,
 	peer_init_features: Vec<(PublicKey, InitFeatures)>,
@@ -18493,6 +18493,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
+		let mut best_block_previous_blocks = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs_legacy, option),
@@ -18511,6 +18512,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
+			(23, best_block_previous_blocks, option),
 		});
 
 		// Merge legacy pending_outbound_payments fields into a single HashMap.
@@ -18605,8 +18607,11 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 
 		Ok(ChannelManagerData {
 			chain_hash,
-			best_block_height,
-			best_block_hash,
+			best_block: BestBlock {
+				block_hash: best_block_hash,
+				height: best_block_height,
+				previous_blocks: best_block_previous_blocks.unwrap_or([None; 12]),
+			},
 			channels,
 			forward_htlcs_legacy,
 			claimable_payments,
@@ -18910,8 +18915,7 @@ impl<
 	) -> Result<(BlockHash, Self), DecodeError> {
 		let ChannelManagerData {
 			chain_hash,
-			best_block_height,
-			best_block_hash,
+			best_block,
 			channels,
 			mut forward_htlcs_legacy,
 			claimable_payments,
@@ -19596,7 +19600,7 @@ impl<
 								htlc.payment_hash,
 								session_priv_bytes,
 								&path,
-								best_block_height,
+								best_block.height,
 								&logger,
 							);
 						}
@@ -19917,7 +19921,7 @@ impl<
 						loop {
 							outbound_scid_alias = fake_scid::Namespace::OutboundAlias
 								.get_fake_scid(
-									best_block_height,
+									best_block.height,
 									&chain_hash,
 									fake_scid_rand_bytes.as_ref().unwrap(),
 									&args.entropy_source,
@@ -20119,7 +20123,6 @@ impl<
 			}
 		}
 
-		let best_block = BestBlock::new(best_block_hash, best_block_height);
 		let flow = OffersMessageFlow::new(
 			chain_hash,
 			best_block,
@@ -20531,7 +20534,7 @@ impl<
 		//TODO: Broadcast channel update for closed channels, but only after we've made a
 		//connection or two.
 
-		Ok((best_block_hash, channel_manager))
+		Ok((best_block.block_hash, channel_manager))
 	}
 }
 

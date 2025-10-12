@@ -734,7 +734,7 @@ where
 	fn best_block_updated_internal(
 		&self, sweeper_state: &mut SweeperState, header: &Header, height: u32,
 	) {
-		sweeper_state.best_block = BestBlock::new(header.block_hash(), height);
+		sweeper_state.best_block.update_for_new_tip(header.block_hash(), height);
 		self.prune_confirmed_outputs(sweeper_state);
 
 		sweeper_state.dirty = true;

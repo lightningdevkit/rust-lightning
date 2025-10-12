@@ -1755,6 +1755,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(34, channel_monitor.alternative_funding_confirmed, option),
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
+		(39, channel_monitor.best_block.previous_blocks, required),
 	});
 
 	Ok(())
@@ -5390,9 +5391,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&mut self, header: &Header, txdata: &TransactionData, height: u32, broadcaster: B,
 		fee_estimator: F, logger: &WithContext<L>,
 	) -> Vec<TransactionOutputs> {
-		let block_hash = header.block_hash();
-		self.best_block = BestBlock::new(block_hash, height);
-
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		self.transactions_confirmed(header, txdata, height, broadcaster, &bounded_fee_estimator, logger)
 	}
@@ -5409,7 +5407,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let block_hash = header.block_hash();
 
 		if height > self.best_block.height {
-			self.best_block = BestBlock::new(block_hash, height);
+			self.best_block.update_for_new_tip(block_hash, height);
 			log_trace!(logger, "Connecting new block {} at height {}", block_hash, height);
 			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, logger)
 		} else if block_hash != self.best_block.block_hash {
@@ -5683,7 +5681,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 
 		if height > self.best_block.height {
-			self.best_block = BestBlock::new(block_hash, height);
+			self.best_block.update_for_new_tip(block_hash, height);
 		}
 
 		if should_broadcast_commitment {
@@ -6644,7 +6642,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			}
 		}
 
-		let best_block = BestBlock::new(Readable::read(reader)?, Readable::read(reader)?);
+		let mut best_block = BestBlock::new(Readable::read(reader)?, Readable::read(reader)?);
 
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
 		let mut onchain_events_awaiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
@@ -6694,6 +6692,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut alternative_funding_confirmed = None;
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
+		let mut best_block_previous_blocks = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6716,7 +6715,12 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(34, alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
+			(39, best_block_previous_blocks, option), // Added and always set in 0.3
 		});
+		if let Some(previous_blocks) = best_block_previous_blocks {
+			best_block.previous_blocks = previous_blocks;
+		}
+
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
 		let written_by_0_1_or_later = payment_preimages_with_info.is_some();
