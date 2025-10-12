@@ -734,7 +734,12 @@ where
 	fn best_block_updated_internal(
 		&self, sweeper_state: &mut SweeperState, header: &Header, height: u32,
 	) {
-		sweeper_state.best_block = BestBlock::new(header.block_hash(), height);
+		let block_hash = header.block_hash();
+		if height == sweeper_state.best_block.height + 1 {
+			sweeper_state.best_block.advance(block_hash);
+		} else {
+			sweeper_state.best_block = BestBlock::new(block_hash, height);
+		}
 		self.prune_confirmed_outputs(sweeper_state);
 
 		sweeper_state.dirty = true;

@@ -15887,7 +15887,14 @@ impl<
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self, || -> NotifyOption { NotifyOption::DoPersist });
-		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
+		{
+			let mut best_block = self.best_block.write().unwrap();
+			if height == best_block.height + 1 {
+				best_block.advance(block_hash);
+			} else {
+				*best_block = BestBlock::new(block_hash, height);
+			}
+		}
 
 		let mut min_anchor_feerate = None;
 		let mut min_non_anchor_feerate = None;
@@ -18215,6 +18222,7 @@ impl<
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
+			(23, self.best_block.read().unwrap().previous_blocks, required),
 		});
 
 		// Remove the SpliceFailed and DiscardFunding events added earlier.
@@ -18302,6 +18310,7 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	in_flight_monitor_updates: HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>,
 	peer_storage_dir: Vec<(PublicKey, Vec<u8>)>,
 	async_receive_offer_cache: AsyncReceiveOfferCache,
+	best_block_previous_blocks: Option<[Option<BlockHash>; ANTI_REORG_DELAY as usize * 2]>,
 	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
 	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
 	// `Channel{Monitor}` data.
@@ -18493,6 +18502,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
+		let mut best_block_previous_blocks = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs_legacy, option),
@@ -18511,6 +18521,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
+			(23, best_block_previous_blocks, option),
 		});
 
 		// Merge legacy pending_outbound_payments fields into a single HashMap.
@@ -18628,6 +18639,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			in_flight_monitor_updates: in_flight_monitor_updates.unwrap_or_default(),
 			peer_storage_dir: peer_storage_dir.unwrap_or_default(),
 			async_receive_offer_cache,
+			best_block_previous_blocks,
 			version,
 		})
 	}
@@ -18930,6 +18942,7 @@ impl<
 			mut in_flight_monitor_updates,
 			peer_storage_dir,
 			async_receive_offer_cache,
+			best_block_previous_blocks,
 			version: _version,
 		} = data;
 
@@ -20119,7 +20132,11 @@ impl<
 			}
 		}
 
-		let best_block = BestBlock::new(best_block_hash, best_block_height);
+		let mut best_block = BestBlock::new(best_block_hash, best_block_height);
+		if let Some(previous_blocks) = best_block_previous_blocks {
+			best_block.previous_blocks = previous_blocks;
+		}
+
 		let flow = OffersMessageFlow::new(
 			chain_hash,
 			best_block,
