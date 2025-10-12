@@ -1448,6 +1448,33 @@ impl Readable for BlockHash {
 	}
 }
 
+impl Writeable for [Option<BlockHash>; 12] {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		for hash_opt in self {
+			match hash_opt {
+				Some(hash) => hash.write(w)?,
+				None => ([0u8; 32]).write(w)?,
+			}
+		}
+		Ok(())
+	}
+}
+
+impl Readable for [Option<BlockHash>; 12] {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		use bitcoin::hashes::Hash;
+
+		let mut res = [None; 12];
+		for hash_opt in res.iter_mut() {
+			let buf: [u8; 32] = Readable::read(r)?;
+			if buf != [0; 32] {
+				*hash_opt = Some(BlockHash::from_slice(&buf[..]).unwrap());
+			}
+		}
+		Ok(res)
+	}
+}
+
 impl Writeable for ChainHash {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.write_all(self.as_bytes())
