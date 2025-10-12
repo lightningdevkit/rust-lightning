@@ -40,11 +40,10 @@ where
 /// switching to [`SpvClient`]. For example:
 ///
 /// ```
-/// use bitcoin::hash_types::BlockHash;
 /// use bitcoin::network::Network;
 ///
 /// use lightning::chain;
-/// use lightning::chain::Watch;
+/// use lightning::chain::{BestBlock, Watch};
 /// use lightning::chain::chainmonitor;
 /// use lightning::chain::chainmonitor::ChainMonitor;
 /// use lightning::chain::channelmonitor::ChannelMonitor;
@@ -89,14 +88,14 @@ where
 /// 	logger: &L,
 /// 	persister: &P,
 /// ) {
-/// 	// Read a serialized channel monitor paired with the block hash when it was persisted.
+/// 	// Read a serialized channel monitor paired with the best block when it was persisted.
 /// 	let serialized_monitor = "...";
-/// 	let (monitor_block_hash, mut monitor) = <(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>::read(
+/// 	let (monitor_best_block, mut monitor) = <(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>::read(
 /// 		&mut Cursor::new(&serialized_monitor), (entropy_source, signer_provider)).unwrap();
 ///
-/// 	// Read the channel manager paired with the block hash when it was persisted.
+/// 	// Read the channel manager paired with the best block when it was persisted.
 /// 	let serialized_manager = "...";
-/// 	let (manager_block_hash, mut manager) = {
+/// 	let (manager_best_block, mut manager) = {
 /// 		let read_args = ChannelManagerReadArgs::new(
 /// 			entropy_source,
 /// 			node_signer,
@@ -110,7 +109,7 @@ where
 /// 			config,
 /// 			vec![&mut monitor],
 /// 		);
-/// 		<(BlockHash, ChannelManager<&ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P, &ES>, &T, &ES, &NS, &SP, &F, &R, &MR, &L>)>::read(
+/// 		<(BestBlock, ChannelManager<&ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P, &ES>, &T, &ES, &NS, &SP, &F, &R, &MR, &L>)>::read(
 /// 			&mut Cursor::new(&serialized_manager), read_args).unwrap()
 /// 	};
 ///
@@ -118,8 +117,8 @@ where
 /// 	let mut cache = UnboundedCache::new();
 /// 	let mut monitor_listener = (monitor, &*tx_broadcaster, &*fee_estimator, &*logger);
 /// 	let listeners = vec![
-/// 		(monitor_block_hash, &monitor_listener as &dyn chain::Listen),
-/// 		(manager_block_hash, &manager as &dyn chain::Listen),
+/// 		(monitor_best_block.block_hash, &monitor_listener as &dyn chain::Listen),
+/// 		(manager_best_block.block_hash, &manager as &dyn chain::Listen),
 /// 	];
 /// 	let chain_tip = init::synchronize_listeners(
 /// 		block_source, Network::Bitcoin, &mut cache, listeners).await.unwrap();

@@ -29,7 +29,7 @@ use bitcoin::transaction::{Transaction, TxOut};
 use bitcoin::FeeRate;
 
 use bitcoin::block::Header;
-use bitcoin::hash_types::{BlockHash, Txid};
+use bitcoin::hash_types::Txid;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash as TraitImport;
@@ -331,7 +331,7 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 			.map(|(_, data)| data)
 			.unwrap_or(&map_entry.persisted_monitor);
 		let deserialized_monitor =
-			<(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
+			<(BestBlock, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 				&mut &latest_monitor_data[..],
 				(&*self.keys, &*self.keys),
 			)
@@ -1000,7 +1000,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			// Use a different value of `use_old_mons` if we have another monitor (only for node B)
 			// by shifting `use_old_mons` one in base-3.
 			use_old_mons /= 3;
-			let mon = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+			let mon = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
 				&mut &serialized_mon[..],
 				(&**keys, &**keys),
 			)
@@ -1035,7 +1035,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		};
 
 		let manager =
-			<(BlockHash, ChanMan)>::read(&mut &ser[..], read_args).expect("Failed to read manager");
+			<(BestBlock, ChanMan)>::read(&mut &ser[..], read_args).expect("Failed to read manager");
 		let res = (manager.1, chain_monitor.clone());
 		for (channel_id, mon) in monitors.drain() {
 			assert_eq!(
