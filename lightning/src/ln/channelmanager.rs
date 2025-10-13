@@ -35,9 +35,7 @@ use bitcoin::{secp256k1, Sequence, SignedAmount};
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, OffersContext,
 };
-use crate::blinded_path::payment::{
-	AsyncBolt12OfferContext, Bolt12OfferContext, PaymentContext, UnauthenticatedReceiveTlvs,
-};
+use crate::blinded_path::payment::{AsyncBolt12OfferContext, Bolt12OfferContext, PaymentContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::chain;
 use crate::chain::chaininterface::{
@@ -102,7 +100,6 @@ use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferFromHrn};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::Refund;
-use crate::offers::signer;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{
 	AsyncPaymentsMessage, AsyncPaymentsMessageHandler, HeldHtlcAvailable, OfferPaths,
@@ -561,34 +558,6 @@ impl Ord for ClaimableHTLC {
 			debug_assert!(self == other, "ClaimableHTLCs from the same source should be identical");
 		}
 		res
-	}
-}
-
-/// A trait defining behavior for creating and verifing the HMAC for authenticating a given data.
-pub trait Verification {
-	/// Constructs an HMAC to include in [`OffersContext`] for the data along with the given
-	/// [`Nonce`].
-	fn hmac_for_offer_payment(
-		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256>;
-
-	/// Authenticates the data using an HMAC and a [`Nonce`] taken from an [`OffersContext`].
-	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Result<(), ()>;
-}
-
-impl Verification for UnauthenticatedReceiveTlvs {
-	fn hmac_for_offer_payment(
-		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_payment_tlvs(self, nonce, expanded_key)
-	}
-
-	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Result<(), ()> {
-		signer::verify_payment_tlvs(self, hmac, nonce, expanded_key)
 	}
 }
 
@@ -5058,7 +5027,7 @@ where
 				let current_height: u32 = self.best_block.read().unwrap().height;
 				create_recv_pending_htlc_info(decoded_hop, shared_secret, msg.payment_hash,
 					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
-					current_height)
+					current_height, &*self.logger)
 			},
 			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
 				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
@@ -5586,12 +5555,10 @@ where
 	fn check_refresh_async_receive_offer_cache(&self, timer_tick_occurred: bool) {
 		let peers = self.get_peers_for_blinded_path();
 		let channels = self.list_usable_channels();
-		let entropy = &*self.entropy_source;
 		let router = &*self.router;
 		let refresh_res = self.flow.check_refresh_async_receive_offer_cache(
 			peers,
 			channels,
-			entropy,
 			router,
 			timer_tick_occurred,
 		);
@@ -7232,6 +7199,7 @@ where
 								false,
 								None,
 								current_height,
+								&*self.logger,
 							);
 							match create_res {
 								Ok(info) => phantom_receives.push((
@@ -13253,11 +13221,8 @@ where
 		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret,
 		payment_context: PaymentContext, relative_expiry_seconds: u32,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
-		let entropy = &*self.entropy_source;
-
 		self.flow.test_create_blinded_payment_paths(
 			&self.router,
-			entropy,
 			self.list_usable_channels(),
 			amount_msats,
 			payment_secret,
@@ -15169,9 +15134,8 @@ where
 					},
 				};
 
-				let entropy = &*self.entropy_source;
 				let (response, context) = self.flow.create_response_for_invoice_request(
-					&self.node_signer, &self.router, entropy, invoice_request, amount_msats,
+					&self.node_signer, &self.router, invoice_request, amount_msats,
 					payment_hash, payment_secret, self.list_usable_channels()
 				);
 
@@ -18266,7 +18230,7 @@ mod tests {
 	use crate::util::config::{ChannelConfig, ChannelConfigUpdate};
 	use crate::util::errors::APIError;
 	use crate::util::ser::Writeable;
-	use crate::util::test_utils;
+	use crate::util::test_utils::{self, TestLogger};
 	use bitcoin::secp256k1::ecdh::SharedSecret;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
@@ -19091,6 +19055,7 @@ mod tests {
 		let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[None]);
 		let node = create_network(1, &node_cfg, &node_chanmgr);
 		let sender_intended_amt_msat = 100;
+		let logger = TestLogger::new();
 		let extra_fee_msat = 10;
 		let hop_data = onion_utils::Hop::Receive {
 			hop_data: msgs::InboundOnionReceivePayload {
@@ -19112,7 +19077,7 @@ mod tests {
 		if let Err(crate::ln::channelmanager::InboundHTLCErr { reason, .. }) =
 			create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 				sender_intended_amt_msat - extra_fee_msat - 1, 42, None, true, Some(extra_fee_msat),
-				current_height)
+				current_height, &logger)
 		{
 			assert_eq!(reason, LocalHTLCFailureReason::FinalIncorrectHTLCAmount);
 		} else { panic!(); }
@@ -19135,7 +19100,7 @@ mod tests {
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 		assert!(create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat),
-			current_height).is_ok());
+			current_height, &logger).is_ok());
 	}
 
 	#[test]
@@ -19145,6 +19110,7 @@ mod tests {
 		let node_cfg = create_node_cfgs(1, &chanmon_cfg);
 		let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[None]);
 		let node = create_network(1, &node_cfg, &node_chanmgr);
+		let logger = TestLogger::new();
 
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 		let result = create_recv_pending_htlc_info(onion_utils::Hop::Receive {
@@ -19160,7 +19126,7 @@ mod tests {
 				custom_tlvs: Vec::new(),
 			},
 			shared_secret: SharedSecret::from_bytes([0; 32]),
-		}, [0; 32], PaymentHash([0; 32]), 100, TEST_FINAL_CLTV + 1, None, true, None, current_height);
+		}, [0; 32], PaymentHash([0; 32]), 100, TEST_FINAL_CLTV + 1, None, true, None, current_height, &logger);
 
 		// Should not return an error as this condition:
 		// https://github.com/lightning/bolts/blob/4dcc377209509b13cf89a4b91fde7d478f5b46d8/04-onion-routing.md?plain=1#L334

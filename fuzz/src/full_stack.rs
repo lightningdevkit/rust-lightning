@@ -62,7 +62,6 @@ use lightning::sign::{
 };
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::{ChannelConfig, UserConfig};
-use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable};
@@ -157,8 +156,9 @@ impl Router for FuzzRouter {
 	}
 
 	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
-		_amount_msats: Option<u64>, _secp_ctx: &Secp256k1<T>,
+		&self, _recipient: PublicKey, _receive_auth_key: ReceiveAuthKey,
+		_first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs, _amount_msats: Option<u64>,
+		_secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		unreachable!()
 	}
