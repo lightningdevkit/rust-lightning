@@ -1,4 +1,5 @@
 #!/bin/bash
+#shellcheck disable=SC2002,SC2207
 set -eox pipefail
 
 RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
@@ -41,23 +42,7 @@ export RUST_BACKTRACE=1
 echo -e "\n\nChecking the workspace, except lightning-transaction-sync."
 cargo check --verbose --color always
 
-# When the workspace members change, make sure to update the list here as well
-# as in `Cargo.toml`.
-WORKSPACE_MEMBERS=(
-	lightning
-	lightning-types
-	lightning-block-sync
-	lightning-invoice
-	lightning-net-tokio
-	lightning-persister
-	lightning-background-processor
-	lightning-rapid-gossip-sync
-	lightning-custom-message
-	lightning-macros
-	lightning-dns-resolver
-	lightning-liquidity
-	possiblyrandom
-)
+WORKSPACE_MEMBERS=( $(cat Cargo.toml | tr '\n' '\r' | sed 's/\r    //g' | tr '\r' '\n' | grep '^members =' | sed 's/members.*=.*\[//' | tr -d '"' | tr ',' ' ') )
 
 echo -e "\n\nTesting the workspace, except lightning-transaction-sync."
 cargo test --verbose --color always
