@@ -981,7 +981,7 @@ where
 	/// Will generate a [`LSPS2ServiceEvent::OpenChannel`] event if the intercept scid matches a payment we are expected
 	/// and the payment amount is correct and the offer has not expired.
 	///
-	/// Will do nothing if the intercept scid does not match any of the ones we gave out.
+	/// Will return an error if the intercept scid does not match any of the ones we gave out.
 	///
 	/// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
 	/// [`LSPS2ServiceEvent::OpenChannel`]: crate::lsps2::event::LSPS2ServiceEvent::OpenChannel
@@ -1067,6 +1067,10 @@ where
 					});
 				},
 			}
+		} else {
+			return Err(APIError::APIMisuseError {
+				err: format!("Unknown scid provided: {}", intercept_scid),
+			});
 		}
 
 		if let Some(counterparty_node_id) = should_persist {
