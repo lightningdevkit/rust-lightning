@@ -245,11 +245,26 @@ pub(super) fn create_fwd_pending_htlc_info(
 }
 
 #[rustfmt::skip]
-pub(super) fn create_recv_pending_htlc_info(
+pub(super) fn create_recv_pending_htlc_info<L: Deref>(
 	hop_data: onion_utils::Hop, shared_secret: [u8; 32], payment_hash: PaymentHash,
 	amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
-	counterparty_skimmed_fee_msat: Option<u64>, current_height: u32
-) -> Result<PendingHTLCInfo, InboundHTLCErr> {
+	counterparty_skimmed_fee_msat: Option<u64>, current_height: u32, logger: L
+) -> Result<PendingHTLCInfo, InboundHTLCErr>
+where
+	L::Target: Logger,
+{
+	let check_authentication = |payment_tlvs_authenticated: bool| -> Result<(), InboundHTLCErr> {
+		if !payment_tlvs_authenticated {
+			log_warn!(logger, "Received an unauthenticated receive payment message");
+			return Err(InboundHTLCErr {
+				reason: LocalHTLCFailureReason::UnauthenticatedPayload,
+				err_data: Vec::new(),
+				msg: "Received unauthenticated receive payment htlc",
+			});
+		}
+		Ok(())
+	};
+
 	let (
 		payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, onion_cltv_expiry,
 		payment_metadata, payment_context, requires_blinded_error, has_recipient_created_payment_secret,
@@ -264,8 +279,10 @@ pub(super) fn create_recv_pending_htlc_info(
 		onion_utils::Hop::BlindedReceive { hop_data: msgs::InboundOnionBlindedReceivePayload {
 			sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
 			intro_node_blinding_point, payment_constraints, payment_context, keysend_preimage,
-			custom_tlvs, invoice_request
+			custom_tlvs, invoice_request, payment_tlvs_authenticated
 		}, .. } => {
+			check_authentication(payment_tlvs_authenticated)?;
+
 			check_blinded_payment_constraints(
 				sender_intended_htlc_amt_msat, cltv_expiry, &payment_constraints
 			)
@@ -293,9 +310,11 @@ pub(super) fn create_recv_pending_htlc_info(
 			trampoline_hop_data: msgs::InboundOnionBlindedReceivePayload {
 				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
 				intro_node_blinding_point, payment_constraints, payment_context, keysend_preimage,
-				custom_tlvs, invoice_request
+				custom_tlvs, invoice_request, payment_tlvs_authenticated
 			}, ..
 		} => {
+			check_authentication(payment_tlvs_authenticated)?;
+
 			check_blinded_payment_constraints(
 				sender_intended_htlc_amt_msat, cltv_expiry, &payment_constraints,
 			)
@@ -438,7 +457,7 @@ where
 	L::Target: Logger,
 {
 	let (hop, next_packet_details_opt) =
-		decode_incoming_update_add_htlc_onion(msg, node_signer, logger, secp_ctx
+		decode_incoming_update_add_htlc_onion(msg, node_signer, logger.deref(), secp_ctx
 	).map_err(|(msg, failure_reason)| {
 		let (reason, err_data) = match msg {
 			HTLCFailureMsg::Malformed(_) => (failure_reason, Vec::new()),
@@ -480,7 +499,8 @@ where
 			let shared_secret = hop.shared_secret().secret_bytes();
 			create_recv_pending_htlc_info(
 				hop, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
-				None, allow_skimmed_fees, msg.skimmed_fee_msat, cur_height,
+				None, allow_skimmed_fees, msg.skimmed_fee_msat,
+				cur_height, logger.deref()
 			)?
 		}
 	})
