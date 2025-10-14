@@ -66,36 +66,22 @@ else
     cargo llvm-cov clean --workspace
 
     # Import honggfuzz corpus if the artifact was downloaded.
-    imported=0
     if [ -d "hfuzz_workspace" ]; then
         echo "Importing corpus from hfuzz_workspace..."
         for target_dir in hfuzz_workspace/*; do
             [ -d "$target_dir" ] || continue
             src_name="$(basename "$target_dir")"
-            for dest in "$src_name" "${src_name%_target}"; do
-                mkdir -p "test_cases/$dest"
-                # Copy corpus files into the test_cases directory
-                find "$target_dir" -maxdepth 2 -type f \
-                \( -path "$target_dir/CORPUS/*" -o -path "$target_dir/INPUT/*" -o -path "$target_dir/NEW/*" -o -path "$target_dir/input/*" \) \
-                -print0 | xargs -0 -I{} cp -n {} "test_cases/$dest/" 2>/dev/null || true
-            done
+            dest="${src_name%_target}"
+            mkdir -p "test_cases/$dest"
+            # Copy corpus files into the test_cases directory
+            find "$target_dir" -maxdepth 2 -type f -path "$target_dir/input/*" \
+              -print0 | xargs -0 -I{} cp -n {} "test_cases/$dest/"
         done
-        # Check if any files were actually imported
-        if [ -n "$(find test_cases -type f -print -quit 2>/dev/null)" ]; then
-            imported=1
-        fi
     fi
 
-    # Generate coverage based on whether a corpus was imported.
-    if [ "$imported" = "1" ]; then
-        echo "Replaying imported corpus via tests to generate coverage..."
-        cargo llvm-cov -j8 --codecov --ignore-filename-regex "fuzz/" \
-          --output-path "$OUTPUT_DIR/fuzz-codecov.json" --tests
-    else
-        echo "No corpus found; generating no-corpus coverage JSON..."
-        cargo llvm-cov -j8 --codecov --ignore-filename-regex "fuzz/" \
-          --output-path "$OUTPUT_DIR/fuzz-codecov.json" --no-run
-    fi
+    echo "Replaying imported corpus (if found) via tests to generate coverage..."
+    cargo llvm-cov -j8 --codecov --ignore-filename-regex "fuzz/" \
+        --output-path "$OUTPUT_DIR/fuzz-codecov.json" --tests
 
     echo "Fuzz codecov report available at $OUTPUT_DIR/fuzz-codecov.json"
 fi
