@@ -345,7 +345,12 @@ pub trait CoinSelectionSource {
 	///    provided, in which case a zero-value empty OP_RETURN output can be used instead.
 	/// 3. Enough inputs must be selected/contributed for the resulting transaction (including the
 	///    inputs and outputs noted above) to meet `target_feerate_sat_per_1000_weight`.
-	/// 4. The final transaction must have a weight smaller than `max_tx_weight`.
+	/// 4. The final transaction must have a weight smaller than `max_tx_weight`; if this
+	///    constraint can't be met, return an `Err`. In the case of counterparty-signed HTLC
+	///    transactions, we will remove a chunk of HTLCs and try your algorithm again. Anchor
+	///    transactions cannot be trimmed, so if you fail to meet the `max_tx_weight` we will
+	///    try your coin selection again with the same input-output set when you call
+	///    [`ChannelMonitor::rebroadcast_pending_claims`].
 	///
 	/// Implementations must take note that [`Input::satisfaction_weight`] only tracks the weight of
 	/// the input's `script_sig` and `witness`. Some wallets, like Bitcoin Core's, may require
@@ -359,6 +364,8 @@ pub trait CoinSelectionSource {
 	/// other claims, implementations must be willing to double spend their UTXOs. The choice of
 	/// which UTXOs to double spend is left to the implementation, but it must strive to keep the
 	/// set of other claims being double spent to a minimum.
+	///
+	/// [`ChannelMonitor::rebroadcast_pending_claims`]: crate::chain::channelmonitor::ChannelMonitor::rebroadcast_pending_claims
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
