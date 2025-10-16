@@ -1,3 +1,0 @@
-# API Updates (0.2)
-
-Downgrading to v0.0.115 is no longer supported if a node has an HTLC routed/settled while running v0.2 or later.
