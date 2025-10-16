@@ -1354,7 +1354,7 @@ fn client_trusts_lsp_end_to_end_test() {
 		} => {
 			assert_eq!(prev_node_id, Some(payer_node_id));
 			assert_eq!(next_node_id, Some(client_node_id));
-			service_handler.payment_forwarded(channel_id, skimmed_fee_msat.unwrap_or(0)).unwrap();
+			service_handler.payment_forwarded(channel_id, skimmed_fee_msat).unwrap();
 			Some(total_fee_earned_msat.unwrap() - skimmed_fee_msat.unwrap())
 		},
 		_ => panic!("Expected PaymentForwarded event, got: {:?}", service_events[0]),
@@ -1782,7 +1782,7 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 		Event::PaymentForwarded { skimmed_fee_msat, .. } => skimmed_fee_msat.unwrap_or(0),
 		other => panic!("Expected PaymentForwarded, got {:?}", other),
 	};
-	service_handler.payment_forwarded(channel_id, skimmed).unwrap();
+	service_handler.payment_forwarded(channel_id, Some(skimmed)).unwrap();
 
 	// Force-close the service->client channel
 	service_node
@@ -2325,7 +2325,7 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 	assert!(service_node.liquidity_manager.get_and_clear_pending_events().is_empty());
 
 	let partial_skim_msat = fee_base_msat - 1; // less than promised fee
-	service_handler.payment_forwarded(channel_id, partial_skim_msat).unwrap();
+	service_handler.payment_forwarded(channel_id, Some(partial_skim_msat)).unwrap();
 
 	let broadcasted = service_node.inner.tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert!(broadcasted.is_empty(), "There should be no broadcasted txs yet");

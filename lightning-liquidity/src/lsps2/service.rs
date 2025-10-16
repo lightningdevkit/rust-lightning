@@ -434,7 +434,7 @@ impl OutboundJITChannelState {
 	}
 
 	fn payment_forwarded(
-		&mut self, skimmed_fee_msat: u64,
+		&mut self, skimmed_fee_msat: Option<u64>,
 	) -> Result<Option<ForwardHTLCsAction>, ChannelStateError> {
 		match self {
 			OutboundJITChannelState::PendingPaymentForward {
@@ -442,7 +442,7 @@ impl OutboundJITChannelState {
 				channel_id,
 				opening_fee_msat,
 			} => {
-				if skimmed_fee_msat >= *opening_fee_msat {
+				if skimmed_fee_msat >= Some(*opening_fee_msat) {
 					let mut pq = core::mem::take(payment_queue);
 					let forward_htlcs = ForwardHTLCsAction(*channel_id, pq.clear());
 					*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
@@ -542,7 +542,7 @@ impl OutboundJITChannel {
 	}
 
 	fn payment_forwarded(
-		&mut self, skimmed_fee_msat: u64,
+		&mut self, skimmed_fee_msat: Option<u64>,
 	) -> Result<Option<ForwardHTLCsAction>, LightningError> {
 		let action = self.state.payment_forwarded(skimmed_fee_msat)?;
 		Ok(action)
@@ -1179,7 +1179,7 @@ where
 	///
 	/// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
 	pub async fn payment_forwarded(
-		&self, next_channel_id: ChannelId, skimmed_fee_msat: u64,
+		&self, next_channel_id: ChannelId, skimmed_fee_msat: Option<u64>,
 	) -> Result<(), APIError> {
 		let mut should_persist = None;
 		if let Some(counterparty_node_id) =
@@ -2239,7 +2239,7 @@ where
 	///
 	/// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
 	pub fn payment_forwarded(
-		&self, next_channel_id: ChannelId, skimmed_fee_msat: u64,
+		&self, next_channel_id: ChannelId, skimmed_fee_msat: Option<u64>,
 	) -> Result<(), APIError> {
 		let mut fut = Box::pin(self.inner.payment_forwarded(next_channel_id, skimmed_fee_msat));
 
@@ -2583,7 +2583,7 @@ mod tests {
 		}
 		// Payment completes, queued payments get forwarded.
 		{
-			let action = state.payment_forwarded(100000000000).unwrap();
+			let action = state.payment_forwarded(Some(100000000000)).unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PaymentForwarded { .. }));
 			match action {
 				Some(ForwardHTLCsAction(channel_id, htlcs)) => {
@@ -2718,7 +2718,7 @@ mod tests {
 		}
 		// Payment completes, queued payments get forwarded.
 		{
-			let action = state.payment_forwarded(10000000000).unwrap();
+			let action = state.payment_forwarded(Some(10000000000)).unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PaymentForwarded { .. }));
 			match action {
 				Some(ForwardHTLCsAction(channel_id, htlcs)) => {
@@ -2839,14 +2839,14 @@ mod tests {
 		);
 
 		// Forward a payment that is not enough to cover the fees
-		let _ = jit_channel.payment_forwarded(min_fee_msat - 1).unwrap();
+		let _ = jit_channel.payment_forwarded(Some(min_fee_msat - 1)).unwrap();
 
 		assert!(
 			!jit_channel.should_broadcast_funding_transaction(),
 			"Should not broadcast before all the fees are collected"
 		);
 
-		let _ = jit_channel.payment_forwarded(min_fee_msat).unwrap();
+		let _ = jit_channel.payment_forwarded(Some(min_fee_msat)).unwrap();
 
 		let broadcast_allowed = jit_channel.should_broadcast_funding_transaction();
 
