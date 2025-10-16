@@ -498,6 +498,7 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Connect blocks on node B
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id(), "".to_string()).unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_closed_events(&nodes[1], &[ExpectedCloseEvent {
 		channel_capacity_sats: Some(1_000_000),
@@ -820,27 +821,28 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 fn do_test_retries_own_commitment_broadcast_after_reorg(keyed_anchors: bool, p2a_anchor: bool, revoked_counterparty_commitment: bool) {
 	// Tests that a node will retry broadcasting its own commitment after seeing a confirmed
 	// counterparty commitment be reorged out.
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(3);
 	if revoked_counterparty_commitment {
 		chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	}
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let persister;
 	let new_chain_monitor;
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config.clone())]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let nodes_1_deserialized;
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = provide_anchor_reserves(&nodes);
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let _ = create_announced_chan_between_nodes(&nodes, 2, 0);
 
 	// Route a payment so we have an HTLC to claim as well.
-	let (_, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (_, payment_hash, ..) = route_payment(&nodes[2], &[&nodes[0], &nodes[1]], 1_000_000);
 
 	if revoked_counterparty_commitment {
 		// Trigger a new commitment by routing a dummy HTLC. We will have B broadcast the previous commitment.
@@ -856,9 +858,9 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(keyed_anchors: bool, p2a
 
 	// Connect blocks until the HTLC expiry is met, prompting a commitment broadcast by A.
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
-	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 	check_closed_event(&nodes[0], 1, reason, false, &[nodes[1].node.get_our_node_id()], 100_000);
 	if keyed_anchors || p2a_anchor {
 		handle_bump_close_event(&nodes[0]);
@@ -909,7 +911,6 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(keyed_anchors: bool, p2a
 		// Confirm B's commitment, A should now broadcast an HTLC timeout for commitment B.
 		mine_transactions(&nodes[0], &[&tx, &anchor_tx]);
 		tx
-
 	} else {
 		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
