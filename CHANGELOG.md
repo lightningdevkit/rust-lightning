@@ -34,7 +34,7 @@
    set `UserConfig::enable_htlc_hold`, support the existing "onion mesage
    mailbox" feature (setting `intercept_messages_for_offline_peers` on
    `OnionMessegner` and handling `Event::OnionMessageIntercepted`s), and handle
-   `Event::PersistStaticInvoice` events.
+   `Event::PersistStaticInvoice`s and `Event::StaticInvoiceRequested`s.
  * Zero-Fee-Commitment channels are now supported in LDK. These channels remove
    force-closure risk for feerate disagreements by using a fixed, zero fee on
    presigned transactions, relying on anchor bumps instead. This only works with
