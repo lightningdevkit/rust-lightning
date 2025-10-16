@@ -47,8 +47,12 @@ pub trait UtxoSource: BlockSource + 'static {
 pub struct TokioSpawner;
 #[cfg(feature = "tokio")]
 impl FutureSpawner for TokioSpawner {
-	fn spawn<T: Future<Output = ()> + Send + 'static>(&self, future: T) {
-		tokio::spawn(future);
+	type E = tokio::task::JoinError;
+	type SpawnedFutureResult<O> = tokio::task::JoinHandle<O>;
+	fn spawn<O: Send + 'static, F: Future<Output = O> + Send + 'static>(
+		&self, future: F,
+	) -> Self::SpawnedFutureResult<O> {
+		tokio::spawn(future)
 	}
 }
 
@@ -273,7 +277,7 @@ where
 		let gossiper = Arc::clone(&self.gossiper);
 		let block_cache = Arc::clone(&self.block_cache);
 		let pmw = Arc::clone(&self.peer_manager_wake);
-		self.spawn.spawn(async move {
+		let _ = self.spawn.spawn(async move {
 			let res = Self::retrieve_utxo(source, block_cache, short_channel_id).await;
 			fut.resolve(gossiper.network_graph(), &*gossiper, res);
 			(pmw)();
