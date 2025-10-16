@@ -1687,6 +1687,9 @@ pub enum Event {
 	/// The offline peer should be awoken if possible on receipt of this event, such as via the LSPS5
 	/// protocol.
 	///
+	/// Once they connect, you should handle the generated [`Event::OnionMessagePeerConnected`] and
+	/// provide the stored message.
+	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
@@ -1698,16 +1701,18 @@ pub enum Event {
 		/// The onion message intended to be forwarded to `peer_node_id`.
 		message: msgs::OnionMessage,
 	},
-	/// Indicates that an onion message supporting peer has come online and it may
-	/// be time to forward any onion messages that were previously intercepted for
-	/// them. This event will only be generated if the `OnionMessenger` was
-	/// initialized with
+	/// Indicates that an onion message supporting peer has come online and any messages previously
+	/// stored for them (from [`Event::OnionMessageIntercepted`]s) should be forwarded to them by
+	/// calling [`OnionMessenger::forward_onion_message`].
+	///
+	/// This event will only be generated if the `OnionMessenger` was initialized with
 	/// [`OnionMessenger::new_with_offline_peer_interception`], see its docs.
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
 	///
+	/// [`OnionMessenger::forward_onion_message`]: crate::onion_message::messenger::OnionMessenger::forward_onion_message
 	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
 	OnionMessagePeerConnected {
 		/// The node id of the peer we just connected to, who advertises support for
