@@ -21,7 +21,10 @@ use crate::events::{
 	ClaimedHTLC, ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PathFailure,
 	PaymentFailureReason, PaymentPurpose,
 };
-use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC};
+use crate::ln::chan_utils::{
+	commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, MAX_STANDARD_TX_WEIGHT,
+	TRUC_MAX_WEIGHT,
+};
 use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
 	RAACommitmentOrder, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA,
@@ -1972,6 +1975,11 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(
 pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 	tx: &Transaction, get_output: F,
 ) {
+	if tx.version == TxVersion::non_standard(3) {
+		assert!(tx.weight().to_wu() <= TRUC_MAX_WEIGHT);
+	} else {
+		assert!(tx.weight().to_wu() <= MAX_STANDARD_TX_WEIGHT);
+	}
 	let mut p2a_output_below_dust = false;
 	let mut has_p2a_output = false;
 	for outp in tx.output.iter() {

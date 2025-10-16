@@ -27,8 +27,9 @@ use bitcoin::{
 };
 
 use crate::chain::chaininterface::fee_for_weight;
-use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
-use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
+use crate::ln::chan_utils::{
+	BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT, FUNDING_TRANSACTION_WITNESS_WEIGHT,
+};
 use crate::ln::channel::{FundingNegotiationContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
 use crate::ln::funding::FundingTxInput;
 use crate::ln::msgs;

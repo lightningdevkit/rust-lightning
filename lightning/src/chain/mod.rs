@@ -12,6 +12,8 @@
 use bitcoin::block::{Block, Header};
 use bitcoin::constants::genesis_block;
 use bitcoin::hash_types::{BlockHash, Txid};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::network::Network;
 use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::secp256k1::PublicKey;
@@ -21,6 +23,7 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::impl_writeable_tlv_based;
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::HTLCDescriptor;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -442,3 +445,14 @@ where
 /// This is not exported to bindings users as we just use [u8; 32] directly.
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ClaimId(pub [u8; 32]);
+
+impl ClaimId {
+	pub(crate) fn from_htlcs(htlcs: &[HTLCDescriptor]) -> ClaimId {
+		let mut engine = Sha256::engine();
+		for htlc in htlcs {
+			engine.input(&htlc.commitment_txid.to_byte_array());
+			engine.input(&htlc.htlc.transaction_output_index.unwrap().to_be_bytes());
+		}
+		ClaimId(Sha256::from_engine(engine).to_byte_array())
+	}
+}

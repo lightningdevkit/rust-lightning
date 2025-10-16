@@ -11,6 +11,7 @@
 //! largely of interest for those implementing the traits on [`crate::sign`] by hand.
 
 use bitcoin::amount::Amount;
+use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::opcodes;
 use bitcoin::script::{Builder, Script, ScriptBuf};
 use bitcoin::sighash;
@@ -95,6 +96,15 @@ pub const P2A_ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 1;
 /// The maximum value of a P2A anchor.
 pub const P2A_MAX_VALUE: u64 = 240;
 
+/// The maximum weight of a TRUC transaction, see BIP431.
+pub const TRUC_MAX_WEIGHT: u64 = 10_000 * WITNESS_SCALE_FACTOR as u64;
+
+/// The maximum weight of a TRUC transaction with an unconfirmed TRUC ancestor, see BIP431.
+pub const TRUC_CHILD_MAX_WEIGHT: u64 = 1000 * WITNESS_SCALE_FACTOR as u64;
+
+/// The maximum weight of any standard transaction, see bitcoin/src/policy/policy.h
+pub const MAX_STANDARD_TX_WEIGHT: u64 = 400_000;
+
 /// The upper bound weight of an HTLC timeout input from a commitment transaction with keyed anchor outputs.
 pub const HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT: u64 = 288;
 /// The upper bound weight of an HTLC timeout input from a commitment transaction with a p2a anchor output.
@@ -125,6 +135,13 @@ pub const FUNDING_TRANSACTION_WITNESS_WEIGHT: u64 = 1 + // number_of_witness_ele
 	1 + // witness_script_length
 	MULTISIG_SCRIPT_SIZE;
 
+pub(crate) const EMPTY_SCRIPT_SIG_WEIGHT: u64 =
+	1 /* empty script_sig */ * WITNESS_SCALE_FACTOR as u64;
+pub(crate) const BASE_INPUT_SIZE: u64 = 32 /* txid */ + 4 /* vout */ + 4 /* sequence */;
+pub(crate) const BASE_INPUT_WEIGHT: u64 = BASE_INPUT_SIZE * WITNESS_SCALE_FACTOR as u64;
+const P2WSH_TXOUT_WEIGHT: u64 =
+	(8 /* value */ + 1 /* var_int */ + 34/* p2wsh spk */) * WITNESS_SCALE_FACTOR as u64;
+
 /// Gets the weight for an HTLC-Success transaction.
 #[inline]
 #[rustfmt::skip]
@@ -134,6 +151,16 @@ pub fn htlc_success_tx_weight(channel_type_features: &ChannelTypeFeatures) -> u6
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { HTLC_SUCCESS_ANCHOR_TX_WEIGHT } else { HTLC_SUCCESS_TX_WEIGHT }
 }
 
+/// Gets the weight of a single input-output pair in HTLC-success transactions
+pub fn htlc_success_input_output_pair_weight(channel_type_features: &ChannelTypeFeatures) -> u64 {
+	let satisfaction_weight = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		EMPTY_SCRIPT_SIG_WEIGHT + HTLC_SUCCESS_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT
+	} else {
+		EMPTY_SCRIPT_SIG_WEIGHT + HTLC_SUCCESS_INPUT_P2A_ANCHOR_WITNESS_WEIGHT
+	};
+	BASE_INPUT_WEIGHT + P2WSH_TXOUT_WEIGHT + satisfaction_weight
+}
+
 /// Gets the weight for an HTLC-Timeout transaction.
 #[inline]
 #[rustfmt::skip]
@@ -141,6 +168,16 @@ pub fn htlc_timeout_tx_weight(channel_type_features: &ChannelTypeFeatures) -> u6
 	const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
 	const HTLC_TIMEOUT_ANCHOR_TX_WEIGHT: u64 = 666;
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { HTLC_TIMEOUT_ANCHOR_TX_WEIGHT } else { HTLC_TIMEOUT_TX_WEIGHT }
+}
+
+/// Gets the weight of a single input-output pair in HTLC-timeout transactions
+pub fn htlc_timeout_input_output_pair_weight(channel_type_features: &ChannelTypeFeatures) -> u64 {
+	let satisfaction_weight = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		EMPTY_SCRIPT_SIG_WEIGHT + HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT
+	} else {
+		EMPTY_SCRIPT_SIG_WEIGHT + HTLC_TIMEOUT_INPUT_P2A_ANCHOR_WITNESS_WEIGHT
+	};
+	BASE_INPUT_WEIGHT + P2WSH_TXOUT_WEIGHT + satisfaction_weight
 }
 
 /// Describes the type of HTLC claim as determined by analyzing the witness.
