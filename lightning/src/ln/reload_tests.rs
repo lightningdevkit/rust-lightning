@@ -93,11 +93,9 @@ fn test_funding_peer_disconnect() {
 	nodes[1].node.handle_channel_reestablish(nodes[0].node.get_our_node_id(), &as_reestablish);
 	let events_4 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_4.len(), 3);
-	let chan_id;
 	let bs_channel_ready = match events_4[0] {
 		MessageSendEvent::SendChannelReady { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			chan_id = msg.channel_id;
 			msg.clone()
 		},
 		_ => panic!("Unexpected event {:?}", events_4[0]),
@@ -183,9 +181,7 @@ fn test_funding_peer_disconnect() {
 	// channel_announcement from the cached signatures.
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
-	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
-
-	reload_node!(nodes[0], &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+	reload_node_and_monitors!(nodes[0], &nodes[0].node.encode(), persister, new_chain_monitor, nodes_0_deserialized);
 
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 }
@@ -205,10 +201,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
-	let chan_0_monitor_serialized =
-		get_monitor!(nodes[0], ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.compute_txid(), index: 0 })).encode();
-	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
-
+	reload_node_and_monitors!(nodes[0], nodes[0].node.encode(), persister, new_chain_monitor, nodes_0_deserialized);
 	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
 		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
 	}, true).unwrap();
@@ -291,11 +284,9 @@ fn test_manager_serialize_deserialize_events() {
 	nodes.push(node_b);
 
 	// Start the de/seriailization process mid-channel creation to check that the channel manager will hold onto events that are serialized
-	let chan_0_monitor_serialized = get_monitor!(nodes[0], bs_funding_signed.channel_id).encode();
-	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+	reload_node_and_monitors!(nodes[0], nodes[0].node.encode(), persister, new_chain_monitor, nodes_0_deserialized);
 
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
-
 	// After deserializing, make sure the funding_transaction is still held by the channel manager
 	let events_4 = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events_4.len(), 0);
@@ -341,15 +332,14 @@ fn test_simple_manager_serialize_deserialize() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes_0_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	let (our_payment_preimage, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 	let (_, our_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
-	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
-	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+	reload_node_and_monitors!(nodes[0], nodes[0].node.encode(), persister, new_chain_monitor, nodes_0_deserialized);
 
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
@@ -1112,7 +1102,7 @@ fn removed_payment_no_manager_persistence() {
 
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
 
 	let (_, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
@@ -1135,9 +1125,7 @@ fn removed_payment_no_manager_persistence() {
 		_ => panic!("Unexpected event"),
 	}
 
-	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
-	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
-	reload_node!(nodes[1], node_encoded, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
+	reload_node_and_monitors!(nodes[1], node_encoded, persister, new_chain_monitor, nodes_1_deserialized);
 
 	match nodes[1].node.pop_pending_event().unwrap() {
 		Event::ChannelClosed { ref reason, .. } => {
@@ -1206,8 +1194,7 @@ fn test_reload_partial_funding_batch() {
 	// Reload the node while a subset of the channels in the funding batch have persisted monitors.
 	let channel_id_1 = ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.compute_txid(), index: 0 });
 	let node_encoded = nodes[0].node.encode();
-	let channel_monitor_1_serialized = get_monitor!(nodes[0], channel_id_1).encode();
-	reload_node!(nodes[0], node_encoded, &[&channel_monitor_1_serialized], new_persister, new_chain_monitor, new_channel_manager);
+	reload_node_and_monitors!(nodes[0], node_encoded, new_persister, new_chain_monitor, new_channel_manager);
 
 	// Process monitor events.
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
@@ -1283,8 +1270,7 @@ fn test_htlc_localremoved_persistence() {
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
-	let monitor_encoded = get_monitor!(nodes[1], _chan.3).encode();
-	reload_node!(nodes[1], nodes[1].node.encode(), &[&monitor_encoded], persister, chain_monitor, deserialized_chanmgr);
+	reload_node_and_monitors!(nodes[1], nodes[1].node.encode(), persister, chain_monitor, deserialized_chanmgr);
 
 	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
 		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
@@ -1419,4 +1405,3 @@ fn test_peer_storage() {
 	let res = std::panic::catch_unwind(|| drop(nodes));
 	assert!(res.is_err());
 }
-
