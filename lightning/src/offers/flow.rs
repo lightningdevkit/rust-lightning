@@ -52,7 +52,7 @@ use crate::onion_message::async_payments::{
 	StaticInvoicePersisted,
 };
 use crate::onion_message::messenger::{
-	Destination, MessageRouter, MessageSendInstructions, Responder, PADDED_PATH_LENGTH,
+	Destination, MessageRouter, MessageSendInstructions, Responder, DUMMY_HOPS_PATH_LENGTH,
 };
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::OnionMessageContents;
@@ -1312,7 +1312,7 @@ where
 			prev_outbound_scid_alias,
 			htlc_id,
 		});
-		let num_dummy_hops = PADDED_PATH_LENGTH.saturating_sub(1);
+		let num_dummy_hops = DUMMY_HOPS_PATH_LENGTH.saturating_sub(1);
 		BlindedMessagePath::new_with_dummy_hops(
 			&[],
 			self.get_our_node_id(),
