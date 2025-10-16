@@ -6846,6 +6846,9 @@ pub struct FundingTxSigned {
 
 	/// Information about the completed funding negotiation.
 	pub splice_negotiated: Option<SpliceFundingNegotiated>,
+
+	/// A `splice_locked` to send to the counterparty when the splice requires 0 confirmations.
+	pub splice_locked: Option<msgs::SpliceLocked>,
 }
 
 /// Information about a splice funding negotiation that has been completed.
@@ -8877,9 +8880,13 @@ where
 		}
 	}
 
-	fn on_tx_signatures_exchange(
-		&mut self, funding_tx: Transaction,
-	) -> Option<SpliceFundingNegotiated> {
+	fn on_tx_signatures_exchange<'a, L: Deref>(
+		&mut self, funding_tx: Transaction, best_block_height: u32,
+		logger: &WithChannelContext<'a, L>,
+	) -> (Option<SpliceFundingNegotiated>, Option<msgs::SpliceLocked>)
+	where
+		L::Target: Logger,
+	{
 		debug_assert!(!self.context.channel_state.is_monitor_update_in_progress());
 		debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
 
@@ -8901,22 +8908,42 @@ where
 					channel_type,
 				};
 
-				Some(splice_negotiated)
+				let splice_locked = pending_splice.check_get_splice_locked(
+					&self.context,
+					pending_splice.negotiated_candidates.len() - 1,
+					best_block_height,
+				);
+				if let Some(splice_txid) =
+					splice_locked.as_ref().map(|splice_locked| splice_locked.splice_txid)
+				{
+					log_info!(
+						logger,
+						"Sending 0conf splice_locked txid {} to our peer for channel {}",
+						splice_txid,
+						&self.context.channel_id
+					);
+				}
+
+				(Some(splice_negotiated), splice_locked)
 			} else {
 				debug_assert!(false);
-				None
+				(None, None)
 			}
 		} else {
 			self.funding.funding_transaction = Some(funding_tx);
 			self.context.channel_state =
 				ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
-			None
+			(None, None)
 		}
 	}
 
-	pub fn funding_transaction_signed(
-		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>,
-	) -> Result<FundingTxSigned, APIError> {
+	pub fn funding_transaction_signed<L: Deref>(
+		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>, best_block_height: u32,
+		logger: &L,
+	) -> Result<FundingTxSigned, APIError>
+	where
+		L::Target: Logger,
+	{
 		let signing_session =
 			if let Some(signing_session) = self.context.interactive_tx_signing_session.as_mut() {
 				if let Some(pending_splice) = self.pending_splice.as_ref() {
@@ -8937,6 +8964,7 @@ where
 						tx_signatures: None,
 						funding_tx: None,
 						splice_negotiated: None,
+						splice_locked: None,
 					});
 				}
 
@@ -8949,6 +8977,7 @@ where
 						tx_signatures: None,
 						funding_tx: None,
 						splice_negotiated: None,
+						splice_locked: None,
 					});
 				}
 				let err =
@@ -8991,19 +9020,30 @@ where
 			.provide_holder_witnesses(tx_signatures, &self.context.secp_ctx)
 			.map_err(|err| APIError::APIMisuseError { err })?;
 
-		let splice_negotiated = if let Some(funding_tx) = funding_tx.clone() {
+		let logger = WithChannelContext::from(logger, &self.context, None);
+		if tx_signatures.is_some() {
+			log_info!(
+				logger,
+				"Sending tx_signatures for interactive funding transaction {funding_txid_signed}"
+			);
+		}
+
+		let (splice_negotiated, splice_locked) = if let Some(funding_tx) = funding_tx.clone() {
 			debug_assert!(tx_signatures.is_some());
-			self.on_tx_signatures_exchange(funding_tx)
+			self.on_tx_signatures_exchange(funding_tx, best_block_height, &logger)
 		} else {
-			None
+			(None, None)
 		};
 
-		Ok(FundingTxSigned { tx_signatures, funding_tx, splice_negotiated })
+		Ok(FundingTxSigned { tx_signatures, funding_tx, splice_negotiated, splice_locked })
 	}
 
-	pub fn tx_signatures(
-		&mut self, msg: &msgs::TxSignatures,
-	) -> Result<FundingTxSigned, ChannelError> {
+	pub fn tx_signatures<L: Deref>(
+		&mut self, msg: &msgs::TxSignatures, best_block_height: u32, logger: &L,
+	) -> Result<FundingTxSigned, ChannelError>
+	where
+		L::Target: Logger,
+	{
 		let signing_session = if let Some(signing_session) =
 			self.context.interactive_tx_signing_session.as_mut()
 		{
@@ -9049,13 +9089,25 @@ where
 		let (holder_tx_signatures, funding_tx) =
 			signing_session.received_tx_signatures(msg).map_err(|msg| ChannelError::Warn(msg))?;
 
-		let splice_negotiated = if let Some(funding_tx) = funding_tx.clone() {
-			self.on_tx_signatures_exchange(funding_tx)
+		let logger = WithChannelContext::from(logger, &self.context, None);
+		log_info!(
+			logger,
+			"Received tx_signatures for interactive funding transaction {}",
+			msg.tx_hash
+		);
+
+		let (splice_negotiated, splice_locked) = if let Some(funding_tx) = funding_tx.clone() {
+			self.on_tx_signatures_exchange(funding_tx, best_block_height, &logger)
 		} else {
-			None
+			(None, None)
 		};
 
-		Ok(FundingTxSigned { tx_signatures: holder_tx_signatures, funding_tx, splice_negotiated })
+		Ok(FundingTxSigned {
+			tx_signatures: holder_tx_signatures,
+			funding_tx,
+			splice_negotiated,
+			splice_locked,
+		})
 	}
 
 	/// Queues up an outbound update fee by placing it in the holding cell. You should call
@@ -11128,6 +11180,12 @@ where
 		let announcement_sigs =
 			self.get_announcement_sigs(node_signer, chain_hash, user_config, block_height, logger);
 
+		if let Some(quiescent_action) = self.quiescent_action.as_ref() {
+			if matches!(quiescent_action, QuiescentAction::Splice(_)) {
+				self.context.channel_state.set_awaiting_quiescence();
+			}
+		}
+
 		Some(SpliceFundingPromotion {
 			funding_txo,
 			monitor_update,
@@ -11362,7 +11420,11 @@ where
 					confirmed_funding_index,
 					height,
 				) {
-					log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
+					log_info!(
+						logger, "Sending splice_locked txid {} to our peer for channel {}",
+						splice_locked.splice_txid,
+						&self.context.channel_id
+					);
 
 					let (funding_txo, monitor_update, announcement_sigs, discarded_funding) = chain_node_signer
 						.and_then(|(chain_hash, node_signer, user_config)| {
@@ -11795,10 +11857,10 @@ where
 			});
 		}
 
-		if !self.context.is_live() {
+		if !self.context.is_usable() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Channel {} cannot be spliced, as channel is not live",
+					"Channel {} cannot be spliced as it is either pending open/close",
 					self.context.channel_id()
 				),
 			});
@@ -12961,6 +13023,7 @@ where
 			|| self.context.channel_state.is_awaiting_quiescence()
 			|| self.context.channel_state.is_local_stfu_sent()
 		{
+			log_debug!(logger, "Channel is either pending quiescence or already quiescent");
 			return Ok(None);
 		}
 
@@ -12968,6 +13031,7 @@ where
 		if self.context.is_live() {
 			Ok(Some(self.send_stfu(logger)?))
 		} else {
+			log_debug!(logger, "Waiting for peer reconnection to send stfu");
 			Ok(None)
 		}
 	}

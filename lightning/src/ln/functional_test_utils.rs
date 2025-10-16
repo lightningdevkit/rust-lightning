@@ -1573,6 +1573,14 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
 	initiator_config: Option<UserConfig>,
 ) -> (bitcoin::Transaction, ChannelId) {
+	open_zero_conf_channel_with_value(initiator, receiver, initiator_config, 100_000, 10_001)
+}
+
+// Receiver must have been initialized with manually_accept_inbound_channels set to true.
+pub fn open_zero_conf_channel_with_value<'a, 'b, 'c, 'd>(
+	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
+	initiator_config: Option<UserConfig>, channel_value_sat: u64, push_msat: u64,
+) -> (bitcoin::Transaction, ChannelId) {
 	let initiator_channels = initiator.node.list_usable_channels().len();
 	let receiver_channels = receiver.node.list_usable_channels().len();
 
@@ -1581,7 +1589,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(
 
 	initiator
 		.node
-		.create_channel(receiver_node_id, 100_000, 10_001, 42, None, initiator_config)
+		.create_channel(receiver_node_id, channel_value_sat, push_msat, 42, None, initiator_config)
 		.unwrap();
 	let open_channel =
 		get_event_msg!(initiator, MessageSendEvent::SendOpenChannel, receiver_node_id);
@@ -1610,7 +1618,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(
 	initiator.node.handle_accept_channel(receiver_node_id, &accept_channel);
 
 	let (temporary_channel_id, tx, _) =
-		create_funding_transaction(&initiator, &receiver_node_id, 100_000, 42);
+		create_funding_transaction(&initiator, &receiver_node_id, channel_value_sat, 42);
 	initiator
 		.node
 		.funding_transaction_generated(temporary_channel_id, receiver_node_id, tx.clone())
@@ -4871,6 +4879,13 @@ macro_rules! handle_chan_reestablish_msgs {
 			had_channel_update = true;
 		}
 
+		let mut stfu = None;
+		if let Some(&MessageSendEvent::SendStfu { ref node_id, ref msg }) = msg_events.get(idx) {
+			idx += 1;
+			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+			stfu = Some(msg.clone());
+		}
+
 		let mut revoke_and_ack = None;
 		let mut commitment_update = None;
 		let order = if let Some(ev) = msg_events.get(idx) {
@@ -4946,7 +4961,15 @@ macro_rules! handle_chan_reestablish_msgs {
 
 		assert_eq!(msg_events.len(), idx, "{msg_events:?}");
 
-		(channel_ready, revoke_and_ack, commitment_update, order, announcement_sigs, tx_signatures)
+		(
+			channel_ready,
+			revoke_and_ack,
+			commitment_update,
+			order,
+			announcement_sigs,
+			tx_signatures,
+			stfu,
+		)
 	}};
 }
 
@@ -4955,6 +4978,7 @@ pub struct ReconnectArgs<'a, 'b, 'c, 'd> {
 	pub node_b: &'a Node<'b, 'c, 'd>,
 	pub send_channel_ready: (bool, bool),
 	pub send_announcement_sigs: (bool, bool),
+	pub send_stfu: (bool, bool),
 	pub send_interactive_tx_commit_sig: (bool, bool),
 	pub send_interactive_tx_sigs: (bool, bool),
 	pub expect_renegotiated_funding_locked_monitor_update: (bool, bool),
@@ -4977,6 +5001,7 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 			node_b,
 			send_channel_ready: (false, false),
 			send_announcement_sigs: (false, false),
+			send_stfu: (false, false),
 			send_interactive_tx_commit_sig: (false, false),
 			send_interactive_tx_sigs: (false, false),
 			expect_renegotiated_funding_locked_monitor_update: (false, false),
@@ -5000,6 +5025,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		node_b,
 		send_channel_ready,
 		send_announcement_sigs,
+		send_stfu,
 		send_interactive_tx_commit_sig,
 		send_interactive_tx_sigs,
 		expect_renegotiated_funding_locked_monitor_update,
@@ -5118,6 +5144,12 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		} else {
 			assert!(chan_msgs.4.is_none());
 		}
+		if send_stfu.0 {
+			let stfu = chan_msgs.6.take().unwrap();
+			node_a.node.handle_stfu(node_b_id, &stfu);
+		} else {
+			assert!(chan_msgs.6.is_none());
+		}
 		if send_interactive_tx_commit_sig.0 {
 			assert!(chan_msgs.1.is_none());
 			let commitment_update = chan_msgs.2.take().unwrap();
@@ -5223,6 +5255,12 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			}
 		} else {
 			assert!(chan_msgs.4.is_none());
+		}
+		if send_stfu.1 {
+			let stfu = chan_msgs.6.take().unwrap();
+			node_b.node.handle_stfu(node_a_id, &stfu);
+		} else {
+			assert!(chan_msgs.6.is_none());
 		}
 		if send_interactive_tx_commit_sig.1 {
 			assert!(chan_msgs.1.is_none());
