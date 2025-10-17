@@ -95,9 +95,11 @@ use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};
 use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestVerifiedFromOffer};
+use crate::offers::invoice_request::{
+	DefaultCurrencyConversion, InvoiceRequest, InvoiceRequestVerifiedFromOffer,
+};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferFromHrn};
+use crate::offers::offer::{Amount, Offer, OfferFromHrn};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::Refund;
 use crate::offers::signer;
@@ -2681,6 +2683,9 @@ pub struct ChannelManager<
 	fee_estimator: LowerBoundedFeeEstimator<F>,
 	chain_monitor: M,
 	tx_broadcaster: T,
+	#[cfg(test)]
+	pub(super) router: R,
+	#[cfg(not(test))]
 	router: R,
 
 	#[cfg(test)]
@@ -2907,6 +2912,9 @@ pub struct ChannelManager<
 	pub(super) entropy_source: ES,
 	#[cfg(not(test))]
 	entropy_source: ES,
+	#[cfg(test)]
+	pub(super) node_signer: NS,
+	#[cfg(not(test))]
 	node_signer: NS,
 	#[cfg(test)]
 	pub(super) signer_provider: SP,
@@ -3920,7 +3928,8 @@ where
 		let flow = OffersMessageFlow::new(
 			ChainHash::using_genesis_block(params.network), params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
-			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
+			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, false,
+			logger.clone(),
 		);
 
 		ChannelManager {
@@ -5632,6 +5641,7 @@ where
 			let features = self.bolt12_invoice_features();
 			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
 				invoice,
+				&DefaultCurrencyConversion,
 				payment_id,
 				features,
 				best_block_height,
@@ -12953,6 +12963,13 @@ where
 		let entropy = &*self.entropy_source;
 		let nonce = Nonce::from_entropy_source(entropy);
 
+		// If the offer is for a specific currency, ensure the amount is provided.
+		if let Some(Amount::Currency { iso4217_code: _, amount: _ }) = offer.amount() {
+			if amount_msats.is_none() {
+				return Err(Bolt12SemanticError::MissingAmount);
+			}
+		}
+
 		let builder = self.flow.create_invoice_request_builder(
 			offer, nonce, payment_id,
 		)?;
@@ -13035,7 +13052,20 @@ where
 
 		let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
 
-		self.flow.enqueue_invoice(invoice.clone(), refund, self.get_peers_for_blinded_path())?;
+		if refund.paths().is_empty() {
+			self.flow.enqueue_invoice_using_node_id(
+				invoice.clone(),
+				refund.payer_signing_pubkey(),
+				self.get_peers_for_blinded_path(),
+			)?;
+		} else {
+			self.flow.enqueue_invoice_using_reply_paths(
+				invoice.clone(),
+				refund.paths(),
+				self.get_peers_for_blinded_path(),
+			)?;
+		}
+
 		Ok(invoice)
 	}
 
@@ -13258,7 +13288,7 @@ where
 		now
 	}
 
-	fn get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
+	pub(crate) fn get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		per_peer_state
 			.iter()
@@ -15176,7 +15206,7 @@ where
 					None => return None,
 				};
 
-				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
+				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context, responder.clone()) {
 					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
 					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot, invoice_request }) => {
 						self.pending_events.lock().unwrap().push_back((Event::StaticInvoiceRequested {
@@ -15185,6 +15215,7 @@ where
 
 						return None
 					},
+					Ok(InvreqResponseInstructions::AsynchronouslyHandleResponse) => return None,
 					Err(_) => return None,
 				};
 
@@ -15201,6 +15232,7 @@ where
 						let result = self.flow.create_invoice_builder_from_invoice_request_with_keys(
 							&self.router,
 							&*self.entropy_source,
+							&DefaultCurrencyConversion,
 							&request,
 							self.list_usable_channels(),
 							get_payment_info,
@@ -15226,6 +15258,7 @@ where
 						let result = self.flow.create_invoice_builder_from_invoice_request_without_keys(
 							&self.router,
 							&*self.entropy_source,
+							&DefaultCurrencyConversion,
 							&request,
 							self.list_usable_channels(),
 							get_payment_info,
@@ -17982,6 +18015,7 @@ where
 			args.node_signer.get_receive_auth_key(),
 			secp_ctx.clone(),
 			args.message_router,
+			false,
 			args.logger.clone(),
 		)
 		.with_async_payments_offers_cache(async_receive_offer_cache);
