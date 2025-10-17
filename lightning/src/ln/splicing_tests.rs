@@ -14,11 +14,13 @@ use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::bump_transaction::sync::WalletSourceSync;
 use crate::events::{ClosureReason, Event, FundingInfo, HTLCHandlingFailureType};
 use crate::ln::chan_utils;
-use crate::ln::channelmanager::BREAKDOWN_TIMEOUT;
+use crate::ln::channel::CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY;
+use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, BREAKDOWN_TIMEOUT};
 use crate::ln::functional_test_utils::*;
 use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::ln::types::ChannelId;
+use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::test_channel_signer::SignerOp;
@@ -1800,4 +1802,151 @@ fn fail_quiescent_action_on_channel_close() {
 	);
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
+}
+
+fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forward: bool) {
+	// Test that we are still able to forward and resolve HTLCs while the original SCIDs contained
+	// in the onion packets have now changed due channel splices becoming locked.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_config.cltv_expiry_delta = CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY as u16 * 2;
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(config.clone()), Some(config.clone()), Some(config)],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let node_id_2 = nodes[2].node.get_our_node_id();
+
+	let (_, _, channel_id_0_1, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let (chan_upd_1_2, _, channel_id_1_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let node_max_height =
+		nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
+	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
+
+	// Send an outbound HTLC from node 0 to 2.
+	let payment_amount = 1_000_000;
+	let payment_params =
+		PaymentParameters::from_node_id(node_id_2, CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY * 2)
+			.with_bolt11_features(nodes[2].node.bolt11_invoice_features())
+			.unwrap();
+	let route_params =
+		RouteParameters::from_payment_params_and_value(payment_params, payment_amount);
+	let route = get_route(&nodes[0], &route_params).unwrap();
+	let (_, payment_hash, payment_secret) =
+		get_payment_preimage_hash(&nodes[2], Some(payment_amount), None);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, onion, id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	// Node 1 should now have a pending HTLC to forward to 2.
+	let update_add_0_1 = get_htlc_update_msgs(&nodes[0], &node_id_1);
+	nodes[1].node.handle_update_add_htlc(node_id_0, &update_add_0_1.update_add_htlcs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], update_add_0_1.commitment_signed, false);
+	assert!(nodes[1].node.needs_pending_htlc_processing());
+
+	// Splice both channels, lock them, and connect enough blocks to trigger the legacy SCID pruning
+	// logic while the HTLC is still pending.
+	let contribution = SpliceContribution::SpliceOut {
+		outputs: vec![TxOut {
+			value: Amount::from_sat(1_000),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		}],
+	};
+	let splice_tx_0_1 = splice_channel(&nodes[0], &nodes[1], channel_id_0_1, contribution);
+	for node in &nodes {
+		mine_transaction(node, &splice_tx_0_1);
+	}
+
+	let contribution = SpliceContribution::SpliceOut {
+		outputs: vec![TxOut {
+			value: Amount::from_sat(1_000),
+			script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+		}],
+	};
+	let splice_tx_1_2 = splice_channel(&nodes[1], &nodes[2], channel_id_1_2, contribution);
+	for node in &nodes {
+		mine_transaction(node, &splice_tx_1_2);
+	}
+
+	for node in &nodes {
+		connect_blocks(node, ANTI_REORG_DELAY - 2);
+	}
+	let splice_locked = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	lock_splice(&nodes[0], &nodes[1], &splice_locked, false);
+
+	for node in &nodes {
+		connect_blocks(node, 1);
+	}
+	let splice_locked = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceLocked, node_id_2);
+	lock_splice(&nodes[1], &nodes[2], &splice_locked, false);
+
+	if expire_scid_pre_forward {
+		for node in &nodes {
+			connect_blocks(node, CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY);
+		}
+
+		// Now attempt to forward the HTLC from node 1 to 2 which will fail because the SCID is no
+		// longer stored and has expired. Obviously this is somewhat of an absurd case - not
+		// forwarding for `CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY` blocks is kinda nuts.
+		let fail_type = HTLCHandlingFailureType::InvalidForward {
+			requested_forward_scid: chan_upd_1_2.contents.short_channel_id,
+		};
+		expect_htlc_forwarding_fails(&nodes[1], &[fail_type]);
+		check_added_monitors(&nodes[1], 1);
+		let update_fail_1_0 = get_htlc_update_msgs(&nodes[1], &node_id_0);
+		nodes[0].node.handle_update_fail_htlc(node_id_1, &update_fail_1_0.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], update_fail_1_0.commitment_signed, false);
+
+		let conditions = PaymentFailedConditions::new();
+		expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
+	} else {
+		// Now attempt to forward the HTLC from node 1 to 2.
+		nodes[1].node.process_pending_htlc_forwards();
+		check_added_monitors(&nodes[1], 1);
+		let update_add_1_2 = get_htlc_update_msgs(&nodes[1], &node_id_2);
+		nodes[2].node.handle_update_add_htlc(node_id_1, &update_add_1_2.update_add_htlcs[0]);
+		commitment_signed_dance!(nodes[2], nodes[1], update_add_1_2.commitment_signed, false);
+		assert!(nodes[2].node.needs_pending_htlc_processing());
+
+		// Node 2 should see the claimable payment. Fail it back to make sure we also handle the SCID
+		// change on the way back.
+		nodes[2].node.process_pending_htlc_forwards();
+		expect_payment_claimable!(&nodes[2], payment_hash, payment_secret, payment_amount);
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
+		let fail_type = HTLCHandlingFailureType::Receive { payment_hash };
+		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[2], &[fail_type]);
+		check_added_monitors(&nodes[2], 1);
+
+		let update_fail_1_2 = get_htlc_update_msgs(&nodes[2], &node_id_1);
+		nodes[1].node.handle_update_fail_htlc(node_id_2, &update_fail_1_2.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[1], nodes[2], update_fail_1_2.commitment_signed, false);
+		let fail_type = HTLCHandlingFailureType::Forward {
+			node_id: Some(node_id_2),
+			channel_id: channel_id_1_2,
+		};
+		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[fail_type]);
+		check_added_monitors(&nodes[1], 1);
+
+		let update_fail_0_1 = get_htlc_update_msgs(&nodes[1], &node_id_0);
+		nodes[0].node.handle_update_fail_htlc(node_id_1, &update_fail_0_1.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], update_fail_0_1.commitment_signed, false);
+
+		let conditions = PaymentFailedConditions::new();
+		expect_payment_failed_conditions(&nodes[0], payment_hash, true, conditions);
+	}
+}
+
+#[test]
+fn test_splice_with_inflight_htlc_forward_and_resolution() {
+	do_test_splice_with_inflight_htlc_forward_and_resolution(true);
+	do_test_splice_with_inflight_htlc_forward_and_resolution(false);
 }

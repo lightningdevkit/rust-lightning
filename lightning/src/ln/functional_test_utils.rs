@@ -2494,6 +2494,15 @@ pub fn expect_and_process_pending_htlcs(node: &Node<'_, '_, '_>, process_twice: 
 	assert!(!node.node.needs_pending_htlc_processing());
 }
 
+/// Processes an HTLC which is pending forward but will fail to forward when we process it here.
+pub fn expect_htlc_forwarding_fails(
+	node: &Node<'_, '_, '_>, expected_failure: &[HTLCHandlingFailureType],
+) {
+	expect_and_process_pending_htlcs(node, false);
+	let events = node.node.get_and_clear_pending_events();
+	expect_htlc_failure_conditions(events, expected_failure);
+}
+
 #[macro_export]
 /// Performs the "commitment signed dance" - the series of message exchanges which occur after a
 /// commitment update.
