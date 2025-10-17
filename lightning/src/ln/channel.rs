@@ -13233,18 +13233,18 @@ where
 		let end = self
 			.funding
 			.get_short_channel_id()
-			.and_then(|current_scid| {
+			.map(|current_scid| {
 				let historical_scids = &self.context.historical_scids;
 				historical_scids
 					.iter()
 					.zip(historical_scids.iter().skip(1).chain(core::iter::once(&current_scid)))
-					.map(|(_, next_scid)| {
-						let funding_height = block_from_scid(*next_scid);
-						let retain_scid =
-							funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY - 1 > height;
-						retain_scid
+					.filter(|(_, next_scid)| {
+						let funding_height = block_from_scid(**next_scid);
+						let drop_scid =
+							funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY - 1 <= height;
+						drop_scid
 					})
-					.position(|retain_scid| retain_scid)
+					.count()
 			})
 			.unwrap_or(0);
 
