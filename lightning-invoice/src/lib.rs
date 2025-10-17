@@ -437,6 +437,9 @@ pub enum Currency {
 	/// Bitcoin testnet
 	BitcoinTestnet,
 
+	/// Bitcoin testnet4
+	BitcoinTestnet4,
+
 	/// Bitcoin regtest
 	Regtest,
 
@@ -452,12 +455,9 @@ impl From<Network> for Currency {
 		match network {
 			Network::Bitcoin => Currency::Bitcoin,
 			Network::Testnet => Currency::BitcoinTestnet,
+			Network::Testnet4 => Currency::BitcoinTestnet4,
 			Network::Regtest => Currency::Regtest,
 			Network::Signet => Currency::Signet,
-			_ => {
-				debug_assert!(false, "Need to handle new rust-bitcoin network type");
-				Currency::Regtest
-			},
 		}
 	}
 }
@@ -467,6 +467,7 @@ impl From<Currency> for Network {
 		match currency {
 			Currency::Bitcoin => Network::Bitcoin,
 			Currency::BitcoinTestnet => Network::Testnet,
+			Currency::BitcoinTestnet4 => Network::Testnet4,
 			Currency::Regtest => Network::Regtest,
 			Currency::Simnet => Network::Regtest,
 			Currency::Signet => Network::Signet,
