@@ -4118,6 +4118,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.funding.prev_holder_commitment_tx.clone(),
 		);
 
+		// It's possible that no commitment updates happened during the lifecycle of the pending
+		// splice's `FundingScope` that was promoted. If so, our `prev_holder_htlc_data` is
+		// now irrelevant, since there's no valid previous commitment that exists for the current
+		// funding transaction that could be broadcast.
+		if self.funding.prev_holder_commitment_tx.is_none() {
+			self.prev_holder_htlc_data.take();
+		}
+
 		let no_further_updates_allowed = self.no_further_updates_allowed();
 
 		// The swap above places the previous `FundingScope` into `pending_funding`.
