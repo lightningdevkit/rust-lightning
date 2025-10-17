@@ -13246,7 +13246,9 @@ where
 					})
 					.position(|retain_scid| retain_scid)
 			})
-			.unwrap_or(0);
+			// `position` above will also return `None` if we have historical scids but they all
+			// need to be removed, so `end` should point to the last index in such cases.
+			.unwrap_or(self.context.historical_scids.len());
 
 		// Drains the oldest historical SCIDs until reaching one without
 		// CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY confirmations.
