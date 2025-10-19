@@ -1209,6 +1209,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// assume this is `true` when absent during upgrade so holder broadcasts aren't gated unexpectedly.
 	/// In manual-broadcast channels we also use this to trigger deferred holder
 	/// broadcasts once the funding transaction finally appears on-chain.
+	///
+	/// Note: This tracks whether the funding transaction was ever broadcast, not whether it is
+	/// currently confirmed. It is never reset, even if the funding transaction is unconfirmed due
+	/// to a reorg.
 	funding_seen_onchain: bool,
 
 	latest_update_id: u64,
