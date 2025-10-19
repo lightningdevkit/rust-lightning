@@ -3990,8 +3990,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// this method returns without queuing any transactions until the funding transaction has been
 	/// observed on-chain, unless `require_funding_seen` is `false`. This prevents attempting to
 	/// broadcast unconfirmable holder commitment transactions before the funding is visible.
-	/// See also
-	/// [`crate::chain::channelmonitor::ChannelMonitor::broadcast_latest_holder_commitment_txn`].
+	/// See also [`ChannelMonitor::broadcast_latest_holder_commitment_txn`].
+	///
+	/// [`ChannelMonitor::broadcast_latest_holder_commitment_txn`]: crate::chain::channelmonitor::ChannelMonitor::broadcast_latest_holder_commitment_txn
 	pub(crate) fn queue_latest_holder_commitment_txn_for_broadcast<B: Deref, F: Deref, L: Deref>(
 		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>, require_funding_seen: bool,
 	)
