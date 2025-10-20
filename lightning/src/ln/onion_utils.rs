@@ -14,7 +14,8 @@ use crate::crypto::streams::ChaChaReader;
 use crate::events::HTLCHandlingFailureReason;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
-use crate::ln::msgs::{self, DecodeError};
+use crate::ln::msgs::{self, DecodeError, InboundOnionDummyPayload, OnionPacket, UpdateAddHTLC};
+use crate::ln::onion_payment::{HopConnector, NextPacketDetails};
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters, TrampolineHop};
@@ -2356,6 +2357,12 @@ where
 						new_packet_bytes,
 					})
 				},
+				msgs::InboundOnionPayload::Dummy(dummy_hop_data) => Ok(Hop::Dummy {
+					dummy_hop_data,
+					shared_secret,
+					next_hop_hmac,
+					new_packet_bytes,
+				}),
 				_ => {
 					if blinding_point.is_some() {
 						return Err(OnionDecodeErr::Malformed {
@@ -2530,6 +2537,61 @@ where
 			},
 		},
 		Err(e) => Err(e),
+	}
+}
+
+/// Peels a single dummy hop from an inbound `UpdateAddHTLC` by reconstructing the next
+/// onion packet and HTLC state.
+///
+/// This helper is used when processing dummy hops in a blinded path. Dummy hops are not
+/// forwarded on the network; instead, their onion layer is removed locally and a new
+/// `UpdateAddHTLC` is constructed with the next onion packet and updated amount/CLTV
+/// values.
+///
+/// This function performs no validation and does not enqueue or forward the HTLC.
+/// It only reconstructs the next `UpdateAddHTLC` for further local processing.
+pub(super) fn peel_dummy_hop_update_add_htlc<NS: Deref, T: secp256k1::Verification>(
+	msg: &UpdateAddHTLC, dummy_hop_data: InboundOnionDummyPayload, next_hop_hmac: [u8; 32],
+	new_packet_bytes: [u8; ONION_DATA_LEN], next_packet_details: NextPacketDetails,
+	node_signer: NS, secp_ctx: &Secp256k1<T>,
+) -> UpdateAddHTLC
+where
+	NS::Target: NodeSigner,
+{
+	let NextPacketDetails {
+		next_packet_pubkey,
+		outgoing_amt_msat,
+		outgoing_connector,
+		outgoing_cltv_value,
+	} = next_packet_details;
+
+	debug_assert!(
+		matches!(outgoing_connector, HopConnector::Dummy),
+		"Dummy hop must always map to HopConnector::Dummy"
+	);
+
+	let next_blinding_point = dummy_hop_data
+		.intro_node_blinding_point
+		.or(msg.blinding_point)
+		.and_then(|blinding_point| {
+			let ss = node_signer.ecdh(Recipient::Node, &blinding_point, None).ok()?.secret_bytes();
+
+			next_hop_pubkey(secp_ctx, blinding_point, &ss).ok()
+		});
+
+	let new_onion_packet = OnionPacket {
+		version: 0,
+		public_key: next_packet_pubkey,
+		hop_data: new_packet_bytes,
+		hmac: next_hop_hmac,
+	};
+
+	UpdateAddHTLC {
+		onion_routing_packet: new_onion_packet,
+		blinding_point: next_blinding_point,
+		amount_msat: outgoing_amt_msat,
+		cltv_expiry: outgoing_cltv_value,
+		..msg.clone()
 	}
 }
 

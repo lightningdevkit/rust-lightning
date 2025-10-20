@@ -33,7 +33,6 @@ use crate::util::ser::{
 	Writeable, Writer,
 };
 
-use core::mem;
 use core::ops::Deref;
 
 #[allow(unused_imports)]
@@ -248,28 +247,31 @@ impl BlindedPaymentPath {
 		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
-		match self.decrypt_intro_payload::<NS>(node_signer) {
-			Ok((
-				BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. }),
-				control_tlvs_ss,
-			)) => {
-				let next_node_id = match node_id_lookup.next_node_id(short_channel_id) {
-					Some(node_id) => node_id,
-					None => return Err(()),
-				};
-				let mut new_blinding_point = onion_utils::next_hop_pubkey(
-					secp_ctx,
-					self.inner_path.blinding_point,
-					control_tlvs_ss.as_ref(),
-				)
-				.map_err(|_| ())?;
-				mem::swap(&mut self.inner_path.blinding_point, &mut new_blinding_point);
-				self.inner_path.introduction_node = IntroductionNode::NodeId(next_node_id);
-				self.inner_path.blinded_hops.remove(0);
-				Ok(())
-			},
-			_ => Err(()),
-		}
+		let (next_node_id, control_tlvs_ss) =
+			match self.decrypt_intro_payload::<NS>(node_signer).map_err(|_| ())? {
+				(BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. }), ss) => {
+					let node_id = node_id_lookup.next_node_id(short_channel_id).ok_or(())?;
+					(node_id, ss)
+				},
+				(BlindedPaymentTlvs::Dummy(_), ss) => {
+					let node_id = node_signer.get_node_id(Recipient::Node)?;
+					(node_id, ss)
+				},
+				_ => return Err(()),
+			};
+
+		let new_blinding_point = onion_utils::next_hop_pubkey(
+			secp_ctx,
+			self.inner_path.blinding_point,
+			control_tlvs_ss.as_ref(),
+		)
+		.map_err(|_| ())?;
+
+		self.inner_path.blinding_point = new_blinding_point;
+		self.inner_path.introduction_node = IntroductionNode::NodeId(next_node_id);
+		self.inner_path.blinded_hops.remove(0);
+
+		Ok(())
 	}
 
 	pub(crate) fn decrypt_intro_payload<NS: Deref>(
@@ -291,9 +293,9 @@ impl BlindedPaymentPath {
 				.map_err(|_| ())?;
 
 		match (&readable, used_aad) {
-			(BlindedPaymentTlvs::Forward(_), false) | (BlindedPaymentTlvs::Receive(_), true) => {
-				Ok((readable, control_tlvs_ss))
-			},
+			(BlindedPaymentTlvs::Forward(_), false)
+			| (BlindedPaymentTlvs::Dummy(_), true)
+			| (BlindedPaymentTlvs::Receive(_), true) => Ok((readable, control_tlvs_ss)),
 			_ => Err(()),
 		}
 	}
