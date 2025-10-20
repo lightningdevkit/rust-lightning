@@ -243,13 +243,8 @@ impl Connection {
 						Ok(len) => {
 							let read_res =
 								peer_manager.as_ref().read_event(&mut our_descriptor, &buf[0..len]);
-							let mut us_lock = us.lock().unwrap();
 							match read_res {
-								Ok(pause_read) => {
-									if pause_read {
-										us_lock.read_paused = true;
-									}
-								},
+								Ok(()) => {},
 								Err(_) => break Disconnect::CloseConnection,
 							}
 						},
@@ -550,7 +545,10 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 			// before we get here, so we ignore any failures to wake it up.
 			us.read_paused = false;
 			let _ = us.read_waker.try_send(());
+		} else if !resume_read {
+			us.read_paused = true;
 		}
+
 		if data.is_empty() {
 			return 0;
 		}
