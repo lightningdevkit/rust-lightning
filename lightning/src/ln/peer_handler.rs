@@ -632,16 +632,15 @@ pub trait SocketDescriptor: cmp::Eq + hash::Hash + Clone {
 	///
 	/// If the returned size is smaller than `data.len()`, a
 	/// [`PeerManager::write_buffer_space_avail`] call must be made the next time more data can be
-	/// written. Additionally, until a `send_data` event completes fully, no further
-	/// [`PeerManager::read_event`] calls should be made for the same peer! Because this is to
-	/// prevent denial-of-service issues, you should not read or buffer any data from the socket
-	/// until then.
+	/// written.
 	///
-	/// If a [`PeerManager::read_event`] call on this descriptor had previously returned true
-	/// (indicating that read events should be paused to prevent DoS in the send buffer),
-	/// `resume_read` may be set indicating that read events on this descriptor should resume. A
-	/// `resume_read` of false carries no meaning, and should not cause any action.
-	fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize;
+	/// If `continue_read` is *not* set, further [`PeerManager::read_event`] calls should be
+	/// avoided until another call is made with it set. This allows us to pause read if there are
+	/// too many outgoing messages queued for a peer to avoid DoS issues where a peer fills our
+	/// buffer by sending us messages that need response without reading the responses.
+	///
+	/// Note that calls may be made with an empty `data` to update the `continue_read` flag.
+	fn send_data(&mut self, data: &[u8], continue_read: bool) -> usize;
 	/// Disconnect the socket pointed to by this SocketDescriptor.
 	///
 	/// You do *not* need to call [`PeerManager::socket_disconnected`] with this socket after this
@@ -1664,7 +1663,10 @@ where
 			Some(peer_mutex) => {
 				let mut peer = peer_mutex.lock().unwrap();
 				peer.awaiting_write_event = false;
-				self.do_attempt_write_data(descriptor, &mut peer, false);
+				// We go ahead and force at least one write here, because if we don't have any
+				// messages to send and the net driver thought we did that's weird, so they might
+				// also have a confused read-paused state that we should go ahead and clear.
+				self.do_attempt_write_data(descriptor, &mut peer, true);
 			},
 		};
 		Ok(())
@@ -1676,11 +1678,9 @@ where
 	///
 	/// Will *not* call back into [`send_data`] on any descriptors to avoid reentrancy complexity.
 	/// Thus, however, you should call [`process_events`] after any `read_event` to generate
-	/// [`send_data`] calls to handle responses.
-	///
-	/// If `Ok(true)` is returned, further read_events should not be triggered until a
-	/// [`send_data`] call on this descriptor has `resume_read` set (preventing DoS issues in the
-	/// send buffer).
+	/// [`send_data`] calls to handle responses. This is also important to give [`send_data`] calls
+	/// a chance to pause reads if too many messages have been queued in response allowing a peer
+	/// to bloat our memory.
 	///
 	/// In order to avoid processing too many messages at once per peer, `data` should be on the
 	/// order of 4KiB.
@@ -1689,7 +1689,7 @@ where
 	/// [`process_events`]: PeerManager::process_events
 	pub fn read_event(
 		&self, peer_descriptor: &mut Descriptor, data: &[u8],
-	) -> Result<bool, PeerHandleError> {
+	) -> Result<(), PeerHandleError> {
 		match self.do_read_event(peer_descriptor, data) {
 			Ok(res) => Ok(res),
 			Err(e) => {
@@ -1718,8 +1718,7 @@ where
 
 	fn do_read_event(
 		&self, peer_descriptor: &mut Descriptor, data: &[u8],
-	) -> Result<bool, PeerHandleError> {
-		let mut pause_read = false;
+	) -> Result<(), PeerHandleError> {
 		let peers = self.peers.read().unwrap();
 		let mut msgs_to_forward = Vec::new();
 		let mut peer_node_id = None;
@@ -1994,7 +1993,6 @@ where
 						},
 					}
 				}
-				pause_read = !self.peer_should_read(peer);
 
 				if let Some(message) = msg_to_handle {
 					match self.handle_message(&peer_mutex, peer_lock, message) {
@@ -2027,7 +2025,7 @@ where
 			);
 		}
 
-		Ok(pause_read)
+		Ok(())
 	}
 
 	/// Process an incoming message and return a decision (ok, lightning error, peer handling error) regarding the next action with the peer
@@ -3725,7 +3723,7 @@ mod tests {
 	}
 
 	impl SocketDescriptor for FileDescriptor {
-		fn send_data(&mut self, data: &[u8], _resume_read: bool) -> usize {
+		fn send_data(&mut self, data: &[u8], _continue_read: bool) -> usize {
 			if self.hang_writes.load(Ordering::Acquire) {
 				0
 			} else {
@@ -3939,12 +3937,8 @@ mod tests {
 
 	fn try_establish_connection<'a>(
 		peer_a: &TestPeer<'a>, peer_b: &TestPeer<'a>,
-	) -> (
-		FileDescriptor,
-		FileDescriptor,
-		Result<bool, PeerHandleError>,
-		Result<bool, PeerHandleError>,
-	) {
+	) -> (FileDescriptor, FileDescriptor, Result<(), PeerHandleError>, Result<(), PeerHandleError>)
+	{
 		let addr_a = SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 1000 };
 		let addr_b = SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 1001 };
 
@@ -3958,11 +3952,11 @@ mod tests {
 		let initial_data =
 			peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
 		peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
-		assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
+		peer_a.read_event(&mut fd_a, &initial_data).unwrap();
 		peer_a.process_events();
 
 		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
-		assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
+		peer_b.read_event(&mut fd_b, &a_data).unwrap();
 
 		peer_b.process_events();
 		let b_data = fd_b.outbound_data.lock().unwrap().split_off(0);
@@ -3989,8 +3983,8 @@ mod tests {
 
 		let (fd_a, fd_b, a_refused, b_refused) = try_establish_connection(peer_a, peer_b);
 
-		assert_eq!(a_refused.unwrap(), false);
-		assert_eq!(b_refused.unwrap(), false);
+		a_refused.unwrap();
+		b_refused.unwrap();
 
 		assert_eq!(peer_a.peer_by_node_id(&id_b).unwrap().counterparty_node_id, id_b);
 		assert_eq!(peer_a.peer_by_node_id(&id_b).unwrap().socket_address, Some(addr_b));
@@ -4113,11 +4107,11 @@ mod tests {
 			let initial_data =
 				peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
 			peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
-			assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
+			peer_a.read_event(&mut fd_a, &initial_data).unwrap();
 			peer_a.process_events();
 
 			let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
-			assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
+			peer_b.read_event(&mut fd_b, &a_data).unwrap();
 
 			peer_b.process_events();
 			let b_data = fd_b.outbound_data.lock().unwrap().split_off(0);
@@ -4144,11 +4138,11 @@ mod tests {
 			let initial_data =
 				peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
 			peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
-			assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
+			peer_a.read_event(&mut fd_a, &initial_data).unwrap();
 			peer_a.process_events();
 
 			let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
-			assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
+			peer_b.read_event(&mut fd_b, &a_data).unwrap();
 
 			peer_b.process_events();
 			let b_data = fd_b.outbound_data.lock().unwrap().split_off(0);
@@ -4220,7 +4214,7 @@ mod tests {
 		peers[0].process_events();
 
 		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
-		assert_eq!(peers[1].read_event(&mut fd_b, &a_data).unwrap(), false);
+		peers[1].read_event(&mut fd_b, &a_data).unwrap();
 	}
 
 	#[test]
@@ -4240,13 +4234,13 @@ mod tests {
 		let mut dup_encryptor =
 			PeerChannelEncryptor::new_outbound(id_a, SecretKey::from_slice(&[42; 32]).unwrap());
 		let initial_data = dup_encryptor.get_act_one(&peers[1].secp_ctx);
-		assert_eq!(peers[0].read_event(&mut fd_dup, &initial_data).unwrap(), false);
+		peers[0].read_event(&mut fd_dup, &initial_data).unwrap();
 		peers[0].process_events();
 
 		let a_data = fd_dup.outbound_data.lock().unwrap().split_off(0);
 		let (act_three, _) =
 			dup_encryptor.process_act_two(&a_data[..], &&cfgs[1].node_signer).unwrap();
-		assert_eq!(peers[0].read_event(&mut fd_dup, &act_three).unwrap(), false);
+		peers[0].read_event(&mut fd_dup, &act_three).unwrap();
 
 		let not_init_msg = msgs::Ping { ponglen: 4, byteslen: 0 };
 		let msg_bytes = dup_encryptor.encrypt_message(&not_init_msg);
@@ -4504,10 +4498,10 @@ mod tests {
 			assert_eq!(peers_len, 1);
 		}
 
-		assert_eq!(peers[0].read_event(&mut fd_a, &initial_data).unwrap(), false);
+		peers[0].read_event(&mut fd_a, &initial_data).unwrap();
 		peers[0].process_events();
 		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
-		assert_eq!(peers[1].read_event(&mut fd_b, &a_data).unwrap(), false);
+		peers[1].read_event(&mut fd_b, &a_data).unwrap();
 		peers[1].process_events();
 
 		// ...but if we get a second timer tick, we should disconnect the peer
@@ -4557,11 +4551,11 @@ mod tests {
 		let act_one = peer_b.new_outbound_connection(a_id, fd_b.clone(), None).unwrap();
 		peer_a.new_inbound_connection(fd_a.clone(), None).unwrap();
 
-		assert_eq!(peer_a.read_event(&mut fd_a, &act_one).unwrap(), false);
+		peer_a.read_event(&mut fd_a, &act_one).unwrap();
 		peer_a.process_events();
 
 		let act_two = fd_a.outbound_data.lock().unwrap().split_off(0);
-		assert_eq!(peer_b.read_event(&mut fd_b, &act_two).unwrap(), false);
+		peer_b.read_event(&mut fd_b, &act_two).unwrap();
 		peer_b.process_events();
 
 		// Calling this here triggers the race on inbound connections.
@@ -4575,7 +4569,7 @@ mod tests {
 			assert!(!handshake_complete);
 		}
 
-		assert_eq!(peer_a.read_event(&mut fd_a, &act_three_with_init_b).unwrap(), false);
+		peer_a.read_event(&mut fd_a, &act_three_with_init_b).unwrap();
 		peer_a.process_events();
 
 		{
@@ -4595,7 +4589,7 @@ mod tests {
 			assert!(!handshake_complete);
 		}
 
-		assert_eq!(peer_b.read_event(&mut fd_b, &init_a).unwrap(), false);
+		peer_b.read_event(&mut fd_b, &init_a).unwrap();
 		peer_b.process_events();
 
 		{
@@ -4632,7 +4626,7 @@ mod tests {
 			peer_a.process_events();
 			let msg = fd_a.outbound_data.lock().unwrap().split_off(0);
 			assert!(!msg.is_empty());
-			assert_eq!(peer_b.read_event(&mut fd_b, &msg).unwrap(), false);
+			peer_b.read_event(&mut fd_b, &msg).unwrap();
 			peer_b.process_events();
 		};
 
@@ -4675,12 +4669,12 @@ mod tests {
 
 					let msg = fd_a.outbound_data.lock().unwrap().split_off(0);
 					if !msg.is_empty() {
-						assert_eq!(peers[1].read_event(&mut fd_b, &msg).unwrap(), false);
+						peers[1].read_event(&mut fd_b, &msg).unwrap();
 						continue;
 					}
 					let msg = fd_b.outbound_data.lock().unwrap().split_off(0);
 					if !msg.is_empty() {
-						assert_eq!(peers[0].read_event(&mut fd_a, &msg).unwrap(), false);
+						peers[0].read_event(&mut fd_a, &msg).unwrap();
 						continue;
 					}
 					break;

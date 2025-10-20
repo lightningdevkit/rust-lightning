@@ -243,13 +243,8 @@ impl Connection {
 						Ok(len) => {
 							let read_res =
 								peer_manager.as_ref().read_event(&mut our_descriptor, &buf[0..len]);
-							let mut us_lock = us.lock().unwrap();
 							match read_res {
-								Ok(pause_read) => {
-									if pause_read {
-										us_lock.read_paused = true;
-									}
-								},
+								Ok(()) => {},
 								Err(_) => break Disconnect::CloseConnection,
 							}
 						},
@@ -533,7 +528,7 @@ impl SocketDescriptor {
 	}
 }
 impl peer_handler::SocketDescriptor for SocketDescriptor {
-	fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize {
+	fn send_data(&mut self, data: &[u8], continue_read: bool) -> usize {
 		// To send data, we take a lock on our Connection to access the TcpStream, writing to it if
 		// there's room in the kernel buffer, or otherwise create a new Waker with a
 		// SocketDescriptor in it which can wake up the write_avail Sender, waking up the
@@ -544,13 +539,16 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 			return 0;
 		}
 
-		if resume_read && us.read_paused {
+		let read_was_paused = us.read_paused;
+		us.read_paused = !continue_read;
+
+		if continue_read && read_was_paused {
 			// The schedule_read future may go to lock up but end up getting woken up by there
 			// being more room in the write buffer, dropping the other end of this Sender
 			// before we get here, so we ignore any failures to wake it up.
-			us.read_paused = false;
 			let _ = us.read_waker.try_send(());
 		}
+
 		if data.is_empty() {
 			return 0;
 		}
@@ -576,16 +574,7 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 					}
 				},
 				task::Poll::Ready(Err(_)) => return written_len,
-				task::Poll::Pending => {
-					// We're queued up for a write event now, but we need to make sure we also
-					// pause read given we're now waiting on the remote end to ACK (and in
-					// accordance with the send_data() docs).
-					us.read_paused = true;
-					// Further, to avoid any current pending read causing a `read_event` call, wake
-					// up the read_waker and restart its loop.
-					let _ = us.read_waker.try_send(());
-					return written_len;
-				},
+				task::Poll::Pending => return written_len,
 			}
 		}
 	}
