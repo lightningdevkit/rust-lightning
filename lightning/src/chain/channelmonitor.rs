@@ -3985,7 +3985,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 			claimable_outpoints.append(&mut new_outpoints);
 		}
-		(claimable_outpoints, watch_outputs)
+		// In manual-broadcast mode, if we have not yet observed the funding transaction on-chain,
+		// return empty vectors.
+		if self.is_manual_broadcast && !self.funding_seen_onchain {
+			return (Vec::new(), Vec::new());
+		} else {
+			(claimable_outpoints, watch_outputs)
+		}
 	}
 
 	#[rustfmt::skip]
@@ -5605,10 +5611,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if should_broadcast_commitment {
 			let (mut claimables, mut outputs) =
 				self.generate_claimable_outpoints_and_watch_outputs(None);
-			if !self.is_manual_broadcast || self.funding_seen_onchain {
-				claimable_outpoints.append(&mut claimables);
-				watch_outputs.append(&mut outputs);
-			}
+			claimable_outpoints.append(&mut claimables);
+			watch_outputs.append(&mut outputs);
 		}
 
 		self.block_confirmed(height, block_hash, txn_matched, watch_outputs, claimable_outpoints, &broadcaster, &fee_estimator, logger)
@@ -5649,10 +5653,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 				let (mut new_outpoints, mut new_outputs) =
 					self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
-				if !self.is_manual_broadcast || self.funding_seen_onchain {
-					claimable_outpoints.append(&mut new_outpoints);
-					watch_outputs.append(&mut new_outputs);
-				}
+				claimable_outpoints.append(&mut new_outpoints);
+				watch_outputs.append(&mut new_outputs);
 			}
 		}
 
