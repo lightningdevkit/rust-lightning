@@ -195,7 +195,7 @@ struct Peer<'a> {
 	peers_connected: &'a RefCell<[bool; 256]>,
 }
 impl<'a> SocketDescriptor for Peer<'a> {
-	fn send_data(&mut self, data: &[u8], _resume_read: bool) -> usize {
+	fn send_data(&mut self, data: &[u8], _continue_read: bool) -> usize {
 		data.len()
 	}
 	fn disconnect_socket(&mut self) {
@@ -695,7 +695,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				}
 				let mut peer = Peer { id: peer_id, peers_connected: &peers };
 				match loss_detector.handler.read_event(&mut peer, get_slice!(get_slice!(1)[0])) {
-					Ok(res) => assert!(!res),
+					Ok(()) => {},
 					Err(_) => {
 						peers.borrow_mut()[peer_id as usize] = false;
 					},
