@@ -7,6 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+#![cfg_attr(not(test), allow(unused_imports))]
+
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
@@ -68,7 +70,7 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 	}
 }
 
-fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
+pub fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	initiator_contribution: SpliceContribution,
 ) -> msgs::CommitmentSigned {
@@ -83,7 +85,7 @@ fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
 	)
 }
 
-fn complete_splice_handshake<'a, 'b, 'c, 'd>(
+pub fn complete_splice_handshake<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	initiator_contribution: SpliceContribution,
 ) -> ScriptBuf {
@@ -120,7 +122,7 @@ fn complete_splice_handshake<'a, 'b, 'c, 'd>(
 	new_funding_script
 }
 
-fn complete_interactive_funding_negotiation<'a, 'b, 'c, 'd>(
+pub fn complete_interactive_funding_negotiation<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	initiator_contribution: SpliceContribution, new_funding_script: ScriptBuf,
 ) -> msgs::CommitmentSigned {
@@ -209,7 +211,7 @@ fn complete_interactive_funding_negotiation<'a, 'b, 'c, 'd>(
 	}
 }
 
-fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
+pub fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>,
 	initial_commit_sig_for_acceptor: msgs::CommitmentSigned, is_0conf: bool,
 ) -> (Transaction, Option<(msgs::SpliceLocked, PublicKey)>) {
@@ -277,7 +279,7 @@ fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
 	(tx, splice_locked)
 }
 
-fn splice_channel<'a, 'b, 'c, 'd>(
+pub fn splice_channel<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	initiator_contribution: SpliceContribution,
 ) -> Transaction {
@@ -304,7 +306,7 @@ fn splice_channel<'a, 'b, 'c, 'd>(
 	splice_tx
 }
 
-fn lock_splice_after_blocks<'a, 'b, 'c, 'd>(
+pub fn lock_splice_after_blocks<'a, 'b, 'c, 'd>(
 	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, num_blocks: u32,
 ) {
 	connect_blocks(node_a, num_blocks);
@@ -316,7 +318,7 @@ fn lock_splice_after_blocks<'a, 'b, 'c, 'd>(
 	lock_splice(node_a, node_b, &splice_locked_for_node_b, false);
 }
 
-fn lock_splice<'a, 'b, 'c, 'd>(
+pub fn lock_splice<'a, 'b, 'c, 'd>(
 	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>,
 	splice_locked_for_node_b: &msgs::SpliceLocked, is_0conf: bool,
 ) {
@@ -387,6 +389,7 @@ fn test_splice_state_reset_on_disconnect() {
 	do_test_splice_state_reset_on_disconnect(true);
 }
 
+#[cfg(test)]
 fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 	// Tests that we're able to forget our pending splice state after a disconnect such that we can
 	// retry later.
@@ -714,6 +717,7 @@ fn test_splice_out() {
 	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
 }
 
+#[cfg(test)]
 #[derive(PartialEq)]
 enum SpliceStatus {
 	Unconfirmed,
@@ -731,6 +735,7 @@ fn test_splice_commitment_broadcast() {
 	do_test_splice_commitment_broadcast(SpliceStatus::Locked, true);
 }
 
+#[cfg(test)]
 fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs: bool) {
 	// Tests that we're able to enforce HTLCs onchain during the different stages of a splice.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -926,6 +931,7 @@ fn test_splice_reestablish() {
 	do_test_splice_reestablish(true, true);
 }
 
+#[cfg(test)]
 fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 	// Test that we're able to reestablish the channel succesfully throughout the lifecycle of a splice.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1188,6 +1194,7 @@ fn test_propose_splice_while_disconnected() {
 	do_test_propose_splice_while_disconnected(true, true);
 }
 
+#[cfg(test)]
 fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 	// Test that both nodes are able to propose a splice while the counterparty is disconnected, and
 	// whoever doesn't go first due to the quiescence tie-breaker, will retry their splice after the
@@ -1804,6 +1811,7 @@ fn fail_quiescent_action_on_channel_close() {
 	check_added_monitors(&nodes[0], 1);
 }
 
+#[cfg(test)]
 fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forward: bool) {
 	// Test that we are still able to forward and resolve HTLCs while the original SCIDs contained
 	// in the onion packets have now changed due channel splices becoming locked.

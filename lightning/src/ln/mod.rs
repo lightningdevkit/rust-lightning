@@ -120,8 +120,8 @@ mod reorg_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod shutdown_tests;
-#[cfg(test)]
-mod splicing_tests;
+#[cfg(any(feature = "_test_utils", test))]
+pub mod splicing_tests;
 #[cfg(any(test, feature = "_externalize_tests"))]
 #[allow(unused_mut)]
 pub mod update_fee_tests;
