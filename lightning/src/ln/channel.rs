@@ -2470,6 +2470,7 @@ impl FundingScope {
 	fn for_splice<SP: Deref>(
 		prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution: SignedAmount,
 		their_funding_contribution: SignedAmount, counterparty_funding_pubkey: PublicKey,
+		our_new_holder_keys: ChannelPublicKeys,
 	) -> Self
 	where
 		SP::Target: SignerProvider,
@@ -2489,19 +2490,15 @@ impl FundingScope {
 		debug_assert!(post_value_to_self_msat.is_some());
 		let post_value_to_self_msat = post_value_to_self_msat.unwrap();
 
-		// Rotate the pubkeys using the prev_funding_txid as a tweak
-		let prev_funding_txid = prev_funding.get_funding_txid();
-		let holder_pubkeys = context.new_holder_pubkeys(prev_funding_txid);
-
 		let channel_parameters = &prev_funding.channel_transaction_parameters;
 		let mut post_channel_transaction_parameters = ChannelTransactionParameters {
-			holder_pubkeys,
+			holder_pubkeys: our_new_holder_keys,
 			holder_selected_contest_delay: channel_parameters.holder_selected_contest_delay,
 			// The 'outbound' attribute doesn't change, even if the splice initiator is the other node
 			is_outbound_from_holder: channel_parameters.is_outbound_from_holder,
 			counterparty_parameters: channel_parameters.counterparty_parameters.clone(),
 			funding_outpoint: None, // filled later
-			splice_parent_funding_txid: prev_funding_txid,
+			splice_parent_funding_txid: prev_funding.get_funding_txid(),
 			channel_type_features: channel_parameters.channel_type_features.clone(),
 			channel_value_satoshis: post_channel_value,
 		};
@@ -2637,6 +2634,7 @@ impl_writeable_tlv_based!(PendingFunding, {
 enum FundingNegotiation {
 	AwaitingAck {
 		context: FundingNegotiationContext,
+		new_holder_funding_key: PublicKey,
 	},
 	ConstructingTransaction {
 		funding: FundingScope,
@@ -2667,7 +2665,7 @@ impl FundingNegotiation {
 
 	fn is_initiator(&self) -> bool {
 		match self {
-			FundingNegotiation::AwaitingAck { context } => context.is_initiator,
+			FundingNegotiation::AwaitingAck { context, .. } => context.is_initiator,
 			FundingNegotiation::ConstructingTransaction { interactive_tx_constructor, .. } => {
 				interactive_tx_constructor.is_initiator()
 			},
@@ -3510,7 +3508,7 @@ where
 
 		// TODO(dual_funding): Checks for `funding_feerate_sat_per_1000_weight`?
 
-		let pubkeys = holder_signer.new_pubkeys(None, &secp_ctx);
+		let pubkeys = holder_signer.pubkeys(&secp_ctx);
 
 		let funding = FundingScope {
 			value_to_self_msat,
@@ -3748,7 +3746,7 @@ where
 			Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get destination script".to_owned()}),
 		};
 
-		let pubkeys = holder_signer.new_pubkeys(None, &secp_ctx);
+		let pubkeys = holder_signer.pubkeys(&secp_ctx);
 		let temporary_channel_id = temporary_channel_id_fn.map(|f| f(&pubkeys))
 			.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
 
@@ -4109,16 +4107,6 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_mut_signer(&mut self) -> &mut ChannelSignerType<SP> {
 		return &mut self.holder_signer;
-	}
-
-	/// Returns holder pubkeys to use for the channel.
-	fn new_holder_pubkeys(&self, prev_funding_txid: Option<Txid>) -> ChannelPublicKeys {
-		match &self.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.new_pubkeys(prev_funding_txid, &self.secp_ctx),
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!(),
-		}
 	}
 
 	/// Only allowed immediately after deserialization if get_outbound_scid_alias returns 0,
@@ -6891,7 +6879,7 @@ macro_rules! maybe_create_splice_funding_failed {
 					.map(|funding| funding.get_channel_type().clone());
 
 				let (contributed_inputs, contributed_outputs) = match funding_negotiation {
-					FundingNegotiation::AwaitingAck { context } => {
+					FundingNegotiation::AwaitingAck { context, .. } => {
 						context.$contributed_inputs_and_outputs()
 					},
 					FundingNegotiation::ConstructingTransaction {
@@ -11962,16 +11950,28 @@ where
 			change_script,
 		};
 
+		// Rotate the funding pubkey using the prev_funding_txid as a tweak
+		let prev_funding_txid = self.funding.get_funding_txid();
+		let funding_pubkey = match (prev_funding_txid, &self.context.holder_signer) {
+			(None, _) => {
+				debug_assert!(false);
+				self.funding.get_holder_pubkeys().funding_pubkey
+			},
+			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) => {
+				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx)
+			},
+			#[cfg(taproot)]
+			_ => todo!(),
+		};
+
+		let funding_negotiation =
+			FundingNegotiation::AwaitingAck { context, new_holder_funding_key: funding_pubkey };
 		self.pending_splice = Some(PendingFunding {
-			funding_negotiation: Some(FundingNegotiation::AwaitingAck { context }),
+			funding_negotiation: Some(funding_negotiation),
 			negotiated_candidates: vec![],
 			sent_funding_txid: None,
 			received_funding_txid: None,
 		});
-
-		// Rotate the pubkeys using the prev_funding_txid as a tweak
-		let prev_funding_txid = self.funding.get_funding_txid();
-		let funding_pubkey = self.context.new_holder_pubkeys(prev_funding_txid).funding_pubkey;
 
 		msgs::SpliceInit {
 			channel_id: self.context.channel_id,
@@ -12056,12 +12056,29 @@ where
 		self.validate_splice_contributions(our_funding_contribution, their_funding_contribution)
 			.map_err(|e| ChannelError::WarnAndDisconnect(e))?;
 
+		// Rotate the pubkeys using the prev_funding_txid as a tweak
+		let prev_funding_txid = self.funding.get_funding_txid();
+		let funding_pubkey = match (prev_funding_txid, &self.context.holder_signer) {
+			(None, _) => {
+				debug_assert!(false);
+				self.funding.get_holder_pubkeys().funding_pubkey
+			},
+			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) => {
+				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx)
+			},
+			#[cfg(taproot)]
+			_ => todo!(),
+		};
+		let mut new_keys = self.funding.get_holder_pubkeys().clone();
+		new_keys.funding_pubkey = funding_pubkey;
+
 		Ok(FundingScope::for_splice(
 			&self.funding,
 			&self.context,
 			our_funding_contribution,
 			their_funding_contribution,
 			msg.funding_pubkey,
+			new_keys,
 		))
 	}
 
@@ -12206,8 +12223,7 @@ where
 		// optimization, but for often-offline nodes it may be, as we may connect and immediately
 		// go into splicing from both sides.
 
-		let funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
-
+		let new_funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
 		self.pending_splice = Some(PendingFunding {
 			funding_negotiation: Some(FundingNegotiation::ConstructingTransaction {
 				funding: splice_funding,
@@ -12221,7 +12237,7 @@ where
 		Ok(msgs::SpliceAck {
 			channel_id: self.context.channel_id,
 			funding_contribution_satoshis: our_funding_contribution.to_sat(),
-			funding_pubkey,
+			funding_pubkey: new_funding_pubkey,
 			require_confirmed_inputs: None,
 		})
 	}
@@ -12247,13 +12263,14 @@ where
 		let pending_splice =
 			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
 		// TODO: Good candidate for a let else statement once MSRV >= 1.65
-		let funding_negotiation_context = if let Some(FundingNegotiation::AwaitingAck { context }) =
-			pending_splice.funding_negotiation.take()
-		{
-			context
-		} else {
-			panic!("We should have returned an error earlier!");
-		};
+		let funding_negotiation_context =
+			if let Some(FundingNegotiation::AwaitingAck { context, .. }) =
+				pending_splice.funding_negotiation.take()
+			{
+				context
+			} else {
+				panic!("We should have returned an error earlier!");
+			};
 
 		let mut interactive_tx_constructor = funding_negotiation_context
 			.into_interactive_tx_constructor(
@@ -12284,13 +12301,17 @@ where
 	fn validate_splice_ack(&self, msg: &msgs::SpliceAck) -> Result<FundingScope, ChannelError> {
 		// TODO(splicing): Add check that we are the splice (quiescence) initiator
 
-		let funding_negotiation_context = match &self
+		let pending_splice = self
 			.pending_splice
 			.as_ref()
-			.ok_or(ChannelError::Ignore("Channel is not in pending splice".to_owned()))?
+			.ok_or_else(|| ChannelError::Ignore("Channel is not in pending splice".to_owned()))?;
+
+		let (funding_negotiation_context, new_holder_funding_key) = match &pending_splice
 			.funding_negotiation
 		{
-			Some(FundingNegotiation::AwaitingAck { context }) => context,
+			Some(FundingNegotiation::AwaitingAck { context, new_holder_funding_key }) => {
+				(context, new_holder_funding_key)
+			},
 			Some(FundingNegotiation::ConstructingTransaction { .. })
 			| Some(FundingNegotiation::AwaitingSignatures { .. }) => {
 				return Err(ChannelError::WarnAndDisconnect(
@@ -12309,12 +12330,16 @@ where
 		self.validate_splice_contributions(our_funding_contribution, their_funding_contribution)
 			.map_err(|e| ChannelError::WarnAndDisconnect(e))?;
 
+		let mut new_keys = self.funding.get_holder_pubkeys().clone();
+		new_keys.funding_pubkey = *new_holder_funding_key;
+
 		Ok(FundingScope::for_splice(
 			&self.funding,
 			&self.context,
 			our_funding_contribution,
 			their_funding_contribution,
 			msg.funding_pubkey,
+			new_keys,
 		))
 	}
 
@@ -16475,7 +16500,7 @@ mod tests {
 			[0; 32],
 		);
 
-		let holder_pubkeys = signer.new_pubkeys(None, &secp_ctx);
+		let holder_pubkeys = signer.pubkeys(&secp_ctx);
 		assert_eq!(holder_pubkeys.funding_pubkey.serialize()[..],
 				<Vec<u8>>::from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
 		let keys_provider = Keys { signer: signer.clone() };
