@@ -7115,7 +7115,7 @@ mod tests {
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.new_pubkeys(None, &secp_ctx),
+			holder_pubkeys: keys.pubkeys(&secp_ctx),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
@@ -7378,7 +7378,7 @@ mod tests {
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.new_pubkeys(None, &secp_ctx),
+			holder_pubkeys: keys.pubkeys(&secp_ctx),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {

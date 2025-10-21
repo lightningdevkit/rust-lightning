@@ -174,9 +174,12 @@ delegate!(DynSigner, ChannelSigner,
 		holder_tx: &HolderCommitmentTransaction,
 		preimages: Vec<PaymentPreimage>
 	) -> Result<(), ()>,
-	fn new_pubkeys(,
-		splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>
+	fn pubkeys(,
+		secp_ctx: &Secp256k1<secp256k1::All>
 	) -> ChannelPublicKeys,
+	fn new_funding_pubkey(,
+		splice_parent_funding_txid: Txid, secp_ctx: &Secp256k1<secp256k1::All>
+	) -> PublicKey,
 	fn channel_keys_id(,) -> [u8; 32],
 	fn validate_counterparty_revocation(, idx: u64, secret: &SecretKey) -> Result<(), ()>
 );
