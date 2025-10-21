@@ -6252,7 +6252,7 @@ where
 			commitment_number,
 			&commitment_point,
 			false,
-			false,
+			true,
 			logger,
 		);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
