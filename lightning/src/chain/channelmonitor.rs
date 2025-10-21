@@ -327,7 +327,7 @@ pub const ARCHIVAL_DELAY_BLOCKS: u32 = 4032;
 /// (2) is the same, but with an additional buffer to avoid accepting an HTLC which is immediately
 /// in a race condition between the user connecting a block (which would fail it) and the user
 /// providing us the preimage (which would claim it).
-pub(crate) const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS;
+pub const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS;
 
 // Deprecated, use [`HolderCommitment`] or [`HolderCommitmentTransaction`].
 #[derive(Clone, PartialEq, Eq)]
