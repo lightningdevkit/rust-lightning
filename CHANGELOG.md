@@ -1,3 +1,10 @@
+# 0.1.7 - Oct 21, 2025 - "Unstable Release CI"
+
+## Bug Fixes
+ * Builds with the `docsrs` cfg flag (set automatically for builds on docs.rs
+   but otherwise not used) were fixed.
+
+
 # 0.1.6 - Oct 10, 2025 - "Async Preimage Claims"
 
 ## Performance Improvements
@@ -35,6 +42,7 @@
    `ChainMonitor::archive_fully_resolved_channel_monitors` would never remove
    it. This allows a peer which opens channels without funding them to bloat our
    memory and disk space, eventually leading to denial-of-service (#4081).
+
 
 # 0.1.5 - Jul 16, 2025 - "Async Path Reduction"
 

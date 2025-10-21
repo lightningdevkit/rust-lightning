@@ -2371,7 +2371,7 @@ where
 /// [`get_event_or_persistence_needed_future`]: Self::get_event_or_persistence_needed_future
 /// [`lightning-block-sync`]: https://docs.rs/lightning_block_sync/latest/lightning_block_sync
 /// [`lightning-transaction-sync`]: https://docs.rs/lightning_transaction_sync/latest/lightning_transaction_sync
-/// [`lightning-background-processor`]: https://docs.rs/lightning_background_processor/lightning_background_processor
+/// [`lightning-background-processor`]: https://docs.rs/lightning-background-processor/latest/lightning_background_processor
 /// [`list_channels`]: Self::list_channels
 /// [`list_usable_channels`]: Self::list_usable_channels
 /// [`create_channel`]: Self::create_channel
@@ -3997,7 +3997,7 @@ where
 	///
 	/// The `shutdown_script` provided  will be used as the `scriptPubKey` for the closing transaction.
 	/// Will fail if a shutdown script has already been set for this channel by
-	/// ['ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`]. The given shutdown script must
+	/// [`ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`]. The given shutdown script must
 	/// also be compatible with our and the counterparty's features.
 	///
 	/// May generate a [`SendShutdown`] message event on success, which should be relayed.
@@ -4009,6 +4009,7 @@ where
 	///
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
 	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
+	/// [`ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`]: crate::util::config::ChannelHandshakeConfig::commit_upfront_shutdown_pubkey
 	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
 	pub fn close_channel_with_feerate_and_script(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
@@ -10472,7 +10473,7 @@ where
 	}
 
 	/// Pays for an [`Offer`] looked up using [BIP 353] Human Readable Names resolved by the DNS
-	/// resolver(s) at `dns_resolvers` which resolve names according to bLIP 32.
+	/// resolver(s) at `dns_resolvers` which resolve names according to [bLIP 32].
 	///
 	/// If the wallet supports paying on-chain schemes, you should instead use
 	/// [`OMNameResolver::resolve_name`] and [`OMNameResolver::handle_dnssec_proof_for_uri`] (by
@@ -10490,18 +10491,19 @@ where
 	///
 	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
 	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
-	/// payment will fail with an [`Event::InvoiceRequestFailed`].
+	/// payment will fail with an [`PaymentFailureReason::UserAbandoned`] or
+	/// [`PaymentFailureReason::InvoiceRequestExpired`], respectively.
 	///
 	/// # Privacy
 	///
 	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
-	/// to construct a [`BlindedPath`] for the reply path. For further privacy implications, see the
+	/// to construct a [`BlindedMessagePath`] for the reply path. For further privacy implications, see the
 	/// docs of the parameterized [`Router`], which implements [`MessageRouter`].
 	///
 	/// # Limitations
 	///
 	/// Requires a direct connection to the given [`Destination`] as well as an introduction node in
-	/// [`Offer::paths`] or to [`Offer::signing_pubkey`], if empty. A similar restriction applies to
+	/// [`Offer::paths`] or to [`Offer::issuer_signing_pubkey`], if empty. A similar restriction applies to
 	/// the responding [`Bolt12Invoice::payment_paths`].
 	///
 	/// # Errors
@@ -10509,8 +10511,13 @@ where
 	/// Errors if:
 	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
 	///
+	/// [BIP 353]: https://github.com/bitcoin/bips/blob/master/bip-0353.mediawiki
+	/// [bLIP 32]: https://github.com/lightning/blips/blob/master/blip-0032.md
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
+	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+	/// [`PaymentFailureReason::UserAbandoned`]: crate::events::PaymentFailureReason::UserAbandoned
+	/// [`PaymentFailureReason::InvoiceRequestRejected`]: crate::events::PaymentFailureReason::InvoiceRequestRejected
 	#[cfg(feature = "dnssec")]
 	pub fn pay_for_offer_from_human_readable_name(
 		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
@@ -11365,7 +11372,7 @@ where
 									// Most of our tests were written when we only broadcasted
 									// `channel_announcement`s once and then never re-broadcasted
 									// them again, so disable the re-broadcasting entirely in tests
-									#[cfg(test)]
+									#[cfg(any(test, feature = "_test_utils"))]
 									{
 										should_announce = announcement_sigs.is_some();
 									}

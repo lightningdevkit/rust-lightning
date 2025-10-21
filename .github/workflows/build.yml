@@ -208,6 +208,24 @@ jobs:
           RUSTFLAGS: '--cfg=taproot'
           RUSTDOCFLAGS: '--cfg=taproot'
 
+  check_docs:
+    runs-on: self-hosted
+    env:
+      # While docs.rs builds using a nightly compiler (and we use some nightly features),
+      # nightly ends up randomly breaking builds occasionally, so we instead use beta
+      # and set RUSTC_BOOTSTRAP in check-docsrs.sh
+      TOOLCHAIN: beta
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+      - name: Simulate docs.rs build
+        run: ci/check-docsrs.sh
+
   fuzz:
     runs-on: ubuntu-latest
     env:
