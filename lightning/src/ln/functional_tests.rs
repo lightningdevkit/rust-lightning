@@ -832,7 +832,7 @@ pub fn test_justice_tx_htlc_timeout() {
 		revoked_local_txn[1].input[0].witness.last().unwrap().len(),
 		OFFERED_HTLC_SCRIPT_WEIGHT
 	); // HTLC-Timeout
-	// Revoke the old state
+   // Revoke the old state
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3);
 
 	{
@@ -6029,7 +6029,7 @@ pub fn test_announce_disable_channels() {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 				assert_eq!(msg.contents.channel_flags & (1 << 1), 1 << 1); // The "channel disabled" bit should be set
-															   // Check that each channel gets updated exactly once
+														   // Check that each channel gets updated exactly once
 				if chans_disabled
 					.insert(msg.contents.short_channel_id, msg.contents.timestamp)
 					.is_some()
@@ -9692,7 +9692,7 @@ fn test_manual_broadcast_skips_commitment_until_funding_seen() {
 		.find(|tx| {
 			tx.input.iter().any(|input| {
 				input.previous_output.txid == funding_txid
-					&& input.previous_output.vout == funding_outpoint.index.into()
+					&& input.previous_output.vout == u32::from(funding_outpoint.index)
 			})
 		})
 		.expect("commitment transaction not broadcast");
@@ -9700,7 +9700,7 @@ fn test_manual_broadcast_skips_commitment_until_funding_seen() {
 	assert_eq!(commitment_tx.input.len(), 1);
 	let commitment_input = &commitment_tx.input[0];
 	assert_eq!(commitment_input.previous_output.txid, funding_txid);
-	assert_eq!(commitment_input.previous_output.vout, funding_outpoint.index.into());
+	assert_eq!(commitment_input.previous_output.vout, u32::from(funding_outpoint.index));
 
 	let monitor_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert!(monitor_events.iter().all(|event| !matches!(event, Event::BumpTransaction(_))));
@@ -9761,7 +9761,7 @@ fn test_manual_broadcast_detects_funding_and_broadcasts_on_timeout() {
 		.find(|tx| {
 			tx.input.iter().any(|input| {
 				input.previous_output.txid == funding_txid
-					&& input.previous_output.vout == funding_outpoint.index.into()
+					&& input.previous_output.vout == u32::from(funding_outpoint.index)
 			})
 		})
 		.expect("commitment transaction not broadcast");

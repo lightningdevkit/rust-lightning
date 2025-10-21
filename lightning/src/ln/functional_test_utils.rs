@@ -1805,8 +1805,8 @@ pub fn create_chan_between_nodes_with_value_a<'a, 'b, 'c: 'd, 'd>(
 }
 
 pub fn create_channel_manual_funding<'a, 'b, 'c: 'd, 'd>(
-	nodes: &'a Vec<Node<'b, 'c, 'd>>, initiator: usize, counterparty: usize,
-	channel_value: u64, push_msat: u64,
+	nodes: &'a Vec<Node<'b, 'c, 'd>>, initiator: usize, counterparty: usize, channel_value: u64,
+	push_msat: u64,
 ) -> (ChannelId, Transaction, OutPoint) {
 	let node_a = &nodes[initiator];
 	let node_b = &nodes[counterparty];
@@ -1829,14 +1829,12 @@ pub fn create_channel_manual_funding<'a, 'b, 'c: 'd, 'd>(
 		.unwrap();
 	check_added_monitors!(node_a, 0);
 
-	let funding_created =
-		get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b_id);
+	let funding_created = get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b_id);
 	node_b.node.handle_funding_created(node_a_id, &funding_created);
 	check_added_monitors!(node_b, 1);
 	let channel_id_b = expect_channel_pending_event(node_b, &node_a_id);
 
-	let funding_signed =
-		get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a_id);
+	let funding_signed = get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a_id);
 	node_a.node.handle_funding_signed(node_b_id, &funding_signed);
 	check_added_monitors!(node_a, 1);
 
@@ -1849,7 +1847,7 @@ pub fn create_channel_manual_funding<'a, 'b, 'c: 'd, 'd>(
 			Event::FundingTxBroadcastSafe { funding_txo, counterparty_node_id, .. } => {
 				assert_eq!(counterparty_node_id, node_b_id);
 				assert_eq!(funding_txo.txid, funding_txid);
-				assert_eq!(funding_txo.vout, funding_outpoint.index.into());
+				assert_eq!(funding_txo.vout, u32::from(funding_outpoint.index));
 			},
 			Event::ChannelPending { channel_id: pending_id, counterparty_node_id, .. } => {
 				assert_eq!(counterparty_node_id, node_b_id);
