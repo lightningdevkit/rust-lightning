@@ -11365,7 +11365,7 @@ where
 									// Most of our tests were written when we only broadcasted
 									// `channel_announcement`s once and then never re-broadcasted
 									// them again, so disable the re-broadcasting entirely in tests
-									#[cfg(test)]
+									#[cfg(any(test, feature = "_test_utils"))]
 									{
 										should_announce = announcement_sigs.is_some();
 									}
