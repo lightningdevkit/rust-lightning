@@ -781,6 +781,7 @@ struct Peer {
 	/// Note that these messages are *not* encrypted/MAC'd, and are only serialized.
 	gossip_broadcast_buffer: VecDeque<MessageBuf>,
 	awaiting_write_event: bool,
+	sent_pause_read: bool,
 
 	pending_read_buffer: Vec<u8>,
 	pending_read_buffer_pos: usize,
@@ -1440,6 +1441,7 @@ where
 					pending_outbound_buffer_first_msg_offset: 0,
 					gossip_broadcast_buffer: VecDeque::new(),
 					awaiting_write_event: false,
+					sent_pause_read: false,
 
 					pending_read_buffer,
 					pending_read_buffer_pos: 0,
@@ -1500,6 +1502,7 @@ where
 					pending_outbound_buffer_first_msg_offset: 0,
 					gossip_broadcast_buffer: VecDeque::new(),
 					awaiting_write_event: false,
+					sent_pause_read: false,
 
 					pending_read_buffer,
 					pending_read_buffer_pos: 0,
@@ -1535,10 +1538,18 @@ where
 	}
 
 	fn do_attempt_write_data(
-		&self, descriptor: &mut Descriptor, peer: &mut Peer, force_one_write: bool,
+		&self, descriptor: &mut Descriptor, peer: &mut Peer, mut force_one_write: bool,
 	) {
-		let mut have_written = false;
-		while !peer.awaiting_write_event {
+		if !self.peer_should_read(peer) {
+			if !peer.sent_pause_read {
+				force_one_write = true;
+			}
+		} else {
+			if peer.sent_pause_read {
+				force_one_write = false;
+			}
+		}
+		while force_one_write || !peer.awaiting_write_event {
 			if peer.should_buffer_onion_message() {
 				if let Some((peer_node_id, _)) = peer.their_node_id {
 					let handler = &self.message_handler.onion_message_handler;
@@ -1606,20 +1617,20 @@ where
 			let should_read = self.peer_should_read(peer);
 			let next_buff = match peer.pending_outbound_buffer.front() {
 				None => {
-					if force_one_write && !have_written {
-						if should_read {
-							let data_sent = descriptor.send_data(&[], should_read);
-							debug_assert_eq!(data_sent, 0, "Can't write more than no data");
-						}
+					if force_one_write {
+						let data_sent = descriptor.send_data(&[], should_read);
+						debug_assert_eq!(data_sent, 0, "Can't write more than no data");
+						peer.sent_pause_read = !should_read;
 					}
 					return;
 				},
 				Some(buff) => buff,
 			};
+			force_one_write = false;
 
 			let pending = &next_buff[peer.pending_outbound_buffer_first_msg_offset..];
 			let data_sent = descriptor.send_data(pending, should_read);
-			have_written = true;
+			peer.sent_pause_read = !should_read;
 			peer.pending_outbound_buffer_first_msg_offset += data_sent;
 			if peer.pending_outbound_buffer_first_msg_offset == next_buff.len() {
 				peer.pending_outbound_buffer_first_msg_offset = 0;
