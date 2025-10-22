@@ -8,6 +8,7 @@ description = """
 Utilities for supporting custom peer-to-peer messages in LDK.
 """
 edition = "2021"
+rust-version = "1.75"
 
 [package.metadata.docs.rs]
 all-features = true

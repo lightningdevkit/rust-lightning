@@ -5,6 +5,7 @@ authors = ["John Cantrell <johncantrell97@gmail.com>", "Elias Rohrer <dev@tnull.
 homepage = "https://lightningdevkit.org/"
 license = "MIT OR Apache-2.0"
 edition = "2021"
+rust-version = "1.75"
 description = "Types and primitives to integrate a spec-compliant LSP with an LDK-based node."
 repository = "https://github.com/lightningdevkit/lightning-liquidity/"
 readme = "README.md"
