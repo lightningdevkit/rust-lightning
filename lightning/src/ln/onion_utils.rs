@@ -992,41 +992,19 @@ pub fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 where
 	L::Target: Logger,
 {
-	let (path, primary_session_priv) = match htlc_source {
+	let (path, session_priv) = match htlc_source {
 		HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
 		_ => unreachable!(),
 	};
 
-	if path.has_trampoline_hops() {
-		// If we have Trampoline hops, the outer onion session_priv is a hash of the inner one.
-		let session_priv_hash = Sha256::hash(&primary_session_priv.secret_bytes()).to_byte_array();
-		let outer_session_priv =
-			SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!");
-		process_onion_failure_inner(
-			secp_ctx,
-			logger,
-			path,
-			&outer_session_priv,
-			Some(primary_session_priv),
-			encrypted_packet,
-		)
-	} else {
-		process_onion_failure_inner(
-			secp_ctx,
-			logger,
-			path,
-			primary_session_priv,
-			None,
-			encrypted_packet,
-		)
-	}
+	process_onion_failure_inner(secp_ctx, logger, path, &session_priv, None, encrypted_packet)
 }
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
 fn process_onion_failure_inner<T: secp256k1::Signing, L: Deref>(
-	secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, outer_session_priv: &SecretKey,
-	inner_session_priv: Option<&SecretKey>, mut encrypted_packet: OnionErrorPacket,
+	secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, session_priv: &SecretKey,
+	trampoline_session_priv_override: Option<SecretKey>, mut encrypted_packet: OnionErrorPacket,
 ) -> DecodedOnionFailure
 where
 	L::Target: Logger,
@@ -1097,22 +1075,27 @@ where
 	let nontrampoline_bt =
 		if path.has_trampoline_hops() { None } else { path.blinded_tail.as_ref() };
 	let nontrampolines =
-		construct_onion_keys_generic(secp_ctx, &path.hops, nontrampoline_bt, outer_session_priv)
-			.map(|(shared_secret, _, _, route_hop_option, _)| {
+		construct_onion_keys_generic(secp_ctx, &path.hops, nontrampoline_bt, session_priv).map(
+			|(shared_secret, _, _, route_hop_option, _)| {
 				(route_hop_option.map(|rh| ErrorHop::RouteHop(rh)), shared_secret)
-			});
+			},
+		);
 
 	let trampolines = if path.has_trampoline_hops() {
 		// Trampoline hops are part of the blinded tail, so this can never panic
 		let blinded_tail = path.blinded_tail.as_ref();
 		let hops = &blinded_tail.unwrap().trampoline_hops;
-		let inner_session_priv =
-			inner_session_priv.expect("Trampoline hops always have an inner session priv");
-		Some(construct_onion_keys_generic(secp_ctx, hops, blinded_tail, inner_session_priv).map(
-			|(shared_secret, _, _, route_hop_option, _)| {
-				(route_hop_option.map(|tram_hop| ErrorHop::TrampolineHop(tram_hop)), shared_secret)
-			},
-		))
+		let trampoline_session_priv = trampoline_session_priv_override
+			.unwrap_or_else(|| compute_trampoline_session_priv(session_priv));
+		Some(
+			construct_onion_keys_generic(secp_ctx, hops, blinded_tail, &trampoline_session_priv)
+				.map(|(shared_secret, _, _, route_hop_option, _)| {
+					(
+						route_hop_option.map(|tram_hop| ErrorHop::TrampolineHop(tram_hop)),
+						shared_secret,
+					)
+				}),
+		)
 	} else {
 		None
 	};
@@ -2242,7 +2225,6 @@ pub(crate) enum Hop {
 		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
 		outer_shared_secret: SharedSecret,
 		trampoline_hop_data: msgs::InboundOnionReceivePayload,
-		#[allow(unused)]
 		trampoline_shared_secret: SharedSecret,
 	},
 	/// This onion payload was for us, not for forwarding to a next-hop, and it was sent to us via
@@ -2252,7 +2234,6 @@ pub(crate) enum Hop {
 		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
 		outer_shared_secret: SharedSecret,
 		trampoline_hop_data: msgs::InboundOnionBlindedReceivePayload,
-		#[allow(unused)]
 		trampoline_shared_secret: SharedSecret,
 	},
 }
@@ -2543,18 +2524,24 @@ pub fn create_payment_onion<T: secp256k1::Signing>(
 	)
 }
 
+pub(super) fn compute_trampoline_session_priv(outer_onion_session_priv: &SecretKey) -> SecretKey {
+	// When creating the inner trampoline onion, we set the session priv to the hash of the outer
+	// onion session priv.
+	let session_priv_hash = Sha256::hash(&outer_onion_session_priv.secret_bytes()).to_byte_array();
+	SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!")
+}
+
 /// Build a payment onion, returning the first hop msat and cltv values as well.
 /// `cur_block_height` should be set to the best known block height + 1.
 pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, total_msat: u64,
 	recipient_onion: &RecipientOnionFields, cur_block_height: u32, payment_hash: &PaymentHash,
 	keysend_preimage: &Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
-	prng_seed: [u8; 32], secondary_session_priv: Option<SecretKey>,
-	secondary_prng_seed: Option<[u8; 32]>,
+	prng_seed: [u8; 32], trampoline_session_priv_override: Option<SecretKey>,
+	trampoline_prng_seed_override: Option<[u8; 32]>,
 ) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
 	let mut outer_total_msat = total_msat;
 	let mut outer_starting_htlc_offset = cur_block_height;
-	let mut outer_session_priv_override = None;
 	let mut trampoline_packet_option = None;
 
 	if let Some(blinded_tail) = &path.blinded_tail {
@@ -2569,12 +2556,15 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 					keysend_preimage,
 				)?;
 
+			let trampoline_session_priv = trampoline_session_priv_override
+				.unwrap_or_else(|| compute_trampoline_session_priv(session_priv));
+			let trampoline_prng_seed = trampoline_prng_seed_override.unwrap_or(prng_seed);
 			let onion_keys =
-				construct_trampoline_onion_keys(&secp_ctx, &blinded_tail, &session_priv);
+				construct_trampoline_onion_keys(&secp_ctx, &blinded_tail, &trampoline_session_priv);
 			let trampoline_packet = construct_trampoline_onion_packet(
 				trampoline_payloads,
 				onion_keys,
-				prng_seed,
+				trampoline_prng_seed,
 				payment_hash,
 				// TODO: specify a fixed size for privacy in future spec upgrade
 				None,
@@ -2584,11 +2574,6 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 			})?;
 
 			trampoline_packet_option = Some(trampoline_packet);
-
-			outer_session_priv_override = Some(secondary_session_priv.unwrap_or_else(|| {
-				let session_priv_hash = Sha256::hash(&session_priv.secret_bytes()).to_byte_array();
-				SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!")
-			}));
 		}
 	}
 
@@ -2602,14 +2587,11 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 		trampoline_packet_option,
 	)?;
 
-	let outer_session_priv = outer_session_priv_override.as_ref().unwrap_or(session_priv);
-	let onion_keys = construct_onion_keys(&secp_ctx, &path, outer_session_priv);
-	let outer_onion_prng_seed = secondary_prng_seed.unwrap_or(prng_seed);
-	let onion_packet =
-		construct_onion_packet(onion_payloads, onion_keys, outer_onion_prng_seed, payment_hash)
-			.map_err(|_| APIError::InvalidRoute {
-				err: "Route size too large considering onion data".to_owned(),
-			})?;
+	let onion_keys = construct_onion_keys(&secp_ctx, &path, session_priv);
+	let onion_packet = construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash)
+		.map_err(|_| APIError::InvalidRoute {
+			err: "Route size too large considering onion data".to_owned(),
+		})?;
 	Ok((onion_packet, htlc_msat, htlc_cltv))
 }
 
@@ -3601,7 +3583,7 @@ mod tests {
 				&logger,
 				&build_trampoline_test_path(),
 				&outer_session_priv,
-				Some(&trampoline_session_priv),
+				Some(trampoline_session_priv),
 				error_packet,
 			);
 			assert_eq!(
@@ -3614,18 +3596,14 @@ mod tests {
 			// shared secret cryptography sanity tests
 			let session_priv = get_test_session_key();
 			let path = build_trampoline_test_path();
+			let outer_onion_keys = construct_onion_keys(&Secp256k1::new(), &path, &session_priv);
 
+			let trampoline_session_priv = compute_trampoline_session_priv(&session_priv);
 			let trampoline_onion_keys = construct_trampoline_onion_keys(
 				&secp_ctx,
 				&path.blinded_tail.as_ref().unwrap(),
-				&session_priv,
+				&trampoline_session_priv,
 			);
-
-			let outer_onion_keys = {
-				let session_priv_hash = Sha256::hash(&session_priv.secret_bytes()).to_byte_array();
-				let outer_session_priv = SecretKey::from_slice(&session_priv_hash[..]).unwrap();
-				construct_onion_keys(&Secp256k1::new(), &path, &outer_session_priv)
-			};
 
 			let htlc_source = HTLCSource::OutboundRoute {
 				path,

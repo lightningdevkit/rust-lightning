@@ -10,8 +10,6 @@
 // licenses.
 
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use bitcoin::secp256k1::ecdh::SharedSecret;
@@ -1831,7 +1829,7 @@ fn test_combined_trampoline_onion_creation_vectors() {
 	let amt_msat = 150_000_000;
 	let cur_height = 800_000;
 	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
-	let (bob_onion, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion_internal(&secp_ctx, &path, &session_priv, amt_msat, &recipient_onion_fields, cur_height, &associated_data, &None, None, [0; 32], Some(outer_session_key), Some(outer_onion_prng_seed)).unwrap();
+	let (bob_onion, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion_internal(&secp_ctx, &path, &outer_session_key, amt_msat, &recipient_onion_fields, cur_height, &associated_data, &None, None, outer_onion_prng_seed, Some(session_priv), Some([0; 32])).unwrap();
 
 	let outer_onion_packet_hex = bob_onion.encode().to_lower_hex_string();
 	assert_eq!(outer_onion_packet_hex, "00025fd60556c134ae97e4baedba220a644037754ee67c54fd05e93bf40c17cbb73362fb9dee96001ff229945595b6edb59437a6bc143406d3f90f749892a84d8d430c6890437d26d5bfc599d565316ef51347521075bbab87c59c57bcf20af7e63d7192b46cf171e4f73cb11f9f603915389105d91ad630224bea95d735e3988add1e24b5bf28f1d7128db64284d90a839ba340d088c74b1fb1bd21136b1809428ec5399c8649e9bdf92d2dcfc694deae5046fa5b2bdf646847aaad73f5e95275763091c90e71031cae1f9a770fdea559642c9c02f424a2a28163dd0957e3874bd28a97bec67d18c0321b0e68bc804aa8345b17cb626e2348ca06c8312a167c989521056b0f25c55559d446507d6c491d50605cb79fa87929ce64b0a9860926eeaec2c431d926a1cadb9a1186e4061cb01671a122fc1f57602cbef06d6c194ec4b715c2e3dd4120baca3172cd81900b49fef857fb6d6afd24c983b608108b0a5ac0c1c6c52011f23b8778059ffadd1bb7cd06e2525417365f485a7fd1d4a9ba3818ede7cdc9e71afee8532252d08e2531ca52538655b7e8d912f7ec6d37bbcce8d7ec690709dbf9321e92c565b78e7fe2c22edf23e0902153d1ca15a112ad32fb19695ec65ce11ddf670da7915f05ad4b86c154fb908cb567315d1124f303f75fa075ebde8ef7bb12e27737ad9e4924439097338ea6d7a6fc3721b88c9b830a34e8d55f4c582b74a3895cc848fe57f4fe29f115dabeb6b3175be15d94408ed6771109cfaf57067ae658201082eae7605d26b1449af4425ae8e8f58cdda5c6265f1fd7a386fc6cea3074e4f25b909b96175883676f7610a00fdf34df9eb6c7b9a4ae89b839c69fd1f285e38cdceb634d782cc6d81179759bc9fd47d7fd060470d0b048287764c6837963274e708314f017ac7dc26d0554d59bfcfd3136225798f65f0b0fea337c6b256ebbb63a90b994c0ab93fd8b1d6bd4c74aebe535d6110014cd3d525394027dfe8faa98b4e9b2bee7949eb1961f1b026791092f84deea63afab66603dbe9b6365a102a1fef2f6b9744bc1bb091a8da9130d34d4d39f25dbad191649cfb67e10246364b7ce0c6ec072f9690cabb459d9fda0c849e17535de4357e9907270c75953fca3c845bb613926ecf73205219c7057a4b6bb244c184362bb4e2f24279dc4e60b94a5b1ec11c34081a628428ba5646c995b9558821053ba9c84a05afbf00dabd60223723096516d2f5668f3ec7e11612b01eb7a3a0506189a2272b88e89807943adb34291a17f6cb5516ffd6f945a1c42a524b21f096d66f350b1dad4db455741ae3d0e023309fbda5ef55fb0dc74f3297041448b2be76c525141963934c6afc53d263fb7836626df502d7c2ee9e79cbbd87afd84bbb8dfbf45248af3cd61ad5fac827e7683ca4f91dfad507a8eb9c17b2c9ac5ec051fe645a4a6cb37136f6f19b611e0ea8da7960af2d779507e55f57305bc74b7568928c5dd5132990fe54c22117df91c257d8c7b61935a018a28c1c3b17bab8e4294fa699161ec21123c9fc4e71079df31f300c2822e1246561e04765d3aab333eafd026c7431ac7616debb0e022746f4538e1c6348b600c988eeb2d051fc60c468dca260a84c79ab3ab8342dc345a764672848ea234e17332bc124799daf7c5fcb2e2358514a7461357e1c19c802c5ee32deccf1776885dd825bedd5f781d459984370a6b7ae885d4483a76ddb19b30f47ed47cd56aa5a079a89793dbcad461c59f2e002067ac98dd5a534e525c9c46c2af730741bf1f8629357ec0bfc0bc9ecb31af96777e507648ff4260dc3673716e098d9111dfd245f1d7c55a6de340deb8bd7a053e5d62d760f184dc70ca8fa255b9023b9b9aedfb6e419a5b5951ba0f83b603793830ee68d442d7b88ee1bbf6bbd1bcd6f68cc1af");
@@ -1985,7 +1983,10 @@ fn test_trampoline_inbound_payment_decoding() {
 	};
 }
 
-fn do_test_trampoline_single_hop_receive(success: bool) {
+#[test]
+fn test_trampoline_forward_payload_encoded_as_receive() {
+	// Test that we'll fail backwards as expected when receiving a well-formed blinded forward
+	// trampoline onion payload with no next hop present.
 	const TOTAL_NODE_COUNT: usize = 3;
 	let secp_ctx = Secp256k1::new();
 
@@ -2009,30 +2010,18 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 	let bob_carol_scid = nodes[1].node().list_channels().iter().find(|c| c.channel_id == chan_id_bob_carol).unwrap().short_channel_id.unwrap();
 
 	let amt_msat = 1000;
-	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+	let (payment_preimage, payment_hash, _) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 
-	let carol_alice_trampoline_session_priv = secret_from_hex("a0f4b8d7b6c2d0ffdfaf718f76e9decaef4d9fb38a8c4addb95c4007cc3eee03");
-	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &carol_alice_trampoline_session_priv);
-	let carol_blinded_hops = if success {
-		let payee_tlvs = UnauthenticatedReceiveTlvs {
-			payment_secret,
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: u32::max_value(),
-				htlc_minimum_msat: amt_msat,
-			},
-			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
-		};
+	// We need the session priv to construct an invalid onion packet later.
+	let override_random_bytes = [3; 32];
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(override_random_bytes);
 
-		let nonce = Nonce([42u8; 16]);
-		let expanded_key = nodes[2].keys_manager.get_expanded_key();
-		let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
-		let carol_unblinded_tlvs = payee_tlvs.encode();
+	let outer_session_priv = SecretKey::from_slice(&override_random_bytes).unwrap();
+	let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
 
-		let path = [((carol_node_id, None), WithoutLength(&carol_unblinded_tlvs))];
-		blinded_path::utils::construct_blinded_hops(
-			&secp_ctx, path.into_iter(), &carol_alice_trampoline_session_priv,
-		)
-	} else {
+	// Create a blinded hop for the recipient that is encoded as a trampoline forward.
+	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &trampoline_session_priv);
+	let carol_blinded_hops =  {
 		let payee_tlvs = blinded_path::payment::TrampolineForwardTlvs {
 			next_trampoline: alice_node_id,
 			payment_constraints: PaymentConstraints {
@@ -2051,9 +2040,9 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 		let carol_unblinded_tlvs = payee_tlvs.encode();
 		let path = [((carol_node_id, None), WithoutLength(&carol_unblinded_tlvs))];
 		blinded_path::utils::construct_blinded_hops(
-			&secp_ctx, path.into_iter(), &carol_alice_trampoline_session_priv,
+			&secp_ctx, path.into_iter(), &trampoline_session_priv,
 		)
-	};
+  };
 
 	let route = Route {
 		paths: vec![Path {
@@ -2099,102 +2088,180 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 		route_params: None,
 	};
 
-	// We need the session priv to construct an invalid onion packet later.
-	let override_random_bytes = [3; 32];
-	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(override_random_bytes);
-
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
-
 	check_added_monitors!(&nodes[0], 1);
 
-	if success {
-		pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], amt_msat, payment_hash, payment_secret);
-		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
-	} else {
-		let replacement_onion = {
-			// create a substitute onion where the last Trampoline hop is a forward
-			let trampoline_secret_key = SecretKey::from_slice(&override_random_bytes).unwrap();
-			let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
+	let replacement_onion = {
+		// create a substitute onion where the last Trampoline hop is a forward
+		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 
-			let mut blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
+		let mut blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
 
-			// append some dummy blinded hop so the intro hop looks like a forward
-			blinded_tail.hops.push(BlindedHop {
-				blinded_node_id: alice_node_id,
-				encrypted_payload: vec![],
-			});
-
-			let (mut trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, amt_msat, &recipient_onion_fields, 32, &None).unwrap();
-
-			// pop the last dummy hop
-			trampoline_payloads.pop();
-
-			let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &trampoline_secret_key);
-			let trampoline_packet = onion_utils::construct_trampoline_onion_packet(
-				trampoline_payloads,
-				trampoline_onion_keys,
-				override_random_bytes,
-				&payment_hash,
-				None,
-			).unwrap();
-
-			let outer_session_priv = {
-				let session_priv_hash = Sha256::hash(&override_random_bytes).to_byte_array();
-				SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!")
-			};
-
-			let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
-			let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
-			let outer_packet = onion_utils::construct_onion_packet(
-				outer_payloads,
-				outer_onion_keys,
-				override_random_bytes,
-				&payment_hash,
-			).unwrap();
-
-			outer_packet
-		};
-
-		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 1);
-		let mut first_message_event = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
-		let mut update_message = match first_message_event {
-			MessageSendEvent::UpdateHTLCs { ref mut updates, .. } => {
-				assert_eq!(updates.update_add_htlcs.len(), 1);
-				updates.update_add_htlcs.get_mut(0)
-			},
-			_ => panic!()
-		};
-		update_message.map(|msg| {
-			msg.onion_routing_packet = replacement_onion.clone();
+		// append some dummy blinded hop so the intro hop looks like a forward
+		blinded_tail.hops.push(BlindedHop {
+			blinded_node_id: alice_node_id,
+			encrypted_payload: vec![],
 		});
 
-		let route: &[&Node] = &[&nodes[1], &nodes[2]];
-		let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
-			.with_payment_preimage(payment_preimage)
-			.without_claimable_event()
-			.expect_failure(HTLCHandlingFailureType::InvalidOnion);
-		do_pass_along_path(args);
+		let (mut trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, amt_msat, &recipient_onion_fields, 32, &None).unwrap();
 
-		{
-			let unblinded_node_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
-			nodes[1].node.handle_update_fail_htlc(
-				nodes[2].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
-			);
-			do_commitment_signed_dance(&nodes[1], &nodes[2], &unblinded_node_updates.commitment_signed, true, false);
-		}
-		{
-			let unblinded_node_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-			nodes[0].node.handle_update_fail_htlc(
-				nodes[1].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
-			);
-			do_commitment_signed_dance(&nodes[0], &nodes[1], &unblinded_node_updates.commitment_signed, false, false);
-		}
-		{
-			let payment_failed_conditions = PaymentFailedConditions::new()
-				.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionPayload, &[0; 0]);
-			expect_payment_failed_conditions(&nodes[0], payment_hash, true, payment_failed_conditions);
-		}
+		// pop the last dummy hop
+		trampoline_payloads.pop();
+
+		let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &trampoline_session_priv);
+		let trampoline_packet = onion_utils::construct_trampoline_onion_packet(
+			trampoline_payloads,
+			trampoline_onion_keys,
+			override_random_bytes,
+			&payment_hash,
+			None,
+		).unwrap();
+
+		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
+		let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
+		let outer_packet = onion_utils::construct_onion_packet(
+			outer_payloads,
+			outer_onion_keys,
+			override_random_bytes,
+			&payment_hash,
+		).unwrap();
+
+		outer_packet
+	};
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let mut first_message_event = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let mut update_message = match first_message_event {
+		MessageSendEvent::UpdateHTLCs { ref mut updates, .. } => {
+			assert_eq!(updates.update_add_htlcs.len(), 1);
+			updates.update_add_htlcs.get_mut(0)
+		},
+		_ => panic!()
+	};
+	update_message.map(|msg| {
+		msg.onion_routing_packet = replacement_onion.clone();
+	});
+
+	let route: &[&Node] = &[&nodes[1], &nodes[2]];
+	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
+		.with_payment_preimage(payment_preimage)
+		.without_claimable_event()
+		.expect_failure(HTLCHandlingFailureType::InvalidOnion);
+	do_pass_along_path(args);
+
+	{
+		let unblinded_node_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_update_fail_htlc(
+			nodes[2].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+		);
+		do_commitment_signed_dance(&nodes[1], &nodes[2], &unblinded_node_updates.commitment_signed, true, false);
+	}
+	{
+		let unblinded_node_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fail_htlc(
+			nodes[1].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+		);
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &unblinded_node_updates.commitment_signed, false, false);
+	}
+	{
+		let payment_failed_conditions = PaymentFailedConditions::new()
+			.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionPayload, &[0; 0]);
+		expect_payment_failed_conditions(&nodes[0], payment_hash, true, payment_failed_conditions);
+	}
+}
+
+fn do_test_trampoline_single_hop_receive(success: bool) {
+	const TOTAL_NODE_COUNT: usize = 3;
+	let secp_ctx = Secp256k1::new();
+
+	let chanmon_cfgs = create_chanmon_cfgs(TOTAL_NODE_COUNT);
+	let node_cfgs = create_node_cfgs(TOTAL_NODE_COUNT, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(TOTAL_NODE_COUNT, &node_cfgs, &vec![None; TOTAL_NODE_COUNT]);
+	let mut nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id_alice_bob, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let (_, _, chan_id_bob_carol, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	for i in 0..TOTAL_NODE_COUNT { // connect all nodes' blocks
+		connect_blocks(&nodes[i], (TOTAL_NODE_COUNT as u32) * CHAN_CONFIRM_DEPTH + 1 - nodes[i].best_block_info().1);
+	}
+
+	let bob_node_id = nodes[1].node().get_our_node_id();
+	let carol_node_id = nodes[2].node().get_our_node_id();
+
+	let alice_bob_scid = nodes[0].node().list_channels().iter().find(|c| c.channel_id == chan_id_alice_bob).unwrap().short_channel_id.unwrap();
+	let bob_carol_scid = nodes[1].node().list_channels().iter().find(|c| c.channel_id == chan_id_bob_carol).unwrap().short_channel_id.unwrap();
+
+	let amt_msat = 1000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+
+	// Create a 1-hop blinded path for Carol.
+	let payee_tlvs = UnauthenticatedReceiveTlvs {
+		payment_secret,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: amt_msat,
+		},
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+	};
+	let nonce = Nonce([42u8; 16]);
+	let expanded_key = nodes[2].keys_manager.get_expanded_key();
+	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
+	let blinded_path = BlindedPaymentPath::new(&[], carol_node_id, payee_tlvs, u64::MAX, 0, nodes[2].keys_manager, &secp_ctx).unwrap();
+
+	let route = Route {
+		paths: vec![Path {
+			hops: vec![
+				// Bob
+				RouteHop {
+					pubkey: bob_node_id,
+					node_features: NodeFeatures::empty(),
+					short_channel_id: alice_bob_scid,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 1000,
+					cltv_expiry_delta: 48,
+					maybe_announced_channel: false,
+				},
+
+				// Carol
+				RouteHop {
+					pubkey: carol_node_id,
+					node_features: NodeFeatures::empty(),
+					short_channel_id: bob_carol_scid,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 0,
+					cltv_expiry_delta: 48,
+					maybe_announced_channel: false,
+				}
+			],
+			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![
+					// Carol
+					TrampolineHop {
+						pubkey: carol_node_id,
+						node_features: Features::empty(),
+						fee_msat: amt_msat,
+						cltv_expiry_delta: 24,
+					},
+				],
+				hops: blinded_path.blinded_hops().to_vec(),
+				blinding_point: blinded_path.blinding_point(),
+				excess_final_cltv_expiry_delta: 39,
+				final_value_msat: amt_msat,
+			})
+		}],
+		route_params: None,
+	};
+
+	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
+	check_added_monitors!(&nodes[0], 1);
+
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], amt_msat, payment_hash, payment_secret);
+	if success {
+		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+	} else {
+		fail_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_hash);
 	}
 }
 
@@ -2207,8 +2274,7 @@ fn test_trampoline_single_hop_receive() {
 	do_test_trampoline_single_hop_receive(false);
 }
 
-#[test]
-fn test_trampoline_unblinded_receive() {
+fn do_test_trampoline_unblinded_receive(success: bool) {
 	// Simulate a payment of A (0) -> B (1) -> C(Trampoline) (2)
 
 	const TOTAL_NODE_COUNT: usize = 3;
@@ -2226,7 +2292,6 @@ fn test_trampoline_unblinded_receive() {
 		connect_blocks(&nodes[i], (TOTAL_NODE_COUNT as u32) * CHAN_CONFIRM_DEPTH + 1 - nodes[i].best_block_info().1);
 	}
 
-	let alice_node_id = nodes[0].node().get_our_node_id();
 	let bob_node_id = nodes[1].node().get_our_node_id();
 	let carol_node_id = nodes[2].node().get_our_node_id();
 
@@ -2235,29 +2300,6 @@ fn test_trampoline_unblinded_receive() {
 
 	let amt_msat = 1000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
-	let payee_tlvs = blinded_path::payment::TrampolineForwardTlvs {
-		next_trampoline: alice_node_id,
-		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
-			htlc_minimum_msat: amt_msat,
-		},
-		features: BlindedHopFeatures::empty(),
-		payment_relay: PaymentRelay {
-			cltv_expiry_delta: 0,
-			fee_proportional_millionths: 0,
-			fee_base_msat: 0,
-		},
-		next_blinding_override: None,
-	};
-
-	let carol_unblinded_tlvs = payee_tlvs.encode();
-	let path = [((carol_node_id, None), WithoutLength(&carol_unblinded_tlvs))];
-	let carol_alice_trampoline_session_priv = secret_from_hex("a0f4b8d7b6c2d0ffdfaf718f76e9decaef4d9fb38a8c4addb95c4007cc3eee03");
-	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &carol_alice_trampoline_session_priv);
-	let carol_blinded_hops = blinded_path::utils::construct_blinded_hops(
-		&secp_ctx, path.into_iter(), &carol_alice_trampoline_session_priv,
-	);
-
 	let route = Route {
 		paths: vec![Path {
 			hops: vec![
@@ -2293,8 +2335,12 @@ fn test_trampoline_unblinded_receive() {
 						cltv_expiry_delta: 24,
 					},
 				],
-				hops: carol_blinded_hops,
-				blinding_point: carol_blinding_point,
+				// The blinded path data is unused because we replace the onion of the last hop
+				hops: vec![BlindedHop {
+					blinded_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
+					encrypted_payload: vec![42; 32]
+				}],
+				blinding_point: PublicKey::from_slice(&[2; 33]).unwrap(),
 				excess_final_cltv_expiry_delta: 39,
 				final_value_msat: amt_msat,
 			})
@@ -2302,49 +2348,47 @@ fn test_trampoline_unblinded_receive() {
 		route_params: None,
 	};
 
+	// We need the session priv to construct an invalid onion packet later.
+	let override_random_bytes = [42; 32];
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(override_random_bytes);
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
 
 	let replacement_onion = {
 		// create a substitute onion where the last Trampoline hop is an unblinded receive, which we
 		// (deliberately) do not support out of the box, therefore necessitating this workaround
-		let trampoline_secret_key = secret_from_hex("0134928f7b7ca6769080d70f16be84c812c741f545b49a34db47ce338a205799");
-		let prng_seed = secret_from_hex("fe02b4b9054302a3ddf4e1e9f7c411d644aebbd295218ab009dca94435f775a9");
+		let outer_session_priv = SecretKey::from_slice(&override_random_bytes[..]).unwrap();
+		let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
 		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 
 		let blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
-		let (mut trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, amt_msat, &recipient_onion_fields, 32, &None).unwrap();
-
-		// pop the last dummy hop
-		trampoline_payloads.pop();
-
-		trampoline_payloads.push(msgs::OutboundTrampolinePayload::Receive {
+		let (_, _, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, amt_msat, &recipient_onion_fields, 32, &None).unwrap();
+		let trampoline_payloads = vec![msgs::OutboundTrampolinePayload::Receive {
 			payment_data: Some(msgs::FinalOnionHopData {
 				payment_secret,
 				total_msat: amt_msat,
 			}),
 			sender_intended_htlc_amt_msat: amt_msat,
 			cltv_expiry_height: 104,
-		});
+		}];
 
-		let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &trampoline_secret_key);
+		let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &trampoline_session_priv);
 		let trampoline_packet = onion_utils::construct_trampoline_onion_packet(
 			trampoline_payloads,
 			trampoline_onion_keys,
-			prng_seed.secret_bytes(),
+			override_random_bytes,
 			&payment_hash,
 			None,
 		).unwrap();
 
 		// Use a different session key to construct the replacement onion packet. Note that the sender isn't aware of
 		// this and won't be able to decode the fulfill hold times.
-		let outer_session_priv = secret_from_hex("e52c20461ed7acd46c4e7b591a37610519179482887bd73bf3b94617f8f03677");
 
-		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
+		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], amt_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
 		let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
 		let outer_packet = onion_utils::construct_onion_packet(
 			outer_payloads,
 			outer_onion_keys,
-			prng_seed.secret_bytes(),
+			override_random_bytes,
 			&payment_hash,
 		).unwrap();
 
@@ -2371,8 +2415,17 @@ fn test_trampoline_unblinded_receive() {
 	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
 		.with_payment_secret(payment_secret);
 	do_pass_along_path(args);
+	if success {
+		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+	} else {
+		fail_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_hash);
+	}
+}
 
-	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+#[test]
+fn test_trampoline_unblinded_receive() {
+    do_test_trampoline_unblinded_receive(true);
+    do_test_trampoline_unblinded_receive(false);
 }
 
 #[test]
