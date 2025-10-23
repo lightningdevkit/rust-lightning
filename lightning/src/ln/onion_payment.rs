@@ -758,6 +758,7 @@ mod tests {
 			skimmed_fee_msat: None,
 			blinding_point: None,
 			hold_htlc: None,
+			accountable: None,
 		}
 	}
 
