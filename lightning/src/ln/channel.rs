@@ -2622,9 +2622,6 @@ struct PendingFunding {
 
 	/// The funding txid used in the `splice_locked` received from the counterparty.
 	received_funding_txid: Option<Txid>,
-
-	/// The new funding key the signer provided us for use in the splice output.
-	new_holder_funding_key: PublicKey,
 }
 
 impl_writeable_tlv_based!(PendingFunding, {
@@ -2632,12 +2629,12 @@ impl_writeable_tlv_based!(PendingFunding, {
 	(3, negotiated_candidates, required_vec),
 	(5, sent_funding_txid, option),
 	(7, received_funding_txid, option),
-	(9, new_holder_funding_key, required),
 });
 
 enum FundingNegotiation {
 	AwaitingAck {
 		context: FundingNegotiationContext,
+		new_holder_funding_key: PublicKey,
 	},
 	ConstructingTransaction {
 		funding: FundingScope,
@@ -2668,7 +2665,7 @@ impl FundingNegotiation {
 
 	fn is_initiator(&self) -> bool {
 		match self {
-			FundingNegotiation::AwaitingAck { context } => context.is_initiator,
+			FundingNegotiation::AwaitingAck { context, .. } => context.is_initiator,
 			FundingNegotiation::ConstructingTransaction { interactive_tx_constructor, .. } => {
 				interactive_tx_constructor.is_initiator()
 			},
@@ -6882,7 +6879,7 @@ macro_rules! maybe_create_splice_funding_failed {
 					.map(|funding| funding.get_channel_type().clone());
 
 				let (contributed_inputs, contributed_outputs) = match funding_negotiation {
-					FundingNegotiation::AwaitingAck { context } => {
+					FundingNegotiation::AwaitingAck { context, .. } => {
 						context.$contributed_inputs_and_outputs()
 					},
 					FundingNegotiation::ConstructingTransaction {
@@ -11966,12 +11963,13 @@ where
 			_ => todo!(),
 		};
 
+		let funding_negotiation =
+			FundingNegotiation::AwaitingAck { context, new_holder_funding_key: funding_pubkey };
 		self.pending_splice = Some(PendingFunding {
-			funding_negotiation: Some(FundingNegotiation::AwaitingAck { context }),
+			funding_negotiation: Some(funding_negotiation),
 			negotiated_candidates: vec![],
 			sent_funding_txid: None,
 			received_funding_txid: None,
-			new_holder_funding_key: funding_pubkey,
 		});
 
 		msgs::SpliceInit {
@@ -12225,7 +12223,6 @@ where
 
 		let new_funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
 		self.pending_splice = Some(PendingFunding {
-			new_holder_funding_key: new_funding_pubkey,
 			funding_negotiation: Some(FundingNegotiation::ConstructingTransaction {
 				funding: splice_funding,
 				interactive_tx_constructor,
@@ -12264,13 +12261,14 @@ where
 		let pending_splice =
 			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
 		// TODO: Good candidate for a let else statement once MSRV >= 1.65
-		let funding_negotiation_context = if let Some(FundingNegotiation::AwaitingAck { context }) =
-			pending_splice.funding_negotiation.take()
-		{
-			context
-		} else {
-			panic!("We should have returned an error earlier!");
-		};
+		let funding_negotiation_context =
+			if let Some(FundingNegotiation::AwaitingAck { context, .. }) =
+				pending_splice.funding_negotiation.take()
+			{
+				context
+			} else {
+				panic!("We should have returned an error earlier!");
+			};
 
 		let mut interactive_tx_constructor = funding_negotiation_context
 			.into_interactive_tx_constructor(
@@ -12306,8 +12304,12 @@ where
 			.as_ref()
 			.ok_or_else(|| ChannelError::Ignore("Channel is not in pending splice".to_owned()))?;
 
-		let funding_negotiation_context = match &pending_splice.funding_negotiation {
-			Some(FundingNegotiation::AwaitingAck { context }) => context,
+		let (funding_negotiation_context, new_holder_funding_key) = match &pending_splice
+			.funding_negotiation
+		{
+			Some(FundingNegotiation::AwaitingAck { context, new_holder_funding_key }) => {
+				(context, new_holder_funding_key)
+			},
 			Some(FundingNegotiation::ConstructingTransaction { .. })
 			| Some(FundingNegotiation::AwaitingSignatures { .. }) => {
 				return Err(ChannelError::WarnAndDisconnect(
@@ -12327,7 +12329,7 @@ where
 			.map_err(|e| ChannelError::WarnAndDisconnect(e))?;
 
 		let mut new_keys = self.funding.get_holder_pubkeys().clone();
-		new_keys.funding_pubkey = pending_splice.new_holder_funding_key;
+		new_keys.funding_pubkey = *new_holder_funding_key;
 
 		Ok(FundingScope::for_splice(
 			&self.funding,
