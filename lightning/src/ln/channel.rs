@@ -1373,6 +1373,27 @@ pub(crate) const COINBASE_MATURITY: u32 = 100;
 /// The number of blocks to wait for a channel_announcement to propagate such that payments using an
 /// older SCID can still be relayed. Once the spend of the previous funding transaction has reached
 /// this number of confirmations, the corresponding SCID will be forgotten.
+///
+/// Because HTLCs added prior to 0.1 which were waiting to be failed may reference a channel's
+/// pre-splice SCID, we need to ensure this is at least the maximum number of blocks before an HTLC
+/// gets failed-back due to a time-out. Luckily, in LDK prior to 0.2, this is enforced directly
+/// when checking the incoming HTLC, and compared against `CLTV_FAR_FAR_AWAY` (which prior to LDK
+/// 0.2, and still at the time of writing, is 14 * 24 * 6, i.e. two weeks).
+///
+/// Here we use four times that value to give us more time to fail an HTLC back (which does require
+/// the user call [`ChannelManager::process_pending_htlc_forwards`]) just in case (if an HTLC has
+/// been expired for 3 * 2 weeks our counterparty really should have closed the channel by now).
+/// Holding on to stale SCIDs doesn't really cost us much as each one costs an on-chain splice to
+/// generate anyway, so we might as well make this nearly arbitrarily long.
+///
+/// [`ChannelManager::process_pending_htlc_forwards`]: crate::ln::channelmanager::ChannelManager::process_pending_htlc_forwards
+#[cfg(not(test))]
+pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 14 * 24 * 6 * 4;
+
+/// In test (not `_test_utils`, though, since that tests actual upgrading), we deliberately break
+/// the above condition so that we can ensure that HTLCs forwarded in 0.2 or later are handled
+/// correctly even if this constant is reduced and an HTLC can outlive the original channel's SCID.
+#[cfg(test)]
 pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 
 struct PendingChannelMonitorUpdate {
