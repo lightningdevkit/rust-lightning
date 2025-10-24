@@ -3696,6 +3696,59 @@ macro_rules! handle_initial_monitor {
 	};
 }
 
+macro_rules! handle_new_monitor_update_internal {
+	(
+		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $logger: expr,
+		$chan_id: expr, $counterparty_node_id: expr, $all_completed: expr
+	) => {{
+		let in_flight_updates = &mut $peer_state
+			.in_flight_monitor_updates
+			.entry($chan_id)
+			.or_insert_with(|| ($funding_txo, Vec::new()))
+			.1;
+		// During startup, we push monitor updates as background events through to here in
+		// order to replay updates that were in-flight when we shut down. Thus, we have to
+		// filter for uniqueness here.
+		let update_idx =
+			in_flight_updates.iter().position(|upd| upd == &$update).unwrap_or_else(|| {
+				in_flight_updates.push($update);
+				in_flight_updates.len() - 1
+			});
+		if $self.background_events_processed_since_startup.load(Ordering::Acquire) {
+			let update_res =
+				$self.chain_monitor.update_channel($chan_id, &in_flight_updates[update_idx]);
+			let update_completed = handle_monitor_update_res($self, update_res, $chan_id, $logger);
+			if update_completed {
+				let _ = in_flight_updates.remove(update_idx);
+				if in_flight_updates.is_empty() {
+					$all_completed;
+				}
+			}
+			update_completed
+		} else {
+			// We blindly assume that the ChannelMonitorUpdate will be regenerated on startup if we
+			// fail to persist it. This is a fairly safe assumption, however, since anything we do
+			// during the startup sequence should be replayed exactly if we immediately crash.
+			let event = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+				counterparty_node_id: $counterparty_node_id,
+				funding_txo: $funding_txo,
+				channel_id: $chan_id,
+				update: in_flight_updates[update_idx].clone(),
+			};
+			// We want to track the in-flight update both in `in_flight_monitor_updates` and in
+			// `pending_background_events` to avoid a race condition during
+			// `pending_background_events` processing where we complete one
+			// `ChannelMonitorUpdate` (but there are more pending as background events) but we
+			// conclude that all pending `ChannelMonitorUpdate`s have completed and its safe to
+			// run post-completion actions.
+			// We could work around that with some effort, but its simpler to just track updates
+			// twice.
+			$self.pending_background_events.lock().unwrap().push(event);
+			false
+		}
+	}};
+}
+
 macro_rules! handle_post_close_monitor_update {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
@@ -3752,59 +3805,6 @@ macro_rules! handle_new_monitor_update_locked_actions_handled_by_caller {
 			counterparty_node_id,
 			{}
 		)
-	}};
-}
-
-macro_rules! handle_new_monitor_update_internal {
-	(
-		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $logger: expr,
-		$chan_id: expr, $counterparty_node_id: expr, $all_completed: expr
-	) => {{
-		let in_flight_updates = &mut $peer_state
-			.in_flight_monitor_updates
-			.entry($chan_id)
-			.or_insert_with(|| ($funding_txo, Vec::new()))
-			.1;
-		// During startup, we push monitor updates as background events through to here in
-		// order to replay updates that were in-flight when we shut down. Thus, we have to
-		// filter for uniqueness here.
-		let update_idx =
-			in_flight_updates.iter().position(|upd| upd == &$update).unwrap_or_else(|| {
-				in_flight_updates.push($update);
-				in_flight_updates.len() - 1
-			});
-		if $self.background_events_processed_since_startup.load(Ordering::Acquire) {
-			let update_res =
-				$self.chain_monitor.update_channel($chan_id, &in_flight_updates[update_idx]);
-			let update_completed = handle_monitor_update_res($self, update_res, $chan_id, $logger);
-			if update_completed {
-				let _ = in_flight_updates.remove(update_idx);
-				if in_flight_updates.is_empty() {
-					$all_completed;
-				}
-			}
-			update_completed
-		} else {
-			// We blindly assume that the ChannelMonitorUpdate will be regenerated on startup if we
-			// fail to persist it. This is a fairly safe assumption, however, since anything we do
-			// during the startup sequence should be replayed exactly if we immediately crash.
-			let event = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-				counterparty_node_id: $counterparty_node_id,
-				funding_txo: $funding_txo,
-				channel_id: $chan_id,
-				update: in_flight_updates[update_idx].clone(),
-			};
-			// We want to track the in-flight update both in `in_flight_monitor_updates` and in
-			// `pending_background_events` to avoid a race condition during
-			// `pending_background_events` processing where we complete one
-			// `ChannelMonitorUpdate` (but there are more pending as background events) but we
-			// conclude that all pending `ChannelMonitorUpdate`s have completed and its safe to
-			// run post-completion actions.
-			// We could work around that with some effort, but its simpler to just track updates
-			// twice.
-			$self.pending_background_events.lock().unwrap().push(event);
-			false
-		}
 	}};
 }
 
