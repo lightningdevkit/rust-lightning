@@ -2494,8 +2494,8 @@ fn no_double_pay_with_stale_channelmanager() {
 
 	// Reload with the stale manager and check that receiving the invoice again won't result in a
 	// duplicate payment attempt.
-	let monitor_0 = get_monitor!(nodes[0], chan_id_0).encode();
-	let monitor_1 = get_monitor!(nodes[0], chan_id_1).encode();
+	let monitor_0 = get_monitor_and_channel(&nodes[0], chan_id_0);
+	let monitor_1 = get_monitor_and_channel(&nodes[0], chan_id_1);
 	reload_node!(nodes[0], &alice_chan_manager_serialized, &[&monitor_0, &monitor_1], persister, chain_monitor, alice_deserialized);
 	// The stale manager results in closing the channels.
 	check_closed_event!(nodes[0], 2, ClosureReason::OutdatedChannelManager, [bob_id, bob_id], 10_000_000);

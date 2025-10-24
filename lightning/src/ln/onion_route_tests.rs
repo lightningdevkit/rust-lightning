@@ -1772,8 +1772,8 @@ fn do_test_onion_failure_stale_channel_update(announce_for_forwarding: bool) {
 
 	// To test persistence of the updated config, we'll re-initialize the ChannelManager.
 	let config_after_restart = {
-		let chan_1_monitor_serialized = get_monitor!(nodes[1], other_channel.3).encode();
-		let chan_2_monitor_serialized = get_monitor!(nodes[1], channel_to_update.0).encode();
+		let chan_1_monitor_serialized = get_monitor_and_channel(&nodes[1], other_channel.3);
+		let chan_2_monitor_serialized = get_monitor_and_channel(&nodes[1], channel_to_update.0);
 		reload_node!(
 			nodes[1],
 			nodes[1].node.get_current_config(),

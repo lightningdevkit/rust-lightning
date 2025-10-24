@@ -113,8 +113,8 @@ fn test_priv_forwarding_rejection() {
 	nodes[2].node.peer_disconnected(node_b_id);
 
 	let nodes_1_serialized = nodes[1].node.encode();
-	let monitor_a_serialized = get_monitor!(nodes[1], chan_id_1).encode();
-	let monitor_b_serialized = get_monitor!(nodes[1], chan_id_2).encode();
+	let monitor_a_serialized = get_monitor_and_channel(&nodes[1], chan_id_1);
+	let monitor_b_serialized = get_monitor_and_channel(&nodes[1], chan_id_2);
 
 	no_announce_cfg.accept_forwards_to_priv_channels = true;
 	reload_node!(

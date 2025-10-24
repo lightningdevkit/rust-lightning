@@ -2188,7 +2188,7 @@ fn offer_cache_round_trip_ser() {
 	// offers.
 	let cached_offers_pre_ser = recipient.node.flow.test_get_async_receive_offers();
 	let config = test_default_channel_config();
-	let serialized_monitor = get_monitor!(recipient, chan_id).encode();
+	let serialized_monitor = get_monitor_and_channel(recipient, chan_id);
 	reload_node!(
 		nodes[1],
 		config,

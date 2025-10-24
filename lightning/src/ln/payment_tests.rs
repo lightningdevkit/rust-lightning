@@ -838,9 +838,9 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 
 	// The ChannelMonitor should always be the latest version, as we're required to persist it
 	// during the `commitment_signed_dance!()`.
-	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	let chan_0_monitor_serialized = get_monitor_and_channel(&nodes[0], chan_id);
 	let config = test_default_channel_config();
-	let mons: &[_] = &[&chan_0_monitor_serialized[..]];
+	let mons: &[_] = &[&chan_0_monitor_serialized];
 	reload_node!(nodes[0], config, &node_a_ser, mons, persister, new_chain_monitor, node_a_reload);
 
 	// On reload, the ChannelManager should realize it is stale compared to the ChannelMonitor and
@@ -1053,7 +1053,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 
 	// The ChannelMonitor should always be the latest version, as we're required to persist it
 	// during the `commitment_signed_dance!()`.
-	let mon_ser = get_monitor!(nodes[0], chan_id).encode();
+	let mon_ser = get_monitor_and_channel(&nodes[0], chan_id);
 
 	let config = test_default_channel_config();
 	reload_node!(nodes[0], config, node_a_ser, &[&mon_ser], persist_1, chain_monitor_1, node_a_1);
@@ -1167,8 +1167,8 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	let conditions = PaymentFailedConditions::new().from_mon_update();
 	expect_payment_failed_conditions(&nodes[0], hash, false, conditions);
 
-	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
-	let chan_1_monitor_serialized = get_monitor!(nodes[0], chan_id_3).encode();
+	let chan_0_monitor_serialized = get_monitor_and_channel(&nodes[0], chan_id);
+	let chan_1_monitor_serialized = get_monitor_and_channel(&nodes[0], chan_id_3);
 	node_a_ser = nodes[0].node.encode();
 
 	// After the payment failed, we're free to send it again.
@@ -1177,7 +1177,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	assert!(!nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	let config = test_default_channel_config();
-	let monitors = &[&chan_0_monitor_serialized[..], &chan_1_monitor_serialized[..]];
+	let monitors = &[&chan_0_monitor_serialized, &chan_1_monitor_serialized];
 	reload_node!(nodes[0], config, node_a_ser, monitors, persist_2, chain_monitor_2, node_a_2);
 	nodes[1].node.peer_disconnected(node_a_id);
 
@@ -1202,14 +1202,14 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
-	let chan_1_monitor_serialized = get_monitor!(nodes[0], chan_id_3).encode();
+	let chan_0_monitor_serialized = get_monitor_and_channel(&nodes[0], chan_id);
+	let chan_1_monitor_serialized = get_monitor_and_channel(&nodes[0], chan_id_3);
 	node_a_ser = nodes[0].node.encode();
 
 	// Check that after reload we can send the payment again (though we shouldn't, since it was
 	// claimed previously).
 	let config = test_default_channel_config();
-	let monitors = &[&chan_0_monitor_serialized[..], &chan_1_monitor_serialized[..]];
+	let monitors = &[&chan_0_monitor_serialized, &chan_1_monitor_serialized];
 	reload_node!(nodes[0], config, node_a_ser, monitors, persist_3, chain_monitor_3, node_a_3);
 	nodes[1].node.peer_disconnected(node_a_id);
 
@@ -1360,7 +1360,15 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 	}
 
 	// Now reload nodes[0]...
-	reload_node!(nodes[0], &node_a_ser, &[&mon_ser], persister, chain_monitor, node_a_reload);
+	let monitor_and_channel = MonitorAndChannel { monitor: mon_ser, channel: None };
+	reload_node!(
+		nodes[0],
+		&node_a_ser,
+		&[&monitor_and_channel],
+		persister,
+		chain_monitor,
+		node_a_reload
+	);
 
 	check_added_monitors(&nodes[0], 0);
 	if persist_manager_post_event && persist_monitor_after_events {
@@ -1440,7 +1448,7 @@ fn test_fulfill_restart_failure() {
 	// The simplest way to get a failure after a fulfill is to reload nodes[1] from a state
 	// pre-fulfill, which we do by serializing it here.
 	let node_b_ser = nodes[1].node.encode();
-	let mon_ser = get_monitor!(nodes[1], chan_id).encode();
+	let mon_ser = get_monitor_and_channel(&nodes[1], chan_id);
 
 	nodes[1].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[1], 1);
@@ -2801,7 +2809,7 @@ fn do_automatic_retries(test: AutoRetry) {
 
 		// Restart the node and ensure that ChannelManager does not use its remaining retry attempt
 		let node_encoded = nodes[0].node.encode();
-		let mon_ser = get_monitor!(nodes[0], channel_id_1).encode();
+		let mon_ser = get_monitor_and_channel(&nodes[0], channel_id_1);
 		reload_node!(nodes[0], node_encoded, &[&mon_ser], persister, chain_monitor, node_a_reload);
 
 		nodes[0].node.process_pending_htlc_forwards();
@@ -4125,7 +4133,7 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 
 	// The ChannelMonitor should always be the latest version, as we're required to persist it
 	// during the commitment signed handling.
-	let mon_ser = get_monitor!(nodes[0], chan_id).encode();
+	let mon_ser = get_monitor_and_channel(&nodes[0], chan_id);
 	let config = test_default_channel_config();
 	reload_node!(nodes[0], config, &node_a_ser, &[&mon_ser], persist_a, chain_monitor_a, node_a_1);
 
@@ -4166,7 +4174,7 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 		nodes[0].node.timer_tick_occurred();
 	}
 
-	let mon_ser = get_monitor!(nodes[0], chan_id).encode();
+	let mon_ser = get_monitor_and_channel(&nodes[0], chan_id);
 	let node_ser = nodes[0].node.encode();
 	let config = test_default_channel_config();
 	reload_node!(nodes[0], config, &node_ser, &[&mon_ser], persist_b, chain_monitor_b, node_a_2);
@@ -4186,7 +4194,7 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	assert!(events.is_empty());
 	check_added_monitors(&nodes[0], 0);
 
-	let mon_ser = get_monitor!(nodes[0], chan_id).encode();
+	let mon_ser = get_monitor_and_channel(&nodes[0], chan_id);
 	let config = test_default_channel_config();
 	let node_ser = nodes[0].node.encode();
 	reload_node!(nodes[0], config, &node_ser, &[&mon_ser], persist_c, chain_monitor_c, node_a_3);
@@ -4848,9 +4856,9 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	// Optionally reload nodes[3] to check that the payment_metadata is properly serialized with
 	// the payment state.
 	if do_reload {
-		let mon_bd = get_monitor!(nodes[3], chan_id_bd).encode();
-		let mon_cd = get_monitor!(nodes[3], chan_id_cd).encode();
-		let mons = [&mon_bd[..], &mon_cd[..]];
+		let mon_bd = get_monitor_and_channel(&nodes[3], chan_id_bd);
+		let mon_cd = get_monitor_and_channel(&nodes[3], chan_id_cd);
+		let mons = [&mon_bd, &mon_cd];
 		let node_d_ser = nodes[3].node.encode();
 		reload_node!(nodes[3], config, &node_d_ser, &mons[..], persister, chain_mon, node_d_reload);
 		nodes[1].node.peer_disconnected(node_d_id);

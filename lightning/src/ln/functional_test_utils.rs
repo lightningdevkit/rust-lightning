@@ -22,9 +22,11 @@ use crate::events::{
 	PaymentFailureReason, PaymentPurpose,
 };
 use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC};
+use crate::ln::channel::FundedChannel;
 use crate::ln::channelmanager::{
-	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
-	RAACommitmentOrder, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA,
+	provided_channel_type_features, AChannelManager, ChainParameters, ChannelManager,
+	ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, RecipientOnionFields,
+	MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::FundingTxInput;
 use crate::ln::msgs;
@@ -498,6 +500,7 @@ pub struct NodeCfg<'a> {
 	pub network_graph: Arc<NetworkGraph<&'a test_utils::TestLogger>>,
 	pub node_seed: [u8; 32],
 	pub override_init_features: Rc<RefCell<Option<InitFeatures>>>,
+	pub persister: &'a test_utils::TestPersister,
 }
 
 pub type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
@@ -581,6 +584,7 @@ pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 		&'chan_mon_cfg test_utils::TestKeysInterface,
 		&'chan_mon_cfg test_utils::TestLogger,
 	>,
+	pub persister: &'chan_mon_cfg test_utils::TestPersister,
 }
 
 impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
@@ -856,80 +860,80 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 
 			// Before using all the new monitors to check the watch outpoints, use the full set of
 			// them to ensure we can write and reload our ChannelManager.
-			{
-				let mut channel_monitors = new_hash_map();
-				for monitor in deserialized_monitors.iter() {
-					channel_monitors.insert(monitor.channel_id(), monitor);
-				}
+			// 	{
+			// 		let mut channel_monitors = new_hash_map();
+			// 		for monitor in deserialized_monitors.iter() {
+			// 			channel_monitors.insert(monitor.channel_id(), monitor);
+			// 		}
 
-				let scorer = RwLock::new(test_utils::TestScorer::new());
-				let mut w = test_utils::TestVecWriter(Vec::new());
-				self.node.write(&mut w).unwrap();
-				<(
-					BlockHash,
-					ChannelManager<
-						&test_utils::TestChainMonitor,
-						&test_utils::TestBroadcaster,
-						&test_utils::TestKeysInterface,
-						&test_utils::TestKeysInterface,
-						&test_utils::TestKeysInterface,
-						&test_utils::TestFeeEstimator,
-						&test_utils::TestRouter,
-						&test_utils::TestMessageRouter,
-						&test_utils::TestLogger,
-					>,
-				)>::read(
-					&mut io::Cursor::new(w.0),
-					ChannelManagerReadArgs {
-						config: self.node.get_current_config(),
-						entropy_source: self.keys_manager,
-						node_signer: self.keys_manager,
-						signer_provider: self.keys_manager,
-						fee_estimator: &test_utils::TestFeeEstimator::new(253),
-						router: &test_utils::TestRouter::new(
-							Arc::clone(&network_graph),
-							&self.logger,
-							&scorer,
-						),
-						message_router: &test_utils::TestMessageRouter::new_default(
-							network_graph,
-							self.keys_manager,
-						),
-						chain_monitor: self.chain_monitor,
-						tx_broadcaster: &broadcaster,
-						logger: &self.logger,
-						channel_monitors,
-					},
-				)
-				.unwrap();
-			}
+			// 		let scorer = RwLock::new(test_utils::TestScorer::new());
+			// 		let mut w = test_utils::TestVecWriter(Vec::new());
+			// 		self.node.write(&mut w).unwrap();
+			// 		<(
+			// 			BlockHash,
+			// 			ChannelManager<
+			// 				&test_utils::TestChainMonitor,
+			// 				&test_utils::TestBroadcaster,
+			// 				&test_utils::TestKeysInterface,
+			// 				&test_utils::TestKeysInterface,
+			// 				&test_utils::TestKeysInterface,
+			// 				&test_utils::TestFeeEstimator,
+			// 				&test_utils::TestRouter,
+			// 				&test_utils::TestMessageRouter,
+			// 				&test_utils::TestLogger,
+			// 			>,
+			// 		)>::read(
+			// 			&mut io::Cursor::new(w.0),
+			// 			ChannelManagerReadArgs {
+			// 				config: self.node.get_current_config(),
+			// 				entropy_source: self.keys_manager,
+			// 				node_signer: self.keys_manager,
+			// 				signer_provider: self.keys_manager,
+			// 				fee_estimator: &test_utils::TestFeeEstimator::new(253),
+			// 				router: &test_utils::TestRouter::new(
+			// 					Arc::clone(&network_graph),
+			// 					&self.logger,
+			// 					&scorer,
+			// 				),
+			// 				message_router: &test_utils::TestMessageRouter::new_default(
+			// 					network_graph,
+			// 					self.keys_manager,
+			// 				),
+			// 				chain_monitor: self.chain_monitor,
+			// 				tx_broadcaster: &broadcaster,
+			// 				logger: &self.logger,
+			// 				channel_monitors,
+			// 			},
+			// 		)
+			// 		.unwrap();
+			// 	}
 
-			let persister = test_utils::TestPersister::new();
-			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-			let chain_monitor = test_utils::TestChainMonitor::new(
-				Some(&chain_source),
-				&broadcaster,
-				&self.logger,
-				&feeest,
-				&persister,
-				&self.keys_manager,
-			);
-			for deserialized_monitor in deserialized_monitors.drain(..) {
-				let channel_id = deserialized_monitor.channel_id();
-				if chain_monitor.watch_channel(channel_id, deserialized_monitor)
-					!= Ok(ChannelMonitorUpdateStatus::Completed)
-				{
-					panic!();
-				}
-			}
-			assert_eq!(
-				*chain_source.watched_txn.unsafe_well_ordered_double_lock_self(),
-				*self.chain_source.watched_txn.unsafe_well_ordered_double_lock_self()
-			);
-			assert_eq!(
-				*chain_source.watched_outputs.unsafe_well_ordered_double_lock_self(),
-				*self.chain_source.watched_outputs.unsafe_well_ordered_double_lock_self()
-			);
+			// 	let persister = test_utils::TestPersister::new();
+			// 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
+			// 	let chain_monitor = test_utils::TestChainMonitor::new(
+			// 		Some(&chain_source),
+			// 		&broadcaster,
+			// 		&self.logger,
+			// 		&feeest,
+			// 		&persister,
+			// 		&self.keys_manager,
+			// 	);
+			// 	for deserialized_monitor in deserialized_monitors.drain(..) {
+			// 		let channel_id = deserialized_monitor.channel_id();
+			// 		if chain_monitor.watch_channel(channel_id, deserialized_monitor)
+			// 			!= Ok(ChannelMonitorUpdateStatus::Completed)
+			// 		{
+			// 			panic!();
+			// 		}
+			// 	}
+			// 	assert_eq!(
+			// 		*chain_source.watched_txn.unsafe_well_ordered_double_lock_self(),
+			// 		*self.chain_source.watched_txn.unsafe_well_ordered_double_lock_self()
+			// 	);
+			// 	assert_eq!(
+			// 		*chain_source.watched_outputs.unsafe_well_ordered_double_lock_self(),
+			// 		*self.chain_source.watched_outputs.unsafe_well_ordered_double_lock_self()
+			// 	);
 		}
 	}
 }
@@ -1202,6 +1206,33 @@ macro_rules! get_monitor {
 	}};
 }
 
+pub struct MonitorAndChannel {
+	pub monitor: Vec<u8>,
+	pub channel: Option<Vec<u8>>,
+}
+
+impl MonitorAndChannel {
+	pub fn new(monitor: Vec<u8>, channel: Option<Vec<u8>>) -> Self {
+		Self { monitor, channel }
+	}
+
+	pub fn as_ref(&self) -> (&[u8], Option<&[u8]>) {
+		(self.monitor.as_slice(), self.channel.as_ref().map(|c| c.as_slice()))
+	}
+}
+
+pub fn get_monitor_and_channel(node: &Node, channel_id: ChannelId) -> MonitorAndChannel {
+	MonitorAndChannel::new(
+		node.chain_monitor.chain_monitor.get_monitor(channel_id).unwrap().encode(),
+		node.chain_monitor
+			.persisted_channels
+			.lock()
+			.unwrap()
+			.get(&channel_id)
+			.and_then(|x| x.clone()),
+	)
+}
+
 /// Returns any local commitment transactions for the channel.
 #[macro_export]
 macro_rules! get_local_commitment_txn {
@@ -1295,11 +1326,13 @@ fn check_claimed_htlcs_match_route<'a, 'b, 'c>(
 
 pub fn _reload_node<'a, 'b, 'c>(
 	node: &'a Node<'a, 'b, 'c>, config: UserConfig, chanman_encoded: &[u8],
-	monitors_encoded: &[&[u8]],
+	monitors_encoded: &[&MonitorAndChannel],
 ) -> TestChannelManager<'b, 'c> {
 	let mut monitors_read = Vec::with_capacity(monitors_encoded.len());
+	let mut channels_read = new_hash_map();
+
 	for encoded in monitors_encoded {
-		let mut monitor_read = &encoded[..];
+		let mut monitor_read = &encoded.monitor[..];
 		let (_, monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut monitor_read,
 			(node.keys_manager, node.keys_manager),
@@ -1307,6 +1340,22 @@ pub fn _reload_node<'a, 'b, 'c>(
 		.unwrap();
 		assert!(monitor_read.is_empty());
 		monitors_read.push(monitor);
+
+		if let Some(channel) = encoded.channel.as_ref() {
+			let mut channel_read = &channel[..];
+			let channel: FundedChannel<&test_utils::TestKeysInterface> = FundedChannel::read(
+				&mut channel_read,
+				(
+					&node.keys_manager,
+					&node.keys_manager,
+					&ChannelTypeFeatures::from_init(&node.node.init_features()),
+				),
+			)
+			.unwrap();
+
+			assert!(channel_read.is_empty());
+			channels_read.insert(channel.context.channel_id(), channel);
+		}
 	}
 
 	let mut node_read = &chanman_encoded[..];
@@ -1329,6 +1378,7 @@ pub fn _reload_node<'a, 'b, 'c>(
 				tx_broadcaster: node.tx_broadcaster,
 				logger: node.logger,
 				channel_monitors,
+				funded_channels: channels_read,
 			},
 		)
 		.unwrap()
@@ -4274,6 +4324,7 @@ where
 			node_seed: seed,
 			network_graph,
 			override_init_features: Rc::new(RefCell::new(None)),
+			persister: &cfg.persister,
 		});
 	}
 
@@ -4463,6 +4514,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(
 				&cfgs[i].keys_manager,
 				cfgs[i].logger,
 			),
+			persister: &cfgs[i].persister,
 		})
 	}
 

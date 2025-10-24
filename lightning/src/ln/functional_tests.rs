@@ -831,7 +831,7 @@ pub fn test_justice_tx_htlc_timeout() {
 		revoked_local_txn[1].input[0].witness.last().unwrap().len(),
 		OFFERED_HTLC_SCRIPT_WEIGHT
 	); // HTLC-Timeout
-   // Revoke the old state
+	// Revoke the old state
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3);
 
 	{
@@ -4755,6 +4755,7 @@ pub fn test_key_derivation_params() {
 		network_graph,
 		node_seed: seed,
 		override_init_features: alloc::rc::Rc::new(core::cell::RefCell::new(None)),
+		persister: &chanmon_cfgs[0].persister,
 	};
 	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	node_cfgs.remove(0);
@@ -5997,7 +5998,7 @@ pub fn test_announce_disable_channels() {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 				assert_eq!(msg.contents.channel_flags & (1 << 1), 1 << 1); // The "channel disabled" bit should be set
-														   // Check that each channel gets updated exactly once
+															   // Check that each channel gets updated exactly once
 				if chans_disabled
 					.insert(msg.contents.short_channel_id, msg.contents.timestamp)
 					.is_some()
@@ -7259,11 +7260,11 @@ pub fn test_update_err_monitor_lockdown() {
 				&node_cfgs[0].logger,
 			) {
 				assert_eq!(
-					watchtower.chain_monitor.update_channel(chan_1.2, &update),
+					watchtower.chain_monitor.update_channel(chan_1.2, &update, None),
 					ChannelMonitorUpdateStatus::InProgress
 				);
 				assert_eq!(
-					nodes[0].chain_monitor.update_channel(chan_1.2, &update),
+					nodes[0].chain_monitor.update_channel(chan_1.2, &update, None),
 					ChannelMonitorUpdateStatus::Completed
 				);
 			} else {
@@ -7416,15 +7417,15 @@ pub fn test_concurrent_monitor_claim() {
 			) {
 				// Watchtower Alice should already have seen the block and reject the update
 				assert_eq!(
-					watchtower_alice.chain_monitor.update_channel(chan_1.2, &update),
+					watchtower_alice.chain_monitor.update_channel(chan_1.2, &update, None),
 					ChannelMonitorUpdateStatus::InProgress
 				);
 				assert_eq!(
-					watchtower_bob.chain_monitor.update_channel(chan_1.2, &update),
+					watchtower_bob.chain_monitor.update_channel(chan_1.2, &update, None),
 					ChannelMonitorUpdateStatus::Completed
 				);
 				assert_eq!(
-					nodes[0].chain_monitor.update_channel(chan_1.2, &update),
+					nodes[0].chain_monitor.update_channel(chan_1.2, &update, None),
 					ChannelMonitorUpdateStatus::Completed
 				);
 			} else {
@@ -9658,9 +9659,9 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 
 	if do_reload {
 		let node_ser = nodes[0].node.encode();
-		let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
-		let chan_1_monitor_serialized = get_monitor!(nodes[0], chan_id_2).encode();
-		let mons = [&chan_0_monitor_serialized[..], &chan_1_monitor_serialized[..]];
+		let chan_0_monitor_serialized = get_monitor_and_channel(&nodes[0], chan_id);
+		let chan_1_monitor_serialized = get_monitor_and_channel(&nodes[0], chan_id_2);
+		let mons = [&chan_0_monitor_serialized, &chan_1_monitor_serialized];
 		let config = test_default_channel_config();
 		reload_node!(nodes[0], config, &node_ser, &mons, persister, chain_monitor, node_a_reload);
 

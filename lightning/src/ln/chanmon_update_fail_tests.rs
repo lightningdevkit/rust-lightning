@@ -143,7 +143,7 @@ fn test_monitor_and_persister_update_fail() {
 				// Check that the persister returns InProgress (and will never actually complete)
 				// as the monitor update errors.
 				if let ChannelMonitorUpdateStatus::InProgress =
-					chain_mon.chain_monitor.update_channel(chan.2, &update)
+					chain_mon.chain_monitor.update_channel(chan.2, &update, None)
 				{
 				} else {
 					panic!("Expected monitor paused");
@@ -158,7 +158,7 @@ fn test_monitor_and_persister_update_fail() {
 				// Apply the monitor update to the original ChainMonitor, ensuring the
 				// ChannelManager and ChannelMonitor aren't out of sync.
 				assert_eq!(
-					nodes[0].chain_monitor.update_channel(chan.2, &update),
+					nodes[0].chain_monitor.update_channel(chan.2, &update, None),
 					ChannelMonitorUpdateStatus::Completed
 				);
 			} else {
@@ -2702,7 +2702,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	nodes[0].node.send_payment_with_route(route, payment_hash_2, onion_2, id_2).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
-	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	let chan_0_monitor_serialized = get_monitor_and_channel(&nodes[0], chan_id);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[0].node.claim_funds(payment_preimage_0);
@@ -2723,7 +2723,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 		// deserializing a ChannelManager in this state causes an assertion failure.
 		if reload_a {
 			let node_ser = nodes[0].node.encode();
-			let mons = &[&chan_0_monitor_serialized[..]];
+			let mons = &[&chan_0_monitor_serialized];
 			reload_node!(nodes[0], &node_ser, mons, persister, new_chain_mon, nodes_0_reload);
 			persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 			persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
@@ -3503,10 +3503,10 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	if completion_mode == BlockedUpdateComplMode::AtReload {
 		let node_ser = nodes[1].node.encode();
-		let chan_mon_0 = get_monitor!(nodes[1], chan_id_1).encode();
-		let chan_mon_1 = get_monitor!(nodes[1], chan_id_2).encode();
+		let chan_mon_0 = get_monitor_and_channel(&nodes[1], chan_id_1);
+		let chan_mon_1 = get_monitor_and_channel(&nodes[1], chan_id_2);
 
-		let mons = &[&chan_mon_0[..], &chan_mon_1[..]];
+		let mons = &[&chan_mon_0, &chan_mon_1];
 		reload_node!(nodes[1], &node_ser, mons, persister, new_chain_mon, nodes_1_reload);
 
 		nodes[0].node.peer_disconnected(node_b_id);
@@ -3617,7 +3617,7 @@ fn do_test_inverted_mon_completion_order(
 	let (payment_preimage, payment_hash, ..) =
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
 
-	let mon_ab = get_monitor!(nodes[1], chan_id_ab).encode();
+	let mon_ab = get_monitor_and_channel(&nodes[1], chan_id_ab);
 	let mut manager_b = Vec::new();
 	if !with_latest_manager {
 		manager_b = nodes[1].node.encode();
@@ -3663,7 +3663,7 @@ fn do_test_inverted_mon_completion_order(
 		manager_b = nodes[1].node.encode();
 	}
 
-	let mon_bc = get_monitor!(nodes[1], chan_id_bc).encode();
+	let mon_bc = get_monitor_and_channel(&nodes[1], chan_id_bc);
 	reload_node!(nodes[1], &manager_b, &[&mon_ab, &mon_bc], persister, chain_mon, node_b_reload);
 
 	nodes[0].node.peer_disconnected(node_b_id);
@@ -3809,7 +3809,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	let (payment_preimage, payment_hash, ..) =
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
 
-	let mon_ab = get_monitor!(nodes[1], chan_id_ab).encode();
+	let mon_ab = get_monitor_and_channel(&nodes[1], chan_id_ab);
 
 	nodes[2].node.claim_funds(payment_preimage);
 	check_added_monitors(&nodes[2], 1);
@@ -3831,7 +3831,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	check_added_monitors(&nodes[1], 1);
 	let _ = get_revoke_commit_msgs!(nodes[1], node_c_id);
 
-	let mon_bc = get_monitor!(nodes[1], chan_id_bc).encode();
+	let mon_bc = get_monitor_and_channel(&nodes[1], chan_id_bc);
 
 	if close_chans_before_reload {
 		if !close_only_a {
@@ -4036,8 +4036,8 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	// Finally, reload node B and check that after we call `process_pending_events` once we realize
 	// we've completed the A<->B preimage-including monitor update and so can release the B<->C
 	// preimage-removing monitor update.
-	let mon_ab = get_monitor!(nodes[1], chan_id_ab).encode();
-	let mon_bc = get_monitor!(nodes[1], chan_id_bc).encode();
+	let mon_ab = get_monitor_and_channel(&nodes[1], chan_id_ab);
+	let mon_bc = get_monitor_and_channel(&nodes[1], chan_id_bc);
 	let manager_b = nodes[1].node.encode();
 	reload_node!(nodes[1], &manager_b, &[&mon_ab, &mon_bc], persister, chain_mon, node_b_reload);
 
@@ -4271,7 +4271,7 @@ fn do_test_partial_claim_mon_update_compl_actions(reload_a: bool, reload_b: bool
 	send_along_route_with_secret(&nodes[0], route, paths, 200_000, payment_hash, payment_secret);
 
 	// Store the monitor for channel 4 without the preimage to use on reload
-	let chan_4_monitor_serialized = get_monitor!(nodes[3], chan_4_id).encode();
+	let chan_4_monitor_serialized = get_monitor_and_channel(&nodes[3], chan_4_id);
 	// Claim along both paths, but only complete one of the two monitor updates.
 	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
@@ -4312,8 +4312,8 @@ fn do_test_partial_claim_mon_update_compl_actions(reload_a: bool, reload_b: bool
 		// After a reload (with the monitor not yet fully updated), the RAA should still be blocked
 		// waiting until the monitor update completes.
 		let node_ser = nodes[3].node.encode();
-		let chan_3_monitor_serialized = get_monitor!(nodes[3], chan_3_id).encode();
-		let mons = &[&chan_3_monitor_serialized[..], &chan_4_monitor_serialized[..]];
+		let chan_3_monitor_serialized = get_monitor_and_channel(&nodes[3], chan_3_id);
+		let mons = &[&chan_3_monitor_serialized, &chan_4_monitor_serialized];
 		reload_node!(nodes[3], &node_ser, mons, persister, new_chain_mon, nodes_3_reload);
 		// The final update to channel 4 should be replayed.
 		persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
@@ -4391,9 +4391,9 @@ fn do_test_partial_claim_mon_update_compl_actions(reload_a: bool, reload_b: bool
 		// reload once the HTLCs for the first payment have been removed and the monitors
 		// completed.
 		let node_ser = nodes[3].node.encode();
-		let chan_3_monitor_serialized = get_monitor!(nodes[3], chan_3_id).encode();
-		let chan_4_monitor_serialized = get_monitor!(nodes[3], chan_4_id).encode();
-		let mons = &[&chan_3_monitor_serialized[..], &chan_4_monitor_serialized[..]];
+		let chan_3_monitor_serialized = get_monitor_and_channel(&nodes[3], chan_3_id);
+		let chan_4_monitor_serialized = get_monitor_and_channel(&nodes[3], chan_4_id);
+		let mons = &[&chan_3_monitor_serialized, &chan_4_monitor_serialized];
 		reload_node!(nodes[3], &node_ser, mons, persister_2, new_chain_mon_2, nodes_3_reload_2);
 		check_added_monitors(&nodes[3], 0);
 
@@ -4418,9 +4418,9 @@ fn do_test_partial_claim_mon_update_compl_actions(reload_a: bool, reload_b: bool
 		// reload once the HTLCs for the first payment have been removed and the monitors
 		// completed, even if only one of the two monitors still knows about the first payment.
 		let node_ser = nodes[3].node.encode();
-		let chan_3_monitor_serialized = get_monitor!(nodes[3], chan_3_id).encode();
-		let chan_4_monitor_serialized = get_monitor!(nodes[3], chan_4_id).encode();
-		let mons = &[&chan_3_monitor_serialized[..], &chan_4_monitor_serialized[..]];
+		let chan_3_monitor_serialized = get_monitor_and_channel(&nodes[3], chan_3_id);
+		let chan_4_monitor_serialized = get_monitor_and_channel(&nodes[3], chan_4_id);
+		let mons = &[&chan_3_monitor_serialized, &chan_4_monitor_serialized];
 		reload_node!(nodes[3], &node_ser, mons, persister_3, new_chain_mon_3, nodes_3_reload_3);
 		check_added_monitors(&nodes[3], 0);
 
@@ -4961,10 +4961,10 @@ fn native_async_persist() {
 
 	// Now test two async `ChannelMonitorUpdate`s in flight at once, completing them in-order but
 	// separately.
-	let update_status = async_chain_monitor.update_channel(chan_id, &updates[0]);
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[0], None);
 	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
 
-	let update_status = async_chain_monitor.update_channel(chan_id, &updates[1]);
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[1], None);
 	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
 
 	persist_futures.poll_futures();
@@ -5010,10 +5010,10 @@ fn native_async_persist() {
 	// Finally, test two async `ChanelMonitorUpdate`s in flight at once, completing them
 	// out-of-order and ensuring that no `MonitorEvent::Completed` is generated until they are both
 	// completed (and that it marks both as completed when it is generated).
-	let update_status = async_chain_monitor.update_channel(chan_id, &updates[2]);
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[2], None);
 	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
 
-	let update_status = async_chain_monitor.update_channel(chan_id, &updates[3]);
+	let update_status = async_chain_monitor.update_channel(chan_id, &updates[3], None);
 	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
 
 	persist_futures.poll_futures();

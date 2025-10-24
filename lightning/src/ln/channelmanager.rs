@@ -3658,6 +3658,7 @@ macro_rules! handle_post_close_monitor_update {
 			$self,
 			$funding_txo,
 			$update,
+			None,
 			$peer_state,
 			logger,
 			$channel_id,
@@ -3696,6 +3697,7 @@ macro_rules! handle_new_monitor_update_todo_name {
 			$self,
 			$funding_txo,
 			$update,
+			None,
 			$peer_state,
 			logger,
 			chan_id,
@@ -3711,7 +3713,7 @@ macro_rules! handle_new_monitor_update_todo_name {
 
 macro_rules! handle_new_monitor_update_internal {
 	(
-		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $logger: expr,
+		$self: ident, $funding_txo: expr, $update: expr, $channel: expr, $peer_state: expr, $logger: expr,
 		$chan_id: expr, $counterparty_node_id: expr, $in_flight_updates: ident, $update_idx: ident,
 		$completed: expr
 	) => {{
@@ -3729,8 +3731,11 @@ macro_rules! handle_new_monitor_update_internal {
 				$in_flight_updates.len() - 1
 			});
 		if $self.background_events_processed_since_startup.load(Ordering::Acquire) {
-			let update_res =
-				$self.chain_monitor.update_channel($chan_id, &$in_flight_updates[$update_idx]);
+			let update_res = $self.chain_monitor.update_channel(
+				$chan_id,
+				&$in_flight_updates[$update_idx],
+				$channel,
+			);
 			let update_completed = $self.handle_monitor_update_res(update_res, $chan_id, $logger);
 			if update_completed {
 				$completed;
@@ -3762,7 +3767,7 @@ macro_rules! handle_new_monitor_update_internal {
 
 macro_rules! handle_new_monitor_update {
 	(
-		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
+		$self: ident, $funding_txo: expr, $update: expr, $channel: expr, $peer_state_lock: expr, $peer_state: expr,
 		$per_peer_state_lock: expr, $chan: expr
 	) => {{
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
@@ -3774,6 +3779,7 @@ macro_rules! handle_new_monitor_update {
 			$self,
 			$funding_txo,
 			$update,
+			$channel,
 			$peer_state,
 			logger,
 			chan_id,
@@ -4337,7 +4343,7 @@ where
 
 						// Update the monitor with the shutdown script if necessary.
 						if let Some(monitor_update) = monitor_update_opt.take() {
-							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
+							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update, None,
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 					} else {
@@ -4461,7 +4467,7 @@ where
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					handle_new_monitor_update!(self, funding_txo,
-						monitor_update, peer_state_lock, peer_state, per_peer_state, chan);
+						monitor_update, None, peer_state_lock, peer_state, per_peer_state, chan);
 					return;
 				} else {
 					debug_assert!(false, "We shouldn't have an update for a non-funded channel");
@@ -5183,10 +5189,12 @@ where
 						);
 						match break_channel_entry!(self, peer_state, send_res, chan_entry) {
 							Some(monitor_update) => {
+								let encoded_channel = chan.encode();
 								let ok = handle_new_monitor_update!(
 									self,
 									funding_txo,
 									monitor_update,
+									Some(&encoded_channel),
 									peer_state_lock,
 									peer_state,
 									per_peer_state,
@@ -8659,7 +8667,8 @@ where
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -8697,7 +8706,8 @@ where
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -8761,10 +8771,12 @@ where
 									.or_insert_with(Vec::new)
 									.push(raa_blocker);
 							}
+							let encoded_chan = chan.encode();
 							handle_new_monitor_update!(
 								self,
 								prev_hop.funding_txo,
 								monitor_update,
+								Some(&encoded_chan),
 								peer_state_lock,
 								peer_state,
 								per_peer_state,
@@ -10616,6 +10628,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								self,
 								funding_txo_opt.unwrap(),
 								monitor_update,
+								None,
 								peer_state_lock,
 								peer_state,
 								per_peer_state,
@@ -10923,7 +10936,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							try_channel_entry!(self, peer_state, Err(err), chan_entry)
 						}
 					} else if let Some(monitor_update) = monitor_update_opt {
-						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
+						let encoded_chan = chan.encode();
+						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, Some(&encoded_chan), peer_state_lock,
 							peer_state, per_peer_state, chan);
 					}
 				}
@@ -10954,8 +10968,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					);
 
 					if let Some(monitor_update) = monitor_update_opt {
+						let encoded_chan = chan.encode();
 						handle_new_monitor_update!(
-							self, funding_txo.unwrap(), monitor_update, peer_state_lock, peer_state,
+							self, funding_txo.unwrap(), monitor_update, Some(&encoded_chan), peer_state_lock, peer_state,
 							per_peer_state, chan
 						);
 					}
@@ -11201,7 +11216,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if let Some(monitor_update) = monitor_update_opt {
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
-							handle_new_monitor_update!(self, funding_txo, monitor_update,
+							let encoded_chan = chan.encode();
+							handle_new_monitor_update!(self, funding_txo, monitor_update, Some(&encoded_chan),
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 						(htlcs_to_fail, static_invoices)
@@ -11682,6 +11698,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								self,
 								splice_promotion.funding_txo,
 								monitor_update,
+								None,
 								peer_state_lock,
 								peer_state,
 								per_peer_state,
@@ -11867,11 +11884,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 						if let Some(monitor_update) = monitor_opt {
 							has_monitor_update = true;
-
+							let encoded_channel = chan.encode();
 							handle_new_monitor_update!(
 								self,
 								funding_txo.unwrap(),
 								monitor_update,
+								Some(&encoded_channel),
 								peer_state_lock,
 								peer_state,
 								per_peer_state,
@@ -13277,7 +13295,8 @@ where
 						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
 							log_debug!(logger, "Unlocking monitor updating for channel {} and updating monitor",
 								channel_id);
-							handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update,
+							let encoded_chan = chan.encode();
+							handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update, Some(&encoded_chan),
 								peer_state_lck, peer_state, per_peer_state, chan);
 							if further_update_exists {
 								// If there are more `ChannelMonitorUpdate`s to process, restart at the
@@ -16231,6 +16250,8 @@ pub struct ChannelManagerReadArgs<
 	/// This is not exported to bindings users because we have no HashMap bindings
 	pub channel_monitors:
 		HashMap<ChannelId, &'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
+
+	pub funded_channels: HashMap<ChannelId, FundedChannel<SP>>,
 }
 
 impl<
@@ -16264,6 +16285,7 @@ where
 		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
 		config: UserConfig,
 		mut channel_monitors: Vec<&'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
+		mut funded_channels: Vec<FundedChannel<SP>>,
 	) -> Self {
 		Self {
 			entropy_source,
@@ -16278,6 +16300,9 @@ where
 			config,
 			channel_monitors: hash_map_from_iter(
 				channel_monitors.drain(..).map(|monitor| (monitor.channel_id(), monitor)),
+			),
+			funded_channels: hash_map_from_iter(
+				funded_channels.drain(..).map(|chan| (chan.context.channel_id(), chan)),
 			),
 		}
 	}
@@ -16365,7 +16390,25 @@ where
 		};
 
 		let mut failed_htlcs = Vec::new();
-		let channel_count: u64 = Readable::read(reader)?;
+
+		let mut funded_channels = args.funded_channels;
+
+		let legacy_channel_count: u64 = Readable::read(reader)?;
+		for _ in 0..legacy_channel_count {
+			let channel: FundedChannel<SP> = FundedChannel::read(
+				reader,
+				(
+					&args.entropy_source,
+					&args.signer_provider,
+					&provided_channel_type_features(&args.config),
+				),
+			)?;
+			let channel_id = channel.context.channel_id();
+			_ = funded_channels.try_insert(channel_id, channel);
+		}
+
+		let channel_count = funded_channels.len() as u64;
+
 		let mut channel_id_set = hash_set_with_capacity(cmp::min(channel_count as usize, 128));
 		let mut per_peer_state = hash_map_with_capacity(cmp::min(
 			channel_count as usize,
@@ -16374,15 +16417,7 @@ where
 		let mut short_to_chan_info = hash_map_with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = VecDeque::new();
 		let mut close_background_events = Vec::new();
-		for _ in 0..channel_count {
-			let mut channel: FundedChannel<SP> = FundedChannel::read(
-				reader,
-				(
-					&args.entropy_source,
-					&args.signer_provider,
-					&provided_channel_type_features(&args.config),
-				),
-			)?;
+		for (_, mut channel) in funded_channels.drain() {
 			let logger = WithChannelContext::from(&args.logger, &channel.context, None);
 			let channel_id = channel.context.channel_id();
 			channel_id_set.insert(channel_id);

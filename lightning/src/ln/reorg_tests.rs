@@ -322,7 +322,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		// the Channel object from the ChannelManager, but still having a monitor event pending for
 		// it when we go to deserialize, and then use the ChannelManager.
 		let nodes_0_serialized = nodes[0].node.encode();
-		let chan_0_monitor_serialized = get_monitor!(nodes[0], chan.2).encode();
+		let chan_0_monitor_serialized = get_monitor_and_channel(&nodes[0], chan.2);
 
 		reload_node!(nodes[0], nodes[0].node.get_current_config(), &nodes_0_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
@@ -843,7 +843,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(keyed_anchors: bool, p2a
 	if revoked_counterparty_commitment {
 		// Trigger a new commitment by routing a dummy HTLC. We will have B broadcast the previous commitment.
 		let serialized_node = nodes[1].node.encode();
-		let serialized_monitor = get_monitor!(nodes[1], chan_id).encode();
+		let serialized_monitor = get_monitor_and_channel(&nodes[1], chan_id);
 
 		let _ = route_payment(&nodes[0], &[&nodes[1]], 1000);
 

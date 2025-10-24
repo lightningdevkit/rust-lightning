@@ -183,7 +183,7 @@ fn test_funding_peer_disconnect() {
 	// channel_announcement from the cached signatures.
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
-	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	let chan_0_monitor_serialized = get_monitor_and_channel(&nodes[0], chan_id);
 
 	reload_node!(nodes[0], &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
@@ -206,7 +206,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
 	let chan_0_monitor_serialized =
-		get_monitor!(nodes[0], ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.compute_txid(), index: 0 })).encode();
+		get_monitor_and_channel(&nodes[0], ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.compute_txid(), index: 0 }));
 	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
 	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
@@ -291,7 +291,7 @@ fn test_manager_serialize_deserialize_events() {
 	nodes.push(node_b);
 
 	// Start the de/seriailization process mid-channel creation to check that the channel manager will hold onto events that are serialized
-	let chan_0_monitor_serialized = get_monitor!(nodes[0], bs_funding_signed.channel_id).encode();
+	let chan_0_monitor_serialized = get_monitor_and_channel(&nodes[0], bs_funding_signed.channel_id);
 	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
@@ -345,16 +345,19 @@ fn test_simple_manager_serialize_deserialize() {
 
 	let (our_payment_preimage, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 	let (_, our_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	fail_payment(&nodes[0], &[&nodes[1]], our_payment_hash);
+	claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
 
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
-	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
-	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+	let chan_0_serialized = get_monitor_and_channel(&nodes[0], chan_id);
+
+	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
-	fail_payment(&nodes[0], &[&nodes[1]], our_payment_hash);
-	claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+
 }
 
 #[test]
@@ -437,6 +440,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
 		channel_monitors: node_0_stale_monitors.iter().map(|monitor| { (monitor.channel_id(), monitor) }).collect(),
+		funded_channels: new_hash_map(),
 	}) { } else {
 		panic!("If the monitor(s) are stale, this indicates a bug and we should get an Err return");
 	};
@@ -455,6 +459,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
 		channel_monitors: node_0_monitors.iter().map(|monitor| { (monitor.channel_id(), monitor) }).collect(),
+		funded_channels: new_hash_map(),
 	}).unwrap();
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());
@@ -531,7 +536,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 
 	// Cache node A state before any channel update
 	let previous_node_state = nodes[0].node.encode();
-	let previous_chain_monitor_state = get_monitor!(nodes[0], chan.2).encode();
+	let previous_chain_monitor_state = get_monitor_and_channel(&nodes[0], chan.2);
 
 	assert!(!substantially_old || !not_stale, "substantially_old and not_stale doesn't make sense");
 	if not_stale || !substantially_old {
@@ -809,13 +814,21 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 	}
 
 	// Now restart nodes[3].
-	reload_node!(nodes[3], original_manager.clone(), &[&updated_monitor.0, &original_monitor.0], persist_d_1, chain_d_1, node_d_1);
+	let original_monitor_and_channel = MonitorAndChannel{
+		monitor: original_monitor.0,
+		channel: None,
+	};
+	let updated_monitor_and_channel = MonitorAndChannel{
+		monitor: updated_monitor.0,
+		channel: None,
+	};
+	reload_node!(nodes[3], original_manager.clone(), &[&updated_monitor_and_channel, &original_monitor_and_channel], persist_d_1, chain_d_1, node_d_1);
 
 	if double_restart {
 		// Previously, we had a bug where we'd fail to reload if we re-persist the `ChannelManager`
 		// without updating any `ChannelMonitor`s as we'd fail to double-initiate the claim replay.
 		// We test that here ensuring that we can reload again.
-		reload_node!(nodes[3], node_d_1.encode(), &[&updated_monitor.0, &original_monitor.0], persist_d_2, chain_d_2, node_d_2);
+		reload_node!(nodes[3], node_d_1.encode(), &[&updated_monitor_and_channel, &original_monitor_and_channel], persist_d_2, chain_d_2, node_d_2);
 	}
 
 	// Until the startup background events are processed (in `get_and_clear_pending_events`,
@@ -1010,8 +1023,8 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	check_closed_event!(nodes[2], 1, reason, [nodes[1].node.get_our_node_id()], 100000);
 	check_closed_broadcast!(nodes[2], true);
 
-	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
-	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
+	let chan_0_monitor_serialized = get_monitor_and_channel(&nodes[1], chan_id_1);
+	let chan_1_monitor_serialized = get_monitor_and_channel(&nodes[1], chan_id_2);
 	reload_node!(nodes[1], node_encoded, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
 	// Note that this checks that this is the only event on nodes[1], implying the
@@ -1135,8 +1148,8 @@ fn removed_payment_no_manager_persistence() {
 		_ => panic!("Unexpected event"),
 	}
 
-	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
-	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
+	let chan_0_monitor_serialized = get_monitor_and_channel(&nodes[1], chan_id_1);
+	let chan_1_monitor_serialized = get_monitor_and_channel(&nodes[1], chan_id_2);
 	reload_node!(nodes[1], node_encoded, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
 	match nodes[1].node.pop_pending_event().unwrap() {
@@ -1206,7 +1219,7 @@ fn test_reload_partial_funding_batch() {
 	// Reload the node while a subset of the channels in the funding batch have persisted monitors.
 	let channel_id_1 = ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.compute_txid(), index: 0 });
 	let node_encoded = nodes[0].node.encode();
-	let channel_monitor_1_serialized = get_monitor!(nodes[0], channel_id_1).encode();
+	let channel_monitor_1_serialized = get_monitor_and_channel(&nodes[0], channel_id_1);
 	reload_node!(nodes[0], node_encoded, &[&channel_monitor_1_serialized], new_persister, new_chain_monitor, new_channel_manager);
 
 	// Process monitor events.
@@ -1283,7 +1296,7 @@ fn test_htlc_localremoved_persistence() {
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
-	let monitor_encoded = get_monitor!(nodes[1], _chan.3).encode();
+	let monitor_encoded = get_monitor_and_channel(&nodes[1], _chan.3);
 	reload_node!(nodes[1], nodes[1].node.encode(), &[&monitor_encoded], persister, chain_monitor, deserialized_chanmgr);
 
 	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
@@ -1419,4 +1432,3 @@ fn test_peer_storage() {
 	let res = std::panic::catch_unwind(|| drop(nodes));
 	assert!(res.is_err());
 }
-
