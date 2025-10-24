@@ -1,3 +1,0 @@
-## Backwards Compat
-
-* Upgrading to v0.2.0 will invalidate existing `Refund`s containing blinded paths.
