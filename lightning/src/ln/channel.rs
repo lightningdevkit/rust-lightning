@@ -11957,8 +11957,9 @@ where
 				debug_assert!(false);
 				self.funding.get_holder_pubkeys().funding_pubkey
 			},
-			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) =>
-				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx),
+			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) => {
+				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx)
+			},
 			#[cfg(taproot)]
 			_ => todo!(),
 		};
@@ -12062,8 +12063,9 @@ where
 				debug_assert!(false);
 				self.funding.get_holder_pubkeys().funding_pubkey
 			},
-			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) =>
-				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx),
+			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) => {
+				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx)
+			},
 			#[cfg(taproot)]
 			_ => todo!(),
 		};
