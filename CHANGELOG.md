@@ -1,3 +1,10 @@
+# 0.1.7 - Oct 21, 2025 - "Unstable Release CI"
+
+## Bug Fixes
+ * Builds with the `docsrs` cfg flag (set automatically for builds on docs.rs
+   but otherwise not used) were fixed.
+
+
 # 0.1.6 - Oct 10, 2025 - "Async Preimage Claims"
 
 ## Performance Improvements
