@@ -4743,6 +4743,10 @@ where
 	/// emitted. At this point, any inputs contributed to the splice can only be re-spent if an
 	/// [`Event::DiscardFunding`] is seen.
 	///
+	/// After initial signatures have been exchanged, if we contributed any inputs,
+	/// [`Event::FundingTransactionReadyForSigning`] will be generated and
+	/// [`ChannelManager::funding_transaction_signed`] should be called.
+	///
 	/// If any failures occur while negotiating the funding transaction, an [`Event::SpliceFailed`]
 	/// will be emitted. Any contributed inputs no longer used will be included here and thus can
 	/// be re-spent.
