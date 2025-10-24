@@ -3288,8 +3288,9 @@ macro_rules! locked_close_channel {
 	}};
 	($self: ident, $peer_state: expr, $funded_chan: expr, $shutdown_res_mut: expr, FUNDED) => {{
 		if let Some((_, funding_txo, _, update)) = $shutdown_res_mut.monitor_update.take() {
-			handle_new_monitor_update_actions_deferred!($self, funding_txo, update, $peer_state,
-				$funded_chan.context);
+			handle_new_monitor_update_locked_actions_handled_by_caller!(
+				$self, funding_txo, update, $peer_state, $funded_chan.context
+			);
 		}
 		// If there's a possibility that we need to generate further monitor updates for this
 		// channel, we need to store the last update_id of it. However, we don't want to insert
@@ -3741,7 +3742,7 @@ macro_rules! handle_post_close_monitor_update {
 /// drop the aforementioned peer state locks at a given callsite. In this situation, use this macro
 /// to apply the monitor update immediately and handle the monitor update completion actions at a
 /// later time.
-macro_rules! handle_new_monitor_update_actions_deferred {
+macro_rules! handle_new_monitor_update_locked_actions_handled_by_caller {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $chan_context: expr
 	) => {{
@@ -14360,7 +14361,7 @@ where
 											insert_short_channel_id!(short_to_chan_info, funded_channel);
 
 											if let Some(monitor_update) = monitor_update_opt {
-												handle_new_monitor_update_actions_deferred!(
+												handle_new_monitor_update_locked_actions_handled_by_caller!(
 													self,
 													funding_txo,
 													monitor_update,
