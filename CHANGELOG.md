@@ -41,7 +41,7 @@
    LDK peers, and feature signaling may change in a future version of LDK,
    breaking compatibility. This is negotiated automatically for
    manually-accepted inbound channels and negotiated for outbound channels based
-   on `ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`.
+   on `ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`.
  * `Event::BumpTransaction` is now always generated even if the transaction has
    sufficient fee. This allows you to manage transaction broadcasting more
    granularly for anchor channels (#4001).
