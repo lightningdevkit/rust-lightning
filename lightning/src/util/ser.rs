@@ -1688,7 +1688,14 @@ impl Readable for Duration {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let secs = Readable::read(r)?;
 		let nanos = Readable::read(r)?;
-		Ok(Duration::new(secs, nanos))
+		// Duration::new panics if the nanosecond part in excess of a second, added to the second
+		// part, overflows. To ensure this won't happen, we simply reject any case where there are
+		// nanoseconds in excess of a second, which is invalid anyway.
+		if nanos >= 1_000_000_000 {
+			Err(DecodeError::InvalidValue)
+		} else {
+			Ok(Duration::new(secs, nanos))
+		}
 	}
 }
 
