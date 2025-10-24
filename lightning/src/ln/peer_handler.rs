@@ -3720,7 +3720,7 @@ mod tests {
 	}
 
 	impl SocketDescriptor for FileDescriptor {
-		fn send_data(&mut self, data: &[u8], _resume_read: bool) -> usize {
+		fn send_data(&mut self, data: &[u8], _continue_read: bool) -> usize {
 			if self.hang_writes.load(Ordering::Acquire) {
 				0
 			} else {

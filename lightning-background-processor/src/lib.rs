@@ -774,7 +774,7 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 /// # #[derive(Eq, PartialEq, Clone, Hash)]
 /// # struct SocketDescriptor {}
 /// # impl lightning::ln::peer_handler::SocketDescriptor for SocketDescriptor {
-/// #     fn send_data(&mut self, _data: &[u8], _resume_read: bool) -> usize { 0 }
+/// #     fn send_data(&mut self, _data: &[u8], _continue_read: bool) -> usize { 0 }
 /// #     fn disconnect_socket(&mut self) {}
 /// # }
 /// # type ChainMonitor<B, F, FE> = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<F>, Arc<B>, Arc<FE>, Arc<Logger>, Arc<StoreSync>, Arc<lightning::sign::KeysManager>>;
@@ -1878,7 +1878,7 @@ mod tests {
 	#[derive(Clone, Hash, PartialEq, Eq)]
 	struct TestDescriptor {}
 	impl SocketDescriptor for TestDescriptor {
-		fn send_data(&mut self, _data: &[u8], _resume_read: bool) -> usize {
+		fn send_data(&mut self, _data: &[u8], _continue_read: bool) -> usize {
 			0
 		}
 
