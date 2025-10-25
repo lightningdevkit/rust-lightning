@@ -35,6 +35,7 @@ use bitcoin::{BlockHash, ScriptBuf, Transaction, Txid};
 
 use core::future::Future;
 use core::ops::Deref;
+use core::pin::pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task;
 
@@ -930,7 +931,7 @@ where
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
 		exclude_static_outputs: bool, delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
-		let mut fut = Box::pin(self.sweeper.track_spendable_outputs(
+		let mut fut = pin!(self.sweeper.track_spendable_outputs(
 			output_descriptors,
 			channel_id,
 			exclude_static_outputs,
@@ -961,7 +962,7 @@ where
 	/// Regenerates and broadcasts the spending transaction for any outputs that are pending. Wraps
 	/// [`OutputSweeper::regenerate_and_broadcast_spend_if_necessary`].
 	pub fn regenerate_and_broadcast_spend_if_necessary(&self) -> Result<(), ()> {
-		let mut fut = Box::pin(self.sweeper.regenerate_and_broadcast_spend_if_necessary());
+		let mut fut = pin!(self.sweeper.regenerate_and_broadcast_spend_if_necessary());
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
 		match fut.as_mut().poll(&mut ctx) {
