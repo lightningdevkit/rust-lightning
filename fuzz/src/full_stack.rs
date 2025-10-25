@@ -195,7 +195,7 @@ struct Peer<'a> {
 	peers_connected: &'a RefCell<[bool; 256]>,
 }
 impl<'a> SocketDescriptor for Peer<'a> {
-	fn send_data(&mut self, data: &[u8], _resume_read: bool) -> usize {
+	fn send_data(&mut self, data: &[u8], _continue_read: bool) -> usize {
 		data.len()
 	}
 	fn disconnect_socket(&mut self) {
