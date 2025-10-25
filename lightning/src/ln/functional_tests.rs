@@ -20,6 +20,7 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
+use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{
 	ClosureReason, Event, HTLCHandlingFailureType, PathFailure, PaymentFailureReason,
 	PaymentPurpose,
@@ -9626,6 +9627,202 @@ pub fn test_remove_expired_inbound_unfunded_channels() {
 	}
 	let reason = ClosureReason::FundingTimedOut;
 	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
+}
+
+#[test]
+fn test_manual_broadcast_skips_commitment_until_funding_seen() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let (channel_id, funding_tx, funding_outpoint) =
+		create_channel_manual_funding(&nodes, 0, 1, 100_000, 10_000);
+
+	nodes[0]
+		.node
+		.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, "manual close".to_owned())
+		.unwrap();
+	check_added_monitors!(&nodes[0], 1);
+	check_added_monitors!(&nodes[1], 0);
+
+	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+	nodes[0].node.get_and_clear_pending_msg_events();
+	nodes[1].node.get_and_clear_pending_msg_events();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::ChannelClosed {
+			reason: ClosureReason::HolderForceClosed { broadcasted_latest_txn, message },
+			counterparty_node_id: Some(id),
+			..
+		} => {
+			assert_eq!(*broadcasted_latest_txn, Some(true));
+			assert_eq!(message, "manual close");
+			assert_eq!(id, &node_b_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	nodes[1].node.get_and_clear_pending_events();
+
+	let monitor_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert!(monitor_events.is_empty());
+
+	confirm_transaction(&nodes[0], &funding_tx);
+	confirm_transaction(&nodes[1], &funding_tx);
+	nodes[0].node.get_and_clear_pending_msg_events();
+	nodes[1].node.get_and_clear_pending_msg_events();
+
+	{
+		let monitor = get_monitor!(&nodes[0], channel_id);
+		// manual override
+		monitor.broadcast_latest_holder_commitment_txn(
+			&nodes[0].tx_broadcaster,
+			&nodes[0].fee_estimator,
+			&nodes[0].logger,
+		);
+	}
+	let funding_txid = funding_tx.compute_txid();
+	let broadcasts = nodes[0].tx_broadcaster.txn_broadcast();
+	assert!(!broadcasts.is_empty());
+	let commitment_tx = broadcasts
+		.iter()
+		.find(|tx| {
+			tx.input.iter().any(|input| {
+				input.previous_output.txid == funding_txid
+					&& input.previous_output.vout == u32::from(funding_outpoint.index)
+			})
+		})
+		.expect("commitment transaction not broadcast");
+	check_spends!(commitment_tx, funding_tx);
+	assert_eq!(commitment_tx.input.len(), 1);
+	let commitment_input = &commitment_tx.input[0];
+	assert_eq!(commitment_input.previous_output.txid, funding_txid);
+	assert_eq!(commitment_input.previous_output.vout, u32::from(funding_outpoint.index));
+
+	let monitor_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert!(monitor_events.iter().all(|event| !matches!(event, Event::BumpTransaction(_))));
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+}
+
+#[test]
+fn test_manual_broadcast_detects_funding_and_broadcasts_on_timeout() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let (channel_id, funding_tx, funding_outpoint) =
+		create_channel_manual_funding(&nodes, 0, 1, 100_000, 10_000);
+
+	let funding_msgs =
+		create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &funding_tx);
+	let confirmed_channel_id = funding_msgs.1;
+	assert_eq!(confirmed_channel_id, channel_id);
+	let _announcements =
+		create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_msgs.0);
+
+	let usable_channels = nodes[0].node.list_usable_channels();
+	assert_eq!(usable_channels.len(), 1);
+	assert_eq!(usable_channels[0].channel_id, channel_id);
+
+	let (_payment_preimage, _payment_hash, _payment_secret, _payment_id) =
+		route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+	nodes[1].node.get_and_clear_pending_events();
+
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert!(events.iter().any(|event| matches!(
+		event,
+		Event::ChannelClosed {
+			reason: ClosureReason::HTLCsTimedOut { .. },
+			counterparty_node_id: Some(id),
+			..
+		} if id == &node_b_id
+	)));
+	nodes[1].node.get_and_clear_pending_events();
+	nodes[0].node.get_and_clear_pending_msg_events();
+	nodes[1].node.get_and_clear_pending_msg_events();
+	check_added_monitors!(&nodes[0], 1);
+	check_added_monitors!(&nodes[1], 0);
+
+	let funding_txid = funding_tx.compute_txid();
+	let broadcasts = nodes[0].tx_broadcaster.txn_broadcast();
+	assert!(!broadcasts.is_empty());
+	let commitment_tx = broadcasts
+		.iter()
+		.find(|tx| {
+			tx.input.iter().any(|input| {
+				input.previous_output.txid == funding_txid
+					&& input.previous_output.vout == u32::from(funding_outpoint.index)
+			})
+		})
+		.expect("commitment transaction not broadcast");
+	check_spends!(commitment_tx, funding_tx);
+	assert_eq!(commitment_tx.input.len(), 1);
+
+	for event in nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events() {
+		if let Event::BumpTransaction(bump_event) = event {
+			if let BumpTransactionEvent::ChannelClose {
+				channel_id: event_channel_id,
+				counterparty_node_id,
+				..
+			} = &bump_event
+			{
+				assert_eq!(*event_channel_id, channel_id);
+				assert_eq!(*counterparty_node_id, node_b_id);
+			}
+			nodes[0].bump_tx_handler.handle_event(&bump_event);
+		}
+	}
+}
+
+#[test]
+fn test_manual_broadcast_no_bump_events_before_funding_seen() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let (channel_id, _, _) = create_channel_manual_funding(&nodes, 0, 1, 100_000, 10_000);
+
+	nodes[0]
+		.node
+		.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, "manual close".to_owned())
+		.unwrap();
+	check_added_monitors!(&nodes[0], 1);
+	check_added_monitors!(&nodes[1], 0);
+
+	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+	nodes[0].node.get_and_clear_pending_msg_events();
+	nodes[1].node.get_and_clear_pending_msg_events();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::ChannelClosed {
+			reason: ClosureReason::HolderForceClosed { broadcasted_latest_txn, message },
+			counterparty_node_id: Some(id),
+			..
+		} => {
+			assert_eq!(*broadcasted_latest_txn, Some(true));
+			assert_eq!(message, "manual close");
+			assert_eq!(id, &node_b_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	nodes[1].node.get_and_clear_pending_events();
+
+	let monitor_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert!(monitor_events.iter().all(|event| !matches!(event, Event::BumpTransaction(_))));
 }
 
 fn do_test_multi_post_event_actions(do_reload: bool) {

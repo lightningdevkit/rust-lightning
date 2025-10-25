@@ -1804,6 +1804,66 @@ pub fn create_chan_between_nodes_with_value_a<'a, 'b, 'c: 'd, 'd>(
 	(msgs, chan_id, tx)
 }
 
+pub fn create_channel_manual_funding<'a, 'b, 'c: 'd, 'd>(
+	nodes: &'a Vec<Node<'b, 'c, 'd>>, initiator: usize, counterparty: usize, channel_value: u64,
+	push_msat: u64,
+) -> (ChannelId, Transaction, OutPoint) {
+	let node_a = &nodes[initiator];
+	let node_b = &nodes[counterparty];
+	let node_a_id = node_a.node.get_our_node_id();
+	let node_b_id = node_b.node.get_our_node_id();
+
+	let temp_channel_id = exchange_open_accept_chan(node_a, node_b, channel_value, push_msat);
+
+	let (funding_temp_id, funding_tx, funding_outpoint) =
+		create_funding_transaction(node_a, &node_b_id, channel_value, 42);
+	assert_eq!(temp_channel_id, funding_temp_id);
+
+	node_a
+		.node
+		.funding_transaction_generated_manual_broadcast(
+			funding_temp_id,
+			node_b_id,
+			funding_tx.clone(),
+		)
+		.unwrap();
+	check_added_monitors!(node_a, 0);
+
+	let funding_created = get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b_id);
+	node_b.node.handle_funding_created(node_a_id, &funding_created);
+	check_added_monitors!(node_b, 1);
+	let channel_id_b = expect_channel_pending_event(node_b, &node_a_id);
+
+	let funding_signed = get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a_id);
+	node_a.node.handle_funding_signed(node_b_id, &funding_signed);
+	check_added_monitors!(node_a, 1);
+
+	let events = node_a.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	let funding_txid = funding_tx.compute_txid();
+	let mut channel_id = None;
+	for event in events {
+		match event {
+			Event::FundingTxBroadcastSafe { funding_txo, counterparty_node_id, .. } => {
+				assert_eq!(counterparty_node_id, node_b_id);
+				assert_eq!(funding_txo.txid, funding_txid);
+				assert_eq!(funding_txo.vout, u32::from(funding_outpoint.index));
+			},
+			Event::ChannelPending { channel_id: pending_id, counterparty_node_id, .. } => {
+				assert_eq!(counterparty_node_id, node_b_id);
+				channel_id = Some(pending_id);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+	let channel_id = channel_id.expect("channel pending event missing");
+	assert_eq!(channel_id, channel_id_b);
+
+	assert!(node_a.tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+
+	(channel_id, funding_tx, funding_outpoint)
+}
+
 pub fn create_chan_between_nodes_with_value_b<'a, 'b, 'c>(
 	node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>,
 	as_funding_msgs: &(msgs::ChannelReady, msgs::AnnouncementSignatures),
