@@ -36,9 +36,11 @@ pub trait BroadcasterInterface {
 	/// In some cases LDK may attempt to broadcast a transaction which double-spends another
 	/// and this isn't a bug and can be safely ignored.
 	///
-	/// If more than one transaction is given, these transactions should be considered to be a
-	/// package and broadcast together. Some of the transactions may or may not depend on each other,
-	/// be sure to manage both cases correctly.
+	/// If more than one transaction is given, these transactions MUST be considered to be a
+	/// single-child-with-parents package and be broadcast together
+	/// (see the `submitpackage` Bitcoin Core RPC).
+	///
+	/// Implementations MUST NOT assume any topological order on the transactions.
 	///
 	/// Bitcoin transaction packages are defined in BIP 331 and here:
 	/// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>
