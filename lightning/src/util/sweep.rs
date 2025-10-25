@@ -35,7 +35,7 @@ use bitcoin::{BlockHash, ScriptBuf, Transaction, Txid};
 
 use core::future::Future;
 use core::ops::Deref;
-use core::pin::{pin, Pin};
+use core::pin::pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task;
 
@@ -605,8 +605,8 @@ where
 	}
 
 	fn persist_state<'a>(
-		&self, sweeper_state: &SweeperState,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'a + Send>> {
+		&'a self, sweeper_state: &SweeperState,
+	) -> impl Future<Output = Result<(), io::Error>> + Send + use<'a, B, D, E, F, K, L, O> {
 		let encoded = sweeper_state.encode();
 
 		self.kv_store.write(
