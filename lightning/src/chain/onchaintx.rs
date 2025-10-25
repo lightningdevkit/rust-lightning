@@ -1339,7 +1339,7 @@ mod tests {
 		// Use non-anchor channels so that HTLC-Timeouts are broadcast immediately instead of sent
 		// to the user for external funding.
 		let chan_params = ChannelTransactionParameters {
-			holder_pubkeys: signer.new_pubkeys(None, &secp_ctx),
+			holder_pubkeys: signer.pubkeys(&secp_ctx),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
