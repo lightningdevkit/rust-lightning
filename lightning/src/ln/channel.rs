@@ -16500,7 +16500,7 @@ mod tests {
 			[0; 32],
 		);
 
-		let holder_pubkeys = signer.new_pubkeys(None, &secp_ctx);
+		let holder_pubkeys = signer.pubkeys(&secp_ctx);
 		assert_eq!(holder_pubkeys.funding_pubkey.serialize()[..],
 				<Vec<u8>>::from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
 		let keys_provider = Keys { signer: signer.clone() };
