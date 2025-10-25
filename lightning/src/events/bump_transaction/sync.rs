@@ -11,6 +11,7 @@
 
 use core::future::Future;
 use core::ops::Deref;
+use core::pin::pin;
 use core::task;
 
 use crate::chain::chaininterface::BroadcasterInterface;
@@ -289,7 +290,7 @@ where
 
 	/// Handles all variants of [`BumpTransactionEvent`].
 	pub fn handle_event(&self, event: &BumpTransactionEvent) {
-		let mut fut = Box::pin(self.bump_transaction_event_handler.handle_event(event));
+		let mut fut = pin!(self.bump_transaction_event_handler.handle_event(event));
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
 		match fut.as_mut().poll(&mut ctx) {

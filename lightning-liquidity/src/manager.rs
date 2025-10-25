@@ -7,7 +7,6 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
@@ -61,6 +60,7 @@ use bitcoin::secp256k1::PublicKey;
 
 use core::future::Future as StdFuture;
 use core::ops::Deref;
+use core::pin::pin;
 use core::task;
 
 const LSPS_FEATURE_BIT: usize = 729;
@@ -1106,7 +1106,7 @@ where
 	) -> Result<Self, lightning::io::Error> {
 		let kv_store = KVStoreSyncWrapper(kv_store_sync);
 
-		let mut fut = Box::pin(LiquidityManager::new(
+		let mut fut = pin!(LiquidityManager::new(
 			entropy_source,
 			node_signer,
 			channel_manager,
@@ -1159,7 +1159,7 @@ where
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
 	) -> Result<Self, lightning::io::Error> {
 		let kv_store = KVStoreSyncWrapper(kv_store_sync);
-		let mut fut = Box::pin(LiquidityManager::new_with_custom_time_provider(
+		let mut fut = pin!(LiquidityManager::new_with_custom_time_provider(
 			entropy_source,
 			node_signer,
 			channel_manager,
@@ -1289,7 +1289,7 @@ where
 	pub fn persist(&self) -> Result<(), lightning::io::Error> {
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
-		match Box::pin(self.inner.persist()).as_mut().poll(&mut ctx) {
+		match pin!(self.inner.persist()).as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
 				// In a sync context, we can't wait for the future to complete.

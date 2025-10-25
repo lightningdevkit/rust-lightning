@@ -19,7 +19,7 @@ use bitcoin::{BlockHash, Txid};
 use core::future::Future;
 use core::mem;
 use core::ops::Deref;
-use core::pin::Pin;
+use core::pin::{pin, Pin};
 use core::str::FromStr;
 use core::task;
 
@@ -490,8 +490,7 @@ impl FutureSpawner for PanicingSpawner {
 fn poll_sync_future<F: Future>(future: F) -> F::Output {
 	let mut waker = dummy_waker();
 	let mut ctx = task::Context::from_waker(&mut waker);
-	// TODO A future MSRV bump to 1.68 should allow for the pin macro
-	match Pin::new(&mut Box::pin(future)).poll(&mut ctx) {
+	match pin!(future).poll(&mut ctx) {
 		task::Poll::Ready(result) => result,
 		task::Poll::Pending => {
 			// In a sync context, we can't wait for the future to complete.
