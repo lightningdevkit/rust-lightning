@@ -1011,13 +1011,13 @@ impl TestStore {
 impl KVStore for TestStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>> {
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send {
 		let res = self.read_internal(&primary_namespace, &secondary_namespace, &key);
-		Box::pin(async move { res })
+		async move { res }
 	}
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + Send {
 		let path = format!("{primary_namespace}/{secondary_namespace}/{key}");
 		let future = Arc::new(Mutex::new((None, None)));
 
@@ -1026,19 +1026,19 @@ impl KVStore for TestStore {
 		let new_id = pending_writes.last().map(|(id, _, _)| id + 1).unwrap_or(0);
 		pending_writes.push((new_id, Arc::clone(&future), buf));
 
-		Box::pin(OneShotChannel(future))
+		OneShotChannel(future)
 	}
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + Send {
 		let res = self.remove_internal(&primary_namespace, &secondary_namespace, &key);
-		Box::pin(async move { res })
+		async move { res }
 	}
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>> {
+	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + Send {
 		let res = self.list_internal(primary_namespace, secondary_namespace);
-		Box::pin(async move { res })
+		async move { res }
 	}
 }
 

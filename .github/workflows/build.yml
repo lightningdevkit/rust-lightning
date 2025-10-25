@@ -62,26 +62,6 @@ jobs:
       - name: Set RUSTFLAGS to deny warnings
         if: "matrix.toolchain == '1.75.0'"
         run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
-      - name: Run CI script
-        shell: bash # Default on Winblows is powershell
-        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh
-
-  build-tx-sync:
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [ ubuntu-latest, macos-latest ]
-        toolchain: [ stable, beta, 1.75.0 ]
-    runs-on: ${{ matrix.platform }}
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-      - name: Install Rust ${{ matrix.toolchain }} toolchain
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ matrix.toolchain }}
-      - name: Set RUSTFLAGS to deny warnings
-        if: "matrix.toolchain == '1.75.0'"
-        run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
       - name: Enable caching for bitcoind
         id: cache-bitcoind
         uses: actions/cache@v4
@@ -107,7 +87,7 @@ jobs:
             echo "ELECTRS_EXE=$( pwd )/bin/electrs-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
       - name: Run CI script
         shell: bash # Default on Winblows is powershell
-        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tx-sync-tests.sh
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh
 
   coverage:
     strategy:
