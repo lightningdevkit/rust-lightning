@@ -17,6 +17,12 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # The backtrace v0.3.75 crate relies on rustc 1.82
 [ "$RUSTC_MINOR_VERSION" -lt 82 ] && cargo update -p backtrace --precise "0.3.74" --verbose
 
+# Starting with version 0.5.11, the `home` crate has an MSRV of rustc 1.81.0.
+[ "$RUSTC_MINOR_VERSION" -lt 81 ] && cargo update -p home --precise "0.5.9" --verbose
+
+# Starting with version 1.2.0, the `idna_adapter` crate has an MSRV of rustc 1.81.0.
+[ "$RUSTC_MINOR_VERSION" -lt 81 ] && cargo update -p idna_adapter --precise "1.1.0" --verbose
+
 export RUST_BACKTRACE=1
 
 echo -e "\n\nChecking the workspace, except lightning-transaction-sync."
@@ -53,6 +59,23 @@ cargo test -p lightning-block-sync --verbose --color always --features rpc-clien
 cargo check -p lightning-block-sync --verbose --color always --features rpc-client,rest-client
 cargo test -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
 cargo check -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
+
+echo -e "\n\nChecking Transaction Sync Clients with features."
+cargo check -p lightning-transaction-sync --verbose --color always --features esplora-blocking
+cargo check -p lightning-transaction-sync --verbose --color always --features esplora-async
+cargo check -p lightning-transaction-sync --verbose --color always --features esplora-async-https
+cargo check -p lightning-transaction-sync --verbose --color always --features electrum
+
+if [ -z "$CI_ENV" ] && [[ -z "$BITCOIND_EXE" || -z "$ELECTRS_EXE" ]]; then
+	echo -e "\n\nSkipping testing Transaction Sync Clients due to BITCOIND_EXE or ELECTRS_EXE being unset."
+	cargo check -p lightning-transaction-sync --tests
+else
+	echo -e "\n\nTesting Transaction Sync Clients with features."
+	cargo test -p lightning-transaction-sync --verbose --color always --features esplora-blocking
+	cargo test -p lightning-transaction-sync --verbose --color always --features esplora-async
+	cargo test -p lightning-transaction-sync --verbose --color always --features esplora-async-https
+	cargo test -p lightning-transaction-sync --verbose --color always --features electrum
+fi
 
 echo -e "\n\nChecking and testing lightning-persister with features"
 cargo test -p lightning-persister --verbose --color always --features tokio
