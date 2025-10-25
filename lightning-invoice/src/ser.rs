@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use core::fmt;
 use core::fmt::{Display, Formatter};
 use core::{array, iter};
@@ -13,14 +12,28 @@ use super::{
 	SignedRawBolt11Invoice, TaggedField,
 };
 
+macro_rules! define_iterator_enum {
+	($name: ident, $($n: ident),*) => {
+		enum $name<$($n: Iterator<Item = Fe32>,)*> {
+			$($n($n),)*
+		}
+		impl<$($n: Iterator<Item = Fe32>,)*> Iterator for $name<$($n,)*> {
+			type Item = Fe32;
+			fn next(&mut self) -> Option<Fe32> {
+				match self {
+					$(Self::$n(iter) => iter.next(),)*
+				}
+			}
+		}
+	}
+}
+
 /// Objects that can be encoded to base32 (bech32).
 ///
-/// Private to this crate to avoid polluting the API.
+/// Private to this crate (except in fuzzing) to avoid polluting the API.
 pub trait Base32Iterable {
-	/// apoelstra: In future we want to replace this Box<dyn Iterator> with an explicit
-	/// associated type, to avoid the allocation. But we cannot do this until
-	/// Rust 1.65 and GATs since the iterator may contain a reference to self.
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's>;
+	/// Serialize this object, returning an iterator over bech32 field elements.
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's;
 }
 
 /// Interface to calculate the length of the base32 representation before actually serializing
@@ -32,7 +45,7 @@ pub(crate) trait Base32Len: Base32Iterable {
 // Base32Iterable & Base32Len implementations are here, because the traits are in this module.
 
 impl<const N: usize> Base32Iterable for [u8; N] {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
 		self[..].fe_iter()
 	}
 }
@@ -45,8 +58,8 @@ impl<const N: usize> Base32Len for [u8; N] {
 }
 
 impl Base32Iterable for [u8] {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(self.iter().copied().bytes_to_fes())
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
+		self.iter().copied().bytes_to_fes()
 	}
 }
 
@@ -58,8 +71,8 @@ impl Base32Len for [u8] {
 }
 
 impl Base32Iterable for Vec<u8> {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(self.iter().copied().bytes_to_fes())
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
+		self.iter().copied().bytes_to_fes()
 	}
 }
 
@@ -71,8 +84,8 @@ impl Base32Len for Vec<u8> {
 }
 
 impl Base32Iterable for PaymentSecret {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(self.0[..].fe_iter())
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
+		self.0[..].fe_iter()
 	}
 }
 
@@ -88,7 +101,7 @@ impl Base32Iterable for Bolt11InvoiceFeatures {
 	/// starting from the rightmost bit,
 	/// and taking the resulting 5-bit values in reverse (left-to-right),
 	/// with the leading 0's skipped.
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
 		// Fe32 conversion cannot be used, because this packs from right, right-to-left
 		let mut input_iter = self.le_flags().iter();
 		// Carry bits, 0..7 bits
@@ -126,7 +139,7 @@ impl Base32Iterable for Bolt11InvoiceFeatures {
 			output.push(Fe32::try_from(next_out8 & 31u8).expect("<32"))
 		}
 		// Take result in reverse order, and skip leading 0s
-		Box::new(output.into_iter().rev().skip_while(|e| *e == Fe32::Q))
+		output.into_iter().rev().skip_while(|e| *e == Fe32::Q)
 	}
 }
 
@@ -241,36 +254,35 @@ fn encoded_int_be_base32_size(int: u64) -> usize {
 }
 
 impl Base32Iterable for RawDataPart {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
 		let ts_iter = self.timestamp.fe_iter();
 		let fields_iter = self.tagged_fields.iter().map(RawTaggedField::fe_iter).flatten();
-		Box::new(ts_iter.chain(fields_iter))
+		ts_iter.chain(fields_iter)
 	}
 }
 
 impl Base32Iterable for PositiveTimestamp {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
 		let fes = encode_int_be_base32(self.as_unix_timestamp());
 		debug_assert!(fes.len() <= 7, "Invalid timestamp length");
 		let to_pad = 7 - fes.len();
-		Box::new(core::iter::repeat(Fe32::Q).take(to_pad).chain(fes))
+		core::iter::repeat(Fe32::Q).take(to_pad).chain(fes)
 	}
 }
 
 impl Base32Iterable for RawTaggedField {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		// Annoyingly, when we move to explicit types, we will need an
-		// explicit enum holding the two iterator variants.
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
+		define_iterator_enum!(TwoIters, A, B);
 		match *self {
-			RawTaggedField::UnknownSemantics(ref content) => Box::new(content.iter().copied()),
-			RawTaggedField::KnownSemantics(ref tagged_field) => tagged_field.fe_iter(),
+			RawTaggedField::UnknownSemantics(ref content) => TwoIters::A(content.iter().copied()),
+			RawTaggedField::KnownSemantics(ref tagged_field) => TwoIters::B(tagged_field.fe_iter()),
 		}
 	}
 }
 
 impl Base32Iterable for Sha256 {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(self.0[..].fe_iter())
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
+		self.0[..].fe_iter()
 	}
 }
 
@@ -281,8 +293,8 @@ impl Base32Len for Sha256 {
 }
 
 impl Base32Iterable for Description {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(self.0 .0.as_bytes().fe_iter())
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
+		self.0 .0.as_bytes().fe_iter()
 	}
 }
 
@@ -293,8 +305,8 @@ impl Base32Len for Description {
 }
 
 impl Base32Iterable for PayeePubKey {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(self.serialize().into_iter().bytes_to_fes())
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
+		self.serialize().into_iter().bytes_to_fes()
 	}
 }
 
@@ -305,8 +317,8 @@ impl Base32Len for PayeePubKey {
 }
 
 impl Base32Iterable for ExpiryTime {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(encode_int_be_base32(self.as_seconds()))
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
+		encode_int_be_base32(self.as_seconds())
 	}
 }
 
@@ -317,8 +329,8 @@ impl Base32Len for ExpiryTime {
 }
 
 impl Base32Iterable for MinFinalCltvExpiryDelta {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(encode_int_be_base32(self.0))
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
+		encode_int_be_base32(self.0)
 	}
 }
 
@@ -329,8 +341,8 @@ impl Base32Len for MinFinalCltvExpiryDelta {
 }
 
 impl Base32Iterable for Fallback {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(match *self {
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
+		match *self {
 			Fallback::SegWitProgram { version: v, program: ref p } => {
 				let v = Fe32::try_from(v.to_num()).expect("valid version");
 				core::iter::once(v).chain(p[..].fe_iter())
@@ -343,7 +355,7 @@ impl Base32Iterable for Fallback {
 				// 18 'J'
 				core::iter::once(Fe32::J).chain(hash[..].fe_iter())
 			},
-		})
+		}
 	}
 }
 
@@ -371,7 +383,7 @@ type RouteHintHopIter = iter::Chain<
 >;
 
 impl Base32Iterable for PrivateRoute {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
 		fn serialize_to_iter(hop: &RouteHintHop) -> RouteHintHopIter {
 			let i1 = hop.src_node_id.serialize().into_iter();
 			let i2 = u64::to_be_bytes(hop.short_channel_id).into_iter();
@@ -381,7 +393,7 @@ impl Base32Iterable for PrivateRoute {
 			i1.chain(i2).chain(i3).chain(i4).chain(i5)
 		}
 
-		Box::new(self.0 .0.iter().map(serialize_to_iter).flatten().bytes_to_fes())
+		self.0 .0.iter().map(serialize_to_iter).flatten().bytes_to_fes()
 	}
 }
 
@@ -391,16 +403,11 @@ impl Base32Len for PrivateRoute {
 	}
 }
 
-// Shorthand type
-type TaggedFieldIter<I> = core::iter::Chain<core::array::IntoIter<Fe32, 3>, I>;
-
 impl Base32Iterable for TaggedField {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
 		/// Writes a tagged field: tag, length and data. `tag` should be in `0..32` otherwise the
 		/// function will panic.
-		fn write_tagged_field<'s, P>(
-			tag: u8, payload: &'s P,
-		) -> TaggedFieldIter<Box<dyn Iterator<Item = Fe32> + 's>>
+		fn write_tagged_field<'s, P>(tag: u8, payload: &'s P) -> impl Iterator<Item = Fe32> + 's
 		where
 			P: Base32Iterable + Base32Len + ?Sized,
 		{
@@ -416,54 +423,49 @@ impl Base32Iterable for TaggedField {
 			.chain(payload.fe_iter())
 		}
 
-		// we will also need a giant enum for this
-		Box::new(match *self {
+		define_iterator_enum!(ManyIters, A, B, C, D, E, F, G, H, I, J, K);
+		match *self {
 			TaggedField::PaymentHash(ref hash) => {
-				write_tagged_field(constants::TAG_PAYMENT_HASH, hash)
+				ManyIters::A(write_tagged_field(constants::TAG_PAYMENT_HASH, hash))
 			},
 			TaggedField::Description(ref description) => {
-				write_tagged_field(constants::TAG_DESCRIPTION, description)
+				ManyIters::B(write_tagged_field(constants::TAG_DESCRIPTION, description))
 			},
 			TaggedField::PayeePubKey(ref pub_key) => {
-				write_tagged_field(constants::TAG_PAYEE_PUB_KEY, pub_key)
+				ManyIters::C(write_tagged_field(constants::TAG_PAYEE_PUB_KEY, pub_key))
 			},
 			TaggedField::DescriptionHash(ref hash) => {
-				write_tagged_field(constants::TAG_DESCRIPTION_HASH, hash)
+				ManyIters::D(write_tagged_field(constants::TAG_DESCRIPTION_HASH, hash))
 			},
 			TaggedField::ExpiryTime(ref duration) => {
-				write_tagged_field(constants::TAG_EXPIRY_TIME, duration)
+				ManyIters::E(write_tagged_field(constants::TAG_EXPIRY_TIME, duration))
 			},
 			TaggedField::MinFinalCltvExpiryDelta(ref expiry) => {
-				write_tagged_field(constants::TAG_MIN_FINAL_CLTV_EXPIRY_DELTA, expiry)
+				ManyIters::F(write_tagged_field(constants::TAG_MIN_FINAL_CLTV_EXPIRY_DELTA, expiry))
 			},
 			TaggedField::Fallback(ref fallback_address) => {
-				write_tagged_field(constants::TAG_FALLBACK, fallback_address)
+				ManyIters::G(write_tagged_field(constants::TAG_FALLBACK, fallback_address))
 			},
 			TaggedField::PrivateRoute(ref route_hops) => {
-				write_tagged_field(constants::TAG_PRIVATE_ROUTE, route_hops)
+				ManyIters::H(write_tagged_field(constants::TAG_PRIVATE_ROUTE, route_hops))
 			},
 			TaggedField::PaymentSecret(ref payment_secret) => {
-				write_tagged_field(constants::TAG_PAYMENT_SECRET, payment_secret)
+				ManyIters::I(write_tagged_field(constants::TAG_PAYMENT_SECRET, payment_secret))
 			},
 			TaggedField::PaymentMetadata(ref payment_metadata) => {
-				write_tagged_field(constants::TAG_PAYMENT_METADATA, payment_metadata)
+				ManyIters::J(write_tagged_field(constants::TAG_PAYMENT_METADATA, payment_metadata))
 			},
 			TaggedField::Features(ref features) => {
-				write_tagged_field(constants::TAG_FEATURES, features)
+				ManyIters::K(write_tagged_field(constants::TAG_FEATURES, features))
 			},
-		})
+		}
 	}
 }
 
 impl Base32Iterable for Bolt11InvoiceSignature {
-	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
 		let (recovery_id, signature) = self.0.serialize_compact();
-		Box::new(
-			signature
-				.into_iter()
-				.chain(core::iter::once(recovery_id.to_i32() as u8))
-				.bytes_to_fes(),
-		)
+		signature.into_iter().chain(core::iter::once(recovery_id.to_i32() as u8)).bytes_to_fes()
 	}
 }
 
