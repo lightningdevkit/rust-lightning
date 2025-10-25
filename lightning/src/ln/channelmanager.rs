@@ -12790,6 +12790,12 @@ where
 	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
 	/// to construct a [`BlindedMessagePath`] for the reply path.
 	///
+	/// # Note
+	///
+	/// When paying an offer to an async recipient, a failed payment attempt could end up in a
+	/// pending state if we are offline. In this case, we allow for an extended grace period
+	/// to resolve it with our peer when we come back online.
+	///
 	/// # Errors
 	///
 	/// Errors if:

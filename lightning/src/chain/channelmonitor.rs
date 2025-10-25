@@ -45,7 +45,7 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::Filter;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
-use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
+use crate::events::{ClosureReason, Event, EventHandler, PaidBolt12Invoice, ReplayEvent};
 use crate::ln::chan_utils::{
 	self, ChannelTransactionParameters, CommitmentTransaction, CounterpartyCommitmentSecrets,
 	HTLCClaim, HTLCOutputInCommitment, HolderCommitmentTransaction,
@@ -5964,9 +5964,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// updates that peer sends us are update_fails, failing the channel if not. It's probably
 		// easier to just fail the channel as this case should be rare enough anyway.
 		let height = self.best_block.height;
+		// Grace period in number of blocks we allow for an async payment to resolve before we
+		// force-close. 4032 blocks are roughly four weeks.
+		const ASYNC_PAYMENT_GRACE_PERIOD_BLOCKS: u32 = 4032;
 		macro_rules! scan_commitment {
 			($htlcs: expr, $holder_tx: expr) => {
-				for ref htlc in $htlcs {
+				for (ref htlc, ref source) in $htlcs {
 					// For inbound HTLCs which we know the preimage for, we have to ensure we hit the
 					// chain with enough room to claim the HTLC without our counterparty being able to
 					// time out the HTLC first.
@@ -5977,9 +5980,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// can still claim the corresponding HTLC. Thus, to avoid needlessly hitting the
 					// chain when our counterparty is waiting for expiration to off-chain fail an HTLC
 					// we give ourselves a few blocks of headroom after expiration before going
-					// on-chain for an expired HTLC.
+					// on-chain for an expired HTLC. In the case of an outbound HTLC for
+					// an async payment, we allow `ASYNC_PAYMENT_GRACE_PERIOD_BLOCKS` before
+					// we force-close the channel so that if we've been offline for a
+					// while we give a chance for the HTLC to be failed on reconnect
+					// instead closing the channel.
 					let htlc_outbound = $holder_tx == htlc.offered;
-					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height) ||
+					let async_payment = htlc_outbound && matches!(
+						source.as_deref().expect("Every outbound HTLC should have a corresponding source"),
+						HTLCSource::OutboundRoute {
+							bolt12_invoice: Some(PaidBolt12Invoice::StaticInvoice(_)),
+							..
+						}
+					);
+					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height && !async_payment) ||
+					   ( htlc_outbound && htlc.cltv_expiry + ASYNC_PAYMENT_GRACE_PERIOD_BLOCKS <= height && async_payment) ||
 					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
 						log_info!(logger, "Force-closing channel due to {} HTLC timeout - HTLC with payment hash {} expires at {}", if htlc_outbound { "outbound" } else { "inbound"}, htlc.payment_hash, htlc.cltv_expiry);
 						return Some(htlc.payment_hash);
@@ -5988,16 +6003,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		scan_commitment!(holder_commitment_htlcs!(self, CURRENT), true);
+		scan_commitment!(holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES), true);
 
 		if let Some(ref txid) = self.funding.current_counterparty_commitment_txid {
 			if let Some(ref htlc_outputs) = self.funding.counterparty_claimable_outpoints.get(txid) {
-				scan_commitment!(htlc_outputs.iter().map(|&(ref a, _)| a), false);
+				scan_commitment!(htlc_outputs.iter(), false);
 			}
 		}
 		if let Some(ref txid) = self.funding.prev_counterparty_commitment_txid {
 			if let Some(ref htlc_outputs) = self.funding.counterparty_claimable_outpoints.get(txid) {
-				scan_commitment!(htlc_outputs.iter().map(|&(ref a, _)| a), false);
+				scan_commitment!(htlc_outputs.iter(), false);
 			}
 		}
 
