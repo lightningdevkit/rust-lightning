@@ -1,5 +1,5 @@
 use_small_heuristics = "Max"
-fn_args_layout = "Compressed"
+fn_params_layout = "Compressed"
 hard_tabs = true
 use_field_init_shorthand = true
 max_width = 100

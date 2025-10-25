@@ -239,7 +239,7 @@ impl OutputSpendStatus {
 	fn is_delayed(&self, cur_height: u32) -> bool {
 		match self {
 			Self::PendingInitialBroadcast { delayed_until_height } => {
-				delayed_until_height.map_or(false, |req_height| cur_height < req_height)
+				delayed_until_height.is_some_and(|req_height| cur_height < req_height)
 			},
 			Self::PendingFirstConfirmation { .. } => false,
 			Self::PendingThresholdConfirmations { .. } => false,

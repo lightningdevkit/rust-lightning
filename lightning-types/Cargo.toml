@@ -8,6 +8,7 @@ description = """
 Basic types which are used in the lightning network
 """
 edition = "2021"
+rust-version = "1.75"
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

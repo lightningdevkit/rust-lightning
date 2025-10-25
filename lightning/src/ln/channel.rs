@@ -2482,10 +2482,9 @@ impl FundingScope {
 			their_funding_contribution.to_sat(),
 		);
 
-		let post_value_to_self_msat = AddSigned::checked_add_signed(
-			prev_funding.value_to_self_msat,
-			our_funding_contribution.to_sat() * 1000,
-		);
+		let post_value_to_self_msat = prev_funding
+			.value_to_self_msat
+			.checked_add_signed(our_funding_contribution.to_sat() * 1000);
 		debug_assert!(post_value_to_self_msat.is_some());
 		let post_value_to_self_msat = post_value_to_self_msat.unwrap();
 
@@ -2551,8 +2550,7 @@ impl FundingScope {
 	pub(super) fn compute_post_splice_value(
 		&self, our_funding_contribution: i64, their_funding_contribution: i64,
 	) -> u64 {
-		AddSigned::saturating_add_signed(
-			self.get_value_satoshis(),
+		self.get_value_satoshis().saturating_add_signed(
 			our_funding_contribution.saturating_add(their_funding_contribution),
 		)
 	}
@@ -2583,30 +2581,6 @@ impl FundingScope {
 			holder_sig_first,
 			self.get_funding_redeemscript(),
 		)
-	}
-}
-
-// TODO: Remove once MSRV is at least 1.66
-trait AddSigned {
-	fn checked_add_signed(self, rhs: i64) -> Option<u64>;
-	fn saturating_add_signed(self, rhs: i64) -> u64;
-}
-
-impl AddSigned for u64 {
-	fn checked_add_signed(self, rhs: i64) -> Option<u64> {
-		if rhs >= 0 {
-			self.checked_add(rhs as u64)
-		} else {
-			self.checked_sub(rhs.unsigned_abs())
-		}
-	}
-
-	fn saturating_add_signed(self, rhs: i64) -> u64 {
-		if rhs >= 0 {
-			self.saturating_add(rhs as u64)
-		} else {
-			self.saturating_sub(rhs.unsigned_abs())
-		}
 	}
 }
 
@@ -3303,15 +3277,12 @@ where
 		// This will return false if `counterparty_parameters` is `None`, but for a `FundedChannel`, it
 		// should never be `None`.
 		debug_assert!(channel_parameters.counterparty_parameters.is_some());
-		channel_parameters.counterparty_parameters.as_ref().map_or(
-			false,
-			|counterparty_parameters| {
-				self.context().channel_id().is_v2_channel_id(
-					&channel_parameters.holder_pubkeys.revocation_basepoint,
-					&counterparty_parameters.pubkeys.revocation_basepoint,
-				)
-			},
-		)
+		channel_parameters.counterparty_parameters.as_ref().is_some_and(|counterparty_parameters| {
+			self.context().channel_id().is_v2_channel_id(
+				&channel_parameters.holder_pubkeys.revocation_basepoint,
+				&counterparty_parameters.pubkeys.revocation_basepoint,
+			)
+		})
 	}
 }
 
@@ -10178,7 +10149,7 @@ where
 				proposed_max_feerate as u64 * tx_weight / 1000,
 			)
 		} else {
-			self.funding.get_value_satoshis() - (self.funding.value_to_self_msat + 999) / 1000
+			self.funding.get_value_satoshis() - self.funding.value_to_self_msat.div_ceil(1000)
 		};
 
 		self.context.closing_fee_limits =
@@ -10686,7 +10657,7 @@ where
 				debug_assert_eq!(
 					our_max_fee,
 					self.funding.get_value_satoshis()
-						- (self.funding.value_to_self_msat + 999) / 1000
+						- self.funding.value_to_self_msat.div_ceil(1000)
 				);
 				propose_fee!(cmp::min(max_fee_satoshis, our_max_fee));
 			} else {
@@ -12105,10 +12076,8 @@ where
 
 		if our_funding_contribution != SignedAmount::ZERO {
 			let post_splice_holder_balance = Amount::from_sat(
-				AddSigned::checked_add_signed(
-					holder_balance_remaining.to_sat(),
-					our_funding_contribution.to_sat(),
-				)
+				holder_balance_remaining.to_sat()
+				.checked_add_signed(our_funding_contribution.to_sat())
 				.ok_or(format!(
 					"Channel {} cannot be spliced out; our remaining balance {} does not cover our negative funding contribution {}",
 					self.context.channel_id(),
@@ -12129,10 +12098,8 @@ where
 
 		if their_funding_contribution != SignedAmount::ZERO {
 			let post_splice_counterparty_balance = Amount::from_sat(
-				AddSigned::checked_add_signed(
-					counterparty_balance_remaining.to_sat(),
-					their_funding_contribution.to_sat(),
-				)
+				counterparty_balance_remaining.to_sat()
+				.checked_add_signed(their_funding_contribution.to_sat())
 				.ok_or(format!(
 					"Channel {} cannot be spliced out; their remaining balance {} does not cover their negative funding contribution {}",
 					self.context.channel_id(),

@@ -8,6 +8,7 @@ description = """
 Utilities for syncing LDK via the transaction-based `Confirm` interface.
 """
 edition = "2021"
+rust-version = "1.75"
 
 [package.metadata.docs.rs]
 all-features = true

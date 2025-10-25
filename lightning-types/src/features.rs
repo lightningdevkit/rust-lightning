@@ -698,7 +698,7 @@ mod sealed {
 	);
 	// By default, allocate enough bytes to cover up to Splice. Update this as new features are
 	// added which we expect to appear commonly across contexts.
-	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = (63 + 7) / 8;
+	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = 63_usize.div_ceil(8);
 	define_feature!(
 		141, // The BOLTs PR uses feature bit 40/41, so add +100 for the experimental bit
 		AnchorZeroFeeCommitmentsStaging,

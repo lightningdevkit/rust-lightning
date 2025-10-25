@@ -9,6 +9,7 @@ keywords = [ "lightning", "bitcoin", "invoice", "BOLT11" ]
 readme = "README.md"
 repository = "https://github.com/lightningdevkit/rust-lightning/"
 edition = "2021"
+rust-version = "1.75"
 
 [package.metadata.docs.rs]
 all-features = true

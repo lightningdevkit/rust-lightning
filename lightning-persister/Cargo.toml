@@ -8,6 +8,7 @@ description = """
 Utilities for LDK data persistence and retrieval.
 """
 edition = "2021"
+rust-version = "1.75"
 
 [package.metadata.docs.rs]
 all-features = true

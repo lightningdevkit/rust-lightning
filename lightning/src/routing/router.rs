@@ -573,7 +573,7 @@ impl Path {
 
 	/// True if this [`Path`] has at least one Trampoline hop.
 	pub fn has_trampoline_hops(&self) -> bool {
-		self.blinded_tail.as_ref().map_or(false, |bt| !bt.trampoline_hops.is_empty())
+		self.blinded_tail.as_ref().is_some_and(|bt| !bt.trampoline_hops.is_empty())
 	}
 }
 
@@ -1278,8 +1278,8 @@ impl Payee {
 	#[rustfmt::skip]
 	fn supports_basic_mpp(&self) -> bool {
 		match self {
-			Self::Clear { features, .. } => features.as_ref().map_or(false, |f| f.supports_basic_mpp()),
-			Self::Blinded { features, .. } => features.as_ref().map_or(false, |f| f.supports_basic_mpp()),
+			Self::Clear { features, .. } => features.as_ref().is_some_and(|f| f.supports_basic_mpp()),
+			Self::Blinded { features, .. } => features.as_ref().is_some_and(|f| f.supports_basic_mpp()),
 		}
 	}
 	fn features(&self) -> Option<FeaturesRef<'_>> {
@@ -2450,7 +2450,7 @@ where L::Target: Logger {
 	let maybe_dummy_payee_node_id = NodeId::from_pubkey(&maybe_dummy_payee_pk);
 	let our_node_id = NodeId::from_pubkey(&our_node_pubkey);
 
-	if payee_node_id_opt.map_or(false, |payee| payee == our_node_id) {
+	if payee_node_id_opt.is_some_and(|payee| payee == our_node_id) {
 		return Err("Cannot generate a route to ourselves");
 	}
 	if our_node_id == maybe_dummy_payee_node_id {
@@ -2541,8 +2541,7 @@ where L::Target: Logger {
 	} else if payment_params.payee.supports_basic_mpp() {
 		true
 	} else if let Some(payee) = payee_node_id_opt {
-		network_nodes.get(&payee).map_or(false, |node| node.announcement_info.as_ref().map_or(false,
-			|info| info.features().supports_basic_mpp()))
+		network_nodes.get(&payee).is_some_and(|node| node.announcement_info.as_ref().is_some_and(|info| info.features().supports_basic_mpp()))
 	} else { false };
 
 	let max_total_routing_fee_msat = route_params.max_total_routing_fee_msat.unwrap_or(u64::max_value());
@@ -2701,7 +2700,7 @@ where L::Target: Logger {
 	// This requirement is currently set to be 1/max_path_count of the payment
 	// value to ensure we only ever return routes that do not violate this limit.
 	let minimal_value_contribution_msat: u64 = if allow_mpp {
-		(final_value_msat + (payment_params.max_path_count as u64 - 1)) / payment_params.max_path_count as u64
+		final_value_msat.div_ceil(payment_params.max_path_count as u64)
 	} else {
 		final_value_msat
 	};
@@ -3665,9 +3664,9 @@ where L::Target: Logger {
 				// there are announced channels between the endpoints. If so, the hop might be
 				// referring to any of the announced channels, as its `short_channel_id` might be
 				// an alias, in which case we don't take any chances here.
-				network_graph.node(&target).map_or(false, |hop_node|
+				network_graph.node(&target).is_some_and(|hop_node|
 					hop_node.channels.iter().any(|scid| network_graph.channel(*scid)
-							.map_or(false, |c| c.as_directed_from(&hop.candidate.source()).is_some()))
+							.is_some_and(|c| c.as_directed_from(&hop.candidate.source()).is_some()))
 				)
 			};
 

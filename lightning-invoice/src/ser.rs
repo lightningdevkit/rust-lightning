@@ -237,7 +237,7 @@ fn encode_int_be_base32(int: u64) -> impl ExactSizeIterator<Item = Fe32> {
 /// The length of the output of `encode_int_be_base32`.
 fn encoded_int_be_base32_size(int: u64) -> usize {
 	let bit_len = 64 - int.leading_zeros() as usize; // cast ok as value is in 0..=64.
-	(bit_len + 4) / 5
+	bit_len.div_ceil(5)
 }
 
 impl Base32Iterable for RawDataPart {

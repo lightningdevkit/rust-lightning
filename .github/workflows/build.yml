@@ -31,10 +31,10 @@ jobs:
       fail-fast: false
       matrix:
         platform: [ self-hosted, windows-latest, macos-latest ]
-        toolchain: [ stable, beta, 1.63.0 ] # 1.63.0 is the MSRV for all crates but `lightning-transaction-sync`.
+        toolchain: [ stable, beta, 1.75.0 ] # 1.75.0 is the MSRV for all crates
         exclude:
           - platform: windows-latest
-            toolchain: 1.63.0
+            toolchain: 1.75.0
           - platform: windows-latest
             toolchain: beta
           - platform: macos-latest
@@ -60,7 +60,7 @@ jobs:
           shellcheck ci/*.sh -aP ci
           shellcheck contrib/*.sh -aP contrib
       - name: Set RUSTFLAGS to deny warnings
-        if: "matrix.toolchain == '1.63.0'"
+        if: "matrix.toolchain == '1.75.0'"
         run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
       - name: Run CI script
         shell: bash # Default on Winblows is powershell
@@ -71,7 +71,7 @@ jobs:
       fail-fast: false
       matrix:
         platform: [ ubuntu-latest, macos-latest ]
-        toolchain: [ stable, beta, 1.75.0 ] # 1.75.0 is the MSRV for `lightning-transaction-sync`.
+        toolchain: [ stable, beta, 1.75.0 ]
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
@@ -254,17 +254,13 @@ jobs:
   fuzz:
     runs-on: self-hosted
     env:
-      TOOLCHAIN: 1.63
+      TOOLCHAIN: 1.75
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-      - name: Pin the regex dependency
-        run: |
-          cd fuzz && cargo update -p regex --precise "1.9.6" --verbose
-          cd write-seeds && cargo update -p regex --precise "1.9.6" --verbose
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: |
           cd fuzz
@@ -293,7 +289,7 @@ jobs:
   rustfmt:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: 1.63.0
+      TOOLCHAIN: 1.75.0
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4

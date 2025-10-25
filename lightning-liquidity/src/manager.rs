@@ -770,12 +770,12 @@ where
 								let lsps2_has_active_requests = self
 									.lsps2_service_handler
 									.as_ref()
-									.map_or(false, |h| h.has_active_requests(sender_node_id));
+									.is_some_and(|h| h.has_active_requests(sender_node_id));
 								#[cfg(lsps1_service)]
 								let lsps1_has_active_requests = self
 									.lsps1_service_handler
 									.as_ref()
-									.map_or(false, |h| h.has_active_requests(sender_node_id));
+									.is_some_and(|h| h.has_active_requests(sender_node_id));
 								#[cfg(not(lsps1_service))]
 								let lsps1_has_active_requests = false;
 
@@ -918,7 +918,7 @@ where
 	fn provided_node_features(&self) -> NodeFeatures {
 		let mut features = NodeFeatures::empty();
 
-		let advertise_service = self.service_config.as_ref().map_or(false, |c| c.advertise_service);
+		let advertise_service = self.service_config.as_ref().is_some_and(|c| c.advertise_service);
 
 		if advertise_service {
 			features
@@ -932,7 +932,7 @@ where
 	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
 		let mut features = InitFeatures::empty();
 
-		let advertise_service = self.service_config.as_ref().map_or(false, |c| c.advertise_service);
+		let advertise_service = self.service_config.as_ref().is_some_and(|c| c.advertise_service);
 		if advertise_service {
 			features
 				.set_optional_custom_bit(LSPS_FEATURE_BIT)

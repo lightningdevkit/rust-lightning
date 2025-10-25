@@ -268,7 +268,7 @@ impl AsyncReceiveOfferCache {
 		for offer_opt in self.offers.iter_mut() {
 			let offer_is_expired = offer_opt
 				.as_ref()
-				.map_or(false, |offer| offer.offer.is_expired_no_std(duration_since_epoch));
+				.is_some_and(|offer| offer.offer.is_expired_no_std(duration_since_epoch));
 			if offer_is_expired {
 				offer_opt.take();
 				offer_was_removed = true;
@@ -486,7 +486,7 @@ impl AsyncReceiveOfferCache {
 		};
 
 		let mut offers = self.offers.iter_mut();
-		let offer_entry = offers.find(|o| o.as_ref().map_or(false, |o| o.offer.id() == offer_id));
+		let offer_entry = offers.find(|o| o.as_ref().is_some_and(|o| o.offer.id() == offer_id));
 		if let Some(Some(ref mut offer)) = offer_entry {
 			match offer.status {
 				OfferStatus::Used { invoice_created_at: ref mut inv_created_at }
