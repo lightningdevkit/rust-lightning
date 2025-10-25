@@ -16,11 +16,11 @@ members = [
     "lightning-macros",
     "lightning-dns-resolver",
     "lightning-liquidity",
+    "lightning-transaction-sync",
     "possiblyrandom",
 ]
 
 exclude = [
-    "lightning-transaction-sync",
     "lightning-tests",
     "ext-functional-test-demo",
     "no-std-check",
