@@ -2,7 +2,7 @@
 //! current UTXO set. This module defines an implementation of the LDK API required to do so
 //! against a [`BlockSource`] which implements a few additional methods for accessing the UTXO set.
 
-use crate::{AsyncBlockSourceResult, BlockData, BlockSource, BlockSourceError};
+use crate::{BlockData, BlockSource, BlockSourceError, BlockSourceResult};
 
 use bitcoin::block::Block;
 use bitcoin::constants::ChainHash;
@@ -18,7 +18,7 @@ use lightning::util::native_async::FutureSpawner;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::ops::Deref;
-use std::pin::Pin;
+use std::pin::{pin, Pin};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
@@ -35,11 +35,13 @@ pub trait UtxoSource: BlockSource + 'static {
 	/// for gossip validation.
 	fn get_block_hash_by_height<'a>(
 		&'a self, block_height: u32,
-	) -> AsyncBlockSourceResult<'a, BlockHash>;
+	) -> impl Future<Output = BlockSourceResult<BlockHash>> + Send + 'a;
 
 	/// Returns true if the given output has *not* been spent, i.e. is a member of the current UTXO
 	/// set.
-	fn is_output_unspent<'a>(&'a self, outpoint: OutPoint) -> AsyncBlockSourceResult<'a, bool>;
+	fn is_output_unspent<'a>(
+		&'a self, outpoint: OutPoint,
+	) -> impl Future<Output = BlockSourceResult<bool>> + Send + 'a;
 }
 
 #[cfg(feature = "tokio")]
@@ -55,34 +57,37 @@ impl FutureSpawner for TokioSpawner {
 /// A trivial future which joins two other futures and polls them at the same time, returning only
 /// once both complete.
 pub(crate) struct Joiner<
-	A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>> + Unpin,
-	B: Future<Output = Result<BlockHash, BlockSourceError>> + Unpin,
+	'a,
+	A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>>,
+	B: Future<Output = Result<BlockHash, BlockSourceError>>,
 > {
-	pub a: A,
-	pub b: B,
+	pub a: Pin<&'a mut A>,
+	pub b: Pin<&'a mut B>,
 	a_res: Option<(BlockHash, Option<u32>)>,
 	b_res: Option<BlockHash>,
 }
 
 impl<
-		A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>> + Unpin,
-		B: Future<Output = Result<BlockHash, BlockSourceError>> + Unpin,
-	> Joiner<A, B>
+		'a,
+		A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>>,
+		B: Future<Output = Result<BlockHash, BlockSourceError>>,
+	> Joiner<'a, A, B>
 {
-	fn new(a: A, b: B) -> Self {
+	fn new(a: Pin<&'a mut A>, b: Pin<&'a mut B>) -> Self {
 		Self { a, b, a_res: None, b_res: None }
 	}
 }
 
 impl<
-		A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>> + Unpin,
-		B: Future<Output = Result<BlockHash, BlockSourceError>> + Unpin,
-	> Future for Joiner<A, B>
+		'a,
+		A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>>,
+		B: Future<Output = Result<BlockHash, BlockSourceError>>,
+	> Future for Joiner<'a, A, B>
 {
 	type Output = Result<((BlockHash, Option<u32>), BlockHash), BlockSourceError>;
 	fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
 		if self.a_res.is_none() {
-			match Pin::new(&mut self.a).poll(ctx) {
+			match self.a.as_mut().poll(ctx) {
 				Poll::Ready(res) => {
 					if let Ok(ok) = res {
 						self.a_res = Some(ok);
@@ -94,7 +99,7 @@ impl<
 			}
 		}
 		if self.b_res.is_none() {
-			match Pin::new(&mut self.b).poll(ctx) {
+			match self.b.as_mut().poll(ctx) {
 				Poll::Ready(res) => {
 					if let Ok(ok) = res {
 						self.b_res = Some(ok);
@@ -200,10 +205,12 @@ where
 				}
 			}
 
-			let ((_, tip_height_opt), block_hash) =
-				Joiner::new(source.get_best_block(), source.get_block_hash_by_height(block_height))
-					.await
-					.map_err(|_| UtxoLookupError::UnknownTx)?;
+			let ((_, tip_height_opt), block_hash) = Joiner::new(
+				pin!(source.get_best_block()),
+				pin!(source.get_block_hash_by_height(block_height)),
+			)
+			.await
+			.map_err(|_| UtxoLookupError::UnknownTx)?;
 			if let Some(tip_height) = tip_height_opt {
 				// If the block doesn't yet have five confirmations, error out.
 				//

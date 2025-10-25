@@ -53,7 +53,6 @@ use lightning::chain::{BestBlock, Listen};
 
 use std::future::Future;
 use std::ops::Deref;
-use std::pin::Pin;
 
 /// Abstract type for retrieving block headers and data.
 pub trait BlockSource: Sync + Send {
@@ -65,12 +64,13 @@ pub trait BlockSource: Sync + Send {
 	/// when `height_hint` is `None`.
 	fn get_header<'a>(
 		&'a self, header_hash: &'a BlockHash, height_hint: Option<u32>,
-	) -> AsyncBlockSourceResult<'a, BlockHeaderData>;
+	) -> impl Future<Output = BlockSourceResult<BlockHeaderData>> + Send + 'a;
 
 	/// Returns the block for a given hash. A headers-only block source should return a `Transient`
 	/// error.
-	fn get_block<'a>(&'a self, header_hash: &'a BlockHash)
-		-> AsyncBlockSourceResult<'a, BlockData>;
+	fn get_block<'a>(
+		&'a self, header_hash: &'a BlockHash,
+	) -> impl Future<Output = BlockSourceResult<BlockData>> + Send + 'a;
 
 	/// Returns the hash of the best block and, optionally, its height.
 	///
@@ -78,17 +78,13 @@ pub trait BlockSource: Sync + Send {
 	/// to allow for a more efficient lookup.
 	///
 	/// [`get_header`]: Self::get_header
-	fn get_best_block(&self) -> AsyncBlockSourceResult<'_, (BlockHash, Option<u32>)>;
+	fn get_best_block<'a>(
+		&'a self,
+	) -> impl Future<Output = BlockSourceResult<(BlockHash, Option<u32>)>> + Send + 'a;
 }
 
 /// Result type for `BlockSource` requests.
 pub type BlockSourceResult<T> = Result<T, BlockSourceError>;
-
-// TODO: Replace with BlockSourceResult once `async` trait functions are supported. For details,
-// see: https://areweasyncyet.rs.
-/// Result type for asynchronous `BlockSource` requests.
-pub type AsyncBlockSourceResult<'a, T> =
-	Pin<Box<dyn Future<Output = BlockSourceResult<T>> + 'a + Send>>;
 
 /// Error type for `BlockSource` requests.
 ///
