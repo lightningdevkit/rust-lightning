@@ -16,6 +16,7 @@ use parking_lot::Condvar as StdCondvar;
 use parking_lot::Mutex as StdMutex;
 use parking_lot::MutexGuard as StdMutexGuard;
 
+#[cfg(feature = "std")]
 pub use parking_lot::WaitTimeoutResult;
 
 use crate::prelude::*;
@@ -56,7 +57,6 @@ impl Condvar {
 		Ok(MutexGuard { mutex, lock: Some(lock) })
 	}
 
-	#[allow(unused)]
 	pub fn wait_timeout_while<'a, T, F: FnMut(&mut T) -> bool>(
 		&'a self, guard: MutexGuard<'a, T>, dur: Duration, condition: F,
 	) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
