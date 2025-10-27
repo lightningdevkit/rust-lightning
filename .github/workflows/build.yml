@@ -261,10 +261,10 @@ jobs:
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-      - name: Pin the regex dependency
+      - name: Pin the syn and regex dependencies
         run: |
-          cd fuzz && cargo update -p regex --precise "1.9.6" --verbose
-          cd write-seeds && cargo update -p regex --precise "1.9.6" --verbose
+          cd fuzz && cargo update -p regex --precise "1.9.6" && cargo update -p syn --precise "2.0.106"
+          cd write-seeds && cargo update -p regex --precise "1.9.6" && cargo update -p syn --precise "2.0.106"
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: |
           cd fuzz
