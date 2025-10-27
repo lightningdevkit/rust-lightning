@@ -1123,6 +1123,30 @@ impl TestBroadcaster {
 
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transactions(&self, txs: &[&Transaction]) {
+		// Assert that any batch of transactions of length greater than 1 is sorted
+		// topologically, and is a `child-with-parents` package as defined in
+		// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>.
+		//
+		// Implementations MUST NOT rely on this, and must re-sort the transactions
+		// themselves.
+		//
+		// Right now LDK only ever broadcasts packages of length 2.
+		assert!(txs.len() <= 2);
+		if txs.len() == 2 {
+			let parent_txid = txs[0].compute_txid();
+			assert!(txs[1]
+				.input
+				.iter()
+				.map(|input| input.previous_output.txid)
+				.any(|txid| txid == parent_txid));
+			let child_txid = txs[1].compute_txid();
+			assert!(txs[0]
+				.input
+				.iter()
+				.map(|input| input.previous_output.txid)
+				.all(|txid| txid != child_txid));
+		}
+
 		for tx in txs {
 			let lock_time = tx.lock_time.to_consensus_u32();
 			assert!(lock_time < 1_500_000_000);
