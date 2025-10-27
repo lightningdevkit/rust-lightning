@@ -327,7 +327,7 @@ pub const ARCHIVAL_DELAY_BLOCKS: u32 = 4032;
 /// (2) is the same, but with an additional buffer to avoid accepting an HTLC which is immediately
 /// in a race condition between the user connecting a block (which would fail it) and the user
 /// providing us the preimage (which would claim it).
-pub(crate) const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS;
+pub const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS;
 
 // Deprecated, use [`HolderCommitment`] or [`HolderCommitmentTransaction`].
 #[derive(Clone, PartialEq, Eq)]
@@ -4118,6 +4118,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.funding.prev_holder_commitment_tx.clone(),
 		);
 
+		// It's possible that no commitment updates happened during the lifecycle of the pending
+		// splice's `FundingScope` that was promoted. If so, our `prev_holder_htlc_data` is
+		// now irrelevant, since there's no valid previous commitment that exists for the current
+		// funding transaction that could be broadcast.
+		if self.funding.prev_holder_commitment_tx.is_none() {
+			self.prev_holder_htlc_data.take();
+		}
+
 		let no_further_updates_allowed = self.no_further_updates_allowed();
 
 		// The swap above places the previous `FundingScope` into `pending_funding`.
@@ -7001,7 +7009,7 @@ mod tests {
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.new_pubkeys(None, &secp_ctx),
+			holder_pubkeys: keys.pubkeys(&secp_ctx),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
@@ -7264,7 +7272,7 @@ mod tests {
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.new_pubkeys(None, &secp_ctx),
+			holder_pubkeys: keys.pubkeys(&secp_ctx),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
