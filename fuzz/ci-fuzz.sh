@@ -33,17 +33,9 @@ cargo --color always hfuzz build -j8
 for TARGET in src/bin/*.rs; do
 	FILENAME=$(basename $TARGET)
 	FILE="${FILENAME%.*}"
-	HFUZZ_RUN_ARGS="--exit_upon_crash -v -n8"
-	if [ "$FILE" = "chanmon_consistency_target" ]; then
-		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -F 64 -N1000"
-	elif [ "$FILE" = "process_network_graph_target" -o "$FILE" = "full_stack_target" -o "$FILE" = "router_target" -o "$FILE" = "lsps_message_target" ]; then
-		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N10000"
-	elif [ "$FILE" = "indexedmap_target" ]; then
-		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N100000"
-	elif [ "$FILE" = "fs_store_target" ]; then
-		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -F 64 -N10000"
-	else
-		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N1000000"
+	HFUZZ_RUN_ARGS="--exit_upon_crash -v -n8 --run_time 30"
+	if [ "$FILE" = "chanmon_consistency_target" -o "$FILE" = "fs_store_target" ]; then
+		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -F 64"
 	fi
 	export HFUZZ_RUN_ARGS
 	cargo --color always hfuzz run $FILE
