@@ -1058,11 +1058,11 @@ pub struct ChannelTransactionParameters {
 	/// If a channel was funded with transaction A, and later spliced with transaction B, this field
 	/// tracks the txid of transaction A.
 	///
-	/// See [`compute_funding_key_tweak`] and [`ChannelSigner::pubkeys`] for more context on how
-	/// this may be used.
+	/// See [`compute_funding_key_tweak`] and [`ChannelSigner::new_funding_pubkey`] for more context
+	/// on how this may be used.
 	///
 	/// [`compute_funding_key_tweak`]: crate::sign::compute_funding_key_tweak
-	/// [`ChannelSigner::pubkeys`]: crate::sign::ChannelSigner::pubkeys
+	/// [`ChannelSigner::new_funding_pubkey`]: crate::sign::ChannelSigner::new_funding_pubkey
 	pub splice_parent_funding_txid: Option<Txid>,
 	/// This channel's type, as negotiated during channel open. For old objects where this field
 	/// wasn't serialized, it will default to static_remote_key at deserialization.
