@@ -3032,6 +3032,92 @@ fn held_htlc_timeout() {
 }
 
 #[test]
+fn fail_held_htlc_on_reconnect() {
+	// Test that if a held HTLC by the sender LSP fails but the async sender is offline, the HTLC
+	// is failed on reconnect instead of FC the channel.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+
+	let (sender_cfg, recipient_cfg) = (often_offline_node_cfg(), often_offline_node_cfg());
+	let mut sender_lsp_cfg = test_default_channel_config();
+	sender_lsp_cfg.enable_htlc_hold = true;
+	let mut invoice_server_cfg = test_default_channel_config();
+	invoice_server_cfg.accept_forwards_to_priv_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		4,
+		&node_cfgs,
+		&[Some(sender_cfg), Some(sender_lsp_cfg), Some(invoice_server_cfg), Some(recipient_cfg)],
+	);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let chan = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+	unify_blockheight_across_nodes(&nodes);
+	let sender = &nodes[0];
+	let sender_lsp = &nodes[1];
+	let invoice_server = &nodes[2];
+	let recipient = &nodes[3];
+
+	let amt_msat = 5000;
+	let (_, peer_node_id, static_invoice_om) = build_async_offer_and_init_payment(amt_msat, &nodes);
+	let payment_hash =
+		lock_in_htlc_for_static_invoice(&static_invoice_om, peer_node_id, sender, sender_lsp);
+
+	sender_lsp.node.process_pending_htlc_forwards();
+	let (peer_id, held_htlc_om) =
+		extract_held_htlc_available_oms(sender, &[sender_lsp, invoice_server, recipient])
+			.pop()
+			.unwrap();
+	recipient.onion_messenger.handle_onion_message(peer_id, &held_htlc_om);
+
+	let _ = extract_release_htlc_oms(recipient, &[sender, sender_lsp, invoice_server]);
+
+	// Disconnect async sender <-> sender LSP
+	sender.node.peer_disconnected(sender_lsp.node.get_our_node_id());
+	sender_lsp.node.peer_disconnected(sender.node.get_our_node_id());
+
+	// Connect blocks such that they cause the HTLC to timeout
+	let chan_id = chan.0.channel_id;
+	let channel =
+		sender.node.list_channels().iter().find(|c| c.channel_id == chan_id).unwrap().clone();
+	let htlc_expiry = channel
+		.pending_outbound_htlcs
+		.iter()
+		.find(|htlc| htlc.payment_hash == payment_hash)
+		.unwrap()
+		.cltv_expiry;
+	let blocks_to_connect = htlc_expiry - sender.best_block_info().1 + 100;
+	connect_blocks(sender, blocks_to_connect);
+	connect_blocks(sender_lsp, blocks_to_connect);
+
+	sender_lsp.node.process_pending_htlc_forwards();
+	let mut evs = sender_lsp.node.get_and_clear_pending_events();
+	assert_eq!(evs.len(), 1);
+	match evs.pop().unwrap() {
+		Event::HTLCHandlingFailed { failure_type, failure_reason, .. } => {
+			assert!(matches!(failure_type, HTLCHandlingFailureType::InvalidForward { .. }));
+			assert!(matches!(
+				failure_reason,
+				Some(HTLCHandlingFailureReason::Local {
+					reason: LocalHTLCFailureReason::ForwardExpiryBuffer
+				})
+			));
+		},
+		_ => panic!(),
+	}
+
+	// After reconnecting, check that HTLC was failed and channel is open.
+	let mut reconnect_args = ReconnectArgs::new(&sender, &sender_lsp);
+	reconnect_args.pending_cell_htlc_fails.0 = 1;
+	reconnect_nodes(reconnect_args);
+
+	expect_payment_failed!(sender, payment_hash, false);
+	assert_eq!(sender.node.list_channels().len(), 1);
+	assert_eq!(sender_lsp.node.list_channels().len(), 2);
+}
+
+#[test]
 fn intercepted_hold_htlc() {
 	// Test a payment `sender --> LSP --> recipient` such that the HTLC is both a hold htlc and an
 	// intercept htlc, i.e. the HTLC needs be held until the recipient comes online *and* the LSP

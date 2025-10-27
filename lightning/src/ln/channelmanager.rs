@@ -12790,6 +12790,15 @@ where
 	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
 	/// to construct a [`BlindedMessagePath`] for the reply path.
 	///
+	/// # Note
+	///
+	/// If the offer resolves to an async payment, and the HTLC is neither claimed nor failed by
+	/// our next-hop peer, we will not force-close the channel to resolve the payment for 4
+	/// weeks. This avoids an issue for often-offline nodes where channels are force-closed on
+	/// startup during chain sync prior to connecting to peers. If you want to resolve such a
+	/// timed-out payment more urgently, you can manually force-close the channel which will,
+	/// after some transaction confirmation(s), result in an [`Event::PaymentFailed`].
+	///
 	/// # Errors
 	///
 	/// Errors if:
