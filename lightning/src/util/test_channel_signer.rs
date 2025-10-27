@@ -83,15 +83,15 @@ impl Clone for TestChannelSigner {
 	fn clone(&self) -> Self {
 		// Generally, a signer should only ever be cloned when a ChannelMonitor is cloned (which
 		// doesn't fetch the pubkeys at all). This isn't really a critical test, but if it
-		// it ever does fail we should make sure the clone is hapening in a sensible place.
+		// ever does fail we should make sure the clone is happening in a sensible place.
 		assert!(!self.have_fetched_pubkeys.load(Ordering::Acquire));
 		Self {
 			inner: self.inner.clone(),
 			state: Arc::clone(&self.state),
 			disable_revocation_policy_check: self.disable_revocation_policy_check,
 			disable_all_state_policy_checks: self.disable_all_state_policy_checks,
-			// In some tests we clone a `ChannelMonitor` multiple times, so have to initialize with
-			// `!have_fetched_pubkeys` to ensure the above assertion passes.
+			// In some tests we clone a `ChannelMonitor` multiple times, so we have to initialize
+			// with `!have_fetched_pubkeys` to ensure the above assertion passes.
 			have_fetched_pubkeys: AtomicBool::new(false),
 		}
 	}
