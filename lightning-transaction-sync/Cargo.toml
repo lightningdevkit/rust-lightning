@@ -44,8 +44,8 @@ lightning = { version = "0.2.0", path = "../lightning", default-features = false
 tokio = { version = "1.35.0", features = ["macros"] }
 
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-electrsd = { version = "0.35.0", default-features = false, features = ["legacy"] }
-corepc-node = { version = "0.8.0", default-features = false, features = ["28_0"] }
+electrsd = { version = "0.36.0", default-features = false, features = ["legacy"] }
+corepc-node = { version = "0.10.0", default-features = false, features = ["28_0"] }
 
 [lints.rust.unexpected_cfgs]
 level = "forbid"
