@@ -43,7 +43,7 @@ use crate::offers::invoice_request::{
 	InvoiceRequest, InvoiceRequestBuilder, InvoiceRequestVerifiedFromOffer, VerifiedInvoiceRequest,
 };
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Amount, DerivedMetadata, Offer, OfferBuilder};
+use crate::offers::offer::{Amount, DerivedMetadata, Offer, OfferBuilder, RecurrenceFields};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder};
@@ -539,7 +539,7 @@ where
 	}
 
 	fn create_offer_builder_intern<ES: Deref, PF, I>(
-		&self, entropy_source: ES, make_paths: PF,
+		&self, entropy_source: ES, recurrence_fields: Option<RecurrenceFields>, make_paths: PF,
 	) -> Result<(OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
@@ -561,6 +561,10 @@ where
 		let mut builder =
 			OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
 				.chain_hash(self.chain_hash);
+
+		if let Some(recurrence) = recurrence_fields {
+			builder = builder.recurrence(recurrence);
+		}
 
 		for path in make_paths(node_id, context, secp_ctx)? {
 			builder = builder.path(path)
@@ -601,11 +605,45 @@ where
 	where
 		ES::Target: EntropySource,
 	{
-		self.create_offer_builder_intern(&*entropy_source, |_, context, _| {
+		self.create_offer_builder_intern(&*entropy_source, None, |_, context, _| {
 			self.create_blinded_paths(peers, context)
 				.map(|paths| paths.into_iter().take(1))
 				.map_err(|_| Bolt12SemanticError::MissingPaths)
 		})
+		.map(|(builder, _)| builder)
+	}
+
+	/// Creates an [`OfferBuilder`] for a recurring offer.
+	///
+	/// This behaves like [`Self::create_offer_builder`] but additionally embeds
+	/// the recurrence TLVs defined in `recurrence_fields`.
+	///
+	/// Use this when constructing subscription-style offers where each invoice
+	/// request must correspond to a specific recurrence period. The provided
+	/// [`RecurrenceFields`] specify:
+	/// - how often invoices may be requested,
+	/// - when the first period begins,
+	/// - optional paywindows, and
+	/// - optional period limits.
+	///
+	/// Refer to [`Self::create_offer_builder`] for notes on privacy,
+	/// requirements, and potential failure cases.
+	pub fn create_offer_builder_with_recurrence<ES: Deref>(
+		&self, entropy_source: ES, recurrence_fields: RecurrenceFields,
+		peers: Vec<MessageForwardNode>,
+	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
+	where
+		ES::Target: EntropySource,
+	{
+		self.create_offer_builder_intern(
+			&*entropy_source,
+			Some(recurrence_fields),
+			|_, context, _| {
+				self.create_blinded_paths(peers, context)
+					.map(|paths| paths.into_iter().take(1))
+					.map_err(|_| Bolt12SemanticError::MissingPaths)
+			},
+		)
 		.map(|(builder, _)| builder)
 	}
 
@@ -626,7 +664,7 @@ where
 		ES::Target: EntropySource,
 	{
 		let receive_key = self.get_receive_auth_key();
-		self.create_offer_builder_intern(&*entropy_source, |node_id, context, secp_ctx| {
+		self.create_offer_builder_intern(&*entropy_source, None, |node_id, context, secp_ctx| {
 			router
 				.create_blinded_paths(node_id, receive_key, context, peers, secp_ctx)
 				.map(|paths| paths.into_iter().take(1))
@@ -651,7 +689,7 @@ where
 	where
 		ES::Target: EntropySource,
 	{
-		self.create_offer_builder_intern(&*entropy_source, |_, _, _| {
+		self.create_offer_builder_intern(&*entropy_source, None, |_, _, _| {
 			Ok(message_paths_to_always_online_node)
 		})
 	}

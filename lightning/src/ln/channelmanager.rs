@@ -95,7 +95,7 @@ use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferFromHrn};
+use crate::offers::offer::{Offer, OfferFromHrn, RecurrenceFields};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::Refund;
 use crate::offers::static_invoice::StaticInvoice;
@@ -12772,6 +12772,32 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
 		let builder = $self.flow.create_offer_builder(
 			&*$self.entropy_source, $self.get_peers_for_blinded_path()
+		)?;
+
+		Ok(builder.into())
+	}
+
+	/// Creates an [`OfferBuilder`] for a recurring offer.
+	///
+	/// This behaves like [`Self::create_offer_builder`] but additionally embeds
+	/// the recurrence TLVs defined in `recurrence_fields`.
+	///
+	/// Use this when constructing subscription-style offers where each invoice
+	/// request must correspond to a specific recurrence period. The provided
+	/// [`RecurrenceFields`] specify:
+	/// - how often invoices may be requested,
+	/// - when the first period begins,
+	/// - optional paywindows, and
+	/// - optional period limits.
+	///
+	/// Refer to [`Self::create_offer_builder`] for notes on privacy,
+	/// requirements, and potential failure cases.
+	pub fn create_offer_builder_with_recurrence(
+		&$self,
+		recurrence_fields: RecurrenceFields
+	) -> Result<$builder, Bolt12SemanticError> {
+		let builder = $self.flow.create_offer_builder_with_recurrence(
+			&*$self.entropy_source, recurrence_fields, $self.get_peers_for_blinded_path()
 		)?;
 
 		Ok(builder.into())

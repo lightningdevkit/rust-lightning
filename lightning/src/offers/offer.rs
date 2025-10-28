@@ -391,6 +391,16 @@ macro_rules! offer_builder_methods { (
 		$return_value
 	}
 
+	/// Set the [Offer::recurrence_fields] for the offer.
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn recurrence(
+		$($self_mut)* $self: $self_type, recurrence: RecurrenceFields,
+	) -> $return_type {
+		$self.offer.recurrence_fields = Some(recurrence);
+		$return_value
+	}
+
 	/// Sets the quantity of items for [`Offer::supported_quantity`]. If not called, defaults to
 	/// [`Quantity::One`].
 	///
