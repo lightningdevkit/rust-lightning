@@ -1527,7 +1527,7 @@ where
 		}
 	}
 
-	fn peer_should_read(&self, peer: &mut Peer) -> bool {
+	fn should_read_from(&self, peer: &mut Peer) -> bool {
 		peer.should_read(self.gossip_processing_backlogged.load(Ordering::Relaxed))
 	}
 
@@ -1546,7 +1546,7 @@ where
 		// vice versa, then we need to tell the socket driver to update their internal flag
 		// indicating whether or not reads are paused. Do this by forcing a write with the desired
 		// `continue_read` flag set, even if no outbound messages are currently queued.
-		force_one_write |= self.peer_should_read(peer) == peer.sent_pause_read;
+		force_one_write |= self.should_read_from(peer) == peer.sent_pause_read;
 		while force_one_write || !peer.awaiting_write_event {
 			if peer.should_buffer_onion_message() {
 				if let Some((peer_node_id, _)) = peer.their_node_id {
@@ -1612,7 +1612,7 @@ where
 				self.maybe_send_extra_ping(peer);
 			}
 
-			let should_read = self.peer_should_read(peer);
+			let should_read = self.should_read_from(peer);
 			let next_buff = match peer.pending_outbound_buffer.front() {
 				None => {
 					if force_one_write {
