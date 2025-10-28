@@ -11,6 +11,9 @@ function PIN_RELEASE_DEPS {
 	# Starting with version 1.39.0, the `tokio` crate has an MSRV of rustc 1.70.0
 	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio --precise "1.38.1" --verbose
 
+	# syn 2.0.107 requires rustc 1.68.0
+	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
+
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
 
@@ -50,6 +53,7 @@ cargo test --verbose --color always
 echo -e "\n\nTesting upgrade from prior versions of LDK"
 pushd lightning-tests
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
 cargo test
 popd
 
@@ -120,6 +124,7 @@ cargo test -p lightning-invoice --verbose --color always --no-default-features -
 echo -e "\n\nTesting no_std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
 pushd no-std-check
+[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
 cargo check --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
