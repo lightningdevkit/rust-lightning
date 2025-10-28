@@ -1806,6 +1806,12 @@ pub struct TestKeysInterface {
 	pub override_next_keys_id: Mutex<Option<[u8; 32]>>,
 }
 
+impl std::fmt::Debug for TestKeysInterface {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("TestKeysInterface").finish()
+	}
+}
+
 impl EntropySource for TestKeysInterface {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let override_random_bytes = self.override_random_bytes.lock().unwrap();

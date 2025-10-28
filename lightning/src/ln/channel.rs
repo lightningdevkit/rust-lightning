@@ -139,6 +139,7 @@ enum FeeUpdateState {
 	Outbound,
 }
 
+#[derive(Debug)]
 enum InboundHTLCRemovalReason {
 	FailRelay(msgs::OnionErrorPacket),
 	FailMalformed(([u8; 32], u16)),
@@ -146,6 +147,7 @@ enum InboundHTLCRemovalReason {
 }
 
 /// Represents the resolution status of an inbound HTLC.
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone)]
 enum InboundHTLCResolution {
 	/// Resolved implies the action we must take with the inbound HTLC has already been determined,
@@ -169,6 +171,7 @@ impl_writeable_tlv_based_enum!(InboundHTLCResolution,
 	},
 );
 
+#[cfg_attr(test, derive(Debug))]
 enum InboundHTLCState {
 	/// Offered by remote, to be included in next local commitment tx. I.e., the remote sent an
 	/// update_add_htlc message for this HTLC.
@@ -296,6 +299,7 @@ impl InboundHTLCState {
 	}
 }
 
+#[cfg_attr(test, derive(Debug))]
 struct InboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -304,7 +308,8 @@ struct InboundHTLCOutput {
 	state: InboundHTLCState,
 }
 
-#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone, PartialEq))]
 enum OutboundHTLCState {
 	/// Added by us and included in a commitment_signed (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -398,8 +403,8 @@ impl OutboundHTLCState {
 	}
 }
 
-#[derive(Clone)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 enum OutboundHTLCOutcome {
 	/// We started always filling in the preimages here in 0.0.105, and the requirement
 	/// that the preimages always be filled in was added in 0.2.
@@ -416,7 +421,8 @@ impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
 	}
 }
 
-#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone, PartialEq))]
 struct OutboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -431,7 +437,8 @@ struct OutboundHTLCOutput {
 }
 
 /// See AwaitingRemoteRevoke ChannelState for more info
-#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone, PartialEq))]
 enum HTLCUpdateAwaitingACK {
 	AddHTLC {
 		// TODO: Time out if we're getting close to cltv_expiry
@@ -1014,7 +1021,7 @@ macro_rules! secp_check {
 /// spamming the network with updates if the connection is flapping. Instead, we "stage" updates to
 /// our channel_update message and track the current state here.
 /// See implementation at [`super::channelmanager::ChannelManager::timer_tick_occurred`].
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(super) enum ChannelUpdateStatus {
 	/// We've announced the channel as enabled and are connected to our peer.
 	Enabled,
@@ -1027,6 +1034,7 @@ pub(super) enum ChannelUpdateStatus {
 }
 
 /// We track when we sent an `AnnouncementSignatures` to our peer in a few states, described here.
+#[cfg_attr(test, derive(Debug))]
 #[derive(PartialEq)]
 pub enum AnnouncementSigsState {
 	/// We have not sent our peer an `AnnouncementSignatures` yet, or our peer disconnected since
@@ -1396,6 +1404,7 @@ pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 14 * 24 * 6 * 4;
 #[cfg(test)]
 pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 
+#[derive(Debug)]
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
 }
@@ -2278,6 +2287,7 @@ impl UnfundedChannelContext {
 /// Information pertaining to an attempt at funding the channel. This is typically constructed
 /// during channel establishment and may be replaced during channel splicing or if the attempted
 /// funding transaction is replaced using tx_init_rbf.
+#[derive(Debug)]
 pub(super) struct FundingScope {
 	value_to_self_msat: u64, // Excluding all pending_htlcs, fees, and anchor outputs
 
@@ -2605,6 +2615,7 @@ impl FundingScope {
 /// Information about pending attempts at funding a channel. This includes funding currently under
 /// negotiation and any negotiated attempts waiting enough on-chain confirmations. More than one
 /// such attempt indicates use of RBF to increase the chances of confirmation.
+#[derive(Debug)]
 struct PendingFunding {
 	funding_negotiation: Option<FundingNegotiation>,
 
@@ -2626,6 +2637,7 @@ impl_writeable_tlv_based!(PendingFunding, {
 	(7, received_funding_txid, option),
 });
 
+#[derive(Debug)]
 enum FundingNegotiation {
 	AwaitingAck {
 		context: FundingNegotiationContext,
@@ -2718,6 +2730,7 @@ impl PendingFunding {
 	}
 }
 
+#[derive(Debug)]
 pub(crate) struct SpliceInstructions {
 	adjusted_funding_contribution: SignedAmount,
 	our_funding_inputs: Vec<FundingTxInput>,
@@ -2745,6 +2758,7 @@ impl_writeable_tlv_based!(SpliceInstructions, {
 	(11, locktime, required),
 });
 
+#[derive(Debug)]
 pub(crate) enum QuiescentAction {
 	Splice(SpliceInstructions),
 	#[cfg(any(test, fuzzing))]
@@ -2791,6 +2805,7 @@ impl<'a> From<&'a Transaction> for ConfirmedTransaction<'a> {
 }
 
 /// Contains everything about the channel including state, and various flags.
+#[cfg_attr(test, derive(Debug))]
 pub(super) struct ChannelContext<SP: Deref>
 where
 	SP::Target: SignerProvider,
@@ -6585,6 +6600,7 @@ fn check_v2_funding_inputs_sufficient(
 }
 
 /// Context for negotiating channels (dual-funded V2 open, splicing)
+#[derive(Debug)]
 pub(super) struct FundingNegotiationContext {
 	/// Whether we initiated the funding negotiation.
 	pub is_initiator: bool,
@@ -6724,6 +6740,7 @@ impl FundingNegotiationContext {
 
 // Holder designates channel data owned for the benefit of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
+#[cfg_attr(test, derive(Debug))]
 pub(super) struct FundedChannel<SP: Deref>
 where
 	SP::Target: SignerProvider,
@@ -6743,7 +6760,7 @@ where
 }
 
 #[cfg(any(test, fuzzing))]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 struct PredictedNextFee {
 	predicted_feerate: u32,
 	predicted_nondust_htlc_count: usize,

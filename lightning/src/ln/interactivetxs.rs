@@ -1892,6 +1892,7 @@ impl InteractiveTxInput {
 	}
 }
 
+#[derive(Debug)]
 pub(super) struct InteractiveTxConstructor {
 	state_machine: StateMachine,
 	is_initiator: bool,
@@ -1904,6 +1905,7 @@ pub(super) struct InteractiveTxConstructor {
 }
 
 #[allow(clippy::enum_variant_names)] // Clippy doesn't like the repeated `Tx` prefix here
+#[derive(Debug)]
 pub(crate) enum InteractiveTxMessageSend {
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),

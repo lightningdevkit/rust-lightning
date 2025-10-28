@@ -431,13 +431,14 @@ pub struct PendingHTLCInfo {
 	pub skimmed_fee_msat: Option<u64>,
 }
 
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone, Debug)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum HTLCFailureMsg {
 	Relay(msgs::UpdateFailHTLC),
 	Malformed(msgs::UpdateFailMalformedHTLC),
 }
 
 /// Stores whether we can't forward an HTLC or relevant forwarding info
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum PendingHTLCStatus {
 	Forward(PendingHTLCInfo),
