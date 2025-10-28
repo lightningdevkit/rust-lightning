@@ -3961,6 +3961,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// in the claim that is queued to OnchainTxHandler. We set holder_tx_signed here to reject
 		// new channel updates.
 		self.holder_tx_signed = true;
+
+		// In manual-broadcast mode, if we have not yet observed the funding transaction on-chain,
+		// return empty vectors rather than triggering a broadcast.
+		if require_funding_seen && self.is_manual_broadcast && !self.funding_seen_onchain {
+			return (Vec::new(), Vec::new());
+		}
+
 		let mut watch_outputs = Vec::new();
 		// In CSV anchor channels, we can't broadcast our HTLC transactions while the commitment transaction is
 		// unconfirmed.
@@ -3986,13 +3993,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 			claimable_outpoints.append(&mut new_outpoints);
 		}
-		// In manual-broadcast mode, if we have not yet observed the funding transaction on-chain,
-		// return empty vectors.
-		if require_funding_seen && self.is_manual_broadcast && !self.funding_seen_onchain {
-			return (Vec::new(), Vec::new());
-		} else {
-			(claimable_outpoints, watch_outputs)
-		}
+		(claimable_outpoints, watch_outputs)
 	}
 
 	#[rustfmt::skip]
