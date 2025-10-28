@@ -3933,6 +3933,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	#[rustfmt::skip]
 	fn generate_claimable_outpoints_and_watch_outputs(
 		&mut self, generate_monitor_event_with_reason: Option<ClosureReason>,
+		require_funding_seen: bool,
 	) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
 		let funding = get_confirmed_funding_scope!(self);
 		let holder_commitment_tx = &funding.current_holder_commitment_tx;
@@ -3987,7 +3988,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 		// In manual-broadcast mode, if we have not yet observed the funding transaction on-chain,
 		// return empty vectors.
-		if self.is_manual_broadcast && !self.funding_seen_onchain {
+		if require_funding_seen && self.is_manual_broadcast && !self.funding_seen_onchain {
 			return (Vec::new(), Vec::new());
 		} else {
 			(claimable_outpoints, watch_outputs)
@@ -4004,7 +4005,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	///
 	/// [`ChannelMonitor::broadcast_latest_holder_commitment_txn`]: crate::chain::channelmonitor::ChannelMonitor::broadcast_latest_holder_commitment_txn
 	pub(crate) fn queue_latest_holder_commitment_txn_for_broadcast<B: Deref, F: Deref, L: Deref>(
-		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>, require_funding_seen: bool,
+		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>,
+		require_funding_seen: bool,
 	)
 	where
 		B::Target: BroadcasterInterface,
@@ -4015,7 +4017,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			broadcasted_latest_txn: Some(true),
 			message: "ChannelMonitor-initiated commitment transaction broadcast".to_owned(),
 		};
-		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
+		let (claimable_outpoints, _) =
+			self.generate_claimable_outpoints_and_watch_outputs(Some(reason), require_funding_seen);
 		// In manual-broadcast mode, if `require_funding_seen` is true and we have not yet observed
 		// the funding transaction on-chain, do not queue any transactions.
 		if require_funding_seen && self.is_manual_broadcast && !self.funding_seen_onchain {
@@ -5610,7 +5613,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		if should_broadcast_commitment {
 			let (mut claimables, mut outputs) =
-				self.generate_claimable_outpoints_and_watch_outputs(None);
+				self.generate_claimable_outpoints_and_watch_outputs(None, false);
 			claimable_outpoints.append(&mut claimables);
 			watch_outputs.append(&mut outputs);
 		}
@@ -5652,7 +5655,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(payment_hash) = should_broadcast {
 				let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 				let (mut new_outpoints, mut new_outputs) =
-					self.generate_claimable_outpoints_and_watch_outputs(Some(reason));
+					self.generate_claimable_outpoints_and_watch_outputs(Some(reason), false);
 				claimable_outpoints.append(&mut new_outpoints);
 				watch_outputs.append(&mut new_outputs);
 			}
