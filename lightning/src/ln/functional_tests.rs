@@ -9629,64 +9629,79 @@ pub fn test_remove_expired_inbound_unfunded_channels() {
 	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
 }
 
-#[test]
-fn test_manual_broadcast_skips_commitment_until_funding_seen() {
+fn do_test_manual_broadcast_skips_commitment_until_funding(
+	force_broadcast: bool, close_by_timeout: bool, zero_conf_open: bool,
+) {
+	// Checks that commitment (and HTLC) transactions will not be broadcast for manual-funded
+	// channels until either the funding transaction is seen on-chain or the channel is manually
+	// forced to broadcast using `ChannelMonitor::broadcast_latest_holder_commitment_txn`.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut chan_config = test_default_channel_config();
+	if zero_conf_open {
+		chan_config.manually_accept_inbound_channels = true;
+	}
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let (channel_id, funding_tx, funding_outpoint) =
-		create_channel_manual_funding(&nodes, 0, 1, 100_000, 10_000);
+		create_channel_manual_funding(&nodes, 0, 1, 100_000, 10_000, zero_conf_open);
 
-	nodes[0]
-		.node
-		.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, "manual close".to_owned())
-		.unwrap();
-	check_added_monitors!(&nodes[0], 1);
-	check_added_monitors!(&nodes[1], 0);
+	if close_by_timeout {
+		if !zero_conf_open {
+			panic!("Cant send a payment if we didn't open 0-conf");
+		}
+		let (_payment_preimage, payment_hash, _payment_secret, _payment_id) =
+			route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+		nodes[1].node.get_and_clear_pending_events();
 
-	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
-	nodes[0].node.get_and_clear_pending_msg_events();
-	nodes[1].node.get_and_clear_pending_msg_events();
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match &events[0] {
-		Event::ChannelClosed {
-			reason: ClosureReason::HolderForceClosed { broadcasted_latest_txn, message },
-			counterparty_node_id: Some(id),
-			..
-		} => {
-			assert_eq!(*broadcasted_latest_txn, Some(true));
-			assert_eq!(message, "manual close");
-			assert_eq!(id, &node_b_id);
-		},
-		_ => panic!("Unexpected event"),
+		connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+		let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+		check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 100_000);
+
+		// On timeout, B will try to fail the HTLC back, but its too late - A has already FC'd.
+		connect_blocks(&nodes[1], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+		let failure = HTLCHandlingFailureType::Receive { payment_hash };
+		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[failure]);
+		get_htlc_update_msgs(&nodes[1], &node_a_id);
+		check_added_monitors(&nodes[1], 1);
+	} else {
+		let msg = "manual close".to_owned();
+		nodes[0]
+			.node
+			.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, msg.clone())
+			.unwrap();
+		let reason =
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message: msg };
+		check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 100_000);
 	}
-	nodes[1].node.get_and_clear_pending_events();
+	check_added_monitors(&nodes[0], 1);
+	assert_eq!(get_err_msg(&nodes[0], &node_b_id).channel_id, channel_id);
+	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
 
 	let monitor_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert!(monitor_events.is_empty());
 
-	confirm_transaction(&nodes[0], &funding_tx);
-	confirm_transaction(&nodes[1], &funding_tx);
-	nodes[0].node.get_and_clear_pending_msg_events();
-	nodes[1].node.get_and_clear_pending_msg_events();
-
-	{
+	// The funding tx should be broadcasted after either a manual broadcast call or if the funding
+	// transaction appears on chain.
+	if force_broadcast {
 		let monitor = get_monitor!(&nodes[0], channel_id);
-		// manual override
 		monitor.broadcast_latest_holder_commitment_txn(
 			&nodes[0].tx_broadcaster,
 			&nodes[0].fee_estimator,
 			&nodes[0].logger,
 		);
+	} else {
+		mine_transaction(&nodes[0], &funding_tx);
+		mine_transaction(&nodes[1], &funding_tx);
 	}
+
 	let funding_txid = funding_tx.compute_txid();
 	let broadcasts = nodes[0].tx_broadcaster.txn_broadcast();
-	assert!(!broadcasts.is_empty());
+	assert_eq!(broadcasts.len(), if close_by_timeout { 2 } else { 1 });
 	let commitment_tx = broadcasts
 		.iter()
 		.find(|tx| {
@@ -9702,10 +9717,30 @@ fn test_manual_broadcast_skips_commitment_until_funding_seen() {
 	assert_eq!(commitment_input.previous_output.txid, funding_txid);
 	assert_eq!(commitment_input.previous_output.vout, u32::from(funding_outpoint.index));
 
+	if close_by_timeout {
+		let htlc_tx = broadcasts
+			.iter()
+			.find(|tx| {
+				tx.input
+					.iter()
+					.any(|input| input.previous_output.txid == commitment_tx.compute_txid())
+			})
+			.expect("HTLC claim transaction not broadcast");
+		check_spends!(htlc_tx, commitment_tx);
+	}
+
 	let monitor_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert!(monitor_events.iter().all(|event| !matches!(event, Event::BumpTransaction(_))));
-	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
-	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+}
+
+#[test]
+fn test_manual_broadcast_skips_commitment_until_funding() {
+	do_test_manual_broadcast_skips_commitment_until_funding(true, true, true);
+	do_test_manual_broadcast_skips_commitment_until_funding(true, false, true);
+	do_test_manual_broadcast_skips_commitment_until_funding(true, false, false);
+	do_test_manual_broadcast_skips_commitment_until_funding(false, true, true);
+	do_test_manual_broadcast_skips_commitment_until_funding(false, false, true);
+	do_test_manual_broadcast_skips_commitment_until_funding(false, false, false);
 }
 
 #[test]
@@ -9718,7 +9753,7 @@ fn test_manual_broadcast_detects_funding_and_broadcasts_on_timeout() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let (channel_id, funding_tx, funding_outpoint) =
-		create_channel_manual_funding(&nodes, 0, 1, 100_000, 10_000);
+		create_channel_manual_funding(&nodes, 0, 1, 100_000, 10_000, false);
 
 	let funding_msgs =
 		create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &funding_tx);
@@ -9793,7 +9828,7 @@ fn test_manual_broadcast_no_bump_events_before_funding_seen() {
 
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	let (channel_id, _, _) = create_channel_manual_funding(&nodes, 0, 1, 100_000, 10_000);
+	let (channel_id, _, _) = create_channel_manual_funding(&nodes, 0, 1, 100_000, 10_000, false);
 
 	nodes[0]
 		.node
