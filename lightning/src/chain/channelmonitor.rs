@@ -5969,7 +5969,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Filters a block's `txdata` for transactions spending watched outputs or for any child
 	/// transactions thereof.
 	#[rustfmt::skip]
-	fn filter_block<'a>(&mut self, txdata: &TransactionData<'a>) -> Vec<&'a Transaction> {
+	fn filter_block<'a>(&self, txdata: &TransactionData<'a>) -> Vec<&'a Transaction> {
 		let mut matched_txn = new_hash_set();
 		txdata.iter().filter(|&&(_, tx)| {
 			let mut matches = self.spends_watched_output(tx);
