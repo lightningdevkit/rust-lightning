@@ -5656,8 +5656,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 				let (mut new_outpoints, mut new_outputs) =
 					self.generate_claimable_outpoints_and_watch_outputs(Some(reason), false);
-				claimable_outpoints.append(&mut new_outpoints);
-				watch_outputs.append(&mut new_outputs);
+				if !self.is_manual_broadcast || self.funding_seen_onchain {
+					claimable_outpoints.append(&mut new_outpoints);
+					watch_outputs.append(&mut new_outputs);
+				} else {
+					log_info!(logger, "Not broadcasting holder commitment for manual-broadcast channel before funding appears on-chain");
+				}
 			}
 		}
 
