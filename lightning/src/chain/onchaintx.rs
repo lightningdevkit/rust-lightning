@@ -14,8 +14,7 @@
 
 use bitcoin::amount::Amount;
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::Hash;
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::secp256k1;
@@ -882,12 +881,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 								// claim, which will always be unique per request. Once a claim ID
 								// is generated, it is assigned and remains unchanged, even if the
 								// underlying set of HTLCs changes.
-								let mut engine = Sha256::engine();
-								for htlc in htlcs {
-									engine.input(&htlc.commitment_txid.to_byte_array());
-									engine.input(&htlc.htlc.transaction_output_index.unwrap().to_be_bytes());
-								}
-								ClaimId(Sha256::from_engine(engine).to_byte_array())
+								ClaimId::from_htlcs(htlcs)
 							},
 						};
 						debug_assert!(self.pending_claim_requests.get(&claim_id).is_none());

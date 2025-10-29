@@ -1669,8 +1669,10 @@ pub enum Event {
 	/// Indicates that a transaction originating from LDK needs to have its fee bumped. This event
 	/// requires confirmed external funds to be readily available to spend.
 	///
-	/// LDK does not currently generate this event unless the
-	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`] config flag is set to true.
+	/// LDK does not currently generate this event unless either the
+	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`] or the
+	/// [`ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`] config flags are set to
+	/// true.
 	/// It is limited to the scope of channels with anchor outputs.
 	///
 	/// # Failure Behavior and Persistence
@@ -1678,6 +1680,7 @@ pub enum Event {
 	/// returning `Err(ReplayEvent ())`), but will only be regenerated as needed after restarts.
 	///
 	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
+	/// [`ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments
 	BumpTransaction(BumpTransactionEvent),
 	/// We received an onion message that is intended to be forwarded to a peer
 	/// that is currently offline. This event will only be generated if the

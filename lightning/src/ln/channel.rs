@@ -36,7 +36,6 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BestBlock;
-use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::events::{ClosureReason, FundingInfo};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
@@ -44,7 +43,7 @@ use crate::ln::chan_utils::{
 	selected_commitment_sat_per_1000_weight, ChannelPublicKeys, ChannelTransactionParameters,
 	ClosingTransaction, CommitmentTransaction, CounterpartyChannelTransactionParameters,
 	CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HolderCommitmentTransaction,
-	FUNDING_TRANSACTION_WITNESS_WEIGHT,
+	BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT, FUNDING_TRANSACTION_WITNESS_WEIGHT,
 };
 use crate::ln::channel_state::{
 	ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails,
