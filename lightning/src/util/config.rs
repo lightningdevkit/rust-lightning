@@ -213,6 +213,11 @@ pub struct ChannelHandshakeConfig {
 	/// back to a `anchors_zero_fee_htlc` (if [`Self::negotiate_anchors_zero_fee_htlc_tx`]
 	/// is set) or `static_remote_key` channel.
 	///
+	/// For a force-close transaction to reach miners and get confirmed,
+	/// zero-fee commitment channels require a path from your Bitcoin node to miners that
+	/// relays TRUC transactions (BIP 431), P2A outputs, and Ephemeral Dust. Currently, only
+	/// nodes running Bitcoin Core v29 and above relay transactions with these features.
+	///
 	/// Default value: `false` (This value is likely to change to `true` in the future.)
 	///
 	/// [TRUC]: (https://bitcoinops.org/en/topics/version-3-transaction-relay/)
