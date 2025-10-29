@@ -78,7 +78,7 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 			Some(b) => b[0],
 			None => break,
 		};
-		match v % 12 {
+		match v % 13 {
 			// Sync write
 			0 => {
 				let data_value = get_next_data_value();
@@ -96,7 +96,8 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 			},
 			// Sync remove
 			1 => {
-				KVStoreSync::remove(fs_store, primary_namespace, secondary_namespace, key).unwrap();
+				KVStoreSync::remove(fs_store, primary_namespace, secondary_namespace, key, false)
+					.unwrap();
 
 				current_data = None;
 			},
@@ -130,8 +131,10 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 				handles.push(handle);
 			},
 			// Async remove
-			10 => {
-				let fut = KVStore::remove(fs_store, primary_namespace, secondary_namespace, key);
+			10 | 11 => {
+				let lazy = v == 10;
+				let fut =
+					KVStore::remove(fs_store, primary_namespace, secondary_namespace, key, lazy);
 
 				// Already set the current_data, even though writing hasn't finished yet. This supports the call-time
 				// ordering semantics.
@@ -141,7 +144,7 @@ async fn do_test_internal<Out: test_logger::Output>(data: &[u8], _out: Out) {
 				handles.push(handle);
 			},
 			// Join tasks.
-			11 => {
+			12 => {
 				for handle in handles.drain(..) {
 					let _ = handle.await.unwrap();
 				}

@@ -129,7 +129,7 @@ pub trait KVStoreSync {
 	) -> Result<(), io::Error>;
 	/// A synchronous version of the [`KVStore::remove`] method.
 	fn remove(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
 	) -> Result<(), io::Error>;
 	/// A synchronous version of the [`KVStore::list`] method.
 	fn list(
@@ -175,9 +175,9 @@ where
 	}
 
 	fn remove(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
 	) -> AsyncResult<'static, (), io::Error> {
-		let res = self.0.remove(primary_namespace, secondary_namespace, key);
+		let res = self.0.remove(primary_namespace, secondary_namespace, key, lazy);
 
 		Box::pin(async move { res })
 	}
@@ -245,11 +245,21 @@ pub trait KVStore {
 	) -> AsyncResult<'static, (), io::Error>;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
+	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
+	/// remove the given `key` at some point in time after the method returns, e.g., as part of an
+	/// eventual batch deletion of multiple keys. As a consequence, subsequent calls to
+	/// [`KVStoreSync::list`] might include the removed key until the changes are actually persisted.
+	///
+	/// Note that while setting the `lazy` flag reduces the I/O burden of multiple subsequent
+	/// `remove` calls, it also influences the atomicity guarantees as lazy `remove`s could
+	/// potentially get lost on crash after the method returns. Therefore, this flag should only be
+	/// set for `remove` operations that can be safely replayed at a later time.
+	///
 	/// Returns successfully if no data will be stored for the given `primary_namespace`,
 	/// `secondary_namespace`, and `key`, independently of whether it was present before its
 	/// invokation or not.
 	fn remove(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
 	) -> AsyncResult<'static, (), io::Error>;
 	/// Returns a list of keys that are stored under the given `secondary_namespace` in
 	/// `primary_namespace`.
@@ -353,6 +363,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			monitor_key.as_str(),
+			true,
 		);
 	}
 }
@@ -499,7 +510,13 @@ fn poll_sync_future<F: Future>(future: F) -> F::Output {
 ///
 /// Stale updates are pruned when the consolidation threshold is reached according to `maximum_pending_updates`.
 /// Monitor updates in the range between the latest `update_id` and `update_id - maximum_pending_updates`
-/// are deleted. If you have many stale updates stored and would like to get rid of them, consider using the
+/// are deleted.
+/// The `lazy` flag is used on the [`KVStoreSync::remove`] method, so there are no guarantees that the deletions
+/// will complete. However, stale updates are not a problem for data integrity, since updates are
+/// only read that are higher than the stored [`ChannelMonitor`]'s `update_id`.
+///
+/// If you have many stale updates stored (such as after a crash with pending lazy deletes), and
+/// would like to get rid of them, consider using the
 /// [`MonitorUpdatingPersister::cleanup_stale_updates`] function.
 pub struct MonitorUpdatingPersister<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>(
 	MonitorUpdatingPersisterAsync<KVStoreSyncWrapper<K>, PanicingSpawner, L, ES, SP, BI, FE>,
@@ -605,9 +622,10 @@ where
 	///
 	/// This function works by first listing all monitors, and then for each of them, listing all
 	/// updates. The updates that have an `update_id` less than or equal to than the stored monitor
-	/// are deleted.
-	pub fn cleanup_stale_updates(&self) -> Result<(), io::Error> {
-		poll_sync_future(self.0.cleanup_stale_updates())
+	/// are deleted. The deletion can either be lazy or non-lazy based on the `lazy` flag; this will
+	/// be passed to [`KVStoreSync::remove`].
+	pub fn cleanup_stale_updates(&self, lazy: bool) -> Result<(), io::Error> {
+		poll_sync_future(self.0.cleanup_stale_updates(lazy))
 	}
 }
 
@@ -824,9 +842,10 @@ where
 	///
 	/// This function works by first listing all monitors, and then for each of them, listing all
 	/// updates. The updates that have an `update_id` less than or equal to than the stored monitor
-	/// are deleted.
-	pub async fn cleanup_stale_updates(&self) -> Result<(), io::Error> {
-		self.0.cleanup_stale_updates().await
+	/// are deleted. The deletion can either be lazy or non-lazy based on the `lazy` flag; this will
+	/// be passed to [`KVStoreSync::remove`].
+	pub async fn cleanup_stale_updates(&self, lazy: bool) -> Result<(), io::Error> {
+		self.0.cleanup_stale_updates(lazy).await
 	}
 }
 
@@ -1049,7 +1068,7 @@ where
 		})
 	}
 
-	async fn cleanup_stale_updates(&self) -> Result<(), io::Error> {
+	async fn cleanup_stale_updates(&self, lazy: bool) -> Result<(), io::Error> {
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let monitor_keys = self.kv_store.list(primary, secondary).await?;
@@ -1058,7 +1077,8 @@ where
 			let maybe_monitor = self.maybe_read_monitor(&monitor_name, &monitor_key).await?;
 			if let Some((_, current_monitor)) = maybe_monitor {
 				let latest_update_id = current_monitor.get_latest_update_id();
-				self.cleanup_stale_updates_for_monitor_to(&monitor_key, latest_update_id).await?;
+				self.cleanup_stale_updates_for_monitor_to(&monitor_key, latest_update_id, lazy)
+					.await?;
 			} else {
 				// TODO: Also clean up super stale monitors (created pre-0.0.110 and last updated
 				// pre-0.0.119).
@@ -1068,7 +1088,7 @@ where
 	}
 
 	async fn cleanup_stale_updates_for_monitor_to(
-		&self, monitor_key: &str, latest_update_id: u64,
+		&self, monitor_key: &str, latest_update_id: u64, lazy: bool,
 	) -> Result<(), io::Error> {
 		let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
 		let updates = self.kv_store.list(primary, monitor_key).await?;
@@ -1076,7 +1096,7 @@ where
 			let update_name = UpdateName::new(update)?;
 			// if the update_id is lower than the stored monitor, delete
 			if update_name.0 <= latest_update_id {
-				self.kv_store.remove(primary, monitor_key, update_name.as_str()).await?;
+				self.kv_store.remove(primary, monitor_key, update_name.as_str(), lazy).await?;
 			}
 		}
 		Ok(())
@@ -1152,6 +1172,7 @@ where
 							self.cleanup_stale_updates_for_monitor_to(
 								&monitor_key,
 								latest_update_id,
+								true,
 							)
 							.await?;
 						} else {
@@ -1202,7 +1223,7 @@ where
 		};
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		let _ = self.kv_store.remove(primary, secondary, &monitor_key).await;
+		let _ = self.kv_store.remove(primary, secondary, &monitor_key, true).await;
 	}
 
 	// Cleans up monitor updates for given monitor in range `start..=end`.
@@ -1211,7 +1232,7 @@ where
 		for update_id in start..=end {
 			let update_name = UpdateName::from(update_id);
 			let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
-			let res = self.kv_store.remove(primary, &monitor_key, update_name.as_str()).await;
+			let res = self.kv_store.remove(primary, &monitor_key, update_name.as_str(), true).await;
 			if let Err(e) = res {
 				log_error!(
 					self.logger,
@@ -1800,7 +1821,7 @@ mod tests {
 		.unwrap();
 
 		// Do the stale update cleanup
-		persister_0.cleanup_stale_updates().unwrap();
+		persister_0.cleanup_stale_updates(false).unwrap();
 
 		// Confirm the stale update is unreadable/gone
 		assert!(KVStoreSync::read(
