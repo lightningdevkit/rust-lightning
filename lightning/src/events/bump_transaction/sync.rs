@@ -58,17 +58,17 @@ impl<T: Deref> WalletSource for WalletSourceSyncWrapper<T>
 where
 	T::Target: WalletSourceSync,
 {
-	fn list_confirmed_utxos<'a>(&'a self) -> AsyncResult<'a, Vec<Utxo>> {
+	fn list_confirmed_utxos<'a>(&'a self) -> AsyncResult<'a, Vec<Utxo>, ()> {
 		let utxos = self.0.list_confirmed_utxos();
 		Box::pin(async move { utxos })
 	}
 
-	fn get_change_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf> {
+	fn get_change_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()> {
 		let script = self.0.get_change_script();
 		Box::pin(async move { script })
 	}
 
-	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction> {
+	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction, ()> {
 		let signed_psbt = self.0.sign_psbt(psbt);
 		Box::pin(async move { signed_psbt })
 	}
@@ -171,7 +171,7 @@ where
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
-	) -> AsyncResult<'a, CoinSelection> {
+	) -> AsyncResult<'a, CoinSelection, ()> {
 		let coins = self.0.select_confirmed_utxos(
 			claim_id,
 			must_spend,
@@ -182,7 +182,7 @@ where
 		Box::pin(async move { coins })
 	}
 
-	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction> {
+	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction, ()> {
 		let psbt = self.0.sign_psbt(psbt);
 		Box::pin(async move { psbt })
 	}

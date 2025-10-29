@@ -34,7 +34,7 @@ use crate::chain::transaction::OutPoint;
 use crate::ln::types::ChannelId;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::sync::Mutex;
-use crate::util::async_poll::{dummy_waker, MaybeSend, MaybeSync};
+use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
 use crate::util::native_async::FutureSpawner;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
@@ -160,7 +160,7 @@ where
 {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, Vec<u8>, io::Error> {
 		let res = self.0.read(primary_namespace, secondary_namespace, key);
 
 		Box::pin(async move { res })
@@ -168,7 +168,7 @@ where
 
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, (), io::Error> {
 		let res = self.0.write(primary_namespace, secondary_namespace, key, buf);
 
 		Box::pin(async move { res })
@@ -176,7 +176,7 @@ where
 
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, (), io::Error> {
 		let res = self.0.remove(primary_namespace, secondary_namespace, key);
 
 		Box::pin(async move { res })
@@ -184,7 +184,7 @@ where
 
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, Vec<String>, io::Error> {
 		let res = self.0.list(primary_namespace, secondary_namespace);
 
 		Box::pin(async move { res })
@@ -222,7 +222,7 @@ pub trait KVStore {
 	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>>;
+	) -> AsyncResult<'static, Vec<u8>, io::Error>;
 	/// Persists the given data under the given `key`.
 	///
 	/// The order of multiple writes to the same key needs to be retained while persisting
@@ -242,7 +242,7 @@ pub trait KVStore {
 	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present in the store.
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>>;
+	) -> AsyncResult<'static, (), io::Error>;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
 	/// Returns successfully if no data will be stored for the given `primary_namespace`,
@@ -250,7 +250,7 @@ pub trait KVStore {
 	/// invokation or not.
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>>;
+	) -> AsyncResult<'static, (), io::Error>;
 	/// Returns a list of keys that are stored under the given `secondary_namespace` in
 	/// `primary_namespace`.
 	///
@@ -258,7 +258,7 @@ pub trait KVStore {
 	/// returned keys. Returns an empty list if `primary_namespace` or `secondary_namespace` is unknown.
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>>;
+	) -> AsyncResult<'static, Vec<String>, io::Error>;
 }
 
 /// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]

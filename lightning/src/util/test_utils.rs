@@ -50,6 +50,7 @@ use crate::sign::{self, ReceiveAuthKey};
 use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
+use crate::util::async_poll::AsyncResult;
 use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
@@ -1011,13 +1012,13 @@ impl TestStore {
 impl KVStore for TestStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, Vec<u8>, io::Error> {
 		let res = self.read_internal(&primary_namespace, &secondary_namespace, &key);
 		Box::pin(async move { res })
 	}
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, (), io::Error> {
 		let path = format!("{primary_namespace}/{secondary_namespace}/{key}");
 		let future = Arc::new(Mutex::new((None, None)));
 
@@ -1030,13 +1031,13 @@ impl KVStore for TestStore {
 	}
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, (), io::Error> {
 		let res = self.remove_internal(&primary_namespace, &secondary_namespace, &key);
 		Box::pin(async move { res })
 	}
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, Vec<String>, io::Error> {
 		let res = self.list_internal(primary_namespace, secondary_namespace);
 		Box::pin(async move { res })
 	}
