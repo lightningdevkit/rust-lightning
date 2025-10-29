@@ -1576,14 +1576,10 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(
 	open_zero_conf_channel_with_value(initiator, receiver, initiator_config, 100_000, 10_001)
 }
 
-// Receiver must have been initialized with manually_accept_inbound_channels set to true.
-pub fn open_zero_conf_channel_with_value<'a, 'b, 'c, 'd>(
+pub fn exchange_open_accept_zero_conf_chan<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
 	initiator_config: Option<UserConfig>, channel_value_sat: u64, push_msat: u64,
-) -> (bitcoin::Transaction, ChannelId) {
-	let initiator_channels = initiator.node.list_usable_channels().len();
-	let receiver_channels = receiver.node.list_usable_channels().len();
-
+) -> ChannelId {
 	let receiver_node_id = receiver.node.get_our_node_id();
 	let initiator_node_id = initiator.node.get_our_node_id();
 
@@ -1616,6 +1612,28 @@ pub fn open_zero_conf_channel_with_value<'a, 'b, 'c, 'd>(
 		get_event_msg!(receiver, MessageSendEvent::SendAcceptChannel, initiator_node_id);
 	assert_eq!(accept_channel.common_fields.minimum_depth, 0);
 	initiator.node.handle_accept_channel(receiver_node_id, &accept_channel);
+
+	accept_channel.common_fields.temporary_channel_id
+}
+
+// Receiver must have been initialized with manually_accept_inbound_channels set to true.
+pub fn open_zero_conf_channel_with_value<'a, 'b, 'c, 'd>(
+	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
+	initiator_config: Option<UserConfig>, channel_value_sat: u64, push_msat: u64,
+) -> (bitcoin::Transaction, ChannelId) {
+	let initiator_channels = initiator.node.list_usable_channels().len();
+	let receiver_channels = receiver.node.list_usable_channels().len();
+
+	let receiver_node_id = receiver.node.get_our_node_id();
+	let initiator_node_id = initiator.node.get_our_node_id();
+
+	exchange_open_accept_zero_conf_chan(
+		initiator,
+		receiver,
+		initiator_config,
+		channel_value_sat,
+		push_msat,
+	);
 
 	let (temporary_channel_id, tx, _) =
 		create_funding_transaction(&initiator, &receiver_node_id, channel_value_sat, 42);
@@ -1806,14 +1824,18 @@ pub fn create_chan_between_nodes_with_value_a<'a, 'b, 'c: 'd, 'd>(
 
 pub fn create_channel_manual_funding<'a, 'b, 'c: 'd, 'd>(
 	nodes: &'a Vec<Node<'b, 'c, 'd>>, initiator: usize, counterparty: usize, channel_value: u64,
-	push_msat: u64,
+	push_msat: u64, zero_conf: bool,
 ) -> (ChannelId, Transaction, OutPoint) {
 	let node_a = &nodes[initiator];
 	let node_b = &nodes[counterparty];
 	let node_a_id = node_a.node.get_our_node_id();
 	let node_b_id = node_b.node.get_our_node_id();
 
-	let temp_channel_id = exchange_open_accept_chan(node_a, node_b, channel_value, push_msat);
+	let temp_channel_id = if zero_conf {
+		exchange_open_accept_zero_conf_chan(node_a, node_b, None, channel_value, push_msat)
+	} else {
+		exchange_open_accept_chan(node_a, node_b, channel_value, push_msat)
+	};
 
 	let (funding_temp_id, funding_tx, funding_outpoint) =
 		create_funding_transaction(node_a, &node_b_id, channel_value, 42);
@@ -1834,12 +1856,39 @@ pub fn create_channel_manual_funding<'a, 'b, 'c: 'd, 'd>(
 	check_added_monitors!(node_b, 1);
 	let channel_id_b = expect_channel_pending_event(node_b, &node_a_id);
 
-	let funding_signed = get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a_id);
-	node_a.node.handle_funding_signed(node_b_id, &funding_signed);
-	check_added_monitors!(node_a, 1);
+	if zero_conf {
+		let bs_signed_locked = node_b.node.get_and_clear_pending_msg_events();
+		assert_eq!(bs_signed_locked.len(), 2);
+		match &bs_signed_locked[0] {
+			MessageSendEvent::SendFundingSigned { node_id, msg } => {
+				assert_eq!(*node_id, node_a_id);
+				node_a.node.handle_funding_signed(node_b_id, &msg);
+				check_added_monitors(node_a, 1);
+
+				assert!(node_a.tx_broadcaster.txn_broadcast().is_empty());
+
+				let as_channel_ready =
+					get_event_msg!(node_a, MessageSendEvent::SendChannelReady, node_b_id);
+				node_b.node.handle_channel_ready(node_a_id, &as_channel_ready);
+				expect_channel_ready_event(node_b, &node_a_id);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		match &bs_signed_locked[1] {
+			MessageSendEvent::SendChannelReady { node_id, msg } => {
+				assert_eq!(*node_id, node_a_id);
+				node_a.node.handle_channel_ready(node_b_id, &msg);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	} else {
+		let funding_signed = get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a_id);
+		node_a.node.handle_funding_signed(node_b_id, &funding_signed);
+		check_added_monitors(node_a, 1)
+	}
 
 	let events = node_a.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), if zero_conf { 3 } else { 2 });
 	let funding_txid = funding_tx.compute_txid();
 	let mut channel_id = None;
 	for event in events {
@@ -1853,6 +1902,10 @@ pub fn create_channel_manual_funding<'a, 'b, 'c: 'd, 'd>(
 				assert_eq!(counterparty_node_id, node_b_id);
 				channel_id = Some(pending_id);
 			},
+			Event::ChannelReady { channel_id: pending_id, counterparty_node_id, .. } => {
+				assert_eq!(counterparty_node_id, node_b_id);
+				channel_id = Some(pending_id);
+			},
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -1860,6 +1913,16 @@ pub fn create_channel_manual_funding<'a, 'b, 'c: 'd, 'd>(
 	assert_eq!(channel_id, channel_id_b);
 
 	assert!(node_a.tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+
+	if zero_conf {
+		let as_channel_update =
+			get_event_msg!(node_a, MessageSendEvent::SendChannelUpdate, node_b_id);
+		let bs_channel_update =
+			get_event_msg!(node_b, MessageSendEvent::SendChannelUpdate, node_a_id);
+
+		node_a.node.handle_channel_update(node_b_id, &bs_channel_update);
+		node_b.node.handle_channel_update(node_a_id, &as_channel_update);
+	}
 
 	(channel_id, funding_tx, funding_outpoint)
 }
