@@ -541,34 +541,29 @@ pub struct WebhookNotification {
 }
 
 impl WebhookNotification {
-	/// Create a new webhook notification.
-	pub fn new(method: WebhookNotificationMethod) -> Self {
-		Self { method }
-	}
-
 	/// Create a webhook_registered notification.
 	pub fn webhook_registered() -> Self {
-		Self::new(WebhookNotificationMethod::LSPS5WebhookRegistered)
+		Self { method: WebhookNotificationMethod::LSPS5WebhookRegistered }
 	}
 
 	/// Create a payment_incoming notification.
 	pub fn payment_incoming() -> Self {
-		Self::new(WebhookNotificationMethod::LSPS5PaymentIncoming)
+		Self { method: WebhookNotificationMethod::LSPS5PaymentIncoming }
 	}
 
 	/// Create an expiry_soon notification.
 	pub fn expiry_soon(timeout: u32) -> Self {
-		Self::new(WebhookNotificationMethod::LSPS5ExpirySoon { timeout })
+		Self { method: WebhookNotificationMethod::LSPS5ExpirySoon { timeout } }
 	}
 
 	/// Create a liquidity_management_request notification.
 	pub fn liquidity_management_request() -> Self {
-		Self::new(WebhookNotificationMethod::LSPS5LiquidityManagementRequest)
+		Self { method: WebhookNotificationMethod::LSPS5LiquidityManagementRequest }
 	}
 
 	/// Create an onion_message_incoming notification.
 	pub fn onion_message_incoming() -> Self {
-		Self::new(WebhookNotificationMethod::LSPS5OnionMessageIncoming)
+		Self { method: WebhookNotificationMethod::LSPS5OnionMessageIncoming }
 	}
 }
 
