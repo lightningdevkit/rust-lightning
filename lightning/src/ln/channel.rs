@@ -16497,6 +16497,108 @@ mod tests {
 	}
 
 	#[cfg(ldk_test_vectors)]
+	#[rustfmt::skip]
+	macro_rules! test_commitment_common {
+			( $chan: expr, $logger: expr, $secp_ctx: expr, $signer: expr, $holder_pubkeys: expr, $per_commitment_point: expr, $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $channel_type_features: expr, {
+				$( { $htlc_idx: expr, $counterparty_htlc_sig_hex: expr, $htlc_sig_hex: expr, $htlc_tx_hex: expr } ), *
+			} ) => { {
+				let commitment_data = $chan.context.build_commitment_transaction(&$chan.funding,
+					0xffffffffffff - 42, &$per_commitment_point, true, false, &$logger);
+				let commitment_tx = commitment_data.tx;
+				let trusted_tx = commitment_tx.trust();
+				let unsigned_tx = trusted_tx.built_transaction();
+				let redeemscript = $chan.funding.get_funding_redeemscript();
+				let counterparty_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_sig_hex).unwrap()[..]).unwrap();
+				let sighash = unsigned_tx.get_sighash_all(&redeemscript, $chan.funding.get_value_satoshis());
+				log_trace!($logger, "unsigned_tx = {}", serialize(&unsigned_tx.transaction).as_hex());
+				assert!($secp_ctx.verify_ecdsa(&sighash, &counterparty_signature, $chan.funding.counterparty_funding_pubkey()).is_ok(), "verify counterparty commitment sig");
+
+				let mut per_htlc: Vec<(HTLCOutputInCommitment, Option<Signature>)> = Vec::new();
+				per_htlc.clear(); // Don't warn about excess mut for no-HTLC calls
+				let mut counterparty_htlc_sigs = Vec::new();
+				counterparty_htlc_sigs.clear(); // Don't warn about excess mut for no-HTLC calls
+				$({
+					let remote_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
+					per_htlc.push((commitment_tx.nondust_htlcs()[$htlc_idx].clone(), Some(remote_signature)));
+					counterparty_htlc_sigs.push(remote_signature);
+				})*
+				assert_eq!(commitment_tx.nondust_htlcs().len(), per_htlc.len());
+
+				let holder_commitment_tx = HolderCommitmentTransaction::new(
+					commitment_tx.clone(),
+					counterparty_signature,
+					counterparty_htlc_sigs,
+					&$holder_pubkeys.funding_pubkey,
+					$chan.funding.counterparty_funding_pubkey()
+				);
+				let holder_sig = $signer.sign_holder_commitment(&$chan.funding.channel_transaction_parameters, &holder_commitment_tx, &$secp_ctx).unwrap();
+				assert_eq!(Signature::from_der(&<Vec<u8>>::from_hex($sig_hex).unwrap()[..]).unwrap(), holder_sig, "holder_sig");
+
+				let funding_redeemscript = $chan.funding.get_funding_redeemscript();
+				let tx = holder_commitment_tx.add_holder_sig(&funding_redeemscript, holder_sig);
+				assert_eq!(serialize(&tx)[..], <Vec<u8>>::from_hex($tx_hex).unwrap()[..], "tx");
+
+				// ((htlc, counterparty_sig), (index, holder_sig))
+				let mut htlc_counterparty_sig_iter = holder_commitment_tx.counterparty_htlc_sigs.iter();
+
+				$({
+					log_trace!($logger, "verifying htlc {}", $htlc_idx);
+					let remote_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
+
+					let ref htlc = commitment_tx.nondust_htlcs()[$htlc_idx];
+					let keys = commitment_tx.trust().keys();
+					let mut htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, $chan.context.feerate_per_kw,
+						$chan.funding.get_counterparty_selected_contest_delay().unwrap(),
+						&htlc, $channel_type_features, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, $channel_type_features, &keys);
+					let htlc_sighashtype = if $channel_type_features.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+					let htlc_sighash = Message::from_digest(sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap().as_raw_hash().to_byte_array());
+					assert!($secp_ctx.verify_ecdsa(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key.to_public_key()).is_ok(), "verify counterparty htlc sig");
+
+					let mut preimage: Option<PaymentPreimage> = None;
+					if !htlc.offered {
+						for i in 0..5 {
+							let out = PaymentHash(Sha256::hash(&[i; 32]).to_byte_array());
+							if out == htlc.payment_hash {
+								preimage = Some(PaymentPreimage([i; 32]));
+							}
+						}
+
+						assert!(preimage.is_some());
+					}
+
+					let htlc_counterparty_sig = htlc_counterparty_sig_iter.next().unwrap();
+					let htlc_holder_sig = $signer.sign_holder_htlc_transaction(&htlc_tx, 0, &HTLCDescriptor {
+						channel_derivation_parameters: ChannelDerivationParameters {
+							value_satoshis: $chan.funding.get_value_satoshis(),
+							keys_id: $chan.context.channel_keys_id,
+							transaction_parameters: $chan.funding.channel_transaction_parameters.clone(),
+						},
+						commitment_txid: trusted_tx.txid(),
+						per_commitment_number: trusted_tx.commitment_number(),
+						per_commitment_point: trusted_tx.per_commitment_point(),
+						feerate_per_kw: trusted_tx.negotiated_feerate_per_kw(),
+						htlc: htlc.clone(),
+						preimage: preimage.clone(),
+						counterparty_sig: *htlc_counterparty_sig,
+					}, &$secp_ctx).unwrap();
+					let num_anchors = if $channel_type_features.supports_anchors_zero_fee_htlc_tx() { 2 } else { 0 };
+					assert_eq!(htlc.transaction_output_index, Some($htlc_idx + num_anchors), "output index");
+
+					let signature = Signature::from_der(&<Vec<u8>>::from_hex($htlc_sig_hex).unwrap()[..]).unwrap();
+					assert_eq!(signature, htlc_holder_sig, "htlc sig");
+					htlc_tx.input[0].witness = chan_utils::build_htlc_input_witness(
+						&htlc_holder_sig, htlc_counterparty_sig, &preimage, &htlc_redeemscript,
+						$channel_type_features,
+					);
+					log_trace!($logger, "htlc_tx = {}", serialize(&htlc_tx).as_hex());
+					assert_eq!(serialize(&htlc_tx)[..], <Vec<u8>>::from_hex($htlc_tx_hex).unwrap()[..], "htlc tx");
+				})*
+				assert!(htlc_counterparty_sig_iter.next().is_none());
+			} }
+		}
+
+	#[cfg(ldk_test_vectors)]
 	#[test]
 	#[rustfmt::skip]
 	fn outbound_commitment_test() {
@@ -16584,117 +16686,18 @@ mod tests {
 		macro_rules! test_commitment {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
 				chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
-				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::only_static_remote_key(), $($remain)*);
+				test_commitment_common!(chan, logger, secp_ctx, signer, holder_pubkeys, per_commitment_point, $counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::only_static_remote_key(), $($remain)*);
 			};
 		}
 
 		macro_rules! test_commitment_with_anchors {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
 				chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
-				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), $($remain)*);
+				test_commitment_common!(chan, logger, secp_ctx, signer, holder_pubkeys, per_commitment_point, $counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), $($remain)*);
 			};
 		}
 
 		#[rustfmt::skip]
-		macro_rules! test_commitment_common {
-			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $channel_type_features: expr, {
-				$( { $htlc_idx: expr, $counterparty_htlc_sig_hex: expr, $htlc_sig_hex: expr, $htlc_tx_hex: expr } ), *
-			} ) => { {
-				let commitment_data = chan.context.build_commitment_transaction(&chan.funding,
-					0xffffffffffff - 42, &per_commitment_point, true, false, &logger);
-				let commitment_tx = commitment_data.tx;
-				let trusted_tx = commitment_tx.trust();
-				let unsigned_tx = trusted_tx.built_transaction();
-				let redeemscript = chan.funding.get_funding_redeemscript();
-				let counterparty_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_sig_hex).unwrap()[..]).unwrap();
-				let sighash = unsigned_tx.get_sighash_all(&redeemscript, chan.funding.get_value_satoshis());
-				log_trace!(logger, "unsigned_tx = {}", serialize(&unsigned_tx.transaction).as_hex());
-				assert!(secp_ctx.verify_ecdsa(&sighash, &counterparty_signature, chan.funding.counterparty_funding_pubkey()).is_ok(), "verify counterparty commitment sig");
-
-				let mut per_htlc: Vec<(HTLCOutputInCommitment, Option<Signature>)> = Vec::new();
-				per_htlc.clear(); // Don't warn about excess mut for no-HTLC calls
-				let mut counterparty_htlc_sigs = Vec::new();
-				counterparty_htlc_sigs.clear(); // Don't warn about excess mut for no-HTLC calls
-				$({
-					let remote_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
-					per_htlc.push((commitment_tx.nondust_htlcs()[$htlc_idx].clone(), Some(remote_signature)));
-					counterparty_htlc_sigs.push(remote_signature);
-				})*
-				assert_eq!(commitment_tx.nondust_htlcs().len(), per_htlc.len());
-
-				let holder_commitment_tx = HolderCommitmentTransaction::new(
-					commitment_tx.clone(),
-					counterparty_signature,
-					counterparty_htlc_sigs,
-					&holder_pubkeys.funding_pubkey,
-					chan.funding.counterparty_funding_pubkey()
-				);
-				let holder_sig = signer.sign_holder_commitment(&chan.funding.channel_transaction_parameters, &holder_commitment_tx, &secp_ctx).unwrap();
-				assert_eq!(Signature::from_der(&<Vec<u8>>::from_hex($sig_hex).unwrap()[..]).unwrap(), holder_sig, "holder_sig");
-
-				let funding_redeemscript = chan.funding.get_funding_redeemscript();
-				let tx = holder_commitment_tx.add_holder_sig(&funding_redeemscript, holder_sig);
-				assert_eq!(serialize(&tx)[..], <Vec<u8>>::from_hex($tx_hex).unwrap()[..], "tx");
-
-				// ((htlc, counterparty_sig), (index, holder_sig))
-				let mut htlc_counterparty_sig_iter = holder_commitment_tx.counterparty_htlc_sigs.iter();
-
-				$({
-					log_trace!(logger, "verifying htlc {}", $htlc_idx);
-					let remote_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
-
-					let ref htlc = commitment_tx.nondust_htlcs()[$htlc_idx];
-					let keys = commitment_tx.trust().keys();
-					let mut htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.context.feerate_per_kw,
-						chan.funding.get_counterparty_selected_contest_delay().unwrap(),
-						&htlc, $channel_type_features, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, $channel_type_features, &keys);
-					let htlc_sighashtype = if $channel_type_features.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
-					let htlc_sighash = Message::from_digest(sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap().as_raw_hash().to_byte_array());
-					assert!(secp_ctx.verify_ecdsa(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key.to_public_key()).is_ok(), "verify counterparty htlc sig");
-
-					let mut preimage: Option<PaymentPreimage> = None;
-					if !htlc.offered {
-						for i in 0..5 {
-							let out = PaymentHash(Sha256::hash(&[i; 32]).to_byte_array());
-							if out == htlc.payment_hash {
-								preimage = Some(PaymentPreimage([i; 32]));
-							}
-						}
-
-						assert!(preimage.is_some());
-					}
-
-					let htlc_counterparty_sig = htlc_counterparty_sig_iter.next().unwrap();
-					let htlc_holder_sig = signer.sign_holder_htlc_transaction(&htlc_tx, 0, &HTLCDescriptor {
-						channel_derivation_parameters: ChannelDerivationParameters {
-							value_satoshis: chan.funding.get_value_satoshis(),
-							keys_id: chan.context.channel_keys_id,
-							transaction_parameters: chan.funding.channel_transaction_parameters.clone(),
-						},
-						commitment_txid: trusted_tx.txid(),
-						per_commitment_number: trusted_tx.commitment_number(),
-						per_commitment_point: trusted_tx.per_commitment_point(),
-						feerate_per_kw: trusted_tx.negotiated_feerate_per_kw(),
-						htlc: htlc.clone(),
-						preimage: preimage.clone(),
-						counterparty_sig: *htlc_counterparty_sig,
-					}, &secp_ctx).unwrap();
-					let num_anchors = if $channel_type_features.supports_anchors_zero_fee_htlc_tx() { 2 } else { 0 };
-					assert_eq!(htlc.transaction_output_index, Some($htlc_idx + num_anchors), "output index");
-
-					let signature = Signature::from_der(&<Vec<u8>>::from_hex($htlc_sig_hex).unwrap()[..]).unwrap();
-					assert_eq!(signature, htlc_holder_sig, "htlc sig");
-					htlc_tx.input[0].witness = chan_utils::build_htlc_input_witness(
-						&htlc_holder_sig, htlc_counterparty_sig, &preimage, &htlc_redeemscript,
-						$channel_type_features,
-					);
-					log_trace!(logger, "htlc_tx = {}", serialize(&htlc_tx).as_hex());
-					assert_eq!(serialize(&htlc_tx)[..], <Vec<u8>>::from_hex($htlc_tx_hex).unwrap()[..], "htlc tx");
-				})*
-				assert!(htlc_counterparty_sig_iter.next().is_none());
-			} }
-		}
 
 		// anchors: simple commitment tx with no HTLCs and single anchor
 		test_commitment_with_anchors!("30440220655bf909fb6fa81d086f1336ac72c97906dce29d1b166e305c99152d810e26e1022051f577faa46412c46707aaac46b65d50053550a66334e00a44af2706f27a8658",
