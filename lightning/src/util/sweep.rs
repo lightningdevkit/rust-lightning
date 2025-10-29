@@ -35,11 +35,10 @@ use bitcoin::{BlockHash, ScriptBuf, Transaction, Txid};
 
 use core::future::Future;
 use core::ops::Deref;
-use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task;
 
-use super::async_poll::dummy_waker;
+use super::async_poll::{dummy_waker, AsyncResult};
 
 /// The number of blocks we wait before we prune the tracked spendable outputs.
 pub const PRUNE_DELAY_BLOCKS: u32 = ARCHIVAL_DELAY_BLOCKS + ANTI_REORG_DELAY;
@@ -604,9 +603,7 @@ where
 		sweeper_state.dirty = true;
 	}
 
-	fn persist_state<'a>(
-		&self, sweeper_state: &SweeperState,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'a + Send>> {
+	fn persist_state<'a>(&self, sweeper_state: &SweeperState) -> AsyncResult<'a, (), io::Error> {
 		let encoded = sweeper_state.encode();
 
 		self.kv_store.write(
