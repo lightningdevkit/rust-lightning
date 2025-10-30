@@ -12,6 +12,17 @@ where
 	Taproot(<SP::Target as SignerProvider>::TaprootSigner),
 }
 
+#[cfg(test)]
+impl<SP> std::fmt::Debug for ChannelSignerType<SP>
+where
+	SP: Deref,
+	SP::Target: SignerProvider,
+{
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("ChannelSignerType").finish()
+	}
+}
+
 impl<SP: Deref> ChannelSignerType<SP>
 where
 	SP::Target: SignerProvider,

@@ -21,6 +21,7 @@ use crate::prelude::*;
 /// A script pubkey for shutting down a channel as defined by [BOLT #2].
 ///
 /// [BOLT #2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub struct ShutdownScript(ShutdownScriptImpl);
 
@@ -33,7 +34,7 @@ pub struct InvalidShutdownScript {
 	pub script: ScriptBuf,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum ShutdownScriptImpl {
 	/// [`PublicKey`] used to form a P2WPKH script pubkey. Used to support backward-compatible
 	/// serialization.
