@@ -1587,7 +1587,7 @@ mod tests {
 	#[test]
 	fn parses_refund_with_optional_fields() {
 		let past_expiry = Duration::from_secs(0);
-		let paths = vec![
+		let paths = [
 			BlindedMessagePath::from_blinded_path(
 				pubkey(40),
 				pubkey(41),
