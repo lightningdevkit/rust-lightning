@@ -255,6 +255,11 @@ pub trait KVStore {
 	/// potentially get lost on crash after the method returns. Therefore, this flag should only be
 	/// set for `remove` operations that can be safely replayed at a later time.
 	///
+	/// All removal operations must complete in a consistent total order with [`Self::write`]s
+	/// to the same key. Whether a removal operation is `lazy` or not, [`Self::write`] operations
+	/// to the same key which occur before a removal completes must cancel/overwrite the pending
+	/// removal.
+	///
 	/// Returns successfully if no data will be stored for the given `primary_namespace`,
 	/// `secondary_namespace`, and `key`, independently of whether it was present before its
 	/// invokation or not.
