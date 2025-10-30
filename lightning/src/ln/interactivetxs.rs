@@ -1492,12 +1492,6 @@ enum StateMachine {
 	NegotiationAborted(NegotiationAborted),
 }
 
-impl Default for StateMachine {
-	fn default() -> Self {
-		Self::Indeterminate
-	}
-}
-
 // The `StateMachine` internally executes the actual transition between two states and keeps
 // track of the current state. This macro defines _how_ those state transitions happen to
 // update the internal state.
@@ -1932,7 +1926,8 @@ impl InteractiveTxMessageSend {
 // This macro executes a state machine transition based on a provided action.
 macro_rules! do_state_transition {
 	($self: ident, $transition: ident, $msg: expr) => {{
-		let state_machine = core::mem::take(&mut $self.state_machine);
+		let mut state_machine = StateMachine::Indeterminate;
+		core::mem::swap(&mut state_machine, &mut $self.state_machine);
 		$self.state_machine = state_machine.$transition($msg);
 		match &$self.state_machine {
 			StateMachine::NegotiationAborted(state) => Err(state.0.clone()),
