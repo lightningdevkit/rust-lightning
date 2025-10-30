@@ -297,6 +297,7 @@ where
 								LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 								LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
 								&key,
+								true,
 							));
 						} else {
 							// If the peer was re-added, force a re-persist of the current state.
