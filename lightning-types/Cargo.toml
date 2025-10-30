@@ -4,6 +4,7 @@ version = "0.3.0+git"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning/"
+readme = "../README.md"
 description = """
 Basic types which are used in the lightning network
 """
