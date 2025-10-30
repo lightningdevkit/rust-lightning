@@ -869,7 +869,7 @@ mod tests {
 		// Taken from the spec example for aggregating blinded payment info. See
 		// https://github.com/lightning/bolts/blob/master/proposals/route-blinding.md#blinded-payments
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![
+		let intermediate_nodes = [
 			PaymentForwardNode {
 				node_id: dummy_pk,
 				tlvs: ForwardTlvs {
@@ -944,7 +944,7 @@ mod tests {
 		// If no hops charge fees, the htlc_minimum_msat should just be the maximum htlc_minimum_msat
 		// along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![
+		let intermediate_nodes = [
 			PaymentForwardNode {
 				node_id: dummy_pk,
 				tlvs: ForwardTlvs {
@@ -1003,7 +1003,7 @@ mod tests {
 		// Create a path with varying fees and htlc_mins, and make sure htlc_minimum_msat ends up as the
 		// max (htlc_min - following_fees) along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![
+		let intermediate_nodes = [
 			PaymentForwardNode {
 				node_id: dummy_pk,
 				tlvs: ForwardTlvs {
@@ -1072,7 +1072,7 @@ mod tests {
 		// Create a path with varying fees and `htlc_maximum_msat`s, and make sure the aggregated max
 		// htlc ends up as the min (htlc_max - following_fees) along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![
+		let intermediate_nodes = [
 			PaymentForwardNode {
 				node_id: dummy_pk,
 				tlvs: ForwardTlvs {

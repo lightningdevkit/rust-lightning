@@ -999,7 +999,7 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let destination_script0 = chanmon_cfgs[0].keys_manager.get_destination_script([0; 32]).unwrap();
 	let destination_script1 = chanmon_cfgs[1].keys_manager.get_destination_script([0; 32]).unwrap();
-	let persisters = vec![
+	let persisters = [
 		WatchtowerPersister::new(destination_script0),
 		WatchtowerPersister::new(destination_script1),
 	];

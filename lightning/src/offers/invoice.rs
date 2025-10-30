@@ -3012,7 +3012,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let paths = vec![
+		let paths = [
 			BlindedMessagePath::from_blinded_path(
 				pubkey(40),
 				pubkey(41),
