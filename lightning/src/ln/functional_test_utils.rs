@@ -21,7 +21,9 @@ use crate::events::{
 	ClaimedHTLC, ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PathFailure,
 	PaymentFailureReason, PaymentPurpose,
 };
-use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC};
+use crate::ln::chan_utils::{
+	commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, TRUC_MAX_WEIGHT,
+};
 use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
 	RAACommitmentOrder, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA,
@@ -58,6 +60,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as _;
 use bitcoin::locktime::absolute::{LockTime, LOCK_TIME_THRESHOLD};
 use bitcoin::network::Network;
+use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::pow::CompactTarget;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
@@ -400,12 +403,18 @@ fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(
 }
 
 pub fn provide_anchor_reserves<'a, 'b, 'c>(nodes: &[Node<'a, 'b, 'c>]) -> Transaction {
+	provide_anchor_utxo_reserves(nodes, 1, Amount::ONE_BTC)
+}
+
+pub fn provide_anchor_utxo_reserves<'a, 'b, 'c>(
+	nodes: &[Node<'a, 'b, 'c>], utxos: usize, amount: Amount,
+) -> Transaction {
 	let mut output = Vec::with_capacity(nodes.len());
 	for node in nodes {
-		output.push(TxOut {
-			value: Amount::ONE_BTC,
-			script_pubkey: node.wallet_source.get_change_script().unwrap(),
-		});
+		let script_pubkey = node.wallet_source.get_change_script().unwrap();
+		for _ in 0..utxos {
+			output.push(TxOut { value: amount, script_pubkey: script_pubkey.clone() });
+		}
 	}
 	let tx = Transaction {
 		version: TxVersion::TWO,
@@ -1573,15 +1582,19 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
 	initiator_config: Option<UserConfig>,
 ) -> (bitcoin::Transaction, ChannelId) {
-	let initiator_channels = initiator.node.list_usable_channels().len();
-	let receiver_channels = receiver.node.list_usable_channels().len();
+	open_zero_conf_channel_with_value(initiator, receiver, initiator_config, 100_000, 10_001)
+}
 
+pub fn exchange_open_accept_zero_conf_chan<'a, 'b, 'c, 'd>(
+	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
+	initiator_config: Option<UserConfig>, channel_value_sat: u64, push_msat: u64,
+) -> ChannelId {
 	let receiver_node_id = receiver.node.get_our_node_id();
 	let initiator_node_id = initiator.node.get_our_node_id();
 
 	initiator
 		.node
-		.create_channel(receiver_node_id, 100_000, 10_001, 42, None, initiator_config)
+		.create_channel(receiver_node_id, channel_value_sat, push_msat, 42, None, initiator_config)
 		.unwrap();
 	let open_channel =
 		get_event_msg!(initiator, MessageSendEvent::SendOpenChannel, receiver_node_id);
@@ -1609,8 +1622,30 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(
 	assert_eq!(accept_channel.common_fields.minimum_depth, 0);
 	initiator.node.handle_accept_channel(receiver_node_id, &accept_channel);
 
+	accept_channel.common_fields.temporary_channel_id
+}
+
+// Receiver must have been initialized with manually_accept_inbound_channels set to true.
+pub fn open_zero_conf_channel_with_value<'a, 'b, 'c, 'd>(
+	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
+	initiator_config: Option<UserConfig>, channel_value_sat: u64, push_msat: u64,
+) -> (bitcoin::Transaction, ChannelId) {
+	let initiator_channels = initiator.node.list_usable_channels().len();
+	let receiver_channels = receiver.node.list_usable_channels().len();
+
+	let receiver_node_id = receiver.node.get_our_node_id();
+	let initiator_node_id = initiator.node.get_our_node_id();
+
+	exchange_open_accept_zero_conf_chan(
+		initiator,
+		receiver,
+		initiator_config,
+		channel_value_sat,
+		push_msat,
+	);
+
 	let (temporary_channel_id, tx, _) =
-		create_funding_transaction(&initiator, &receiver_node_id, 100_000, 42);
+		create_funding_transaction(&initiator, &receiver_node_id, channel_value_sat, 42);
 	initiator
 		.node
 		.funding_transaction_generated(temporary_channel_id, receiver_node_id, tx.clone())
@@ -1796,6 +1831,111 @@ pub fn create_chan_between_nodes_with_value_a<'a, 'b, 'c: 'd, 'd>(
 	(msgs, chan_id, tx)
 }
 
+pub fn create_channel_manual_funding<'a, 'b, 'c: 'd, 'd>(
+	nodes: &'a Vec<Node<'b, 'c, 'd>>, initiator: usize, counterparty: usize, channel_value: u64,
+	push_msat: u64, zero_conf: bool,
+) -> (ChannelId, Transaction, OutPoint) {
+	let node_a = &nodes[initiator];
+	let node_b = &nodes[counterparty];
+	let node_a_id = node_a.node.get_our_node_id();
+	let node_b_id = node_b.node.get_our_node_id();
+
+	let temp_channel_id = if zero_conf {
+		exchange_open_accept_zero_conf_chan(node_a, node_b, None, channel_value, push_msat)
+	} else {
+		exchange_open_accept_chan(node_a, node_b, channel_value, push_msat)
+	};
+
+	let (funding_temp_id, funding_tx, funding_outpoint) =
+		create_funding_transaction(node_a, &node_b_id, channel_value, 42);
+	assert_eq!(temp_channel_id, funding_temp_id);
+
+	node_a
+		.node
+		.funding_transaction_generated_manual_broadcast(
+			funding_temp_id,
+			node_b_id,
+			funding_tx.clone(),
+		)
+		.unwrap();
+	check_added_monitors!(node_a, 0);
+
+	let funding_created = get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b_id);
+	node_b.node.handle_funding_created(node_a_id, &funding_created);
+	check_added_monitors!(node_b, 1);
+	let channel_id_b = expect_channel_pending_event(node_b, &node_a_id);
+
+	if zero_conf {
+		let bs_signed_locked = node_b.node.get_and_clear_pending_msg_events();
+		assert_eq!(bs_signed_locked.len(), 2);
+		match &bs_signed_locked[0] {
+			MessageSendEvent::SendFundingSigned { node_id, msg } => {
+				assert_eq!(*node_id, node_a_id);
+				node_a.node.handle_funding_signed(node_b_id, &msg);
+				check_added_monitors(node_a, 1);
+
+				assert!(node_a.tx_broadcaster.txn_broadcast().is_empty());
+
+				let as_channel_ready =
+					get_event_msg!(node_a, MessageSendEvent::SendChannelReady, node_b_id);
+				node_b.node.handle_channel_ready(node_a_id, &as_channel_ready);
+				expect_channel_ready_event(node_b, &node_a_id);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		match &bs_signed_locked[1] {
+			MessageSendEvent::SendChannelReady { node_id, msg } => {
+				assert_eq!(*node_id, node_a_id);
+				node_a.node.handle_channel_ready(node_b_id, &msg);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	} else {
+		let funding_signed = get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a_id);
+		node_a.node.handle_funding_signed(node_b_id, &funding_signed);
+		check_added_monitors(node_a, 1)
+	}
+
+	let events = node_a.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), if zero_conf { 3 } else { 2 });
+	let funding_txid = funding_tx.compute_txid();
+	let mut channel_id = None;
+	for event in events {
+		match event {
+			Event::FundingTxBroadcastSafe { funding_txo, counterparty_node_id, .. } => {
+				assert_eq!(counterparty_node_id, node_b_id);
+				assert_eq!(funding_txo.txid, funding_txid);
+				assert_eq!(funding_txo.vout, u32::from(funding_outpoint.index));
+			},
+			Event::ChannelPending { channel_id: pending_id, counterparty_node_id, .. } => {
+				assert_eq!(counterparty_node_id, node_b_id);
+				channel_id = Some(pending_id);
+			},
+			Event::ChannelReady { channel_id: pending_id, counterparty_node_id, .. } => {
+				assert_eq!(counterparty_node_id, node_b_id);
+				channel_id = Some(pending_id);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+	let channel_id = channel_id.expect("channel pending event missing");
+	assert_eq!(channel_id, channel_id_b);
+
+	assert!(node_a.tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+
+	if zero_conf {
+		let as_channel_update =
+			get_event_msg!(node_a, MessageSendEvent::SendChannelUpdate, node_b_id);
+		let bs_channel_update =
+			get_event_msg!(node_b, MessageSendEvent::SendChannelUpdate, node_a_id);
+
+		node_a.node.handle_channel_update(node_b_id, &bs_channel_update);
+		node_b.node.handle_channel_update(node_a_id, &as_channel_update);
+	}
+
+	(channel_id, funding_tx, funding_outpoint)
+}
+
 pub fn create_chan_between_nodes_with_value_b<'a, 'b, 'c>(
 	node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>,
 	as_funding_msgs: &(msgs::ChannelReady, msgs::AnnouncementSignatures),
@@ -1964,6 +2104,11 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(
 pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 	tx: &Transaction, get_output: F,
 ) {
+	if tx.version == TxVersion::non_standard(3) {
+		assert!(tx.weight().to_wu() <= TRUC_MAX_WEIGHT);
+	} else {
+		assert!(tx.weight().to_wu() <= MAX_STANDARD_TX_WEIGHT as u64);
+	}
 	let mut p2a_output_below_dust = false;
 	let mut has_p2a_output = false;
 	for outp in tx.output.iter() {
@@ -2484,6 +2629,15 @@ pub fn expect_and_process_pending_htlcs(node: &Node<'_, '_, '_>, process_twice: 
 		node.node.process_pending_htlc_forwards();
 	}
 	assert!(!node.node.needs_pending_htlc_processing());
+}
+
+/// Processes an HTLC which is pending forward but will fail to forward when we process it here.
+pub fn expect_htlc_forwarding_fails(
+	node: &Node<'_, '_, '_>, expected_failure: &[HTLCHandlingFailureType],
+) {
+	expect_and_process_pending_htlcs(node, false);
+	let events = node.node.get_and_clear_pending_events();
+	expect_htlc_failure_conditions(events, expected_failure);
 }
 
 #[macro_export]
@@ -4871,6 +5025,13 @@ macro_rules! handle_chan_reestablish_msgs {
 			had_channel_update = true;
 		}
 
+		let mut stfu = None;
+		if let Some(&MessageSendEvent::SendStfu { ref node_id, ref msg }) = msg_events.get(idx) {
+			idx += 1;
+			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+			stfu = Some(msg.clone());
+		}
+
 		let mut revoke_and_ack = None;
 		let mut commitment_update = None;
 		let order = if let Some(ev) = msg_events.get(idx) {
@@ -4946,7 +5107,15 @@ macro_rules! handle_chan_reestablish_msgs {
 
 		assert_eq!(msg_events.len(), idx, "{msg_events:?}");
 
-		(channel_ready, revoke_and_ack, commitment_update, order, announcement_sigs, tx_signatures)
+		(
+			channel_ready,
+			revoke_and_ack,
+			commitment_update,
+			order,
+			announcement_sigs,
+			tx_signatures,
+			stfu,
+		)
 	}};
 }
 
@@ -4955,6 +5124,7 @@ pub struct ReconnectArgs<'a, 'b, 'c, 'd> {
 	pub node_b: &'a Node<'b, 'c, 'd>,
 	pub send_channel_ready: (bool, bool),
 	pub send_announcement_sigs: (bool, bool),
+	pub send_stfu: (bool, bool),
 	pub send_interactive_tx_commit_sig: (bool, bool),
 	pub send_interactive_tx_sigs: (bool, bool),
 	pub expect_renegotiated_funding_locked_monitor_update: (bool, bool),
@@ -4977,6 +5147,7 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 			node_b,
 			send_channel_ready: (false, false),
 			send_announcement_sigs: (false, false),
+			send_stfu: (false, false),
 			send_interactive_tx_commit_sig: (false, false),
 			send_interactive_tx_sigs: (false, false),
 			expect_renegotiated_funding_locked_monitor_update: (false, false),
@@ -5000,6 +5171,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		node_b,
 		send_channel_ready,
 		send_announcement_sigs,
+		send_stfu,
 		send_interactive_tx_commit_sig,
 		send_interactive_tx_sigs,
 		expect_renegotiated_funding_locked_monitor_update,
@@ -5118,6 +5290,12 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		} else {
 			assert!(chan_msgs.4.is_none());
 		}
+		if send_stfu.0 {
+			let stfu = chan_msgs.6.take().unwrap();
+			node_a.node.handle_stfu(node_b_id, &stfu);
+		} else {
+			assert!(chan_msgs.6.is_none());
+		}
 		if send_interactive_tx_commit_sig.0 {
 			assert!(chan_msgs.1.is_none());
 			let commitment_update = chan_msgs.2.take().unwrap();
@@ -5223,6 +5401,12 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			}
 		} else {
 			assert!(chan_msgs.4.is_none());
+		}
+		if send_stfu.1 {
+			let stfu = chan_msgs.6.take().unwrap();
+			node_b.node.handle_stfu(node_a_id, &stfu);
+		} else {
+			assert!(chan_msgs.6.is_none());
 		}
 		if send_interactive_tx_commit_sig.1 {
 			assert!(chan_msgs.1.is_none());

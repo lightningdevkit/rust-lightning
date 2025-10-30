@@ -272,12 +272,12 @@ pub enum SpendableOutputDescriptor {
 	/// To derive the delayed payment key which is used to sign this input, you must pass the
 	/// holder [`InMemorySigner::delayed_payment_base_key`] (i.e., the private key which
 	/// corresponds to the [`ChannelPublicKeys::delayed_payment_basepoint`] in
-	/// [`ChannelSigner::new_pubkeys`]) and the provided
+	/// [`ChannelSigner::pubkeys`]) and the provided
 	/// [`DelayedPaymentOutputDescriptor::per_commitment_point`] to
 	/// [`chan_utils::derive_private_key`]. The DelayedPaymentKey can be generated without the
 	/// secret key using [`DelayedPaymentKey::from_basepoint`] and only the
 	/// [`ChannelPublicKeys::delayed_payment_basepoint`] which appears in
-	/// [`ChannelSigner::new_pubkeys`].
+	/// [`ChannelSigner::pubkeys`].
 	///
 	/// To derive the [`DelayedPaymentOutputDescriptor::revocation_pubkey`] provided here (which is
 	/// used in the witness script generation), you must pass the counterparty
@@ -292,7 +292,7 @@ pub enum SpendableOutputDescriptor {
 	/// [`chan_utils::get_revokeable_redeemscript`].
 	DelayedPaymentOutput(DelayedPaymentOutputDescriptor),
 	/// An output spendable exclusively by our payment key (i.e., the private key that corresponds
-	/// to the `payment_point` in [`ChannelSigner::new_pubkeys`]). The output type depends on the
+	/// to the `payment_point` in [`ChannelSigner::pubkeys`]). The output type depends on the
 	/// channel type negotiated.
 	///
 	/// On an anchor outputs channel, the witness in the spending input is:
@@ -792,19 +792,25 @@ pub trait ChannelSigner {
 	/// and pause future signing operations until this validation completes.
 	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()>;
 
-	/// Returns a *new* set of holder channel public keys and basepoints. They may be the same as a
-	/// previous value, but are also allowed to change arbitrarily. Signing methods must still
-	/// support signing for any keys which have ever been returned. This should only be called
-	/// either for new channels or new splices.
+	/// Returns the holder channel public keys and basepoints. This should only be called once
+	/// during channel creation and as such implementations are allowed undefined behavior if
+	/// called more than once.
 	///
-	/// `splice_parent_funding_txid` can be used to compute a tweak to rotate the funding key in the
-	/// 2-of-2 multisig script during a splice. See [`compute_funding_key_tweak`] for an example
-	/// tweak and more details.
+	/// This method is *not* asynchronous. Instead, the value must be computed locally or in
+	/// advance and cached.
+	fn pubkeys(&self, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelPublicKeys;
+
+	/// Returns a new funding pubkey (i.e. our public which is used in a 2-of-2 with the
+	/// counterparty's key to to lock the funds on-chain) for a spliced channel.
+	///
+	/// `splice_parent_funding_txid` can be used to compute a tweak with which to rotate the base
+	/// key (which will then be available later in signing operations via
+	/// [`ChannelTransactionParameters::splice_parent_funding_txid`]).
 	///
 	/// This method is *not* asynchronous. Instead, the value must be cached locally.
-	fn new_pubkeys(
-		&self, splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> ChannelPublicKeys;
+	fn new_funding_pubkey(
+		&self, splice_parent_funding_txid: Txid, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> PublicKey;
 
 	/// Returns an arbitrary identifier describing the set of keys which are provided back to you in
 	/// some [`SpendableOutputDescriptor`] types. This should be sufficient to identify this
@@ -1058,7 +1064,7 @@ pub trait ChangeDestinationSource {
 	///
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds controlled to the same user.
-	fn get_change_destination_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf>;
+	fn get_change_destination_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()>;
 }
 
 /// A synchronous helper trait that describes an on-chain wallet capable of returning a (change) destination script.
@@ -1090,7 +1096,7 @@ impl<T: Deref> ChangeDestinationSource for ChangeDestinationSourceSyncWrapper<T>
 where
 	T::Target: ChangeDestinationSourceSync,
 {
-	fn get_change_destination_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf> {
+	fn get_change_destination_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()> {
 		let script = self.0.get_change_destination_script();
 		Box::pin(async move { script })
 	}
@@ -1457,17 +1463,13 @@ impl ChannelSigner for InMemorySigner {
 		Ok(())
 	}
 
-	fn new_pubkeys(
-		&self, splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> ChannelPublicKeys {
+	fn pubkeys(&self, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelPublicKeys {
 		// Because splices always break downgrades, we go ahead and always use the new derivation
 		// here as its just much better.
-		let use_v2_derivation =
-			self.v2_remote_key_derivation || splice_parent_funding_txid.is_some();
 		let payment_key =
-			if use_v2_derivation { &self.payment_key_v2 } else { &self.payment_key_v1 };
+			if self.v2_remote_key_derivation { &self.payment_key_v2 } else { &self.payment_key_v1 };
 		let from_secret = |s: &SecretKey| PublicKey::from_secret_key(secp_ctx, s);
-		let mut pubkeys = ChannelPublicKeys {
+		let pubkeys = ChannelPublicKeys {
 			funding_pubkey: from_secret(&self.funding_key.0),
 			revocation_basepoint: RevocationBasepoint::from(from_secret(&self.revocation_base_key)),
 			payment_point: from_secret(payment_key),
@@ -1477,11 +1479,13 @@ impl ChannelSigner for InMemorySigner {
 			htlc_basepoint: HtlcBasepoint::from(from_secret(&self.htlc_base_key)),
 		};
 
-		if splice_parent_funding_txid.is_some() {
-			pubkeys.funding_pubkey =
-				self.funding_key(splice_parent_funding_txid).public_key(secp_ctx);
-		}
 		pubkeys
+	}
+
+	fn new_funding_pubkey(
+		&self, splice_parent_funding_txid: Txid, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> PublicKey {
+		self.funding_key(Some(splice_parent_funding_txid)).public_key(secp_ctx)
 	}
 
 	fn channel_keys_id(&self) -> [u8; 32] {

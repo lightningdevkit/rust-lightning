@@ -11,6 +11,7 @@
 //! largely of interest for those implementing the traits on [`crate::sign`] by hand.
 
 use bitcoin::amount::Amount;
+use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::opcodes;
 use bitcoin::script::{Builder, Script, ScriptBuf};
 use bitcoin::sighash;
@@ -89,11 +90,17 @@ pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 114;
 #[cfg(not(feature = "grind_signatures"))]
 pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 115;
 
-/// The weight of a P2A anchor witness.
-pub const P2A_ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 1;
+/// The weight of an empty witness; used to spend a P2A output.
+pub const EMPTY_WITNESS_WEIGHT: u64 = 1;
 
 /// The maximum value of a P2A anchor.
 pub const P2A_MAX_VALUE: u64 = 240;
+
+/// The maximum weight of a TRUC transaction, see BIP431.
+pub const TRUC_MAX_WEIGHT: u64 = 10_000 * WITNESS_SCALE_FACTOR as u64;
+
+/// The maximum weight of a TRUC transaction with an unconfirmed TRUC ancestor, see BIP431.
+pub const TRUC_CHILD_MAX_WEIGHT: u64 = 1000 * WITNESS_SCALE_FACTOR as u64;
 
 /// The upper bound weight of an HTLC timeout input from a commitment transaction with keyed anchor outputs.
 pub const HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT: u64 = 288;
@@ -125,6 +132,15 @@ pub const FUNDING_TRANSACTION_WITNESS_WEIGHT: u64 = 1 + // number_of_witness_ele
 	1 + // witness_script_length
 	MULTISIG_SCRIPT_SIZE;
 
+pub(crate) const BASE_TX_SIZE: u64 = 4 /* version */ + 1 /* input count */ + 1 /* output count */ + 4 /* locktime */;
+pub(crate) const SEGWIT_MARKER_FLAG_WEIGHT: u64 = 2;
+pub(crate) const EMPTY_SCRIPT_SIG_WEIGHT: u64 =
+	1 /* empty script_sig */ * WITNESS_SCALE_FACTOR as u64;
+pub(crate) const BASE_INPUT_SIZE: u64 = 32 /* txid */ + 4 /* vout */ + 4 /* sequence */;
+pub(crate) const BASE_INPUT_WEIGHT: u64 = BASE_INPUT_SIZE * WITNESS_SCALE_FACTOR as u64;
+pub(crate) const P2WSH_TXOUT_WEIGHT: u64 =
+	(8 /* value */ + 1 /* var_int */ + 34/* p2wsh spk */) * WITNESS_SCALE_FACTOR as u64;
+
 /// Gets the weight for an HTLC-Success transaction.
 #[inline]
 #[rustfmt::skip]
@@ -134,6 +150,18 @@ pub fn htlc_success_tx_weight(channel_type_features: &ChannelTypeFeatures) -> u6
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { HTLC_SUCCESS_ANCHOR_TX_WEIGHT } else { HTLC_SUCCESS_TX_WEIGHT }
 }
 
+/// Gets the weight of a single input-output pair in externally funded HTLC-success transactions
+pub fn aggregated_htlc_success_input_output_pair_weight(
+	channel_type_features: &ChannelTypeFeatures,
+) -> u64 {
+	let satisfaction_weight = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		EMPTY_SCRIPT_SIG_WEIGHT + HTLC_SUCCESS_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT
+	} else {
+		EMPTY_SCRIPT_SIG_WEIGHT + HTLC_SUCCESS_INPUT_P2A_ANCHOR_WITNESS_WEIGHT
+	};
+	BASE_INPUT_WEIGHT + P2WSH_TXOUT_WEIGHT + satisfaction_weight
+}
+
 /// Gets the weight for an HTLC-Timeout transaction.
 #[inline]
 #[rustfmt::skip]
@@ -141,6 +169,18 @@ pub fn htlc_timeout_tx_weight(channel_type_features: &ChannelTypeFeatures) -> u6
 	const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
 	const HTLC_TIMEOUT_ANCHOR_TX_WEIGHT: u64 = 666;
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { HTLC_TIMEOUT_ANCHOR_TX_WEIGHT } else { HTLC_TIMEOUT_TX_WEIGHT }
+}
+
+/// Gets the weight of a single input-output pair in externally funded HTLC-timeout transactions
+pub fn aggregated_htlc_timeout_input_output_pair_weight(
+	channel_type_features: &ChannelTypeFeatures,
+) -> u64 {
+	let satisfaction_weight = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		EMPTY_SCRIPT_SIG_WEIGHT + HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT
+	} else {
+		EMPTY_SCRIPT_SIG_WEIGHT + HTLC_TIMEOUT_INPUT_P2A_ANCHOR_WITNESS_WEIGHT
+	};
+	BASE_INPUT_WEIGHT + P2WSH_TXOUT_WEIGHT + satisfaction_weight
 }
 
 /// Describes the type of HTLC claim as determined by analyzing the witness.
@@ -1018,11 +1058,11 @@ pub struct ChannelTransactionParameters {
 	/// If a channel was funded with transaction A, and later spliced with transaction B, this field
 	/// tracks the txid of transaction A.
 	///
-	/// See [`compute_funding_key_tweak`] and [`ChannelSigner::new_pubkeys`] for more context on how
-	/// this may be used.
+	/// See [`compute_funding_key_tweak`] and [`ChannelSigner::new_funding_pubkey`] for more context
+	/// on how this may be used.
 	///
 	/// [`compute_funding_key_tweak`]: crate::sign::compute_funding_key_tweak
-	/// [`ChannelSigner::new_pubkeys`]: crate::sign::ChannelSigner::new_pubkeys
+	/// [`ChannelSigner::new_funding_pubkey`]: crate::sign::ChannelSigner::new_funding_pubkey
 	pub splice_parent_funding_txid: Option<Txid>,
 	/// This channel's type, as negotiated during channel open. For old objects where this field
 	/// wasn't serialized, it will default to static_remote_key at deserialization.
@@ -2245,8 +2285,8 @@ mod tests {
 			let counterparty_signer = keys_provider.derive_channel_signer(keys_provider.generate_channel_keys_id(true, 1));
 			let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 			let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
-			let holder_pubkeys = signer.new_pubkeys(None, &secp_ctx);
-			let counterparty_pubkeys = counterparty_signer.new_pubkeys(None, &secp_ctx).clone();
+			let holder_pubkeys = signer.pubkeys(&secp_ctx);
+			let counterparty_pubkeys = counterparty_signer.pubkeys(&secp_ctx).clone();
 			let channel_parameters = ChannelTransactionParameters {
 				holder_pubkeys: holder_pubkeys.clone(),
 				holder_selected_contest_delay: 0,

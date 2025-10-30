@@ -300,7 +300,7 @@ where
 
 /// Updates scorer based on event and returns whether an update occurred so we can decide whether
 /// to persist.
-fn update_scorer<'a, S: Deref<Target = SC> + Send + Sync, SC: 'a + WriteableScore<'a>>(
+fn update_scorer<'a, S: Deref<Target = SC>, SC: 'a + WriteableScore<'a>>(
 	scorer: &'a S, event: &Event, duration_since_epoch: Duration,
 ) -> bool {
 	match event {
@@ -774,7 +774,7 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 /// # #[derive(Eq, PartialEq, Clone, Hash)]
 /// # struct SocketDescriptor {}
 /// # impl lightning::ln::peer_handler::SocketDescriptor for SocketDescriptor {
-/// #     fn send_data(&mut self, _data: &[u8], _resume_read: bool) -> usize { 0 }
+/// #     fn send_data(&mut self, _data: &[u8], _continue_read: bool) -> usize { 0 }
 /// #     fn disconnect_socket(&mut self) {}
 /// # }
 /// # type ChainMonitor<B, F, FE> = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<F>, Arc<B>, Arc<FE>, Arc<Logger>, Arc<StoreSync>, Arc<lightning::sign::KeysManager>>;
@@ -887,10 +887,8 @@ pub async fn process_events_async<
 	P: Deref,
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
-	ES: Deref + Send,
-	M: Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
-		+ Send
-		+ Sync,
+	ES: Deref,
+	M: Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>,
 	CM: Deref,
 	OM: Deref,
 	PGS: Deref<Target = P2PGossipSync<G, UL, L>>,
@@ -901,7 +899,7 @@ pub async fn process_events_async<
 	O: Deref,
 	K: Deref,
 	OS: Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>>,
-	S: Deref<Target = SC> + Send + Sync,
+	S: Deref<Target = SC>,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
 	Sleeper: Fn(Duration) -> SleepFuture,
@@ -1356,15 +1354,13 @@ pub async fn process_events_async_with_kv_store_sync<
 	T: Deref,
 	F: Deref,
 	G: Deref<Target = NetworkGraph<L>>,
-	L: Deref + Send + Sync,
+	L: Deref,
 	P: Deref,
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
-	ES: Deref + Send,
-	M: Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
-		+ Send
-		+ Sync,
-	CM: Deref + Send + Sync,
+	ES: Deref,
+	M: Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>,
+	CM: Deref,
 	OM: Deref,
 	PGS: Deref<Target = P2PGossipSync<G, UL, L>>,
 	RGS: Deref<Target = RapidGossipSync<G, L>>,
@@ -1374,7 +1370,7 @@ pub async fn process_events_async_with_kv_store_sync<
 	O: Deref,
 	K: Deref,
 	OS: Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>>,
-	S: Deref<Target = SC> + Send + Sync,
+	S: Deref<Target = SC>,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
 	Sleeper: Fn(Duration) -> SleepFuture,
@@ -1878,7 +1874,7 @@ mod tests {
 	#[derive(Clone, Hash, PartialEq, Eq)]
 	struct TestDescriptor {}
 	impl SocketDescriptor for TestDescriptor {
-		fn send_data(&mut self, _data: &[u8], _resume_read: bool) -> usize {
+		fn send_data(&mut self, _data: &[u8], _continue_read: bool) -> usize {
 			0
 		}
 

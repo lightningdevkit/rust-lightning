@@ -50,6 +50,7 @@ use crate::sign::{self, ReceiveAuthKey};
 use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
+use crate::util::async_poll::AsyncResult;
 use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
@@ -1011,13 +1012,13 @@ impl TestStore {
 impl KVStore for TestStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, Vec<u8>, io::Error> {
 		let res = self.read_internal(&primary_namespace, &secondary_namespace, &key);
 		Box::pin(async move { res })
 	}
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, (), io::Error> {
 		let path = format!("{primary_namespace}/{secondary_namespace}/{key}");
 		let future = Arc::new(Mutex::new((None, None)));
 
@@ -1030,13 +1031,13 @@ impl KVStore for TestStore {
 	}
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, (), io::Error> {
 		let res = self.remove_internal(&primary_namespace, &secondary_namespace, &key);
 		Box::pin(async move { res })
 	}
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, Vec<String>, io::Error> {
 		let res = self.list_internal(primary_namespace, secondary_namespace);
 		Box::pin(async move { res })
 	}
@@ -1123,6 +1124,30 @@ impl TestBroadcaster {
 
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transactions(&self, txs: &[&Transaction]) {
+		// Assert that any batch of transactions of length greater than 1 is sorted
+		// topologically, and is a `child-with-parents` package as defined in
+		// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>.
+		//
+		// Implementations MUST NOT rely on this, and must re-sort the transactions
+		// themselves.
+		//
+		// Right now LDK only ever broadcasts packages of length 2.
+		assert!(txs.len() <= 2);
+		if txs.len() == 2 {
+			let parent_txid = txs[0].compute_txid();
+			assert!(txs[1]
+				.input
+				.iter()
+				.map(|input| input.previous_output.txid)
+				.any(|txid| txid == parent_txid));
+			let child_txid = txs[1].compute_txid();
+			assert!(txs[0]
+				.input
+				.iter()
+				.map(|input| input.previous_output.txid)
+				.all(|txid| txid != child_txid));
+		}
+
 		for tx in txs {
 			let lock_time = tx.lock_time.to_consensus_u32();
 			assert!(lock_time < 1_500_000_000);
@@ -2175,6 +2200,10 @@ impl TestWalletSource {
 
 	pub fn remove_utxo(&self, outpoint: bitcoin::OutPoint) {
 		self.utxos.lock().unwrap().retain(|utxo| utxo.outpoint != outpoint);
+	}
+
+	pub fn clear_utxos(&self) {
+		self.utxos.lock().unwrap().clear();
 	}
 
 	pub fn sign_tx(

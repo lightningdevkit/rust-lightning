@@ -24,7 +24,9 @@ use crate::prelude::*;
 #[cfg(any(test, feature = "_test_utils"))]
 use crate::sync::MutexGuard;
 use crate::sync::{Arc, Mutex};
+
 use core::cmp;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use bitcoin::hashes::Hash;
 use bitcoin::sighash;
@@ -68,13 +70,31 @@ pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 ///
 /// Note that before we do so we should ensure its serialization format has backwards- and
 /// forwards-compatibility prefix/suffixes!
-#[derive(Clone)]
 pub struct TestChannelSigner {
 	pub inner: DynSigner,
 	/// Channel state used for policy enforcement
 	pub state: Arc<Mutex<EnforcementState>>,
 	pub disable_revocation_policy_check: bool,
 	pub disable_all_state_policy_checks: bool,
+	have_fetched_pubkeys: AtomicBool,
+}
+
+impl Clone for TestChannelSigner {
+	fn clone(&self) -> Self {
+		// Generally, a signer should only ever be cloned when a ChannelMonitor is cloned (which
+		// doesn't fetch the pubkeys at all). This isn't really a critical test, but if it
+		// ever does fail we should make sure the clone is happening in a sensible place.
+		assert!(!self.have_fetched_pubkeys.load(Ordering::Acquire));
+		Self {
+			inner: self.inner.clone(),
+			state: Arc::clone(&self.state),
+			disable_revocation_policy_check: self.disable_revocation_policy_check,
+			disable_all_state_policy_checks: self.disable_all_state_policy_checks,
+			// In some tests we clone a `ChannelMonitor` multiple times, so we have to initialize
+			// with `!have_fetched_pubkeys` to ensure the above assertion passes.
+			have_fetched_pubkeys: AtomicBool::new(false),
+		}
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -129,6 +149,7 @@ impl TestChannelSigner {
 			state,
 			disable_revocation_policy_check: false,
 			disable_all_state_policy_checks: false,
+			have_fetched_pubkeys: AtomicBool::new(false),
 		}
 	}
 
@@ -141,7 +162,13 @@ impl TestChannelSigner {
 		inner: DynSigner, state: Arc<Mutex<EnforcementState>>,
 		disable_revocation_policy_check: bool, disable_all_state_policy_checks: bool,
 	) -> Self {
-		Self { inner, state, disable_revocation_policy_check, disable_all_state_policy_checks }
+		Self {
+			inner,
+			state,
+			disable_revocation_policy_check,
+			disable_all_state_policy_checks,
+			have_fetched_pubkeys: AtomicBool::new(false),
+		}
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -221,10 +248,15 @@ impl ChannelSigner for TestChannelSigner {
 		Ok(())
 	}
 
-	fn new_pubkeys(
-		&self, splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> ChannelPublicKeys {
-		self.inner.new_pubkeys(splice_parent_funding_txid, secp_ctx)
+	fn pubkeys(&self, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelPublicKeys {
+		assert!(!self.have_fetched_pubkeys.swap(true, Ordering::AcqRel));
+		self.inner.pubkeys(secp_ctx)
+	}
+
+	fn new_funding_pubkey(
+		&self, splice_parent_funding_txid: Txid, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> PublicKey {
+		self.inner.new_funding_pubkey(splice_parent_funding_txid, secp_ctx)
 	}
 
 	fn channel_keys_id(&self) -> [u8; 32] {

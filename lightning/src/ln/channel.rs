@@ -36,7 +36,6 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BestBlock;
-use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::events::{ClosureReason, FundingInfo};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
@@ -44,7 +43,7 @@ use crate::ln::chan_utils::{
 	selected_commitment_sat_per_1000_weight, ChannelPublicKeys, ChannelTransactionParameters,
 	ClosingTransaction, CommitmentTransaction, CounterpartyChannelTransactionParameters,
 	CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HolderCommitmentTransaction,
-	FUNDING_TRANSACTION_WITNESS_WEIGHT,
+	BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT, FUNDING_TRANSACTION_WITNESS_WEIGHT,
 };
 use crate::ln::channel_state::{
 	ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails,
@@ -1373,7 +1372,28 @@ pub(crate) const COINBASE_MATURITY: u32 = 100;
 /// The number of blocks to wait for a channel_announcement to propagate such that payments using an
 /// older SCID can still be relayed. Once the spend of the previous funding transaction has reached
 /// this number of confirmations, the corresponding SCID will be forgotten.
-const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
+///
+/// Because HTLCs added prior to 0.1 which were waiting to be failed may reference a channel's
+/// pre-splice SCID, we need to ensure this is at least the maximum number of blocks before an HTLC
+/// gets failed-back due to a time-out. Luckily, in LDK prior to 0.2, this is enforced directly
+/// when checking the incoming HTLC, and compared against `CLTV_FAR_FAR_AWAY` (which prior to LDK
+/// 0.2, and still at the time of writing, is 14 * 24 * 6, i.e. two weeks).
+///
+/// Here we use four times that value to give us more time to fail an HTLC back (which does require
+/// the user call [`ChannelManager::process_pending_htlc_forwards`]) just in case (if an HTLC has
+/// been expired for 3 * 2 weeks our counterparty really should have closed the channel by now).
+/// Holding on to stale SCIDs doesn't really cost us much as each one costs an on-chain splice to
+/// generate anyway, so we might as well make this nearly arbitrarily long.
+///
+/// [`ChannelManager::process_pending_htlc_forwards`]: crate::ln::channelmanager::ChannelManager::process_pending_htlc_forwards
+#[cfg(not(test))]
+pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 14 * 24 * 6 * 4;
+
+/// In test (not `_test_utils`, though, since that tests actual upgrading), we deliberately break
+/// the above condition so that we can ensure that HTLCs forwarded in 0.2 or later are handled
+/// correctly even if this constant is reduced and an HTLC can outlive the original channel's SCID.
+#[cfg(test)]
+pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
@@ -2470,6 +2490,7 @@ impl FundingScope {
 	fn for_splice<SP: Deref>(
 		prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution: SignedAmount,
 		their_funding_contribution: SignedAmount, counterparty_funding_pubkey: PublicKey,
+		our_new_holder_keys: ChannelPublicKeys,
 	) -> Self
 	where
 		SP::Target: SignerProvider,
@@ -2489,19 +2510,15 @@ impl FundingScope {
 		debug_assert!(post_value_to_self_msat.is_some());
 		let post_value_to_self_msat = post_value_to_self_msat.unwrap();
 
-		// Rotate the pubkeys using the prev_funding_txid as a tweak
-		let prev_funding_txid = prev_funding.get_funding_txid();
-		let holder_pubkeys = context.new_holder_pubkeys(prev_funding_txid);
-
 		let channel_parameters = &prev_funding.channel_transaction_parameters;
 		let mut post_channel_transaction_parameters = ChannelTransactionParameters {
-			holder_pubkeys,
+			holder_pubkeys: our_new_holder_keys,
 			holder_selected_contest_delay: channel_parameters.holder_selected_contest_delay,
 			// The 'outbound' attribute doesn't change, even if the splice initiator is the other node
 			is_outbound_from_holder: channel_parameters.is_outbound_from_holder,
 			counterparty_parameters: channel_parameters.counterparty_parameters.clone(),
 			funding_outpoint: None, // filled later
-			splice_parent_funding_txid: prev_funding_txid,
+			splice_parent_funding_txid: prev_funding.get_funding_txid(),
 			channel_type_features: channel_parameters.channel_type_features.clone(),
 			channel_value_satoshis: post_channel_value,
 		};
@@ -2637,6 +2654,7 @@ impl_writeable_tlv_based!(PendingFunding, {
 enum FundingNegotiation {
 	AwaitingAck {
 		context: FundingNegotiationContext,
+		new_holder_funding_key: PublicKey,
 	},
 	ConstructingTransaction {
 		funding: FundingScope,
@@ -2667,7 +2685,7 @@ impl FundingNegotiation {
 
 	fn is_initiator(&self) -> bool {
 		match self {
-			FundingNegotiation::AwaitingAck { context } => context.is_initiator,
+			FundingNegotiation::AwaitingAck { context, .. } => context.is_initiator,
 			FundingNegotiation::ConstructingTransaction { interactive_tx_constructor, .. } => {
 				interactive_tx_constructor.is_initiator()
 			},
@@ -3203,6 +3221,7 @@ where
 			funding.get_holder_selected_contest_delay(), &context.destination_script,
 			&funding.channel_transaction_parameters, funding.is_outbound(), obscure_factor,
 			holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id(),
+			context.is_manual_broadcast,
 		);
 		channel_monitor.provide_initial_counterparty_commitment_tx(
 			counterparty_initial_commitment_tx.clone(),
@@ -3510,7 +3529,7 @@ where
 
 		// TODO(dual_funding): Checks for `funding_feerate_sat_per_1000_weight`?
 
-		let pubkeys = holder_signer.new_pubkeys(None, &secp_ctx);
+		let pubkeys = holder_signer.pubkeys(&secp_ctx);
 
 		let funding = FundingScope {
 			value_to_self_msat,
@@ -3748,7 +3767,7 @@ where
 			Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get destination script".to_owned()}),
 		};
 
-		let pubkeys = holder_signer.new_pubkeys(None, &secp_ctx);
+		let pubkeys = holder_signer.pubkeys(&secp_ctx);
 		let temporary_channel_id = temporary_channel_id_fn.map(|f| f(&pubkeys))
 			.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
 
@@ -4109,16 +4128,6 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_mut_signer(&mut self) -> &mut ChannelSignerType<SP> {
 		return &mut self.holder_signer;
-	}
-
-	/// Returns holder pubkeys to use for the channel.
-	fn new_holder_pubkeys(&self, prev_funding_txid: Option<Txid>) -> ChannelPublicKeys {
-		match &self.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.new_pubkeys(prev_funding_txid, &self.secp_ctx),
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!(),
-		}
 	}
 
 	/// Only allowed immediately after deserialization if get_outbound_scid_alias returns 0,
@@ -6264,7 +6273,7 @@ where
 			commitment_number,
 			&commitment_point,
 			false,
-			false,
+			true,
 			logger,
 		);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
@@ -6846,6 +6855,9 @@ pub struct FundingTxSigned {
 
 	/// Information about the completed funding negotiation.
 	pub splice_negotiated: Option<SpliceFundingNegotiated>,
+
+	/// A `splice_locked` to send to the counterparty when the splice requires 0 confirmations.
+	pub splice_locked: Option<msgs::SpliceLocked>,
 }
 
 /// Information about a splice funding negotiation that has been completed.
@@ -6888,7 +6900,7 @@ macro_rules! maybe_create_splice_funding_failed {
 					.map(|funding| funding.get_channel_type().clone());
 
 				let (contributed_inputs, contributed_outputs) = match funding_negotiation {
-					FundingNegotiation::AwaitingAck { context } => {
+					FundingNegotiation::AwaitingAck { context, .. } => {
 						context.$contributed_inputs_and_outputs()
 					},
 					FundingNegotiation::ConstructingTransaction {
@@ -8877,9 +8889,13 @@ where
 		}
 	}
 
-	fn on_tx_signatures_exchange(
-		&mut self, funding_tx: Transaction,
-	) -> Option<SpliceFundingNegotiated> {
+	fn on_tx_signatures_exchange<'a, L: Deref>(
+		&mut self, funding_tx: Transaction, best_block_height: u32,
+		logger: &WithChannelContext<'a, L>,
+	) -> (Option<SpliceFundingNegotiated>, Option<msgs::SpliceLocked>)
+	where
+		L::Target: Logger,
+	{
 		debug_assert!(!self.context.channel_state.is_monitor_update_in_progress());
 		debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
 
@@ -8901,22 +8917,42 @@ where
 					channel_type,
 				};
 
-				Some(splice_negotiated)
+				let splice_locked = pending_splice.check_get_splice_locked(
+					&self.context,
+					pending_splice.negotiated_candidates.len() - 1,
+					best_block_height,
+				);
+				if let Some(splice_txid) =
+					splice_locked.as_ref().map(|splice_locked| splice_locked.splice_txid)
+				{
+					log_info!(
+						logger,
+						"Sending 0conf splice_locked txid {} to our peer for channel {}",
+						splice_txid,
+						&self.context.channel_id
+					);
+				}
+
+				(Some(splice_negotiated), splice_locked)
 			} else {
 				debug_assert!(false);
-				None
+				(None, None)
 			}
 		} else {
 			self.funding.funding_transaction = Some(funding_tx);
 			self.context.channel_state =
 				ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
-			None
+			(None, None)
 		}
 	}
 
-	pub fn funding_transaction_signed(
-		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>,
-	) -> Result<FundingTxSigned, APIError> {
+	pub fn funding_transaction_signed<L: Deref>(
+		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>, best_block_height: u32,
+		logger: &L,
+	) -> Result<FundingTxSigned, APIError>
+	where
+		L::Target: Logger,
+	{
 		let signing_session =
 			if let Some(signing_session) = self.context.interactive_tx_signing_session.as_mut() {
 				if let Some(pending_splice) = self.pending_splice.as_ref() {
@@ -8937,6 +8973,7 @@ where
 						tx_signatures: None,
 						funding_tx: None,
 						splice_negotiated: None,
+						splice_locked: None,
 					});
 				}
 
@@ -8949,6 +8986,7 @@ where
 						tx_signatures: None,
 						funding_tx: None,
 						splice_negotiated: None,
+						splice_locked: None,
 					});
 				}
 				let err =
@@ -8991,19 +9029,30 @@ where
 			.provide_holder_witnesses(tx_signatures, &self.context.secp_ctx)
 			.map_err(|err| APIError::APIMisuseError { err })?;
 
-		let splice_negotiated = if let Some(funding_tx) = funding_tx.clone() {
+		let logger = WithChannelContext::from(logger, &self.context, None);
+		if tx_signatures.is_some() {
+			log_info!(
+				logger,
+				"Sending tx_signatures for interactive funding transaction {funding_txid_signed}"
+			);
+		}
+
+		let (splice_negotiated, splice_locked) = if let Some(funding_tx) = funding_tx.clone() {
 			debug_assert!(tx_signatures.is_some());
-			self.on_tx_signatures_exchange(funding_tx)
+			self.on_tx_signatures_exchange(funding_tx, best_block_height, &logger)
 		} else {
-			None
+			(None, None)
 		};
 
-		Ok(FundingTxSigned { tx_signatures, funding_tx, splice_negotiated })
+		Ok(FundingTxSigned { tx_signatures, funding_tx, splice_negotiated, splice_locked })
 	}
 
-	pub fn tx_signatures(
-		&mut self, msg: &msgs::TxSignatures,
-	) -> Result<FundingTxSigned, ChannelError> {
+	pub fn tx_signatures<L: Deref>(
+		&mut self, msg: &msgs::TxSignatures, best_block_height: u32, logger: &L,
+	) -> Result<FundingTxSigned, ChannelError>
+	where
+		L::Target: Logger,
+	{
 		let signing_session = if let Some(signing_session) =
 			self.context.interactive_tx_signing_session.as_mut()
 		{
@@ -9049,13 +9098,25 @@ where
 		let (holder_tx_signatures, funding_tx) =
 			signing_session.received_tx_signatures(msg).map_err(|msg| ChannelError::Warn(msg))?;
 
-		let splice_negotiated = if let Some(funding_tx) = funding_tx.clone() {
-			self.on_tx_signatures_exchange(funding_tx)
+		let logger = WithChannelContext::from(logger, &self.context, None);
+		log_info!(
+			logger,
+			"Received tx_signatures for interactive funding transaction {}",
+			msg.tx_hash
+		);
+
+		let (splice_negotiated, splice_locked) = if let Some(funding_tx) = funding_tx.clone() {
+			self.on_tx_signatures_exchange(funding_tx, best_block_height, &logger)
 		} else {
-			None
+			(None, None)
 		};
 
-		Ok(FundingTxSigned { tx_signatures: holder_tx_signatures, funding_tx, splice_negotiated })
+		Ok(FundingTxSigned {
+			tx_signatures: holder_tx_signatures,
+			funding_tx,
+			splice_negotiated,
+			splice_locked,
+		})
 	}
 
 	/// Queues up an outbound update fee by placing it in the holding cell. You should call
@@ -11128,6 +11189,12 @@ where
 		let announcement_sigs =
 			self.get_announcement_sigs(node_signer, chain_hash, user_config, block_height, logger);
 
+		if let Some(quiescent_action) = self.quiescent_action.as_ref() {
+			if matches!(quiescent_action, QuiescentAction::Splice(_)) {
+				self.context.channel_state.set_awaiting_quiescence();
+			}
+		}
+
 		Some(SpliceFundingPromotion {
 			funding_txo,
 			monitor_update,
@@ -11362,7 +11429,11 @@ where
 					confirmed_funding_index,
 					height,
 				) {
-					log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
+					log_info!(
+						logger, "Sending splice_locked txid {} to our peer for channel {}",
+						splice_locked.splice_txid,
+						&self.context.channel_id
+					);
 
 					let (funding_txo, monitor_update, announcement_sigs, discarded_funding) = chain_node_signer
 						.and_then(|(chain_hash, node_signer, user_config)| {
@@ -11795,10 +11866,10 @@ where
 			});
 		}
 
-		if !self.context.is_live() {
+		if !self.context.is_usable() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Channel {} cannot be spliced, as channel is not live",
+					"Channel {} cannot be spliced as it is either pending open/close",
 					self.context.channel_id()
 				),
 			});
@@ -11900,16 +11971,28 @@ where
 			change_script,
 		};
 
+		// Rotate the funding pubkey using the prev_funding_txid as a tweak
+		let prev_funding_txid = self.funding.get_funding_txid();
+		let funding_pubkey = match (prev_funding_txid, &self.context.holder_signer) {
+			(None, _) => {
+				debug_assert!(false);
+				self.funding.get_holder_pubkeys().funding_pubkey
+			},
+			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) => {
+				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx)
+			},
+			#[cfg(taproot)]
+			_ => todo!(),
+		};
+
+		let funding_negotiation =
+			FundingNegotiation::AwaitingAck { context, new_holder_funding_key: funding_pubkey };
 		self.pending_splice = Some(PendingFunding {
-			funding_negotiation: Some(FundingNegotiation::AwaitingAck { context }),
+			funding_negotiation: Some(funding_negotiation),
 			negotiated_candidates: vec![],
 			sent_funding_txid: None,
 			received_funding_txid: None,
 		});
-
-		// Rotate the pubkeys using the prev_funding_txid as a tweak
-		let prev_funding_txid = self.funding.get_funding_txid();
-		let funding_pubkey = self.context.new_holder_pubkeys(prev_funding_txid).funding_pubkey;
 
 		msgs::SpliceInit {
 			channel_id: self.context.channel_id,
@@ -11994,12 +12077,29 @@ where
 		self.validate_splice_contributions(our_funding_contribution, their_funding_contribution)
 			.map_err(|e| ChannelError::WarnAndDisconnect(e))?;
 
+		// Rotate the pubkeys using the prev_funding_txid as a tweak
+		let prev_funding_txid = self.funding.get_funding_txid();
+		let funding_pubkey = match (prev_funding_txid, &self.context.holder_signer) {
+			(None, _) => {
+				debug_assert!(false);
+				self.funding.get_holder_pubkeys().funding_pubkey
+			},
+			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) => {
+				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx)
+			},
+			#[cfg(taproot)]
+			_ => todo!(),
+		};
+		let mut new_keys = self.funding.get_holder_pubkeys().clone();
+		new_keys.funding_pubkey = funding_pubkey;
+
 		Ok(FundingScope::for_splice(
 			&self.funding,
 			&self.context,
 			our_funding_contribution,
 			their_funding_contribution,
 			msg.funding_pubkey,
+			new_keys,
 		))
 	}
 
@@ -12144,8 +12244,7 @@ where
 		// optimization, but for often-offline nodes it may be, as we may connect and immediately
 		// go into splicing from both sides.
 
-		let funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
-
+		let new_funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
 		self.pending_splice = Some(PendingFunding {
 			funding_negotiation: Some(FundingNegotiation::ConstructingTransaction {
 				funding: splice_funding,
@@ -12159,7 +12258,7 @@ where
 		Ok(msgs::SpliceAck {
 			channel_id: self.context.channel_id,
 			funding_contribution_satoshis: our_funding_contribution.to_sat(),
-			funding_pubkey,
+			funding_pubkey: new_funding_pubkey,
 			require_confirmed_inputs: None,
 		})
 	}
@@ -12185,13 +12284,14 @@ where
 		let pending_splice =
 			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
 		// TODO: Good candidate for a let else statement once MSRV >= 1.65
-		let funding_negotiation_context = if let Some(FundingNegotiation::AwaitingAck { context }) =
-			pending_splice.funding_negotiation.take()
-		{
-			context
-		} else {
-			panic!("We should have returned an error earlier!");
-		};
+		let funding_negotiation_context =
+			if let Some(FundingNegotiation::AwaitingAck { context, .. }) =
+				pending_splice.funding_negotiation.take()
+			{
+				context
+			} else {
+				panic!("We should have returned an error earlier!");
+			};
 
 		let mut interactive_tx_constructor = funding_negotiation_context
 			.into_interactive_tx_constructor(
@@ -12222,13 +12322,17 @@ where
 	fn validate_splice_ack(&self, msg: &msgs::SpliceAck) -> Result<FundingScope, ChannelError> {
 		// TODO(splicing): Add check that we are the splice (quiescence) initiator
 
-		let funding_negotiation_context = match &self
+		let pending_splice = self
 			.pending_splice
 			.as_ref()
-			.ok_or(ChannelError::Ignore("Channel is not in pending splice".to_owned()))?
+			.ok_or_else(|| ChannelError::Ignore("Channel is not in pending splice".to_owned()))?;
+
+		let (funding_negotiation_context, new_holder_funding_key) = match &pending_splice
 			.funding_negotiation
 		{
-			Some(FundingNegotiation::AwaitingAck { context }) => context,
+			Some(FundingNegotiation::AwaitingAck { context, new_holder_funding_key }) => {
+				(context, new_holder_funding_key)
+			},
 			Some(FundingNegotiation::ConstructingTransaction { .. })
 			| Some(FundingNegotiation::AwaitingSignatures { .. }) => {
 				return Err(ChannelError::WarnAndDisconnect(
@@ -12247,12 +12351,16 @@ where
 		self.validate_splice_contributions(our_funding_contribution, their_funding_contribution)
 			.map_err(|e| ChannelError::WarnAndDisconnect(e))?;
 
+		let mut new_keys = self.funding.get_holder_pubkeys().clone();
+		new_keys.funding_pubkey = *new_holder_funding_key;
+
 		Ok(FundingScope::for_splice(
 			&self.funding,
 			&self.context,
 			our_funding_contribution,
 			their_funding_contribution,
 			msg.funding_pubkey,
+			new_keys,
 		))
 	}
 
@@ -12961,6 +13069,7 @@ where
 			|| self.context.channel_state.is_awaiting_quiescence()
 			|| self.context.channel_state.is_local_stfu_sent()
 		{
+			log_debug!(logger, "Channel is either pending quiescence or already quiescent");
 			return Ok(None);
 		}
 
@@ -12968,6 +13077,7 @@ where
 		if self.context.is_live() {
 			Ok(Some(self.send_stfu(logger)?))
 		} else {
+			log_debug!(logger, "Waiting for peer reconnection to send stfu");
 			Ok(None)
 		}
 	}
@@ -13169,18 +13279,18 @@ where
 		let end = self
 			.funding
 			.get_short_channel_id()
-			.and_then(|current_scid| {
+			.map(|current_scid| {
 				let historical_scids = &self.context.historical_scids;
 				historical_scids
 					.iter()
 					.zip(historical_scids.iter().skip(1).chain(core::iter::once(&current_scid)))
-					.map(|(_, next_scid)| {
-						let funding_height = block_from_scid(*next_scid);
-						let retain_scid =
-							funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY - 1 > height;
-						retain_scid
+					.filter(|(_, next_scid)| {
+						let funding_height = block_from_scid(**next_scid);
+						let drop_scid =
+							funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY - 1 <= height;
+						drop_scid
 					})
-					.position(|retain_scid| retain_scid)
+					.count()
 			})
 			.unwrap_or(0);
 
@@ -16411,7 +16521,7 @@ mod tests {
 			[0; 32],
 		);
 
-		let holder_pubkeys = signer.new_pubkeys(None, &secp_ctx);
+		let holder_pubkeys = signer.pubkeys(&secp_ctx);
 		assert_eq!(holder_pubkeys.funding_pubkey.serialize()[..],
 				<Vec<u8>>::from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
 		let keys_provider = Keys { signer: signer.clone() };
