@@ -955,9 +955,12 @@ where
 			Some(res) => Ok(res),
 			None => Err(io::Error::new(
 				io::ErrorKind::InvalidData,
-				"ChannelMonitor was stale, with no updates since LDK 0.0.118. \
+				format!(
+					"ChannelMonitor {} was stale, with no updates since LDK 0.0.118. \
 						It cannot be read by modern versions of LDK, though also does not contain any funds left to sweep. \
 						You should manually delete it instead",
+					monitor_key,
+				),
 			)),
 		}
 	}
