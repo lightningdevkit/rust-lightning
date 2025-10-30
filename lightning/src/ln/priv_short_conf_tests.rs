@@ -30,6 +30,7 @@ use crate::prelude::*;
 
 use crate::ln::functional_test_utils::*;
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_priv_forwarding_rejection() {
 	// If we have a private channel with outbound liquidity, and

@@ -2153,7 +2153,7 @@ where
 					// Not having a signing session implies they've already sent `splice_locked`,
 					// which must always come after the initial commitment signed is sent.
 					.unwrap_or(true);
-				let res = if has_negotiated_pending_splice && !session_received_commitment_signed {
+				let res: Result<(Option<ChannelMonitor<<<SP as Deref>::Target as SignerProvider>::EcdsaSigner>>, Option<ChannelMonitorUpdate>), ChannelError> = if has_negotiated_pending_splice && !session_received_commitment_signed {
 					funded_channel
 						.splice_initial_commitment_signed(msg, fee_estimator, logger)
 						.map(|monitor_update_opt| (None, monitor_update_opt))
@@ -6045,6 +6045,7 @@ where
 						should_broadcast: broadcast,
 					}],
 					channel_id: Some(self.channel_id()),
+					encoded_channel: None,
 				};
 				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), update))
 			} else {
@@ -7276,6 +7277,7 @@ where
 				payment_info,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			encoded_channel: None,
 		};
 
 		if !self.context.channel_state.can_generate_new_commitment() {
@@ -7417,6 +7419,7 @@ where
 					Vec::new(),
 					Vec::new(),
 				);
+				monitor_update.encoded_channel = Some(self.encode());
 				UpdateFulfillCommitFetch::NewClaim { monitor_update, htlc_value_msat }
 			},
 			UpdateFulfillFetch::DuplicateClaim {} => UpdateFulfillCommitFetch::DuplicateClaim {},
@@ -7892,7 +7895,7 @@ where
 			&self.context.channel_id(), pending_splice_funding.get_funding_txo().unwrap().txid);
 
 		self.context.latest_monitor_update_id += 1;
-		let monitor_update = ChannelMonitorUpdate {
+		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
 			updates: vec![ChannelMonitorUpdateStep::RenegotiatedFunding {
 				channel_parameters: pending_splice_funding.channel_transaction_parameters.clone(),
@@ -7900,6 +7903,7 @@ where
 				counterparty_commitment_tx,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			encoded_channel: None,
 		};
 
 		self.context
@@ -7909,6 +7913,7 @@ where
 			.received_commitment_signed();
 		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 
+		monitor_update.encoded_channel = Some(self.encode());
 		Ok(self.push_ret_blockable_mon_update(monitor_update))
 	}
 
@@ -8165,6 +8170,7 @@ where
 			update_id: self.context.latest_monitor_update_id,
 			updates: vec![update],
 			channel_id: Some(self.context.channel_id()),
+			encoded_channel: None,
 		};
 
 		self.context.expecting_peer_commitment_signed = false;
@@ -8217,6 +8223,7 @@ where
 			Vec::new(),
 			Vec::new(),
 		);
+		monitor_update.encoded_channel = Some(self.encode());
 		return Ok(self.push_ret_blockable_mon_update(monitor_update));
 	}
 
@@ -8270,6 +8277,7 @@ where
 				update_id: self.context.latest_monitor_update_id + 1, // We don't increment this yet!
 				updates: Vec::new(),
 				channel_id: Some(self.context.channel_id()),
+				encoded_channel: None,
 			};
 
 			let mut htlc_updates = Vec::new();
@@ -8346,7 +8354,7 @@ where
 						// `ChannelMonitorUpdate` to the user, making this one redundant, however
 						// there's no harm in including the extra `ChannelMonitorUpdateStep` here.
 						// We do not bother to track and include `payment_info` here, however.
-						let fulfill = self.get_update_fulfill_htlc(
+						let fulfill: UpdateFulfillFetch = self.get_update_fulfill_htlc(
 							htlc_id,
 							*payment_preimage,
 							None,
@@ -8360,6 +8368,8 @@ where
 								unreachable!()
 							};
 						update_fulfill_count += 1;
+
+						additional_monitor_update.encoded_channel = Some(self.encode());
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 						None
 					},
@@ -8418,6 +8428,8 @@ where
 				update_add_count, update_fulfill_count, update_fail_count);
 
 			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
+
+			monitor_update.encoded_channel = Some(self.encode());
 			(self.push_ret_blockable_mon_update(monitor_update), htlcs_to_fail)
 		} else {
 			(None, Vec::new())
@@ -8534,6 +8546,7 @@ where
 				secret: msg.per_commitment_secret,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			encoded_channel: None,
 		};
 
 		// Update state now that we've passed all the can-fail calls...
@@ -8759,6 +8772,7 @@ where
 		};
 		macro_rules! return_with_htlcs_to_fail {
 			($htlcs_to_fail: expr) => {
+				monitor_update.encoded_channel = Some(self.encode());
 				if !release_monitor {
 					self.context
 						.blocked_monitor_updates
@@ -10384,6 +10398,7 @@ where
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
 				channel_id: Some(self.context.channel_id()),
+				encoded_channel: Some(self.encode()),
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)
@@ -11153,6 +11168,7 @@ where
 				funding_txid: funding_txo.txid,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			encoded_channel: Some(self.encode()),
 		};
 		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 		let monitor_update = self.push_ret_blockable_mon_update(monitor_update);
@@ -12712,6 +12728,7 @@ where
 			update_id: self.context.latest_monitor_update_id,
 			updates: vec![update],
 			channel_id: Some(self.context.channel_id()),
+			encoded_channel: Some(self.encode()),
 		};
 		self.context.channel_state.set_awaiting_remote_revoke();
 		monitor_update
@@ -12958,6 +12975,7 @@ where
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
 				channel_id: Some(self.context.channel_id()),
+				encoded_channel: Some(self.encode()),
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)

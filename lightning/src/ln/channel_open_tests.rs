@@ -2095,6 +2095,7 @@ pub fn test_batch_channel_open() {
 	)));
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[xtest(feature = "_externalize_tests")]
 pub fn test_close_in_funding_batch() {
 	// This test ensures that if one of the channels
@@ -2183,6 +2184,7 @@ pub fn test_close_in_funding_batch() {
 	assert!(nodes[0].node.list_channels().is_empty());
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[xtest(feature = "_externalize_tests")]
 pub fn test_batch_funding_close_after_funding_signed() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);

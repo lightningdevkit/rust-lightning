@@ -701,6 +701,7 @@ fn test_quiescence_during_disconnection() {
 	do_test_quiescence_during_disconnection(true, true);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_quiescence_termination_on_disconnect() {
 	do_test_quiescence_termination_on_disconnect(false);

@@ -1795,6 +1795,7 @@ fn do_test_onion_failure_stale_channel_update(announce_for_forwarding: bool) {
 	assert_eq!(config, config_after_restart);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_onion_failure_stale_channel_update() {
 	do_test_onion_failure_stale_channel_update(false);

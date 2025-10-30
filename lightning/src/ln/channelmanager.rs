@@ -9100,6 +9100,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				payment_info,
 			}],
 			channel_id: Some(prev_hop.channel_id),
+			encoded_channel: None,
 		};
 
 		// We don't have any idea if this is a duplicate claim without interrogating the
@@ -10316,6 +10317,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				fail_chan!("Already had channel with the new channel_id");
 			},
 			hash_map::Entry::Vacant(e) => {
+				monitor.update_encoded_channel(chan.encode());
 				let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 				if let Ok(persist_state) = monitor_res {
 					// There's no problem signing a counterparty's funding transaction if our monitor
@@ -10480,6 +10482,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				match chan
 					.funding_signed(&msg, best_block, &self.signer_provider, &self.logger)
 					.and_then(|(funded_chan, monitor)| {
+						monitor.update_encoded_channel(funded_chan.encode());
 						self.chain_monitor
 							.watch_channel(funded_chan.context.channel_id(), monitor)
 							.map_err(|()| {
@@ -11191,6 +11194,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 				if let Some(chan) = chan.as_funded_mut() {
 					if let Some(monitor) = monitor_opt {
+						monitor.update_encoded_channel(chan.encode());
 						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
 							handle_initial_monitor!(self, persist_state, peer_state_lock, peer_state,
@@ -13621,6 +13625,7 @@ where
 						updates: vec![ChannelMonitorUpdateStep::ReleasePaymentComplete {
 							htlc: htlc_id,
 						}],
+						encoded_channel: None,
 					};
 
 					let during_startup =
@@ -16760,6 +16765,19 @@ where
 
 		let mut failed_htlcs = Vec::new();
 		let channel_count: u64 = Readable::read(reader)?;
+
+		// Discard channel manager versions of channels.
+		for _ in 0..channel_count {
+			_ = FundedChannel::read(
+				reader,
+				(
+					&args.entropy_source,
+					&args.signer_provider,
+					&provided_channel_type_features(&args.config),
+				),
+			)?;
+		}
+
 		let mut channel_id_set = hash_set_with_capacity(cmp::min(channel_count as usize, 128));
 		let mut per_peer_state = hash_map_with_capacity(cmp::min(
 			channel_count as usize,
@@ -16768,181 +16786,97 @@ where
 		let mut short_to_chan_info = hash_map_with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = VecDeque::new();
 		let mut close_background_events = Vec::new();
-		for _ in 0..channel_count {
+		for (_, monitor) in args.channel_monitors.iter() {
+			let encoded_channel = monitor.get_encoded_channel().unwrap();
+			let encoded_channel_reader = &mut &encoded_channel[..];
 			let mut channel: FundedChannel<SP> = FundedChannel::read(
-				reader,
+				encoded_channel_reader,
 				(
 					&args.entropy_source,
 					&args.signer_provider,
 					&provided_channel_type_features(&args.config),
 				),
 			)?;
+
 			let logger = WithChannelContext::from(&args.logger, &channel.context, None);
 			let channel_id = channel.context.channel_id();
 			channel_id_set.insert(channel_id);
-			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&channel_id) {
+			if channel.get_cur_holder_commitment_transaction_number()
+				> monitor.get_cur_holder_commitment_number()
+				|| channel.get_revoked_counterparty_commitment_transaction_number()
+					> monitor.get_min_seen_secret()
+				|| channel.get_cur_counterparty_commitment_transaction_number()
+					> monitor.get_cur_counterparty_commitment_number()
+				|| channel.context.get_latest_monitor_update_id() < monitor.get_latest_update_id()
+			{
+				// But if the channel is behind of the monitor, close the channel:
+				log_error!(
+					logger,
+					"A ChannelManager is stale compared to the current ChannelMonitor!"
+				);
+				log_error!(logger, " The channel will be force-closed and the latest commitment transaction from the ChannelMonitor broadcast.");
+				if channel.context.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
+					log_error!(logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
+							&channel.context.channel_id(), monitor.get_latest_update_id(), channel.context.get_latest_monitor_update_id());
+				}
 				if channel.get_cur_holder_commitment_transaction_number()
 					> monitor.get_cur_holder_commitment_number()
-					|| channel.get_revoked_counterparty_commitment_transaction_number()
-						> monitor.get_min_seen_secret()
-					|| channel.get_cur_counterparty_commitment_transaction_number()
-						> monitor.get_cur_counterparty_commitment_number()
-					|| channel.context.get_latest_monitor_update_id()
-						< monitor.get_latest_update_id()
 				{
-					// But if the channel is behind of the monitor, close the channel:
-					log_error!(
-						logger,
-						"A ChannelManager is stale compared to the current ChannelMonitor!"
-					);
-					log_error!(logger, " The channel will be force-closed and the latest commitment transaction from the ChannelMonitor broadcast.");
-					if channel.context.get_latest_monitor_update_id()
-						< monitor.get_latest_update_id()
-					{
-						log_error!(logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
-							&channel.context.channel_id(), monitor.get_latest_update_id(), channel.context.get_latest_monitor_update_id());
-					}
-					if channel.get_cur_holder_commitment_transaction_number()
-						> monitor.get_cur_holder_commitment_number()
-					{
-						log_error!(logger, " The ChannelMonitor for channel {} is at holder commitment number {} but the ChannelManager is at holder commitment number {}.",
+					log_error!(logger, " The ChannelMonitor for channel {} is at holder commitment number {} but the ChannelManager is at holder commitment number {}.",
 							&channel.context.channel_id(), monitor.get_cur_holder_commitment_number(), channel.get_cur_holder_commitment_transaction_number());
-					}
-					if channel.get_revoked_counterparty_commitment_transaction_number()
-						> monitor.get_min_seen_secret()
-					{
-						log_error!(logger, " The ChannelMonitor for channel {} is at revoked counterparty transaction number {} but the ChannelManager is at revoked counterparty transaction number {}.",
-							&channel.context.channel_id(), monitor.get_min_seen_secret(), channel.get_revoked_counterparty_commitment_transaction_number());
-					}
-					if channel.get_cur_counterparty_commitment_transaction_number()
-						> monitor.get_cur_counterparty_commitment_number()
-					{
-						log_error!(logger, " The ChannelMonitor for channel {} is at counterparty commitment transaction number {} but the ChannelManager is at counterparty commitment transaction number {}.",
-							&channel.context.channel_id(), monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
-					}
-					let shutdown_result =
-						channel.force_shutdown(ClosureReason::OutdatedChannelManager);
-					if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
-						return Err(DecodeError::InvalidValue);
-					}
-					if let Some((counterparty_node_id, funding_txo, channel_id, mut update)) =
-						shutdown_result.monitor_update
-					{
-						// Our channel information is out of sync with the `ChannelMonitor`, so
-						// force the update to use the `ChannelMonitor`'s update_id for the close
-						// update.
-						let latest_update_id = monitor.get_latest_update_id().saturating_add(1);
-						update.update_id = latest_update_id;
-						per_peer_state
-							.entry(counterparty_node_id)
-							.or_insert_with(|| Mutex::new(empty_peer_state()))
-							.lock()
-							.unwrap()
-							.closed_channel_monitor_update_ids
-							.entry(channel_id)
-							.and_modify(|v| *v = cmp::max(latest_update_id, *v))
-							.or_insert(latest_update_id);
-
-						close_background_events.push(
-							BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-								counterparty_node_id,
-								funding_txo,
-								channel_id,
-								update,
-							},
-						);
-					}
-					for (source, hash, cp_id, chan_id) in shutdown_result.dropped_outbound_htlcs {
-						let reason = LocalHTLCFailureReason::ChannelClosed;
-						failed_htlcs.push((source, hash, cp_id, chan_id, reason, None));
-					}
-					channel_closures.push_back((
-						events::Event::ChannelClosed {
-							channel_id: channel.context.channel_id(),
-							user_channel_id: channel.context.get_user_id(),
-							reason: ClosureReason::OutdatedChannelManager,
-							counterparty_node_id: Some(channel.context.get_counterparty_node_id()),
-							channel_capacity_sats: Some(channel.funding.get_value_satoshis()),
-							channel_funding_txo: channel.funding.get_funding_txo(),
-							last_local_balance_msat: Some(channel.funding.get_value_to_self_msat()),
-						},
-						None,
-					));
-					for (channel_htlc_source, payment_hash) in channel.inflight_htlc_sources() {
-						let mut found_htlc = false;
-						for (monitor_htlc_source, _) in monitor.get_all_current_outbound_htlcs() {
-							if *channel_htlc_source == monitor_htlc_source {
-								found_htlc = true;
-								break;
-							}
-						}
-						if !found_htlc {
-							// If we have some HTLCs in the channel which are not present in the newer
-							// ChannelMonitor, they have been removed and should be failed back to
-							// ensure we don't forget them entirely. Note that if the missing HTLC(s)
-							// were actually claimed we'd have generated and ensured the previous-hop
-							// claim update ChannelMonitor updates were persisted prior to persising
-							// the ChannelMonitor update for the forward leg, so attempting to fail the
-							// backwards leg of the HTLC will simply be rejected.
-							let logger = WithChannelContext::from(
-								&args.logger,
-								&channel.context,
-								Some(*payment_hash),
-							);
-							log_info!(logger,
-								"Failing HTLC with hash {} as it is missing in the ChannelMonitor for channel {} but was present in the (stale) ChannelManager",
-								&channel.context.channel_id(), &payment_hash);
-							failed_htlcs.push((
-								channel_htlc_source.clone(),
-								*payment_hash,
-								channel.context.get_counterparty_node_id(),
-								channel.context.channel_id(),
-								LocalHTLCFailureReason::ChannelClosed,
-								None,
-							));
-						}
-					}
-				} else {
-					channel.on_startup_drop_completed_blocked_mon_updates_through(
-						&logger,
-						monitor.get_latest_update_id(),
-					);
-					log_info!(logger, "Successfully loaded channel {} at update_id {} against monitor at update id {} with {} blocked updates",
-						&channel.context.channel_id(), channel.context.get_latest_monitor_update_id(),
-						monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
-					if let Some(short_channel_id) = channel.funding.get_short_channel_id() {
-						short_to_chan_info.insert(
-							short_channel_id,
-							(
-								channel.context.get_counterparty_node_id(),
-								channel.context.channel_id(),
-							),
-						);
-					}
-
-					for short_channel_id in channel.context.historical_scids() {
-						let cp_id = channel.context.get_counterparty_node_id();
-						let chan_id = channel.context.channel_id();
-						short_to_chan_info.insert(*short_channel_id, (cp_id, chan_id));
-					}
-
-					per_peer_state
-						.entry(channel.context.get_counterparty_node_id())
-						.or_insert_with(|| Mutex::new(empty_peer_state()))
-						.get_mut()
-						.unwrap()
-						.channel_by_id
-						.insert(channel.context.channel_id(), Channel::from(channel));
 				}
-			} else if channel.is_awaiting_initial_mon_persist() {
-				// If we were persisted and shut down while the initial ChannelMonitor persistence
-				// was in-progress, we never broadcasted the funding transaction and can still
-				// safely discard the channel.
+				if channel.get_revoked_counterparty_commitment_transaction_number()
+					> monitor.get_min_seen_secret()
+				{
+					log_error!(logger, " The ChannelMonitor for channel {} is at revoked counterparty transaction number {} but the ChannelManager is at revoked counterparty transaction number {}.",
+							&channel.context.channel_id(), monitor.get_min_seen_secret(), channel.get_revoked_counterparty_commitment_transaction_number());
+				}
+				if channel.get_cur_counterparty_commitment_transaction_number()
+					> monitor.get_cur_counterparty_commitment_number()
+				{
+					log_error!(logger, " The ChannelMonitor for channel {} is at counterparty commitment transaction number {} but the ChannelManager is at counterparty commitment transaction number {}.",
+							&channel.context.channel_id(), monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
+				}
+				let shutdown_result = channel.force_shutdown(ClosureReason::OutdatedChannelManager);
+				if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
+					return Err(DecodeError::InvalidValue);
+				}
+				if let Some((counterparty_node_id, funding_txo, channel_id, mut update)) =
+					shutdown_result.monitor_update
+				{
+					// Our channel information is out of sync with the `ChannelMonitor`, so
+					// force the update to use the `ChannelMonitor`'s update_id for the close
+					// update.
+					let latest_update_id = monitor.get_latest_update_id().saturating_add(1);
+					update.update_id = latest_update_id;
+					per_peer_state
+						.entry(counterparty_node_id)
+						.or_insert_with(|| Mutex::new(empty_peer_state()))
+						.lock()
+						.unwrap()
+						.closed_channel_monitor_update_ids
+						.entry(channel_id)
+						.and_modify(|v| *v = cmp::max(latest_update_id, *v))
+						.or_insert(latest_update_id);
+
+					close_background_events.push(
+						BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+							counterparty_node_id,
+							funding_txo,
+							channel_id,
+							update,
+						},
+					);
+				}
+				for (source, hash, cp_id, chan_id) in shutdown_result.dropped_outbound_htlcs {
+					let reason = LocalHTLCFailureReason::ChannelClosed;
+					failed_htlcs.push((source, hash, cp_id, chan_id, reason, None));
+				}
 				channel_closures.push_back((
 					events::Event::ChannelClosed {
 						channel_id: channel.context.channel_id(),
 						user_channel_id: channel.context.get_user_id(),
-						reason: ClosureReason::DisconnectedPeer,
+						reason: ClosureReason::OutdatedChannelManager,
 						counterparty_node_id: Some(channel.context.get_counterparty_node_id()),
 						channel_capacity_sats: Some(channel.funding.get_value_satoshis()),
 						channel_funding_txo: channel.funding.get_funding_txo(),
@@ -16950,20 +16884,68 @@ where
 					},
 					None,
 				));
+				for (channel_htlc_source, payment_hash) in channel.inflight_htlc_sources() {
+					let mut found_htlc = false;
+					for (monitor_htlc_source, _) in monitor.get_all_current_outbound_htlcs() {
+						if *channel_htlc_source == monitor_htlc_source {
+							found_htlc = true;
+							break;
+						}
+					}
+					if !found_htlc {
+						// If we have some HTLCs in the channel which are not present in the newer
+						// ChannelMonitor, they have been removed and should be failed back to
+						// ensure we don't forget them entirely. Note that if the missing HTLC(s)
+						// were actually claimed we'd have generated and ensured the previous-hop
+						// claim update ChannelMonitor updates were persisted prior to persising
+						// the ChannelMonitor update for the forward leg, so attempting to fail the
+						// backwards leg of the HTLC will simply be rejected.
+						let logger = WithChannelContext::from(
+							&args.logger,
+							&channel.context,
+							Some(*payment_hash),
+						);
+						log_info!(logger,
+								"Failing HTLC with hash {} as it is missing in the ChannelMonitor for channel {} but was present in the (stale) ChannelManager",
+								&channel.context.channel_id(), &payment_hash);
+						failed_htlcs.push((
+							channel_htlc_source.clone(),
+							*payment_hash,
+							channel.context.get_counterparty_node_id(),
+							channel.context.channel_id(),
+							LocalHTLCFailureReason::ChannelClosed,
+							None,
+						));
+					}
+				}
 			} else {
-				log_error!(
-					logger,
-					"Missing ChannelMonitor for channel {} needed by ChannelManager.",
-					&channel.context.channel_id()
+				channel.on_startup_drop_completed_blocked_mon_updates_through(
+					&logger,
+					monitor.get_latest_update_id(),
 				);
-				log_error!(logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
-				log_error!(logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
-				log_error!(
-					logger,
-					" Without the ChannelMonitor we cannot continue without risking funds."
-				);
-				log_error!(logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/lightningdevkit/rust-lightning");
-				return Err(DecodeError::InvalidValue);
+				log_info!(logger, "Successfully loaded channel {} at update_id {} against monitor at update id {} with {} blocked updates",
+						&channel.context.channel_id(), channel.context.get_latest_monitor_update_id(),
+						monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
+				if let Some(short_channel_id) = channel.funding.get_short_channel_id() {
+					short_to_chan_info.insert(
+						short_channel_id,
+						(channel.context.get_counterparty_node_id(), channel.context.channel_id()),
+					);
+				}
+
+				for short_channel_id in channel.context.historical_scids() {
+					let cp_id = channel.context.get_counterparty_node_id();
+					let chan_id = channel.context.channel_id();
+					short_to_chan_info.insert(*short_channel_id, (cp_id, chan_id));
+				}
+
+				per_peer_state
+					.entry(channel.context.get_counterparty_node_id())
+					.or_insert_with(|| Mutex::new(empty_peer_state()))
+					.get_mut()
+					.unwrap()
+					.channel_by_id
+					.insert(channel.context.channel_id(), Channel::from(channel));
 			}
 		}
 
@@ -17014,6 +16996,7 @@ where
 						should_broadcast: true,
 					}],
 					channel_id: Some(monitor.channel_id()),
+					encoded_channel: None,
 				};
 				let funding_txo = monitor.get_funding_txo();
 				let update = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
@@ -17645,6 +17628,7 @@ where
 												updates: vec![ChannelMonitorUpdateStep::ReleasePaymentComplete {
 													htlc: htlc_id,
 												}],
+												encoded_channel: None,
 											},
 										});
 									}
