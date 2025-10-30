@@ -3,7 +3,7 @@
 set -eox pipefail
 
 # Currently unused as we don't have to pin anything for MSRV:
-#RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
+RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
 
 # Some crates require pinning to meet our MSRV even for our downstream users,
 # which we do here.
@@ -16,6 +16,9 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 
 # The backtrace v0.3.75 crate relies on rustc 1.82
 [ "$RUSTC_MINOR_VERSION" -lt 82 ] && cargo update -p backtrace --precise "0.3.74" --verbose
+
+# proptest 1.9.0 requires rustc 1.82.0
+[ "$RUSTC_MINOR_VERSION" -lt 82 ] && cargo update -p proptest --precise "1.8.0" --verbose
 
 export RUST_BACKTRACE=1
 
