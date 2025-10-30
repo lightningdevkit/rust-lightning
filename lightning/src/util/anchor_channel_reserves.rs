@@ -290,8 +290,8 @@ pub fn can_support_additional_anchor_channel<
 		>,
 	>,
 >(
-	context: &AnchorChannelReserveContext, utxos: &[Utxo], a_channel_manager: &AChannelManagerRef,
-	chain_monitor: &ChainMonitorRef,
+	context: &AnchorChannelReserveContext, utxos: &[Utxo], a_channel_manager: AChannelManagerRef,
+	chain_monitor: ChainMonitorRef,
 ) -> bool
 where
 	AChannelManagerRef::Target: AChannelManager,

@@ -17,7 +17,7 @@ use lightning::ln::functional_test_utils::{
 };
 use lightning::ln::msgs::Init;
 use lightning::ln::peer_handler::CustomMessageHandler;
-use lightning::util::hash_tables::{HashMap, HashSet};
+use lightning::util::hash_tables::HashSet;
 use lightning::util::test_utils::TestStore;
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::ser::LSPSDateTime;
@@ -288,15 +288,20 @@ impl TimeProvider for MockTimeProvider {
 	}
 }
 
-fn extract_ts_sig(headers: &HashMap<String, String>) -> (LSPSDateTime, String) {
+fn extract_ts_sig(headers: &Vec<(String, String)>) -> (LSPSDateTime, String) {
 	let timestamp = headers
-		.get("x-lsps5-timestamp")
+		.iter()
+		.find_map(|(key, value)| (key == "x-lsps5-timestamp").then(|| value))
 		.expect("missing x-lsps5-timestamp header")
 		.parse::<LSPSDateTime>()
 		.expect("failed to parse x-lsps5-timestamp header");
 
-	let signature =
-		headers.get("x-lsps5-signature").expect("missing x-lsps5-signature header").to_owned();
+	let signature = headers
+		.iter()
+		.find(|(key, _)| key == "x-lsps5-signature")
+		.expect("missing x-lsps5-signature header")
+		.1
+		.clone();
 	(timestamp, signature)
 }
 

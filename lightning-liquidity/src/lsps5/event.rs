@@ -15,7 +15,6 @@ use alloc::vec::Vec;
 use bitcoin::secp256k1::PublicKey;
 
 use lightning::impl_writeable_tlv_based_enum;
-use lightning::util::hash_tables::HashMap;
 
 use super::msgs::LSPS5AppName;
 use super::msgs::LSPS5Error;
@@ -70,7 +69,7 @@ pub enum LSPS5ServiceEvent {
 		/// - `"x-lsps5-timestamp"`: with the timestamp in RFC3339 format (`"YYYY-MM-DDThh:mm:ss.uuuZ"`).
 		/// - `"x-lsps5-signature"`: with the signature of the notification payload, signed using the LSP's node ID.
 		/// Other custom headers may also be included as needed.
-		headers: HashMap<String, String>,
+		headers: Vec<(String, String)>,
 	},
 }
 
