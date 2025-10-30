@@ -4,6 +4,7 @@ version = "0.2.0+git"
 authors = ["Jeffrey Czyz"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning"
+readme = "../README.md"
 description = """
 Utilities for supporting custom peer-to-peer messages in LDK.
 """

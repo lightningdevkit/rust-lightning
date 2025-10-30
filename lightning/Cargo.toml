@@ -4,6 +4,7 @@ version = "0.2.0+git"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning/"
+readme = "../README.md"
 description = """
 A Complete Bitcoin Lightning Library in Rust.
 Handles the core functionality of the Lightning Network, allowing clients to implement custom wallet, chain interactions, storage and network logic without enforcing a specific runtime.
