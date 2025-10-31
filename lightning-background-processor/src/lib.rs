@@ -41,6 +41,8 @@ use lightning::events::ReplayEvent;
 use lightning::events::{Event, PathFailure};
 use lightning::util::ser::Writeable;
 
+#[cfg(not(c_bindings))]
+use lightning::io::Error;
 use lightning::ln::channelmanager::AChannelManager;
 use lightning::ln::msgs::OnionMessageHandler;
 use lightning::ln::peer_handler::APeerManager;
@@ -51,6 +53,8 @@ use lightning::routing::utxo::UtxoLookup;
 use lightning::sign::{
 	ChangeDestinationSource, ChangeDestinationSourceSync, EntropySource, OutputSpender,
 };
+#[cfg(not(c_bindings))]
+use lightning::util::async_poll::MaybeSend;
 use lightning::util::logger::Logger;
 use lightning::util::persist::{
 	KVStore, KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
@@ -83,7 +87,11 @@ use std::time::Instant;
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 #[cfg(all(not(c_bindings), not(feature = "std")))]
+use alloc::string::String;
+#[cfg(all(not(c_bindings), not(feature = "std")))]
 use alloc::sync::Arc;
+#[cfg(all(not(c_bindings), not(feature = "std")))]
+use alloc::vec::Vec;
 
 /// `BackgroundProcessor` takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
@@ -416,6 +424,37 @@ pub const NO_ONION_MESSENGER: Option<
 	>,
 > = None;
 
+#[cfg(not(c_bindings))]
+/// A panicking implementation of [`KVStore`] that is used in [`NO_LIQUIDITY_MANAGER`].
+pub struct DummyKVStore;
+
+#[cfg(not(c_bindings))]
+impl KVStore for DummyKVStore {
+	fn read(
+		&self, _: &str, _: &str, _: &str,
+	) -> impl core::future::Future<Output = Result<Vec<u8>, Error>> + MaybeSend + 'static {
+		async { unimplemented!() }
+	}
+
+	fn write(
+		&self, _: &str, _: &str, _: &str, _: Vec<u8>,
+	) -> impl core::future::Future<Output = Result<(), Error>> + MaybeSend + 'static {
+		async { unimplemented!() }
+	}
+
+	fn remove(
+		&self, _: &str, _: &str, _: &str, _: bool,
+	) -> impl core::future::Future<Output = Result<(), Error>> + MaybeSend + 'static {
+		async { unimplemented!() }
+	}
+
+	fn list(
+		&self, _: &str, _: &str,
+	) -> impl core::future::Future<Output = Result<Vec<String>, Error>> + MaybeSend + 'static {
+		async { unimplemented!() }
+	}
+}
+
 /// When initializing a background processor without a liquidity manager, this can be used to avoid
 /// specifying a concrete `LiquidityManager` type.
 #[cfg(not(c_bindings))]
@@ -430,8 +469,8 @@ pub const NO_LIQUIDITY_MANAGER: Option<
 				CM = &DynChannelManager,
 				Filter = dyn chain::Filter + Send + Sync,
 				C = &(dyn chain::Filter + Send + Sync),
-				KVStore = dyn lightning::util::persist::KVStore + Send + Sync,
-				K = &(dyn lightning::util::persist::KVStore + Send + Sync),
+				KVStore = DummyKVStore,
+				K = &DummyKVStore,
 				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider + Send + Sync,
 				TP = &(dyn lightning_liquidity::utils::time::TimeProvider + Send + Sync),
 				BroadcasterInterface = dyn lightning::chain::chaininterface::BroadcasterInterface

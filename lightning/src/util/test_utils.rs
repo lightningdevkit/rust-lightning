@@ -50,7 +50,7 @@ use crate::sign::{self, ReceiveAuthKey};
 use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-use crate::util::async_poll::AsyncResult;
+use crate::util::async_poll::MaybeSend;
 use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
@@ -1012,13 +1012,13 @@ impl TestStore {
 impl KVStore for TestStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> AsyncResult<'static, Vec<u8>, io::Error> {
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + 'static + MaybeSend {
 		let res = self.read_internal(&primary_namespace, &secondary_namespace, &key);
-		Box::pin(async move { res })
+		async move { res }
 	}
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> AsyncResult<'static, (), io::Error> {
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
 		let path = format!("{primary_namespace}/{secondary_namespace}/{key}");
 		let future = Arc::new(Mutex::new((None, None)));
 
@@ -1027,19 +1027,19 @@ impl KVStore for TestStore {
 		let new_id = pending_writes.last().map(|(id, _, _)| id + 1).unwrap_or(0);
 		pending_writes.push((new_id, Arc::clone(&future), buf));
 
-		Box::pin(OneShotChannel(future))
+		OneShotChannel(future)
 	}
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
-	) -> AsyncResult<'static, (), io::Error> {
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
 		let res = self.remove_internal(&primary_namespace, &secondary_namespace, &key, lazy);
-		Box::pin(async move { res })
+		async move { res }
 	}
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> AsyncResult<'static, Vec<String>, io::Error> {
+	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend {
 		let res = self.list_internal(primary_namespace, secondary_namespace);
-		Box::pin(async move { res })
+		async move { res }
 	}
 }
 
