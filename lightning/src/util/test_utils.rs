@@ -966,7 +966,7 @@ impl TestStore {
 	}
 
 	fn remove_internal(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, _lazy: bool,
 	) -> io::Result<()> {
 		if self.read_only {
 			return Err(io::Error::new(
@@ -1030,9 +1030,9 @@ impl KVStore for TestStore {
 		Box::pin(OneShotChannel(future))
 	}
 	fn remove(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
 	) -> AsyncResult<'static, (), io::Error> {
-		let res = self.remove_internal(&primary_namespace, &secondary_namespace, &key);
+		let res = self.remove_internal(&primary_namespace, &secondary_namespace, &key, lazy);
 		Box::pin(async move { res })
 	}
 	fn list(
@@ -1080,9 +1080,9 @@ impl KVStoreSync for TestStore {
 	}
 
 	fn remove(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
 	) -> io::Result<()> {
-		self.remove_internal(primary_namespace, secondary_namespace, key)
+		self.remove_internal(primary_namespace, secondary_namespace, key, lazy)
 	}
 
 	fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> io::Result<Vec<String>> {

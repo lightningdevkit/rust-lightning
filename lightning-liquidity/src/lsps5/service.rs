@@ -297,6 +297,7 @@ where
 								LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 								LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
 								&key,
+								true,
 							));
 						} else {
 							// If the peer was re-added, force a re-persist of the current state.
@@ -629,12 +630,12 @@ where
 
 		let signature_hex = self.sign_notification(&notification, &timestamp)?;
 
-		let mut headers: HashMap<String, String> = [("Content-Type", "application/json")]
+		let mut headers: Vec<(String, String)> = [("Content-Type", "application/json")]
 			.into_iter()
 			.map(|(k, v)| (k.to_string(), v.to_string()))
 			.collect();
-		headers.insert("x-lsps5-timestamp".into(), timestamp.to_rfc3339());
-		headers.insert("x-lsps5-signature".into(), signature_hex);
+		headers.push(("x-lsps5-timestamp".into(), timestamp.to_rfc3339()));
+		headers.push(("x-lsps5-signature".into(), signature_hex));
 
 		event_queue_notifier.enqueue(LSPS5ServiceEvent::SendWebhookNotification {
 			counterparty_node_id,

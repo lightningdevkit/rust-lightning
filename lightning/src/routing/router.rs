@@ -4054,7 +4054,7 @@ mod tests {
 
 		// Simple route to 2 via 1
 
-		let our_chans = vec![get_channel_details(Some(2), our_id, InitFeatures::from_le_bytes(vec![0b11]), 100000)];
+		let our_chans = [get_channel_details(Some(2), our_id, InitFeatures::from_le_bytes(vec![0b11]), 100000)];
 
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		if let Err(err) = get_route(&our_id,
@@ -4473,7 +4473,7 @@ mod tests {
 		} else { panic!(); }
 
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
-		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(),
+		let our_chans = [get_channel_details(Some(42), nodes[7].clone(),
 			InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		route_params.payment_params.max_path_length = 2;
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(),
@@ -4521,7 +4521,7 @@ mod tests {
 		} else { panic!(); }
 
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
-		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(),
+		let our_chans = [get_channel_details(Some(42), nodes[7].clone(),
 			InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(),
 			Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
@@ -4586,7 +4586,7 @@ mod tests {
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
-		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(),
+		let our_chans = [get_channel_details(Some(42), nodes[7].clone(),
 			InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(),
 			Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
@@ -5137,7 +5137,7 @@ mod tests {
 		let random_seed_bytes = [42; 32];
 
 		// Simple test with outbound channel to 4 to test that last_hops and first_hops connect
-		let our_chans = vec![get_channel_details(Some(42), nodes[3].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
+		let our_chans = [get_channel_details(Some(42), nodes[3].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let mut last_hops = last_hops(&nodes);
 		let payment_params = PaymentParameters::from_node_id(nodes[6], 42)
 			.with_route_hints(last_hops.clone()).unwrap();
@@ -5265,7 +5265,7 @@ mod tests {
 			htlc_maximum_msat: last_hop_htlc_max,
 		}]);
 		let payment_params = PaymentParameters::from_node_id(target_node_id, 42).with_route_hints(vec![last_hops]).unwrap();
-		let our_chans = vec![get_channel_details(Some(42), middle_node_id, InitFeatures::from_le_bytes(vec![0b11]), outbound_capacity_msat)];
+		let our_chans = [get_channel_details(Some(42), middle_node_id, InitFeatures::from_le_bytes(vec![0b11]), outbound_capacity_msat)];
 		let scorer = ln_test_utils::TestScorer::new();
 		let random_seed_bytes = [42; 32];
 		let logger = ln_test_utils::TestLogger::new();
@@ -5442,7 +5442,7 @@ mod tests {
 		});
 
 		// Now, limit the first_hop by the next_outbound_htlc_limit_msat of 200_000 sats.
-		let our_chans = vec![get_channel_details(Some(42), nodes[0].clone(), InitFeatures::from_le_bytes(vec![0b11]), 200_000_000)];
+		let our_chans = [get_channel_details(Some(42), nodes[0].clone(), InitFeatures::from_le_bytes(vec![0b11]), 200_000_000)];
 
 		{
 			// Attempt to route more than available results in a failure.
@@ -7827,7 +7827,7 @@ mod tests {
 
 		let our_node_id = ln_test_utils::pubkey(42);
 		let intermed_node_id = ln_test_utils::pubkey(43);
-		let first_hop = vec![get_channel_details(Some(42), intermed_node_id, InitFeatures::from_le_bytes(vec![0b11]), 10_000_000)];
+		let first_hop = [get_channel_details(Some(42), intermed_node_id, InitFeatures::from_le_bytes(vec![0b11]), 10_000_000)];
 
 		let amt_msat = 900_000;
 		let max_htlc_msat = 500_000;
@@ -7874,7 +7874,7 @@ mod tests {
 
 		// Re-run but with two first hop channels connected to the same route hint peers that must be
 		// split between.
-		let first_hops = vec![
+		let first_hops = [
 			get_channel_details(Some(42), intermed_node_id, InitFeatures::from_le_bytes(vec![0b11]), amt_msat - 10),
 			get_channel_details(Some(43), intermed_node_id, InitFeatures::from_le_bytes(vec![0b11]), amt_msat - 10),
 		];
@@ -8286,8 +8286,9 @@ mod tests {
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
 		});
-		let first_hops = vec![
-			get_channel_details(Some(1), nodes[1], InitFeatures::from_le_bytes(vec![0b11]), 10_000_000)];
+		let first_hops = [
+			get_channel_details(Some(1), nodes[1], InitFeatures::from_le_bytes(vec![0b11]), 10_000_000)
+		];
 
 		let blinded_payinfo = BlindedPayInfo {
 			fee_base_msat: 1000,
@@ -8347,9 +8348,10 @@ mod tests {
 		// Values are taken from the fuzz input that uncovered this panic.
 		let amt_msat = 21_7020_5185_1403_2640;
 		let (_, _, _, nodes) = get_nodes(&secp_ctx);
-		let first_hops = vec![
+		let first_hops = [
 			get_channel_details(Some(1), nodes[1], channelmanager::provided_init_features(&config),
-				18446744073709551615)];
+				18446744073709551615),
+		];
 
 		let blinded_payinfo = BlindedPayInfo {
 			fee_base_msat: 5046_2720,
@@ -8493,7 +8495,7 @@ mod tests {
 		let amt_msat = 7_4009_8048;
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let first_hop_outbound_capacity = 2_7345_2000;
-		let first_hops = vec![get_channel_details(
+		let first_hops = [get_channel_details(
 			Some(200), nodes[0], channelmanager::provided_init_features(&config),
 			first_hop_outbound_capacity
 		)];
@@ -8566,7 +8568,7 @@ mod tests {
 		// Values are taken from the fuzz input that uncovered this panic.
 		let amt_msat = 52_4288;
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let first_hops = vec![get_channel_details(
+		let first_hops = [get_channel_details(
 			Some(161), nodes[0], channelmanager::provided_init_features(&config), 486_4000
 		), get_channel_details(
 			Some(122), nodes[0], channelmanager::provided_init_features(&config), 179_5000
@@ -8641,7 +8643,7 @@ mod tests {
 		// Values are taken from the fuzz input that uncovered this panic.
 		let amt_msat = 7_4009_8048;
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let first_hops = vec![get_channel_details(
+		let first_hops = [get_channel_details(
 			Some(200), nodes[0], channelmanager::provided_init_features(&config), 2_7345_2000
 		)];
 
@@ -8705,7 +8707,7 @@ mod tests {
 		// Values are taken from the fuzz input that uncovered this panic.
 		let amt_msat = 562_0000;
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let first_hops = vec![
+		let first_hops = [
 			get_channel_details(
 				Some(83), nodes[0], channelmanager::provided_init_features(&config), 2199_0000,
 			),
@@ -8849,9 +8851,8 @@ mod tests {
 
 		// First create an insufficient first hop for channel with SCID 1 and check we'd use the
 		// route hint.
-		let first_hop = get_channel_details(Some(1), nodes[0],
-			channelmanager::provided_init_features(&config), 999_999);
-		let first_hops = vec![first_hop];
+		let first_hops = [get_channel_details(Some(1), nodes[0],
+			channelmanager::provided_init_features(&config), 999_999)];
 
 		let route = get_route(&our_node_id, &route_params.clone(), &network_graph.read_only(),
 			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
@@ -8867,7 +8868,7 @@ mod tests {
 		// for a first hop channel.
 		let mut first_hop = get_channel_details(Some(1), nodes[0], channelmanager::provided_init_features(&config), 999_999);
 		first_hop.outbound_scid_alias = Some(44);
-		let first_hops = vec![first_hop];
+		let first_hops = [first_hop];
 
 		let route_res = get_route(&our_node_id, &route_params.clone(), &network_graph.read_only(),
 			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
@@ -8879,7 +8880,7 @@ mod tests {
 		let mut first_hop = get_channel_details(Some(1), nodes[0],
 			channelmanager::provided_init_features(&config), 10_000_000);
 		first_hop.outbound_scid_alias = Some(44);
-		let first_hops = vec![first_hop];
+		let first_hops = [first_hop];
 
 		let route = get_route(&our_node_id, &route_params.clone(), &network_graph.read_only(),
 			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
@@ -9002,8 +9003,9 @@ mod tests {
 		let amt_msat = 1_000_000;
 		let dest_node_id = nodes[1];
 
-		let first_hop = get_channel_details(Some(1), nodes[0], channelmanager::provided_init_features(&config), 10_000_000);
-		let first_hops = vec![first_hop];
+		let first_hops = [
+			get_channel_details(Some(1), nodes[0], channelmanager::provided_init_features(&config), 10_000_000),
+		];
 
 		let route_hint = RouteHint(vec![RouteHintHop {
 			src_node_id: our_node_id,

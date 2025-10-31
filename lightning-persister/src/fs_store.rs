@@ -125,7 +125,7 @@ impl KVStoreSync for FilesystemStore {
 	}
 
 	fn remove(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
 	) -> Result<(), lightning::io::Error> {
 		let path = self.inner.get_checked_dest_file_path(
 			primary_namespace,
@@ -134,7 +134,7 @@ impl KVStoreSync for FilesystemStore {
 			"remove",
 		)?;
 		let (inner_lock_ref, version) = self.get_new_version_and_lock_ref(path.clone());
-		self.inner.remove_version(inner_lock_ref, path, version)
+		self.inner.remove_version(inner_lock_ref, path, lazy, version)
 	}
 
 	fn list(
@@ -334,76 +334,81 @@ impl FilesystemStoreInner {
 	}
 
 	fn remove_version(
-		&self, inner_lock_ref: Arc<RwLock<u64>>, dest_file_path: PathBuf, version: u64,
+		&self, inner_lock_ref: Arc<RwLock<u64>>, dest_file_path: PathBuf, lazy: bool, version: u64,
 	) -> lightning::io::Result<()> {
 		self.execute_locked_write(inner_lock_ref, dest_file_path.clone(), version, || {
 			if !dest_file_path.is_file() {
 				return Ok(());
 			}
 
-			// We try our best to persist the updated metadata to ensure
-			// atomicity of this call.
-			#[cfg(not(target_os = "windows"))]
-			{
+			if lazy {
+				// If we're lazy we just call remove and be done with it.
 				fs::remove_file(&dest_file_path)?;
-
-				let parent_directory = dest_file_path.parent().ok_or_else(|| {
-					let msg = format!(
-						"Could not retrieve parent directory of {}.",
-						dest_file_path.display()
-					);
-					std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)
-				})?;
-				let dir_file = fs::OpenOptions::new().read(true).open(parent_directory)?;
-				// The above call to `fs::remove_file` corresponds to POSIX `unlink`, whose changes
-				// to the inode might get cached (and hence possibly lost on crash), depending on
-				// the target platform and file system.
-				//
-				// In order to assert we permanently removed the file in question we therefore
-				// call `fsync` on the parent directory on platforms that support it.
-				dir_file.sync_all()?;
-			}
-
-			#[cfg(target_os = "windows")]
-			{
-				// Since Windows `DeleteFile` API is not persisted until the last open file handle
-				// is dropped, and there seemingly is no reliable way to flush the directory
-				// metadata, we here fall back to use a 'recycling bin' model, i.e., first move the
-				// file to be deleted to a temporary trash file and remove the latter file
-				// afterwards.
-				//
-				// This should be marginally better, as, according to the documentation,
-				// `MoveFileExW` APIs should offer stronger persistence guarantees,
-				// at least if `MOVEFILE_WRITE_THROUGH`/`MOVEFILE_REPLACE_EXISTING` is set.
-				// However, all this is partially based on assumptions and local experiments, as
-				// Windows API is horribly underdocumented.
-				let mut trash_file_path = dest_file_path.clone();
-				let trash_file_ext =
-					format!("{}.trash", self.tmp_file_counter.fetch_add(1, Ordering::AcqRel));
-				trash_file_path.set_extension(trash_file_ext);
-
-				call!(unsafe {
-					windows_sys::Win32::Storage::FileSystem::MoveFileExW(
-						path_to_windows_str(&dest_file_path).as_ptr(),
-						path_to_windows_str(&trash_file_path).as_ptr(),
-						windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
-							| windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
-					)
-				})?;
-
+			} else {
+				// If we're not lazy we try our best to persist the updated metadata to ensure
+				// atomicity of this call.
+				#[cfg(not(target_os = "windows"))]
 				{
-					// We fsync the trash file in hopes this will also flush the original's file
-					// metadata to disk.
-					let trash_file = fs::OpenOptions::new()
-						.read(true)
-						.write(true)
-						.open(&trash_file_path.clone())?;
-					trash_file.sync_all()?;
+					fs::remove_file(&dest_file_path)?;
+
+					let parent_directory = dest_file_path.parent().ok_or_else(|| {
+						let msg = format!(
+							"Could not retrieve parent directory of {}.",
+							dest_file_path.display()
+						);
+						std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)
+					})?;
+					let dir_file = fs::OpenOptions::new().read(true).open(parent_directory)?;
+					// The above call to `fs::remove_file` corresponds to POSIX `unlink`, whose changes
+					// to the inode might get cached (and hence possibly lost on crash), depending on
+					// the target platform and file system.
+					//
+					// In order to assert we permanently removed the file in question we therefore
+					// call `fsync` on the parent directory on platforms that support it.
+					dir_file.sync_all()?;
 				}
 
-				// We're fine if this remove would fail as the trash file will be cleaned up in
-				// list eventually.
-				fs::remove_file(trash_file_path).ok();
+				#[cfg(target_os = "windows")]
+				{
+					// Since Windows `DeleteFile` API is not persisted until the last open file handle
+					// is dropped, and there seemingly is no reliable way to flush the directory
+					// metadata, we here fall back to use a 'recycling bin' model, i.e., first move the
+					// file to be deleted to a temporary trash file and remove the latter file
+					// afterwards.
+					//
+					// This should be marginally better, as, according to the documentation,
+					// `MoveFileExW` APIs should offer stronger persistence guarantees,
+					// at least if `MOVEFILE_WRITE_THROUGH`/`MOVEFILE_REPLACE_EXISTING` is set.
+					// However, all this is partially based on assumptions and local experiments, as
+					// Windows API is horribly underdocumented.
+					let mut trash_file_path = dest_file_path.clone();
+					let trash_file_ext =
+						format!("{}.trash", self.tmp_file_counter.fetch_add(1, Ordering::AcqRel));
+					trash_file_path.set_extension(trash_file_ext);
+
+					call!(unsafe {
+						windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+							path_to_windows_str(&dest_file_path).as_ptr(),
+							path_to_windows_str(&trash_file_path).as_ptr(),
+							windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
+							| windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
+							)
+					})?;
+
+					{
+						// We fsync the trash file in hopes this will also flush the original's file
+						// metadata to disk.
+						let trash_file = fs::OpenOptions::new()
+							.read(true)
+							.write(true)
+							.open(&trash_file_path.clone())?;
+						trash_file.sync_all()?;
+					}
+
+					// We're fine if this remove would fail as the trash file will be cleaned up in
+					// list eventually.
+					fs::remove_file(trash_file_path).ok();
+				}
 			}
 
 			Ok(())
@@ -503,7 +508,7 @@ impl KVStore for FilesystemStore {
 	}
 
 	fn remove(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
 	) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + 'static + Send>> {
 		let this = Arc::clone(&self.inner);
 		let path = match this.get_checked_dest_file_path(
@@ -518,11 +523,11 @@ impl KVStore for FilesystemStore {
 
 		let (inner_lock_ref, version) = self.get_new_version_and_lock_ref(path.clone());
 		Box::pin(async move {
-			tokio::task::spawn_blocking(move || this.remove_version(inner_lock_ref, path, version))
-				.await
-				.unwrap_or_else(|e| {
-					Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
-				})
+			tokio::task::spawn_blocking(move || {
+				this.remove_version(inner_lock_ref, path, lazy, version)
+			})
+			.await
+			.unwrap_or_else(|e| Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e)))
 		})
 	}
 
@@ -767,7 +772,7 @@ mod tests {
 		let fut1 = async_fs_store.write(primary_namespace, secondary_namespace, key, data1);
 		assert_eq!(fs_store.state_size(), 1);
 
-		let fut2 = async_fs_store.remove(primary_namespace, secondary_namespace, key);
+		let fut2 = async_fs_store.remove(primary_namespace, secondary_namespace, key, false);
 		assert_eq!(fs_store.state_size(), 1);
 
 		let fut3 = async_fs_store.write(primary_namespace, secondary_namespace, key, data2.clone());
@@ -794,7 +799,7 @@ mod tests {
 		assert_eq!(data2, &*read_data);
 
 		// Test remove.
-		async_fs_store.remove(primary_namespace, secondary_namespace, key).await.unwrap();
+		async_fs_store.remove(primary_namespace, secondary_namespace, key, false).await.unwrap();
 
 		let listed_keys =
 			async_fs_store.list(primary_namespace, secondary_namespace).await.unwrap();

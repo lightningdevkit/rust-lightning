@@ -1834,6 +1834,7 @@ where
 								LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 								LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
 								&key,
+								true,
 							));
 						} else {
 							// If the peer got new state, force a re-persist of the current state.
