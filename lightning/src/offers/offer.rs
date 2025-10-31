@@ -258,6 +258,7 @@ macro_rules! offer_explicit_metadata_builder_methods {
 		/// Sets the [`Offer::metadata`] to the given bytes.
 		///
 		/// Successive calls to this method will override the previous setting.
+		#[allow(unused_mut)]
 		pub fn metadata(
 			mut $self: $self_type, metadata: Vec<u8>,
 		) -> Result<$return_type, Bolt12SemanticError> {
