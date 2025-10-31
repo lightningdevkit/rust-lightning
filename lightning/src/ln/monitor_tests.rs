@@ -2388,6 +2388,7 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	}
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_restored_packages_retry() {
 	do_test_restored_packages_retry(false);
@@ -3023,6 +3024,7 @@ fn do_test_anchors_aggregated_revoked_htlc_tx(p2a_anchor: bool) {
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).len(), 6);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_anchors_aggregated_revoked_htlc_tx() {
 	do_test_anchors_aggregated_revoked_htlc_tx(false);
@@ -3116,6 +3118,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 	}
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_anchors_monitor_fixes_counterparty_payment_script_on_reload() {
 	do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(false);
@@ -3343,6 +3346,7 @@ fn test_update_replay_panics() {
 	monitor.update_monitor(&updates[3], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_claim_event_never_handled() {
 	// When a payment is claimed, the `ChannelMonitorUpdate` containing the payment preimage goes
@@ -3570,6 +3574,7 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool, p2a_anchor: bo
 	expect_payment_sent(&nodes[0], preimage_a, None, true, true);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_lost_preimage_monitor_events() {
 	do_test_lost_preimage_monitor_events(true, false);
@@ -3815,6 +3820,7 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	expect_payment_failed!(nodes[0], hash_a, false);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_lost_timeout_monitor_events() {
 	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, false, false);

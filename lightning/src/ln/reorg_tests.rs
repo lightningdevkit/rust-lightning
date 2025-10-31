@@ -410,6 +410,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_unconf_chan() {
 	do_test_unconf_chan(true, true, false, ConnectStyle::BestBlockFirstSkippingBlocks);
@@ -423,6 +424,7 @@ fn test_unconf_chan() {
 	do_test_unconf_chan(false, false, false, ConnectStyle::BestBlockFirstReorgsOnlyTip);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_unconf_chan_via_listen() {
 	do_test_unconf_chan(true, true, false, ConnectStyle::FullBlockViaListen);
@@ -431,6 +433,7 @@ fn test_unconf_chan_via_listen() {
 	do_test_unconf_chan(false, false, false, ConnectStyle::FullBlockViaListen);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_unconf_chan_via_funding_unconfirmed() {
 	do_test_unconf_chan(true, true, true, ConnectStyle::BestBlockFirstSkippingBlocks);

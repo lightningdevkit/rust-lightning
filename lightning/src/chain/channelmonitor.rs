@@ -111,6 +111,9 @@ pub struct ChannelMonitorUpdate {
 	/// Will be `None` for `ChannelMonitorUpdate`s constructed on LDK versions prior to 0.0.121 and
 	/// always `Some` otherwise.
 	pub channel_id: Option<ChannelId>,
+
+	/// The encoded channel data associated with this ChannelMonitor, if any.
+	pub encoded_channel: Option<Vec<u8>>,
 }
 
 impl ChannelMonitorUpdate {
@@ -156,6 +159,13 @@ impl Writeable for ChannelMonitorUpdate {
 		for update_step in self.updates.iter() {
 			update_step.write(w)?;
 		}
+		#[cfg(feature = "safe_channels")]
+		write_tlv_fields!(w, {
+			// 1 was previously used to store `counterparty_node_id`
+			(3, self.channel_id, option),
+			(5, self.encoded_channel, option)
+		});
+		#[cfg(not(feature = "safe_channels"))]
 		write_tlv_fields!(w, {
 			// 1 was previously used to store `counterparty_node_id`
 			(3, self.channel_id, option),
@@ -176,11 +186,13 @@ impl Readable for ChannelMonitorUpdate {
 			}
 		}
 		let mut channel_id = None;
+		let mut encoded_channel = None;
 		read_tlv_fields!(r, {
 			// 1 was previously used to store `counterparty_node_id`
 			(3, channel_id, option),
+			(5, encoded_channel, option)
 		});
-		Ok(Self { update_id, updates, channel_id })
+		Ok(Self { update_id, updates, channel_id, encoded_channel })
 	}
 }
 
@@ -1402,6 +1414,8 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// make deciding whether to do so simple, here we track whether this monitor was last written
 	/// prior to 0.1.
 	written_by_0_1_or_later: bool,
+
+	encoded_channel: Option<Vec<u8>>,
 }
 
 // Returns a `&FundingScope` for the one we are currently observing/handling commitment transactions
@@ -1733,6 +1747,32 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			_ => channel_monitor.pending_monitor_events.clone(),
 		};
 
+	#[cfg(feature = "safe_channels")]
+	write_tlv_fields!(writer, {
+		(1, channel_monitor.funding_spend_confirmed, option),
+		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
+		(5, pending_monitor_events, required_vec),
+		(7, channel_monitor.funding_spend_seen, required),
+		(9, channel_monitor.counterparty_node_id, required),
+		(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
+		(13, channel_monitor.spendable_txids_confirmed, required_vec),
+		(15, channel_monitor.counterparty_fulfilled_htlcs, required),
+		(17, channel_monitor.initial_counterparty_commitment_info, option),
+		(19, channel_monitor.channel_id, required),
+		(21, channel_monitor.balances_empty_height, option),
+		(23, channel_monitor.holder_pays_commitment_tx_fee, option),
+		(25, channel_monitor.payment_preimages, required),
+		(27, channel_monitor.first_negotiated_funding_txo, required),
+		(29, channel_monitor.initial_counterparty_commitment_tx, option),
+		(31, channel_monitor.funding.channel_parameters, required),
+		(32, channel_monitor.pending_funding, optional_vec),
+		(33, channel_monitor.htlcs_resolved_to_user, required),
+		(34, channel_monitor.alternative_funding_confirmed, option),
+		(35, channel_monitor.is_manual_broadcast, required),
+		(37, channel_monitor.funding_seen_onchain, required),
+		(39, channel_monitor.encoded_channel, option),
+	});
+	#[cfg(not(feature = "safe_channels"))]
 	write_tlv_fields!(writer, {
 		(1, channel_monitor.funding_spend_confirmed, option),
 		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
@@ -1994,6 +2034,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			alternative_funding_confirmed: None,
 
 			written_by_0_1_or_later: true,
+			encoded_channel: None,
 		})
 	}
 
@@ -2112,6 +2153,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.update_monitor(updates, broadcaster, fee_estimator, &logger)
+	}
+
+	/// Gets the encoded channel data, if any, associated with this ChannelMonitor.
+	pub fn get_encoded_channel(&self) -> Option<Vec<u8>> {
+		self.inner.lock().unwrap().encoded_channel.clone()
+	}
+
+	/// Updates the encoded channel data associated with this ChannelMonitor.
+	pub fn update_encoded_channel(&self, encoded: Vec<u8>) {
+		self.inner.lock().unwrap().encoded_channel = Some(encoded);
 	}
 
 	/// Gets the update_id from the latest ChannelMonitorUpdate which was applied to this
@@ -4405,9 +4456,18 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		if ret.is_ok() && self.no_further_updates_allowed() && is_pre_close_update {
-			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
-			Err(())
+		if ret.is_ok() {
+			if self.no_further_updates_allowed() && is_pre_close_update {
+				log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
+				Err(())
+			} else {
+				// Assume that if the updates contains no encoded channel, that the channel remained unchanged. We
+				// therefore do not update the monitor.
+				if let Some(encoded_channel) = updates.encoded_channel.as_ref() {
+					self.encoded_channel = Some(encoded_channel.clone());
+				}
+				Ok(())
+			}
 		} else { ret }
 	}
 
@@ -6645,6 +6705,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut alternative_funding_confirmed = None;
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
+		let mut encoded_channel = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6667,6 +6728,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(34, alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
+			(39, encoded_channel, option),
 		});
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
@@ -6844,6 +6906,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			alternative_funding_confirmed,
 
 			written_by_0_1_or_later,
+			encoded_channel,
 		});
 
 		if counterparty_node_id.is_none() {

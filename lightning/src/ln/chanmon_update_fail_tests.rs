@@ -2839,6 +2839,8 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
+
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn channel_holding_cell_serialize() {
 	do_channel_holding_cell_serialize(true, true);
@@ -3320,6 +3322,7 @@ fn do_test_outbound_reload_without_init_mon(use_0conf: bool) {
 	assert!(nodes[0].node.list_channels().is_empty());
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_outbound_reload_without_init_mon() {
 	do_test_outbound_reload_without_init_mon(true);
@@ -3428,6 +3431,7 @@ fn do_test_inbound_reload_without_init_mon(use_0conf: bool, lock_commitment: boo
 	assert!(nodes[1].node.list_channels().is_empty());
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_inbound_reload_without_init_mon() {
 	do_test_inbound_reload_without_init_mon(true, true);
@@ -3767,6 +3771,7 @@ fn do_test_inverted_mon_completion_order(
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_inverted_mon_completion_order() {
 	do_test_inverted_mon_completion_order(true, true);
@@ -3969,6 +3974,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	}
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_durable_preimages_on_closed_channel() {
 	do_test_durable_preimages_on_closed_channel(true, true, true);
@@ -4093,6 +4099,7 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	send_payment(&nodes[1], &[&nodes[2]], 100_000);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_reload_mon_update_completion_actions() {
 	do_test_reload_mon_update_completion_actions(true);
@@ -4459,6 +4466,7 @@ fn do_test_partial_claim_mon_update_compl_actions(reload_a: bool, reload_b: bool
 	assert!(!get_monitor!(nodes[3], chan_4_id).get_stored_preimages().contains_key(&payment_hash));
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_partial_claim_mon_update_compl_actions() {
 	do_test_partial_claim_mon_update_compl_actions(true, true);

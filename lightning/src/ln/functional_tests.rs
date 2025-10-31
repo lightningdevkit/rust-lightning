@@ -9843,6 +9843,7 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	check_added_monitors(&nodes[0], 3);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[xtest(feature = "_externalize_tests")]
 pub fn test_multi_post_event_actions() {
 	do_test_multi_post_event_actions(true);

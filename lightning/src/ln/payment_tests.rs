@@ -997,6 +997,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	expect_payment_sent!(nodes[0], payment_preimage, Some(new_route.paths[0].hops[0].fee_msat));
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn retry_with_no_persist() {
 	do_retry_with_no_persist(true);
@@ -1225,6 +1226,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_completed_payment_not_retryable_on_reload() {
 	do_test_completed_payment_not_retryable_on_reload(true);
@@ -1402,6 +1404,7 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_dup_htlc_onchain_doesnt_fail_on_reload() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true, true);
@@ -1415,6 +1418,7 @@ fn test_dup_htlc_onchain_doesnt_fail_on_reload() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, false, false);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_fulfill_restart_failure() {
 	// When we receive an update_fulfill_htlc message, we immediately consider the HTLC fully
@@ -4194,12 +4198,14 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	assert!(events.is_empty());
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn no_missing_sent_on_midpoint_reload() {
 	do_no_missing_sent_on_reload(false, true);
 	do_no_missing_sent_on_reload(true, true);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn no_missing_sent_on_reload() {
 	do_no_missing_sent_on_reload(false, false);
@@ -4908,6 +4914,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	}
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_payment_metadata_consistency() {
 	do_test_payment_metadata_consistency(true, true);

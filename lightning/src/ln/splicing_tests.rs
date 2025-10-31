@@ -383,6 +383,7 @@ pub fn lock_splice<'a, 'b, 'c, 'd>(
 	node_b.chain_source.remove_watched_txn_and_outputs(prev_funding_outpoint, prev_funding_script);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_splice_state_reset_on_disconnect() {
 	do_test_splice_state_reset_on_disconnect(false);
@@ -923,6 +924,7 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 	}
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_splice_reestablish() {
 	do_test_splice_reestablish(false, false);
@@ -1186,6 +1188,7 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 		.remove_watched_txn_and_outputs(prev_funding_outpoint, prev_funding_script);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_propose_splice_while_disconnected() {
 	do_test_propose_splice_while_disconnected(false, false);

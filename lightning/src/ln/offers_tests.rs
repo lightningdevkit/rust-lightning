@@ -2430,6 +2430,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 	expect_payment_failed_conditions(&nodes[0], payment_hash, true, PaymentFailedConditions::new());
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn no_double_pay_with_stale_channelmanager() {
 	// This tests the following bug:

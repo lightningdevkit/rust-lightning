@@ -190,6 +190,7 @@ fn test_funding_peer_disconnect() {
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_no_txn_manager_serialize_deserialize() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -235,6 +236,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	send_payment(&nodes[0], &[&nodes[1]], 1000000);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_manager_serialize_deserialize_events() {
 	// This test makes sure the events field in ChannelManager survives de/serialization
@@ -357,6 +359,7 @@ fn test_simple_manager_serialize_deserialize() {
 	claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	// Test deserializing a ChannelManager with an out-of-date ChannelMonitor
@@ -705,7 +708,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 }
 
 #[test]
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(feature = "safe_channels")))]
 fn test_data_loss_protect() {
 	do_test_data_loss_protect(true, false, true);
 	do_test_data_loss_protect(true, true, false);
@@ -911,6 +914,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 	}
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_partial_claim_before_restart() {
 	do_test_partial_claim_before_restart(false, false);
@@ -1081,6 +1085,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	}
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn forwarded_payment_no_manager_persistence() {
 	do_forwarded_payment_no_manager_persistence(true, true, false);
@@ -1088,6 +1093,7 @@ fn forwarded_payment_no_manager_persistence() {
 	do_forwarded_payment_no_manager_persistence(false, false, false);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn intercepted_payment_no_manager_persistence() {
 	do_forwarded_payment_no_manager_persistence(true, true, true);
@@ -1095,6 +1101,7 @@ fn intercepted_payment_no_manager_persistence() {
 	do_forwarded_payment_no_manager_persistence(false, false, true);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn removed_payment_no_manager_persistence() {
 	// If an HTLC is failed to us on a channel, and the ChannelMonitor persistence completes, but
@@ -1173,6 +1180,7 @@ fn removed_payment_no_manager_persistence() {
 	expect_payment_failed!(nodes[0], payment_hash, false);
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_reload_partial_funding_batch() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -1236,6 +1244,7 @@ fn test_reload_partial_funding_batch() {
 	assert!(nodes[0].node.list_channels().is_empty());
 }
 
+#[cfg(not(feature = "safe_channels"))]
 #[test]
 fn test_htlc_localremoved_persistence() {
 	// Tests that if we fail an htlc back (update_fail_htlc message) and then restart the node, the node will resend the
@@ -1419,4 +1428,3 @@ fn test_peer_storage() {
 	let res = std::panic::catch_unwind(|| drop(nodes));
 	assert!(res.is_err());
 }
-
