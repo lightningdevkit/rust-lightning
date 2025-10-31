@@ -62,9 +62,26 @@ if [ "$OUTPUT_CODECOV_JSON" = "0" ]; then
     cargo llvm-cov --html --ignore-filename-regex "fuzz/" --output-dir "$OUTPUT_DIR"
     echo "Coverage report generated in $OUTPUT_DIR/html/index.html"
 else
-    cargo llvm-cov -j8 --codecov --ignore-filename-regex "fuzz/" --output-path "$OUTPUT_DIR/fuzz-codecov.json"
+    # Clean previous coverage artifacts to ensure a fresh run.
+    cargo llvm-cov clean --workspace
+
+    # Import honggfuzz corpus if the artifact was downloaded.
+    if [ -d "hfuzz_workspace" ]; then
+        echo "Importing corpus from hfuzz_workspace..."
+        for target_dir in hfuzz_workspace/*; do
+            [ -d "$target_dir" ] || continue
+            src_name="$(basename "$target_dir")"
+            dest="${src_name%_target}"
+            mkdir -p "test_cases/$dest"
+            # Copy corpus files into the test_cases directory
+            find "$target_dir" -maxdepth 2 -type f -path "$target_dir/input/*" \
+              -print0 | xargs -0 -I{} cp -n {} "test_cases/$dest/"
+        done
+    fi
+
+    echo "Replaying imported corpus (if found) via tests to generate coverage..."
+    cargo llvm-cov -j8 --codecov --ignore-filename-regex "fuzz/" \
+        --output-path "$OUTPUT_DIR/fuzz-codecov.json" --tests
+
     echo "Fuzz codecov report available at $OUTPUT_DIR/fuzz-codecov.json"
 fi
-
-
-
