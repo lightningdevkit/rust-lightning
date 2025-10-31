@@ -194,6 +194,7 @@ impl Display for Currency {
 		let currency_code = match *self {
 			Currency::Bitcoin => "bc",
 			Currency::BitcoinTestnet => "tb",
+			Currency::BitcoinTestnet4 => "tb",
 			Currency::Regtest => "bcrt",
 			Currency::Simnet => "sb",
 			Currency::Signet => "tbs",
@@ -475,6 +476,7 @@ mod test {
 
 		assert_eq!("bc", Currency::Bitcoin.to_string());
 		assert_eq!("tb", Currency::BitcoinTestnet.to_string());
+		assert_eq!("tb", Currency::BitcoinTestnet4.to_string());
 		assert_eq!("bcrt", Currency::Regtest.to_string());
 		assert_eq!("sb", Currency::Simnet.to_string());
 		assert_eq!("tbs", Currency::Signet.to_string());

@@ -39,7 +39,7 @@ lightning-invoice = { version = "0.34.0", path = "../lightning-invoice", default
 lightning-macros = { version = "0.2", path = "../lightning-macros" }
 
 bech32 = { version = "0.11.0", default-features = false }
-bitcoin = { version = "0.32.2", default-features = false, features = ["secp-recovery"] }
+bitcoin = { version = "0.32.4", default-features = false, features = ["secp-recovery"] }
 
 dnssec-prover = { version = "0.6", default-features = false }
 hashbrown = { version = "0.13", default-features = false }
@@ -58,7 +58,7 @@ lightning-macros = { path = "../lightning-macros" }
 parking_lot = { version = "0.12", default-features = false }
 
 [dev-dependencies.bitcoin]
-version = "0.32.2"
+version = "0.32.4"
 default-features = false
 features = ["bitcoinconsensus", "secp-recovery"]
 
