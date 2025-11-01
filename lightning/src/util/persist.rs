@@ -38,6 +38,7 @@ use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
 use crate::util::native_async::FutureSpawner;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
+use crate::util::wakers::Notifier;
 
 /// The alphabet of characters allowed for namespaces and keys.
 pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str =
@@ -875,6 +876,7 @@ where
 	pub(crate) fn spawn_async_persist_new_channel(
 		&self, monitor_name: MonitorName,
 		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+		notifier: Arc<Notifier>,
 	) {
 		let inner = Arc::clone(&self.0);
 		// Note that `persist_new_channel` is a sync method which calls all the way through to the
@@ -884,7 +886,10 @@ where
 		let completion = (monitor.channel_id(), monitor.get_latest_update_id());
 		self.0.future_spawner.spawn(async move {
 			match future.await {
-				Ok(()) => inner.async_completed_updates.lock().unwrap().push(completion),
+				Ok(()) => {
+					inner.async_completed_updates.lock().unwrap().push(completion);
+					notifier.notify();
+				},
 				Err(e) => {
 					log_error!(
 						inner.logger,
@@ -895,9 +900,10 @@ where
 		});
 	}
 
-	pub(crate) fn spawn_async_update_persisted_channel(
+	pub(crate) fn spawn_async_update_channel(
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+		notifier: Arc<Notifier>,
 	) {
 		let inner = Arc::clone(&self.0);
 		// Note that `update_persisted_channel` is a sync method which calls all the way through to
@@ -914,6 +920,7 @@ where
 			match future.await {
 				Ok(()) => if let Some(completion) = completion {
 					inner.async_completed_updates.lock().unwrap().push(completion);
+					notifier.notify();
 				},
 				Err(e) => {
 					log_error!(
