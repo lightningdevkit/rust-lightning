@@ -159,7 +159,7 @@ impl_record!('a, );
 impl_record!(, 'a);
 
 /// A trait encapsulating the operations required of a logger.
-pub trait Logger {
+pub trait Logger: Clone {
 	/// Logs the [`Record`].
 	fn log(&self, record: Record);
 }
@@ -180,6 +180,17 @@ where
 	channel_id: Option<ChannelId>,
 	/// The payment hash of the payment pertaining to the logged record.
 	payment_hash: Option<PaymentHash>,
+}
+
+impl<'a, L: Deref> Clone for WithContext<'a, L> where L::Target: Logger {
+	fn clone(&self) -> Self {
+		WithContext {
+			logger: self.logger,
+			peer_id: self.peer_id,
+			channel_id: self.channel_id,
+			payment_hash: self.payment_hash,
+		}
+	}
 }
 
 impl<'a, L: Deref> Logger for WithContext<'a, L>

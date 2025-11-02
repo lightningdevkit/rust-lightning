@@ -600,6 +600,15 @@ where
 	details: &'b ChannelDetails,
 }
 
+impl<'a, 'b, L: Deref> Clone for WithChannelDetails<'a, 'b, L> where L::Target: Logger {
+	fn clone(&self) -> Self {
+		Self {
+			logger: self.logger,
+			details: self.details,
+		}
+	}
+}
+
 impl<'a, 'b, L: Deref> Logger for WithChannelDetails<'a, 'b, L>
 where
 	L::Target: Logger,

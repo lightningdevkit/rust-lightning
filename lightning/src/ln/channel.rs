@@ -968,6 +968,17 @@ where
 	pub payment_hash: Option<PaymentHash>,
 }
 
+impl<'a, L: Deref> Clone for WithChannelContext<'a, L> where L::Target: Logger {
+	fn clone(&self) -> Self {
+		Self {
+			logger: self.logger,
+			peer_id: self.peer_id,
+			channel_id: self.channel_id,
+			payment_hash: self.payment_hash,
+		}
+	}
+}
+
 impl<'a, L: Deref> Logger for WithChannelContext<'a, L>
 where
 	L::Target: Logger,

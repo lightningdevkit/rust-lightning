@@ -2694,9 +2694,9 @@ pub struct ChannelManager<
 	router: R,
 
 	#[cfg(test)]
-	pub(super) flow: OffersMessageFlow<MR, L>,
+	pub(super) flow: OffersMessageFlow<MR, Box<L::Target>>,
 	#[cfg(not(test))]
-	flow: OffersMessageFlow<MR, L>,
+	flow: OffersMessageFlow<MR, Box<L::Target>>,
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -2718,7 +2718,7 @@ pub struct ChannelManager<
 	/// See `PendingOutboundPayment` documentation for more info.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	pending_outbound_payments: OutboundPayments<L>,
+	pending_outbound_payments: OutboundPayments<Box<L::Target>>,
 
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
 	///
@@ -3948,10 +3948,7 @@ where
 		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
 		entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
 		params: ChainParameters, current_timestamp: u32,
-	) -> Self
-	where
-		L: Clone,
-	{
+	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
@@ -3961,7 +3958,7 @@ where
 		let flow = OffersMessageFlow::new(
 			ChainHash::using_genesis_block(params.network), params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
-			node_signer.get_receive_auth_key(), message_router, logger.clone(),
+			node_signer.get_receive_auth_key(), message_router, Box::new((*logger).clone()),
 		);
 
 		ChannelManager {
@@ -3976,7 +3973,7 @@ where
 			best_block: RwLock::new(params.best_block),
 
 			outbound_scid_aliases: Mutex::new(new_hash_set()),
-			pending_outbound_payments: OutboundPayments::new(new_hash_map(), logger.clone()),
+			pending_outbound_payments: OutboundPayments::new(new_hash_map(), Box::new((*logger).clone())),
 			forward_htlcs: Mutex::new(new_hash_map()),
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
@@ -17151,7 +17148,7 @@ where
 			pending_outbound_payments = Some(outbounds);
 		}
 		let pending_outbounds =
-			OutboundPayments::new(pending_outbound_payments.unwrap(), args.logger.clone());
+			OutboundPayments::new(pending_outbound_payments.unwrap(), Box::new((*args.logger).clone()));
 
 		for (peer_pubkey, peer_storage) in peer_storage_dir {
 			if let Some(peer_state) = per_peer_state.get_mut(&peer_pubkey) {
@@ -17997,7 +17994,7 @@ where
 			expanded_inbound_key,
 			args.node_signer.get_receive_auth_key(),
 			args.message_router,
-			args.logger.clone(),
+			Box::new((*args.logger).clone()),
 		)
 		.with_async_payments_offers_cache(async_receive_offer_cache);
 
