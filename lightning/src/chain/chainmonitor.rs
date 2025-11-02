@@ -26,6 +26,8 @@
 use bitcoin::block::Header;
 use bitcoin::hash_types::{BlockHash, Txid};
 
+use bitcoin::secp256k1::PublicKey;
+
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 #[cfg(peer_storage)]
@@ -57,7 +59,8 @@ use crate::util::persist::{KVStore, MonitorName, MonitorUpdatingPersisterAsync};
 #[cfg(peer_storage)]
 use crate::util::ser::{VecWriter, Writeable};
 use crate::util::wakers::{Future, Notifier};
-use bitcoin::secp256k1::PublicKey;
+
+use alloc::sync::Arc;
 #[cfg(peer_storage)]
 use core::iter::Cycle;
 use core::ops::Deref;
@@ -267,6 +270,7 @@ pub struct AsyncPersister<
 	FE::Target: FeeEstimator,
 {
 	persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>,
+	event_notifier: Arc<Notifier>,
 }
 
 impl<
@@ -314,7 +318,8 @@ where
 		&self, monitor_name: MonitorName,
 		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
 	) -> ChannelMonitorUpdateStatus {
-		self.persister.spawn_async_persist_new_channel(monitor_name, monitor);
+		let notifier = Arc::clone(&self.event_notifier);
+		self.persister.spawn_async_persist_new_channel(monitor_name, monitor, notifier);
 		ChannelMonitorUpdateStatus::InProgress
 	}
 
@@ -322,7 +327,8 @@ where
 		&self, monitor_name: MonitorName, monitor_update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
 	) -> ChannelMonitorUpdateStatus {
-		self.persister.spawn_async_update_persisted_channel(monitor_name, monitor_update, monitor);
+		let notifier = Arc::clone(&self.event_notifier);
+		self.persister.spawn_async_update_channel(monitor_name, monitor_update, monitor, notifier);
 		ChannelMonitorUpdateStatus::InProgress
 	}
 
@@ -382,7 +388,7 @@ pub struct ChainMonitor<
 
 	/// A [`Notifier`] used to wake up the background processor in case we have any [`Event`]s for
 	/// it to give to users (or [`MonitorEvent`]s for `ChannelManager` to process).
-	event_notifier: Notifier,
+	event_notifier: Arc<Notifier>,
 
 	/// Messages to send to the peer. This is currently used to distribute PeerStorage to channel partners.
 	pending_send_only_events: Mutex<Vec<MessageSendEvent>>,
@@ -430,17 +436,18 @@ impl<
 		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, T, F>, _entropy_source: ES,
 		_our_peerstorage_encryption_key: PeerStorageKey,
 	) -> Self {
+		let event_notifier = Arc::new(Notifier::new());
 		Self {
 			monitors: RwLock::new(new_hash_map()),
 			chain_source,
 			broadcaster,
 			logger,
 			fee_estimator: feeest,
-			persister: AsyncPersister { persister },
 			_entropy_source,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
-			event_notifier: Notifier::new(),
+			event_notifier: Arc::clone(&event_notifier),
+			persister: AsyncPersister { persister, event_notifier },
 			pending_send_only_events: Mutex::new(Vec::new()),
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
@@ -656,7 +663,7 @@ where
 			_entropy_source,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
-			event_notifier: Notifier::new(),
+			event_notifier: Arc::new(Notifier::new()),
 			pending_send_only_events: Mutex::new(Vec::new()),
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
