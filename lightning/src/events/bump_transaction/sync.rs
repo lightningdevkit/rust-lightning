@@ -17,7 +17,7 @@ use crate::chain::chaininterface::BroadcasterInterface;
 use crate::chain::ClaimId;
 use crate::prelude::*;
 use crate::sign::SignerProvider;
-use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
+use crate::util::async_poll::{dummy_waker, AsyncResult};
 use crate::util::logger::Logger;
 
 use bitcoin::{Psbt, ScriptBuf, Transaction, TxOut};
@@ -93,18 +93,18 @@ where
 ///
 /// For an asynchronous version of this wrapper, see [`Wallet`].
 // Note that updates to documentation on this struct should be copied to the asynchronous version.
-pub struct WalletSync<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend>
+pub struct WalletSync<W: Deref + Sync + Send, L: Deref + Sync + Send>
 where
-	W::Target: WalletSourceSync + MaybeSend,
-	L::Target: Logger + MaybeSend,
+	W::Target: WalletSourceSync + Send,
+	L::Target: Logger + Send,
 {
 	wallet: Wallet<WalletSourceSyncWrapper<W>, L>,
 }
 
-impl<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend> WalletSync<W, L>
+impl<W: Deref + Sync + Send, L: Deref + Sync + Send> WalletSync<W, L>
 where
-	W::Target: WalletSourceSync + MaybeSend,
-	L::Target: Logger + MaybeSend,
+	W::Target: WalletSourceSync + Send,
+	L::Target: Logger + Send,
 {
 	/// Constructs a new [`WalletSync`] instance.
 	pub fn new(source: W, logger: L) -> Self {
@@ -112,11 +112,11 @@ where
 	}
 }
 
-impl<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend> CoinSelectionSourceSync
+impl<W: Deref + Sync + Send, L: Deref + Sync + Send> CoinSelectionSourceSync
 	for WalletSync<W, L>
 where
-	W::Target: WalletSourceSync + MaybeSend + MaybeSync,
-	L::Target: Logger + MaybeSend + MaybeSync,
+	W::Target: WalletSourceSync + Send + Sync,
+	L::Target: Logger + Send + Sync,
 {
 	fn select_confirmed_utxos(
 		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
