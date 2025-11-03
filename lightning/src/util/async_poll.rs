@@ -94,27 +94,39 @@ pub(crate) fn dummy_waker() -> Waker {
 
 #[cfg(feature = "std")]
 /// A type alias for a future that returns a result of type `T` or error `E`.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 pub type AsyncResult<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + 'a + Send>>;
 #[cfg(not(feature = "std"))]
 /// A type alias for a future that returns a result of type `T` or error `E`.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 pub type AsyncResult<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + 'a>>;
 
 /// Marker trait to optionally implement `Sync` under std.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 #[cfg(feature = "std")]
 pub use core::marker::Sync as MaybeSync;
 
 #[cfg(not(feature = "std"))]
 /// Marker trait to optionally implement `Sync` under std.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 pub trait MaybeSync {}
 #[cfg(not(feature = "std"))]
 impl<T> MaybeSync for T where T: ?Sized {}
 
 /// Marker trait to optionally implement `Send` under std.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 #[cfg(feature = "std")]
 pub use core::marker::Send as MaybeSend;
 
 #[cfg(not(feature = "std"))]
 /// Marker trait to optionally implement `Send` under std.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 pub trait MaybeSend {}
 #[cfg(not(feature = "std"))]
 impl<T> MaybeSend for T where T: ?Sized {}

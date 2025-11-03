@@ -353,6 +353,8 @@ pub struct CoinSelection {
 /// which can provide a default implementation of this trait when used with [`Wallet`].
 ///
 /// For a synchronous version of this trait, see [`sync::CoinSelectionSourceSync`].
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 pub trait CoinSelectionSource {
 	/// Performs coin selection of a set of UTXOs, with at least 1 confirmation each, that are
 	/// available to spend. Implementations are free to pick their coin selection algorithm of
@@ -404,6 +406,8 @@ pub trait CoinSelectionSource {
 /// provide a default implementation to [`CoinSelectionSource`].
 ///
 /// For a synchronous version of this trait, see [`sync::WalletSourceSync`].
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 pub trait WalletSource {
 	/// Returns all UTXOs, with at least 1 confirmation each, that are available to spend.
 	fn list_confirmed_utxos<'a>(&'a self) -> AsyncResult<'a, Vec<Utxo>, ()>;
@@ -424,6 +428,8 @@ pub trait WalletSource {
 /// spends may happen.
 ///
 /// For a synchronous version of this wrapper, see [`sync::WalletSync`].
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 pub struct Wallet<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend>
 where
 	W::Target: WalletSource + MaybeSend,
@@ -669,6 +675,8 @@ where
 /// Replace-By-Fee (RBF).
 ///
 /// For a synchronous version of this handler, see [`sync::BumpTransactionEventHandlerSync`].
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 ///
 /// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 pub struct BumpTransactionEventHandler<B: Deref, C: Deref, SP: Deref, L: Deref>

@@ -155,6 +155,7 @@ where
 	}
 }
 
+/// This is not exported to bindings users as async is only supported in Rust.
 impl<K: Deref> KVStore for KVStoreSyncWrapper<K>
 where
 	K::Target: KVStoreSync,
@@ -213,6 +214,8 @@ where
 /// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
 /// interface can use a concatenation of `[{primary_namespace}/[{secondary_namespace}/]]{key}` to
 /// recover a `key` compatible with the data model previously assumed by `KVStorePersister::persist`.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 pub trait KVStore {
 	/// Returns the data stored for the given `primary_namespace`, `secondary_namespace`, and
 	/// `key`.
@@ -716,6 +719,8 @@ where
 ///
 /// Unlike [`MonitorUpdatingPersister`], this does not implement [`Persist`], but is instead used
 /// directly by the [`ChainMonitor`] via [`ChainMonitor::new_async_beta`].
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 ///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 /// [`ChainMonitor::new_async_beta`]: crate::chain::chainmonitor::ChainMonitor::new_async_beta
