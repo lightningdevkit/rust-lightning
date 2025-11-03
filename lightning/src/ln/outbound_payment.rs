@@ -93,6 +93,7 @@ pub(crate) enum PendingOutboundPayment {
 		// race conditions where this field might be missing upon reload. It may be required
 		// for future retries.
 		route_params_config: RouteParametersConfig,
+		retryable_invoice_request: Option<RetryableInvoiceRequest>,
 	},
 	// This state applies when we are paying an often-offline recipient and another node on the
 	// network served us a static invoice on the recipient's behalf in response to our invoice
@@ -133,6 +134,9 @@ pub(crate) enum PendingOutboundPayment {
 		/// Our best known block height at the time this payment was initiated.
 		starting_block_height: u32,
 		remaining_max_total_routing_fee_msat: Option<u64>,
+		/// Contact information for BLIP-42 contact management, containing the contact secrets
+		/// and payer offer that were sent in the invoice request.
+		contact_info: Option<crate::events::ContactInfo>,
 	},
 	/// When a pending payment is fulfilled, we continue tracking it until all pending HTLCs have
 	/// been resolved. This ensures we don't look up pending payments in ChannelMonitors on restart
@@ -981,7 +985,7 @@ where
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
 
-		let (payment_hash, retry_strategy, params_config, _) = self
+		let (payment_hash, retry_strategy, params_config, _, invoice_request) = self
 			.mark_invoice_received_and_get_details(invoice, payment_id)?;
 
 		if invoice.invoice_features().requires_unknown_bits_from(&features) {
@@ -1000,7 +1004,7 @@ where
 		}
 		let invoice = PaidBolt12Invoice::Bolt12Invoice(invoice.clone());
 		self.send_payment_for_bolt12_invoice_internal(
-			payment_id, payment_hash, None, None, invoice, route_params, retry_strategy, false, router,
+			payment_id, payment_hash, None, invoice_request.as_ref(), invoice, route_params, retry_strategy, false, router,
 			first_hops, inflight_htlcs, entropy_source, node_signer, node_id_lookup, secp_ctx,
 			best_block_height, pending_events, send_payment_along_path
 		)
@@ -1072,9 +1076,27 @@ where
 		let onion_session_privs = match outbounds.entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
 				PendingOutboundPayment::InvoiceReceived { .. } => {
+					// Extract ContactInfo from invoice_request if present
+					let contact_info = invoice_request.and_then(|inv_req| {
+						let contact_secret_bytes = inv_req.contact_secret()?;
+						let payer_offer_bytes = inv_req.payer_offer()?;
+
+						// Deserialize into ContactInfo
+						use crate::offers::contacts::ContactSecrets;
+						use crate::offers::offer::Offer;
+
+						// For the initial payment, we only have the primary secret
+						let contact_secrets = ContactSecrets::new(
+							contact_secret_bytes.try_into().ok()?
+						);
+						let payer_offer = Offer::try_from(payer_offer_bytes.to_vec()).ok()?;
+
+						Some(events::ContactInfo { contact_secrets, payer_offer })
+					});
+
 					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
-						payment_hash, recipient_onion.clone(), keysend_preimage, None, Some(bolt12_invoice.clone()), &route,
-						Some(retry_strategy), payment_params, entropy_source, best_block_height,
+						payment_hash, recipient_onion.clone(), keysend_preimage, invoice_request.cloned(), Some(bolt12_invoice.clone()), &route,
+						Some(retry_strategy), payment_params, entropy_source, best_block_height, contact_info,
 					);
 					*entry.into_mut() = retryable_payment;
 					onion_session_privs
@@ -1083,9 +1105,32 @@ where
 					let invreq = if let PendingOutboundPayment::StaticInvoiceReceived { invoice_request, .. } = entry.remove() {
 						invoice_request
 					} else { unreachable!() };
+
+					// Extract ContactInfo from invreq
+					let contact_info = {
+						let contact_secret_bytes = invreq.contact_secret();
+						let payer_offer_bytes = invreq.payer_offer();
+
+						match (contact_secret_bytes, payer_offer_bytes) {
+							(Some(secret), Some(offer_bytes)) => {
+								use crate::offers::contacts::ContactSecrets;
+								use crate::offers::offer::Offer;
+
+								let contact_secrets = secret.try_into().ok()
+									.map(|s| ContactSecrets::new(s));
+								let payer_offer = Offer::try_from(offer_bytes.to_vec()).ok();
+
+								contact_secrets.and_then(|cs| payer_offer.map(|po|
+									events::ContactInfo { contact_secrets: cs, payer_offer: po }
+								))
+							},
+							_ => None,
+						}
+					};
+
 					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
 						payment_hash, recipient_onion.clone(), keysend_preimage, Some(invreq), Some(bolt12_invoice.clone()), &route,
-						Some(retry_strategy), payment_params, entropy_source, best_block_height
+						Some(retry_strategy), payment_params, entropy_source, best_block_height, contact_info,
 					);
 					outbounds.insert(payment_id, retryable_payment);
 					onion_session_privs
@@ -1887,7 +1932,7 @@ where
 			hash_map::Entry::Vacant(entry) => {
 				let (payment, onion_session_privs) = Self::create_pending_payment(
 					payment_hash, recipient_onion, keysend_preimage, None, bolt12_invoice, route, retry_strategy,
-					payment_params, entropy_source, best_block_height
+					payment_params, entropy_source, best_block_height, None,
 				);
 				entry.insert(payment);
 				Ok(onion_session_privs)
@@ -1900,7 +1945,8 @@ where
 		payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<InvoiceRequest>,
 		bolt12_invoice: Option<PaidBolt12Invoice>, route: &Route, retry_strategy: Option<Retry>,
-		payment_params: Option<PaymentParameters>, entropy_source: &ES, best_block_height: u32
+		payment_params: Option<PaymentParameters>, entropy_source: &ES, best_block_height: u32,
+		contact_info: Option<crate::events::ContactInfo>,
 	) -> (PendingOutboundPayment, Vec<[u8; 32]>)
 	where
 		ES::Target: EntropySource,
@@ -1928,6 +1974,7 @@ where
 			total_msat: route.get_total_amount(),
 			remaining_max_total_routing_fee_msat:
 				route.route_params.as_ref().and_then(|p| p.max_total_routing_fee_msat),
+			contact_info,
 		};
 
 		for (path, session_priv_bytes) in route.paths.iter().zip(onion_session_privs.iter()) {
@@ -2025,7 +2072,7 @@ where
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId
 	) -> Result<(), Bolt12PaymentError> {
 		self.mark_invoice_received_and_get_details(invoice, payment_id)
-			.and_then(|(_, _, _, is_newly_marked)| {
+			.and_then(|(_, _, _, is_newly_marked, _)| {
 				is_newly_marked
 					.then_some(())
 					.ok_or(Bolt12PaymentError::DuplicateInvoice)
@@ -2035,31 +2082,35 @@ where
 	#[rustfmt::skip]
 	fn mark_invoice_received_and_get_details(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId
-	) -> Result<(PaymentHash, Retry, RouteParametersConfig, bool), Bolt12PaymentError> {
+	) -> Result<(PaymentHash, Retry, RouteParametersConfig, bool, Option<InvoiceRequest>), Bolt12PaymentError> {
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
 				PendingOutboundPayment::AwaitingInvoice {
-					retry_strategy: retry, route_params_config, ..
+					retry_strategy: retry, route_params_config, retryable_invoice_request, ..
 				} => {
 					let payment_hash = invoice.payment_hash();
 					let retry = *retry;
 					let config = *route_params_config;
+					let invreq = retryable_invoice_request.clone();
+					let invoice_request = invreq.as_ref().map(|r| r.invoice_request.clone());
 					*entry.into_mut() = PendingOutboundPayment::InvoiceReceived {
 						payment_hash,
 						retry_strategy: retry,
 						route_params_config: config,
+						retryable_invoice_request: invreq,
 					};
 
-					Ok((payment_hash, retry, config, true))
+					Ok((payment_hash, retry, config, true, invoice_request))
 				},
 				// When manual invoice handling is enabled, the corresponding `PendingOutboundPayment` entry
 				// is already updated at the time the invoice is received. This ensures that `InvoiceReceived`
 				// event generation remains idempotent, even if the same invoice is received again before the
 				// event is handled by the user.
 				PendingOutboundPayment::InvoiceReceived {
-					retry_strategy, route_params_config, ..
+					retry_strategy, route_params_config, retryable_invoice_request, ..
 				} => {
-					Ok((invoice.payment_hash(), *retry_strategy, *route_params_config, false))
+					let invoice_request = retryable_invoice_request.as_ref().map(|r| r.invoice_request.clone());
+					Ok((invoice.payment_hash(), *retry_strategy, *route_params_config, false, invoice_request))
 				},
 				_ => Err(Bolt12PaymentError::DuplicateInvoice),
 			},
@@ -2231,6 +2282,13 @@ where
 				log_info!(self.logger, "Payment with id {} and hash {} sent!", payment_id, payment_hash);
 				let fee_paid_msat = payment.get().get_pending_fee_msat();
 				let amount_msat = payment.get().total_msat();
+
+				// Extract contact_info from payment if present
+				let contact_info = match payment.get() {
+					PendingOutboundPayment::Retryable { contact_info, .. } => contact_info.clone(),
+					_ => None,
+				};
+
 				pending_events.push_back((events::Event::PaymentSent {
 					payment_id: Some(payment_id),
 					payment_preimage,
@@ -2238,6 +2296,7 @@ where
 					amount_msat,
 					fee_paid_msat,
 					bolt12_invoice: bolt12_invoice,
+					contact_info,
 				}, ev_completion_action.take()));
 				payment.get_mut().mark_fulfilled();
 			}
@@ -2644,6 +2703,7 @@ where
 					total_msat: path_amt,
 					starting_block_height: best_block_height,
 					remaining_max_total_routing_fee_msat: None, // only used for retries, and we'll never retry on startup
+					contact_info: None, // only used for BLIP-42 payments, not available on startup
 				}
 			}
 		}
@@ -2726,6 +2786,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(11, remaining_max_total_routing_fee_msat, option),
 		(13, invoice_request, option),
 		(15, bolt12_invoice, option),
+		(17, contact_info, option),
 		(not_written, retry_strategy, (static_value, None)),
 		(not_written, attempts, (static_value, PaymentAttempts::new())),
 	},
@@ -2767,6 +2828,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 				|fee_msat| RouteParametersConfig::default().with_max_total_routing_fee_msat(fee_msat)
 			)
 		))),
+		(6, retryable_invoice_request, option),
 	},
 	// Added in 0.1. Prior versions will drop these outbounds on downgrade, which is safe because no
 	// HTLCs are in-flight.

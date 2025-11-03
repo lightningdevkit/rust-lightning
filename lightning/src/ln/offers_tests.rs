@@ -185,7 +185,7 @@ fn route_bolt12_payment<'a, 'b, 'c>(
 
 fn claim_bolt12_payment<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], expected_payment_context: PaymentContext, invoice: &Bolt12Invoice
-) {
+) -> Option<crate::events::ContactInfo> {
 	let recipient = &path[path.len() - 1];
 	let payment_purpose = match get_event!(recipient, Event::PaymentClaimable) {
 		Event::PaymentClaimable { purpose, .. } => purpose,
@@ -204,11 +204,13 @@ fn claim_bolt12_payment<'a, 'b, 'c>(
 		},
 		_ => panic!("Unexpected payment purpose: {:?}", payment_purpose),
 	}
-	if let Some(inv) = claim_payment(node, path, payment_preimage) {
-		assert_eq!(inv, PaidBolt12Invoice::Bolt12Invoice(invoice.to_owned()));
+	let (inv, contact_info) = claim_payment(node, path, payment_preimage);
+	if let Some(paid_inv) = inv {
+		assert_eq!(paid_inv, PaidBolt12Invoice::Bolt12Invoice(invoice.to_owned()));
 	} else {
 		panic!("Expected PaidInvoice::Bolt12Invoice");
 	};
+	contact_info
 }
 
 fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> Nonce {
@@ -714,7 +716,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
 	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(david, &[charlie, bob, alice], payment_context, &invoice);
+	let _ = claim_bolt12_payment(david, &[charlie, bob, alice], payment_context, &invoice);
 	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -796,7 +798,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
 	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(david, &[charlie, bob, alice], payment_context, &invoice);
+	let _ = claim_bolt12_payment(david, &[charlie, bob, alice], payment_context, &invoice);
 	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -863,7 +865,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	let _ = claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -919,7 +921,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	let _ = claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -973,7 +975,7 @@ fn pays_for_offer_without_blinded_paths() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	let _ = claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -1016,7 +1018,7 @@ fn pays_for_refund_without_blinded_paths() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	let _ = claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -1253,7 +1255,7 @@ fn creates_and_pays_for_offer_with_retry() {
 	}
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
-	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	let _ = claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -1331,7 +1333,7 @@ fn pays_bolt12_invoice_asynchronously() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	let _ = claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 
 	assert_eq!(
@@ -1411,7 +1413,7 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	let _ = claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -2251,7 +2253,7 @@ fn fails_paying_invoice_more_than_once() {
 	assert!(david.node.get_and_clear_pending_msg_events().is_empty());
 
 	// Complete paying the first invoice
-	claim_bolt12_payment(david, &[charlie, bob, alice], payment_context, &invoice1);
+	let _ = claim_bolt12_payment(david, &[charlie, bob, alice], payment_context, &invoice1);
 	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -2576,10 +2578,6 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	// TODO: we should check also if the contact secret is the same that we inject by bob.
 
 	assert!(invoice_request.payer_offer().is_some());
-	// FIXME: this is wrong but make sure that we are following correctly the code path.
-	let payer_offer_bytes = invoice_request.payer_offer().unwrap();
-	let payer_offer = Offer::try_from(payer_offer_bytes.to_vec()).unwrap();
-	assert_eq!(payer_offer, offer);
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
@@ -2592,8 +2590,14 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	let contact_info = claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+
+	assert!(contact_info.is_some());
+	let contact_info = contact_info.unwrap();
+
+	assert!(invoice_request.contact_secret().is_some());
+	assert_eq!(invoice_request.contact_secret().unwrap(), contact_info.contact_secrets.primary_secret());
 
 	// TODO: now should be possible that alice will be able to repay bob without that
 	// bob give any offer in exchange!! but there is a contact list somewhere that allow

@@ -564,7 +564,7 @@ fn test_fulfill_hold_times() {
 	// Delay claiming so that we get a non-zero hold time.
 	thread::sleep(Duration::from_millis(200));
 
-	let (_, path_events) =
+	let (_, path_events, _) =
 		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, preimage.unwrap()));
 
 	assert_eq!(path_events.len(), 1);

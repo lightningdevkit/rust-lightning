@@ -3033,7 +3033,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 	node: &H, expected_payment_preimage: PaymentPreimage,
 	expected_fee_msat_opt: Option<Option<u64>>, expect_per_path_claims: bool,
 	expect_post_ev_mon_update: bool,
-) -> (Option<PaidBolt12Invoice>, Vec<Event>) {
+) -> (Option<PaidBolt12Invoice>, Vec<Event>, Option<crate::events::ContactInfo>) {
 	if expect_post_ev_mon_update {
 		check_added_monitors(node, 0);
 	}
@@ -3051,6 +3051,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 	}
 	// We return the invoice because some test may want to check the invoice details.
 	let invoice;
+	let contact_info_result;
 	let mut path_events = Vec::new();
 	let expected_payment_id = match events[0] {
 		Event::PaymentSent {
@@ -3060,6 +3061,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 			ref amount_msat,
 			ref fee_paid_msat,
 			ref bolt12_invoice,
+			ref contact_info,
 		} => {
 			assert_eq!(expected_payment_preimage, *payment_preimage);
 			assert_eq!(expected_payment_hash, *payment_hash);
@@ -3070,6 +3072,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 				assert!(fee_paid_msat.is_some());
 			}
 			invoice = bolt12_invoice.clone();
+			contact_info_result = contact_info.clone();
 			payment_id.unwrap()
 		},
 		_ => panic!("Unexpected event"),
@@ -3087,7 +3090,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 			}
 		}
 	}
-	(invoice, path_events)
+	(invoice, path_events, contact_info_result)
 }
 
 #[macro_export]
@@ -4119,7 +4122,7 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 }
 pub fn claim_payment_along_route(
 	args: ClaimAlongRouteArgs,
-) -> (Option<PaidBolt12Invoice>, Vec<Event>) {
+) -> (Option<PaidBolt12Invoice>, Vec<Event>, Option<crate::events::ContactInfo>) {
 	let origin_node = args.origin_node;
 	let payment_preimage = args.payment_preimage;
 	let skip_last = args.skip_last;
@@ -4127,20 +4130,20 @@ pub fn claim_payment_along_route(
 	if !skip_last {
 		expect_payment_sent!(origin_node, payment_preimage, Some(expected_total_fee_msat))
 	} else {
-		(None, Vec::new())
+		(None, Vec::new(), None)
 	}
 }
 
 pub fn claim_payment<'a, 'b, 'c>(
 	origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>],
 	our_payment_preimage: PaymentPreimage,
-) -> Option<PaidBolt12Invoice> {
-	claim_payment_along_route(ClaimAlongRouteArgs::new(
+) -> (Option<PaidBolt12Invoice>, Option<crate::events::ContactInfo>) {
+	let result = claim_payment_along_route(ClaimAlongRouteArgs::new(
 		origin_node,
 		&[expected_route],
 		our_payment_preimage,
-	))
-	.0
+	));
+	(result.0, result.2)
 }
 
 pub const TEST_FINAL_CLTV: u32 = 70;

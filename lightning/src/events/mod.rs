@@ -727,6 +727,55 @@ pub enum InboundChannelFunds {
 	/// who is the channel opener in this case.
 	DualFunded,
 }
+/// Contact information for BLIP-42 contact management, containing the contact secrets
+/// and payer offer that were used when paying a BOLT12 offer.
+///
+/// This information allows the payer to establish a contact relationship with the recipient,
+/// enabling future direct payments without needing a new offer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContactInfo {
+	/// The contact secrets that were generated and sent in the invoice request.
+	pub contact_secrets: crate::offers::contacts::ContactSecrets,
+	/// The payer's offer that was sent in the invoice request.
+	pub payer_offer: crate::offers::offer::Offer,
+}
+
+impl Writeable for ContactInfo {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		// Serialize ContactSecrets by writing its fields
+		self.contact_secrets.primary_secret().write(writer)?;
+		(self.contact_secrets.additional_remote_secrets().len() as u16).write(writer)?;
+		for secret in self.contact_secrets.additional_remote_secrets() {
+			secret.write(writer)?;
+		}
+		// Serialize Offer as bytes (as a length-prefixed Vec<u8>)
+		self.payer_offer.as_ref().to_vec().write(writer)?;
+		Ok(())
+	}
+}
+
+impl Readable for ContactInfo {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, crate::ln::msgs::DecodeError> {
+		// Deserialize ContactSecrets
+		let primary_secret: [u8; 32] = Readable::read(reader)?;
+		let num_secrets: u16 = Readable::read(reader)?;
+		let mut additional_remote_secrets = Vec::with_capacity(num_secrets as usize);
+		for _ in 0..num_secrets {
+			additional_remote_secrets.push(Readable::read(reader)?);
+		}
+		let contact_secrets = crate::offers::contacts::ContactSecrets::with_additional_secrets(
+			primary_secret,
+			additional_remote_secrets,
+		);
+
+		// Deserialize Offer (as a length-prefixed Vec<u8>)
+		let payer_offer_bytes: Vec<u8> = Readable::read(reader)?;
+		let payer_offer = crate::offers::offer::Offer::try_from(payer_offer_bytes)
+			.map_err(|_| crate::ln::msgs::DecodeError::InvalidValue)?;
+
+		Ok(ContactInfo { contact_secrets, payer_offer })
+	}
+}
 
 /// An Event which you should probably take some action in response to.
 ///
@@ -1064,6 +1113,13 @@ pub enum Event {
 		///
 		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 		bolt12_invoice: Option<PaidBolt12Invoice>,
+		/// Contact information for BLIP-42 contact management.
+		///
+		/// This is `Some` when paying a BOLT12 offer with contact information enabled,
+		/// containing the contact secrets and payer offer that were sent in the invoice request.
+		///
+		/// This allows the payer to establish a contact relationship with the recipient.
+		contact_info: Option<ContactInfo>,
 	},
 	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
 	/// provide failure information for each path attempt in the payment, including retries.
@@ -1951,6 +2007,7 @@ impl Writeable for Event {
 				ref amount_msat,
 				ref fee_paid_msat,
 				ref bolt12_invoice,
+				ref contact_info,
 			} => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -1960,6 +2017,7 @@ impl Writeable for Event {
 					(5, fee_paid_msat, option),
 					(7, amount_msat, option),
 					(9, bolt12_invoice, option),
+					(11, contact_info, option),
 				});
 			},
 			&Event::PaymentPathFailed {
@@ -2422,6 +2480,7 @@ impl MaybeReadable for Event {
 					let mut amount_msat = None;
 					let mut fee_paid_msat = None;
 					let mut bolt12_invoice = None;
+					let mut contact_info = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
 						(1, payment_hash, option),
@@ -2429,6 +2488,7 @@ impl MaybeReadable for Event {
 						(5, fee_paid_msat, option),
 						(7, amount_msat, option),
 						(9, bolt12_invoice, option),
+						(11, contact_info, option),
 					});
 					if payment_hash.is_none() {
 						payment_hash = Some(PaymentHash(
@@ -2442,6 +2502,7 @@ impl MaybeReadable for Event {
 						amount_msat,
 						fee_paid_msat,
 						bolt12_invoice,
+						contact_info,
 					}))
 				};
 				f()
