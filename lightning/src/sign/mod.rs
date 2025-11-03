@@ -1071,6 +1071,9 @@ pub trait ChangeDestinationSource {
 
 /// A synchronous helper trait that describes an on-chain wallet capable of returning a (change) destination script.
 pub trait ChangeDestinationSourceSync {
+	/// Returns a script pubkey which can be used as a change destination for
+	/// [`OutputSpender::spend_spendable_outputs`].
+	///
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds controlled to the same user.
 	fn get_change_destination_script(&self) -> Result<ScriptBuf, ()>;
