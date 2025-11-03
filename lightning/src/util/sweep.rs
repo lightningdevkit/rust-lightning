@@ -329,6 +329,8 @@ impl_writeable_tlv_based_enum!(OutputSpendStatus,
 /// required to give their chain data sources (i.e., [`Filter`] implementation) to the respective
 /// constructor.
 ///
+/// This is not exported to bindings users as async is not supported outside of Rust.
+///
 /// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 pub struct OutputSweeper<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
 where
@@ -979,6 +981,8 @@ where
 	/// this [`OutputSweeperSync`], fetching an async [`OutputSweeper`] won't accomplish much, all
 	/// the async methods will hang waiting on your sync [`KVStore`] and likely confuse your async
 	/// runtime. This exists primarily for LDK-internal use, including outside of this crate.
+	///
+	/// This is not exported to bindings users as async is not supported outside of Rust.
 	#[doc(hidden)]
 	pub fn sweeper_async(
 		&self,
