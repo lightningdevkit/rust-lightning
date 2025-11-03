@@ -55,7 +55,7 @@ use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
-use crate::offers::invoice::Bolt12Invoice;
+use crate::offers::invoice::{self, Bolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
@@ -2574,6 +2574,7 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	// Now we check that there are the contact secret and the
 	// contact secret is the same that we inject by bob.
 	assert!(invoice_request.contact_secret().is_some());
+	assert!(invoice_request.payer_offer().is_some());
 	// TODO: we should check also if the contact secret is the same that we inject by bob.
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
