@@ -599,6 +599,8 @@ where
 	///
 	/// Returns an error if the parameterized [`Router`] is unable to create a blinded path for the offer.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`DefaultMessageRouter`]: crate::onion_message::messenger::DefaultMessageRouter
 	pub fn create_offer_builder<ES: Deref>(
 		&self, entropy_source: ES, peers: Vec<MessageForwardNode>,
@@ -619,6 +621,8 @@ where
 	///
 	/// This gives users full control over how the [`BlindedMessagePath`] is constructed,
 	/// including the option to omit it entirely.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// See [`Self::create_offer_builder`] for more details on usage.
 	pub fn create_offer_builder_using_router<ME: Deref, ES: Deref>(
@@ -646,6 +650,8 @@ where
 	/// 2. Use [`Self::create_static_invoice_builder`] to create a [`StaticInvoice`] from this
 	///    [`Offer`] plus the returned [`Nonce`], and provide the static invoice to the
 	///    aforementioned always-online node.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	pub fn create_async_receive_offer_builder<ES: Deref>(
 		&self, entropy_source: ES, message_paths_to_always_online_node: Vec<BlindedMessagePath>,
 	) -> Result<(OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError>
@@ -728,6 +734,8 @@ where
 	/// - `amount_msats` is invalid, or
 	/// - The parameterized [`Router`] is unable to create a blinded path for the refund.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	/// [`RouteParameters::from_payment_params_and_value`]: crate::routing::router::RouteParameters::from_payment_params_and_value
 	pub fn create_refund_builder<ES: Deref>(
@@ -764,6 +772,8 @@ where
 	/// return an error if the provided [`MessageRouter`] fails to construct a valid
 	/// [`BlindedMessagePath`] for the refund.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
@@ -799,6 +809,8 @@ where
 	/// # Nonce
 	/// The nonce is used to create a unique [`InvoiceRequest::payer_metadata`] for the invoice request.
 	/// These will be used to verify the corresponding [`Bolt12Invoice`] when it is received.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	pub fn create_invoice_request_builder<'a>(
 		&'a self, offer: &'a Offer, nonce: Nonce, payment_id: PaymentId,
 	) -> Result<InvoiceRequestBuilder<'a, 'a, secp256k1::All>, Bolt12SemanticError> {
@@ -814,6 +826,8 @@ where
 
 	/// Creates a [`StaticInvoiceBuilder`] from the corresponding [`Offer`] and [`Nonce`] that were
 	/// created via [`Self::create_async_receive_offer_builder`].
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	pub fn create_static_invoice_builder<'a, ES: Deref, R: Deref>(
 		&self, router: &R, entropy_source: ES, offer: &'a Offer, offer_nonce: Nonce,
 		payment_secret: PaymentSecret, relative_expiry_secs: u32,
@@ -886,6 +900,8 @@ where
 	///
 	/// Returns an error if the refund targets a different chain or if no valid
 	/// blinded path can be constructed.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	pub fn create_invoice_builder_from_refund<'a, ES: Deref, R: Deref>(
 		&'a self, router: &R, entropy_source: ES, refund: &'a Refund, payment_hash: PaymentHash,
 		payment_secret: PaymentSecret, usable_channels: Vec<ChannelDetails>,
