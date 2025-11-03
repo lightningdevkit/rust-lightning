@@ -28,13 +28,26 @@ use super::{
 	WalletSource,
 };
 
-/// A synchronous version of the [`WalletSource`] trait.
+/// An alternative to [`CoinSelectionSourceSync`] that can be implemented and used along
+/// [`WalletSync`] to provide a default implementation to [`CoinSelectionSourceSync`].
+///
+/// For an asynchronous version of this trait, see [`WalletSource`].
+// Note that updates to documentation on this trait should be copied to the asynchronous version.
 pub trait WalletSourceSync {
-	/// A synchronous version of [`WalletSource::list_confirmed_utxos`].
+	/// Returns all UTXOs, with at least 1 confirmation each, that are available to spend.
 	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()>;
-	/// A synchronous version of [`WalletSource::get_change_script`].
+	/// Returns a script to use for change above dust resulting from a successful coin selection
+	/// attempt.
 	fn get_change_script(&self) -> Result<ScriptBuf, ()>;
-	/// A Synchronous version of [`WalletSource::sign_psbt`].
+	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
+	/// the transaction known to the wallet (i.e., any provided via
+	/// [`WalletSource::list_confirmed_utxos`]).
+	///
+	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
+	/// unsigned transaction and then sign it with your wallet.
+	///
+	/// [`TxIn::script_sig`]: bitcoin::TxIn::script_sig
+	/// [`TxIn::witness`]: bitcoin::TxIn::witness
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()>;
 }
 
@@ -74,7 +87,12 @@ where
 	}
 }
 
-/// A synchronous wrapper around [`Wallet`] to be used in contexts where async is not available.
+/// A wrapper over [`WalletSourceSync`] that implements [`CoinSelectionSourceSync`] by preferring
+/// UTXOs that would avoid conflicting double spends. If not enough UTXOs are available to do so,
+/// conflicting double spends may happen.
+///
+/// For an asynchronous version of this wrapper, see [`Wallet`].
+// Note that updates to documentation on this struct should be copied to the asynchronous version.
 pub struct WalletSync<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend>
 where
 	W::Target: WalletSourceSync + MaybeSend,
@@ -136,15 +154,59 @@ where
 	}
 }
 
-/// A synchronous version of the [`CoinSelectionSource`] trait.
+/// An abstraction over a bitcoin wallet that can perform coin selection over a set of UTXOs and can
+/// sign for them. The coin selection method aims to mimic Bitcoin Core's `fundrawtransaction` RPC,
+/// which most wallets should be able to satisfy. Otherwise, consider implementing
+/// [`WalletSourceSync`], which can provide a default implementation of this trait when used with
+/// [`WalletSync`].
+///
+/// For an asynchronous version of this trait, see [`CoinSelectionSource`].
+// Note that updates to documentation on this trait should be copied to the asynchronous version.
 pub trait CoinSelectionSourceSync {
-	/// A synchronous version of [`CoinSelectionSource::select_confirmed_utxos`].
+	/// Performs coin selection of a set of UTXOs, with at least 1 confirmation each, that are
+	/// available to spend. Implementations are free to pick their coin selection algorithm of
+	/// choice, as long as the following requirements are met:
+	///
+	/// 1. `must_spend` contains a set of [`Input`]s that must be included in the transaction
+	///    throughout coin selection, but must not be returned as part of the result.
+	/// 2. `must_pay_to` contains a set of [`TxOut`]s that must be included in the transaction
+	///    throughout coin selection. In some cases, like when funding an anchor transaction, this
+	///    set is empty. Implementations should ensure they handle this correctly on their end,
+	///    e.g., Bitcoin Core's `fundrawtransaction` RPC requires at least one output to be
+	///    provided, in which case a zero-value empty OP_RETURN output can be used instead.
+	/// 3. Enough inputs must be selected/contributed for the resulting transaction (including the
+	///    inputs and outputs noted above) to meet `target_feerate_sat_per_1000_weight`.
+	/// 4. The final transaction must have a weight smaller than `max_tx_weight`; if this
+	///    constraint can't be met, return an `Err`. In the case of counterparty-signed HTLC
+	///    transactions, we will remove a chunk of HTLCs and try your algorithm again. As for
+	///    anchor transactions, we will try your coin selection again with the same input-output
+	///    set when you call [`ChannelMonitor::rebroadcast_pending_claims`], as anchor transactions
+	///    cannot be downsized.
+	///
+	/// Implementations must take note that [`Input::satisfaction_weight`] only tracks the weight of
+	/// the input's `script_sig` and `witness`. Some wallets, like Bitcoin Core's, may require
+	/// providing the full input weight. Failing to do so may lead to underestimating fee bumps and
+	/// delaying block inclusion.
+	///
+	/// The `claim_id` must map to the set of external UTXOs assigned to the claim, such that they
+	/// can be re-used within new fee-bumped iterations of the original claiming transaction,
+	/// ensuring that claims don't double spend each other. If a specific `claim_id` has never had a
+	/// transaction associated with it, and all of the available UTXOs have already been assigned to
+	/// other claims, implementations must be willing to double spend their UTXOs. The choice of
+	/// which UTXOs to double spend is left to the implementation, but it must strive to keep the
+	/// set of other claims being double spent to a minimum.
+	///
+	/// [`ChannelMonitor::rebroadcast_pending_claims`]: crate::chain::channelmonitor::ChannelMonitor::rebroadcast_pending_claims
 	fn select_confirmed_utxos(
 		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
 	) -> Result<CoinSelection, ()>;
 
-	/// A synchronous version of [`CoinSelectionSource::sign_psbt`].
+	/// Signs and provides the full witness for all inputs within the transaction known to the
+	/// trait (i.e., any provided via [`CoinSelectionSourceSync::select_confirmed_utxos`]).
+	///
+	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
+	/// unsigned transaction and then sign it with your wallet.
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()>;
 }
 
@@ -188,7 +250,14 @@ where
 	}
 }
 
-/// A synchronous wrapper around [`BumpTransactionEventHandler`] to be used in contexts where async is not available.
+/// A handler for [`Event::BumpTransaction`] events that sources confirmed UTXOs from a
+/// [`CoinSelectionSourceSync`] to fee bump transactions via Child-Pays-For-Parent (CPFP) or
+/// Replace-By-Fee (RBF).
+///
+/// For an asynchronous version of this handler, see [`BumpTransactionEventHandler`].
+///
+/// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
+// Note that updates to documentation on this struct should be copied to the synchronous version.
 pub struct BumpTransactionEventHandlerSync<B: Deref, C: Deref, SP: Deref, L: Deref>
 where
 	B::Target: BroadcasterInterface,
