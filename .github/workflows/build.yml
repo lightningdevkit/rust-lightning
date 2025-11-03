@@ -110,6 +110,7 @@ jobs:
         run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tx-sync-tests.sh
 
   coverage:
+    needs: fuzz
     strategy:
       fail-fast: false
     runs-on: self-hosted
@@ -133,6 +134,11 @@ jobs:
           # Maybe if codecov wasn't broken we wouldn't need to do this...
           ./codecov --verbose upload-process --disable-search --fail-on-error -f target/codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'tests'
           cargo clean
+      - name: Download honggfuzz corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: hfuzz-corpus
+          path: fuzz/hfuzz_workspace
       - name: Run fuzz coverage generation
         run: |
           ./contrib/generate_fuzz_coverage.sh --output-dir `pwd` --output-codecov-json
@@ -261,6 +267,29 @@ jobs:
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+      # This is read-only for PRs. It seeds the fuzzer for a more effective run.
+      # NOTE: The `key` is unique and will always miss, forcing a fallback to
+      # the `restore-keys` to find the latest global cache from the `main` branch.
+      - name: Restore persistent fuzz corpus (PR)
+        if: ${{ github.ref != 'refs/heads/main' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: fuzz/hfuzz_workspace
+          key: fuzz-corpus-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-refs/heads/main-
+      # The `restore-keys` performs a prefix search to find the most recent
+      # cache from a previous `main` run. We then save with a new, unique
+      # `key` (using the SHA) to ensure the cache is always updated,
+      # as caches are immutable.
+      - name: Restore/Save persistent honggfuzz corpus (Main)
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: actions/cache@v4
+        with:
+          path: fuzz/hfuzz_workspace
+          key: fuzz-corpus-refs/heads/main-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-refs/heads/main-
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: |
           cd fuzz
@@ -268,6 +297,11 @@ jobs:
           cargo clean
       - name: Run fuzzers
         run: cd fuzz && ./ci-fuzz.sh && cd ..
+      - name: Upload honggfuzz corpus
+        uses: actions/upload-artifact@v4
+        with:
+          name: hfuzz-corpus
+          path: fuzz/hfuzz_workspace
 
   linting:
     runs-on: ubuntu-latest
