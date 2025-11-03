@@ -268,6 +268,17 @@ macro_rules! invoice_request_builder_methods { (
 		$return_value
 	}
 
+	/// Sets the payer's offer for BLIP-42 contact management.
+	///
+	/// This will include the serialized offer bytes in the invoice request,
+	/// allowing the recipient to identify which offer the payer is responding to.
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn payer_offer($($self_mut)* $self: $self_type, offer: &Offer) -> $return_type {
+		$self.invoice_request.invreq_payer_offer = Some(offer.bytes.clone());
+		$return_value
+	}
+
 	fn build_with_checks($($self_mut)* $self: $self_type) -> Result<
 		(UnsignedInvoiceRequest, Option<Keypair>, Option<&'b Secp256k1<$secp_context>>),
 		Bolt12SemanticError

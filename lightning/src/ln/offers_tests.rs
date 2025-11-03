@@ -51,6 +51,7 @@ use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, Paym
 use crate::blinded_path::message::OffersContext;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{Bolt12PaymentError, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry, self};
+use crate::offers::offer::Offer;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
@@ -2571,11 +2572,14 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
-	// Now we check that there are the contact secret and the
-	// contact secret is the same that we inject by bob.
 	assert!(invoice_request.contact_secret().is_some());
-	assert!(invoice_request.payer_offer().is_some());
 	// TODO: we should check also if the contact secret is the same that we inject by bob.
+
+	assert!(invoice_request.payer_offer().is_some());
+	// FIXME: this is wrong but make sure that we are following correctly the code path.
+	let payer_offer_bytes = invoice_request.payer_offer().unwrap();
+	let payer_offer = Offer::try_from(payer_offer_bytes.to_vec()).unwrap();
+	assert_eq!(payer_offer, offer);
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
