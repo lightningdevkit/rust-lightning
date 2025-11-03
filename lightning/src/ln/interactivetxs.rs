@@ -362,6 +362,36 @@ impl ConstructedTransaction {
 		NegotiationError { reason, contributed_inputs, contributed_outputs }
 	}
 
+	fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
+		let contributed_inputs = self
+			.tx
+			.input
+			.iter()
+			.zip(self.input_metadata.iter())
+			.enumerate()
+			.filter(|(_, (_, input))| input.is_local(self.holder_is_initiator))
+			.filter(|(index, _)| {
+				self.shared_input_index
+					.map(|shared_index| *index != shared_index as usize)
+					.unwrap_or(true)
+			})
+			.map(|(_, (txin, _))| txin.previous_output)
+			.collect();
+
+		let contributed_outputs = self
+			.tx
+			.output
+			.iter()
+			.zip(self.output_metadata.iter())
+			.enumerate()
+			.filter(|(_, (_, output))| output.is_local(self.holder_is_initiator))
+			.filter(|(index, _)| *index != self.shared_output_index as usize)
+			.map(|(_, (txout, _))| txout.clone())
+			.collect();
+
+		(contributed_inputs, contributed_outputs)
+	}
+
 	fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
 		let contributed_inputs = self
 			.tx
@@ -869,6 +899,10 @@ impl InteractiveTxSigningSession {
 
 	pub(crate) fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
 		self.unsigned_tx.into_negotiation_error(reason)
+	}
+
+	pub(super) fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
+		self.unsigned_tx.to_contributed_inputs_and_outputs()
 	}
 
 	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
