@@ -7,7 +7,8 @@ use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use crate::ln::chan_utils::{
-	ClosingTransaction, CommitmentTransaction, HTLCOutputInCommitment, HolderCommitmentTransaction,
+	ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
+	HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::msgs::UnsignedChannelAnnouncement;
 use crate::types::payment::PaymentPreimage;
@@ -15,7 +16,7 @@ use crate::types::payment::PaymentPreimage;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use crate::sign::{ChannelSigner, ChannelTransactionParameters, HTLCDescriptor};
+use crate::sign::{ChannelSigner, HTLCDescriptor};
 
 /// A trait to sign Lightning channel transactions as described in
 /// [BOLT 3](https://github.com/lightning/bolts/blob/master/03-transactions.md).

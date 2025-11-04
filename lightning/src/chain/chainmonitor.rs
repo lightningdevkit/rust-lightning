@@ -253,6 +253,8 @@ impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, Chann
 
 /// An unconstructable [`Persist`]er which is used under the hood when you call
 /// [`ChainMonitor::new_async_beta`].
+///
+/// This is not exported to bindings users as async is not supported outside of Rust.
 pub struct AsyncPersister<
 	K: Deref + MaybeSend + MaybeSync + 'static,
 	S: FutureSpawner,
@@ -431,6 +433,8 @@ impl<
 	/// [`MonitorUpdatingPersisterAsync`] and thus allows persistence to be completed async.
 	///
 	/// Note that async monitor updating is considered beta, and bugs may be triggered by its use.
+	///
+	/// This is not exported to bindings users as async is not supported outside of Rust.
 	pub fn new_async_beta(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F,
 		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, T, F>, _entropy_source: ES,

@@ -9,12 +9,13 @@
 
 //! Types pertaining to funding channels.
 
+use alloc::vec::Vec;
+
 use bitcoin::{Amount, ScriptBuf, SignedAmount, TxOut};
 use bitcoin::{Script, Sequence, Transaction, Weight};
 
 use crate::events::bump_transaction::Utxo;
 use crate::ln::chan_utils::EMPTY_SCRIPT_SIG_WEIGHT;
-use crate::prelude::Vec;
 use crate::sign::{P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 
 /// The components of a splice's funding transaction that are contributed by one party.
