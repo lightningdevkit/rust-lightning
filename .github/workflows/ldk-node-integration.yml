@@ -1,0 +1,44 @@
+name: LDK Node Integration Tests
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-api:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          path: rust-lightning
+      - name: Checkout LDK Node
+        uses: actions/checkout@v3
+        with:
+          repository: lightningdevkit/ldk-node
+          path: ldk-node
+      - name: Install Rust stable toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain stable
+      - name: Run LDK Node Integration Tests
+        run: |
+          cd ldk-node
+          cat <<EOF >> Cargo.toml
+            [patch.crates-io]
+            lightning = { path = "../rust-lightning/lightning" }
+            lightning-types = { path = "../rust-lightning/lightning-types" }
+            lightning-invoice = { path = "../rust-lightning/lightning-invoice" }
+            lightning-net-tokio = { path = "../rust-lightning/lightning-net-tokio" }
+            lightning-persister = { path = "../rust-lightning/lightning-persister" }
+            lightning-background-processor = { path = "../rust-lightning/lightning-background-processor" }
+            lightning-rapid-gossip-sync = { path = "../rust-lightning/lightning-rapid-gossip-sync" }
+            lightning-block-sync = { path = "../rust-lightning/lightning-block-sync" }
+            lightning-transaction-sync = { path = "../rust-lightning/lightning-transaction-sync" }
+            lightning-liquidity = { path = "../rust-lightning/lightning-liquidity" }
+            lightning-macros = { path = "../rust-lightning/lightning-macros" }
+          EOF
+          cargo check
+          cargo check --features uniffi
