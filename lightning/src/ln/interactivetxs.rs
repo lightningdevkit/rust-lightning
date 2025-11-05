@@ -257,6 +257,9 @@ impl_writeable_tlv_based!(ConstructedTransaction, {
 	(11, shared_output_index, required),
 });
 
+/// The percent tolerance given to the remote when estimating if they paid enough fees.
+const REMOTE_FEE_TOLERANCE_PERCENT: u64 = 95;
+
 impl ConstructedTransaction {
 	fn new(context: NegotiationContext) -> Result<Self, AbortReason> {
 		let remote_inputs_value = context.remote_inputs_value();
@@ -315,8 +318,10 @@ impl ConstructedTransaction {
 
 		// - the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee).
 		let remote_fees_contributed = remote_inputs_value.saturating_sub(remote_outputs_value);
-		let required_remote_contribution_fee =
-			fee_for_weight(context.feerate_sat_per_kw, remote_weight_contributed);
+		let required_remote_contribution_fee = fee_for_weight(
+			(context.feerate_sat_per_kw as u64 * REMOTE_FEE_TOLERANCE_PERCENT / 100) as u32,
+			remote_weight_contributed,
+		);
 		if remote_fees_contributed < required_remote_contribution_fee {
 			return Err(AbortReason::InsufficientFees);
 		}
@@ -2379,7 +2384,7 @@ mod tests {
 	use super::{
 		get_output_weight, ConstructedTransaction, InteractiveTxSigningSession, TxInMetadata,
 		P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
-		P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
+		P2WSH_INPUT_WEIGHT_LOWER_BOUND, REMOTE_FEE_TOLERANCE_PERCENT, TX_COMMON_FIELDS_WEIGHT,
 	};
 
 	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
@@ -2844,7 +2849,7 @@ mod tests {
 		let outputs_weight = get_output_weight(&generate_p2wsh_script_pubkey()).to_wu();
 		let amount_adjusted_with_p2wpkh_fee = 1_000_000
 			- fee_for_weight(
-				TEST_FEERATE_SATS_PER_KW,
+				(TEST_FEERATE_SATS_PER_KW as u64 * REMOTE_FEE_TOLERANCE_PERCENT / 100) as u32,
 				P2WPKH_INPUT_WEIGHT_LOWER_BOUND + TX_COMMON_FIELDS_WEIGHT + outputs_weight,
 			);
 		do_test_interactive_tx_constructor(TestSession {
@@ -2880,7 +2885,7 @@ mod tests {
 		});
 		let amount_adjusted_with_p2wsh_fee = 1_000_000
 			- fee_for_weight(
-				TEST_FEERATE_SATS_PER_KW,
+				(TEST_FEERATE_SATS_PER_KW as u64 * REMOTE_FEE_TOLERANCE_PERCENT / 100) as u32,
 				P2WSH_INPUT_WEIGHT_LOWER_BOUND + TX_COMMON_FIELDS_WEIGHT + outputs_weight,
 			);
 		do_test_interactive_tx_constructor(TestSession {
@@ -2916,7 +2921,7 @@ mod tests {
 		});
 		let amount_adjusted_with_p2tr_fee = 1_000_000
 			- fee_for_weight(
-				TEST_FEERATE_SATS_PER_KW,
+				(TEST_FEERATE_SATS_PER_KW as u64 * REMOTE_FEE_TOLERANCE_PERCENT / 100) as u32,
 				P2TR_INPUT_WEIGHT_LOWER_BOUND + TX_COMMON_FIELDS_WEIGHT + outputs_weight,
 			);
 		do_test_interactive_tx_constructor(TestSession {
