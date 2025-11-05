@@ -117,7 +117,8 @@ pub struct DelayedPaymentOutputDescriptor {
 
 impl DelayedPaymentOutputDescriptor {
 	/// The maximum length a well-formed witness spending one of these should have.
-	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
+	///
+	/// Note: If you have the `grind_signatures` feature enabled, this will be at least 1 byte
 	/// shorter.
 	pub const MAX_WITNESS_LENGTH: u64 = (1 /* witness items */
 		+ 1 /* sig push */
@@ -198,7 +199,8 @@ impl StaticPaymentOutputDescriptor {
 	}
 
 	/// The maximum length a well-formed witness spending one of these should have.
-	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
+	///
+	/// Note: If you have the `grind_signatures` feature enabled, this will be at least 1 byte
 	/// shorter.
 	pub fn max_witness_length(&self) -> u64 {
 		if self.needs_csv_1_for_spend() {

@@ -127,6 +127,9 @@ const MULTISIG_SCRIPT_SIZE: u64 = 1 + // OP_2
 /// Unlike in the [spec], 72 WU is used for the max signature size since 73 WU signatures are
 /// non-standard.
 ///
+/// Note: If you have the `grind_signatures` feature enabled, this will be at least 1 byte
+/// shorter.
+///
 /// [spec]: https://github.com/lightning/bolts/blob/master/03-transactions.md#expected-weight-of-the-commitment-transaction
 pub const FUNDING_TRANSACTION_WITNESS_WEIGHT: u64 = 1 + // number_of_witness_elements
 	1 + // nil_len

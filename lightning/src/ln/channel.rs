@@ -6561,6 +6561,11 @@ fn estimate_v2_funding_transaction_fee(
 				.saturating_add(BASE_INPUT_WEIGHT)
 				.saturating_add(EMPTY_SCRIPT_SIG_WEIGHT)
 				.saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT);
+			#[cfg(feature = "grind_signatures")]
+			{
+				// Guarantees a low R signature
+				weight -= 1;
+			}
 		}
 	}
 
@@ -17413,19 +17418,19 @@ mod tests {
 		// 2 inputs, initiator, 2000 sat/kw feerate
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&two_inputs, &[], true, false, 2000),
-			1516,
+			if cfg!(feature = "grind_signatures") { 1512 } else { 1516 },
 		);
 
 		// higher feerate
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&two_inputs, &[], true, false, 3000),
-			2274,
+			if cfg!(feature = "grind_signatures") { 2268 } else { 2274 },
 		);
 
 		// only 1 input
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&one_input, &[], true, false, 2000),
-			972,
+			if cfg!(feature = "grind_signatures") { 970 } else { 972 },
 		);
 
 		// 0 inputs
@@ -17443,13 +17448,13 @@ mod tests {
 		// splice initiator
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&one_input, &[], true, true, 2000),
-			1740,
+			if cfg!(feature = "grind_signatures") { 1736 } else { 1740 },
 		);
 
 		// splice acceptor
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&one_input, &[], false, true, 2000),
-			544,
+			if cfg!(feature = "grind_signatures") { 542 } else { 544 },
 		);
 	}
 
@@ -17473,40 +17478,46 @@ mod tests {
 		use crate::ln::channel::check_v2_funding_inputs_sufficient;
 
 		// positive case, inputs well over intended contribution
-		assert_eq!(
-			check_v2_funding_inputs_sufficient(
-				220_000,
-				&[
-					funding_input_sats(200_000),
-					funding_input_sats(100_000),
-				],
-				true,
-				true,
-				2000,
-			).unwrap(),
-			2284,
-		);
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2278 } else { 2284 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					220_000,
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					true,
+					true,
+					2000,
+				).unwrap(),
+				expected_fee,
+			);
+		}
 
 		// negative case, inputs clearly insufficient
 		{
-			let res = check_v2_funding_inputs_sufficient(
-				220_000,
-				&[
-					funding_input_sats(100_000),
-				],
-				true,
-				true,
-				2000,
-			);
+			let expected_fee = if cfg!(feature = "grind_signatures") { 1736 } else { 1740 };
 			assert_eq!(
-				res.err().unwrap(),
-				"Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1740. Need more inputs.",
+				check_v2_funding_inputs_sufficient(
+					220_000,
+					&[
+						funding_input_sats(100_000),
+					],
+					true,
+					true,
+					2000,
+				),
+				Err(format!(
+					"Total input amount 100000 is lower than needed for contribution 220000, considering fees of {}. Need more inputs.",
+					expected_fee,
+				)),
 			);
 		}
 
 		// barely covers
 		{
-			let expected_fee: u64 = 2284;
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2278 } else { 2284 };
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
 					(300_000 - expected_fee - 20) as i64,
@@ -17524,25 +17535,28 @@ mod tests {
 
 		// higher fee rate, does not cover
 		{
-			let res = check_v2_funding_inputs_sufficient(
-				298032,
-				&[
-					funding_input_sats(200_000),
-					funding_input_sats(100_000),
-				],
-				true,
-				true,
-				2200,
-			);
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2506 } else { 2513 };
 			assert_eq!(
-				res.err().unwrap(),
-				"Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2513. Need more inputs.",
+				check_v2_funding_inputs_sufficient(
+					298032,
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					true,
+					true,
+					2200,
+				),
+				Err(format!(
+					"Total input amount 300000 is lower than needed for contribution 298032, considering fees of {}. Need more inputs.",
+					expected_fee
+				)),
 			);
 		}
 
-		// barely covers, less fees (no extra weight, no init)
+		// barely covers, less fees (no extra weight, not initiator)
 		{
-			let expected_fee: u64 = 1088;
+			let expected_fee = if cfg!(feature = "grind_signatures") { 1084 } else { 1088 };
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
 					(300_000 - expected_fee - 20) as i64,
