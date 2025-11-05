@@ -50,7 +50,8 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::blinded_path::message::OffersContext;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose};
-use crate::ln::channelmanager::{Bolt12PaymentError, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry, self};
+use crate::ln::channelmanager::{self, Bolt12PaymentError, OptionalOfferPaymentParams, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry};
+use crate::offers::contacts::ContactSecrets;
 use crate::offers::offer::Offer;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
@@ -686,6 +687,8 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			contact_secret: None,
+			payer_offer: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
@@ -844,6 +847,8 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			contact_secret: None,
+			payer_offer: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
@@ -965,6 +970,8 @@ fn pays_for_offer_without_blinded_paths() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			contact_secret: None,
+			payer_offer: None,
 		},
 	});
 
@@ -1232,6 +1239,8 @@ fn creates_and_pays_for_offer_with_retry() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			contact_secret: None,
+			payer_offer: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
@@ -1297,6 +1306,8 @@ fn pays_bolt12_invoice_asynchronously() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			contact_secret: None,
+			payer_offer: None,
 		},
 	});
 
@@ -1394,6 +1405,8 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			contact_secret: None,
+			payer_offer: None,
 		},
 	});
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
@@ -2555,28 +2568,16 @@ fn pay_offer_and_add_contacts_info_blip42() {
 
 	let payment_id = PaymentId([1; 32]);
 	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
-	// Probably a good place to add the information that we use for the contact secret.
-	// but need to double check if the sender of the invoice request still need to ask anything.
+
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
 
 	let (invoice_request, _reply_path) = extract_invoice_request(alice, &onion_message);
 
-	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
-		offer_id: offer.id(),
-		invoice_request: InvoiceRequestFields {
-			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
-			quantity: None,
-			payer_note_truncated: None,
-			human_readable_name: None,
-		},
-	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert!(invoice_request.contact_secret().is_some());
-	// TODO: we should check also if the contact secret is the same that we inject by bob.
-
 	assert!(invoice_request.payer_offer().is_some());
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -2590,7 +2591,18 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	let contact_info = claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	let (alice_payment_purpose, alice_payment_preimage) = match get_event!(alice, Event::PaymentClaimable) {
+		Event::PaymentClaimable { purpose, .. } => {
+			let preimage = match purpose.preimage() {
+				Some(p) => p,
+				None => panic!("No preimage in PaymentClaimable"),
+			};
+			(purpose, preimage)
+		},
+		_ => panic!("No Event::PaymentClaimable for Alice"),
+	};
+
+	let (_, contact_info) = claim_payment(bob, &[alice], alice_payment_preimage);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 
 	assert!(contact_info.is_some());
@@ -2599,7 +2611,63 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	assert!(invoice_request.contact_secret().is_some());
 	assert_eq!(invoice_request.contact_secret().unwrap(), contact_info.contact_secrets.primary_secret());
 
-	// TODO: now should be possible that alice will be able to repay bob without that
-	// bob give any offer in exchange!! but there is a contact list somewhere that allow
-	// to run something like bob.pay_for_contact(alice_contact_name, amount);
+	let alice_invoice_request_fields = match alice_payment_purpose {
+		PaymentPurpose::Bolt12OfferPayment { payment_context, .. } => {
+			assert_eq!(payment_context.offer_id, offer.id());
+			payment_context.invoice_request
+		},
+		_ => panic!("Expected Bolt12OfferPayment purpose for Alice"),
+	};
+
+	assert!(alice_invoice_request_fields.contact_secret.is_some());
+	assert_eq!(alice_invoice_request_fields.contact_secret.unwrap(), *contact_info.contact_secrets.primary_secret());
+
+	assert!(alice_invoice_request_fields.payer_offer.is_some());
+	assert_eq!(alice_invoice_request_fields.payer_offer.as_ref().unwrap(), &contact_info.payer_offer);
+
+	let alice_contact_secret = alice_invoice_request_fields.contact_secret.unwrap();
+	let alice_payer_offer = alice_invoice_request_fields.payer_offer.unwrap();
+
+	let payment_id = PaymentId([1; 32]);
+	alice.node.pay_for_offer(&alice_payer_offer, Some(5_000_000), payment_id, OptionalOfferPaymentParams{
+		contact_secrects: Some(ContactSecrets::new(alice_contact_secret)),
+		..Default::default()
+	}).unwrap();
+
+
+	expect_recent_payment!(alice, RecentPaymentDetails::AwaitingInvoice, payment_id);
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let (invoice_request, _reply_path) = extract_invoice_request(bob, &onion_message);
+
+	assert_eq!(invoice_request.amount_msats(), Some(5_000_000));
+	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
+	assert!(invoice_request.contact_secret().is_some());
+	assert!(invoice_request.payer_offer().is_some());
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	bob.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let (invoice, _reply_path) = extract_invoice(alice, &onion_message);
+	assert_eq!(invoice.amount_msats(), 10_000_000);
+	assert_ne!(invoice.signing_pubkey(), alice_id);
+	assert!(!invoice.payment_paths().is_empty());
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	let (_, alice_payment_preimage) = match get_event!(alice, Event::PaymentClaimable) {
+		Event::PaymentClaimable { purpose, .. } => {
+			let preimage = match purpose.preimage() {
+				Some(p) => p,
+				None => panic!("No preimage in PaymentClaimable"),
+			};
+			(purpose, preimage)
+		},
+		_ => panic!("No Event::PaymentClaimable for Alice"),
+	};
+
+	let (_, _) = claim_payment(bob, &[alice], alice_payment_preimage);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }

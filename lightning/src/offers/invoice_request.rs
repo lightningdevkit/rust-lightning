@@ -1094,6 +1094,12 @@ macro_rules! fields_accessor {
 				},
 			} = &$inner;
 
+			// Extract BLIP-42 contact information if present
+			let contact_secret = $self.contact_secret().and_then(|bytes| bytes.try_into().ok());
+			let payer_offer = $self
+				.payer_offer()
+				.and_then(|bytes| crate::offers::offer::Offer::try_from(bytes.to_vec()).ok());
+
 			InvoiceRequestFields {
 				payer_signing_pubkey: *payer_signing_pubkey,
 				quantity: *quantity,
@@ -1103,6 +1109,8 @@ macro_rules! fields_accessor {
 					// down to the nearest valid UTF-8 code point boundary.
 					.map(|s| UntrustedString(string_truncate_safe(s, PAYER_NOTE_LIMIT))),
 				human_readable_name: $self.offer_from_hrn().clone(),
+				contact_secret,
+				payer_offer,
 			}
 		}
 	};
@@ -1587,6 +1595,14 @@ pub struct InvoiceRequestFields {
 
 	/// The Human Readable Name which the sender indicated they were paying to.
 	pub human_readable_name: Option<HumanReadableName>,
+
+	/// BLIP-42: The contact secret included by the payer for contact management.
+	/// This allows the recipient to establish a contact relationship with the payer.
+	pub contact_secret: Option<[u8; 32]>,
+
+	/// BLIP-42: The payer's minimal offer included in the invoice request.
+	/// This is a compact offer (just node_id) to fit within payment onion size constraints.
+	pub payer_offer: Option<crate::offers::offer::Offer>,
 }
 
 /// The maximum number of characters included in [`InvoiceRequestFields::payer_note_truncated`].
@@ -1599,11 +1615,17 @@ pub const PAYER_NOTE_LIMIT: usize = 8;
 
 impl Writeable for InvoiceRequestFields {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let payer_offer_bytes = self.payer_offer.as_ref().map(|offer| {
+			use core::convert::AsRef;
+			offer.as_ref().to_vec()
+		});
 		write_tlv_fields!(writer, {
 			(0, self.payer_signing_pubkey, required),
 			(1, self.human_readable_name, option),
 			(2, self.quantity.map(|v| HighZeroBytesDroppedBigSize(v)), option),
 			(4, self.payer_note_truncated.as_ref().map(|s| WithoutLength(&s.0)), option),
+			(6, self.contact_secret, option),
+			(8, payer_offer_bytes.as_ref().map(|v| WithoutLength(&v[..])), option),
 		});
 		Ok(())
 	}
@@ -1616,13 +1638,20 @@ impl Readable for InvoiceRequestFields {
 			(1, human_readable_name, option),
 			(2, quantity, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, payer_note_truncated, (option, encoding: (String, WithoutLength))),
+			(6, contact_secret, option),
+			(8, payer_offer_bytes, (option, encoding: (Vec<u8>, WithoutLength))),
 		});
+
+		let payer_offer =
+			payer_offer_bytes.and_then(|bytes| crate::offers::offer::Offer::try_from(bytes).ok());
 
 		Ok(InvoiceRequestFields {
 			payer_signing_pubkey: payer_signing_pubkey.0.unwrap(),
 			quantity,
 			payer_note_truncated: payer_note_truncated.map(|s| UntrustedString(s)),
 			human_readable_name,
+			contact_secret,
+			payer_offer,
 		})
 	}
 }
@@ -3199,6 +3228,8 @@ mod tests {
 						quantity: Some(1),
 						payer_note_truncated: Some(UntrustedString(expected_payer_note)),
 						human_readable_name: None,
+						contact_secret: None,
+						payer_offer: None,
 					}
 				);
 
