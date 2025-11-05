@@ -81,6 +81,11 @@ pub mod ecdsa;
 pub mod taproot;
 pub mod tx_builder;
 
+pub(crate) const COMPRESSED_PUBLIC_KEY_SIZE: usize = bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
+
+pub(crate) const MAX_STANDARD_SIGNATURE_SIZE: usize =
+	bitcoin::secp256k1::constants::MAX_SIGNATURE_SIZE;
+
 /// Information about a spendable output to a P2WSH script.
 ///
 /// See [`SpendableOutputDescriptor::DelayedPaymentOutput`] for more details on how to spend this.
@@ -114,10 +119,12 @@ impl DelayedPaymentOutputDescriptor {
 	/// The maximum length a well-formed witness spending one of these should have.
 	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
 	/// shorter.
-	// Calculated as 1 byte length + 73 byte signature, 1 byte empty vec push, 1 byte length plus
-	// redeemscript push length.
-	pub const MAX_WITNESS_LENGTH: u64 =
-		1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH as u64 + 1;
+	pub const MAX_WITNESS_LENGTH: u64 = (1 /* witness items */
+		+ 1 /* sig push */
+		+ MAX_STANDARD_SIGNATURE_SIZE
+		+ 1 /* empty vec push */
+		+ 1 /* redeemscript push */
+		+ chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH) as u64;
 }
 
 impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
@@ -131,15 +138,18 @@ impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
 	(13, channel_transaction_parameters, (option: ReadableArgs, Some(channel_value_satoshis.0.unwrap()))),
 });
 
-pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
-	1 /* sig length */ +
-	73 /* sig including sighash flag */ +
-	1 /* pubkey length */ +
-	33 /* pubkey */;
+/// Witness weight for satisfying a P2WPKH spend.
+pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = (1 /* witness items */
+	+ 1 /* sig push */
+	+ MAX_STANDARD_SIGNATURE_SIZE
+	+ 1 /* pubkey push */
+	+ COMPRESSED_PUBLIC_KEY_SIZE) as u64;
 
-/// Witness weight for satisying a P2TR key-path spend.
-pub(crate) const P2TR_KEY_PATH_WITNESS_WEIGHT: u64 = 1 /* witness items */
-	+ 1 /* schnorr sig len */ + 64 /* schnorr sig */;
+/// Witness weight for satisfying a P2TR key-path spend.
+pub(crate) const P2TR_KEY_PATH_WITNESS_WEIGHT: u64 = (1 /* witness items */
+	+ 1 /* sig push */
+	+ bitcoin::secp256k1::constants::SCHNORR_SIGNATURE_SIZE)
+	as u64;
 
 /// If a [`KeysManager`] is built with [`KeysManager::new`] with `v2_remote_key_derivation` set
 /// (and for all channels after they've been spliced), the script which we receive funds to on-chain
@@ -192,10 +202,16 @@ impl StaticPaymentOutputDescriptor {
 	/// shorter.
 	pub fn max_witness_length(&self) -> u64 {
 		if self.needs_csv_1_for_spend() {
-			let witness_script_weight = 1 /* pubkey push */ + 33 /* pubkey */ +
-				1 /* OP_CHECKSIGVERIFY */ + 1 /* OP_1 */ + 1 /* OP_CHECKSEQUENCEVERIFY */;
-			1 /* num witness items */ + 1 /* sig push */ + 73 /* sig including sighash flag */ +
-				1 /* witness script push */ + witness_script_weight
+			let witness_script_weight = 1 /* pubkey push */
+				+ COMPRESSED_PUBLIC_KEY_SIZE
+				+ 1 /* OP_CHECKSIGVERIFY */
+				+ 1 /* OP_1 */
+				+ 1 /* OP_CHECKSEQUENCEVERIFY */;
+			(1 /* num witness items */
+				+ 1 /* sig push */
+				+ MAX_STANDARD_SIGNATURE_SIZE
+				+ 1 /* witness script push */
+				+ witness_script_weight) as u64
 		} else {
 			P2WPKH_WITNESS_WEIGHT
 		}
@@ -511,7 +527,7 @@ impl SpendableOutputDescriptor {
 						sequence: Sequence::ZERO,
 						witness: Witness::new(),
 					});
-					witness_weight += 1 + 73 + 34;
+					witness_weight += P2WPKH_WITNESS_WEIGHT;
 					#[cfg(feature = "grind_signatures")]
 					{
 						// Guarantees a low R signature

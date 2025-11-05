@@ -3353,21 +3353,19 @@ mod tests {
 				FundingTxInput::new_p2wpkh(prevtx, 0).unwrap()
 			})
 			.collect();
-		let our_contributed = 110_000;
 		let txout = TxOut { value: Amount::from_sat(10_000), script_pubkey: ScriptBuf::new() };
 		let outputs = vec![txout];
 		let funding_feerate_sat_per_1000_weight = 3000;
 
-		let total_inputs: u64 = input_prevouts.iter().map(|o| o.value.to_sat()).sum();
-		let total_outputs: u64 = outputs.iter().map(|o| o.value.to_sat()).sum();
-		let gross_change = total_inputs - total_outputs - our_contributed;
-		let fees = 1746;
-		let common_fees = 234;
+		let total_inputs: Amount = input_prevouts.iter().map(|o| o.value).sum();
+		let total_outputs: Amount = outputs.iter().map(|o| o.value).sum();
+		let fees = Amount::from_sat(1740);
+		let common_fees = Amount::from_sat(234);
 
 		// There is leftover for change
 		let context = FundingNegotiationContext {
 			is_initiator: true,
-			our_funding_contribution: SignedAmount::from_sat(our_contributed as i64),
+			our_funding_contribution: SignedAmount::from_sat(110_000),
 			funding_tx_locktime: AbsoluteLockTime::ZERO,
 			funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
@@ -3375,16 +3373,18 @@ mod tests {
 			our_funding_outputs: outputs,
 			change_script: None,
 		};
+		let gross_change =
+			total_inputs - total_outputs - context.our_funding_contribution.to_unsigned().unwrap();
 		assert_eq!(
 			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
-			Ok(Some(gross_change - fees - common_fees)),
+			Ok(Some((gross_change - fees - common_fees).to_sat())),
 		);
 
 		// There is leftover for change, without common fees
 		let context = FundingNegotiationContext { is_initiator: false, ..context };
 		assert_eq!(
 			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
-			Ok(Some(gross_change - fees)),
+			Ok(Some((gross_change - fees).to_sat())),
 		);
 
 		// Insufficient inputs, no leftover
@@ -3415,21 +3415,25 @@ mod tests {
 			our_funding_contribution: SignedAmount::from_sat(117_992),
 			..context
 		};
+		let gross_change =
+			total_inputs - total_outputs - context.our_funding_contribution.to_unsigned().unwrap();
 		assert_eq!(
 			calculate_change_output_value(&context, false, &ScriptBuf::new(), 100),
-			Ok(Some(262)),
+			Ok(Some((gross_change - fees).to_sat())),
 		);
 
 		// Larger fee, smaller change
 		let context = FundingNegotiationContext {
 			is_initiator: true,
-			our_funding_contribution: SignedAmount::from_sat(our_contributed as i64),
+			our_funding_contribution: SignedAmount::from_sat(110_000),
 			funding_feerate_sat_per_1000_weight: funding_feerate_sat_per_1000_weight * 3,
 			..context
 		};
+		let gross_change =
+			total_inputs - total_outputs - context.our_funding_contribution.to_unsigned().unwrap();
 		assert_eq!(
 			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
-			Ok(Some(4060)),
+			Ok(Some((gross_change - fees * 3 - common_fees * 3).to_sat())),
 		);
 	}
 
