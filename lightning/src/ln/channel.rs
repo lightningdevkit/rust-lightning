@@ -17413,19 +17413,19 @@ mod tests {
 		// 2 inputs, initiator, 2000 sat/kw feerate
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&two_inputs, &[], true, false, 2000),
-			1520,
+			1516,
 		);
 
 		// higher feerate
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&two_inputs, &[], true, false, 3000),
-			2280,
+			2274,
 		);
 
 		// only 1 input
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&one_input, &[], true, false, 2000),
-			974,
+			972,
 		);
 
 		// 0 inputs
@@ -17443,13 +17443,13 @@ mod tests {
 		// splice initiator
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&one_input, &[], true, true, 2000),
-			1746,
+			1740,
 		);
 
 		// splice acceptor
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&one_input, &[], false, true, 2000),
-			546,
+			544,
 		);
 	}
 
@@ -17484,7 +17484,7 @@ mod tests {
 				true,
 				2000,
 			).unwrap(),
-			2292,
+			2284,
 		);
 
 		// negative case, inputs clearly insufficient
@@ -17500,13 +17500,13 @@ mod tests {
 			);
 			assert_eq!(
 				res.err().unwrap(),
-				"Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1746. Need more inputs.",
+				"Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1740. Need more inputs.",
 			);
 		}
 
 		// barely covers
 		{
-			let expected_fee: u64 = 2292;
+			let expected_fee: u64 = 2284;
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
 					(300_000 - expected_fee - 20) as i64,
@@ -17536,13 +17536,13 @@ mod tests {
 			);
 			assert_eq!(
 				res.err().unwrap(),
-				"Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2522. Need more inputs.",
+				"Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2513. Need more inputs.",
 			);
 		}
 
 		// barely covers, less fees (no extra weight, no init)
 		{
-			let expected_fee: u64 = 1092;
+			let expected_fee: u64 = 1088;
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
 					(300_000 - expected_fee - 20) as i64,

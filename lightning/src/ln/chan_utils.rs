@@ -116,19 +116,24 @@ pub const HTLC_SUCCESS_INPUT_P2A_ANCHOR_WITNESS_WEIGHT: u64 = 324;
 /// The size of the 2-of-2 multisig script
 const MULTISIG_SCRIPT_SIZE: u64 = 1 + // OP_2
 	1 + // data len
-	33 + // pubkey1
+	crate::sign::COMPRESSED_PUBLIC_KEY_SIZE as u64 + // pubkey1
 	1 + // data len
-	33 + // pubkey2
+	crate::sign::COMPRESSED_PUBLIC_KEY_SIZE as u64 + // pubkey2
 	1 + // OP_2
 	1; // OP_CHECKMULTISIG
-/// The weight of a funding transaction input (2-of-2 P2WSH)
-/// See https://github.com/lightning/bolts/blob/master/03-transactions.md#expected-weight-of-the-commitment-transaction
+
+/// The weight of a funding transaction input (2-of-2 P2WSH).
+///
+/// Unlike in the [spec], 72 WU is used for the max signature size since 73 WU signatures are
+/// non-standard.
+///
+/// [spec]: https://github.com/lightning/bolts/blob/master/03-transactions.md#expected-weight-of-the-commitment-transaction
 pub const FUNDING_TRANSACTION_WITNESS_WEIGHT: u64 = 1 + // number_of_witness_elements
 	1 + // nil_len
 	1 + // sig len
-	73 + // sig1
+	crate::sign::MAX_STANDARD_SIGNATURE_SIZE as u64 + // sig1
 	1 + // sig len
-	73 + // sig2
+	crate::sign::MAX_STANDARD_SIGNATURE_SIZE as u64 + // sig2
 	1 + // witness_script_length
 	MULTISIG_SCRIPT_SIZE;
 
