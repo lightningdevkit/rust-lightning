@@ -1706,7 +1706,15 @@ impl InputOwned {
 			InputOwned::Single(single) => single.satisfaction_weight,
 			// TODO(taproot): Needs to consider different weights based on channel type
 			InputOwned::Shared(_) => {
-				Weight::from_wu(EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT)
+				let mut weight = 0;
+				weight += EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT;
+				#[cfg(feature = "grind_signatures")]
+				{
+					// Guarantees a low R signature
+					weight -= 1;
+				}
+
+				Weight::from_wu(weight)
 			},
 		}
 	}
@@ -2314,6 +2322,11 @@ pub(super) fn calculate_change_output_value(
 			weight = weight.saturating_add(BASE_INPUT_WEIGHT);
 			weight = weight.saturating_add(EMPTY_SCRIPT_SIG_WEIGHT);
 			weight = weight.saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT);
+			#[cfg(feature = "grind_signatures")]
+			{
+				// Guarantees a low R signature
+				weight -= 1;
+			}
 		}
 	}
 
@@ -3359,7 +3372,11 @@ mod tests {
 
 		let total_inputs: Amount = input_prevouts.iter().map(|o| o.value).sum();
 		let total_outputs: Amount = outputs.iter().map(|o| o.value).sum();
-		let fees = Amount::from_sat(1740);
+		let fees = if cfg!(feature = "grind_signatures") {
+			Amount::from_sat(1734)
+		} else {
+			Amount::from_sat(1740)
+		};
 		let common_fees = Amount::from_sat(234);
 
 		// There is leftover for change

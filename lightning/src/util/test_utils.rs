@@ -2226,7 +2226,13 @@ impl TestWalletSource {
 					utxo.output.value,
 					EcdsaSighashType::All,
 				)?;
+				#[cfg(not(feature = "grind_signatures"))]
 				let signature = self.secp.sign_ecdsa(
+					&secp256k1::Message::from_digest(sighash.to_byte_array()),
+					&self.secret_key,
+				);
+				#[cfg(feature = "grind_signatures")]
+				let signature = self.secp.sign_ecdsa_low_r(
 					&secp256k1::Message::from_digest(sighash.to_byte_array()),
 					&self.secret_key,
 				);
