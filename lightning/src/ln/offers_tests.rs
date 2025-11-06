@@ -2540,8 +2540,6 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 
-	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
-
 	let node_chanmgrs = create_node_chanmgrs(
 		2, &node_cfgs, &[None, None]
 	);

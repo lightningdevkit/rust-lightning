@@ -3427,7 +3427,7 @@ fn release_htlc_races_htlc_onion_decode() {
 
 	let route: &[&[&Node]] = &[&[sender_lsp, invoice_server, recipient]];
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let (res, _) =
+	let (res, _, _) =
 		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
