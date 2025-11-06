@@ -14,6 +14,11 @@
 //! [`Level`] field. Each module may have its own Logger or share one.
 
 use bitcoin::secp256k1::PublicKey;
+use tracing::Event;
+use tracing::Subscriber;
+use tracing_subscriber::layer::Context;
+use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::Layer;
 
 use core::cmp;
 use core::fmt;
@@ -258,6 +263,81 @@ impl<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone> fmt::Display fo
 		}
 		write!(f, "]")?;
 		Ok(())
+	}
+}
+
+/// A tracing `Layer` that forwards tracing events to a given `Logger`.
+pub struct TracingToLogger<L: Deref>
+where
+	L::Target: Logger,
+{
+	logger: L,
+}
+
+impl<L: Deref> TracingToLogger<L>
+where
+	L::Target: Logger,
+{
+	pub fn new(logger: L) -> Self {
+		Self { logger }
+	}
+}
+
+impl<S, L> Layer<S> for TracingToLogger<L>
+where
+	S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+	L: Deref + 'static,
+	L::Target: Logger,
+{
+	fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+		let meta = event.metadata();
+		let level = *meta.level();
+
+		// Extract the "message" field from the event
+		let mut visitor = MessageVisitor::new();
+		event.record(&mut visitor);
+		let message = visitor.message.unwrap_or_else(|| "<no message>".to_string());
+
+		self.logger.log(Record::new(
+			match level {
+				tracing::Level::ERROR => Level::Error,
+				tracing::Level::WARN => Level::Warn,
+				tracing::Level::INFO => Level::Info,
+				tracing::Level::DEBUG => Level::Debug,
+				tracing::Level::TRACE => Level::Trace,
+			},
+			None,
+			None,
+			format_args!("{}", message),
+			meta.module_path().unwrap_or("<unknown>"),
+			meta.file().unwrap_or("<unknown>"),
+			meta.line().unwrap_or(0),
+			None,
+		));
+	}
+}
+
+struct MessageVisitor {
+	message: Option<String>,
+}
+
+impl MessageVisitor {
+	fn new() -> Self {
+		Self { message: None }
+	}
+}
+
+impl tracing::field::Visit for MessageVisitor {
+	fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+		if field.name() == "message" {
+			self.message = Some(format!("{:?}", value));
+		}
+	}
+
+	fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+		if field.name() == "message" {
+			self.message = Some(value.to_string());
+		}
 	}
 }
 

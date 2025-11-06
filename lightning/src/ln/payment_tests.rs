@@ -46,8 +46,12 @@ use crate::types::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
 use crate::util::errors::APIError;
+use crate::util::logger::TracingToLogger;
 use crate::util::ser::Writeable;
-use crate::util::test_utils;
+use crate::util::test_utils::{self, TestTracerLayer};
+
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::{fmt, prelude::*};
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
@@ -61,6 +65,7 @@ use crate::ln::functional_test_utils::*;
 use crate::routing::gossip::NodeId;
 
 use core::cmp::Ordering;
+use std::sync::Arc;
 #[cfg(feature = "std")]
 use std::thread;
 
@@ -428,11 +433,25 @@ fn mpp_receive_timeout() {
 
 #[test]
 fn test_keysend_payments() {
+	// tracing_subscriber::fmt().init();
+	// tracing_subscriber::fmt()
+	// 	//		.with_span_list(true) // <--- print parent span chain
+	// 	.with_span_events(FmtSpan::FULL)
+	// 	.init();
+
 	do_test_keysend_payments(false);
 	do_test_keysend_payments(true);
 }
 
 fn do_test_keysend_payments(public_node: bool) {
+	let layer = TestTracerLayer {};
+	let subscriber = tracing_subscriber::registry().with(layer);
+	let _guard = tracing::subscriber::set_default(subscriber);
+	{
+		let _enter = tracing::info_span!("hello").entered();
+		tracing::info!("Hello from tracing!");
+	}
+
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);

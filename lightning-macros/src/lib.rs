@@ -25,7 +25,7 @@ use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::spanned::Spanned;
-use syn::{parse, ImplItemFn, Token};
+use syn::{parse, Attribute, FnArg, ImplItem, ImplItemFn, ItemImpl, Meta, Token, Visibility};
 use syn::{parse_macro_input, Item};
 
 fn add_async_method(mut parsed: ImplItemFn) -> TokenStream {
@@ -399,4 +399,31 @@ pub fn xtest_inventory(_input: TokenStream) -> TokenStream {
 	};
 
 	TokenStream::from(expanded)
+}
+
+/// Auto-enters the parent span.
+#[proc_macro_attribute]
+pub fn auto_span_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
+	let mut input = parse_macro_input!(item as ItemImpl);
+
+	for item in input.items.iter_mut() {
+		if let ImplItem::Fn(method) = item {
+			if let Visibility::Public(_) = method.vis {
+				// Skip the method that sets the node_span
+				if method.sig.ident == "set_node_id" {
+					continue;
+				}
+
+				if let Some(FnArg::Receiver(_)) = method.sig.inputs.first() {
+					let block = &method.block;
+					method.block = syn::parse_quote!({
+						let _entered_span = self.node_span.enter();
+						#block
+					});
+				}
+			}
+		}
+	}
+
+	TokenStream::from(quote!(#input))
 }

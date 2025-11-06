@@ -2927,6 +2927,8 @@ pub struct ChannelManager<
 	signer_provider: SP,
 
 	logger: L,
+
+	node_span: tracing::Span,
 }
 
 /// Chain-related parameters used to construct a new `ChannelManager`.
@@ -3926,6 +3928,7 @@ macro_rules! process_events_body {
 	}
 }
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -4043,7 +4046,13 @@ where
 
 			#[cfg(feature = "_test_utils")]
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
+
+			node_span: tracing::span!(tracing::Level::INFO, "node"),
 		}
+	}
+
+	pub fn set_node_id(&mut self, id: String) {
+		self.node_span = tracing::span!(tracing::Level::INFO, "node", node_id = id);
 	}
 
 	/// Gets the current [`UserConfig`] which controls some global behavior and includes the
@@ -4126,6 +4135,8 @@ where
 	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
 	#[rustfmt::skip]
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, temporary_channel_id: Option<ChannelId>, override_config: Option<UserConfig>) -> Result<ChannelId, APIError> {
+		tracing::info!("create_channel called");
+
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
@@ -18122,6 +18133,7 @@ where
 
 			#[cfg(feature = "_test_utils")]
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
+			node_span: tracing::span!(tracing::Level::INFO, "node"),
 		};
 
 		let mut processed_claims: HashSet<Vec<MPPClaimHTLCSource>> = new_hash_set();
