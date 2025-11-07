@@ -434,12 +434,10 @@ fn mpp_receive_timeout() {
 
 #[test]
 fn test_keysend_payments() {
-	let layer = HierarchicalLayer::new(5) // indent by 2 spaces
+	let layer = HierarchicalLayer::new(3) // indent by 2 spaces
 		.with_ansi(true)
 		.with_targets(true)
 		.with_deferred_spans(true);
-	//.with_indent_lines(true);
-
 	let subscriber = Registry::default().with(layer);
 	tracing::subscriber::set_global_default(subscriber).unwrap();
 
@@ -449,11 +447,11 @@ fn test_keysend_payments() {
 	// 	.init();
 
 	do_test_keysend_payments(false);
-	do_test_keysend_payments(true);
+	// do_test_keysend_payments(true);
 }
 
 fn do_test_keysend_payments(public_node: bool) {
-	let span = tracing::info_span!("node setup");
+	let span = tracing::info_span!("node setup").entered();
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);

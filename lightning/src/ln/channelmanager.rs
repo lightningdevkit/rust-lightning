@@ -1893,9 +1893,30 @@ where
 thread_local! {
 	static CURRENT_INSTANCE: RefCell<Option<String>> = RefCell::new(None);
 	static CURRENT_SPAN: RefCell<Option<Span>> = RefCell::new(None);
+	static IN_SPAN: RefCell<bool> = RefCell::new(false);
 }
 
-fn enter_instance_span(name: String) -> tracing::span::Span {
+struct InSpanGuard {}
+
+impl Drop for InSpanGuard {
+	fn drop(&mut self) {
+		IN_SPAN.with(|in_span| {
+			*in_span.borrow_mut() = false;
+		});
+	}
+}
+
+fn enter_instance_span(name: String) -> Option<tracing::span::Span> {
+	// return None is IN_SPAN
+	if IN_SPAN.with(|in_span| *in_span.borrow()) {
+		return None;
+	}
+
+	// set IN_SPAN to true
+	IN_SPAN.with(|in_span| {
+		*in_span.borrow_mut() = true;
+	});
+
 	let mut span_to_enter: Option<Span> = None;
 
 	CURRENT_INSTANCE.with(|current_name| {
@@ -1917,7 +1938,7 @@ fn enter_instance_span(name: String) -> tracing::span::Span {
 		}
 	});
 
-	span_to_enter.unwrap()
+	span_to_enter
 }
 
 /// A lightning node's channel state machine and payment management logic, which facilitates

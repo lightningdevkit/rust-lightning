@@ -417,7 +417,7 @@ pub fn auto_span_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
 				let block = &method.block;
 				let method_name = method.sig.ident.to_string();
 				method.block = syn::parse_quote!({
-					let _node_span = enter_instance_span(self.node_id.clone()).entered();
+					let _node_span = enter_instance_span(self.node_id.clone()).map(|s|(s.entered(), InSpanGuard{}));
 					let _method_span = tracing::span!(tracing::Level::INFO, #method_name).entered();
 					#block
 				});
