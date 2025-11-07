@@ -220,7 +220,7 @@ impl MetadataStrategy for DerivedMetadata {}
 
 macro_rules! offer_explicit_metadata_builder_methods {
 	(
-	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
+	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr $(, $mut: tt)?
 ) => {
 		/// Creates a new builder for an offer using the `signing_pubkey` for signing invoices. The
 		/// associated secret key must be remembered while the offer is valid.
@@ -259,7 +259,7 @@ macro_rules! offer_explicit_metadata_builder_methods {
 		///
 		/// Successive calls to this method will override the previous setting.
 		pub fn metadata(
-			mut $self: $self_type, metadata: Vec<u8>,
+			$($mut)? $self: $self_type, metadata: Vec<u8>,
 		) -> Result<$return_type, Bolt12SemanticError> {
 			$self.offer.metadata = Some(Metadata::Bytes(metadata));
 			Ok($return_value)
@@ -523,7 +523,7 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 }
 
 impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
-	offer_explicit_metadata_builder_methods!(self, Self, Self, self);
+	offer_explicit_metadata_builder_methods!(self, Self, Self, self, mut);
 }
 
 impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {

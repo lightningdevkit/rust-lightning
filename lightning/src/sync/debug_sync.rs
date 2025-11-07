@@ -16,6 +16,7 @@ use parking_lot::Condvar as StdCondvar;
 use parking_lot::Mutex as StdMutex;
 use parking_lot::MutexGuard as StdMutexGuard;
 
+#[cfg(feature = "std")]
 pub use parking_lot::WaitTimeoutResult;
 
 use crate::prelude::*;
