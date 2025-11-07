@@ -408,19 +408,18 @@ pub fn auto_span_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 	for item in input.items.iter_mut() {
 		if let ImplItem::Fn(method) = item {
-			if let Visibility::Public(_) = method.vis {
-				// Skip the method that sets the node_span
-				if method.sig.ident == "set_node_id" {
-					continue;
-				}
+			// Skip the method that sets the node_span
+			if method.sig.ident == "set_node_id" {
+				continue;
+			}
 
-				if let Some(FnArg::Receiver(_)) = method.sig.inputs.first() {
-					let block = &method.block;
-					method.block = syn::parse_quote!({
-						let _entered_span = self.node_span.enter();
-						#block
-					});
-				}
+			if let Some(FnArg::Receiver(_)) = method.sig.inputs.first() {
+				let block = &method.block;
+				let method_name = method.sig.ident.to_string();
+				method.block = syn::parse_quote!({
+					let _entered_span = tracing::span!(tracing::Level::INFO, #method_name, node_id = self.node_id).entered();
+					#block
+				});
 			}
 		}
 	}

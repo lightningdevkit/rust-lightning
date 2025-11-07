@@ -13496,6 +13496,8 @@ where
 		};
 		let keys = self.funding.get_holder_pubkeys();
 
+		log_trace!(_logger, "Channel opened");
+
 		Some(msgs::OpenChannel {
 			common_fields: msgs::CommonOpenChannelFields {
 				chain_hash,
