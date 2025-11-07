@@ -31,6 +31,7 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::{secp256k1, Sequence, SignedAmount};
+use tracing::Span;
 
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, OffersContext,
@@ -1887,6 +1888,36 @@ where
 	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, L> {
 		self
 	}
+}
+
+thread_local! {
+	static CURRENT_INSTANCE: RefCell<Option<String>> = RefCell::new(None);
+	static CURRENT_SPAN: RefCell<Option<Span>> = RefCell::new(None);
+}
+
+fn enter_instance_span(name: String) -> tracing::span::Span {
+	let mut span_to_enter: Option<Span> = None;
+
+	CURRENT_INSTANCE.with(|current_name| {
+		let mut current_name = current_name.borrow_mut();
+
+		if current_name.as_deref() != Some(&name) {
+			// Start a new span and store it
+			let span = tracing::info_span!("node", name);
+			CURRENT_SPAN.with(|s| *s.borrow_mut() = Some(span.clone())); // clone is cheap
+			*current_name = Some(name);
+			span_to_enter = Some(span);
+		} else {
+			// Reuse existing span
+			CURRENT_SPAN.with(|s| {
+				if let Some(span) = s.borrow().as_ref() {
+					span_to_enter = Some(span.clone());
+				}
+			});
+		}
+	});
+
+	span_to_enter.unwrap()
 }
 
 /// A lightning node's channel state machine and payment management logic, which facilitates
