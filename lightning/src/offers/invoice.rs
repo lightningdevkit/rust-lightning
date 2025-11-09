@@ -778,6 +778,19 @@ struct InvoiceFields {
 }
 
 macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
+	/// Whether the invoice was created in response to a [`Refund`].
+	pub fn is_for_refund(&$self) -> bool {
+		$contents.is_for_refund()
+	}
+
+	/// Whether the invoice was created in response to an [`InvoiceRequest`] created from an
+	/// [`Offer`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	pub fn is_for_offer(&$self) -> bool {
+		$contents.is_for_offer()
+	}
+
 	/// The chains that may be used when paying a requested invoice.
 	///
 	/// From [`Offer::chains`]; `None` if the invoice was created in response to a [`Refund`].
@@ -1090,6 +1103,20 @@ impl InvoiceContents {
 			InvoiceContents::ForRefund { refund, .. } => {
 				refund.is_expired_no_std(duration_since_epoch)
 			},
+		}
+	}
+
+	fn is_for_refund(&self) -> bool {
+		match self {
+			InvoiceContents::ForRefund { .. } => true,
+			InvoiceContents::ForOffer { .. } => false,
+		}
+	}
+
+	fn is_for_offer(&self) -> bool {
+		match self {
+			InvoiceContents::ForRefund { .. } => false,
+			InvoiceContents::ForOffer { .. } => true,
 		}
 	}
 

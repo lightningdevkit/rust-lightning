@@ -416,28 +416,45 @@ pub enum OffersContext {
 		/// Useful to timeout async recipients that are no longer supported as clients.
 		path_absolute_expiry: Duration,
 	},
-	/// Context used by a [`BlindedMessagePath`] within a [`Refund`] or as a reply path for an
-	/// [`InvoiceRequest`].
+	/// Context used by a [`BlindedMessagePath`] within a [`Refund`].
 	///
 	/// This variant is intended to be received when handling a [`Bolt12Invoice`] or an
 	/// [`InvoiceError`].
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
-	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-	OutboundPayment {
-		/// Payment ID used when creating a [`Refund`] or [`InvoiceRequest`].
+	OutboundPaymentForRefund {
+		/// Payment ID used when creating a [`Refund`].
 		///
 		/// [`Refund`]: crate::offers::refund::Refund
-		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		payment_id: PaymentId,
 
-		/// A nonce used for authenticating that a [`Bolt12Invoice`] is for a valid [`Refund`] or
-		/// [`InvoiceRequest`] and for deriving their signing keys.
+		/// A nonce used for authenticating that a [`Bolt12Invoice`] is for a valid [`Refund`] and
+		/// for deriving its signing keys.
 		///
 		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 		/// [`Refund`]: crate::offers::refund::Refund
+		nonce: Nonce,
+	},
+	/// Context used by a [`BlindedMessagePath`] as a reply path for an [`InvoiceRequest`].
+	///
+	/// This variant is intended to be received when handling a [`Bolt12Invoice`] or an
+	/// [`InvoiceError`].
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
+	OutboundPaymentForOffer {
+		/// Payment ID used when creating an [`InvoiceRequest`].
+		///
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		payment_id: PaymentId,
+
+		/// A nonce used for authenticating that a [`Bolt12Invoice`] is for a valid
+		/// [`InvoiceRequest`] and for deriving its signing keys.
+		///
+		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		nonce: Nonce,
 	},
@@ -619,7 +636,7 @@ impl_writeable_tlv_based_enum!(OffersContext,
 	(0, InvoiceRequest) => {
 		(0, nonce, required),
 	},
-	(1, OutboundPayment) => {
+	(1, OutboundPaymentForRefund) => {
 		(0, payment_id, required),
 		(1, nonce, required),
 	},
@@ -630,6 +647,10 @@ impl_writeable_tlv_based_enum!(OffersContext,
 		(0, recipient_id, required),
 		(2, invoice_slot, required),
 		(4, path_absolute_expiry, required),
+	},
+	(4, OutboundPaymentForOffer) => {
+		(0, payment_id, required),
+		(1, nonce, required),
 	},
 );
 

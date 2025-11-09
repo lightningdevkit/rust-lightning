@@ -5593,26 +5593,9 @@ where
 	pub fn send_payment_for_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
-		match self.verify_bolt12_invoice(invoice, context) {
+		match self.flow.verify_bolt12_invoice(invoice, context) {
 			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
 			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
-		}
-	}
-
-	fn verify_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
-	) -> Result<PaymentId, ()> {
-		let secp_ctx = &self.secp_ctx;
-		let expanded_key = &self.inbound_payment_key;
-
-		match context {
-			None if invoice.is_for_refund_without_paths() => {
-				invoice.verify_using_metadata(expanded_key, secp_ctx)
-			},
-			Some(&OffersContext::OutboundPayment { payment_id, nonce, .. }) => {
-				invoice.verify_using_payer_data(payment_id, nonce, expanded_key, secp_ctx)
-			},
-			_ => Err(()),
 		}
 	}
 
@@ -15366,7 +15349,7 @@ where
 			},
 			OffersMessage::StaticInvoice(invoice) => {
 				let payment_id = match context {
-					Some(OffersContext::OutboundPayment { payment_id, .. }) => payment_id,
+					Some(OffersContext::OutboundPaymentForOffer { payment_id, .. }) => payment_id,
 					_ => return None
 				};
 				let res = self.initiate_async_payment(&invoice, payment_id);
@@ -15382,7 +15365,8 @@ where
 				log_trace!(logger, "Received invoice_error: {}", invoice_error);
 
 				match context {
-					Some(OffersContext::OutboundPayment { payment_id, .. }) => {
+					Some(OffersContext::OutboundPaymentForOffer { payment_id, .. })
+					|Some(OffersContext::OutboundPaymentForRefund { payment_id, .. }) => {
 						self.abandon_payment_with_reason(
 							payment_id, PaymentFailureReason::InvoiceRequestRejected,
 						);
