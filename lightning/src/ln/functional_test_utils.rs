@@ -4996,9 +4996,17 @@ macro_rules! handle_chan_reestablish_msgs {
 	($src_node: expr, $dst_node: expr) => {{
 		let msg_events = $src_node.node.get_and_clear_pending_msg_events();
 		let mut idx = 0;
+
+		let mut tx_abort = None;
+		if let Some(&MessageSendEvent::SendTxAbort { ref node_id, ref msg }) = msg_events.get(idx) {
+			idx += 1;
+			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+			tx_abort = Some(msg.clone());
+		}
+
 		let channel_ready =
 			if let Some(&MessageSendEvent::SendChannelReady { ref node_id, ref msg }) =
-				msg_events.get(0)
+				msg_events.get(idx)
 			{
 				idx += 1;
 				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
@@ -5115,6 +5123,7 @@ macro_rules! handle_chan_reestablish_msgs {
 			announcement_sigs,
 			tx_signatures,
 			stfu,
+			tx_abort,
 		)
 	}};
 }
@@ -5127,6 +5136,7 @@ pub struct ReconnectArgs<'a, 'b, 'c, 'd> {
 	pub send_stfu: (bool, bool),
 	pub send_interactive_tx_commit_sig: (bool, bool),
 	pub send_interactive_tx_sigs: (bool, bool),
+	pub send_tx_abort: (bool, bool),
 	pub expect_renegotiated_funding_locked_monitor_update: (bool, bool),
 	pub pending_responding_commitment_signed: (bool, bool),
 	/// Indicates that the pending responding commitment signed will be a dup for the recipient,
@@ -5150,6 +5160,7 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 			send_stfu: (false, false),
 			send_interactive_tx_commit_sig: (false, false),
 			send_interactive_tx_sigs: (false, false),
+			send_tx_abort: (false, false),
 			expect_renegotiated_funding_locked_monitor_update: (false, false),
 			pending_responding_commitment_signed: (false, false),
 			pending_responding_commitment_signed_dup_monitor: (false, false),
@@ -5174,6 +5185,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		send_stfu,
 		send_interactive_tx_commit_sig,
 		send_interactive_tx_sigs,
+		send_tx_abort,
 		expect_renegotiated_funding_locked_monitor_update,
 		pending_htlc_adds,
 		pending_htlc_claims,
@@ -5305,6 +5317,12 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				&commitment_update.commitment_signed,
 			)
 		}
+		if send_tx_abort.0 {
+			let tx_abort = chan_msgs.7.take().unwrap();
+			node_a.node.handle_tx_abort(node_b_id, &tx_abort);
+		} else {
+			assert!(chan_msgs.7.is_none());
+		}
 		if send_interactive_tx_sigs.0 {
 			let tx_signatures = chan_msgs.5.take().unwrap();
 			node_a.node.handle_tx_signatures(node_b_id, &tx_signatures);
@@ -5416,6 +5434,12 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				node_a_id,
 				&commitment_update.commitment_signed,
 			)
+		}
+		if send_tx_abort.1 {
+			let tx_abort = chan_msgs.7.take().unwrap();
+			node_a.node.handle_tx_abort(node_b_id, &tx_abort);
+		} else {
+			assert!(chan_msgs.7.is_none());
 		}
 		if send_interactive_tx_sigs.1 {
 			let tx_signatures = chan_msgs.5.take().unwrap();
