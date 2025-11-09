@@ -1402,7 +1402,7 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
 				assert_eq!(msg.contents.channel_flags & 2, 2);
 			},
 			_ => panic!("Unexpected event"),

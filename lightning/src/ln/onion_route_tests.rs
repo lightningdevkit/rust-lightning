@@ -1662,7 +1662,7 @@ fn do_test_onion_failure_stale_channel_update(announce_for_forwarding: bool) {
 			return None;
 		}
 		let new_update = match &events[0] {
-			MessageSendEvent::BroadcastChannelUpdate { msg } => {
+			MessageSendEvent::BroadcastChannelUpdate { msg, .. } => {
 				assert!(announce_for_forwarding);
 				msg.clone()
 			},

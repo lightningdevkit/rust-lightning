@@ -394,7 +394,7 @@ where
 					*update_msg = None;
 				}
 			},
-			MessageSendEvent::BroadcastChannelUpdate { msg } => {
+			MessageSendEvent::BroadcastChannelUpdate { msg, .. } => {
 				if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY {
 					return;
 				}

@@ -1917,6 +1917,16 @@ pub enum MessageSendEvent {
 	BroadcastChannelUpdate {
 		/// The channel_update which should be sent.
 		msg: ChannelUpdate,
+		/// The node_id of the first endpoint of the channel.
+		///
+		/// This is not used in the message broadcast, but rather is useful for deciding which
+		/// peer(s) to send the update to.
+		node_id_1: NodeId,
+		/// The node_id of the second endpoint of the channel.
+		///
+		/// This is not used in the message broadcast, but rather is useful for deciding which
+		/// peer(s) to send the update to.
+		node_id_2: NodeId,
 	},
 	/// Used to indicate that a node_announcement should be broadcast to all peers.
 	BroadcastNodeAnnouncement {

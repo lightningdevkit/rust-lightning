@@ -111,6 +111,7 @@ use crate::onion_message::messenger::{
 	MessageRouter, MessageSendInstructions, Responder, ResponseInstruction,
 };
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
+use crate::routing::gossip::NodeId;
 use crate::routing::router::{
 	BlindedTail, FixedRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route,
 	RouteParameters, RouteParametersConfig, Router,
@@ -942,7 +943,7 @@ impl Into<LocalHTLCFailureReason> for FailureCode {
 struct MsgHandleErrInternal {
 	err: msgs::LightningError,
 	closes_channel: bool,
-	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
+	shutdown_finish: Option<(ShutdownResult, Option<(msgs::ChannelUpdate, NodeId, NodeId)>)>,
 	tx_abort: Option<msgs::TxAbort>,
 }
 impl MsgHandleErrInternal {
@@ -966,7 +967,7 @@ impl MsgHandleErrInternal {
 
 	fn from_finish_shutdown(
 		err: String, channel_id: ChannelId, shutdown_res: ShutdownResult,
-		channel_update: Option<msgs::ChannelUpdate>,
+		channel_update: Option<(msgs::ChannelUpdate, NodeId, NodeId)>,
 	) -> Self {
 		let err_msg = msgs::ErrorMessage { channel_id, data: err.clone() };
 		let action = if shutdown_res.monitor_update.is_some() {
@@ -3244,10 +3245,10 @@ macro_rules! handle_error {
 					log_error!(logger, "Closing channel: {}", err.err);
 
 					$self.finish_close_channel(shutdown_res);
-					if let Some(update) = update_option {
+					if let Some((update, node_id_1, node_id_2)) = update_option {
 						let mut pending_broadcast_messages = $self.pending_broadcast_messages.lock().unwrap();
 						pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
-							msg: update
+							msg: update, node_id_1, node_id_2
 						});
 					}
 				} else {
@@ -3574,7 +3575,7 @@ macro_rules! handle_monitor_update_completion {
 			// channel_update later through the announcement_signatures process for public
 			// channels, but there's no reason not to just inform our counterparty of our fees
 			// now.
-			if let Ok(msg) = $self.get_channel_update_for_unicast($chan) {
+			if let Ok((msg, _, _)) = $self.get_channel_update_for_unicast($chan) {
 				Some(MessageSendEvent::SendChannelUpdate {
 					node_id: counterparty_node_id,
 					msg,
@@ -5125,7 +5126,9 @@ where
 		}
 	}
 
-	/// Gets the current [`channel_update`] for the given channel. This first checks if the channel is
+	/// Gets the current [`channel_update`] for the given channel (as well as our and our
+	/// counterparty's [`NodeId`], which is needed for the
+	/// [`MessageSendEvent::BroadcastChannelUpdate`]). This first checks if the channel is
 	/// public, and thus should be called whenever the result is going to be passed out in a
 	/// [`MessageSendEvent::BroadcastChannelUpdate`] event.
 	///
@@ -5137,7 +5140,7 @@ where
 	/// [`internal_closing_signed`]: Self::internal_closing_signed
 	fn get_channel_update_for_broadcast(
 		&self, chan: &FundedChannel<SP>,
-	) -> Result<msgs::ChannelUpdate, LightningError> {
+	) -> Result<(msgs::ChannelUpdate, NodeId, NodeId), LightningError> {
 		if !chan.context.should_announce() {
 			return Err(LightningError {
 				err: "Cannot broadcast a channel_update for a private channel".to_owned(),
@@ -5159,10 +5162,11 @@ where
 		self.get_channel_update_for_unicast(chan)
 	}
 
-	/// Gets the current [`channel_update`] for the given channel. This does not check if the channel
-	/// is public (only returning an `Err` if the channel does not yet have an assigned SCID),
-	/// and thus MUST NOT be called unless the recipient of the resulting message has already
-	/// provided evidence that they know about the existence of the channel.
+	/// Gets the current [`channel_update`] for the given channel (as well as our and our
+	/// counterparty's [`NodeId`]). This does not check if the channel is public (only returning an
+	/// `Err` if the channel does not yet have an assigned SCID), and thus MUST NOT be called
+	/// unless the recipient of the resulting message has already provided evidence that they know
+	/// about the existence of the channel.
 	///
 	/// Note that through [`internal_closing_signed`], this function is called without the
 	/// `peer_state`  corresponding to the channel's counterparty locked, as the channel been
@@ -5171,7 +5175,9 @@ where
 	/// [`channel_update`]: msgs::ChannelUpdate
 	/// [`internal_closing_signed`]: Self::internal_closing_signed
 	#[rustfmt::skip]
-	fn get_channel_update_for_unicast(&self, chan: &FundedChannel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_unicast(
+		&self, chan: &FundedChannel<SP>,
+	) -> Result<(msgs::ChannelUpdate, NodeId, NodeId), LightningError> {
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 		log_trace!(logger, "Attempting to generate channel update for channel {}", chan.context.channel_id());
 		let short_channel_id = match chan.funding.get_short_channel_id().or(chan.context.latest_inbound_scid_alias()) {
@@ -5181,7 +5187,9 @@ where
 
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 		log_trace!(logger, "Generating channel update for channel {}", chan.context.channel_id());
-		let were_node_one = self.our_network_pubkey.serialize()[..] < chan.context.get_counterparty_node_id().serialize()[..];
+		let our_node_id = NodeId::from_pubkey(&self.our_network_pubkey);
+		let their_node_id = NodeId::from_pubkey(&chan.context.get_counterparty_node_id());
+		let were_node_one = our_node_id < their_node_id;
 		let enabled = chan.context.is_enabled();
 
 		let unsigned = msgs::UnsignedChannelUpdate {
@@ -5203,10 +5211,14 @@ where
 		// channel.
 		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(&unsigned)).unwrap();
 
-		Ok(msgs::ChannelUpdate {
-			signature: sig,
-			contents: unsigned
-		})
+		Ok((
+			msgs::ChannelUpdate {
+				signature: sig,
+				contents: unsigned
+			},
+			if were_node_one { our_node_id } else { their_node_id },
+			if were_node_one { their_node_id } else { our_node_id },
+		))
 	}
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
@@ -6649,11 +6661,11 @@ where
 					continue;
 				}
 				if let Some(channel) = channel.as_funded() {
-					if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
+					if let Ok((msg, node_id_1, node_id_2)) = self.get_channel_update_for_broadcast(channel) {
 						let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-						pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate { msg });
+						pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate { msg, node_id_1, node_id_2 });
 					} else if peer_state.is_connected {
-						if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+						if let Ok((msg, _, _)) = self.get_channel_update_for_unicast(channel) {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
 								node_id: channel.context.get_counterparty_node_id(),
 								msg,
@@ -8177,10 +8189,10 @@ where
 										n += 1;
 										if n >= DISABLE_GOSSIP_TICKS {
 											funded_chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
-											if let Ok(update) = self.get_channel_update_for_broadcast(&funded_chan) {
+											if let Ok((update, node_id_1, node_id_2)) = self.get_channel_update_for_broadcast(&funded_chan) {
 												let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
 												pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
-													msg: update
+													msg: update, node_id_1, node_id_2
 												});
 											}
 											should_persist = NotifyOption::DoPersist;
@@ -8192,10 +8204,10 @@ where
 										n += 1;
 										if n >= ENABLE_GOSSIP_TICKS {
 											funded_chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
-											if let Ok(update) = self.get_channel_update_for_broadcast(&funded_chan) {
+											if let Ok((update, node_id_1, node_id_2)) = self.get_channel_update_for_broadcast(&funded_chan) {
 												let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
 												pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
-													msg: update
+													msg: update, node_id_1, node_id_2
 												});
 											}
 											should_persist = NotifyOption::DoPersist;
@@ -10821,7 +10833,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						// channel_update here if the channel is not public, i.e. we're not sending an
 						// announcement_signatures.
 						log_trace!(logger, "Sending private initial channel_update for our counterparty on channel {}", chan.context.channel_id());
-						if let Ok(msg) = self.get_channel_update_for_unicast(chan) {
+						if let Ok((msg, _, _)) = self.get_channel_update_for_unicast(chan) {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
 								node_id: counterparty_node_id.clone(),
 								msg,
@@ -11620,7 +11632,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						msg: try_channel_entry!(self, peer_state, res, chan_entry),
 						// Note that announcement_signatures fails if the channel cannot be announced,
 						// so get_channel_update_for_broadcast will never fail by the time we get here.
-						update_msg: Some(self.get_channel_update_for_broadcast(chan).unwrap()),
+						update_msg: Some(self.get_channel_update_for_broadcast(chan).unwrap().0),
 					});
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
@@ -11729,7 +11741,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// If the channel is in a usable state (ie the channel is not being shut
 							// down), send a unicast channel_update to our counterparty to make sure
 							// they have the latest channel parameters.
-							if let Ok(msg) = self.get_channel_update_for_unicast(chan) {
+							if let Ok((msg, _, _)) = self.get_channel_update_for_unicast(chan) {
 								channel_update = Some(MessageSendEvent::SendChannelUpdate {
 									node_id: chan.context.get_counterparty_node_id(),
 									msg,
@@ -14340,7 +14352,7 @@ where
 										send_channel_ready!(self, pending_msg_events, funded_channel, channel_ready);
 										if funded_channel.context.is_usable() && peer_state.is_connected {
 											log_trace!(logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", channel_id);
-											if let Ok(msg) = self.get_channel_update_for_unicast(funded_channel) {
+											if let Ok((msg, _, _)) = self.get_channel_update_for_unicast(funded_channel) {
 												pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
 													node_id: funded_channel.context.get_counterparty_node_id(),
 													msg,
@@ -14433,7 +14445,7 @@ where
 												// if the channel cannot be announced, so
 												// get_channel_update_for_broadcast will never fail
 												// by the time we get here.
-												update_msg: Some(self.get_channel_update_for_broadcast(funded_channel).unwrap()),
+												update_msg: Some(self.get_channel_update_for_broadcast(funded_channel).unwrap().0),
 											});
 										}
 									}

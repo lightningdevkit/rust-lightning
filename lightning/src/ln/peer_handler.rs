@@ -3164,7 +3164,7 @@ where
 								}
 							}
 						},
-						MessageSendEvent::BroadcastChannelUpdate { msg } => {
+						MessageSendEvent::BroadcastChannelUpdate { msg, .. } => {
 							log_debug!(self.logger, "Handling BroadcastChannelUpdate event in peer_handler for contents {:?}", msg.contents);
 							match route_handler.handle_channel_update(None, &msg) {
 								Ok(_)
@@ -4409,8 +4409,6 @@ mod tests {
 
 	#[test]
 	fn test_forward_while_syncing() {
-		use crate::ln::peer_handler::tests::test_utils::get_dummy_channel_update;
-
 		// Test forwarding new channel announcements while we're doing syncing.
 		let cfgs = create_peermgr_cfgs(2);
 		cfgs[0].routing_handler.request_full_sync.store(true, Ordering::Release);
@@ -4457,11 +4455,19 @@ mod tests {
 		// At this point we should have sent channel announcements up to roughly SCID 150. Now
 		// build an updated update for SCID 100 and SCID 5000 and make sure only the one for SCID
 		// 100 gets forwarded
-		let msg_100 = get_dummy_channel_update(100);
-		let msg_ev_100 = MessageSendEvent::BroadcastChannelUpdate { msg: msg_100.clone() };
+		let msg_100 = test_utils::get_dummy_channel_update(100);
+		let msg_ev_100 = MessageSendEvent::BroadcastChannelUpdate {
+			msg: msg_100.clone(),
+			node_id_1: NodeId::from_slice(&[2; 33]).unwrap(),
+			node_id_2: NodeId::from_slice(&[3; 33]).unwrap(),
+		};
 
-		let msg_5000 = get_dummy_channel_update(5000);
-		let msg_ev_5000 = MessageSendEvent::BroadcastChannelUpdate { msg: msg_5000 };
+		let msg_5000 = test_utils::get_dummy_channel_update(5000);
+		let msg_ev_5000 = MessageSendEvent::BroadcastChannelUpdate {
+			msg: msg_5000,
+			node_id_1: NodeId::from_slice(&[2; 33]).unwrap(),
+			node_id_2: NodeId::from_slice(&[3; 33]).unwrap(),
+		};
 
 		fd_a.hang_writes.store(true, Ordering::Relaxed);
 
