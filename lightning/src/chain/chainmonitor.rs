@@ -1597,11 +1597,11 @@ mod tests {
 	use crate::chain::channelmonitor::ANTI_REORG_DELAY;
 	use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 	use crate::events::{ClosureReason, Event};
+	use crate::get_htlc_update_msgs;
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 	use crate::{check_added_monitors, check_closed_event};
 	use crate::{expect_payment_path_successful, get_event_msg};
-	use crate::{get_htlc_update_msgs, get_revoke_commit_msgs};
 
 	const CHAINSYNC_MONITOR_PARTITION_FACTOR: u32 = 5;
 
@@ -1696,7 +1696,7 @@ mod tests {
 		expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
 		nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
-		let (as_first_raa, as_first_update) = get_revoke_commit_msgs!(nodes[0], node_b_id);
+		let (as_first_raa, as_first_update) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &as_first_raa);
 		check_added_monitors!(nodes[1], 1);
@@ -1716,7 +1716,7 @@ mod tests {
 		nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_first_raa);
 		expect_payment_path_successful!(nodes[0]);
 		check_added_monitors!(nodes[0], 1);
-		let (as_second_raa, as_second_update) = get_revoke_commit_msgs!(nodes[0], node_b_id);
+		let (as_second_raa, as_second_update) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &as_second_raa);
 		check_added_monitors!(nodes[1], 1);

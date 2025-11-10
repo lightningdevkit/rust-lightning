@@ -16,7 +16,7 @@ use crate::chain::Watch;
 use crate::chain::channelmonitor::{Balance, BalanceSource, ChannelMonitorUpdateStep, HolderCommitmentTransactionBalance, ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
-use crate::events::bump_transaction::{BumpTransactionEvent};
+use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
@@ -586,7 +586,7 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &b_htlc_msgs.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
-		let (as_raa, as_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		let (as_raa, as_cs) = get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_raa);
 		let _htlc_updates = get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
 		check_added_monitors!(nodes[1], 1);
@@ -3655,7 +3655,7 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	nodes[2].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
 	check_added_monitors(&nodes[2], 1);
 
-	let (cs_raa, cs_cs) = get_revoke_commit_msgs!(nodes[2], node_b_id);
+	let (cs_raa, cs_cs) = get_revoke_commit_msgs(&nodes[2], &node_b_id);
 	if confirm_tx == CommitmentType::LocalWithLastHTLC {
 		// Only deliver the last RAA + CS if we need to update the local commitment with the third
 		// HTLC.

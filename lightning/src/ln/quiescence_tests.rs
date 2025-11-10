@@ -109,7 +109,7 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 	remote_node
 		.node
 		.handle_commitment_signed_batch_test(local_node_id, &update_add.commitment_signed);
-	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs!(remote_node, local_node_id);
+	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs(remote_node, &local_node_id);
 	local_node.node.handle_revoke_and_ack(remote_node_id, &revoke_and_ack);
 	check_added_monitors(local_node, 1);
 
@@ -155,7 +155,7 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 		.node
 		.handle_commitment_signed_batch_test(remote_node_id, &update_fail.commitment_signed);
 
-	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs!(local_node, remote_node_id);
+	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs(local_node, &remote_node_id);
 	remote_node.node.handle_revoke_and_ack(local_node_id, &revoke_and_ack);
 	check_added_monitors(remote_node, 1);
 	remote_node.node.handle_commitment_signed_batch_test(local_node_id, &commit_sig);
@@ -214,7 +214,7 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 	// `revoke_and_ack` goes out, and drive the state machine forward.
 	nodes[1].disable_channel_signer_op(&node_id_0, &chan_id, SignerOp::ReleaseCommitmentSecret);
 
-	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs!(&nodes[0], node_id_1);
+	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs(&nodes[0], &node_id_1);
 	nodes[1].node.handle_revoke_and_ack(node_id_0, &revoke_and_ack);
 	check_added_monitors(&nodes[1], 1);
 	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &commit_sig);
@@ -318,7 +318,7 @@ fn test_quiescence_on_final_revoke_and_ack_pending_monitor_update() {
 	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &update_add.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 
-	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs!(&nodes[1], node_id_0);
+	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs(&nodes[1], &node_id_0);
 	nodes[0].node.handle_revoke_and_ack(node_id_1, &revoke_and_ack);
 	check_added_monitors(&nodes[0], 1);
 	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &commit_sig);

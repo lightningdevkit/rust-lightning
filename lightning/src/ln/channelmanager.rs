@@ -18590,7 +18590,7 @@ mod tests {
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_1st_updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
-		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
 		check_added_monitors!(nodes[1], 1);
 		let mut bs_2nd_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());

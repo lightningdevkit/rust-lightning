@@ -1014,16 +1014,6 @@ pub fn get_updates_and_revoke<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 	)
 }
 
-#[macro_export]
-/// Gets an RAA and CS which were sent in response to a commitment update
-///
-/// Don't use this, use the identically-named function instead.
-macro_rules! get_revoke_commit_msgs {
-	($node: expr, $node_id: expr) => {
-		$crate::ln::functional_test_utils::get_revoke_commit_msgs(&$node, &$node_id)
-	};
-}
-
 /// Get an specific event message from the pending events queue.
 #[macro_export]
 macro_rules! get_event_msg {
@@ -2728,7 +2718,7 @@ pub fn do_main_commitment_signed_dance(
 	let node_a_id = node_a.node.get_our_node_id();
 	let node_b_id = node_b.node.get_our_node_id();
 
-	let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs!(node_a, node_b_id);
+	let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs(node_a, &node_b_id);
 	check_added_monitors!(node_b, 0);
 	assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
 	node_b.node.handle_revoke_and_ack(node_a_id, &as_revoke_and_ack);

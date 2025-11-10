@@ -3006,7 +3006,7 @@ fn auto_retry_partial_failure() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &payment_event.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
-	let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_first_raa);
 	check_added_monitors!(nodes[0], 1);
@@ -3023,7 +3023,7 @@ fn auto_retry_partial_failure() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_2nd_htlcs.msgs[1]);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_2nd_htlcs.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
-	let (bs_second_raa, bs_second_cs) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (bs_second_raa, bs_second_cs) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_second_raa);
 	check_added_monitors!(nodes[0], 1);
@@ -3047,7 +3047,7 @@ fn auto_retry_partial_failure() {
 	expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_claim.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
-	let (as_third_raa, as_third_cs) = get_revoke_commit_msgs!(nodes[0], node_b_id);
+	let (as_third_raa, as_third_cs) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_third_raa);
 	check_added_monitors!(nodes[1], 4);
@@ -3067,7 +3067,7 @@ fn auto_retry_partial_failure() {
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_second_fulfill_b);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_2nd_claim.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
-	let (as_fourth_raa, as_fourth_cs) = get_revoke_commit_msgs!(nodes[0], node_b_id);
+	let (as_fourth_raa, as_fourth_cs) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_fourth_raa);
 	check_added_monitors!(nodes[1], 1);
@@ -3536,7 +3536,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &first_htlc.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 
-	let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_first_raa);
 	check_added_monitors!(nodes[0], 1);
 
@@ -3554,7 +3554,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &second_htlc.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 
-	let (bs_second_raa, bs_second_cs) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (bs_second_raa, bs_second_cs) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_second_raa);
 	check_added_monitors!(nodes[0], 1);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_second_cs);
@@ -3777,7 +3777,7 @@ fn test_simple_partial_retry() {
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &first_htlc.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 
-	let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_first_raa);
 	check_added_monitors!(nodes[0], 1);
 
