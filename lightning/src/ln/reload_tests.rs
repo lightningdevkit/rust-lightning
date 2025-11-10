@@ -892,7 +892,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 				check_added_monitors!(nodes[2], 1);
 				let cs_updates = get_htlc_update_msgs!(nodes[2], nodes[0].node.get_our_node_id());
 				expect_payment_forwarded!(nodes[2], nodes[0], nodes[3], Some(1000), false, false);
-				commitment_signed_dance!(nodes[2], nodes[3], updates.commitment_signed, false, true);
+				do_commitment_signed_dance(&nodes[2], &nodes[3], &updates.commitment_signed, false, true);
 				cs_updates
 			}
 			_ => panic!(),
@@ -900,7 +900,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 
 		let fulfill = cs_updates.update_fulfill_htlcs.remove(0);
 		nodes[0].node.handle_update_fulfill_htlc(nodes[2].node.get_our_node_id(), fulfill);
-		commitment_signed_dance!(nodes[0], nodes[2], cs_updates.commitment_signed, false, true);
+		do_commitment_signed_dance(&nodes[0], &nodes[2], &cs_updates.commitment_signed, false, true);
 		expect_payment_sent!(nodes[0], payment_preimage);
 
 		// Ensure that the remaining channel is fully operation and not blocked (and that after a

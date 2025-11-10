@@ -587,7 +587,8 @@ fn lock_in_htlc_for_static_invoice(
 	let payment_hash = update_add.payment_hash;
 	assert!(update_add.hold_htlc.is_some());
 	sender_lsp.node.handle_update_add_htlc(sender.node.get_our_node_id(), &update_add);
-	commitment_signed_dance!(sender_lsp, sender, &commitment_update.commitment_signed, false, true);
+	let commitment = &commitment_update.commitment_signed;
+	do_commitment_signed_dance(sender_lsp, sender, commitment, false, true);
 	payment_hash
 }
 
@@ -3240,7 +3241,7 @@ fn async_payment_mpp() {
 	let payment_hash = update_add.payment_hash;
 	assert!(update_add.hold_htlc.is_some());
 	lsp_a.node.handle_update_add_htlc(sender.node.get_our_node_id(), &update_add);
-	commitment_signed_dance!(lsp_a, sender, &commitment_update.commitment_signed, false, true);
+	do_commitment_signed_dance(lsp_a, sender, &commitment_update.commitment_signed, false, true);
 	lsp_a.node.process_pending_htlc_forwards();
 
 	// HTLC 2
@@ -3252,7 +3253,7 @@ fn async_payment_mpp() {
 	let update_add = commitment_update.update_add_htlcs[0].clone();
 	assert!(update_add.hold_htlc.is_some());
 	lsp_b.node.handle_update_add_htlc(sender.node.get_our_node_id(), &update_add);
-	commitment_signed_dance!(lsp_b, sender, &commitment_update.commitment_signed, false, true);
+	do_commitment_signed_dance(lsp_b, sender, &commitment_update.commitment_signed, false, true);
 	lsp_b.node.process_pending_htlc_forwards();
 
 	// held htlc <> release_htlc dance

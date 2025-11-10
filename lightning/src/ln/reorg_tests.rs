@@ -149,7 +149,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
 		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]);
 	}
-	commitment_signed_dance!(nodes[0], nodes[1], htlc_updates.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &htlc_updates.commitment_signed, false, true);
 	if claim {
 		expect_payment_sent!(nodes[0], our_payment_preimage);
 	} else {

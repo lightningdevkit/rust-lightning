@@ -721,7 +721,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 		SendEvent::from_event(events.remove(0))
 	};
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], &payment_event.commitment_msg, false, true);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, true);
 	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
@@ -761,7 +761,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 		SendEvent::from_event(events.remove(0))
 	};
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
-	commitment_signed_dance!(nodes[2], nodes[1], &payment_event.commitment_msg, false, true);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event.commitment_msg, false, true);
 	expect_and_process_pending_htlcs(&nodes[2], false);
 
 	expect_payment_claimable!(&nodes[2], payment_hash, payment_secret, amt_msat, None, nodes[2].node.get_our_node_id());

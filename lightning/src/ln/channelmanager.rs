@@ -18566,7 +18566,7 @@ mod tests {
 		assert!(updates.update_fail_malformed_htlcs.is_empty());
 		assert!(updates.update_fee.is_none());
 		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
-		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, true, true);
 		expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 		// Send the second half of the original MPP payment.
@@ -18686,7 +18686,7 @@ mod tests {
 		assert!(updates.update_fail_malformed_htlcs.is_empty());
 		assert!(updates.update_fee.is_none());
 		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
-		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, true, true);
 		expect_payment_failed!(nodes[0], payment_hash, true);
 
 		// Finally, claim the original payment.
@@ -18733,7 +18733,7 @@ mod tests {
 		assert!(updates.update_fail_malformed_htlcs.is_empty());
 		assert!(updates.update_fee.is_none());
 		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
-		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, true, true);
 		expect_payment_failed!(nodes[0], payment_hash, true);
 
 		// Finally, succeed the keysend payment.
@@ -18782,7 +18782,7 @@ mod tests {
 		assert!(updates.update_fail_malformed_htlcs.is_empty());
 		assert!(updates.update_fee.is_none());
 		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
-		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, true, true);
 		expect_payment_failed!(nodes[0], payment_hash, true);
 
 		// Finally, claim the original payment.

@@ -201,7 +201,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 	assert!(updates_2.update_fee.is_none());
 	assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates_2.update_fulfill_htlcs.remove(0));
-	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_2.commitment_signed, false, true);
 	expect_payment_sent!(nodes[0], payment_preimage_0);
 
 	// all htlcs removed, chan1 advances to NegotiatingClosingFee
@@ -473,7 +473,7 @@ fn updates_shutdown_wait() {
 	assert!(updates_2.update_fee.is_none());
 	assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates_2.update_fulfill_htlcs.remove(0));
-	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_2.commitment_signed, false, true);
 	expect_payment_sent!(nodes[0], payment_preimage_0);
 
 	let node_0_closing_signed =
@@ -582,7 +582,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	assert!(updates_2.update_fee.is_none());
 
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &updates_2.update_fail_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_2.commitment_signed, false, true);
 
 	if blinded_recipient {
 		expect_payment_failed_conditions(
@@ -739,7 +739,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert!(updates_2.update_fee.is_none());
 	assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates_2.update_fulfill_htlcs.remove(0));
-	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_2.commitment_signed, false, true);
 	expect_payment_sent!(nodes[0], payment_preimage);
 
 	let node_0_closing_signed =

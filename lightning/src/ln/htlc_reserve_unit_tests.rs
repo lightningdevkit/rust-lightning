@@ -685,7 +685,8 @@ pub fn holding_cell_htlc_counting() {
 
 	let bs_fail_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_fail_updates.update_fail_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], bs_fail_updates.commitment_signed, false, true);
+	let commitment = &bs_fail_updates.commitment_signed;
+	do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, true);
 
 	let failing_scid = chan_2.0.contents.short_channel_id;
 	expect_payment_failed_with_update!(nodes[0], payment_hash_2, false, failing_scid, false);
@@ -2072,7 +2073,7 @@ pub fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_me
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 	check_added_monitors(&nodes[1], 0);
-	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, true);
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),

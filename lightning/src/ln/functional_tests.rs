@@ -1857,7 +1857,7 @@ pub fn test_simple_commitment_revoked_fail_backward() {
 			assert_eq!(node_a_id, *node_id);
 
 			nodes[0].node.handle_update_fail_htlc(node_b_id, &update_fail_htlcs[0]);
-			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
+			do_commitment_signed_dance(&nodes[0], &nodes[1], commitment_signed, false, true);
 			let scid = chan_2.0.contents.short_channel_id;
 			expect_payment_failed_with_update!(nodes[0], payment_hash, false, scid, true);
 		},
@@ -2105,7 +2105,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 			nodes[0].node.handle_update_fail_htlc(node_b_id, &update_fail_htlcs[1]);
 			nodes[0].node.handle_update_fail_htlc(node_b_id, &update_fail_htlcs[2]);
 
-			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
+			do_commitment_signed_dance(&nodes[0], &nodes[1], commitment_signed, false, true);
 
 			let events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 6);
@@ -3399,7 +3399,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 				..
 			} => {
 				nodes[0].node.handle_update_fail_htlc(node_b_id, &update_fail_htlcs[0]);
-				commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, true, true);
+				do_commitment_signed_dance(&nodes[0], &nodes[1], commitment_signed, true, true);
 			},
 			_ => unreachable!(),
 		}
@@ -4192,7 +4192,7 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &htlc_updates.update_fail_htlcs[0]);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	commitment_signed_dance!(nodes[0], nodes[1], &htlc_updates.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &htlc_updates.commitment_signed, false, true);
 	let failing_scid = chan_2.0.contents.short_channel_id;
 	expect_payment_failed_with_update!(nodes[0], dup_payment_hash, false, failing_scid, true);
 
@@ -4582,7 +4582,8 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 							.handle_update_fail_htlc(node_c_id, &updates.update_fail_htlcs[4]);
 					}
 				}
-				commitment_signed_dance!(target, nodes[2], updates.commitment_signed, false, true);
+				let commitment = &updates.commitment_signed;
+				do_commitment_signed_dance(target, &nodes[2], commitment, false, true);
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -5314,7 +5315,7 @@ pub fn test_free_and_fail_holding_cell_htlcs() {
 
 	let mut update_msgs = get_htlc_update_msgs!(nodes[1], node_a_id);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_msgs.update_fulfill_htlcs.remove(0));
-	commitment_signed_dance!(nodes[0], nodes[1], update_msgs.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_msgs.commitment_signed, false, true);
 	expect_payment_sent!(nodes[0], payment_preimage_1);
 }
 
@@ -5506,7 +5507,7 @@ pub fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_
 	payment_event.msgs[0].onion_routing_packet.version = 1; //Produce a malformed HTLC message
 	nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event.msgs[0]);
 	check_added_monitors(&nodes[2], 0);
-	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false, true);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event.commitment_msg, false, true);
 	expect_and_process_pending_htlcs(&nodes[2], false);
 	expect_htlc_handling_failed_destinations!(
 		nodes[2].node.get_and_clear_pending_events(),
@@ -5544,7 +5545,7 @@ pub fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_
 	nodes[1].node.handle_update_fail_malformed_htlc(node_c_id, &update_msg.0);
 
 	check_added_monitors(&nodes[1], 0);
-	commitment_signed_dance!(nodes[1], nodes[2], update_msg.1, false, true);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &update_msg.1, false, true);
 	expect_and_process_pending_htlcs_and_htlc_handling_failed(
 		&nodes[1],
 		&[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 }],
@@ -5615,7 +5616,7 @@ pub fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	payment_event.msgs[0].onion_routing_packet.version = 1; // Trigger an invalid_onion_version error
 	nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event.msgs[0]);
 	check_added_monitors(&nodes[2], 0);
-	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false, true);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event.commitment_msg, false, true);
 	expect_and_process_pending_htlcs(&nodes[2], false);
 	expect_htlc_handling_failed_destinations!(
 		nodes[2].node.get_and_clear_pending_events(),
@@ -5632,7 +5633,8 @@ pub fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 			update_msg.failure_code |= 0x2000;
 
 			nodes[1].node.handle_update_fail_malformed_htlc(node_c_id, &update_msg);
-			commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false, true);
+			let commitment = &updates.commitment_signed;
+			do_commitment_signed_dance(&nodes[1], &nodes[2], commitment, false, true);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -5648,7 +5650,8 @@ pub fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	match events_4[0] {
 		MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
 			nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
-			commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false, true);
+			let commitment = &updates.commitment_signed;
+			do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, true);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -5988,7 +5991,7 @@ pub fn test_check_htlc_underpaying() {
 	check_added_monitors(&nodes[1], 1);
 
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &update_fail_htlc);
-	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], commitment_signed, false, true);
 
 	// 10_000 msat as u64, followed by a height of CHAN_CONFIRM_DEPTH as u32
 	let mut expected_failure_data = (10_000 as u64).to_be_bytes().to_vec();
@@ -8120,7 +8123,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		assert!(updates.update_fail_malformed_htlcs.is_empty());
 		assert!(updates.update_fee.is_none());
 		nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
-		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, true, true);
 
 		let failed_scid = chan_announce.contents.short_channel_id;
 		expect_payment_failed_with_update!(nodes[0], payment_hash, false, failed_scid, true);
@@ -8374,7 +8377,7 @@ pub fn test_inconsistent_mpp_params() {
 
 		nodes[3].node.handle_update_add_htlc(node_c_id, &payment_event.msgs[0]);
 		check_added_monitors(&nodes[3], 0);
-		commitment_signed_dance!(nodes[3], nodes[2], payment_event.commitment_msg, true, true);
+		do_commitment_signed_dance(&nodes[3], &nodes[2], &payment_event.commitment_msg, true, true);
 
 		// At this point, nodes[3] should notice the two HTLCs don't contain the same total payment
 		// amount. It will assume the second is a privacy attack (no longer particularly relevant
@@ -9055,7 +9058,7 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	let send = SendEvent::from_node(&nodes[2]);
 
 	nodes[0].node.handle_update_add_htlc(node_c_id, &send.msgs[0]);
-	commitment_signed_dance!(nodes[0], nodes[2], send.commitment_msg, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[2], &send.commitment_msg, false, true);
 
 	expect_and_process_pending_htlcs(&nodes[0], true);
 	check_added_monitors(&nodes[0], 1);
@@ -9361,7 +9364,8 @@ fn do_payment_with_custom_min_final_cltv_expiry(valid_delta: bool, use_user_hash
 
 		let fail_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
 		nodes[0].node.handle_update_fail_htlc(node_b_id, &fail_updates.update_fail_htlcs[0]);
-		commitment_signed_dance!(nodes[0], nodes[1], fail_updates.commitment_signed, false, true);
+		let commitment = &fail_updates.commitment_signed;
+		do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, true);
 
 		expect_payment_failed!(nodes[0], hash, true);
 	}

@@ -94,7 +94,7 @@ fn chanmon_fail_from_stale_commitment() {
 	let fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_updates.update_fail_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], fail_updates.commitment_signed, true, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &fail_updates.commitment_signed, true, true);
 	expect_payment_failed_with_update!(nodes[0], payment_hash, false, update_a.contents.short_channel_id, true);
 }
 
@@ -3811,7 +3811,7 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	check_added_monitors(&nodes[1], 1);
 	let bs_fail = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_fail.update_fail_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], bs_fail.commitment_signed, true, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &bs_fail.commitment_signed, true, true);
 	expect_payment_failed!(nodes[0], hash_a, false);
 }
 
