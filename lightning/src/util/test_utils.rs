@@ -82,7 +82,7 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 use lightning_invoice::RawBolt11Invoice;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id};
-use tracing::{Event, Metadata, Subscriber};
+use tracing::{event, Event, Metadata, Subscriber};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{layer, Layer};
 
@@ -1732,6 +1732,45 @@ impl Logger for TestLogger {
 				.entry((record.module_path, record.peer_id, record.channel_id))
 				.or_insert(0) += 1;
 			println!("{}", s);
+		}
+	}
+}
+
+struct FieldVisitor {
+	name: Option<String>,
+}
+
+impl Visit for FieldVisitor {
+	fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+		if field.name() == "name" {
+			self.name = Some(value.to_string());
+		}
+	}
+
+	fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {}
+}
+
+pub struct HighlightLayer;
+
+impl<S> Layer<S> for HighlightLayer
+where
+	S: Subscriber + for<'a> LookupSpan<'a>,
+{
+	fn on_new_span(
+		&self, attrs: &tracing::span::Attributes<'_>, id: &Id,
+		ctx: tracing_subscriber::layer::Context<'_, S>,
+	) {
+		let span = ctx.span(id).unwrap();
+		let meta = span.metadata();
+		if meta.name() == "node" {
+			let mut visitor = FieldVisitor { name: None };
+			attrs.record(&mut visitor);
+
+			event!(
+				tracing::Level::INFO,
+				"NODE \x1b[1;34;47m {} \x1b[0m",
+				visitor.name.unwrap_or_default()
+			);
 		}
 	}
 }

@@ -48,7 +48,7 @@ use crate::types::string::UntrustedString;
 use crate::util::errors::APIError;
 use crate::util::logger::TracingToLogger;
 use crate::util::ser::Writeable;
-use crate::util::test_utils::{self, TestTracerLayer};
+use crate::util::test_utils::{self, HighlightLayer, TestTracerLayer};
 
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{fmt, prelude::*, Registry};
@@ -438,7 +438,7 @@ fn test_keysend_payments() {
 		.with_ansi(true)
 		.with_targets(true)
 		.with_deferred_spans(true);
-	let subscriber = Registry::default().with(layer);
+	let subscriber = Registry::default().with(HighlightLayer).with(layer);
 	tracing::subscriber::set_global_default(subscriber).unwrap();
 
 	// tracing_subscriber::fmt()
