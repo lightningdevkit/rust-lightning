@@ -4066,7 +4066,7 @@ fn test_threaded_payment_retries() {
 		// `process_pending_htlc_forwards`. Instead, we defer the monitor update check until after
 		// *we've* called `process_pending_htlc_forwards` when its guaranteed to have two updates.
 		let cs = bs_fail_updates.commitment_signed;
-		let last_raa = commitment_signed_dance!(nodes[0], nodes[1], cs, false, true, false, true);
+		let last_raa = commitment_signed_dance_return_raa(&nodes[0], &nodes[1], &cs, false);
 		nodes[0].node.handle_revoke_and_ack(node_b_id, &last_raa);
 
 		let cur_time = Instant::now();

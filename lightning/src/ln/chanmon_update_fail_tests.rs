@@ -857,7 +857,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 		SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 	nodes[1].node.handle_update_add_htlc(node_a_id, &send_event.msgs[0]);
 	let commitment = send_event.commitment_msg;
-	let bs_raa = commitment_signed_dance!(nodes[1], nodes[0], commitment, false, true, false, true);
+	let bs_raa = commitment_signed_dance_return_raa(&nodes[1], &nodes[0], &commitment, false);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &bs_raa);
@@ -1006,7 +1006,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	let commitment = updates.commitment_signed;
 	let bs_revoke_and_ack =
-		commitment_signed_dance!(nodes[1], nodes[2], commitment, false, true, false, true);
+		commitment_signed_dance_return_raa(&nodes[1], &nodes[2], &commitment, false);
 	check_added_monitors!(nodes[0], 0);
 
 	// While the second channel is AwaitingRAA, forward a second payment to get it into the
@@ -2084,7 +2084,7 @@ fn monitor_update_claim_fail_no_response() {
 	let payment_event = SendEvent::from_event(events.pop().unwrap());
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	let commitment = payment_event.commitment_msg;
-	let as_raa = commitment_signed_dance!(nodes[1], nodes[0], commitment, false, true, false, true);
+	let as_raa = commitment_signed_dance_return_raa(&nodes[1], &nodes[0], &commitment, false);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.claim_funds(payment_preimage_1);

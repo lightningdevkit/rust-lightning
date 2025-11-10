@@ -1935,7 +1935,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 	assert!(updates.update_fee.is_none());
 	nodes[1].node.handle_update_fail_htlc(node_c_id, &updates.update_fail_htlcs[0]);
 	let cs = updates.commitment_signed;
-	let bs_raa = commitment_signed_dance!(nodes[1], nodes[2], cs, false, true, false, true);
+	let bs_raa = commitment_signed_dance_return_raa(&nodes[1], &nodes[2], &cs, false);
 	// Drop the last RAA from 3 -> 2
 
 	nodes[2].node.fail_htlc_backwards(&second_payment_hash);
@@ -4453,7 +4453,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 		do_commitment_signed_dance(&nodes[2], &nodes[3], commitment, false, false);
 	} else {
 		let cs = six_removes.commitment_signed;
-		commitment_signed_dance!(nodes[2], nodes[3], cs, false, true, false, true);
+		commitment_signed_dance_return_raa(&nodes[2], &nodes[3], &cs, false);
 	}
 
 	// D's latest commitment transaction now contains 1st + 2nd + 9th HTLCs (implicitly, they're

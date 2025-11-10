@@ -772,7 +772,8 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 	// Handle the fee update on the other side, but don't send the last RAA such that the previous
 	// commitment is still valid (unrevoked).
 	nodes[1].node().handle_update_fee(nodes[0].node.get_our_node_id(), &update_fee);
-	let _last_revoke_and_ack = commitment_signed_dance!(nodes[1], nodes[0], commit_sig, false, true, false, true);
+	let _last_revoke_and_ack = commitment_signed_dance_return_raa(&nodes[1], &nodes[0], &commit_sig, false);
+
 	let message = "Channel force-closed".to_owned();
 
 	// Force close with the latest commitment, confirm it, and reorg it with the previous commitment.

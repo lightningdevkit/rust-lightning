@@ -2640,29 +2640,6 @@ pub fn expect_htlc_forwarding_fails(
 	expect_htlc_failure_conditions(events, expected_failure);
 }
 
-#[macro_export]
-/// Performs the "commitment signed dance" - the series of message exchanges which occur after a
-/// commitment update.
-macro_rules! commitment_signed_dance {
-	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */, false /* return extra message */, true /* return last RAA */) => {{
-		$crate::ln::functional_test_utils::check_added_monitors(&$node_a, 0);
-		assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
-		$node_a.node.handle_commitment_signed_batch_test(
-			$node_b.node.get_our_node_id(),
-			&$commitment_signed,
-		);
-		check_added_monitors(&$node_a, 1);
-		let (extra_msg_option, bs_revoke_and_ack) =
-			$crate::ln::functional_test_utils::do_main_commitment_signed_dance(
-				&$node_a,
-				&$node_b,
-				$fail_backwards,
-			);
-		assert!(extra_msg_option.is_none());
-		bs_revoke_and_ack
-	}};
-}
-
 /// Runs the commitment_signed dance after the initial commitment_signed is delivered through to
 /// the initiator's `revoke_and_ack` response. i.e. [`do_main_commitment_signed_dance`] plus the
 /// `revoke_and_ack` response to it.
@@ -2722,6 +2699,22 @@ pub fn do_main_commitment_signed_dance(
 		assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 	}
 	(extra_msg_option, bs_revoke_and_ack)
+}
+
+pub fn commitment_signed_dance_return_raa(
+	node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>,
+	commitment_signed: &Vec<msgs::CommitmentSigned>, fail_backwards: bool,
+) -> msgs::RevokeAndACK {
+	check_added_monitors(&node_a, 0);
+	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
+	node_a
+		.node
+		.handle_commitment_signed_batch_test(node_b.node.get_our_node_id(), commitment_signed);
+	check_added_monitors(&node_a, 1);
+	let (extra_msg_option, bs_revoke_and_ack) =
+		do_main_commitment_signed_dance(&node_a, &node_b, fail_backwards);
+	assert!(extra_msg_option.is_none());
+	bs_revoke_and_ack
 }
 
 /// Runs a full commitment_signed dance, delivering a commitment_signed, the responding
