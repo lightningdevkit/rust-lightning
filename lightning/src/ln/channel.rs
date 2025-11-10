@@ -13099,7 +13099,13 @@ where
 
 		self.context.channel_state.set_awaiting_quiescence();
 		if self.context.is_live() {
-			Ok(Some(self.send_stfu(logger)?))
+			match self.send_stfu(logger) {
+				Ok(stfu) => Ok(Some(stfu)),
+				Err(e) => {
+					log_debug!(logger, "{e}");
+					Ok(None)
+				},
+			}
 		} else {
 			log_debug!(logger, "Waiting for peer reconnection to send stfu");
 			Ok(None)
