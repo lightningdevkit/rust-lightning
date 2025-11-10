@@ -2826,8 +2826,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 100000);
 	check_added_monitors!(nodes[1], 1);
 
-	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
-
+	assert!(commitment_signed_dance_through_cp_raa(&nodes[1], &nodes[0], false, false).is_none());
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {

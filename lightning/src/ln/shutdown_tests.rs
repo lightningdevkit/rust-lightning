@@ -566,7 +566,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &updates.commitment_signed);
 	check_added_monitors!(nodes[1], 1);
 	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
-	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
+	assert!(commitment_signed_dance_through_cp_raa(&nodes[1], &nodes[0], false, false).is_none());
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),

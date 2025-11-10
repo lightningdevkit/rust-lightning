@@ -2661,15 +2661,6 @@ macro_rules! commitment_signed_dance {
 		assert!(extra_msg_option.is_none());
 		bs_revoke_and_ack
 	}};
-	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, false /* no extra message */, $incl_claim: expr) => {
-		assert!($crate::ln::functional_test_utils::commitment_signed_dance_through_cp_raa(
-			&$node_a,
-			&$node_b,
-			$fail_backwards,
-			$incl_claim
-		)
-		.is_none());
-	};
 }
 
 /// Runs the commitment_signed dance after the initial commitment_signed is delivered through to
@@ -2755,7 +2746,9 @@ pub fn do_commitment_signed_dance(
 	if fail_backwards {
 		assert!(!got_claim);
 	}
-	commitment_signed_dance!(node_a, node_b, (), fail_backwards, true, false, got_claim);
+	assert!(
+		commitment_signed_dance_through_cp_raa(node_a, node_b, fail_backwards, got_claim).is_none()
+	);
 
 	if skip_last_step {
 		return;

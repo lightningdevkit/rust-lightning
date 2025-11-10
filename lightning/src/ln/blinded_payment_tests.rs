@@ -1027,7 +1027,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			check_added_monitors!(nodes[2], 1);
 
 			nodes[2].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
-			commitment_signed_dance!(nodes[2], nodes[1], (), false, true, false, false);
+			assert!(commitment_signed_dance_through_cp_raa(&nodes[2], &nodes[1], false, false).is_none());
 			expect_and_process_pending_htlcs(&nodes[2], false);
 			expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]);
 			check_added_monitors(&nodes[2], 1);
