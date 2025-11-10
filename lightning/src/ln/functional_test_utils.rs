@@ -2644,13 +2644,6 @@ pub fn expect_htlc_forwarding_fails(
 /// Performs the "commitment signed dance" - the series of message exchanges which occur after a
 /// commitment update.
 macro_rules! commitment_signed_dance {
-	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */, true /* return last RAA */) => {
-		$crate::ln::functional_test_utils::do_main_commitment_signed_dance(
-			&$node_a,
-			&$node_b,
-			$fail_backwards,
-		)
-	};
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */, false /* return extra message */, true /* return last RAA */) => {{
 		$crate::ln::functional_test_utils::check_added_monitors(&$node_a, 0);
 		assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
