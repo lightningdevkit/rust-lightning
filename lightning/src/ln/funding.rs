@@ -230,4 +230,9 @@ impl FundingTxInput {
 	pub fn set_sequence(&mut self, sequence: Sequence) {
 		self.sequence = sequence;
 	}
+
+	/// Converts the [`FundingTxInput`] into a [`Utxo`] for coin selection.
+	pub fn into_utxo(self) -> Utxo {
+		self.utxo
+	}
 }
