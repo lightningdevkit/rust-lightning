@@ -29,6 +29,7 @@ use bitcoin::{
 use crate::chain::chaininterface::fee_for_weight;
 use crate::ln::chan_utils::{
 	BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT, FUNDING_TRANSACTION_WITNESS_WEIGHT,
+	SEGWIT_MARKER_FLAG_WEIGHT,
 };
 use crate::ln::channel::{FundingNegotiationContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
 use crate::ln::funding::FundingTxInput;
@@ -266,10 +267,11 @@ impl ConstructedTransaction {
 		let remote_outputs_value = context.remote_outputs_value();
 		let remote_weight_contributed = context.remote_weight_contributed();
 
-		let satisfaction_weight =
-			Weight::from_wu(context.inputs.iter().fold(0u64, |value, (_, input)| {
-				value.saturating_add(input.satisfaction_weight().to_wu())
-			}));
+		let expected_witness_weight = context.inputs.iter().fold(0u64, |value, (_, input)| {
+			value
+				.saturating_add(input.satisfaction_weight().to_wu())
+				.saturating_sub(EMPTY_SCRIPT_SIG_WEIGHT)
+		});
 
 		let lock_time = context.tx_locktime;
 
@@ -342,8 +344,13 @@ impl ConstructedTransaction {
 			return Err(AbortReason::MissingFundingOutput);
 		}
 
-		let tx_weight = tx.tx.weight().checked_add(satisfaction_weight).unwrap_or(Weight::MAX);
-		if tx_weight > Weight::from_wu(MAX_STANDARD_TX_WEIGHT as u64) {
+		let tx_weight = tx
+			.tx
+			.weight()
+			.to_wu()
+			.saturating_add(SEGWIT_MARKER_FLAG_WEIGHT)
+			.saturating_add(expected_witness_weight);
+		if tx_weight > MAX_STANDARD_TX_WEIGHT as u64 {
 			return Err(AbortReason::TransactionTooLarge);
 		}
 
