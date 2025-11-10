@@ -2019,18 +2019,32 @@ where
 							| NegotiatingFundingFlags::THEIR_INIT_SENT
 					),
 				);
+				chan.context.assert_no_commitment_advancement(
+					chan.unfunded_context.transaction_number(),
+					"initial commitment_signed",
+				);
+
+				chan.context.channel_state =
+					ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
+				chan.funding.channel_transaction_parameters.funding_outpoint =
+					Some(funding_outpoint);
 
 				let interactive_tx_constructor = chan
 					.interactive_tx_constructor
 					.take()
 					.expect("PendingV2Channel::interactive_tx_constructor should be set");
-				let commitment_signed = chan.context.funding_tx_constructed(
-					&mut chan.funding,
-					funding_outpoint,
-					false,
-					chan.unfunded_context.transaction_number(),
-					&&logger,
-				)?;
+
+				let commitment_signed =
+					chan.context.get_initial_commitment_signed_v2(&chan.funding, &&logger);
+				let commitment_signed = match commitment_signed {
+					Some(commitment_signed) => commitment_signed,
+					// TODO(dual_funding): Support async signing
+					None => {
+						return Err(AbortReason::InternalError(
+							"Failed to compute commitment_signed signatures",
+						));
+					},
+				};
 
 				(interactive_tx_constructor, commitment_signed)
 			},
@@ -2059,14 +2073,11 @@ where
 							)
 						})
 						.and_then(|(is_initiator, mut funding, interactive_tx_constructor)| {
-							match chan.context.funding_tx_constructed(
-								&mut funding,
-								funding_outpoint,
-								true,
-								chan.holder_commitment_point.next_transaction_number(),
-								&&logger,
-							) {
-								Ok(commitment_signed) => {
+							funding.channel_transaction_parameters.funding_outpoint =
+								Some(funding_outpoint);
+							match chan.context.get_initial_commitment_signed_v2(&funding, &&logger)
+							{
+								Some(commitment_signed) => {
 									// Advance the state
 									pending_splice.funding_negotiation =
 										Some(FundingNegotiation::AwaitingSignatures {
@@ -2075,14 +2086,17 @@ where
 										});
 									Ok((interactive_tx_constructor, commitment_signed))
 								},
-								Err(e) => {
+								// TODO(splicing): Support async signing
+								None => {
 									// Restore the taken state for later error handling
 									pending_splice.funding_negotiation =
 										Some(FundingNegotiation::ConstructingTransaction {
 											funding,
 											interactive_tx_constructor,
 										});
-									Err(e)
+									Err(AbortReason::InternalError(
+										"Failed to compute commitment_signed signatures",
+									))
 								},
 							}
 						})?
@@ -6201,33 +6215,6 @@ where
 	 	funding.channel_transaction_parameters.channel_type_features = next_channel_type;
 
 		Ok(())
-	}
-
-	#[rustfmt::skip]
-	fn funding_tx_constructed<L: Deref>(
-		&mut self, funding: &mut FundingScope, funding_outpoint: OutPoint, is_splice: bool,
-		holder_commitment_transaction_number: u64, logger: &L,
-	) -> Result<msgs::CommitmentSigned, AbortReason>
-	where
-		L::Target: Logger
-	{
-		funding.channel_transaction_parameters.funding_outpoint = Some(funding_outpoint);
-
-		if !is_splice {
-			self.assert_no_commitment_advancement(holder_commitment_transaction_number, "initial commitment_signed");
-			self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
-		}
-
-		let commitment_signed = self.get_initial_commitment_signed_v2(&funding, logger);
-		let commitment_signed = match commitment_signed {
-			Some(commitment_signed) => commitment_signed,
-			// TODO(splicing): Support async signing
-			None => {
-				return Err(AbortReason::InternalError("Failed to compute commitment_signed signatures"));
-			},
-		};
-
-		Ok(commitment_signed)
 	}
 
 	/// Asserts that the commitment tx numbers have not advanced from their initial number.
