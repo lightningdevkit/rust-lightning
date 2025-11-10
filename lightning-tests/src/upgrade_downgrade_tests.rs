@@ -477,14 +477,15 @@ fn do_test_0_1_htlc_forward_after_splice(fail_htlc: bool) {
 
 		let updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 		nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
-		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 		let conditions = PaymentFailedConditions::new();
 		expect_payment_failed_conditions(&nodes[0], pay_hash, false, conditions);
 	} else {
 		check_added_monitors(&nodes[1], 1);
 		let forward_event = SendEvent::from_node(&nodes[1]);
 		nodes[2].node.handle_update_add_htlc(node_b_id, &forward_event.msgs[0]);
-		commitment_signed_dance!(nodes[2], nodes[1], forward_event.commitment_msg, false);
+		let commitment = &forward_event.commitment_msg;
+		do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, false);
 
 		expect_and_process_pending_htlcs(&nodes[2], false);
 		expect_payment_claimable!(nodes[2], pay_hash, pay_secret, 1_000_000);

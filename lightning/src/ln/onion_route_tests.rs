@@ -219,7 +219,8 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 
 			// 2 => 1
 			nodes[1].node.handle_update_fail_htlc(nodes[2].node.get_our_node_id(), &fail_msg);
-			commitment_signed_dance!(nodes[1], nodes[2], update_2_1.commitment_signed, true);
+			let commitment = &update_2_1.commitment_signed;
+			do_commitment_signed_dance(&nodes[1], &nodes[2], commitment, true, false);
 
 			// backward fail on 1
 			let update_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -2288,7 +2289,7 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, payment_amount);
@@ -2472,7 +2473,7 @@ fn test_phantom_onion_hmac_failure() {
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_1.commitment_signed, false, false);
 
 	// Ensure the payment fails with the expected error.
 	let mut fail_conditions = PaymentFailedConditions::new()
@@ -2573,7 +2574,7 @@ fn test_phantom_invalid_onion_payload() {
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_1.commitment_signed, false, false);
 
 	// Ensure the payment fails with the expected error.
 	let error_data = Vec::new();
@@ -2639,7 +2640,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_1.commitment_signed, false, false);
 
 	// Ensure the payment fails with the expected error.
 	let expected_cltv: u32 = 80;
@@ -2693,7 +2694,7 @@ fn test_phantom_failure_too_low_cltv() {
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_1.commitment_signed, false, false);
 
 	// Ensure the payment fails with the expected error.
 	let mut error_data = recv_value_msat.to_be_bytes().to_vec();
@@ -2747,7 +2748,7 @@ fn test_phantom_failure_modified_cltv() {
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_1.commitment_signed, false, false);
 
 	// Ensure the payment fails with the expected error.
 	let mut err_data = Vec::new();
@@ -2800,7 +2801,7 @@ fn test_phantom_failure_expires_too_soon() {
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_1.commitment_signed, false, false);
 
 	// Ensure the payment fails with the expected error.
 	let err_data = 0u16.to_be_bytes();
@@ -2853,7 +2854,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_1.commitment_signed, false, false);
 
 	// Ensure the payment fails with the expected error.
 	let mut error_data = bad_recv_amt_msat.to_be_bytes().to_vec();
@@ -2919,7 +2920,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_1.commitment_signed, false, false);
 
 	// Ensure the payment fails with the expected error.
 	let err_data = 0u16.to_be_bytes();
@@ -2983,7 +2984,7 @@ fn test_phantom_failure_reject_payment() {
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_1.commitment_signed, false, false);
 
 	// Ensure the payment fails with the expected error.
 	let mut error_data = recv_amt_msat.to_be_bytes().to_vec();

@@ -2686,15 +2686,6 @@ macro_rules! commitment_signed_dance {
 		)
 		.is_none());
 	};
-	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
-		$crate::ln::functional_test_utils::do_commitment_signed_dance(
-			&$node_a,
-			&$node_b,
-			&$commitment_signed,
-			$fail_backwards,
-			false,
-		);
-	};
 }
 
 /// Runs the commitment_signed dance after the initial commitment_signed is delivered through to
@@ -3499,7 +3490,8 @@ fn fail_payment_along_path<'a, 'b, 'c>(expected_path: &[&Node<'a, 'b, 'c>]) {
 
 		let is_first_hop = origin_node_id == prev_node.node.get_our_node_id();
 		// We do not want to fail backwards on the first hop. All other hops should fail backwards.
-		commitment_signed_dance!(prev_node, node, updates.commitment_signed, !is_first_hop);
+		let commitment = &updates.commitment_signed;
+		do_commitment_signed_dance(prev_node, node, commitment, !is_first_hop, false);
 	}
 }
 
@@ -3609,7 +3601,8 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 			node.node.process_pending_htlc_forwards();
 			check_added_monitors(node, 1);
 		} else {
-			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
+			let commitment = &payment_event.commitment_msg;
+			do_commitment_signed_dance(node, prev_node, commitment, false, false);
 			node.node.process_pending_htlc_forwards();
 		}
 
@@ -4003,7 +3996,8 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 				);
 				check_added_monitors!($node, 0);
 				assert!($node.node.get_and_clear_pending_msg_events().is_empty());
-				commitment_signed_dance!($node, $prev_node, next_msgs.as_ref().unwrap().1, false);
+				let commitment = &next_msgs.as_ref().unwrap().1;
+				do_commitment_signed_dance($node, $prev_node, commitment, false, false);
 			}};
 		}
 		macro_rules! mid_update_fulfill_dance {
@@ -4076,7 +4070,8 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 					assert!($node.node.get_and_clear_pending_msg_events().is_empty());
 					None
 				};
-				commitment_signed_dance!($node, $prev_node, next_msgs.as_ref().unwrap().1, false);
+				let commitment = &next_msgs.as_ref().unwrap().1;
+				do_commitment_signed_dance($node, $prev_node, commitment, false, false);
 				next_msgs = new_next_msgs;
 			}};
 		}
@@ -4264,12 +4259,8 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(
 					prev_node.node.get_our_node_id(),
 					&next_msgs.as_ref().unwrap().0,
 				);
-				commitment_signed_dance!(
-					node,
-					prev_node,
-					next_msgs.as_ref().unwrap().1,
-					update_next_node
-				);
+				let commitment = &next_msgs.as_ref().unwrap().1;
+				do_commitment_signed_dance(node, prev_node, commitment, update_next_node, false);
 				if !update_next_node {
 					expect_and_process_pending_htlcs_and_htlc_handling_failed(
 						&node,
@@ -4326,7 +4317,8 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(
 			);
 			check_added_monitors!(origin_node, 0);
 			assert!(origin_node.node.get_and_clear_pending_msg_events().is_empty());
-			commitment_signed_dance!(origin_node, prev_node, next_msgs.as_ref().unwrap().1, false);
+			let commitment = &next_msgs.as_ref().unwrap().1;
+			do_commitment_signed_dance(origin_node, prev_node, commitment, false, false);
 			let events = origin_node.node.get_and_clear_pending_events();
 			if i == expected_paths.len() - 1 {
 				assert_eq!(events.len(), 2);
@@ -5366,12 +5358,8 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			}
 
 			if !pending_responding_commitment_signed.0 {
-				commitment_signed_dance!(
-					node_a,
-					node_b,
-					commitment_update.commitment_signed,
-					false
-				);
+				let commitment = &commitment_update.commitment_signed;
+				do_commitment_signed_dance(node_a, node_b, commitment, false, false);
 			} else {
 				node_a.node.handle_commitment_signed_batch_test(
 					node_b_id,
@@ -5484,12 +5472,8 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			}
 
 			if !pending_responding_commitment_signed.1 {
-				commitment_signed_dance!(
-					node_b,
-					node_a,
-					commitment_update.commitment_signed,
-					false
-				);
+				let commitment = &commitment_update.commitment_signed;
+				do_commitment_signed_dance(node_b, node_a, commitment, false, false);
 			} else {
 				node_b.node.handle_commitment_signed_batch_test(
 					node_a_id,

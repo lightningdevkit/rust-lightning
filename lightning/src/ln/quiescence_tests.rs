@@ -387,7 +387,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 
 	let update_add = get_htlc_update_msgs!(&nodes[0], node_id_1);
 	nodes[1].node.handle_update_add_htlc(node_id_0, &update_add.update_add_htlcs[0]);
-	commitment_signed_dance!(&nodes[1], &nodes[0], update_add.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_add.commitment_signed, false, false);
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_payment_claimable!(nodes[1], payment_hash2, payment_secret2, payment_amount);
 
@@ -422,7 +422,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 		expect_payment_claimed!(nodes[1], payment_hash2, payment_amount);
 		nodes[0].node.handle_update_fulfill_htlc(node_id_1, update.update_fulfill_htlcs.remove(0));
 	}
-	commitment_signed_dance!(&nodes[0], &nodes[1], update.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update.commitment_signed, false, false);
 
 	// The payment from nodes[0] should now be seen as failed/successful.
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -455,7 +455,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 		expect_payment_claimed!(nodes[0], payment_hash1, payment_amount);
 		nodes[1].node.handle_update_fulfill_htlc(node_id_0, update.update_fulfill_htlcs.remove(0));
 	}
-	commitment_signed_dance!(&nodes[1], &nodes[0], update.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &update.commitment_signed, false, false);
 
 	// The payment from nodes[1] should now be seen as failed/successful.
 	if fail_htlc {

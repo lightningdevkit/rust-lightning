@@ -1452,7 +1452,7 @@ fn fails_receive_tlvs_authentication() {
 	assert!(update_fail.update_fail_htlcs.len() == 1);
 	let fail_msg = &update_fail.update_fail_htlcs[0];
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_fail.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_fail.commitment_signed, false, false);
 	expect_payment_failed_conditions(
 		&nodes[0], payment_hash, true,
 		PaymentFailedConditions::new().expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionPayload, &[]),

@@ -347,7 +347,8 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 
 	let ref payment_event_11 = expect_forward!(nodes[1]);
 	nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event_11.msgs[0]);
-	commitment_signed_dance!(nodes[2], nodes[1], payment_event_11.commitment_msg, false);
+	let commitment = &payment_event_11.commitment_msg;
+	do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, false);
 
 	expect_and_process_pending_htlcs(&nodes[2], false);
 	expect_payment_claimable!(nodes[2], our_payment_hash_1, our_payment_secret_1, recv_value_1);
@@ -356,7 +357,8 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 	assert_eq!(commitment_update_2.update_add_htlcs.len(), 2);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &commitment_update_2.update_add_htlcs[0]);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &commitment_update_2.update_add_htlcs[1]);
-	commitment_signed_dance!(nodes[1], nodes[0], &commitment_update_2.commitment_signed, false);
+	let commitment = &commitment_update_2.commitment_signed;
+	do_commitment_signed_dance(&nodes[1], &nodes[0], commitment, false, false);
 	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	let ref payment_event_3 = expect_forward!(nodes[1]);
@@ -364,7 +366,7 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 	nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event_3.msgs[0]);
 	nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event_3.msgs[1]);
 
-	commitment_signed_dance!(nodes[2], nodes[1], &payment_event_3.commitment_msg, false);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_3.commitment_msg, false, false);
 	expect_and_process_pending_htlcs(&nodes[2], false);
 
 	let events = nodes[2].node.get_and_clear_pending_events();
@@ -672,7 +674,7 @@ pub fn holding_cell_htlc_counting() {
 	assert_eq!(payment_event.node_id, node_b_id);
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 	// We have to forward pending HTLCs twice - once tries to forward the payment forward (and
 	// fails), the second will process the resulting failure and fail the HTLC backward.
 	expect_and_process_pending_htlcs(&nodes[1], true);
@@ -1470,7 +1472,8 @@ pub fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increme
 		};
 		nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 		check_added_monitors(&nodes[1], 0);
-		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		let commitment = &payment_event.commitment_msg;
+		do_commitment_signed_dance(&nodes[1], &nodes[0], commitment, false, false);
 
 		expect_and_process_pending_htlcs(&nodes[1], false);
 		expect_payment_claimable!(nodes[1], our_payment_hash, our_payment_secret, 100000);

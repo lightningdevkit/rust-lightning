@@ -623,7 +623,7 @@ fn test_inbound_scid_privacy() {
 
 	let mut updates = get_htlc_update_msgs!(nodes[1], node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 
 	expect_payment_failed_conditions(
 		&nodes[0],
@@ -976,7 +976,7 @@ fn test_0conf_channel_with_async_monitor() {
 
 	let bs_send = SendEvent::from_node(&nodes[1]);
 	nodes[2].node.handle_update_add_htlc(node_b_id, &bs_send.msgs[0]);
-	commitment_signed_dance!(nodes[2], nodes[1], bs_send.commitment_msg, false);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &bs_send.commitment_msg, false, false);
 	expect_and_process_pending_htlcs(&nodes[2], false);
 	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, 1_000_000);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);

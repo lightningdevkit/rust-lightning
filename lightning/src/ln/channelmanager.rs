@@ -18553,7 +18553,7 @@ mod tests {
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
-		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 		expect_and_process_pending_htlcs(&nodes[1], true);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		let fail = HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash };
@@ -18671,7 +18671,7 @@ mod tests {
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
-		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 		// We have to forward pending HTLCs twice - once tries to forward the payment forward (and
 		// fails), the second will process the resulting failure and fail the HTLC backward
 		expect_and_process_pending_htlcs(&nodes[1], true);
@@ -18720,7 +18720,7 @@ mod tests {
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
-		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 		expect_and_process_pending_htlcs(&nodes[1], true);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
@@ -18769,7 +18769,7 @@ mod tests {
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
-		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 		expect_and_process_pending_htlcs(&nodes[1], true);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
@@ -18829,7 +18829,7 @@ mod tests {
 		assert!(updates.update_fail_malformed_htlcs.is_empty());
 		assert!(updates.update_fee.is_none());
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-		commitment_signed_dance!(nodes[1], nodes[0], &updates.commitment_signed, false);
+		do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
 		expect_and_process_pending_htlcs(&nodes[1], false);
 		expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash: mismatch_payment_hash }]);
 		check_added_monitors(&nodes[1], 1);

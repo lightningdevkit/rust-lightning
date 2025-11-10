@@ -189,7 +189,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
 	let mut updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
-	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
 	// Still in "resolvingHTLCs" on chan1 after htlc removed on chan2
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::ResolvingHTLCs);
@@ -465,7 +465,7 @@ fn updates_shutdown_wait() {
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
 	let mut updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
-	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
 	assert!(updates_2.update_add_htlcs.is_empty());
 	assert!(updates_2.update_fail_htlcs.is_empty());
@@ -731,7 +731,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
 	let mut updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
-	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
 	assert!(updates_2.update_add_htlcs.is_empty());
 	assert!(updates_2.update_fail_htlcs.is_empty());
@@ -1883,7 +1883,7 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 	let as_send = get_htlc_update_msgs(&nodes[0], &node_b_id);
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_send.update_add_htlcs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], as_send.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &as_send.commitment_signed, false, false);
 
 	// Place the HTLC in the B <-> C channel holding cell for release upon RAA and finally deliver
 	// `cs_last_raa`. Because we're still waiting to handle the `PaymentSent` event, the
@@ -1933,6 +1933,6 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 
 	let failures = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &failures.update_fail_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], failures.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &failures.commitment_signed, false, false);
 	expect_payment_failed!(nodes[0], payment_hash_b, false);
 }
