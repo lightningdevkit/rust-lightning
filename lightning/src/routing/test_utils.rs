@@ -111,7 +111,7 @@ pub(crate) fn update_channel(
 	};
 
 	match gossip_sync.handle_channel_update(Some(node_pubkey), &valid_channel_update) {
-		Ok(res) => assert!(res),
+		Ok(res) => assert!(res.is_some()),
 		Err(e) => panic!("{e:?}")
 	};
 }

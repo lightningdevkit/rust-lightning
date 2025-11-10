@@ -556,9 +556,12 @@ where
 
 	fn handle_channel_update(
 		&self, _their_node_id: Option<PublicKey>, msg: &msgs::ChannelUpdate,
-	) -> Result<bool, LightningError> {
-		self.network_graph.update_channel(msg)?;
-		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
+	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
+		match self.network_graph.update_channel(msg) {
+			Ok(nodes) if msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY => Ok(nodes),
+			Ok(_) => Ok(None),
+			Err(e) => Err(e),
+		}
 	}
 
 	fn get_next_channel_announcement(
@@ -2433,7 +2436,11 @@ where
 	///
 	/// If not built with `std`, any updates with a timestamp more than two weeks in the past or
 	/// materially in the future will be rejected.
-	pub fn update_channel(&self, msg: &msgs::ChannelUpdate) -> Result<(), LightningError> {
+	///
+	/// Returns the [`NodeId`]s of both sides of the channel if it was applied.
+	pub fn update_channel(
+		&self, msg: &msgs::ChannelUpdate,
+	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
 		self.update_channel_internal(&msg.contents, Some(&msg), Some(&msg.signature), false)
 	}
 
@@ -2443,9 +2450,11 @@ where
 	///
 	/// If not built with `std`, any updates with a timestamp more than two weeks in the past or
 	/// materially in the future will be rejected.
+	///
+	/// Returns the [`NodeId`]s of both sides of the channel if it was applied.
 	pub fn update_channel_unsigned(
 		&self, msg: &msgs::UnsignedChannelUpdate,
-	) -> Result<(), LightningError> {
+	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
 		self.update_channel_internal(msg, None, None, false)
 	}
 
@@ -2456,13 +2465,14 @@ where
 	/// If not built with `std`, any updates with a timestamp more than two weeks in the past or
 	/// materially in the future will be rejected.
 	pub fn verify_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<(), LightningError> {
-		self.update_channel_internal(&msg.contents, Some(&msg), Some(&msg.signature), true)
+		self.update_channel_internal(&msg.contents, Some(&msg), Some(&msg.signature), true)?;
+		Ok(())
 	}
 
 	fn update_channel_internal(
 		&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>,
 		sig: Option<&secp256k1::ecdsa::Signature>, only_verify: bool,
-	) -> Result<(), LightningError> {
+	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
 		let chan_enabled = msg.channel_flags & (1 << 1) != (1 << 1);
 
 		if msg.chain_hash != self.chain_hash {
@@ -2602,7 +2612,7 @@ where
 		}
 
 		if only_verify {
-			return Ok(());
+			return Ok(None);
 		}
 
 		let mut channels = self.channels.write().unwrap();
@@ -2633,9 +2643,11 @@ where
 			} else {
 				channel.one_to_two = new_channel_info;
 			}
-		}
 
-		Ok(())
+			Ok(Some((channel.node_one, channel.node_two)))
+		} else {
+			Ok(None)
+		}
 	}
 
 	fn remove_channel_in_nodes_callback<RM: FnMut(IndexedMapOccupiedEntry<NodeId, NodeInfo>)>(
@@ -3180,7 +3192,7 @@ pub(crate) mod tests {
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 		network_graph.verify_channel_update(&valid_channel_update).unwrap();
 		match gossip_sync.handle_channel_update(Some(node_1_pubkey), &valid_channel_update) {
-			Ok(res) => assert!(res),
+			Ok(res) => assert!(res.is_some()),
 			_ => panic!(),
 		};
 
@@ -3202,9 +3214,9 @@ pub(crate) mod tests {
 			node_1_privkey,
 			&secp_ctx,
 		);
-		// Return false because contains excess data
+		// Update is accepted but won't be relayed because contains excess data
 		match gossip_sync.handle_channel_update(Some(node_1_pubkey), &valid_channel_update) {
-			Ok(res) => assert!(!res),
+			Ok(res) => assert!(res.is_none()),
 			_ => panic!(),
 		};
 

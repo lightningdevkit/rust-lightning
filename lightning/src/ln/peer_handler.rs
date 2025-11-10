@@ -157,8 +157,8 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	}
 	fn handle_channel_update(
 		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelUpdate,
-	) -> Result<bool, LightningError> {
-		Ok(false)
+	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
+		Ok(None)
 	}
 	fn get_next_channel_announcement(
 		&self, _starting_point: u64,
@@ -609,6 +609,19 @@ where
 	///
 	/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 	pub send_only_message_handler: SM,
+}
+
+/// A gossip message to be forwarded to all peers.
+enum BroadcastGossipMessage {
+	ChannelAnnouncement(msgs::ChannelAnnouncement),
+	NodeAnnouncement(msgs::NodeAnnouncement),
+	ChannelUpdate {
+		msg: msgs::ChannelUpdate,
+		/// One of the two channel endpoints.
+		node_id_1: NodeId,
+		/// One of the two channel endpoints.
+		node_id_2: NodeId,
+	},
 }
 
 /// Provides an object which can be used to send data to and which uniquely identifies a connection
@@ -2045,10 +2058,7 @@ where
 		message: wire::Message<
 			<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage,
 		>,
-	) -> Result<
-		Option<wire::Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>>,
-		MessageHandlingError,
-	> {
+	) -> Result<Option<BroadcastGossipMessage>, MessageHandlingError> {
 		let their_node_id = peer_lock
 			.their_node_id
 			.expect("We know the peer's public key by the time we receive messages")
@@ -2390,10 +2400,7 @@ where
 			<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage,
 		>,
 		their_node_id: PublicKey, logger: &WithContext<'a, L>,
-	) -> Result<
-		Option<wire::Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>>,
-		MessageHandlingError,
-	> {
+	) -> Result<Option<BroadcastGossipMessage>, MessageHandlingError> {
 		if is_gossip_msg(message.type_id()) {
 			log_gossip!(logger, "Received message {:?} from {}", message, their_node_id);
 		} else {
@@ -2575,7 +2582,7 @@ where
 					.handle_channel_announcement(Some(their_node_id), &msg)
 					.map_err(|e| -> MessageHandlingError { e.into() })?
 				{
-					should_forward = Some(wire::Message::ChannelAnnouncement(msg));
+					should_forward = Some(BroadcastGossipMessage::ChannelAnnouncement(msg));
 				}
 				self.update_gossip_backlogged();
 			},
@@ -2585,7 +2592,7 @@ where
 					.handle_node_announcement(Some(their_node_id), &msg)
 					.map_err(|e| -> MessageHandlingError { e.into() })?
 				{
-					should_forward = Some(wire::Message::NodeAnnouncement(msg));
+					should_forward = Some(BroadcastGossipMessage::NodeAnnouncement(msg));
 				}
 				self.update_gossip_backlogged();
 			},
@@ -2594,11 +2601,12 @@ where
 				chan_handler.handle_channel_update(their_node_id, &msg);
 
 				let route_handler = &self.message_handler.route_handler;
-				if route_handler
+				if let Some((node_id_1, node_id_2)) = route_handler
 					.handle_channel_update(Some(their_node_id), &msg)
 					.map_err(|e| -> MessageHandlingError { e.into() })?
 				{
-					should_forward = Some(wire::Message::ChannelUpdate(msg));
+					should_forward =
+						Some(BroadcastGossipMessage::ChannelUpdate { msg, node_id_1, node_id_2 });
 				}
 				self.update_gossip_backlogged();
 			},
@@ -2652,12 +2660,11 @@ where
 	/// unless `allow_large_buffer` is set, in which case the message will be treated as critical
 	/// and delivered no matter the available buffer space.
 	fn forward_broadcast_msg(
-		&self, peers: &HashMap<Descriptor, Mutex<Peer>>,
-		msg: &wire::Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>,
+		&self, peers: &HashMap<Descriptor, Mutex<Peer>>, msg: &BroadcastGossipMessage,
 		except_node: Option<&PublicKey>, allow_large_buffer: bool,
 	) {
 		match msg {
-			wire::Message::ChannelAnnouncement(ref msg) => {
+			BroadcastGossipMessage::ChannelAnnouncement(ref msg) => {
 				log_gossip!(self.logger, "Sending message to all peers except {:?} or the announced channel's counterparties: {:?}", except_node, msg);
 				let encoded_msg = encode_msg!(msg);
 
@@ -2696,7 +2703,7 @@ where
 					peer.gossip_broadcast_buffer.push_back(encoded_message);
 				}
 			},
-			wire::Message::NodeAnnouncement(ref msg) => {
+			BroadcastGossipMessage::NodeAnnouncement(ref msg) => {
 				log_gossip!(
 					self.logger,
 					"Sending message to all peers except {:?} or the announced node: {:?}",
@@ -2738,7 +2745,7 @@ where
 					peer.gossip_broadcast_buffer.push_back(encoded_message);
 				}
 			},
-			wire::Message::ChannelUpdate(ref msg) => {
+			BroadcastGossipMessage::ChannelUpdate { msg, node_id_1: _, node_id_2: _ } => {
 				log_gossip!(
 					self.logger,
 					"Sending message to all peers except {:?}: {:?}",
@@ -2774,9 +2781,6 @@ where
 					let encoded_message = MessageBuf::from_encoded(&encoded_msg);
 					peer.gossip_broadcast_buffer.push_back(encoded_message);
 				}
-			},
-			_ => {
-				debug_assert!(false, "We shouldn't attempt to forward anything but gossip messages")
 			},
 		}
 	}
@@ -3129,13 +3133,15 @@ where
 						},
 						MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg } => {
 							log_debug!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
+							let node_id_1 = msg.contents.node_id_1;
+							let node_id_2 = msg.contents.node_id_2;
 							match route_handler.handle_channel_announcement(None, &msg) {
 								Ok(_)
 								| Err(LightningError {
 									action: msgs::ErrorAction::IgnoreDuplicateGossip,
 									..
 								}) => {
-									let forward = wire::Message::ChannelAnnouncement(msg);
+									let forward = BroadcastGossipMessage::ChannelAnnouncement(msg);
 									self.forward_broadcast_msg(
 										peers,
 										&forward,
@@ -3152,7 +3158,11 @@ where
 										action: msgs::ErrorAction::IgnoreDuplicateGossip,
 										..
 									}) => {
-										let forward = wire::Message::ChannelUpdate(msg);
+										let forward = BroadcastGossipMessage::ChannelUpdate {
+											msg,
+											node_id_1,
+											node_id_2,
+										};
 										self.forward_broadcast_msg(
 											peers,
 											&forward,
@@ -3164,7 +3174,7 @@ where
 								}
 							}
 						},
-						MessageSendEvent::BroadcastChannelUpdate { msg, .. } => {
+						MessageSendEvent::BroadcastChannelUpdate { msg, node_id_1, node_id_2 } => {
 							log_debug!(self.logger, "Handling BroadcastChannelUpdate event in peer_handler for contents {:?}", msg.contents);
 							match route_handler.handle_channel_update(None, &msg) {
 								Ok(_)
@@ -3172,7 +3182,11 @@ where
 									action: msgs::ErrorAction::IgnoreDuplicateGossip,
 									..
 								}) => {
-									let forward = wire::Message::ChannelUpdate(msg);
+									let forward = BroadcastGossipMessage::ChannelUpdate {
+										msg,
+										node_id_1,
+										node_id_2,
+									};
 									self.forward_broadcast_msg(
 										peers,
 										&forward,
@@ -3191,7 +3205,7 @@ where
 									action: msgs::ErrorAction::IgnoreDuplicateGossip,
 									..
 								}) => {
-									let forward = wire::Message::NodeAnnouncement(msg);
+									let forward = BroadcastGossipMessage::NodeAnnouncement(msg);
 									self.forward_broadcast_msg(
 										peers,
 										&forward,
@@ -3668,7 +3682,7 @@ where
 		let _ = self.message_handler.route_handler.handle_node_announcement(None, &msg);
 		self.forward_broadcast_msg(
 			&*self.peers.read().unwrap(),
-			&wire::Message::NodeAnnouncement(msg),
+			&BroadcastGossipMessage::NodeAnnouncement(msg),
 			None,
 			true,
 		);
