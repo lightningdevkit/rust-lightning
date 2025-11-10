@@ -6199,12 +6199,7 @@ where
 	{
 		funding.channel_transaction_parameters.funding_outpoint = Some(funding_outpoint);
 
-		if is_splice {
-			debug_assert_eq!(
-				holder_commitment_transaction_number,
-				self.counterparty_next_commitment_transaction_number,
-			);
-		} else {
+		if !is_splice {
 			self.assert_no_commitment_advancement(holder_commitment_transaction_number, "initial commitment_signed");
 			self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 		}
