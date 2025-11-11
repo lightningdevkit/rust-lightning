@@ -50,6 +50,8 @@ use crate::ln::chan_utils::{
 	self, ChannelTransactionParameters, CommitmentTransaction, CounterpartyCommitmentSecrets,
 	HTLCClaim, HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
+#[cfg(feature = "safe_channels")]
+use crate::ln::channel::read_check_data;
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::channel_keys::{
 	DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, HtlcKey, RevocationBasepoint,
@@ -111,6 +113,10 @@ pub struct ChannelMonitorUpdate {
 	/// Will be `None` for `ChannelMonitorUpdate`s constructed on LDK versions prior to 0.0.121 and
 	/// always `Some` otherwise.
 	pub channel_id: Option<ChannelId>,
+
+	/// The encoded channel data associated with this ChannelMonitor, if any.
+	#[cfg(feature = "safe_channels")]
+	pub encoded_channel: Option<Vec<u8>>,
 }
 
 impl ChannelMonitorUpdate {
@@ -156,9 +162,16 @@ impl Writeable for ChannelMonitorUpdate {
 		for update_step in self.updates.iter() {
 			update_step.write(w)?;
 		}
+		#[cfg(not(feature = "safe_channels"))]
 		write_tlv_fields!(w, {
 			// 1 was previously used to store `counterparty_node_id`
 			(3, self.channel_id, option),
+		});
+		#[cfg(feature = "safe_channels")]
+		write_tlv_fields!(w, {
+			// 1 was previously used to store `counterparty_node_id`
+			(3, self.channel_id, option),
+			(5, self.encoded_channel, option)
 		});
 		Ok(())
 	}
@@ -176,11 +189,24 @@ impl Readable for ChannelMonitorUpdate {
 			}
 		}
 		let mut channel_id = None;
+		#[cfg(not(feature = "safe_channels"))]
 		read_tlv_fields!(r, {
 			// 1 was previously used to store `counterparty_node_id`
 			(3, channel_id, option),
 		});
-		Ok(Self { update_id, updates, channel_id })
+		#[cfg(feature = "safe_channels")]
+		let mut encoded_channel = None;
+		#[cfg(feature = "safe_channels")]
+		read_tlv_fields!(r, {
+			// 1 was previously used to store `counterparty_node_id`
+			(3, channel_id, option),
+			(5, encoded_channel, option)
+		});
+		Ok(Self {
+			update_id, updates, channel_id,
+			#[cfg(feature = "safe_channels")]
+			encoded_channel
+		})
 	}
 }
 
@@ -1402,6 +1428,11 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// make deciding whether to do so simple, here we track whether this monitor was last written
 	/// prior to 0.1.
 	written_by_0_1_or_later: bool,
+
+	/// The serialized channel state as provided via the last `ChannelMonitorUpdate` or via a call to
+	/// [`ChannelMonitor::update_encoded_channel`].
+	#[cfg(feature = "safe_channels")]
+	encoded_channel: Option<Vec<u8>>,
 }
 
 // Returns a `&FundingScope` for the one we are currently observing/handling commitment transactions
@@ -1521,6 +1552,12 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 	channel_monitor: &ChannelMonitorImpl<Signer>, _is_stub: bool, writer: &mut W,
 ) -> Result<(), Error> {
+	// Check that the encoded channel (if present) is consistent with the rest of the monitor. This sets an invariant
+	// for the safe_channels feature.
+	#[cfg(feature = "safe_channels")]
+	if let Some(ref encoded_channel) = channel_monitor.encoded_channel {
+		channel_monitor.check_encoded_channel_consistency(encoded_channel);
+	}
 	write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 	channel_monitor.latest_update_id.write(writer)?;
@@ -1733,6 +1770,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			_ => channel_monitor.pending_monitor_events.clone(),
 		};
 
+	#[cfg(not(feature = "safe_channels"))]
 	write_tlv_fields!(writer, {
 		(1, channel_monitor.funding_spend_confirmed, option),
 		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
@@ -1755,6 +1793,32 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(34, channel_monitor.alternative_funding_confirmed, option),
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
+	});
+
+	#[cfg(feature = "safe_channels")]
+	write_tlv_fields!(writer, {
+		(1, channel_monitor.funding_spend_confirmed, option),
+		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
+		(5, pending_monitor_events, required_vec),
+		(7, channel_monitor.funding_spend_seen, required),
+		(9, channel_monitor.counterparty_node_id, required),
+		(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
+		(13, channel_monitor.spendable_txids_confirmed, required_vec),
+		(15, channel_monitor.counterparty_fulfilled_htlcs, required),
+		(17, channel_monitor.initial_counterparty_commitment_info, option),
+		(19, channel_monitor.channel_id, required),
+		(21, channel_monitor.balances_empty_height, option),
+		(23, channel_monitor.holder_pays_commitment_tx_fee, option),
+		(25, channel_monitor.payment_preimages, required),
+		(27, channel_monitor.first_negotiated_funding_txo, required),
+		(29, channel_monitor.initial_counterparty_commitment_tx, option),
+		(31, channel_monitor.funding.channel_parameters, required),
+		(32, channel_monitor.pending_funding, optional_vec),
+		(33, channel_monitor.htlcs_resolved_to_user, required),
+		(34, channel_monitor.alternative_funding_confirmed, option),
+		(35, channel_monitor.is_manual_broadcast, required),
+		(37, channel_monitor.funding_seen_onchain, required),
+		(39, channel_monitor.encoded_channel, option),
 	});
 
 	Ok(())
@@ -1994,6 +2058,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			alternative_funding_confirmed: None,
 
 			written_by_0_1_or_later: true,
+			#[cfg(feature = "safe_channels")]
+			encoded_channel: None,
 		})
 	}
 
@@ -2112,6 +2178,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.update_monitor(updates, broadcaster, fee_estimator, &logger)
+	}
+
+	/// Gets the encoded channel data, if any, associated with this ChannelMonitor.
+	#[cfg(feature = "safe_channels")]
+	pub fn get_encoded_channel(&self) -> Option<Vec<u8>> {
+		self.inner.lock().unwrap().encoded_channel.clone()
+	}
+
+	/// Updates the encoded channel data associated with this ChannelMonitor. To clear the encoded channel data (for
+	/// example after shut down of a channel), pass an empty vector.
+	#[cfg(feature = "safe_channels")]
+	pub fn update_encoded_channel(&self, encoded: Vec<u8>) {
+		self.inner.lock().unwrap().update_encoded_channel(encoded);
 	}
 
 	/// Gets the update_id from the latest ChannelMonitorUpdate which was applied to this
@@ -2719,6 +2798,55 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 }
 
 impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
+	#[cfg(feature = "safe_channels")]
+	fn check_encoded_channel_consistency(&self, encoded: &[u8]) {
+		let encoded_channel_reader = &mut &encoded[..];
+		let check_res = read_check_data(encoded_channel_reader);
+		if let Ok(check_data) = check_res {
+			debug_assert!(
+				check_data.cur_holder_commitment_transaction_number
+					<= self.get_cur_holder_commitment_number(),
+				"cur_holder_commitment_transaction_number - channel: {} vs monitor: {}",
+				check_data.cur_holder_commitment_transaction_number,
+				self.get_cur_holder_commitment_number()
+			);
+			debug_assert!(
+				check_data.revoked_counterparty_commitment_transaction_number
+					<= self.get_min_seen_secret(),
+				"revoked_counterparty_commitment_transaction_number - channel: {} vs monitor: {}",
+				check_data.revoked_counterparty_commitment_transaction_number,
+				self.get_min_seen_secret()
+			);
+			debug_assert!(
+				check_data.cur_counterparty_commitment_transaction_number
+					<= self.get_cur_counterparty_commitment_number(),
+				"cur_counterparty_commitment_transaction_number - channel: {} vs monitor: {}",
+				check_data.cur_counterparty_commitment_transaction_number,
+				self.get_cur_counterparty_commitment_number()
+			);
+			debug_assert!(
+				check_data.latest_monitor_update_id >= self.get_latest_update_id(),
+				"latest_monitor_update_id - channel: {} vs monitor: {}",
+				check_data.latest_monitor_update_id,
+				self.get_latest_update_id()
+			);
+		} else {
+			debug_assert!(false, "Failed to read check data from encoded channel");
+		}
+	}
+
+	#[cfg(feature = "safe_channels")]
+	fn update_encoded_channel(&mut self, encoded: Vec<u8>) {
+		if encoded.len() > 0 {
+			// Check that the encoded channel is consistent with the rest of the monitor. This sets an invariant for the
+			// safe_channels feature.
+			self.check_encoded_channel_consistency(&encoded);
+			self.encoded_channel = Some(encoded);
+		} else {
+			self.encoded_channel = None;
+		}
+	}
+
 	/// Helper for get_claimable_balances which does the work for an individual HTLC, generating up
 	/// to one `Balance` for the HTLC.
 	#[rustfmt::skip]
@@ -4403,6 +4531,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
 			}
+		}
+
+		// Assume that if the update contains no encoded channel, that the channel remained unchanged. We
+		// therefore do not update the monitor.
+		#[cfg(feature="safe_channels")]
+		if let Some(encoded_channel) = updates.encoded_channel.as_ref() {
+			self.update_encoded_channel(encoded_channel.clone());
 		}
 
 		if ret.is_ok() && self.no_further_updates_allowed() && is_pre_close_update {
@@ -6644,6 +6779,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut alternative_funding_confirmed = None;
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
+		#[cfg(not(feature="safe_channels"))]
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6666,6 +6802,33 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(34, alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
+		});
+		#[cfg(feature="safe_channels")]
+		let mut encoded_channel = None;
+		#[cfg(feature="safe_channels")]
+		read_tlv_fields!(reader, {
+			(1, funding_spend_confirmed, option),
+			(3, htlcs_resolved_on_chain, optional_vec),
+			(5, pending_monitor_events, optional_vec),
+			(7, funding_spend_seen, option),
+			(9, counterparty_node_id, option),
+			(11, confirmed_commitment_tx_counterparty_output, option),
+			(13, spendable_txids_confirmed, optional_vec),
+			(15, counterparty_fulfilled_htlcs, option),
+			(17, initial_counterparty_commitment_info, option),
+			(19, channel_id, option),
+			(21, balances_empty_height, option),
+			(23, holder_pays_commitment_tx_fee, option),
+			(25, payment_preimages_with_info, option),
+			(27, first_negotiated_funding_txo, (default_value, outpoint)),
+			(29, initial_counterparty_commitment_tx, option),
+			(31, channel_parameters, (option: ReadableArgs, None)),
+			(32, pending_funding, optional_vec),
+			(33, htlcs_resolved_to_user, option),
+			(34, alternative_funding_confirmed, option),
+			(35, is_manual_broadcast, (default_value, false)),
+			(37, funding_seen_onchain, (default_value, true)),
+			(39, encoded_channel, option),
 		});
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
@@ -6843,6 +7006,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			alternative_funding_confirmed,
 
 			written_by_0_1_or_later,
+			#[cfg(feature="safe_channels")]
+			encoded_channel,
 		});
 
 		if counterparty_node_id.is_none() {
