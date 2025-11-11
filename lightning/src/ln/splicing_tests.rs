@@ -1954,7 +1954,8 @@ fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forw
 	// Node 1 should now have a pending HTLC to forward to 2.
 	let update_add_0_1 = get_htlc_update_msgs(&nodes[0], &node_id_1);
 	nodes[1].node.handle_update_add_htlc(node_id_0, &update_add_0_1.update_add_htlcs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], update_add_0_1.commitment_signed, false);
+	let commitment = &update_add_0_1.commitment_signed;
+	do_commitment_signed_dance(&nodes[1], &nodes[0], commitment, false, false);
 	assert!(nodes[1].node.needs_pending_htlc_processing());
 
 	// Splice both channels, lock them, and connect enough blocks to trigger the legacy SCID pruning
@@ -2008,7 +2009,8 @@ fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forw
 		check_added_monitors(&nodes[1], 1);
 		let update_fail_1_0 = get_htlc_update_msgs(&nodes[1], &node_id_0);
 		nodes[0].node.handle_update_fail_htlc(node_id_1, &update_fail_1_0.update_fail_htlcs[0]);
-		commitment_signed_dance!(nodes[0], nodes[1], update_fail_1_0.commitment_signed, false);
+		let commitment = &update_fail_1_0.commitment_signed;
+		do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, false);
 
 		let conditions = PaymentFailedConditions::new();
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
@@ -2018,7 +2020,8 @@ fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forw
 		check_added_monitors(&nodes[1], 1);
 		let update_add_1_2 = get_htlc_update_msgs(&nodes[1], &node_id_2);
 		nodes[2].node.handle_update_add_htlc(node_id_1, &update_add_1_2.update_add_htlcs[0]);
-		commitment_signed_dance!(nodes[2], nodes[1], update_add_1_2.commitment_signed, false);
+		let commitment = &update_add_1_2.commitment_signed;
+		do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, false);
 		assert!(nodes[2].node.needs_pending_htlc_processing());
 
 		// Node 2 should see the claimable payment. Fail it back to make sure we also handle the SCID
@@ -2032,7 +2035,8 @@ fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forw
 
 		let update_fail_1_2 = get_htlc_update_msgs(&nodes[2], &node_id_1);
 		nodes[1].node.handle_update_fail_htlc(node_id_2, &update_fail_1_2.update_fail_htlcs[0]);
-		commitment_signed_dance!(nodes[1], nodes[2], update_fail_1_2.commitment_signed, false);
+		let commitment = &update_fail_1_2.commitment_signed;
+		do_commitment_signed_dance(&nodes[1], &nodes[2], commitment, false, false);
 		let fail_type = HTLCHandlingFailureType::Forward {
 			node_id: Some(node_id_2),
 			channel_id: channel_id_1_2,
@@ -2042,7 +2046,8 @@ fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forw
 
 		let update_fail_0_1 = get_htlc_update_msgs(&nodes[1], &node_id_0);
 		nodes[0].node.handle_update_fail_htlc(node_id_1, &update_fail_0_1.update_fail_htlcs[0]);
-		commitment_signed_dance!(nodes[0], nodes[1], update_fail_0_1.commitment_signed, false);
+		let commitment = &update_fail_0_1.commitment_signed;
+		do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, false);
 
 		let conditions = PaymentFailedConditions::new();
 		expect_payment_failed_conditions(&nodes[0], payment_hash, true, conditions);

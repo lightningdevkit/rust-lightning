@@ -443,7 +443,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 
 	nodes[1].node.handle_update_fee(node_a_id, &update_msg.update_fee.unwrap());
 
-	commitment_signed_dance!(nodes[1], nodes[0], update_msg.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_msg.commitment_signed, false, false);
 
 	// Confirm that the new fee based on the last local commitment txn is what we expected based on the feerate set above.
 	{
@@ -947,7 +947,7 @@ pub fn accept_busted_but_better_fee() {
 			..
 		} => {
 			nodes[1].node.handle_update_fee(node_a_id, update_fee.as_ref().unwrap());
-			commitment_signed_dance!(nodes[1], nodes[0], commitment_signed, false);
+			do_commitment_signed_dance(&nodes[1], &nodes[0], &commitment_signed, false, false);
 		},
 		_ => panic!("Unexpected event"),
 	};
@@ -969,7 +969,7 @@ pub fn accept_busted_but_better_fee() {
 			..
 		} => {
 			nodes[1].node.handle_update_fee(node_a_id, update_fee.as_ref().unwrap());
-			commitment_signed_dance!(nodes[1], nodes[0], commitment_signed, false);
+			do_commitment_signed_dance(&nodes[1], &nodes[0], &commitment_signed, false, false);
 		},
 		_ => panic!("Unexpected event"),
 	};
@@ -1150,7 +1150,8 @@ pub fn do_cannot_afford_on_holding_cell_release(
 			assert_eq!(update_fee.feerate_per_kw, target_feerate);
 
 			nodes[1].node.handle_update_fee(node_a_id, &update_fee);
-			commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
+			let commitment = &updates.commitment_signed;
+			do_commitment_signed_dance(&nodes[1], &nodes[0], commitment, false, false);
 
 			// Confirm the feerate on node 0's commitment transaction
 			{
@@ -1310,7 +1311,8 @@ pub fn do_can_afford_given_trimmed_htlcs(inequality_regions: core::cmp::Ordering
 			assert_eq!(update_fee.feerate_per_kw, target_feerate);
 
 			nodes[1].node.handle_update_fee(node_a_id, &update_fee);
-			commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
+			let commitment = &updates.commitment_signed;
+			do_commitment_signed_dance(&nodes[1], &nodes[0], commitment, false, false);
 
 			// Confirm the feerate on node 0's commitment transaction
 			{

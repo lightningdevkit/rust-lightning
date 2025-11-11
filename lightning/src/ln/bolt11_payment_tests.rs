@@ -76,7 +76,7 @@ fn payment_metadata_end_to_end_for_invoice_with_amount() {
 	check_added_monitors(&nodes[0], 1);
 	let send_event = SendEvent::from_node(&nodes[0]);
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], &send_event.commitment_msg, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &send_event.commitment_msg, false, false);
 
 	expect_and_process_pending_htlcs(&nodes[1], false);
 
@@ -144,7 +144,7 @@ fn payment_metadata_end_to_end_for_invoice_with_no_amount() {
 	check_added_monitors(&nodes[0], 1);
 	let send_event = SendEvent::from_node(&nodes[0]);
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], &send_event.commitment_msg, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &send_event.commitment_msg, false, false);
 
 	expect_and_process_pending_htlcs(&nodes[1], false);
 

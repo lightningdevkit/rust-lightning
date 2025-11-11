@@ -721,7 +721,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 		SendEvent::from_event(events.remove(0))
 	};
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], &payment_event.commitment_msg, false, true);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, true);
 	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
@@ -761,7 +761,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 		SendEvent::from_event(events.remove(0))
 	};
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
-	commitment_signed_dance!(nodes[2], nodes[1], &payment_event.commitment_msg, false, true);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event.commitment_msg, false, true);
 	expect_and_process_pending_htlcs(&nodes[2], false);
 
 	expect_payment_claimable!(&nodes[2], payment_hash, payment_secret, amt_msat, None, nodes[2].node.get_our_node_id());
@@ -1027,7 +1027,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			check_added_monitors!(nodes[2], 1);
 
 			nodes[2].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
-			commitment_signed_dance!(nodes[2], nodes[1], (), false, true, false, false);
+			assert!(commitment_signed_dance_through_cp_raa(&nodes[2], &nodes[1], false, false).is_none());
 			expect_and_process_pending_htlcs(&nodes[2], false);
 			expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]);
 			check_added_monitors(&nodes[2], 1);
@@ -1452,7 +1452,7 @@ fn fails_receive_tlvs_authentication() {
 	assert!(update_fail.update_fail_htlcs.len() == 1);
 	let fail_msg = &update_fail.update_fail_htlcs[0];
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), fail_msg);
-	commitment_signed_dance!(nodes[0], nodes[1], update_fail.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_fail.commitment_signed, false, false);
 	expect_payment_failed_conditions(
 		&nodes[0], payment_hash, true,
 		PaymentFailedConditions::new().expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionPayload, &[]),

@@ -189,7 +189,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
 	let mut updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
-	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
 	// Still in "resolvingHTLCs" on chan1 after htlc removed on chan2
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::ResolvingHTLCs);
@@ -201,7 +201,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 	assert!(updates_2.update_fee.is_none());
 	assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates_2.update_fulfill_htlcs.remove(0));
-	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_2.commitment_signed, false, true);
 	expect_payment_sent!(nodes[0], payment_preimage_0);
 
 	// all htlcs removed, chan1 advances to NegotiatingClosingFee
@@ -465,7 +465,7 @@ fn updates_shutdown_wait() {
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
 	let mut updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
-	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
 	assert!(updates_2.update_add_htlcs.is_empty());
 	assert!(updates_2.update_fail_htlcs.is_empty());
@@ -473,7 +473,7 @@ fn updates_shutdown_wait() {
 	assert!(updates_2.update_fee.is_none());
 	assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates_2.update_fulfill_htlcs.remove(0));
-	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_2.commitment_signed, false, true);
 	expect_payment_sent!(nodes[0], payment_preimage_0);
 
 	let node_0_closing_signed =
@@ -566,7 +566,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &updates.commitment_signed);
 	check_added_monitors!(nodes[1], 1);
 	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
-	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
+	assert!(commitment_signed_dance_through_cp_raa(&nodes[1], &nodes[0], false, false).is_none());
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
@@ -582,7 +582,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	assert!(updates_2.update_fee.is_none());
 
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &updates_2.update_fail_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_2.commitment_signed, false, true);
 
 	if blinded_recipient {
 		expect_payment_failed_conditions(
@@ -731,7 +731,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
 	let mut updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
-	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
 	assert!(updates_2.update_add_htlcs.is_empty());
 	assert!(updates_2.update_fail_htlcs.is_empty());
@@ -739,7 +739,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert!(updates_2.update_fee.is_none());
 	assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates_2.update_fulfill_htlcs.remove(0));
-	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_2.commitment_signed, false, true);
 	expect_payment_sent!(nodes[0], payment_preimage);
 
 	let node_0_closing_signed =
@@ -1883,7 +1883,7 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 	let as_send = get_htlc_update_msgs(&nodes[0], &node_b_id);
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_send.update_add_htlcs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], as_send.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &as_send.commitment_signed, false, false);
 
 	// Place the HTLC in the B <-> C channel holding cell for release upon RAA and finally deliver
 	// `cs_last_raa`. Because we're still waiting to handle the `PaymentSent` event, the
@@ -1933,6 +1933,6 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 
 	let failures = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &failures.update_fail_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], failures.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &failures.commitment_signed, false, false);
 	expect_payment_failed!(nodes[0], payment_hash_b, false);
 }

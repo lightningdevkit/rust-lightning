@@ -892,7 +892,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 				check_added_monitors!(nodes[2], 1);
 				let cs_updates = get_htlc_update_msgs!(nodes[2], nodes[0].node.get_our_node_id());
 				expect_payment_forwarded!(nodes[2], nodes[0], nodes[3], Some(1000), false, false);
-				commitment_signed_dance!(nodes[2], nodes[3], updates.commitment_signed, false, true);
+				do_commitment_signed_dance(&nodes[2], &nodes[3], &updates.commitment_signed, false, true);
 				cs_updates
 			}
 			_ => panic!(),
@@ -900,7 +900,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 
 		let fulfill = cs_updates.update_fulfill_htlcs.remove(0);
 		nodes[0].node.handle_update_fulfill_htlc(nodes[2].node.get_our_node_id(), fulfill);
-		commitment_signed_dance!(nodes[0], nodes[2], cs_updates.commitment_signed, false, true);
+		do_commitment_signed_dance(&nodes[0], &nodes[2], &cs_updates.commitment_signed, false, true);
 		expect_payment_sent!(nodes[0], payment_preimage);
 
 		// Ensure that the remaining channel is fully operation and not blocked (and that after a
@@ -955,7 +955,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 
 	let payment_event = SendEvent::from_node(&nodes[0]);
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 
 	// Store the `ChannelManager` before handling the `HTLCIntercepted` events, expecting the event
 	// (and the HTLC itself) to be missing on reload even though its present when we serialized.
@@ -1072,7 +1072,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	} else {
 		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update.update_fail_htlcs[0]);
 	}
-	commitment_signed_dance!(nodes[0], nodes[1], update.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update.commitment_signed, false, false);
 
 	if claim_htlc {
 		expect_payment_sent!(nodes[0], payment_preimage);
@@ -1130,7 +1130,7 @@ fn removed_payment_no_manager_persistence() {
 	match &events[0] {
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { update_fail_htlcs, commitment_signed, .. }, .. } => {
 			nodes[1].node.handle_update_fail_htlc(nodes[2].node.get_our_node_id(), &update_fail_htlcs[0]);
-			commitment_signed_dance!(nodes[1], nodes[2], commitment_signed, false);
+			do_commitment_signed_dance(&nodes[1], &nodes[2], &commitment_signed, false, false);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1165,7 +1165,7 @@ fn removed_payment_no_manager_persistence() {
 	match &events[0] {
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { update_fail_htlcs, commitment_signed, .. }, .. } => {
 			nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
-			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false);
+			do_commitment_signed_dance(&nodes[0], &nodes[1], &commitment_signed, false, false);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1270,7 +1270,7 @@ fn test_htlc_localremoved_persistence() {
 
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	commitment_signed_dance!(nodes[1], nodes[0], &updates.commitment_signed, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash: mismatch_payment_hash }]);
 	check_added_monitors(&nodes[1], 1);
