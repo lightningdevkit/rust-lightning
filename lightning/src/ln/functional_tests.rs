@@ -5147,7 +5147,7 @@ pub fn test_fail_holding_cell_htlc_upon_free() {
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
 	nodes[0].logger.assert_log(
 		"lightning::ln::channel",
-		format!("Freeing holding cell with 1 HTLC updates in channel {}", chan.2),
+		"Freeing holding cell with 1 HTLC updates".to_string(),
 		1,
 	);
 
@@ -5258,7 +5258,7 @@ pub fn test_free_and_fail_holding_cell_htlcs() {
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
 	nodes[0].logger.assert_log(
 		"lightning::ln::channel",
-		format!("Freeing holding cell with 2 HTLC updates in channel {}", chan.2),
+		"Freeing holding cell with 2 HTLC updates".to_string(),
 		1,
 	);
 

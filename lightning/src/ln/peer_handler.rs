@@ -3121,9 +3121,16 @@ where
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendShutdown { ref node_id, ref msg } => {
-							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling Shutdown event in peer_handler for node {} for channel {}",
-									node_id,
-									&msg.channel_id);
+							log_debug!(
+								WithContext::from(
+									&self.logger,
+									Some(*node_id),
+									Some(msg.channel_id),
+									None
+								),
+								"Handling Shutdown event in peer_handler for node {}",
+								node_id
+							);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {

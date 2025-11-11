@@ -403,7 +403,7 @@ where
 		if channel.get_inbound_payment_scid().is_none()
 			|| channel.counterparty.forwarding_info.is_none()
 		{
-			log_trace!(logger, "Ignoring channel {} for invoice route hints", &channel.channel_id);
+			log_trace!(logger, "Ignoring channel for invoice route hints");
 			continue;
 		}
 
@@ -418,8 +418,7 @@ where
 				// look at the public channels instead.
 				log_trace!(
 					logger,
-					"Not including channels in invoice route hints on account of public channel {}",
-					&channel.channel_id
+					"Not including channels in invoice route hints on account of public channel",
 				);
 				return vec![].into_iter().take(MAX_CHANNEL_HINTS).map(route_hint_from_channel);
 			}
@@ -519,24 +518,15 @@ where
 			};
 
 			if include_channel {
-				log_trace!(
-					logger,
-					"Including channel {} in invoice route hints",
-					&channel.channel_id
-				);
+				log_trace!(logger, "Including channel in invoice route hints",);
 			} else if !has_enough_capacity {
 				log_trace!(
 					logger,
-					"Ignoring channel {} without enough capacity for invoice route hints",
-					&channel.channel_id
+					"Ignoring channel without enough capacity for invoice route hints",
 				);
 			} else {
 				debug_assert!(!channel.is_usable || (has_pub_unconf_chan && !channel.is_announced));
-				log_trace!(
-					logger,
-					"Ignoring channel {} with disconnected peer",
-					&channel.channel_id
-				);
+				log_trace!(logger, "Ignoring channel with disconnected peer",);
 			}
 
 			include_channel

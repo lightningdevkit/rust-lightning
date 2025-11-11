@@ -3366,7 +3366,7 @@ macro_rules! convert_channel_err {
 			ChannelError::Close((msg, reason)) => {
 				let (mut shutdown_res, chan_update) = $close(reason);
 				let logger = WithChannelContext::from(&$self.logger, &$chan.context(), None);
-				log_error!(logger, "Closed channel {} due to close-required error: {}", $channel_id, msg);
+				log_error!(logger, "Closed channel due to close-required error: {}", msg);
 				$locked_close(&mut shutdown_res, $chan);
 				let err =
 					MsgHandleErrInternal::from_finish_shutdown(msg, $channel_id, shutdown_res, chan_update);
@@ -3665,7 +3665,7 @@ macro_rules! handle_monitor_update_completion {
 
 /// Returns whether the monitor update is completed, `false` if the update is in-progress.
 fn handle_monitor_update_res<CM: AChannelManager, LG: Logger>(
-	cm: &CM, update_res: ChannelMonitorUpdateStatus, channel_id: ChannelId, logger: LG,
+	cm: &CM, update_res: ChannelMonitorUpdateStatus, logger: LG,
 ) -> bool {
 	debug_assert!(cm.get_cm().background_events_processed_since_startup.load(Ordering::Acquire));
 	match update_res {
@@ -3679,8 +3679,10 @@ fn handle_monitor_update_res<CM: AChannelManager, LG: Logger>(
 			if cm.get_cm().monitor_update_type.swap(1, Ordering::Relaxed) == 2 {
 				panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
 			}
-			log_debug!(logger, "ChannelMonitor update for {} in flight, holding messages until the update completes.",
-				channel_id);
+			log_debug!(
+				logger,
+				"ChannelMonitor update in flight, holding messages until the update completes.",
+			);
 			false
 		},
 		ChannelMonitorUpdateStatus::Completed => {
@@ -3696,8 +3698,7 @@ fn handle_monitor_update_res<CM: AChannelManager, LG: Logger>(
 macro_rules! handle_initial_monitor {
 	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => {
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
-		let update_completed =
-			handle_monitor_update_res($self, $update_res, $chan.context.channel_id(), logger);
+		let update_completed = handle_monitor_update_res($self, $update_res, logger);
 		if update_completed {
 			handle_monitor_update_completion!(
 				$self,
@@ -3732,7 +3733,7 @@ fn handle_new_monitor_update_internal<CM: AChannelManager, LG: Logger>(
 	if cm.get_cm().background_events_processed_since_startup.load(Ordering::Acquire) {
 		let update_res =
 			cm.get_cm().chain_monitor.update_channel(channel_id, &in_flight_updates[update_idx]);
-		let update_completed = handle_monitor_update_res(cm, update_res, channel_id, logger);
+		let update_completed = handle_monitor_update_res(cm, update_res, logger);
 		if update_completed {
 			let _ = in_flight_updates.remove(update_idx);
 		}
@@ -4648,7 +4649,7 @@ where
 		};
 
 		if let Some(mut chan) = peer_state.channel_by_id.remove(channel_id) {
-			log_error!(logger, "Force-closing channel {}", channel_id);
+			log_error!(logger, "Force-closing channel");
 			let err = ChannelError::Close((message, reason));
 			let (_, mut e) = convert_channel_err!(self, peer_state, err, &mut chan);
 			mem::drop(peer_state_lock);
@@ -4661,7 +4662,7 @@ where
 			let _ = handle_error!(self, Err::<(), _>(e), *peer_node_id);
 			Ok(())
 		} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
-			log_error!(logger, "Force-closing inbound channel request {}", &channel_id);
+			log_error!(logger, "Force-closing inbound channel request");
 			if !is_from_counterparty && peer_state.is_connected {
 				peer_state.pending_msg_events.push(
 					MessageSendEvent::HandleError {
@@ -5154,11 +5155,7 @@ where
 			});
 		}
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-		log_trace!(
-			logger,
-			"Attempting to generate broadcast channel update for channel {}",
-			&chan.context.channel_id()
-		);
+		log_trace!(logger, "Attempting to generate broadcast channel update",);
 		self.get_channel_update_for_unicast(chan)
 	}
 
@@ -5179,14 +5176,14 @@ where
 		&self, chan: &FundedChannel<SP>,
 	) -> Result<(msgs::ChannelUpdate, NodeId, NodeId), LightningError> {
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-		log_trace!(logger, "Attempting to generate channel update for channel {}", chan.context.channel_id());
+		log_trace!(logger, "Attempting to generate channel update");
 		let short_channel_id = match chan.funding.get_short_channel_id().or(chan.context.latest_inbound_scid_alias()) {
 			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
 		};
 
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-		log_trace!(logger, "Generating channel update for channel {}", chan.context.channel_id());
+		log_trace!(logger, "Generating channel update");
 		let our_node_id = NodeId::from_pubkey(&self.our_network_pubkey);
 		let their_node_id = NodeId::from_pubkey(&chan.context.get_counterparty_node_id());
 		let were_node_one = our_node_id < their_node_id;
@@ -6777,7 +6774,7 @@ where
 				},
 				None => {
 					let error = format!(
-						"Channel with id {next_hop_channel_id} not found for the passed counterparty node_id {next_node_id}"
+						"Channel not found for the passed counterparty node_id {next_node_id}"
 					);
 					let logger = WithContext::from(
 						&self.logger,
@@ -6786,7 +6783,11 @@ where
 						None,
 					);
 					log_error!(logger, "{error} when attempting to forward intercepted HTLC");
-					return Err(APIError::ChannelUnavailable { err: error });
+					return Err(APIError::ChannelUnavailable {
+						err: format!(
+						"Channel with id {next_hop_channel_id} not found for the passed counterparty node_id {next_node_id}"
+					),
+					});
 				},
 			}
 		};
@@ -7520,8 +7521,8 @@ where
 						} else {
 							"alternate"
 						};
-					log_trace!(logger, "Forwarding HTLC from SCID {} with payment_hash {} and next hop SCID {} over {} channel {} with corresponding peer {}",
-						prev_outbound_scid_alias, &payment_hash, short_chan_id, channel_description, optimal_channel.context.channel_id(), &counterparty_node_id);
+					log_trace!(logger, "Forwarding HTLC from SCID {} with payment_hash {} and next hop SCID {} over {} with corresponding peer {}",
+						prev_outbound_scid_alias, &payment_hash, short_chan_id, channel_description, &counterparty_node_id);
 					if let Err((reason, msg)) = optimal_channel.queue_add_htlc(
 						*outgoing_amt_msat,
 						*payment_hash,
@@ -8083,8 +8084,8 @@ where
 				chan_id, chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
 			return NotifyOption::SkipPersistNoEvents;
 		}
-		log_trace!(logger, "Channel {} qualifies for a feerate change from {} to {}.",
-			&chan_id, chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
+		log_trace!(logger, "Channel qualifies for a feerate change from {} to {}.",
+			chan.context.get_feerate_sat_per_1000_weight(), new_feerate);
 
 		chan.queue_update_fee(new_feerate, &self.fee_estimator, &&logger);
 		NotifyOption::DoPersist
@@ -8223,8 +8224,8 @@ where
 								if peer_state.is_connected {
 									if funded_chan.should_disconnect_peer_awaiting_response() {
 										let logger = WithChannelContext::from(&self.logger, &funded_chan.context, None);
-										log_debug!(logger, "Disconnecting peer {} due to not making any progress on channel {}",
-												counterparty_node_id, chan_id);
+										log_debug!(logger, "Disconnecting peer {} due to not making any progress",
+												counterparty_node_id);
 										pending_msg_events.push(MessageSendEvent::HandleError {
 											node_id: counterparty_node_id,
 											action: msgs::ErrorAction::DisconnectPeerWithWarning {
@@ -8246,8 +8247,8 @@ where
 									let context = chan.context();
 									let logger = WithChannelContext::from(&self.logger, context, None);
 									log_error!(logger,
-										"Force-closing pending channel with ID {} for not establishing in a timely manner",
-										context.channel_id());
+										"Force-closing pending channel for not establishing in a timely manner",
+										);
 									let reason = ClosureReason::FundingTimedOut;
 									let msg = "Force-closing pending channel due to timeout awaiting establishment handshake".to_owned();
 									let err = ChannelError::Close((msg, reason));
@@ -8972,8 +8973,11 @@ where
 							let (action_opt, raa_blocker_opt) =
 								completion_action(Some(htlc_value_msat), false);
 							if let Some(action) = action_opt {
-								log_trace!(logger, "Tracking monitor update completion action for channel {}: {:?}",
-									chan_id, action);
+								log_trace!(
+									logger,
+									"Tracking monitor update completion action: {:?}",
+									action
+								);
 								peer_state
 									.monitor_update_blocked_actions
 									.entry(chan_id)
@@ -9044,8 +9048,8 @@ where
 
 							mem::drop(peer_state_lock);
 
-							log_trace!(logger, "Completing monitor update completion action for channel {} as claim was redundant: {:?}",
-								chan_id, action);
+							log_trace!(logger, "Completing monitor update completion action as claim was redundant: {:?}",
+								action);
 							if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
 								downstream_counterparty_node_id: node_id,
 								blocking_action: blocker,
@@ -9146,8 +9150,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if let Some(action) = action_opt {
 			log_trace!(
 				logger,
-				"Tracking monitor update completion action for closed channel {}: {:?}",
-				chan_id,
+				"Tracking monitor update completion action for closed channel: {:?}",
 				action
 			);
 			peer_state
@@ -9530,8 +9533,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		channel_ready_order: ChannelReadyOrder,
 	) -> (Option<(u64, PublicKey, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort",
-			&channel.context.channel_id(),
+		log_trace!(logger, "Handling channel resumption with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort",
 			if raa.is_some() { "an" } else { "no" },
 			if commitment_update.is_some() { "a" } else { "no" },
 			pending_forwards.len(), pending_update_adds.len(),
@@ -10821,7 +10823,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					let announcement_sigs_opt =
 						try_channel_entry!(self, peer_state, res, chan_entry);
 					if let Some(announcement_sigs) = announcement_sigs_opt {
-						log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
+						log_trace!(logger, "Sending announcement_signatures");
 						peer_state.pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
 							node_id: counterparty_node_id.clone(),
 							msg: announcement_sigs,
@@ -10832,7 +10834,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						// counterparty's announcement_signatures. Thus, we only bother to send a
 						// channel_update here if the channel is not public, i.e. we're not sending an
 						// announcement_signatures.
-						log_trace!(logger, "Sending private initial channel_update for our counterparty on channel {}", chan.context.channel_id());
+						log_trace!(logger, "Sending private initial channel_update for our counterparty");
 						if let Ok((msg, _, _)) = self.get_channel_update_for_unicast(chan) {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
 								node_id: counterparty_node_id.clone(),
@@ -10884,9 +10886,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if !chan.received_shutdown() {
 							let logger =
 								WithChannelContext::from(&self.logger, &chan.context, None);
-							log_info!(logger, "Received a shutdown message from our counterparty for channel {}{}.",
-								msg.channel_id,
-								if chan.sent_shutdown() { " after we initiated shutdown" } else { "" });
+							log_info!(
+								logger,
+								"Received a shutdown message from our counterparty{}.",
+								if chan.sent_shutdown() {
+									" after we initiated shutdown"
+								} else {
+									""
+								}
+							);
 						}
 
 						let funding_txo_opt = chan.funding.get_funding_txo();
@@ -10926,7 +10934,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							chan_entry.get().context(),
 							None,
 						);
-						log_error!(logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
+						log_error!(logger, "Immediately closing unfunded channel as peer asked to cooperatively shut it down (which is unnecessary)");
 						let reason = ClosureReason::CounterpartyCoopClosedUnfundedChannel;
 						let err = ChannelError::Close((reason.to_string(), reason));
 						let mut chan = chan_entry.remove();
@@ -11089,8 +11097,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if let HTLCSource::PreviousHopData(prev_hop) = &res.0 {
 							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 							log_trace!(logger,
-								"Holding the next revoke_and_ack from {} until the preimage is durably persisted in the inbound edge's ChannelMonitor",
-								msg.channel_id);
+								"Holding the next revoke_and_ack until the preimage is durably persisted in the inbound edge's ChannelMonitor",
+								);
 							peer_state.actions_blocking_raa_monitor_updates.entry(msg.channel_id)
 								.or_insert_with(Vec::new)
 								.push(RAAMonitorUpdateBlockingAction::from_prev_hop_data(&prev_hop));
@@ -11679,7 +11687,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						return Ok(NotifyOption::SkipPersistNoEvents);
 					} else {
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						log_debug!(logger, "Received channel_update {:?} for channel {}.", msg, chan_id);
+						log_debug!(logger, "Received channel_update {:?}.", msg);
 						let did_change = try_channel_entry!(self, peer_state, chan.channel_update(&msg), chan_entry);
 						// If nothing changed after applying their update, we don't need to bother
 						// persisting.
@@ -11767,8 +11775,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 				},
 				hash_map::Entry::Vacant(_) => {
-					log_debug!(logger, "Sending bogus ChannelReestablish for unknown channel {} to force channel closure",
-						msg.channel_id);
+					log_debug!(logger, "Sending bogus ChannelReestablish for unknown channel to force channel closure",
+						);
 					// Unfortunately, lnd doesn't force close on errors
 					// (https://github.com/lightningnetwork/lnd/blob/abb1e3463f3a83bbb843d5c399869dbe930ad94f/htlcswitch/link.go#L2119).
 					// One of the few ways to get an lnd counterparty to force close is by
@@ -11967,11 +11975,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 
 						if let Some(announcement_sigs) = splice_promotion.announcement_sigs {
-							log_trace!(
-								logger,
-								"Sending announcement_signatures for channel {}",
-								chan.context.channel_id()
-							);
+							log_trace!(logger, "Sending announcement_signatures",);
 							peer_state.pending_msg_events.push(
 								MessageSendEvent::SendAnnouncementSignatures {
 									node_id: counterparty_node_id.clone(),
@@ -12310,8 +12314,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				if let Some(shutdown) = shutdown_result {
 					let context = chan.context();
 					let logger = WithChannelContext::from(&self.logger, context, None);
-					let chan_id = context.channel_id();
-					log_trace!(logger, "Removing channel {} now that the signer is unblocked", chan_id);
+					log_trace!(logger, "Removing channel now that the signer is unblocked");
 					let (remove, err) = if let Some(funded) = chan.as_funded_mut() {
 						let err =
 							convert_channel_err!(self, peer_state, shutdown, funded, COOP_CLOSED);
@@ -13564,8 +13567,8 @@ where
 					// Check that, while holding the peer lock, we don't have anything else
 					// blocking monitor updates for this channel. If we do, release the monitor
 					// update(s) when those blockers complete.
-					log_trace!(logger, "Delaying monitor unlock for channel {} as another channel's mon update needs to complete first",
-						&channel_id);
+					log_trace!(logger, "Delaying monitor unlock as another channel's mon update needs to complete first",
+						);
 					break;
 				}
 
@@ -13574,8 +13577,8 @@ where
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let channel_funding_outpoint = chan.funding_outpoint();
 						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
-							log_debug!(logger, "Unlocking monitor updating for channel {} and updating monitor",
-								channel_id);
+							log_debug!(logger, "Unlocking monitor updating and updating monitor",
+								);
 							handle_new_monitor_update!(self, channel_funding_outpoint, monitor_update,
 								peer_state_lck, peer_state, per_peer_state, chan);
 							if further_update_exists {
@@ -13584,8 +13587,8 @@ where
 								continue;
 							}
 						} else {
-							log_trace!(logger, "Unlocked monitor updating for channel {} without monitors to update",
-								channel_id);
+							log_trace!(logger, "Unlocked monitor updating without monitors to update",
+								);
 						}
 					}
 				}
@@ -14351,7 +14354,7 @@ where
 									Some(FundingConfirmedMessage::Establishment(channel_ready)) => {
 										send_channel_ready!(self, pending_msg_events, funded_channel, channel_ready);
 										if funded_channel.context.is_usable() && peer_state.is_connected {
-											log_trace!(logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", channel_id);
+											log_trace!(logger, "Sending channel_ready with private initial channel_update for our counterparty");
 											if let Ok((msg, _, _)) = self.get_channel_update_for_unicast(funded_channel) {
 												pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
 													node_id: funded_channel.context.get_counterparty_node_id(),
@@ -14359,7 +14362,7 @@ where
 												});
 											}
 										} else {
-											log_trace!(logger, "Sending channel_ready WITHOUT channel_update for {}", channel_id);
+											log_trace!(logger, "Sending channel_ready WITHOUT channel_update");
 										}
 									},
 									Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update_opt, discarded_funding)) => {
@@ -14452,7 +14455,7 @@ where
 								}
 								if let Some(announcement_sigs) = announcement_sigs {
 									if peer_state.is_connected {
-										log_trace!(logger, "Sending announcement_signatures for channel {}", funded_channel.context.channel_id());
+										log_trace!(logger, "Sending announcement_signatures");
 										pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
 											node_id: funded_channel.context.get_counterparty_node_id(),
 											msg: announcement_sigs,
@@ -16815,26 +16818,26 @@ where
 					if channel.context.get_latest_monitor_update_id()
 						< monitor.get_latest_update_id()
 					{
-						log_error!(logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
-							&channel.context.channel_id(), monitor.get_latest_update_id(), channel.context.get_latest_monitor_update_id());
+						log_error!(logger, " The ChannelMonitor is at update_id {} but the ChannelManager is at update_id {}.",
+							monitor.get_latest_update_id(), channel.context.get_latest_monitor_update_id());
 					}
 					if channel.get_cur_holder_commitment_transaction_number()
 						> monitor.get_cur_holder_commitment_number()
 					{
-						log_error!(logger, " The ChannelMonitor for channel {} is at holder commitment number {} but the ChannelManager is at holder commitment number {}.",
-							&channel.context.channel_id(), monitor.get_cur_holder_commitment_number(), channel.get_cur_holder_commitment_transaction_number());
+						log_error!(logger, " The ChannelMonitor is at holder commitment number {} but the ChannelManager is at holder commitment number {}.",
+							monitor.get_cur_holder_commitment_number(), channel.get_cur_holder_commitment_transaction_number());
 					}
 					if channel.get_revoked_counterparty_commitment_transaction_number()
 						> monitor.get_min_seen_secret()
 					{
-						log_error!(logger, " The ChannelMonitor for channel {} is at revoked counterparty transaction number {} but the ChannelManager is at revoked counterparty transaction number {}.",
-							&channel.context.channel_id(), monitor.get_min_seen_secret(), channel.get_revoked_counterparty_commitment_transaction_number());
+						log_error!(logger, " The ChannelMonitor is at revoked counterparty transaction number {} but the ChannelManager is at revoked counterparty transaction number {}.",
+							monitor.get_min_seen_secret(), channel.get_revoked_counterparty_commitment_transaction_number());
 					}
 					if channel.get_cur_counterparty_commitment_transaction_number()
 						> monitor.get_cur_counterparty_commitment_number()
 					{
-						log_error!(logger, " The ChannelMonitor for channel {} is at counterparty commitment transaction number {} but the ChannelManager is at counterparty commitment transaction number {}.",
-							&channel.context.channel_id(), monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
+						log_error!(logger, " The ChannelMonitor is at counterparty commitment transaction number {} but the ChannelManager is at counterparty commitment transaction number {}.",
+							monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
 					}
 					let shutdown_result =
 						channel.force_shutdown(ClosureReason::OutdatedChannelManager);
@@ -16906,8 +16909,8 @@ where
 								Some(*payment_hash),
 							);
 							log_info!(logger,
-								"Failing HTLC with hash {} as it is missing in the ChannelMonitor for channel {} but was present in the (stale) ChannelManager",
-								&channel.context.channel_id(), &payment_hash);
+								"Failing HTLC with hash {} as it is missing in the ChannelMonitor but was present in the (stale) ChannelManager",
+								&payment_hash);
 							failed_htlcs.push((
 								channel_htlc_source.clone(),
 								*payment_hash,
@@ -16923,8 +16926,8 @@ where
 						&logger,
 						monitor.get_latest_update_id(),
 					);
-					log_info!(logger, "Successfully loaded channel {} at update_id {} against monitor at update id {} with {} blocked updates",
-						&channel.context.channel_id(), channel.context.get_latest_monitor_update_id(),
+					log_info!(logger, "Successfully loaded at update_id {} against monitor at update id {} with {} blocked updates",
+						channel.context.get_latest_monitor_update_id(),
 						monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
 					if let Some(short_channel_id) = channel.funding.get_short_channel_id() {
 						short_to_chan_info.insert(
@@ -17021,8 +17024,7 @@ where
 				let channel_id = monitor.channel_id();
 				log_info!(
 					logger,
-					"Queueing monitor update to ensure missing channel {} is force closed",
-					&channel_id
+					"Queueing monitor update to ensure missing channel is force closed",
 				);
 				let monitor_update = ChannelMonitorUpdate {
 					update_id: monitor.get_latest_update_id().saturating_add(1),
@@ -17348,8 +17350,8 @@ where
 					{
 						// If the channel is ahead of the monitor, return DangerousValue:
 						log_error!(logger, "A ChannelMonitor is stale compared to the current ChannelManager! This indicates a potentially-critical violation of the chain::Watch API!");
-						log_error!(logger, " The ChannelMonitor for channel {} is at update_id {} with update_id through {} in-flight",
-							chan_id, monitor.get_latest_update_id(), max_in_flight_update_id);
+						log_error!(logger, " The ChannelMonitor is at update_id {} with update_id through {} in-flight",
+							monitor.get_latest_update_id(), max_in_flight_update_id);
 						log_error!(
 							logger,
 							" but the ChannelManager is at update_id {}.",
@@ -17567,8 +17569,8 @@ where
 										let matches = *src_outb_alias == prev_hop_data.prev_outbound_scid_alias &&
 											update_add_htlc.htlc_id == prev_hop_data.htlc_id;
 										if matches {
-											log_info!(logger, "Removing pending to-decode HTLC with hash {} as it was forwarded to the closed channel {}",
-												&htlc.payment_hash, &monitor.channel_id());
+											log_info!(logger, "Removing pending to-decode HTLC with hash {} as it was forwarded to the closed channel",
+												&htlc.payment_hash);
 										}
 										!matches
 									});
