@@ -156,7 +156,7 @@ impl<$($args)?> Record<$($args)?> {
 
 impl<$($args)?> Display for Record<$($args)?> {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		let context = format!("{} [{}:{}]", self.level, self.module_path, self.line);
+		let context = format!("{:<5} [{}:{}]", self.level, self.module_path, self.line);
 		write!(f, "{:<48} {}", context, self.args)
 	}
 }
