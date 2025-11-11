@@ -18,6 +18,7 @@ use bitcoin::secp256k1::PublicKey;
 use core::cmp;
 use core::fmt;
 use core::fmt::Display;
+use core::fmt::Write;
 use core::ops::Deref;
 
 use crate::ln::types::ChannelId;
@@ -107,7 +108,8 @@ pub struct Record<$($args)?> {
 	/// generated.
 	pub peer_id: Option<PublicKey>,
 	/// The channel id of the channel pertaining to the logged record. May be a temporary id before
-	/// the channel has been funded.
+	/// the channel has been funded. Since channel_id is not repeated in the message body,
+	/// include it in the log output so entries remain clear.
 	pub channel_id: Option<ChannelId>,
 	#[cfg(not(c_bindings))]
 	/// The message body.
@@ -156,8 +158,63 @@ impl<$($args)?> Record<$($args)?> {
 
 impl<$($args)?> Display for Record<$($args)?> {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		let context = format!("{:<5} [{}:{}]", self.level, self.module_path, self.line);
-		write!(f, "{:<48} {}", context, self.args)
+		let mut context_formatter = SubstringFormatter::new(48, f);
+		write!(&mut context_formatter, "{:<5} [{}:{}]", self.level, self.module_path, self.line)?;
+		context_formatter.pad_remaining()?;
+
+		let mut channel_formatter = SubstringFormatter::new(9, f);
+		if let Some(channel_id) = self.channel_id {
+			write!(channel_formatter, "ch:{}", channel_id)?;
+		}
+		channel_formatter.pad_remaining()?;
+
+		#[cfg(not(test))]
+		{
+			let mut peer_formatter = SubstringFormatter::new(9, f);
+			if let Some(peer_id) = self.peer_id {
+				write!(peer_formatter, " p:{}", peer_id)?;
+			}
+			peer_formatter.pad_remaining()?;
+
+			let mut payment_formatter = SubstringFormatter::new(9, f);
+			if let Some(payment_hash) = self.payment_hash {
+				write!(payment_formatter, " h:{}", payment_hash)?;
+			}
+			payment_formatter.pad_remaining()?;
+
+			write!(f, " {}", self.args)
+		}
+
+		#[cfg(test)]
+		{
+			write!(f, " {}", self.args)?;
+
+			let mut open_bracket_written = false;
+			if let Some(peer_id) = self.peer_id {
+				write!(f, " [")?;
+				open_bracket_written = true;
+				let mut peer_formatter = SubstringFormatter::new(8, f);
+				write!(peer_formatter, "p:{}", peer_id)?;
+			}
+
+			if let Some(payment_hash) = self.payment_hash {
+				if !open_bracket_written {
+					write!(f, " [")?;
+					open_bracket_written = true;
+				} else {
+					write!(f, " ")?;
+				}
+
+				let mut payment_formatter = SubstringFormatter::new(8, f);
+				write!(payment_formatter, "h:{}", payment_hash)?;
+			}
+
+			if open_bracket_written {
+				write!(f, "]")?;
+			}
+
+			Ok(())
+		}
 	}
 }
 } }
@@ -166,9 +223,64 @@ impl_record!('a, );
 #[cfg(c_bindings)]
 impl_record!(, 'a);
 
-/// A trait encapsulating the operations required of a logger.
+// Writes only up to a certain number of unicode characters to the underlying formatter. This handles multi-byte Unicode
+// characters safely.
+struct SubstringFormatter<'fmt: 'r, 'r> {
+	remaining_chars: usize,
+	fmt: &'r mut fmt::Formatter<'fmt>,
+}
+
+impl<'fmt: 'r, 'r> SubstringFormatter<'fmt, 'r> {
+	fn new(length: usize, formatter: &'r mut fmt::Formatter<'fmt>) -> Self {
+		debug_assert!(length <= 100);
+		SubstringFormatter { remaining_chars: length, fmt: formatter }
+	}
+
+	// Pads the underlying formatter with spaces until the remaining character count.
+	fn pad_remaining(&mut self) -> fmt::Result {
+		// Use a constant string to avoid allocations.
+		const PAD100: &str = "                                                                                                    "; // 100 spaces
+
+		self.fmt.write_str(&PAD100[..self.remaining_chars])?;
+		self.remaining_chars = 0;
+
+		Ok(())
+	}
+}
+
+impl<'fmt: 'r, 'r> Write for SubstringFormatter<'fmt, 'r> {
+	fn write_str(&mut self, s: &str) -> fmt::Result {
+		let mut char_count = 0;
+		let mut next_char_byte_pos = 0;
+
+		// Iterate over the unicode character boundaries in `s`. We take one more than the number of remaining
+		// characters so we can find the byte boundary where we should stop writing.
+		for (pos, _) in s.char_indices().take(self.remaining_chars + 1) {
+			char_count += 1;
+			next_char_byte_pos = pos;
+		}
+
+		// Determine where to split the string.
+		let at_cut_off_point = char_count == self.remaining_chars + 1;
+		let split_pos = if at_cut_off_point {
+			self.remaining_chars = 0;
+			next_char_byte_pos
+		} else {
+			// Not enough characters in this chunk.
+			self.remaining_chars -= char_count;
+			s.len()
+		};
+
+		// Write only the substring up to the split position into the formatter.
+		self.fmt.write_str(&s[..split_pos])
+	}
+}
+
+/// A trait encapsulating the operations required of a logger. Keep in mind that log messages might not be entirely
+/// self-explanatory and may need accompanying context fields to be fully understood.
 pub trait Logger {
-	/// Logs the [`Record`].
+	/// Logs the [`Record`]. Since the record's [`Record::channel_id`] is not embedded in the message body, log
+	/// implementations should print it alongside the message to keep entries clear.
 	fn log(&self, record: Record);
 }
 
