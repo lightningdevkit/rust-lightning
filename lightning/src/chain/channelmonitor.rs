@@ -2405,14 +2405,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().sign_to_local_justice_tx(justice_tx, input_idx, value, commitment_number)
 	}
 
+	#[cfg(not(feature = "safe_channels"))]
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
 		self.inner.lock().unwrap().get_min_seen_secret()
 	}
 
+	#[cfg(not(feature = "safe_channels"))]
 	pub(crate) fn get_cur_counterparty_commitment_number(&self) -> u64 {
 		self.inner.lock().unwrap().get_cur_counterparty_commitment_number()
 	}
 
+	#[cfg(not(feature = "safe_channels"))]
 	pub(crate) fn get_cur_holder_commitment_number(&self) -> u64 {
 		self.inner.lock().unwrap().get_cur_holder_commitment_number()
 	}

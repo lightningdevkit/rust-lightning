@@ -2608,6 +2608,7 @@ impl FundingScope {
 		self.channel_transaction_parameters.channel_value_satoshis
 	}
 
+	#[cfg(not(feature = "safe_channels"))]
 	pub(crate) fn get_value_to_self_msat(&self) -> u64 {
 		self.value_to_self_msat
 	}
@@ -7413,6 +7414,161 @@ where
 	SP::Target: SignerProvider,
 	<SP::Target as SignerProvider>::EcdsaSigner: EcdsaChannelSigner,
 {
+	#[cfg(feature = "safe_channels")]
+	pub(crate) fn new_from_state<ES: Deref>(
+		channel: FundedChannelState, entropy_source: &ES, signer_provider: &SP,
+		_our_supported_features: &ChannelTypeFeatures,
+	) -> Result<Self, DecodeError>
+	where
+		ES::Target: EntropySource,
+	{
+		let holder_signer = signer_provider.derive_channel_signer(channel.channel_keys_id);
+
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
+
+		if let Some(funding_negotiation) = channel
+			.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+		{
+			if !matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. }) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let announcement_sigs_state = if channel.announcement_sigs_state_sent {
+			AnnouncementSigsState::PeerReceived
+		} else {
+			AnnouncementSigsState::NotSent
+		};
+
+		let blocked_monitor_updates = channel
+			.blocked_monitor_updates
+			.iter()
+			.map(|update| {
+				let mut reader = &update[..];
+				PendingChannelMonitorUpdate::read(&mut reader)
+			})
+			.collect::<Result<Vec<_>, _>>()
+			.map_err(|_| DecodeError::InvalidValue)?;
+
+		let channel_update_status = if channel.channel_update_status_enabled {
+			ChannelUpdateStatus::Enabled
+		} else {
+			ChannelUpdateStatus::Disabled
+		};
+
+		Ok(FundedChannel {
+			funding: channel.funding,
+			context: ChannelContext {
+				user_id: channel.user_id,
+				config: channel.config,
+				prev_config: None,
+				inbound_handshake_limits_override: None,
+				channel_id: channel.channel_id,
+				temporary_channel_id: channel.temporary_channel_id,
+				channel_state: channel.channel_state,
+				announcement_sigs_state,
+				secp_ctx,
+				latest_monitor_update_id: channel.latest_monitor_update_id,
+				holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+				shutdown_scriptpubkey: channel.shutdown_scriptpubkey,
+				destination_script: channel.destination_script,
+				counterparty_next_commitment_transaction_number: channel
+					.counterparty_next_commitment_transaction_number,
+				holder_max_accepted_htlcs: channel.holder_max_accepted_htlcs,
+				pending_inbound_htlcs: channel.pending_inbound_htlcs,
+				pending_outbound_htlcs: channel.pending_outbound_htlcs,
+				holding_cell_htlc_updates: channel.holding_cell_htlc_updates,
+				resend_order: channel.resend_order,
+
+				monitor_pending_channel_ready: channel.monitor_pending_channel_ready,
+				monitor_pending_revoke_and_ack: channel.monitor_pending_revoke_and_ack,
+				monitor_pending_commitment_signed: channel.monitor_pending_commitment_signed,
+				monitor_pending_forwards: channel.monitor_pending_forwards,
+				monitor_pending_failures: channel.monitor_pending_failures,
+				monitor_pending_finalized_fulfills: channel.monitor_pending_finalized_fulfills,
+				monitor_pending_update_adds: channel.monitor_pending_update_adds,
+
+				signer_pending_revoke_and_ack: false,
+				signer_pending_commitment_update: false,
+				signer_pending_funding: false,
+				signer_pending_closing: false,
+				signer_pending_channel_ready: false,
+				signer_pending_stale_state_verification: None,
+
+				pending_update_fee: channel.pending_update_fee,
+				holding_cell_update_fee: channel.holding_cell_update_fee,
+				next_holder_htlc_id: channel.next_holder_htlc_id,
+				next_counterparty_htlc_id: channel.next_counterparty_htlc_id,
+				update_time_counter: channel.update_time_counter,
+				feerate_per_kw: channel.feerate_per_kw,
+
+				last_sent_closing_fee: None,
+				last_received_closing_sig: None,
+				pending_counterparty_closing_signed: None,
+				expecting_peer_commitment_signed: false,
+				closing_fee_limits: None,
+				target_closing_feerate_sats_per_kw: channel.target_closing_feerate_sats_per_kw,
+
+				channel_creation_height: channel.channel_creation_height,
+
+				counterparty_dust_limit_satoshis: channel.counterparty_dust_limit_satoshis,
+				holder_dust_limit_satoshis: channel.holder_dust_limit_satoshis,
+				counterparty_max_htlc_value_in_flight_msat: channel
+					.counterparty_max_htlc_value_in_flight_msat,
+				holder_max_htlc_value_in_flight_msat: channel.holder_max_htlc_value_in_flight_msat,
+				counterparty_htlc_minimum_msat: channel.counterparty_htlc_minimum_msat,
+				holder_htlc_minimum_msat: channel.holder_htlc_minimum_msat,
+				counterparty_max_accepted_htlcs: channel.counterparty_max_accepted_htlcs,
+				minimum_depth: channel.minimum_depth,
+
+				counterparty_forwarding_info: channel.counterparty_forwarding_info,
+
+				is_batch_funding: channel.is_batch_funding,
+
+				counterparty_next_commitment_point: channel.counterparty_next_commitment_point,
+				counterparty_current_commitment_point: channel
+					.counterparty_current_commitment_point,
+				counterparty_node_id: channel.counterparty_node_id,
+
+				counterparty_shutdown_scriptpubkey: channel.counterparty_shutdown_scriptpubkey,
+
+				commitment_secrets: channel.commitment_secrets,
+
+				channel_update_status,
+				closing_signed_in_flight: false,
+
+				announcement_sigs: channel.announcement_sigs,
+
+				workaround_lnd_bug_4006: None,
+				sent_message_awaiting_response: None,
+
+				latest_inbound_scid_alias: channel.latest_inbound_scid_alias,
+				outbound_scid_alias: channel.outbound_scid_alias,
+				historical_scids: channel.historical_scids,
+
+				funding_tx_broadcast_safe_event_emitted: channel
+					.funding_tx_broadcast_safe_event_emitted,
+				channel_pending_event_emitted: channel.channel_pending_event_emitted,
+				initial_channel_ready_event_emitted: channel.initial_channel_ready_event_emitted,
+
+				channel_keys_id: channel.channel_keys_id,
+
+				local_initiated_shutdown: channel.local_initiated_shutdown,
+
+				blocked_monitor_updates,
+				is_manual_broadcast: channel.is_manual_broadcast,
+
+				interactive_tx_signing_session: channel.interactive_tx_signing_session,
+			},
+			holder_commitment_point: channel.holder_commitment_point,
+			pending_splice: channel.pending_splice,
+			quiescent_action: channel.quiescent_action,
+		})
+	}
+
 	pub fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -11406,10 +11562,12 @@ where
 			.try_for_each(|funding| self.context.can_accept_incoming_htlc(funding, dust_exposure_limiting_feerate, &logger))
 	}
 
+	#[cfg(not(feature = "safe_channels"))]
 	pub fn get_cur_holder_commitment_transaction_number(&self) -> u64 {
 		self.holder_commitment_point.current_transaction_number()
 	}
 
+	#[cfg(not(feature = "safe_channels"))]
 	pub fn get_cur_counterparty_commitment_transaction_number(&self) -> u64 {
 		self.context.counterparty_next_commitment_transaction_number + 1
 			- if self.context.channel_state.is_awaiting_remote_revoke() { 1 } else { 0 }
@@ -11523,6 +11681,7 @@ where
 	/// transaction. If the channel is inbound, this implies simply that the channel has not
 	/// advanced state.
 	#[rustfmt::skip]
+	#[cfg(not(feature = "safe_channels"))]
 	pub fn is_awaiting_initial_mon_persist(&self) -> bool {
 		if !self.is_awaiting_monitor_update() { return false; }
 		if matches!(
@@ -14961,6 +15120,7 @@ impl Readable for AnnouncementSigsState {
 	}
 }
 
+#[cfg(not(feature = "safe_channels"))]
 impl<SP: Deref> Writeable for FundedChannel<SP>
 where
 	SP::Target: SignerProvider,
@@ -15438,6 +15598,7 @@ where
 	}
 }
 
+#[cfg(not(feature = "safe_channels"))]
 impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures)>
 	for FundedChannel<SP>
 where
@@ -16327,6 +16488,8 @@ mod tests {
 	use crate::chain::transaction::OutPoint;
 	use crate::chain::BestBlock;
 	use crate::ln::chan_utils::{self, commit_tx_fee_sat, ChannelTransactionParameters};
+	#[cfg(feature = "safe_channels")]
+	use crate::ln::channel::FundedChannelState;
 	use crate::ln::channel::{
 		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate, HTLCInitiator,
 		HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState, InboundV1Channel,
@@ -16354,6 +16517,8 @@ mod tests {
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::util::config::UserConfig;
 	use crate::util::errors::APIError;
+	#[cfg(feature = "safe_channels")]
+	use crate::util::ser::Readable;
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::{
 		self, OnGetShutdownScriptpubkey, TestFeeEstimator, TestKeysInterface, TestLogger,
@@ -17138,14 +17303,34 @@ mod tests {
 		chan.context.holding_cell_htlc_updates = holding_cell_htlc_updates.clone();
 
 		// Encode and decode the channel and ensure that the HTLCs within are the same.
-		let encoded_chan = chan.encode();
-		let mut s = crate::io::Cursor::new(&encoded_chan);
-		let mut reader =
-			crate::util::ser::FixedLengthReader::new(&mut s, encoded_chan.len() as u64);
 		let features = channelmanager::provided_channel_type_features(&config);
-		let decoded_chan =
-			FundedChannel::read(&mut reader, (&&keys_provider, &&keys_provider, &features))
-				.unwrap();
+		let decoded_chan;
+		#[cfg(not(feature = "safe_channels"))]
+		{
+			let encoded_chan = chan.encode();
+			let mut s = crate::io::Cursor::new(&encoded_chan);
+			let mut reader =
+				crate::util::ser::FixedLengthReader::new(&mut s, encoded_chan.len() as u64);
+			decoded_chan =
+				FundedChannel::read(&mut reader, (&&keys_provider, &&keys_provider, &features))
+					.unwrap();
+		}
+		#[cfg(feature = "safe_channels")]
+		{
+			let channel_state: FundedChannelState = (&mut chan).into();
+			let encoded_chan = channel_state.encode();
+			let mut s = crate::io::Cursor::new(&encoded_chan);
+			let mut reader =
+				crate::util::ser::FixedLengthReader::new(&mut s, encoded_chan.len() as u64);
+			let decoded_state = FundedChannelState::read(&mut reader).unwrap();
+			decoded_chan = FundedChannel::new_from_state(
+				decoded_state,
+				&&keys_provider,
+				&&keys_provider,
+				&features,
+			)
+			.unwrap();
+		}
 		assert_eq!(decoded_chan.context.pending_outbound_htlcs, pending_outbound_htlcs);
 		assert_eq!(decoded_chan.context.holding_cell_htlc_updates, holding_cell_htlc_updates);
 	}
