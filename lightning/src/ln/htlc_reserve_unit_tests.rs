@@ -326,7 +326,7 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 
 	// flush the pending htlc
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &payment_event_1.commitment_msg);
-	let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	check_added_monitors(&nodes[1], 1);
 
 	// the pending htlc should be promoted to committed
@@ -695,7 +695,7 @@ pub fn holding_cell_htlc_counting() {
 		.handle_commitment_signed_batch_test(node_b_id, &initial_payment_event.commitment_msg);
 	check_added_monitors(&nodes[2], 1);
 
-	let (bs_revoke_and_ack, bs_commitment_signed) = get_revoke_commit_msgs!(nodes[2], node_b_id);
+	let (bs_revoke_and_ack, bs_commitment_signed) = get_revoke_commit_msgs(&nodes[2], &node_b_id);
 	nodes[1].node.handle_revoke_and_ack(node_c_id, &bs_revoke_and_ack);
 	check_added_monitors(&nodes[1], 1);
 	let as_updates = get_htlc_update_msgs!(nodes[1], node_c_id);
@@ -711,7 +711,7 @@ pub fn holding_cell_htlc_counting() {
 	check_added_monitors(&nodes[2], 1);
 	nodes[2].node.handle_revoke_and_ack(node_b_id, &as_raa);
 	check_added_monitors(&nodes[2], 1);
-	let (bs_revoke_and_ack, bs_commitment_signed) = get_revoke_commit_msgs!(nodes[2], node_b_id);
+	let (bs_revoke_and_ack, bs_commitment_signed) = get_revoke_commit_msgs(&nodes[2], &node_b_id);
 
 	nodes[1].node.handle_revoke_and_ack(node_c_id, &bs_revoke_and_ack);
 	check_added_monitors(&nodes[1], 1);
@@ -1778,7 +1778,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	assert_eq!(updates.commitment_signed[0].htlc_signatures.len(), 1);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &updates.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
-	let _bs_responses = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let _bs_responses = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 

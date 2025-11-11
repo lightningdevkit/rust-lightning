@@ -2392,7 +2392,7 @@ pub fn test_force_close_fail_back() {
 	nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event.msgs[0]);
 	nodes[2].node.handle_commitment_signed_batch_test(node_b_id, &payment_event.commitment_msg);
 	check_added_monitors(&nodes[2], 1);
-	let (_, _) = get_revoke_commit_msgs!(nodes[2], node_b_id);
+	let _ = get_revoke_commit_msgs(&nodes[2], &node_b_id);
 
 	// nodes[2] now has the latest commitment transaction, but hasn't revoked its previous
 	// state or updated nodes[1]' state. Now force-close and broadcast that commitment/HTLC
@@ -2673,7 +2673,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 				.handle_commitment_signed_batch_test(node_a_id, &payment_event.commitment_msg);
 			check_added_monitors(&nodes[1], 1);
 			let (bs_revoke_and_ack, bs_commitment_signed) =
-				get_revoke_commit_msgs!(nodes[1], node_a_id);
+				get_revoke_commit_msgs(&nodes[1], &node_a_id);
 
 			if messages_delivered >= 4 {
 				nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_revoke_and_ack);
@@ -2837,7 +2837,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 			nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_signed);
 			check_added_monitors(&nodes[0], 1);
 			let (as_revoke_and_ack, as_commitment_signed) =
-				get_revoke_commit_msgs!(nodes[0], node_b_id);
+				get_revoke_commit_msgs(&nodes[0], &node_b_id);
 
 			if messages_delivered >= 3 {
 				nodes[1].node.handle_revoke_and_ack(node_a_id, &as_revoke_and_ack);
@@ -4930,7 +4930,7 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_updates.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
-	let as_updates = get_revoke_commit_msgs!(nodes[0], node_b_id);
+	let as_updates = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_updates.0);
 	check_added_monitors(&nodes[1], 1);
 
@@ -5015,7 +5015,7 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_updates.update_fail_htlcs[0]);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_updates.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
-	let as_updates = get_revoke_commit_msgs!(nodes[0], node_b_id);
+	let as_updates = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_updates.0);
 	check_added_monitors(&nodes[1], 1);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_updates.1);
@@ -5131,7 +5131,7 @@ pub fn test_fail_holding_cell_htlc_upon_free() {
 
 	// Flush the pending fee update.
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed);
-	let (as_revoke_and_ack, _) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (as_revoke_and_ack, _) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	check_added_monitors(&nodes[1], 1);
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &as_revoke_and_ack);
 	check_added_monitors(&nodes[0], 1);
@@ -5241,7 +5241,7 @@ pub fn test_free_and_fail_holding_cell_htlcs() {
 
 	// Flush the pending fee update.
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed);
-	let (revoke_and_ack, commitment_signed) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (revoke_and_ack, commitment_signed) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	check_added_monitors(&nodes[1], 1);
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &revoke_and_ack);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_signed);
@@ -5393,7 +5393,7 @@ pub fn test_fail_holding_cell_htlc_upon_free_multihop() {
 
 	// Flush the pending fee update.
 	nodes[2].node.handle_commitment_signed_batch_test(node_b_id, commitment_signed);
-	let (raa, commitment_signed) = get_revoke_commit_msgs!(nodes[2], node_b_id);
+	let (raa, commitment_signed) = get_revoke_commit_msgs(&nodes[2], &node_b_id);
 	check_added_monitors(&nodes[2], 1);
 	nodes[1].node.handle_revoke_and_ack(node_c_id, &raa);
 	nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &commitment_signed);
@@ -5437,7 +5437,7 @@ pub fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_signed);
 
 	// Complete the HTLC failure+removal process.
-	let (raa, commitment_signed) = get_revoke_commit_msgs!(nodes[0], node_b_id);
+	let (raa, commitment_signed) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 	check_added_monitors(&nodes[0], 1);
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &commitment_signed);
@@ -9420,7 +9420,7 @@ pub fn test_disconnects_peer_awaiting_response_ticks() {
 	check_added_monitors(&&nodes[1], 1);
 
 	// This will prompt Bob (nodes[1]) to respond with his `CommitmentSigned` and `RevokeAndACK`.
-	let (bob_revoke_and_ack, bob_commitment_signed) = get_revoke_commit_msgs!(&nodes[1], node_a_id);
+	let (bob_revoke_and_ack, bob_commitment_signed) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bob_revoke_and_ack);
 	check_added_monitors(&&nodes[0], 1);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bob_commitment_signed);

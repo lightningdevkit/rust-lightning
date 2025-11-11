@@ -262,7 +262,7 @@ pub fn test_multi_flight_update_fee() {
 	// Deliver first update_fee/commitment_signed pair, generating (1) and (2):
 	nodes[1].node.handle_update_fee(node_a_id, update_msg_1);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed_1);
-	let (bs_revoke_msg, bs_commitment_signed) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (bs_revoke_msg, bs_commitment_signed) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	check_added_monitors(&nodes[1], 1);
 
 	// nodes[0] is awaiting a revoke from nodes[1] before it will create a new commitment
@@ -316,7 +316,7 @@ pub fn test_multi_flight_update_fee() {
 	nodes[1]
 		.node
 		.handle_commitment_signed_batch_test(node_a_id, &as_second_update.commitment_signed);
-	let (bs_second_revoke, bs_second_commitment) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (bs_second_revoke, bs_second_commitment) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	check_added_monitors(&nodes[1], 1);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_second_revoke);
@@ -364,7 +364,7 @@ pub fn test_update_fee_vanilla() {
 	nodes[1].node.handle_update_fee(node_a_id, update_msg.unwrap());
 
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed);
-	let (revoke_msg, commitment_signed) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (revoke_msg, commitment_signed) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	check_added_monitors(&nodes[1], 1);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &revoke_msg);
@@ -665,7 +665,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	};
 	nodes[1].node.handle_update_fee(node_a_id, update_msg.unwrap());
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed);
-	let (revoke_msg, commitment_signed) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (revoke_msg, commitment_signed) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	check_added_monitors(&nodes[1], 1);
 
 	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) =
@@ -704,7 +704,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 		.node
 		.handle_commitment_signed_batch_test(node_b_id, &commitment_update.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
-	let (revoke, commitment_signed) = get_revoke_commit_msgs!(nodes[0], node_b_id);
+	let (revoke, commitment_signed) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke);
 	check_added_monitors(&nodes[1], 1);
@@ -789,7 +789,7 @@ pub fn test_update_fee() {
 
 	// Generate (2) and (3):
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed);
-	let (revoke_msg, commitment_signed_0) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (revoke_msg, commitment_signed_0) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	check_added_monitors(&nodes[1], 1);
 
 	// Deliver (2):
@@ -1111,7 +1111,7 @@ pub fn do_cannot_afford_on_holding_cell_release(
 	nodes[0].node.handle_commitment_signed(node_b_id, &payment_event.commitment_msg[0]);
 	check_added_monitors(&nodes[0], 1);
 
-	let (revoke_ack, commitment_signed) = get_revoke_commit_msgs!(nodes[0], node_b_id);
+	let (revoke_ack, commitment_signed) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke_ack);
 	check_added_monitors(&nodes[1], 1);

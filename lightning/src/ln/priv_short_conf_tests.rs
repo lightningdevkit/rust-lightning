@@ -943,7 +943,7 @@ fn test_0conf_channel_with_async_monitor() {
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_send.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 
-	let (bs_raa, bs_commitment_signed) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (bs_raa, bs_commitment_signed) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_raa);
 	check_added_monitors!(nodes[0], 1);
 

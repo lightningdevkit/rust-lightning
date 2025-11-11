@@ -941,7 +941,7 @@ fn test_monitor_update_raa_while_paused() {
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[0], 0);
 
-	let as_update_raa = get_revoke_commit_msgs!(nodes[0], node_b_id);
+	let as_update_raa = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_update_raa.0);
 	check_added_monitors!(nodes[1], 1);
 	let bs_cs = get_htlc_update_msgs!(nodes[1], node_a_id);
@@ -1412,7 +1412,7 @@ fn raa_no_response_awaiting_raa_state() {
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &payment_event.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 
-	let bs_responses = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let bs_responses = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_responses.0);
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1442,7 +1442,7 @@ fn raa_no_response_awaiting_raa_state() {
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	// nodes[1] should be AwaitingRAA here!
 	check_added_monitors!(nodes[1], 0);
-	let bs_responses = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let bs_responses = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
@@ -1699,7 +1699,7 @@ fn monitor_failed_no_reestablish_response() {
 	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[1], 0);
-	let bs_responses = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let bs_responses = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_responses.0);
 	check_added_monitors!(nodes[0], 1);
@@ -1754,7 +1754,7 @@ fn first_message_on_recv_ordering() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &payment_event.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
-	let bs_responses = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let bs_responses = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_responses.0);
 	check_added_monitors!(nodes[0], 1);
@@ -1802,7 +1802,7 @@ fn first_message_on_recv_ordering() {
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
-	let bs_responses = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let bs_responses = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_responses.0);
 	check_added_monitors!(nodes[0], 1);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_responses.1);
@@ -2601,7 +2601,7 @@ fn do_update_fee_resend_test(deliver_update: bool, parallel_updates: bool) {
 			.node
 			.handle_commitment_signed_batch_test(node_a_id, &update_msgs.commitment_signed);
 		check_added_monitors!(nodes[1], 1);
-		let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+		let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 		nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_first_raa);
 		check_added_monitors!(nodes[0], 1);
 		let as_second_update = get_htlc_update_msgs!(nodes[0], node_b_id);
@@ -2713,7 +2713,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &send.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 
-	let (raa, cs) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+	let (raa, cs) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &raa);
 	check_added_monitors!(nodes[0], 1);
@@ -2891,7 +2891,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &send_event.commitment_msg);
 		check_added_monitors!(nodes[1], 1);
 
-		let (bs_raa, bs_cs) = get_revoke_commit_msgs!(nodes[1], node_a_id);
+		let (bs_raa, bs_cs) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 		nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_raa);
 		check_added_monitors!(nodes[0], 1);
 		nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_cs);
@@ -3171,7 +3171,7 @@ fn double_temp_error() {
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_signed_b1);
 	check_added_monitors!(nodes[0], 1);
 	nodes[0].node.process_pending_htlc_forwards();
-	let (raa_a1, commitment_signed_a1) = get_revoke_commit_msgs!(nodes[0], node_b_id);
+	let (raa_a1, commitment_signed_a1) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 	check_added_monitors!(nodes[1], 0);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa_a1);
@@ -3644,7 +3644,7 @@ fn do_test_inverted_mon_completion_order(
 	check_added_monitors(&nodes[1], 1);
 	if complete_bc_commitment_dance {
 		let (bs_revoke_and_ack, bs_commitment_signed) =
-			get_revoke_commit_msgs!(nodes[1], node_c_id);
+			get_revoke_commit_msgs(&nodes[1], &node_c_id);
 		nodes[2].node.handle_revoke_and_ack(node_b_id, &bs_revoke_and_ack);
 		check_added_monitors(&nodes[2], 1);
 		nodes[2].node.handle_commitment_signed_batch_test(node_b_id, &bs_commitment_signed);
@@ -3830,7 +3830,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	// ChannelMonitor.
 	nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &cs_updates.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
-	let _ = get_revoke_commit_msgs!(nodes[1], node_c_id);
+	let _ = get_revoke_commit_msgs(&nodes[1], &node_c_id);
 
 	let mon_bc = get_monitor!(nodes[1], chan_id_bc).encode();
 
@@ -4023,7 +4023,7 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	// doesn't let the preimage-removing monitor update fly.
 	nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &cs_updates.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
-	let (bs_raa, bs_cs) = get_revoke_commit_msgs!(nodes[1], node_c_id);
+	let (bs_raa, bs_cs) = get_revoke_commit_msgs(&nodes[1], &node_c_id);
 
 	nodes[2].node.handle_revoke_and_ack(node_b_id, &bs_raa);
 	check_added_monitors(&nodes[2], 1);
