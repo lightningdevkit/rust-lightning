@@ -46,6 +46,11 @@ cargo test -p lightning --verbose --color always --features dnssec
 cargo check -p lightning --verbose --color always --features dnssec
 cargo doc -p lightning --document-private-items --features dnssec
 
+echo -e "\n\nChecking and testing lightning with safe_channels"
+cargo test -p lightning --verbose --color always --features safe_channels
+cargo check -p lightning --verbose --color always --features safe_channels
+cargo doc -p lightning --document-private-items --features safe_channels
+
 echo -e "\n\nChecking and testing Block Sync Clients with features"
 
 cargo test -p lightning-block-sync --verbose --color always --features rest-client

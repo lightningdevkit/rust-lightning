@@ -6262,6 +6262,8 @@ where
 						should_broadcast: broadcast,
 					}],
 					channel_id: Some(self.channel_id()),
+					#[cfg(feature = "safe_channels")]
+					encoded_channel: Some(Vec::new()), // Clear channel on shut down.
 				};
 				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), update))
 			} else {
@@ -7511,6 +7513,8 @@ where
 				payment_info,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			encoded_channel: Some(self.encode()),
 		};
 
 		if !self.context.channel_state.can_generate_new_commitment() {
@@ -7624,6 +7628,10 @@ where
 					// to be strictly increasing by one, so decrement it here.
 					self.context.latest_monitor_update_id = monitor_update.update_id;
 					monitor_update.updates.append(&mut additional_update.updates);
+					#[cfg(feature = "safe_channels")]
+					{
+						monitor_update.encoded_channel = Some(self.encode());
+					}
 				} else {
 					let blocked_upd = self.context.blocked_monitor_updates.get(0);
 					let new_mon_id = blocked_upd
@@ -8133,7 +8141,8 @@ where
 		);
 
 		self.context.latest_monitor_update_id += 1;
-		let monitor_update = ChannelMonitorUpdate {
+		#[allow(unused_mut)]
+		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
 			updates: vec![ChannelMonitorUpdateStep::RenegotiatedFunding {
 				channel_parameters: pending_splice_funding.channel_transaction_parameters.clone(),
@@ -8141,6 +8150,8 @@ where
 				counterparty_commitment_tx,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			encoded_channel: None,
 		};
 
 		self.context
@@ -8150,6 +8161,10 @@ where
 			.received_commitment_signed();
 		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 
+		#[cfg(feature = "safe_channels")]
+		{
+			monitor_update.encoded_channel = Some(self.encode());
+		}
 		Ok(self.push_ret_blockable_mon_update(monitor_update))
 	}
 
@@ -8409,6 +8424,8 @@ where
 			update_id: self.context.latest_monitor_update_id,
 			updates: vec![update],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			encoded_channel: None,
 		};
 
 		self.context.expecting_peer_commitment_signed = false;
@@ -8433,6 +8450,10 @@ where
 			}
 			log_debug!(logger, "Received valid commitment_signed from peer, updated HTLC state but awaiting a monitor update resolution to reply.",
 				);
+			#[cfg(feature = "safe_channels")]
+			{
+				monitor_update.encoded_channel = Some(self.encode());
+			}
 			return Ok(self.push_ret_blockable_mon_update(monitor_update));
 		}
 
@@ -8461,6 +8482,10 @@ where
 			Vec::new(),
 			Vec::new(),
 		);
+		#[cfg(feature = "safe_channels")]
+		{
+			monitor_update.encoded_channel = Some(self.encode());
+		}
 		return Ok(self.push_ret_blockable_mon_update(monitor_update));
 	}
 
@@ -8513,6 +8538,8 @@ where
 				update_id: self.context.latest_monitor_update_id + 1, // We don't increment this yet!
 				updates: Vec::new(),
 				channel_id: Some(self.context.channel_id()),
+				#[cfg(feature = "safe_channels")]
+				encoded_channel: None,
 			};
 
 			let mut htlc_updates = Vec::new();
@@ -8608,6 +8635,11 @@ where
 								unreachable!()
 							};
 						update_fulfill_count += 1;
+
+						#[cfg(feature = "safe_channels")]
+						{
+							additional_monitor_update.encoded_channel = Some(self.encode());
+						}
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 						None
 					},
@@ -8666,6 +8698,11 @@ where
 				update_add_count, update_fulfill_count, update_fail_count);
 
 			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
+
+			#[cfg(feature = "safe_channels")]
+			{
+				monitor_update.encoded_channel = Some(self.encode());
+			}
 			(self.push_ret_blockable_mon_update(monitor_update), htlcs_to_fail)
 		} else {
 			(None, Vec::new())
@@ -8782,6 +8819,8 @@ where
 				secret: msg.per_commitment_secret,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			encoded_channel: None,
 		};
 
 		// Update state now that we've passed all the can-fail calls...
@@ -9006,6 +9045,10 @@ where
 		};
 		macro_rules! return_with_htlcs_to_fail {
 			($htlcs_to_fail: expr) => {
+				#[cfg(feature = "safe_channels")]
+				{
+					monitor_update.encoded_channel = Some(self.encode());
+				}
 				if !release_monitor {
 					self.context
 						.blocked_monitor_updates
@@ -10659,6 +10702,8 @@ where
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
 				channel_id: Some(self.context.channel_id()),
+				#[cfg(feature = "safe_channels")]
+				encoded_channel: Some(self.encode()),
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)
@@ -11113,10 +11158,13 @@ where
 		if self.context.blocked_monitor_updates.is_empty() {
 			return None;
 		}
-		Some((
-			self.context.blocked_monitor_updates.remove(0).update,
-			!self.context.blocked_monitor_updates.is_empty(),
-		))
+		#[allow(unused_mut)]
+		let mut update = self.context.blocked_monitor_updates.remove(0).update;
+		#[cfg(feature = "safe_channels")]
+		{
+			update.encoded_channel = Some(self.encode());
+		}
+		Some((update, !self.context.blocked_monitor_updates.is_empty()))
 	}
 
 	/// Pushes a new monitor update into our monitor update queue, returning it if it should be
@@ -11416,6 +11464,8 @@ where
 				funding_txid: funding_txo.txid,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			encoded_channel: Some(self.encode()),
 		};
 		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 		let monitor_update = self.push_ret_blockable_mon_update(monitor_update);
@@ -12988,12 +13038,14 @@ where
 		}
 
 		self.context.latest_monitor_update_id += 1;
+		self.context.channel_state.set_awaiting_remote_revoke();
 		let monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
 			updates: vec![update],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			encoded_channel: Some(self.encode()),
 		};
-		self.context.channel_state.set_awaiting_remote_revoke();
 		monitor_update
 	}
 
@@ -13238,6 +13290,8 @@ where
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
 				channel_id: Some(self.context.channel_id()),
+				#[cfg(feature = "safe_channels")]
+				encoded_channel: Some(self.encode()),
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)
@@ -15929,6 +15983,58 @@ where
 			quiescent_action,
 		})
 	}
+}
+
+#[cfg(feature = "safe_channels")]
+pub struct ChannelStateCheckData {
+	pub cur_holder_commitment_transaction_number: u64,
+	pub revoked_counterparty_commitment_transaction_number: u64,
+	pub cur_counterparty_commitment_transaction_number: u64,
+	pub latest_monitor_update_id: u64,
+}
+
+#[cfg(feature = "safe_channels")]
+pub fn read_check_data<R: io::Read>(reader: &mut R) -> Result<ChannelStateCheckData, DecodeError> {
+	let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
+	if ver <= 2 {
+		return Err(DecodeError::UnknownVersion);
+	}
+
+	let _user_id_low: u64 = Readable::read(reader)?;
+
+	let mut _config = LegacyChannelConfig::default();
+	let mut _val: u64 = Readable::read(reader)?;
+
+	let _channel_id: ChannelId = Readable::read(reader)?;
+	let channel_state =
+		ChannelState::from_u32(Readable::read(reader)?).map_err(|_| DecodeError::InvalidValue)?;
+	let _channel_value_satoshis: u64 = Readable::read(reader)?;
+
+	let latest_monitor_update_id = Readable::read(reader)?;
+
+	// Read the old serialization for shutdown_pubkey, preferring the TLV field later if set.
+	let mut _shutdown_scriptpubkey = match <PublicKey as Readable>::read(reader) {
+		Ok(pubkey) => Some(ShutdownScript::new_p2wpkh_from_pubkey(pubkey)),
+		Err(_) => None,
+	};
+	let _destination_script: ScriptBuf = Readable::read(reader)?;
+
+	let holder_commitment_next_transaction_number: u64 = Readable::read(reader)?;
+	let counterparty_next_commitment_transaction_number: u64 = Readable::read(reader)?;
+
+	let cur_holder_commitment_transaction_number = holder_commitment_next_transaction_number + 1;
+	let revoked_counterparty_commitment_transaction_number =
+		counterparty_next_commitment_transaction_number + 2;
+	let cur_counterparty_commitment_transaction_number =
+		counterparty_next_commitment_transaction_number
+			+ if channel_state.is_awaiting_remote_revoke() { 0 } else { 1 };
+
+	Ok(ChannelStateCheckData {
+		cur_holder_commitment_transaction_number,
+		revoked_counterparty_commitment_transaction_number,
+		cur_counterparty_commitment_transaction_number,
+		latest_monitor_update_id,
+	})
 }
 
 fn duration_since_epoch() -> Option<Duration> {
