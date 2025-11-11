@@ -29,6 +29,7 @@ use bitcoin::{
 use crate::chain::chaininterface::fee_for_weight;
 use crate::ln::chan_utils::{
 	BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT, FUNDING_TRANSACTION_WITNESS_WEIGHT,
+	SEGWIT_MARKER_FLAG_WEIGHT,
 };
 use crate::ln::channel::{FundingNegotiationContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
 use crate::ln::funding::FundingTxInput;
@@ -257,16 +258,20 @@ impl_writeable_tlv_based!(ConstructedTransaction, {
 	(11, shared_output_index, required),
 });
 
+/// The percent tolerance given to the remote when estimating if they paid enough fees.
+const REMOTE_FEE_TOLERANCE_PERCENT: u64 = 95;
+
 impl ConstructedTransaction {
 	fn new(context: NegotiationContext) -> Result<Self, AbortReason> {
 		let remote_inputs_value = context.remote_inputs_value();
 		let remote_outputs_value = context.remote_outputs_value();
 		let remote_weight_contributed = context.remote_weight_contributed();
 
-		let satisfaction_weight =
-			Weight::from_wu(context.inputs.iter().fold(0u64, |value, (_, input)| {
-				value.saturating_add(input.satisfaction_weight().to_wu())
-			}));
+		let expected_witness_weight = context.inputs.iter().fold(0u64, |value, (_, input)| {
+			value
+				.saturating_add(input.satisfaction_weight().to_wu())
+				.saturating_sub(EMPTY_SCRIPT_SIG_WEIGHT)
+		});
 
 		let lock_time = context.tx_locktime;
 
@@ -315,8 +320,10 @@ impl ConstructedTransaction {
 
 		// - the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee).
 		let remote_fees_contributed = remote_inputs_value.saturating_sub(remote_outputs_value);
-		let required_remote_contribution_fee =
-			fee_for_weight(context.feerate_sat_per_kw, remote_weight_contributed);
+		let required_remote_contribution_fee = fee_for_weight(
+			(context.feerate_sat_per_kw as u64 * REMOTE_FEE_TOLERANCE_PERCENT / 100) as u32,
+			remote_weight_contributed,
+		);
 		if remote_fees_contributed < required_remote_contribution_fee {
 			return Err(AbortReason::InsufficientFees);
 		}
@@ -337,8 +344,13 @@ impl ConstructedTransaction {
 			return Err(AbortReason::MissingFundingOutput);
 		}
 
-		let tx_weight = tx.tx.weight().checked_add(satisfaction_weight).unwrap_or(Weight::MAX);
-		if tx_weight > Weight::from_wu(MAX_STANDARD_TX_WEIGHT as u64) {
+		let tx_weight = tx
+			.tx
+			.weight()
+			.to_wu()
+			.saturating_add(SEGWIT_MARKER_FLAG_WEIGHT)
+			.saturating_add(expected_witness_weight);
+		if tx_weight > MAX_STANDARD_TX_WEIGHT as u64 {
 			return Err(AbortReason::TransactionTooLarge);
 		}
 
@@ -1740,7 +1752,15 @@ impl InputOwned {
 			InputOwned::Single(single) => single.satisfaction_weight,
 			// TODO(taproot): Needs to consider different weights based on channel type
 			InputOwned::Shared(_) => {
-				Weight::from_wu(EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT)
+				let mut weight = 0;
+				weight += EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT;
+				#[cfg(feature = "grind_signatures")]
+				{
+					// Guarantees a low R signature
+					weight -= 1;
+				}
+
+				Weight::from_wu(weight)
 			},
 		}
 	}
@@ -2348,6 +2368,11 @@ pub(super) fn calculate_change_output_value(
 			weight = weight.saturating_add(BASE_INPUT_WEIGHT);
 			weight = weight.saturating_add(EMPTY_SCRIPT_SIG_WEIGHT);
 			weight = weight.saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT);
+			#[cfg(feature = "grind_signatures")]
+			{
+				// Guarantees a low R signature
+				weight -= 1;
+			}
 		}
 	}
 
@@ -2400,7 +2425,7 @@ mod tests {
 	use super::{
 		get_output_weight, ConstructedTransaction, InteractiveTxSigningSession, TxInMetadata,
 		P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
-		P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
+		P2WSH_INPUT_WEIGHT_LOWER_BOUND, REMOTE_FEE_TOLERANCE_PERCENT, TX_COMMON_FIELDS_WEIGHT,
 	};
 
 	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
@@ -2865,7 +2890,7 @@ mod tests {
 		let outputs_weight = get_output_weight(&generate_p2wsh_script_pubkey()).to_wu();
 		let amount_adjusted_with_p2wpkh_fee = 1_000_000
 			- fee_for_weight(
-				TEST_FEERATE_SATS_PER_KW,
+				(TEST_FEERATE_SATS_PER_KW as u64 * REMOTE_FEE_TOLERANCE_PERCENT / 100) as u32,
 				P2WPKH_INPUT_WEIGHT_LOWER_BOUND + TX_COMMON_FIELDS_WEIGHT + outputs_weight,
 			);
 		do_test_interactive_tx_constructor(TestSession {
@@ -2901,7 +2926,7 @@ mod tests {
 		});
 		let amount_adjusted_with_p2wsh_fee = 1_000_000
 			- fee_for_weight(
-				TEST_FEERATE_SATS_PER_KW,
+				(TEST_FEERATE_SATS_PER_KW as u64 * REMOTE_FEE_TOLERANCE_PERCENT / 100) as u32,
 				P2WSH_INPUT_WEIGHT_LOWER_BOUND + TX_COMMON_FIELDS_WEIGHT + outputs_weight,
 			);
 		do_test_interactive_tx_constructor(TestSession {
@@ -2937,7 +2962,7 @@ mod tests {
 		});
 		let amount_adjusted_with_p2tr_fee = 1_000_000
 			- fee_for_weight(
-				TEST_FEERATE_SATS_PER_KW,
+				(TEST_FEERATE_SATS_PER_KW as u64 * REMOTE_FEE_TOLERANCE_PERCENT / 100) as u32,
 				P2TR_INPUT_WEIGHT_LOWER_BOUND + TX_COMMON_FIELDS_WEIGHT + outputs_weight,
 			);
 		do_test_interactive_tx_constructor(TestSession {
@@ -3387,21 +3412,23 @@ mod tests {
 				FundingTxInput::new_p2wpkh(prevtx, 0).unwrap()
 			})
 			.collect();
-		let our_contributed = 110_000;
 		let txout = TxOut { value: Amount::from_sat(10_000), script_pubkey: ScriptBuf::new() };
 		let outputs = vec![txout];
 		let funding_feerate_sat_per_1000_weight = 3000;
 
-		let total_inputs: u64 = input_prevouts.iter().map(|o| o.value.to_sat()).sum();
-		let total_outputs: u64 = outputs.iter().map(|o| o.value.to_sat()).sum();
-		let gross_change = total_inputs - total_outputs - our_contributed;
-		let fees = 1746;
-		let common_fees = 234;
+		let total_inputs: Amount = input_prevouts.iter().map(|o| o.value).sum();
+		let total_outputs: Amount = outputs.iter().map(|o| o.value).sum();
+		let fees = if cfg!(feature = "grind_signatures") {
+			Amount::from_sat(1734)
+		} else {
+			Amount::from_sat(1740)
+		};
+		let common_fees = Amount::from_sat(234);
 
 		// There is leftover for change
 		let context = FundingNegotiationContext {
 			is_initiator: true,
-			our_funding_contribution: SignedAmount::from_sat(our_contributed as i64),
+			our_funding_contribution: SignedAmount::from_sat(110_000),
 			funding_tx_locktime: AbsoluteLockTime::ZERO,
 			funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
@@ -3409,16 +3436,18 @@ mod tests {
 			our_funding_outputs: outputs,
 			change_script: None,
 		};
+		let gross_change =
+			total_inputs - total_outputs - context.our_funding_contribution.to_unsigned().unwrap();
 		assert_eq!(
 			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
-			Ok(Some(gross_change - fees - common_fees)),
+			Ok(Some((gross_change - fees - common_fees).to_sat())),
 		);
 
 		// There is leftover for change, without common fees
 		let context = FundingNegotiationContext { is_initiator: false, ..context };
 		assert_eq!(
 			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
-			Ok(Some(gross_change - fees)),
+			Ok(Some((gross_change - fees).to_sat())),
 		);
 
 		// Insufficient inputs, no leftover
@@ -3449,21 +3478,25 @@ mod tests {
 			our_funding_contribution: SignedAmount::from_sat(117_992),
 			..context
 		};
+		let gross_change =
+			total_inputs - total_outputs - context.our_funding_contribution.to_unsigned().unwrap();
 		assert_eq!(
 			calculate_change_output_value(&context, false, &ScriptBuf::new(), 100),
-			Ok(Some(262)),
+			Ok(Some((gross_change - fees).to_sat())),
 		);
 
 		// Larger fee, smaller change
 		let context = FundingNegotiationContext {
 			is_initiator: true,
-			our_funding_contribution: SignedAmount::from_sat(our_contributed as i64),
+			our_funding_contribution: SignedAmount::from_sat(110_000),
 			funding_feerate_sat_per_1000_weight: funding_feerate_sat_per_1000_weight * 3,
 			..context
 		};
+		let gross_change =
+			total_inputs - total_outputs - context.our_funding_contribution.to_unsigned().unwrap();
 		assert_eq!(
 			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
-			Ok(Some(4060)),
+			Ok(Some((gross_change - fees * 3 - common_fees * 3).to_sat())),
 		);
 	}
 

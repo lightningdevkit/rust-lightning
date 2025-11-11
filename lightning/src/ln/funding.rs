@@ -143,7 +143,13 @@ impl FundingTxInput {
 	/// [`TxIn::sequence`]: bitcoin::TxIn::sequence
 	/// [`set_sequence`]: Self::set_sequence
 	pub fn new_p2wpkh(prevtx: Transaction, vout: u32) -> Result<Self, ()> {
-		let witness_weight = Weight::from_wu(P2WPKH_WITNESS_WEIGHT);
+		let witness_weight = Weight::from_wu(P2WPKH_WITNESS_WEIGHT)
+			- if cfg!(feature = "grind_signatures") {
+				// Guarantees a low R signature
+				Weight::from_wu(1)
+			} else {
+				Weight::ZERO
+			};
 		FundingTxInput::new(prevtx, vout, witness_weight, Script::is_p2wpkh)
 	}
 
@@ -223,5 +229,10 @@ impl FundingTxInput {
 	/// [`TxIn`]: bitcoin::TxIn
 	pub fn set_sequence(&mut self, sequence: Sequence) {
 		self.sequence = sequence;
+	}
+
+	/// Converts the [`FundingTxInput`] into a [`Utxo`] for coin selection.
+	pub fn into_utxo(self) -> Utxo {
+		self.utxo
 	}
 }
