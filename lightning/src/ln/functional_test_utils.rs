@@ -2670,6 +2670,10 @@ pub fn do_main_commitment_signed_dance(
 	(extra_msg_option, bs_revoke_and_ack)
 }
 
+/// Runs the commitment_signed dance by delivering the commitment_signed and handling the
+/// responding `revoke_and_ack` and `commitment_signed`.
+///
+/// Returns the recipient's `revoke_and_ack`.
 pub fn commitment_signed_dance_return_raa(
 	node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>,
 	commitment_signed: &Vec<msgs::CommitmentSigned>, fail_backwards: bool,
