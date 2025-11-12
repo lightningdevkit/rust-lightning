@@ -43,13 +43,16 @@ use lightning::chain::{
 	chainmonitor, channelmonitor, BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch,
 };
 use lightning::events;
-use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
+use lightning::ln::channel::{
+	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS,
+};
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
 	RecipientOnionFields,
 };
 use lightning::ln::functional_test_utils::*;
+use lightning::ln::funding::{FundingTxInput, SpliceContribution};
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, Init, MessageSendEvent,
@@ -68,6 +71,7 @@ use lightning::sign::{
 };
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::UserConfig;
+use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{LengthReadable, ReadableArgs, Writeable, Writer};
@@ -160,6 +164,63 @@ impl Writer for VecWriter {
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::lightning::io::Error> {
 		self.0.extend_from_slice(buf);
 		Ok(())
+	}
+}
+
+pub struct TestWallet {
+	secret_key: SecretKey,
+	utxos: Mutex<Vec<lightning::events::bump_transaction::Utxo>>,
+	secp: Secp256k1<bitcoin::secp256k1::All>,
+}
+
+impl TestWallet {
+	pub fn new(secret_key: SecretKey) -> Self {
+		Self { secret_key, utxos: Mutex::new(Vec::new()), secp: Secp256k1::new() }
+	}
+
+	fn get_change_script(&self) -> Result<ScriptBuf, ()> {
+		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
+		Ok(ScriptBuf::new_p2wpkh(&public_key.wpubkey_hash().unwrap()))
+	}
+
+	pub fn add_utxo(&self, outpoint: bitcoin::OutPoint, value: Amount) -> TxOut {
+		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
+		let utxo = lightning::events::bump_transaction::Utxo::new_v0_p2wpkh(
+			outpoint,
+			value,
+			&public_key.wpubkey_hash().unwrap(),
+		);
+		self.utxos.lock().unwrap().push(utxo.clone());
+		utxo.output
+	}
+
+	pub fn sign_tx(
+		&self, mut tx: Transaction,
+	) -> Result<Transaction, bitcoin::sighash::P2wpkhError> {
+		let utxos = self.utxos.lock().unwrap();
+		for i in 0..tx.input.len() {
+			if let Some(utxo) =
+				utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output)
+			{
+				let sighash = bitcoin::sighash::SighashCache::new(&tx).p2wpkh_signature_hash(
+					i,
+					&utxo.output.script_pubkey,
+					utxo.output.value,
+					bitcoin::EcdsaSighashType::All,
+				)?;
+				let signature = self.secp.sign_ecdsa(
+					&secp256k1::Message::from_digest(sighash.to_byte_array()),
+					&self.secret_key,
+				);
+				let bitcoin_sig = bitcoin::ecdsa::Signature {
+					signature,
+					sighash_type: bitcoin::EcdsaSighashType::All,
+				};
+				tx.input[i].witness =
+					bitcoin::Witness::p2wpkh(&bitcoin_sig, &self.secret_key.public_key(&self.secp));
+			}
+		}
+		Ok(tx)
 	}
 }
 
@@ -671,6 +732,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			let mut config = UserConfig::default();
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
 			config.channel_handshake_config.announce_for_forwarding = true;
+			config.reject_inbound_splices = false;
 			if anchors {
 				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 				config.manually_accept_inbound_channels = true;
@@ -724,6 +786,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 		let mut config = UserConfig::default();
 		config.channel_config.forwarding_fee_proportional_millionths = 0;
 		config.channel_handshake_config.announce_for_forwarding = true;
+		config.reject_inbound_splices = false;
 		if anchors {
 			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 			config.manually_accept_inbound_channels = true;
@@ -984,6 +1047,30 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 		}};
 	}
 
+	let wallet_a = TestWallet::new(SecretKey::from_slice(&[1; 32]).unwrap());
+	let wallet_b = TestWallet::new(SecretKey::from_slice(&[2; 32]).unwrap());
+	let wallet_c = TestWallet::new(SecretKey::from_slice(&[3; 32]).unwrap());
+	let wallets = vec![wallet_a, wallet_b, wallet_c];
+	let coinbase_tx = bitcoin::Transaction {
+		version: bitcoin::transaction::Version::TWO,
+		lock_time: bitcoin::absolute::LockTime::ZERO,
+		input: vec![bitcoin::TxIn { ..Default::default() }],
+		output: wallets
+			.iter()
+			.map(|w| TxOut {
+				value: Amount::from_sat(100_000),
+				script_pubkey: w.get_change_script().unwrap(),
+			})
+			.collect(),
+	};
+	let coinbase_txid = coinbase_tx.compute_txid();
+	wallets.iter().enumerate().for_each(|(i, w)| {
+		w.add_utxo(
+			bitcoin::OutPoint { txid: coinbase_txid, vout: i as u32 },
+			Amount::from_sat(100_000),
+		);
+	});
+
 	let fee_est_a = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
 	let mut last_htlc_clear_fee_a = 253;
 	let fee_est_b = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
@@ -1070,6 +1157,34 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							*node_id == a_id
 						},
 						MessageSendEvent::SendStfu { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::SendSpliceInit { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::SendSpliceAck { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::SendSpliceLocked { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::SendTxAddInput { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::SendTxAddOutput { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::SendTxComplete { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::SendTxAbort { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
@@ -1208,7 +1323,79 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 									dest.handle_stfu(nodes[$node].get_our_node_id(), msg);
 								}
 							}
-						}
+						},
+						MessageSendEvent::SendTxAddInput { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering tx_add_input from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_tx_add_input(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
+						MessageSendEvent::SendTxAddOutput { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering tx_add_output from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_tx_add_output(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
+						MessageSendEvent::SendTxRemoveInput { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering tx_remove_input from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_tx_remove_input(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
+						MessageSendEvent::SendTxRemoveOutput { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering tx_remove_output from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_tx_remove_output(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
+						MessageSendEvent::SendTxComplete { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering tx_complete from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_tx_complete(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
+						MessageSendEvent::SendTxAbort { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering tx_abort from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_tx_abort(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
+						MessageSendEvent::SendSpliceInit { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering splice_init from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_splice_init(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
+						MessageSendEvent::SendSpliceAck { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering splice_ack from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_splice_ack(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
+						MessageSendEvent::SendSpliceLocked { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering splice_locked from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_splice_locked(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
 						MessageSendEvent::SendChannelReady { .. } => {
 							// Can be generated as a reestablish response
 						},
@@ -1347,6 +1534,25 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
 						events::Event::ChannelReady { .. } => {},
 						events::Event::HTLCHandlingFailed { .. } => {},
+
+						events::Event::FundingTransactionReadyForSigning {
+							channel_id,
+							counterparty_node_id,
+							unsigned_transaction,
+							..
+						} => {
+							let signed_tx = wallets[$node].sign_tx(unsigned_transaction).unwrap();
+							nodes[$node]
+								.funding_transaction_signed(
+									&channel_id,
+									&counterparty_node_id,
+									signed_tx,
+								)
+								.unwrap();
+						},
+						events::Event::SplicePending { .. } => {},
+						events::Event::SpliceFailed { .. } => {},
+
 						_ => {
 							if out.may_fail.load(atomic::Ordering::Acquire) {
 								return;
@@ -1652,16 +1858,220 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 
 			0xa0 => {
-				nodes[0].maybe_propose_quiescence(&nodes[1].get_our_node_id(), &chan_a_id).unwrap()
+				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 0).unwrap();
+				let contribution = SpliceContribution::SpliceIn {
+					value: Amount::from_sat(10_000),
+					inputs: vec![input],
+					change_script: None,
+				};
+				let funding_feerate_sat_per_kw = fee_est_a.ret_val.load(atomic::Ordering::Acquire);
+				if let Err(e) = nodes[0].splice_channel(
+					&chan_a_id,
+					&nodes[1].get_our_node_id(),
+					contribution,
+					funding_feerate_sat_per_kw,
+					None,
+				) {
+					assert!(
+						matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+						"{:?}",
+						e
+					);
+				}
 			},
 			0xa1 => {
-				nodes[1].maybe_propose_quiescence(&nodes[0].get_our_node_id(), &chan_a_id).unwrap()
+				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 1).unwrap();
+				let contribution = SpliceContribution::SpliceIn {
+					value: Amount::from_sat(10_000),
+					inputs: vec![input],
+					change_script: None,
+				};
+				let funding_feerate_sat_per_kw = fee_est_b.ret_val.load(atomic::Ordering::Acquire);
+				if let Err(e) = nodes[1].splice_channel(
+					&chan_a_id,
+					&nodes[0].get_our_node_id(),
+					contribution,
+					funding_feerate_sat_per_kw,
+					None,
+				) {
+					assert!(
+						matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+						"{:?}",
+						e
+					);
+				}
 			},
 			0xa2 => {
-				nodes[1].maybe_propose_quiescence(&nodes[2].get_our_node_id(), &chan_b_id).unwrap()
+				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 0).unwrap();
+				let contribution = SpliceContribution::SpliceIn {
+					value: Amount::from_sat(10_000),
+					inputs: vec![input],
+					change_script: None,
+				};
+				let funding_feerate_sat_per_kw = fee_est_b.ret_val.load(atomic::Ordering::Acquire);
+				if let Err(e) = nodes[1].splice_channel(
+					&chan_b_id,
+					&nodes[2].get_our_node_id(),
+					contribution,
+					funding_feerate_sat_per_kw,
+					None,
+				) {
+					assert!(
+						matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+						"{:?}",
+						e
+					);
+				}
 			},
 			0xa3 => {
-				nodes[2].maybe_propose_quiescence(&nodes[1].get_our_node_id(), &chan_b_id).unwrap()
+				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 1).unwrap();
+				let contribution = SpliceContribution::SpliceIn {
+					value: Amount::from_sat(10_000),
+					inputs: vec![input],
+					change_script: None,
+				};
+				let funding_feerate_sat_per_kw = fee_est_c.ret_val.load(atomic::Ordering::Acquire);
+				if let Err(e) = nodes[2].splice_channel(
+					&chan_b_id,
+					&nodes[1].get_our_node_id(),
+					contribution,
+					funding_feerate_sat_per_kw,
+					None,
+				) {
+					assert!(
+						matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+						"{:?}",
+						e
+					);
+				}
+			},
+
+			// We conditionally splice out `MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS` only when the node
+			// has double the balance required to send a payment upon a `0xff` byte. We do this to
+			// ensure there's always liquidity available for a payment to succeed then.
+			0xa4 => {
+				let outbound_capacity_msat = nodes[0]
+					.list_channels()
+					.iter()
+					.find(|chan| chan.channel_id == chan_a_id)
+					.map(|chan| chan.outbound_capacity_msat)
+					.unwrap();
+				if outbound_capacity_msat >= 20_000_000 {
+					let contribution = SpliceContribution::SpliceOut {
+						outputs: vec![TxOut {
+							value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+							script_pubkey: coinbase_tx.output[0].script_pubkey.clone(),
+						}],
+					};
+					let funding_feerate_sat_per_kw =
+						fee_est_a.ret_val.load(atomic::Ordering::Acquire);
+					if let Err(e) = nodes[0].splice_channel(
+						&chan_a_id,
+						&nodes[1].get_our_node_id(),
+						contribution,
+						funding_feerate_sat_per_kw,
+						None,
+					) {
+						assert!(
+							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+							"{:?}",
+							e
+						);
+					}
+				}
+			},
+			0xa5 => {
+				let outbound_capacity_msat = nodes[1]
+					.list_channels()
+					.iter()
+					.find(|chan| chan.channel_id == chan_a_id)
+					.map(|chan| chan.outbound_capacity_msat)
+					.unwrap();
+				if outbound_capacity_msat >= 20_000_000 {
+					let contribution = SpliceContribution::SpliceOut {
+						outputs: vec![TxOut {
+							value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+							script_pubkey: coinbase_tx.output[1].script_pubkey.clone(),
+						}],
+					};
+					let funding_feerate_sat_per_kw =
+						fee_est_b.ret_val.load(atomic::Ordering::Acquire);
+					if let Err(e) = nodes[1].splice_channel(
+						&chan_a_id,
+						&nodes[0].get_our_node_id(),
+						contribution,
+						funding_feerate_sat_per_kw,
+						None,
+					) {
+						assert!(
+							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+							"{:?}",
+							e
+						);
+					}
+				}
+			},
+			0xa6 => {
+				let outbound_capacity_msat = nodes[1]
+					.list_channels()
+					.iter()
+					.find(|chan| chan.channel_id == chan_b_id)
+					.map(|chan| chan.outbound_capacity_msat)
+					.unwrap();
+				if outbound_capacity_msat >= 20_000_000 {
+					let contribution = SpliceContribution::SpliceOut {
+						outputs: vec![TxOut {
+							value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+							script_pubkey: coinbase_tx.output[1].script_pubkey.clone(),
+						}],
+					};
+					let funding_feerate_sat_per_kw =
+						fee_est_b.ret_val.load(atomic::Ordering::Acquire);
+					if let Err(e) = nodes[1].splice_channel(
+						&chan_b_id,
+						&nodes[2].get_our_node_id(),
+						contribution,
+						funding_feerate_sat_per_kw,
+						None,
+					) {
+						assert!(
+							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+							"{:?}",
+							e
+						);
+					}
+				}
+			},
+			0xa7 => {
+				let outbound_capacity_msat = nodes[2]
+					.list_channels()
+					.iter()
+					.find(|chan| chan.channel_id == chan_b_id)
+					.map(|chan| chan.outbound_capacity_msat)
+					.unwrap();
+				if outbound_capacity_msat >= 20_000_000 {
+					let contribution = SpliceContribution::SpliceOut {
+						outputs: vec![TxOut {
+							value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+							script_pubkey: coinbase_tx.output[2].script_pubkey.clone(),
+						}],
+					};
+					let funding_feerate_sat_per_kw =
+						fee_est_c.ret_val.load(atomic::Ordering::Acquire);
+					if let Err(e) = nodes[2].splice_channel(
+						&chan_b_id,
+						&nodes[1].get_our_node_id(),
+						contribution,
+						funding_feerate_sat_per_kw,
+						None,
+					) {
+						assert!(
+							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+							"{:?}",
+							e
+						);
+					}
+				}
 			},
 
 			0xb0 | 0xb1 | 0xb2 => {
@@ -1828,16 +2238,6 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					} };
 				}
 
-				// We may be pending quiescence, so first process all messages to ensure we can
-				// complete the quiescence handshake.
-				process_all_events!();
-
-				// Then exit quiescence and process all messages again, to resolve any pending
-				// HTLCs (only irrevocably committed ones) before attempting to send more payments.
-				nodes[0].exit_quiescence(&nodes[1].get_our_node_id(), &chan_a_id).unwrap();
-				nodes[1].exit_quiescence(&nodes[0].get_our_node_id(), &chan_a_id).unwrap();
-				nodes[1].exit_quiescence(&nodes[2].get_our_node_id(), &chan_b_id).unwrap();
-				nodes[2].exit_quiescence(&nodes[1].get_our_node_id(), &chan_b_id).unwrap();
 				process_all_events!();
 
 				// Finally, make sure that at least one end of each channel can make a substantial payment
