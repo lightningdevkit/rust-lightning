@@ -94,7 +94,7 @@ fn test_priv_forwarding_rejection() {
 	);
 	check_added_monitors(&nodes[1], 1);
 
-	let htlc_fail_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let htlc_fail_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	assert!(htlc_fail_updates.update_add_htlcs.is_empty());
 	assert_eq!(htlc_fail_updates.update_fail_htlcs.len(), 1);
 	assert!(htlc_fail_updates.update_fail_malformed_htlcs.is_empty());
@@ -622,7 +622,7 @@ fn test_inbound_scid_privacy() {
 		1,
 	);
 
-	let mut updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 
@@ -698,7 +698,7 @@ fn test_scid_alias_returned() {
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, onion, id).unwrap();
 
 	check_added_monitors!(nodes[0], 1);
-	let as_updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let as_updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_updates.update_add_htlcs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &as_updates.commitment_signed, false, true);
 
@@ -711,7 +711,7 @@ fn test_scid_alias_returned() {
 	expect_htlc_failure_conditions(events, &expected_failures);
 	check_added_monitors!(nodes[1], 1);
 
-	let bs_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let bs_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &bs_updates.commitment_signed, false, true);
 
@@ -735,7 +735,7 @@ fn test_scid_alias_returned() {
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 
 	check_added_monitors!(nodes[0], 1);
-	let as_updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let as_updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_updates.update_add_htlcs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &as_updates.commitment_signed, false, true);
 
@@ -749,7 +749,7 @@ fn test_scid_alias_returned() {
 	);
 	check_added_monitors(&nodes[1], 1);
 
-	let bs_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let bs_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &bs_updates.commitment_signed, false, true);
 

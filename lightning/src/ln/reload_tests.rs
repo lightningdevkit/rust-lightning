@@ -890,7 +890,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 				let mut fulfill = updates.update_fulfill_htlcs.remove(0);
 				nodes[2].node.handle_update_fulfill_htlc(nodes[3].node.get_our_node_id(), fulfill);
 				check_added_monitors!(nodes[2], 1);
-				let cs_updates = get_htlc_update_msgs!(nodes[2], nodes[0].node.get_our_node_id());
+				let cs_updates = get_htlc_update_msgs(&nodes[2], &nodes[0].node.get_our_node_id());
 				expect_payment_forwarded!(nodes[2], nodes[0], nodes[3], Some(1000), false, false);
 				do_commitment_signed_dance(&nodes[2], &nodes[3], &updates.commitment_signed, false, true);
 				cs_updates
@@ -1268,7 +1268,7 @@ fn test_htlc_localremoved_persistence() {
 		RecipientOnionFields::spontaneous_empty(), Some(test_preimage), PaymentId(mismatch_payment_hash.0), None, session_privs).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
-	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
 	expect_and_process_pending_htlcs(&nodes[1], false);
@@ -1276,7 +1276,7 @@ fn test_htlc_localremoved_persistence() {
 	check_added_monitors(&nodes[1], 1);
 
 	// Save the update_fail_htlc message for later comparison.
-	let msgs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let msgs = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	let htlc_fail_msg = msgs.update_fail_htlcs[0].clone();
 
 	// Reload nodes.

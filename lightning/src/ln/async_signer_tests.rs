@@ -950,7 +950,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	// The rest of this is boilerplate for resolving the previous state.
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_revoke_and_ack);
-	let as_commitment_signed = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let as_commitment_signed = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	check_added_monitors!(nodes[0], 1);
 
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_second_commitment_signed);
@@ -1358,12 +1358,12 @@ fn test_no_disconnect_while_async_revoke_and_ack_expecting_remote_commitment_sig
 	nodes[1].node.send_payment_with_route(route2, payment_hash2, onion2, payment_id2).unwrap();
 	check_added_monitors(&nodes[1], 1);
 
-	let update = get_htlc_update_msgs!(&nodes[0], node_b_id);
+	let update = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &update.update_add_htlcs[0]);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &update.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 
-	let update = get_htlc_update_msgs!(&nodes[1], node_a_id);
+	let update = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_add_htlc(node_b_id, &update.update_add_htlcs[0]);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &update.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
@@ -1420,7 +1420,7 @@ fn test_no_disconnect_while_async_commitment_signed_expecting_remote_revoke_and_
 
 	// After processing the `update_fulfill`, they'll only be able to send `revoke_and_ack` until
 	// the `commitment_signed` is no longer pending.
-	let mut update = get_htlc_update_msgs!(&nodes[1], node_a_id);
+	let mut update = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update.update_fulfill_htlcs.remove(0));
 	expect_payment_sent(&nodes[0], preimage, None, false, false);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &update.commitment_signed);

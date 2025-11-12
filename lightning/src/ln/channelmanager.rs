@@ -18559,7 +18559,7 @@ mod tests {
 		let fail = HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
 		check_added_monitors!(nodes[1], 1);
-		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
 		assert_eq!(updates.update_fail_htlcs.len(), 1);
@@ -18585,7 +18585,7 @@ mod tests {
 		expect_payment_claimed!(nodes[1], our_payment_hash, 200_000);
 		check_added_monitors!(nodes[1], 2);
 
-		let mut bs_1st_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let mut bs_1st_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_1st_updates.update_fulfill_htlcs.remove(0));
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_1st_updates.commitment_signed);
@@ -18593,7 +18593,7 @@ mod tests {
 		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
 		check_added_monitors!(nodes[1], 1);
-		let mut bs_2nd_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let mut bs_2nd_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_first_cs);
 		check_added_monitors!(nodes[1], 1);
 		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
@@ -18602,7 +18602,7 @@ mod tests {
 		check_added_monitors!(nodes[0], 1);
 		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
-		let as_second_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		let as_second_updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 		check_added_monitors!(nodes[0], 1);
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
 		check_added_monitors!(nodes[1], 1);
@@ -18679,7 +18679,7 @@ mod tests {
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
 		check_added_monitors!(nodes[1], 1);
-		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
 		assert_eq!(updates.update_fail_htlcs.len(), 1);
@@ -18726,7 +18726,7 @@ mod tests {
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
 		check_added_monitors!(nodes[1], 1);
-		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
 		assert_eq!(updates.update_fail_htlcs.len(), 1);
@@ -18775,7 +18775,7 @@ mod tests {
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
 		check_added_monitors!(nodes[1], 1);
-		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
 		assert_eq!(updates.update_fail_htlcs.len(), 1);
@@ -18822,7 +18822,7 @@ mod tests {
 			RecipientOnionFields::spontaneous_empty(), Some(test_preimage), PaymentId(mismatch_payment_hash.0), None, session_privs).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
-		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 		assert_eq!(updates.update_add_htlcs.len(), 1);
 		assert!(updates.update_fulfill_htlcs.is_empty());
 		assert!(updates.update_fail_htlcs.is_empty());
@@ -18833,7 +18833,7 @@ mod tests {
 		expect_and_process_pending_htlcs(&nodes[1], false);
 		expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash: mismatch_payment_hash }]);
 		check_added_monitors(&nodes[1], 1);
-		let _ = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let _ = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 
 		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Payment preimage didn't match payment hash", 1);
 	}

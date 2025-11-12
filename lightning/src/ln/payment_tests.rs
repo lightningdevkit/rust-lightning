@@ -164,7 +164,7 @@ fn mpp_retry() {
 	let events = nodes[2].node.get_and_clear_pending_events();
 	let fail = HTLCHandlingFailureType::Forward { node_id: Some(node_d_id), channel_id: chan_4_id };
 	expect_htlc_failure_conditions(events, &[fail]);
-	let htlc_updates = get_htlc_update_msgs!(nodes[2], node_a_id);
+	let htlc_updates = get_htlc_update_msgs(&nodes[2], &node_a_id);
 	assert!(htlc_updates.update_add_htlcs.is_empty());
 	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
 	assert!(htlc_updates.update_fulfill_htlcs.is_empty());
@@ -283,7 +283,7 @@ fn mpp_retry_overpay() {
 	let fail = HTLCHandlingFailureType::Forward { node_id: Some(node_d_id), channel_id: chan_4_id };
 	expect_htlc_failure_conditions(events, &[fail]);
 
-	let htlc_updates = get_htlc_update_msgs!(nodes[2], node_a_id);
+	let htlc_updates = get_htlc_update_msgs(&nodes[2], &node_a_id);
 	assert!(htlc_updates.update_add_htlcs.is_empty());
 	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
 	assert!(htlc_updates.update_fulfill_htlcs.is_empty());
@@ -381,7 +381,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 		let fail = HTLCHandlingFailureType::Receive { payment_hash: hash };
 		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[3], &[fail]);
 
-		let htlc_fail_updates = get_htlc_update_msgs!(nodes[3], node_b_id);
+		let htlc_fail_updates = get_htlc_update_msgs(&nodes[3], &node_b_id);
 		assert_eq!(htlc_fail_updates.update_fail_htlcs.len(), 1);
 		nodes[1].node.handle_update_fail_htlc(node_d_id, &htlc_fail_updates.update_fail_htlcs[0]);
 		check_added_monitors!(nodes[3], 1);
@@ -394,7 +394,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 			HTLCHandlingFailureType::Forward { node_id: Some(node_d_id), channel_id: chan_3_id };
 		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[fail_type]);
 
-		let htlc_fail_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+		let htlc_fail_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 		assert_eq!(htlc_fail_updates.update_fail_htlcs.len(), 1);
 		nodes[0].node.handle_update_fail_htlc(node_b_id, &htlc_fail_updates.update_fail_htlcs[0]);
 		check_added_monitors!(nodes[1], 1);
@@ -623,14 +623,14 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	nodes[0].node.send_spontaneous_payment(preimage, onion, payment_id_0, params, retry).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
-	let update_0 = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let update_0 = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	let update_add_0 = update_0.update_add_htlcs[0].clone();
 	nodes[1].node.handle_update_add_htlc(node_a_id, &update_add_0);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
 	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	check_added_monitors!(&nodes[1], 1);
-	let update_1 = get_htlc_update_msgs!(nodes[1], node_d_id);
+	let update_1 = get_htlc_update_msgs(&nodes[1], &node_d_id);
 	let update_add_1 = update_1.update_add_htlcs[0].clone();
 	nodes[3].node.handle_update_add_htlc(node_b_id, &update_add_1);
 	do_commitment_signed_dance(&nodes[3], &nodes[1], &update_1.commitment_signed, false, true);
@@ -672,14 +672,14 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	nodes[0].node.send_spontaneous_payment(preimage, onion, payment_id_1, params, retry).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
-	let update_2 = get_htlc_update_msgs!(nodes[0], node_c_id);
+	let update_2 = get_htlc_update_msgs(&nodes[0], &node_c_id);
 	let update_add_2 = update_2.update_add_htlcs[0].clone();
 	nodes[2].node.handle_update_add_htlc(node_a_id, &update_add_2);
 	do_commitment_signed_dance(&nodes[2], &nodes[0], &update_2.commitment_signed, false, true);
 	expect_and_process_pending_htlcs(&nodes[2], false);
 
 	check_added_monitors!(&nodes[2], 1);
-	let update_3 = get_htlc_update_msgs!(nodes[2], node_d_id);
+	let update_3 = get_htlc_update_msgs(&nodes[2], &node_d_id);
 	let update_add_3 = update_3.update_add_htlcs[0].clone();
 	nodes[3].node.handle_update_add_htlc(node_c_id, &update_add_3);
 	do_commitment_signed_dance(&nodes[3], &nodes[2], &update_3.commitment_signed, false, true);
@@ -713,7 +713,7 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	check_added_monitors!(nodes[3], 1);
 
 	// Fail back along nodes[2]
-	let update_fail_0 = get_htlc_update_msgs!(&nodes[3], &node_c_id);
+	let update_fail_0 = get_htlc_update_msgs(&nodes[3], &node_c_id);
 	nodes[2].node.handle_update_fail_htlc(node_d_id, &update_fail_0.update_fail_htlcs[0]);
 	let commitment = &update_fail_0.commitment_signed;
 	do_commitment_signed_dance(&nodes[2], &nodes[3], commitment, false, false);
@@ -723,7 +723,7 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[2], &[fail_type]);
 	check_added_monitors!(nodes[2], 1);
 
-	let update_fail_1 = get_htlc_update_msgs!(nodes[2], node_a_id);
+	let update_fail_1 = get_htlc_update_msgs(&nodes[2], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_c_id, &update_fail_1.update_fail_htlcs[0]);
 	let commitment = &update_fail_1.commitment_signed;
 	do_commitment_signed_dance(&nodes[0], &nodes[2], commitment, false, false);
@@ -830,7 +830,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 
 	check_added_monitors(&nodes[1], 1);
 	// nodes[1] now immediately fails the HTLC as the next-hop channel is disconnected
-	let _ = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let _ = get_htlc_update_msgs(&nodes[1], &node_a_id);
 
 	reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[2]));
 
@@ -903,7 +903,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	check_added_monitors!(nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_1, 1_000_000);
 
-	let mut htlc_fulfill = get_htlc_update_msgs!(nodes[2], node_b_id);
+	let mut htlc_fulfill = get_htlc_update_msgs(&nodes[2], &node_b_id);
 	let fulfill_msg = htlc_fulfill.update_fulfill_htlcs.remove(0);
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, fulfill_msg);
 	check_added_monitors!(nodes[1], 1);
@@ -1116,7 +1116,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[2], &[fail_type]);
 	check_added_monitors!(nodes[2], 1);
 
-	let htlc_fulfill_updates = get_htlc_update_msgs!(nodes[2], node_b_id);
+	let htlc_fulfill_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
 	nodes[1].node.handle_update_fail_htlc(node_c_id, &htlc_fulfill_updates.update_fail_htlcs[0]);
 	let commitment = &htlc_fulfill_updates.commitment_signed;
 	do_commitment_signed_dance(&nodes[1], &nodes[2], commitment, false, false);
@@ -1451,7 +1451,7 @@ fn test_fulfill_restart_failure() {
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 100_000);
 
-	let mut htlc_fulfill = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut htlc_fulfill = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	let fulfill_msg = htlc_fulfill.update_fulfill_htlcs.remove(0);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, fulfill_msg);
 	expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
@@ -1467,7 +1467,7 @@ fn test_fulfill_restart_failure() {
 	expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[fail_type]);
 	check_added_monitors!(nodes[1], 1);
 
-	let htlc_fail_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let htlc_fail_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &htlc_fail_updates.update_fail_htlcs[0]);
 	let commitment = &htlc_fail_updates.commitment_signed;
 	do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, false);
@@ -1557,7 +1557,7 @@ fn sent_probe_is_probe_of_sending_node() {
 		_ => panic!(),
 	}
 
-	get_htlc_update_msgs!(nodes[0], node_b_id);
+	get_htlc_update_msgs(&nodes[0], &node_b_id);
 	check_added_monitors!(nodes[0], 1);
 }
 
@@ -1606,7 +1606,7 @@ fn failed_probe_yields_event() {
 
 	// node[0] -- update_add_htlcs -> node[1]
 	check_added_monitors!(nodes[0], 1);
-	let updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	let probe_event = SendEvent::from_commitment_update(node_b_id, channel_id, updates);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &probe_event.msgs[0]);
 	check_added_monitors!(nodes[1], 0);
@@ -1615,7 +1615,7 @@ fn failed_probe_yields_event() {
 
 	// node[0] <- update_fail_htlcs -- node[1]
 	check_added_monitors!(nodes[1], 1);
-	let updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	let _events = nodes[1].node.get_and_clear_pending_events();
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
 	check_added_monitors!(nodes[0], 0);
@@ -1657,7 +1657,7 @@ fn onchain_failed_probe_yields_event() {
 
 	// node[0] -- update_add_htlcs -> node[1]
 	check_added_monitors!(nodes[0], 1);
-	let updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	let probe_event = SendEvent::from_commitment_update(node_b_id, chan_id, updates);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &probe_event.msgs[0]);
 	check_added_monitors!(nodes[1], 0);
@@ -1665,7 +1665,7 @@ fn onchain_failed_probe_yields_event() {
 	expect_and_process_pending_htlcs(&nodes[1], false);
 
 	check_added_monitors!(nodes[1], 1);
-	let _ = get_htlc_update_msgs!(nodes[1], node_c_id);
+	let _ = get_htlc_update_msgs(&nodes[1], &node_c_id);
 
 	// Don't bother forwarding the HTLC onwards and just confirm the force-close transaction on
 	// Node A, which after 6 confirmations should result in a probe failure event.
@@ -2307,7 +2307,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			HTLCHandlingFailureType::InvalidForward { requested_forward_scid: intercept_scid };
 		expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[fail]);
 		nodes[1].node.process_pending_htlc_forwards();
-		let update_fail = get_htlc_update_msgs!(nodes[1], node_a_id);
+		let update_fail = get_htlc_update_msgs(&nodes[1], &node_a_id);
 		check_added_monitors!(&nodes[1], 1);
 		assert!(update_fail.update_fail_htlcs.len() == 1);
 		let fail_msg = update_fail.update_fail_htlcs[0].clone();
@@ -2395,7 +2395,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[fail_type]);
 		check_added_monitors!(nodes[1], 1);
 
-		let htlc_fail = get_htlc_update_msgs!(nodes[1], node_a_id);
+		let htlc_fail = get_htlc_update_msgs(&nodes[1], &node_a_id);
 		assert!(htlc_fail.update_add_htlcs.is_empty());
 		assert_eq!(htlc_fail.update_fail_htlcs.len(), 1);
 		assert!(htlc_fail.update_fail_malformed_htlcs.is_empty());
@@ -2647,7 +2647,7 @@ fn do_automatic_retries(test: AutoRetry) {
 		($failing_channel_id: expr, $expect_pending_htlcs_forwardable: expr) => {
 			// Send a payment attempt that fails due to lack of liquidity on the second hop
 			check_added_monitors!(nodes[0], 1);
-			let update_0 = get_htlc_update_msgs!(nodes[0], node_b_id);
+			let update_0 = get_htlc_update_msgs(&nodes[0], &node_b_id);
 			let mut update_add = update_0.update_add_htlcs[0].clone();
 			nodes[1].node.handle_update_add_htlc(node_a_id, &update_add);
 			let commitment = &update_0.commitment_signed;
@@ -2662,7 +2662,7 @@ fn do_automatic_retries(test: AutoRetry) {
 				}],
 			);
 			nodes[1].node.process_pending_htlc_forwards();
-			let update_1 = get_htlc_update_msgs!(nodes[1], node_a_id);
+			let update_1 = get_htlc_update_msgs(&nodes[1], &node_a_id);
 			check_added_monitors!(&nodes[1], 1);
 			assert!(update_1.update_fail_htlcs.len() == 1);
 			let fail_msg = update_1.update_fail_htlcs[0].clone();
@@ -3051,7 +3051,7 @@ fn auto_retry_partial_failure() {
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, amt_msat);
 	nodes[1].node.claim_funds(payment_preimage);
 	expect_payment_claimed!(nodes[1], payment_hash, amt_msat);
-	let mut bs_claim = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut bs_claim = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	assert_eq!(bs_claim.update_fulfill_htlcs.len(), 1);
 
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_claim.update_fulfill_htlcs.remove(0));
@@ -3062,7 +3062,7 @@ fn auto_retry_partial_failure() {
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_third_raa);
 	check_added_monitors!(nodes[1], 4);
-	let mut bs_2nd_claim = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut bs_2nd_claim = get_htlc_update_msgs(&nodes[1], &node_a_id);
 
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_third_cs);
 	check_added_monitors!(nodes[1], 1);
@@ -3584,7 +3584,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	);
 	check_added_monitors(&nodes[1], 1);
 
-	let bs_fail_update = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let bs_fail_update = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	assert_eq!(bs_fail_update.update_fail_htlcs.len(), 2);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_fail_update.update_fail_htlcs[0]);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_fail_update.update_fail_htlcs[1]);
@@ -3642,7 +3642,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	);
 	check_added_monitors(&nodes[1], 1);
 
-	let bs_fail_update = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let bs_fail_update = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_fail_update.update_fail_htlcs[0]);
 	let commitment = &bs_fail_update.commitment_signed;
 	do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, true);
@@ -3868,7 +3868,7 @@ fn test_simple_partial_retry() {
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
-	let bs_second_forward = get_htlc_update_msgs!(nodes[1], node_c_id);
+	let bs_second_forward = get_htlc_update_msgs(&nodes[1], &node_c_id);
 	nodes[2].node.handle_update_add_htlc(node_b_id, &bs_second_forward.update_add_htlcs[0]);
 	let commitment = &bs_second_forward.commitment_signed;
 	do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, false);
@@ -4058,7 +4058,7 @@ fn test_threaded_payment_retries() {
 		route.route_params = Some(new_route_params.clone());
 		nodes[0].router.expect_find_route(new_route_params, Ok(route.clone()));
 
-		let bs_fail_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+		let bs_fail_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 		nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_fail_updates.update_fail_htlcs[0]);
 		// The "normal" commitment_signed_dance delivers the final RAA and then calls
 		// `check_added_monitors` to ensure only the one RAA-generated monitor update was created.
@@ -4127,12 +4127,12 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	expect_payment_claimed!(nodes[1], our_payment_hash, 1_000_000);
 
 	if at_midpoint {
-		let mut updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+		let mut updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 		nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
 		nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 	} else {
-		let mut fulfill = get_htlc_update_msgs!(nodes[1], node_a_id);
+		let mut fulfill = get_htlc_update_msgs(&nodes[1], &node_a_id);
 		nodes[0].node.handle_update_fulfill_htlc(node_b_id, fulfill.update_fulfill_htlcs.remove(0));
 		do_commitment_signed_dance(&nodes[0], &nodes[1], &fulfill.commitment_signed, false, false);
 		// Ignore the PaymentSent event which is now pending on nodes[0] - if we were to handle it we'd
@@ -4551,7 +4551,7 @@ fn test_retry_custom_tlvs() {
 	expect_htlc_failure_conditions(events, &[fail]);
 	check_added_monitors!(nodes[1], 1);
 
-	let htlc_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let htlc_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	let msgs::CommitmentUpdate { update_fail_htlcs, commitment_signed, .. } = htlc_updates;
 	assert_eq!(update_fail_htlcs.len(), 1);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &update_fail_htlcs[0]);
@@ -4744,7 +4744,7 @@ fn do_test_custom_tlvs_consistency(
 		);
 		check_added_monitors!(nodes[3], 1);
 
-		let fail_updates_1 = get_htlc_update_msgs!(nodes[3], node_c_id);
+		let fail_updates_1 = get_htlc_update_msgs(&nodes[3], &node_c_id);
 		nodes[2].node.handle_update_fail_htlc(node_d_id, &fail_updates_1.update_fail_htlcs[0]);
 		let commitment = &fail_updates_1.commitment_signed;
 		do_commitment_signed_dance(&nodes[2], &nodes[3], commitment, false, false);
@@ -4754,7 +4754,7 @@ fn do_test_custom_tlvs_consistency(
 		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[2], &[fail]);
 		check_added_monitors!(nodes[2], 1);
 
-		let fail_updates_2 = get_htlc_update_msgs!(nodes[2], node_a_id);
+		let fail_updates_2 = get_htlc_update_msgs(&nodes[2], &node_a_id);
 		nodes[0].node.handle_update_fail_htlc(node_c_id, &fail_updates_2.update_fail_htlcs[0]);
 		let commitment = &fail_updates_2.commitment_signed;
 		do_commitment_signed_dance(&nodes[0], &nodes[2], commitment, false, false);
@@ -5229,7 +5229,7 @@ fn test_non_strict_forwarding() {
 		HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: routed_chan_id };
 	expect_htlc_failure_conditions(events, &[fail]);
 
-	let updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 	let events = nodes[0].node.get_and_clear_pending_events();

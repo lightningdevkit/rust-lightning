@@ -72,12 +72,12 @@ fn chanmon_fail_from_stale_commitment() {
 
 	let bs_txn = get_local_commitment_txn!(nodes[1], chan_id_2);
 
-	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
 
 	expect_and_process_pending_htlcs(&nodes[1], false);
-	get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
+	get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 1);
 
 	// Don't bother delivering the new HTLC add/commits, instead confirming the pre-HTLC commitment
@@ -91,7 +91,7 @@ fn chanmon_fail_from_stale_commitment() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
 	check_added_monitors!(nodes[1], 1);
-	let fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let fail_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &fail_updates.commitment_signed, true, true);
@@ -568,7 +568,7 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 3_000_100);
 
-	let mut b_htlc_msgs = get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
+	let mut b_htlc_msgs = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	// We claim the dust payment here as well, but it won't impact our claimable balances as its
 	// dust and thus doesn't appear on chain at all.
 	nodes[1].node.claim_funds(dust_payment_preimage);
@@ -588,7 +588,7 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 		check_added_monitors!(nodes[0], 1);
 		let (as_raa, as_cs) = get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_raa);
-		let _htlc_updates = get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
+		let _htlc_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		check_added_monitors!(nodes[1], 1);
 		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_cs);
 		let _bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
@@ -887,7 +887,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
-	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
 
@@ -899,14 +899,14 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
-	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
 
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 20_000_000);
 	nodes[1].node.claim_funds(payment_preimage_2);
-	get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_2, 20_000_000);
 
@@ -1428,7 +1428,7 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	nodes[1].node.claim_funds(claimed_payment_preimage);
 	expect_payment_claimed!(nodes[1], claimed_payment_hash, 3_000_100);
 	check_added_monitors!(nodes[1], 1);
-	let _b_htlc_msgs = get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
+	let _b_htlc_msgs = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	connect_blocks(&nodes[0], htlc_cltv_timeout + 1 - 10);
 	check_closed_broadcast!(nodes[0], true);
@@ -2021,7 +2021,7 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 	nodes[0].node.claim_funds(claimed_payment_preimage);
 	expect_payment_claimed!(nodes[0], claimed_payment_hash, 3_000_100);
 	check_added_monitors!(nodes[0], 1);
-	let _a_htlc_msgs = get_htlc_update_msgs!(&nodes[0], nodes[1].node.get_our_node_id());
+	let _a_htlc_msgs = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {

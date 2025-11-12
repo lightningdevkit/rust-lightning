@@ -66,7 +66,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	nodes[2].node.claim_funds(our_payment_preimage);
 	expect_payment_claimed!(nodes[2], our_payment_hash, 1_000_000);
 	check_added_monitors!(nodes[2], 1);
-	get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
 
 	let claim_txn = if local_commitment {
 		// Broadcast node 1 commitment txn to broadcast the HTLC-Timeout
@@ -141,7 +141,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 
 	check_added_monitors!(nodes[1], 1);
 	// Which should result in an immediate claim/fail of the HTLC:
-	let mut htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let mut htlc_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	if claim {
 		assert_eq!(htlc_updates.update_fulfill_htlcs.len(), 1);
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), htlc_updates.update_fulfill_htlcs.remove(0));
@@ -198,7 +198,7 @@ fn test_counterparty_revoked_reorg() {
 	let payment_hash_4 = route_payment(&nodes[1], &[&nodes[0]], 4_000).1;
 
 	nodes[0].node.claim_funds(payment_preimage_3);
-	let _ = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let _ = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	check_added_monitors!(nodes[0], 1);
 	expect_payment_claimed!(nodes[0], payment_hash_3, 4_000_000);
 

@@ -1067,7 +1067,7 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 	let initial_commit_sig_for_acceptor =
 		negotiate_splice_tx(&nodes[0], &nodes[1], channel_id, initiator_contribution);
 	assert_eq!(initial_commit_sig_for_acceptor.htlc_signatures.len(), 1);
-	let initial_commit_sig_for_initiator = get_htlc_update_msgs!(&nodes[1], node_id_0);
+	let initial_commit_sig_for_initiator = get_htlc_update_msgs(&nodes[1], &node_id_0);
 	assert_eq!(initial_commit_sig_for_initiator.commitment_signed.len(), 1);
 	assert_eq!(initial_commit_sig_for_initiator.commitment_signed[0].htlc_signatures.len(), 1);
 

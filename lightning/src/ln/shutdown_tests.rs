@@ -179,7 +179,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 	expect_payment_claimed!(nodes[2], payment_hash_0, 100_000);
 
 	// Fulfil HTLCs on node1 and node0
-	let mut updates = get_htlc_update_msgs!(nodes[2], node_b_id);
+	let mut updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
@@ -188,7 +188,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, updates.update_fulfill_htlcs.remove(0));
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
-	let mut updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut updates_2 = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
 	// Still in "resolvingHTLCs" on chan1 after htlc removed on chan2
@@ -455,7 +455,7 @@ fn updates_shutdown_wait() {
 	check_added_monitors!(nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_0, 100_000);
 
-	let mut updates = get_htlc_update_msgs!(nodes[2], node_b_id);
+	let mut updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
@@ -464,7 +464,7 @@ fn updates_shutdown_wait() {
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, updates.update_fulfill_htlcs.remove(0));
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
-	let mut updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut updates_2 = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
 	assert!(updates_2.update_add_htlcs.is_empty());
@@ -550,7 +550,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 		.send_payment(our_payment_hash, onion, id, route_params, Retry::Attempts(0))
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
-	let updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	assert_eq!(updates.update_add_htlcs.len(), 1);
 	assert!(updates.update_fulfill_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
@@ -574,7 +574,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	);
 	check_added_monitors(&nodes[1], 1);
 
-	let updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let updates_2 = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	assert!(updates_2.update_add_htlcs.is_empty());
 	assert!(updates_2.update_fulfill_htlcs.is_empty());
 	assert_eq!(updates_2.update_fail_htlcs.len(), 1);
@@ -721,7 +721,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	check_added_monitors!(nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 100_000);
 
-	let mut updates = get_htlc_update_msgs!(nodes[2], node_b_id);
+	let mut updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
@@ -730,7 +730,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, updates.update_fulfill_htlcs.remove(0));
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
-	let mut updates_2 = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut updates_2 = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
 	assert!(updates_2.update_add_htlcs.is_empty());
