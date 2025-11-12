@@ -102,7 +102,11 @@ impl MessageRouter for TestMessageRouter {
 	fn find_path(
 		&self, _sender: PublicKey, _peers: Vec<PublicKey>, destination: Destination,
 	) -> Result<OnionMessagePath, ()> {
-		Ok(OnionMessagePath { intermediate_nodes: vec![], destination, first_node_addresses: vec![] })
+		Ok(OnionMessagePath {
+			intermediate_nodes: vec![],
+			destination,
+			first_node_addresses: vec![],
+		})
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
@@ -328,14 +332,7 @@ mod tests {
 			let mut lines_lock = self.lines.lock().unwrap();
 			let key = (record.module_path.to_string(), format!("{}", record.args));
 			*lines_lock.entry(key).or_insert(0) += 1;
-			println!(
-				"{:<5} [{} : {}, {}] {}",
-				record.level.to_string(),
-				record.module_path,
-				record.file,
-				record.line,
-				record.args
-			);
+			println!("{}", record);
 		}
 	}
 
