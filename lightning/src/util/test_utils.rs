@@ -80,7 +80,7 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning_invoice::RawBolt11Invoice;
-use lightning_types::payment::PaymentPreimage;
+use lightning_types::payment::{PaymentHash, PaymentPreimage};
 
 use crate::io;
 use crate::prelude::*;
@@ -129,6 +129,10 @@ pub fn public_from_secret_hex(
 ) -> PublicKey {
 	let secret = SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap();
 	PublicKey::from_secret_key(&secp_ctx, &secret)
+}
+
+pub fn payment_hash_from_hex(hex: &str) -> PaymentHash {
+	PaymentHash(<Vec<u8>>::from_hex(hex).unwrap().try_into().unwrap())
 }
 
 pub struct TestVecWriter(pub Vec<u8>);
