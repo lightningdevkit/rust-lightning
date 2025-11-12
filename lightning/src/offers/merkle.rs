@@ -94,6 +94,9 @@ pub enum SignError {
 }
 
 /// A function for signing a [`TaggedHash`].
+///
+/// This is not exported to bindings users as signing functions should just be used per-signed-type
+/// instead.
 pub trait SignFn<T: AsRef<TaggedHash>> {
 	/// Signs a [`TaggedHash`] computed over the merkle root of `message`'s TLV stream.
 	fn sign(&self, message: &T) -> Result<Signature, ()>;

@@ -619,7 +619,7 @@ impl PeerState {
 		self.needs_persist |= true;
 	}
 
-	fn prune_expired_request_state(&mut self) {
+	fn prune_pending_requests(&mut self) {
 		self.pending_requests.retain(|_, entry| {
 			match entry {
 				LSPS2Request::GetInfo(_) => false,
@@ -629,7 +629,9 @@ impl PeerState {
 				},
 			}
 		});
+	}
 
+	fn prune_expired_request_state(&mut self) {
 		self.outbound_channels_by_intercept_scid.retain(|intercept_scid, entry| {
 			if entry.is_prunable() {
 				// We abort the flow, and prune any data kept.
@@ -1871,6 +1873,7 @@ where
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
 			// We clean up the peer state, but leave removing the peer entry to the prune logic in
 			// `persist` which removes it from the store.
+			peer_state_lock.prune_pending_requests();
 			peer_state_lock.prune_expired_request_state();
 		}
 	}

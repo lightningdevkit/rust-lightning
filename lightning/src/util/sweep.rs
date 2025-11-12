@@ -317,10 +317,11 @@ impl_writeable_tlv_based_enum!(OutputSpendStatus,
 );
 
 /// A utility that keeps track of [`SpendableOutputDescriptor`]s, persists them in a given
-/// [`KVStoreSync`] and regularly retries sweeping them based on a callback given to the constructor
+/// [`KVStore`] and regularly retries sweeping them based on a callback given to the constructor
 /// methods.
 ///
-/// Users should call [`Self::track_spendable_outputs`] for any [`SpendableOutputDescriptor`]s received via [`Event::SpendableOutputs`].
+/// Users should call [`Self::track_spendable_outputs`] for any [`SpendableOutputDescriptor`]s
+/// received via [`Event::SpendableOutputs`].
 ///
 /// This needs to be notified of chain state changes either via its [`Listen`] or [`Confirm`]
 /// implementation and hence has to be connected with the utilized chain data sources.
@@ -329,7 +330,12 @@ impl_writeable_tlv_based_enum!(OutputSpendStatus,
 /// required to give their chain data sources (i.e., [`Filter`] implementation) to the respective
 /// constructor.
 ///
+/// For a synchronous version of this struct, see [`OutputSweeperSync`].
+///
+/// This is not exported to bindings users as async is not supported outside of Rust.
+///
 /// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
+// Note that updates to documentation on this struct should be copied to the synchronous version.
 pub struct OutputSweeper<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
 where
 	B::Target: BroadcasterInterface,
@@ -876,7 +882,24 @@ where
 	}
 }
 
-/// A synchronous wrapper around [`OutputSweeper`] to be used in contexts where async is not available.
+/// A utility that keeps track of [`SpendableOutputDescriptor`]s, persists them in a given
+/// [`KVStoreSync`] and regularly retries sweeping them based on a callback given to the constructor
+/// methods.
+///
+/// Users should call [`Self::track_spendable_outputs`] for any [`SpendableOutputDescriptor`]s
+/// received via [`Event::SpendableOutputs`].
+///
+/// This needs to be notified of chain state changes either via its [`Listen`] or [`Confirm`]
+/// implementation and hence has to be connected with the utilized chain data sources.
+///
+/// If chain data is provided via the [`Confirm`] interface or via filtered blocks, users are
+/// required to give their chain data sources (i.e., [`Filter`] implementation) to the respective
+/// constructor.
+///
+/// For an asynchronous version of this struct, see [`OutputSweeper`].
+///
+/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
+// Note that updates to documentation on this struct should be copied to the asynchronous version.
 pub struct OutputSweeperSync<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
 where
 	B::Target: BroadcasterInterface,
@@ -903,6 +926,9 @@ where
 	O::Target: OutputSpender,
 {
 	/// Constructs a new [`OutputSweeperSync`] instance.
+	///
+	/// If chain data is provided via the [`Confirm`] interface or via filtered blocks, users also
+	/// need to register their [`Filter`] implementation via the given `chain_data_source`.
 	pub fn new(
 		best_block: BestBlock, broadcaster: B, fee_estimator: E, chain_data_source: Option<F>,
 		output_spender: O, change_destination_source: D, kv_store: K, logger: L,
@@ -925,7 +951,21 @@ where
 		Self { sweeper }
 	}
 
-	/// Wrapper around [`OutputSweeper::track_spendable_outputs`].
+	/// Tells the sweeper to track the given outputs descriptors.
+	///
+	/// Usually, this should be called based on the values emitted by the
+	/// [`Event::SpendableOutputs`].
+	///
+	/// The given `exclude_static_outputs` flag controls whether the sweeper will filter out
+	/// [`SpendableOutputDescriptor::StaticOutput`]s, which may be handled directly by the on-chain
+	/// wallet implementation.
+	///
+	/// If `delay_until_height` is set, we will delay the spending until the respective block
+	/// height is reached. This can be used to batch spends, e.g., to reduce on-chain fees.
+	///
+	/// Returns `Err` on persistence failure, in which case the call may be safely retried.
+	///
+	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	pub fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
 		exclude_static_outputs: bool, delay_until_height: Option<u32>,
@@ -947,7 +987,9 @@ where
 		}
 	}
 
-	/// Returns a list of the currently tracked spendable outputs. Wraps [`OutputSweeper::tracked_spendable_outputs`].
+	/// Returns a list of the currently tracked spendable outputs.
+	///
+	/// Wraps [`OutputSweeper::tracked_spendable_outputs`].
 	pub fn tracked_spendable_outputs(&self) -> Vec<TrackedSpendableOutput> {
 		self.sweeper.tracked_spendable_outputs()
 	}
@@ -958,8 +1000,10 @@ where
 		self.sweeper.current_best_block()
 	}
 
-	/// Regenerates and broadcasts the spending transaction for any outputs that are pending. Wraps
-	/// [`OutputSweeper::regenerate_and_broadcast_spend_if_necessary`].
+	/// Regenerates and broadcasts the spending transaction for any outputs that are pending. This method will be a
+	/// no-op if a sweep is already pending.
+	///
+	/// Wraps [`OutputSweeper::regenerate_and_broadcast_spend_if_necessary`].
 	pub fn regenerate_and_broadcast_spend_if_necessary(&self) -> Result<(), ()> {
 		let mut fut = Box::pin(self.sweeper.regenerate_and_broadcast_spend_if_necessary());
 		let mut waker = dummy_waker();
@@ -979,6 +1023,8 @@ where
 	/// this [`OutputSweeperSync`], fetching an async [`OutputSweeper`] won't accomplish much, all
 	/// the async methods will hang waiting on your sync [`KVStore`] and likely confuse your async
 	/// runtime. This exists primarily for LDK-internal use, including outside of this crate.
+	///
+	/// This is not exported to bindings users as async is not supported outside of Rust.
 	#[doc(hidden)]
 	pub fn sweeper_async(
 		&self,

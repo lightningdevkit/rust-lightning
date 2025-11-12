@@ -229,6 +229,8 @@ impl<'a, R: Read> Read for FixedLengthReader<'a, R> {
 	}
 }
 
+/// This is not exported to bindings users as reads are always from byte arrays, never streams, in
+/// bindings.
 impl<'a, R: Read> LengthLimitedRead for FixedLengthReader<'a, R> {
 	#[inline]
 	fn remaining_bytes(&self) -> u64 {
@@ -350,6 +352,9 @@ where
 /// A [`io::Read`] that limits the amount of bytes that can be read. Implementations should ensure
 /// that the object being read will only consume a fixed number of bytes from the underlying
 /// [`io::Read`], see [`FixedLengthReader`] for an example.
+///
+/// This is not exported to bindings users as reads are always from byte arrays, never streams, in
+/// bindings.
 pub trait LengthLimitedRead: Read {
 	/// The number of bytes remaining to be read.
 	fn remaining_bytes(&self) -> u64;
@@ -379,6 +384,9 @@ where
 ///
 /// Any type that implements [`Readable`] also automatically has a [`LengthReadable`]
 /// implementation, but some types, most notably onion packets, only implement [`LengthReadable`].
+///
+/// This is not exported to bindings users as reads are always from byte arrays, never streams, in
+/// bindings.
 pub trait LengthReadable
 where
 	Self: Sized,

@@ -18,6 +18,8 @@ use core::future::Future;
 use core::pin::Pin;
 
 /// A generic trait which is able to spawn futures in the background.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
 pub trait FutureSpawner: MaybeSend + MaybeSync + 'static {
 	/// Spawns the given future as a background task.
 	///

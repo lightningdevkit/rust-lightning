@@ -38,6 +38,7 @@ use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
 use crate::util::native_async::FutureSpawner;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
+use crate::util::wakers::Notifier;
 
 /// The alphabet of characters allowed for namespaces and keys.
 pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str =
@@ -117,21 +118,75 @@ pub const OUTPUT_SWEEPER_PERSISTENCE_KEY: &str = "output_sweeper";
 /// updates applied to be current) with another implementation.
 pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 
-/// A synchronous version of the [`KVStore`] trait.
+/// Provides an interface that allows storage and retrieval of persisted values that are associated
+/// with given keys.
+///
+/// In order to avoid collisions the key space is segmented based on the given `primary_namespace`s
+/// and `secondary_namespace`s. Implementations of this trait are free to handle them in different
+/// ways, as long as per-namespace key uniqueness is asserted.
+///
+/// Keys and namespaces are required to be valid ASCII strings in the range of
+/// [`KVSTORE_NAMESPACE_KEY_ALPHABET`] and no longer than [`KVSTORE_NAMESPACE_KEY_MAX_LEN`]. Empty
+/// primary namespaces and secondary namespaces (`""`) are assumed to be a valid, however, if
+/// `primary_namespace` is empty, `secondary_namespace` is required to be empty, too. This means
+/// that concerns should always be separated by primary namespace first, before secondary
+/// namespaces are used. While the number of primary namespaces will be relatively small and is
+/// determined at compile time, there may be many secondary namespaces per primary namespace. Note
+/// that per-namespace uniqueness needs to also hold for keys *and* namespaces in any given
+/// namespace, i.e., conflicts between keys and equally named
+/// primary namespaces/secondary namespaces must be avoided.
+///
+/// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
+/// interface can use a concatenation of `[{primary_namespace}/[{secondary_namespace}/]]{key}` to
+/// recover a `key` compatible with the data model previously assumed by `KVStorePersister::persist`.
+///
+/// For an asynchronous version of this trait, see [`KVStore`].
+// Note that updates to documentation on this trait should be copied to the asynchronous version.
 pub trait KVStoreSync {
-	/// A synchronous version of the [`KVStore::read`] method.
+	/// Returns the data stored for the given `primary_namespace`, `secondary_namespace`, and
+	/// `key`.
+	///
+	/// Returns an [`ErrorKind::NotFound`] if the given `key` could not be found in the given
+	/// `primary_namespace` and `secondary_namespace`.
+	///
+	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 	) -> Result<Vec<u8>, io::Error>;
-	/// A synchronous version of the [`KVStore::write`] method.
+	/// Persists the given data under the given `key`.
+	///
+	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present in the store.
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
 	) -> Result<(), io::Error>;
-	/// A synchronous version of the [`KVStore::remove`] method.
+	/// Removes any data that had previously been persisted under the given `key`.
+	///
+	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
+	/// remove the given `key` at some point in time after the method returns, e.g., as part of an
+	/// eventual batch deletion of multiple keys. As a consequence, subsequent calls to
+	/// [`KVStoreSync::list`] might include the removed key until the changes are actually persisted.
+	///
+	/// Note that while setting the `lazy` flag reduces the I/O burden of multiple subsequent
+	/// `remove` calls, it also influences the atomicity guarantees as lazy `remove`s could
+	/// potentially get lost on crash after the method returns. Therefore, this flag should only be
+	/// set for `remove` operations that can be safely replayed at a later time.
+	///
+	/// All removal operations must complete in a consistent total order with [`Self::write`]s
+	/// to the same key. Whether a removal operation is `lazy` or not, [`Self::write`] operations
+	/// to the same key which occur before a removal completes must cancel/overwrite the pending
+	/// removal.
+	///
+	/// Returns successfully if no data will be stored for the given `primary_namespace`,
+	/// `secondary_namespace`, and `key`, independently of whether it was present before its
+	/// invokation or not.
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
 	) -> Result<(), io::Error>;
-	/// A synchronous version of the [`KVStore::list`] method.
+	/// Returns a list of keys that are stored under the given `secondary_namespace` in
+	/// `primary_namespace`.
+	///
+	/// Returns the keys in arbitrary order, so users requiring a particular order need to sort the
+	/// returned keys. Returns an empty list if `primary_namespace` or `secondary_namespace` is unknown.
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
 	) -> Result<Vec<String>, io::Error>;
@@ -154,6 +209,7 @@ where
 	}
 }
 
+/// This is not exported to bindings users as async is only supported in Rust.
 impl<K: Deref> KVStore for KVStoreSyncWrapper<K>
 where
 	K::Target: KVStoreSync,
@@ -212,6 +268,11 @@ where
 /// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
 /// interface can use a concatenation of `[{primary_namespace}/[{secondary_namespace}/]]{key}` to
 /// recover a `key` compatible with the data model previously assumed by `KVStorePersister::persist`.
+///
+/// For a synchronous version of this trait, see [`KVStoreSync`].
+///
+/// This is not exported to bindings users as async is only supported in Rust.
+// Note that updates to documentation on this trait should be copied to the synchronous version.
 pub trait KVStore {
 	/// Returns the data stored for the given `primary_namespace`, `secondary_namespace`, and
 	/// `key`.
@@ -716,6 +777,8 @@ where
 /// Unlike [`MonitorUpdatingPersister`], this does not implement [`Persist`], but is instead used
 /// directly by the [`ChainMonitor`] via [`ChainMonitor::new_async_beta`].
 ///
+/// This is not exported to bindings users as async is only supported in Rust.
+///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 /// [`ChainMonitor::new_async_beta`]: crate::chain::chainmonitor::ChainMonitor::new_async_beta
 pub struct MonitorUpdatingPersisterAsync<
@@ -875,6 +938,7 @@ where
 	pub(crate) fn spawn_async_persist_new_channel(
 		&self, monitor_name: MonitorName,
 		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+		notifier: Arc<Notifier>,
 	) {
 		let inner = Arc::clone(&self.0);
 		// Note that `persist_new_channel` is a sync method which calls all the way through to the
@@ -884,7 +948,10 @@ where
 		let completion = (monitor.channel_id(), monitor.get_latest_update_id());
 		self.0.future_spawner.spawn(async move {
 			match future.await {
-				Ok(()) => inner.async_completed_updates.lock().unwrap().push(completion),
+				Ok(()) => {
+					inner.async_completed_updates.lock().unwrap().push(completion);
+					notifier.notify();
+				},
 				Err(e) => {
 					log_error!(
 						inner.logger,
@@ -895,9 +962,10 @@ where
 		});
 	}
 
-	pub(crate) fn spawn_async_update_persisted_channel(
+	pub(crate) fn spawn_async_update_channel(
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+		notifier: Arc<Notifier>,
 	) {
 		let inner = Arc::clone(&self.0);
 		// Note that `update_persisted_channel` is a sync method which calls all the way through to
@@ -914,6 +982,7 @@ where
 			match future.await {
 				Ok(()) => if let Some(completion) = completion {
 					inner.async_completed_updates.lock().unwrap().push(completion);
+					notifier.notify();
 				},
 				Err(e) => {
 					log_error!(

@@ -395,17 +395,28 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 	// retry later.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let (persister_0a, persister_0b, persister_0c, persister_1a, persister_1b, persister_1c);
+	let (
+		persister_0a,
+		persister_0b,
+		persister_0c,
+		persister_0d,
+		persister_1a,
+		persister_1b,
+		persister_1c,
+		persister_1d,
+	);
 	let (
 		chain_monitor_0a,
 		chain_monitor_0b,
 		chain_monitor_0c,
+		chain_monitor_0d,
 		chain_monitor_1a,
 		chain_monitor_1b,
 		chain_monitor_1c,
+		chain_monitor_1d,
 	);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let (node_0a, node_0b, node_0c, node_1a, node_1b, node_1c);
+	let (node_0a, node_0b, node_0c, node_0d, node_1a, node_1b, node_1c, node_1d);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_id_0 = nodes[0].node.get_our_node_id();
@@ -533,9 +544,56 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 	reconnect_args.send_announcement_sigs = (true, true);
 	reconnect_nodes(reconnect_args);
 
-	// Attempt a splice negotiation that completes, (i.e. `tx_signatures` are exchanged). Reconnecting
-	// should not abort the negotiation or reset the splice state.
-	let splice_tx = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+	nodes[0]
+		.node
+		.splice_channel(
+			&channel_id,
+			&node_id_1,
+			contribution.clone(),
+			FEERATE_FLOOR_SATS_PER_KW,
+			None,
+		)
+		.unwrap();
+
+	// Attempt a splice negotiation that ends before the initial `commitment_signed` messages are
+	// exchanged. The node missing the other's `commitment_signed` upon reconnecting should
+	// implicitly abort the negotiation and reset the splice state such that we're able to retry
+	// another splice later.
+	let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu);
+	let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+
+	let tx_add_input = get_event_msg!(nodes[0], MessageSendEvent::SendTxAddInput, node_id_1);
+	nodes[1].node.handle_tx_add_input(node_id_0, &tx_add_input);
+	let tx_complete = get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, node_id_0);
+	nodes[0].node.handle_tx_complete(node_id_1, &tx_complete);
+
+	let tx_add_output = get_event_msg!(nodes[0], MessageSendEvent::SendTxAddOutput, node_id_1);
+	nodes[1].node.handle_tx_add_output(node_id_0, &tx_add_output);
+	let tx_complete = get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, node_id_0);
+	nodes[0].node.handle_tx_complete(node_id_1, &tx_complete);
+
+	let tx_add_output = get_event_msg!(nodes[0], MessageSendEvent::SendTxAddOutput, node_id_1);
+	nodes[1].node.handle_tx_add_output(node_id_0, &tx_add_output);
+	let tx_complete = get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, node_id_0);
+	nodes[0].node.handle_tx_complete(node_id_1, &tx_complete);
+
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2);
+	if let MessageSendEvent::SendTxComplete { .. } = &msg_events[0] {
+	} else {
+		panic!("Unexpected event");
+	}
+	if let MessageSendEvent::UpdateHTLCs { .. } = &msg_events[1] {
+	} else {
+		panic!("Unexpected event");
+	}
 
 	if reload {
 		let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
@@ -555,6 +613,44 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 			persister_1c,
 			chain_monitor_1c,
 			node_1c
+		);
+	} else {
+		nodes[0].node.peer_disconnected(node_id_1);
+		nodes[1].node.peer_disconnected(node_id_0);
+	}
+
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, false);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_args.send_tx_abort = (true, false);
+	reconnect_nodes(reconnect_args);
+
+	let tx_abort = get_event_msg!(nodes[0], MessageSendEvent::SendTxAbort, node_id_1);
+	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort);
+	let _event = get_event!(nodes[0], Event::SpliceFailed);
+
+	// Attempt a splice negotiation that completes, (i.e. `tx_signatures` are exchanged). Reconnecting
+	// should not abort the negotiation or reset the splice state.
+	let splice_tx = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+
+	if reload {
+		let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
+		reload_node!(
+			nodes[0],
+			&nodes[0].node.encode(),
+			&[&encoded_monitor_0],
+			persister_0d,
+			chain_monitor_0d,
+			node_0d
+		);
+		let encoded_monitor_1 = get_monitor!(nodes[1], channel_id).encode();
+		reload_node!(
+			nodes[1],
+			&nodes[1].node.encode(),
+			&[&encoded_monitor_1],
+			persister_1d,
+			chain_monitor_1d,
+			node_1d
 		);
 	} else {
 		nodes[0].node.peer_disconnected(node_id_1);

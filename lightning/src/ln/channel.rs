@@ -1645,7 +1645,7 @@ where
 				}
 				chan.context.channel_state.clear_local_stfu_sent();
 				chan.context.channel_state.clear_remote_stfu_sent();
-				if chan.should_reset_pending_splice_state() {
+				if chan.should_reset_pending_splice_state(false) {
 					// If there was a pending splice negotiation that failed due to disconnecting, we
 					// also take the opportunity to clean up our state.
 					let splice_funding_failed = chan.reset_pending_splice_state();
@@ -1766,7 +1766,7 @@ where
 				None
 			},
 			ChannelPhase::Funded(funded_channel) => {
-				if funded_channel.should_reset_pending_splice_state() {
+				if funded_channel.should_reset_pending_splice_state(false) {
 					funded_channel.reset_pending_splice_state()
 				} else {
 					debug_assert!(false, "We should never fail an interactive funding negotiation once we're exchanging tx_signatures");
@@ -1923,12 +1923,24 @@ where
 				(had_constructor, None)
 			},
 			ChannelPhase::Funded(funded_channel) => {
-				if funded_channel.has_pending_splice_awaiting_signatures() {
+				if funded_channel.has_pending_splice_awaiting_signatures()
+					&& funded_channel
+						.context()
+						.interactive_tx_signing_session
+						.as_ref()
+						.expect("We have a pending splice awaiting signatures")
+						.has_received_commitment_signed()
+				{
+					// We only force close once the counterparty tries to abort after committing to
+					// the splice via their initial `commitment_signed`. This is because our monitor
+					// state is updated with the post-splice commitment transaction upon receiving
+					// their `commitment_signed`, so we would need another monitor update to abandon
+					// it, which we don't currently support.
 					return Err(ChannelError::close(
 						"Received tx_abort while awaiting tx_signatures exchange".to_owned(),
 					));
 				}
-				if funded_channel.should_reset_pending_splice_state() {
+				if funded_channel.should_reset_pending_splice_state(true) {
 					let has_funding_negotiation = funded_channel
 						.pending_splice
 						.as_ref()
@@ -2007,18 +2019,32 @@ where
 							| NegotiatingFundingFlags::THEIR_INIT_SENT
 					),
 				);
+				chan.context.assert_no_commitment_advancement(
+					chan.unfunded_context.transaction_number(),
+					"initial commitment_signed",
+				);
+
+				chan.context.channel_state =
+					ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
+				chan.funding.channel_transaction_parameters.funding_outpoint =
+					Some(funding_outpoint);
 
 				let interactive_tx_constructor = chan
 					.interactive_tx_constructor
 					.take()
 					.expect("PendingV2Channel::interactive_tx_constructor should be set");
-				let commitment_signed = chan.context.funding_tx_constructed(
-					&mut chan.funding,
-					funding_outpoint,
-					false,
-					chan.unfunded_context.transaction_number(),
-					&&logger,
-				)?;
+
+				let commitment_signed =
+					chan.context.get_initial_commitment_signed_v2(&chan.funding, &&logger);
+				let commitment_signed = match commitment_signed {
+					Some(commitment_signed) => commitment_signed,
+					// TODO(dual_funding): Support async signing
+					None => {
+						return Err(AbortReason::InternalError(
+							"Failed to compute commitment_signed signatures",
+						));
+					},
+				};
 
 				(interactive_tx_constructor, commitment_signed)
 			},
@@ -2047,14 +2073,11 @@ where
 							)
 						})
 						.and_then(|(is_initiator, mut funding, interactive_tx_constructor)| {
-							match chan.context.funding_tx_constructed(
-								&mut funding,
-								funding_outpoint,
-								true,
-								chan.holder_commitment_point.next_transaction_number(),
-								&&logger,
-							) {
-								Ok(commitment_signed) => {
+							funding.channel_transaction_parameters.funding_outpoint =
+								Some(funding_outpoint);
+							match chan.context.get_initial_commitment_signed_v2(&funding, &&logger)
+							{
+								Some(commitment_signed) => {
 									// Advance the state
 									pending_splice.funding_negotiation =
 										Some(FundingNegotiation::AwaitingSignatures {
@@ -2063,14 +2086,17 @@ where
 										});
 									Ok((interactive_tx_constructor, commitment_signed))
 								},
-								Err(e) => {
+								// TODO(splicing): Support async signing
+								None => {
 									// Restore the taken state for later error handling
 									pending_splice.funding_negotiation =
 										Some(FundingNegotiation::ConstructingTransaction {
 											funding,
 											interactive_tx_constructor,
 										});
-									Err(e)
+									Err(AbortReason::InternalError(
+										"Failed to compute commitment_signed signatures",
+									))
 								},
 							}
 						})?
@@ -2695,19 +2721,6 @@ impl FundingNegotiation {
 }
 
 impl PendingFunding {
-	fn can_abandon_state(&self) -> bool {
-		self.funding_negotiation
-			.as_ref()
-			.map(|funding_negotiation| {
-				!matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. })
-			})
-			.unwrap_or_else(|| {
-				let has_negotiated_candidates = !self.negotiated_candidates.is_empty();
-				debug_assert!(has_negotiated_candidates);
-				!has_negotiated_candidates
-			})
-	}
-
 	fn check_get_splice_locked<SP: Deref>(
 		&mut self, context: &ChannelContext<SP>, confirmed_funding_index: usize, height: u32,
 	) -> Option<msgs::SpliceLocked>
@@ -6204,38 +6217,6 @@ where
 		Ok(())
 	}
 
-	#[rustfmt::skip]
-	fn funding_tx_constructed<L: Deref>(
-		&mut self, funding: &mut FundingScope, funding_outpoint: OutPoint, is_splice: bool,
-		holder_commitment_transaction_number: u64, logger: &L,
-	) -> Result<msgs::CommitmentSigned, AbortReason>
-	where
-		L::Target: Logger
-	{
-		funding.channel_transaction_parameters.funding_outpoint = Some(funding_outpoint);
-
-		if is_splice {
-			debug_assert_eq!(
-				holder_commitment_transaction_number,
-				self.counterparty_next_commitment_transaction_number,
-			);
-		} else {
-			self.assert_no_commitment_advancement(holder_commitment_transaction_number, "initial commitment_signed");
-			self.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
-		}
-
-		let commitment_signed = self.get_initial_commitment_signed_v2(&funding, logger);
-		let commitment_signed = match commitment_signed {
-			Some(commitment_signed) => commitment_signed,
-			// TODO(splicing): Support async signing
-			None => {
-				return Err(AbortReason::InternalError("Failed to compute commitment_signed signatures"));
-			},
-		};
-
-		Ok(commitment_signed)
-	}
-
 	/// Asserts that the commitment tx numbers have not advanced from their initial number.
 	fn assert_no_commitment_advancement(
 		&self, holder_commitment_transaction_number: u64, msg_name: &str,
@@ -6561,6 +6542,11 @@ fn estimate_v2_funding_transaction_fee(
 				.saturating_add(BASE_INPUT_WEIGHT)
 				.saturating_add(EMPTY_SCRIPT_SIG_WEIGHT)
 				.saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT);
+			#[cfg(feature = "grind_signatures")]
+			{
+				// Guarantees a low R signature
+				weight -= 1;
+			}
 		}
 	}
 
@@ -6885,7 +6871,7 @@ pub struct SpliceFundingFailed {
 }
 
 macro_rules! maybe_create_splice_funding_failed {
-	($pending_splice: expr, $get: ident, $contributed_inputs_and_outputs: ident) => {{
+	($funded_channel: expr, $pending_splice: expr, $get: ident, $contributed_inputs_and_outputs: ident) => {{
 		$pending_splice
 			.and_then(|pending_splice| pending_splice.funding_negotiation.$get())
 			.filter(|funding_negotiation| funding_negotiation.is_initiator())
@@ -6907,10 +6893,12 @@ macro_rules! maybe_create_splice_funding_failed {
 						interactive_tx_constructor,
 						..
 					} => interactive_tx_constructor.$contributed_inputs_and_outputs(),
-					FundingNegotiation::AwaitingSignatures { .. } => {
-						debug_assert!(false);
-						(Vec::new(), Vec::new())
-					},
+					FundingNegotiation::AwaitingSignatures { .. } => $funded_channel
+						.context
+						.interactive_tx_signing_session
+						.$get()
+						.expect("We have a pending splice awaiting signatures")
+						.$contributed_inputs_and_outputs(),
 				};
 
 				SpliceFundingFailed {
@@ -6949,7 +6937,7 @@ where
 
 	fn maybe_fail_splice_negotiation(&mut self) -> Option<SpliceFundingFailed> {
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			if self.should_reset_pending_splice_state() {
+			if self.should_reset_pending_splice_state(false) {
 				self.reset_pending_splice_state()
 			} else {
 				match self.quiescent_action.take() {
@@ -7023,19 +7011,54 @@ where
 
 	/// Returns a boolean indicating whether we should reset the splice's
 	/// [`PendingFunding::funding_negotiation`].
-	fn should_reset_pending_splice_state(&self) -> bool {
+	fn should_reset_pending_splice_state(&self, counterparty_aborted: bool) -> bool {
 		self.pending_splice
 			.as_ref()
-			.map(|pending_splice| pending_splice.can_abandon_state())
+			.map(|pending_splice| {
+				pending_splice
+					.funding_negotiation
+					.as_ref()
+					.map(|funding_negotiation| {
+						let is_awaiting_signatures = matches!(
+							funding_negotiation,
+							FundingNegotiation::AwaitingSignatures { .. }
+						);
+						if counterparty_aborted {
+							!is_awaiting_signatures
+								|| !self
+									.context()
+									.interactive_tx_signing_session
+									.as_ref()
+									.expect("We have a pending splice awaiting signatures")
+									.has_received_commitment_signed()
+						} else {
+							!is_awaiting_signatures
+						}
+					})
+					.unwrap_or_else(|| {
+						let has_negotiated_candidates =
+							!pending_splice.negotiated_candidates.is_empty();
+						debug_assert!(has_negotiated_candidates);
+						!has_negotiated_candidates
+					})
+			})
 			.unwrap_or(false)
 	}
 
 	fn reset_pending_splice_state(&mut self) -> Option<SpliceFundingFailed> {
-		debug_assert!(self.should_reset_pending_splice_state());
-		debug_assert!(self.context.interactive_tx_signing_session.is_none());
-		self.context.channel_state.clear_quiescent();
+		debug_assert!(self.should_reset_pending_splice_state(true));
+		debug_assert!(
+			self.context.interactive_tx_signing_session.is_none()
+				|| !self
+					.context
+					.interactive_tx_signing_session
+					.as_ref()
+					.expect("We have a pending splice awaiting signatures")
+					.has_received_commitment_signed()
+		);
 
 		let splice_funding_failed = maybe_create_splice_funding_failed!(
+			self,
 			self.pending_splice.as_mut(),
 			take,
 			into_contributed_inputs_and_outputs
@@ -7045,15 +7068,19 @@ where
 			self.pending_splice.take();
 		}
 
+		self.context.channel_state.clear_quiescent();
+		self.context.interactive_tx_signing_session.take();
+
 		splice_funding_failed
 	}
 
 	pub(super) fn maybe_splice_funding_failed(&self) -> Option<SpliceFundingFailed> {
-		if !self.should_reset_pending_splice_state() {
+		if !self.should_reset_pending_splice_state(false) {
 			return None;
 		}
 
 		maybe_create_splice_funding_failed!(
+			self,
 			self.pending_splice.as_ref(),
 			as_ref,
 			to_contributed_inputs_and_outputs
@@ -12008,7 +12035,7 @@ where
 	pub fn abandon_splice(
 		&mut self,
 	) -> Result<(msgs::TxAbort, Option<SpliceFundingFailed>), APIError> {
-		if self.should_reset_pending_splice_state() {
+		if self.should_reset_pending_splice_state(false) {
 			let tx_abort =
 				msgs::TxAbort { channel_id: self.context.channel_id(), data: Vec::new() };
 			let splice_funding_failed = self.reset_pending_splice_state();
@@ -13075,7 +13102,13 @@ where
 
 		self.context.channel_state.set_awaiting_quiescence();
 		if self.context.is_live() {
-			Ok(Some(self.send_stfu(logger)?))
+			match self.send_stfu(logger) {
+				Ok(stfu) => Ok(Some(stfu)),
+				Err(e) => {
+					log_debug!(logger, "{e}");
+					Ok(None)
+				},
+			}
 		} else {
 			log_debug!(logger, "Waiting for peer reconnection to send stfu");
 			Ok(None)
@@ -14377,7 +14410,7 @@ where
 					}
 					channel_state.clear_local_stfu_sent();
 					channel_state.clear_remote_stfu_sent();
-					if self.should_reset_pending_splice_state()
+					if self.should_reset_pending_splice_state(false)
 						|| !self.has_pending_splice_awaiting_signatures()
 					{
 						// We shouldn't be quiescent anymore upon reconnecting if:
@@ -14751,7 +14784,7 @@ where
 		// We don't have to worry about resetting the pending `FundingNegotiation` because we
 		// can only read `FundingNegotiation::AwaitingSignatures` variants anyway.
 		let pending_splice =
-			self.pending_splice.as_ref().filter(|_| !self.should_reset_pending_splice_state());
+			self.pending_splice.as_ref().filter(|_| !self.should_reset_pending_splice_state(false));
 
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
@@ -17413,19 +17446,19 @@ mod tests {
 		// 2 inputs, initiator, 2000 sat/kw feerate
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&two_inputs, &[], true, false, 2000),
-			1520,
+			if cfg!(feature = "grind_signatures") { 1512 } else { 1516 },
 		);
 
 		// higher feerate
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&two_inputs, &[], true, false, 3000),
-			2280,
+			if cfg!(feature = "grind_signatures") { 2268 } else { 2274 },
 		);
 
 		// only 1 input
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&one_input, &[], true, false, 2000),
-			974,
+			if cfg!(feature = "grind_signatures") { 970 } else { 972 },
 		);
 
 		// 0 inputs
@@ -17443,13 +17476,13 @@ mod tests {
 		// splice initiator
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&one_input, &[], true, true, 2000),
-			1746,
+			if cfg!(feature = "grind_signatures") { 1736 } else { 1740 },
 		);
 
 		// splice acceptor
 		assert_eq!(
 			estimate_v2_funding_transaction_fee(&one_input, &[], false, true, 2000),
-			546,
+			if cfg!(feature = "grind_signatures") { 542 } else { 544 },
 		);
 	}
 
@@ -17473,40 +17506,46 @@ mod tests {
 		use crate::ln::channel::check_v2_funding_inputs_sufficient;
 
 		// positive case, inputs well over intended contribution
-		assert_eq!(
-			check_v2_funding_inputs_sufficient(
-				220_000,
-				&[
-					funding_input_sats(200_000),
-					funding_input_sats(100_000),
-				],
-				true,
-				true,
-				2000,
-			).unwrap(),
-			2292,
-		);
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2278 } else { 2284 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					220_000,
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					true,
+					true,
+					2000,
+				).unwrap(),
+				expected_fee,
+			);
+		}
 
 		// negative case, inputs clearly insufficient
 		{
-			let res = check_v2_funding_inputs_sufficient(
-				220_000,
-				&[
-					funding_input_sats(100_000),
-				],
-				true,
-				true,
-				2000,
-			);
+			let expected_fee = if cfg!(feature = "grind_signatures") { 1736 } else { 1740 };
 			assert_eq!(
-				res.err().unwrap(),
-				"Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1746. Need more inputs.",
+				check_v2_funding_inputs_sufficient(
+					220_000,
+					&[
+						funding_input_sats(100_000),
+					],
+					true,
+					true,
+					2000,
+				),
+				Err(format!(
+					"Total input amount 100000 is lower than needed for contribution 220000, considering fees of {}. Need more inputs.",
+					expected_fee,
+				)),
 			);
 		}
 
 		// barely covers
 		{
-			let expected_fee: u64 = 2292;
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2278 } else { 2284 };
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
 					(300_000 - expected_fee - 20) as i64,
@@ -17524,25 +17563,28 @@ mod tests {
 
 		// higher fee rate, does not cover
 		{
-			let res = check_v2_funding_inputs_sufficient(
-				298032,
-				&[
-					funding_input_sats(200_000),
-					funding_input_sats(100_000),
-				],
-				true,
-				true,
-				2200,
-			);
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2506 } else { 2513 };
 			assert_eq!(
-				res.err().unwrap(),
-				"Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2522. Need more inputs.",
+				check_v2_funding_inputs_sufficient(
+					298032,
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					true,
+					true,
+					2200,
+				),
+				Err(format!(
+					"Total input amount 300000 is lower than needed for contribution 298032, considering fees of {}. Need more inputs.",
+					expected_fee
+				)),
 			);
 		}
 
-		// barely covers, less fees (no extra weight, no init)
+		// barely covers, less fees (no extra weight, not initiator)
 		{
-			let expected_fee: u64 = 1092;
+			let expected_fee = if cfg!(feature = "grind_signatures") { 1084 } else { 1088 };
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
 					(300_000 - expected_fee - 20) as i64,
