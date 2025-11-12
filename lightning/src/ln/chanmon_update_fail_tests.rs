@@ -3527,15 +3527,8 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 	// Note that when completing as a side effect of a reload we completed the CS dance in
 	// `reconnect_nodes` above.
 	if completion_mode != BlockedUpdateComplMode::AtReload {
-		nodes[1]
-			.node
-			.handle_commitment_signed_batch_test(node_a_id, &as_htlc_fulfill.commitment_signed);
-		check_added_monitors(&nodes[1], 1);
-		let (a, raa) = do_main_commitment_signed_dance(&nodes[1], &nodes[0], false);
-		assert!(a.is_none());
-
-		nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
-		check_added_monitors(&nodes[1], 0);
+		let commitment = &as_htlc_fulfill.commitment_signed;
+		do_commitment_signed_dance(&nodes[1], &nodes[0], commitment, false, true);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
