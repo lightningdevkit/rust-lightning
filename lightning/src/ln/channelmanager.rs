@@ -18890,7 +18890,7 @@ mod tests {
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 100000);
+		check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 100000);
 
 		// Confirm that the channel_update was not sent immediately to node[1] but was cached.
 		let node_1_events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -18954,7 +18954,7 @@ mod tests {
 			.unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 1_000_000);
+		check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 1_000_000);
 
 		{
 			// Assert that nodes[1] is awaiting removal for nodes[0] once nodes[1] has been
@@ -18991,8 +18991,8 @@ mod tests {
 
 		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
-		check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer, [nodes[1].node.get_our_node_id()], 1_000_000);
-		check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer, [nodes[0].node.get_our_node_id()], 1_000_000);
+		check_closed_event(&nodes[0], 1, ClosureReason::DisconnectedPeer, &[nodes[1].node.get_our_node_id()], 1_000_000);
+		check_closed_event(&nodes[1], 1, ClosureReason::DisconnectedPeer, &[nodes[0].node.get_our_node_id()], 1_000_000);
 
 		// At this point the state for the peers should have been removed.
 		assert_eq!(nodes[0].node.per_peer_state.read().unwrap().len(), 0);
@@ -19438,7 +19438,7 @@ mod tests {
 		check_closed_broadcast(&nodes[0], 1, false);
 		check_added_monitors(&nodes[0], 1);
 		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 100000);
+		check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 100000);
 		{
 			let txn = nodes[0].tx_broadcaster.txn_broadcast();
 			assert_eq!(txn.len(), 1);
@@ -19476,7 +19476,7 @@ mod tests {
 		let expected_close_reason = ClosureReason::ProcessingError {
 			err: "Peer sent an invalid channel_reestablish to force close in a non-standard way".to_string()
 		};
-		check_closed_event!(nodes[1], 1, expected_close_reason, [nodes[0].node.get_our_node_id()], 100000);
+		check_closed_event(&nodes[1], 1, expected_close_reason, &[nodes[0].node.get_our_node_id()], 100000);
 		{
 			let txn = nodes[1].tx_broadcaster.txn_broadcast();
 			assert_eq!(txn.len(), 1);

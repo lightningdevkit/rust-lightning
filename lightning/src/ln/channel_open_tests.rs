@@ -1045,7 +1045,7 @@ pub fn test_user_configurable_csv_delay() {
 		panic!();
 	}
 	let reason = ClosureReason::ProcessingError { err: reason_msg };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 1000000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 1000000);
 
 	// We test msg.to_self_delay <= config.their_to_self_delay is enforced in InboundV1Channel::new()
 	nodes[1].node.create_channel(node_a_id, 1000000, 1000000, 42, None, None).unwrap();
@@ -1705,7 +1705,7 @@ pub fn test_invalid_funding_tx() {
 	confirm_transaction_at(&nodes[1], &tx, 1);
 
 	let reason = ClosureReason::ProcessingError { err: expected_err.to_string() };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 
 	check_added_monitors(&nodes[1], 1);
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
@@ -1963,7 +1963,7 @@ pub fn test_channel_close_when_not_timely_accepted() {
 	// Since we disconnected from peer and did not connect back within time,
 	// we should have forced-closed the channel by now.
 	let reason = ClosureReason::FundingTimedOut;
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 
 	{
@@ -2346,12 +2346,12 @@ pub fn test_funding_and_commitment_tx_confirm_same_block() {
 	check_msg_events(&nodes[0]);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
-	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 1_000_000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 1_000_000);
 
 	check_msg_events(&nodes[1]);
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
-	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 1_000_000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 1_000_000);
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
@@ -2542,5 +2542,5 @@ fn test_fund_pending_channel() {
 	let reason = ClosureReason::ProcessingError {
 		err: "Error in transaction funding: Misuse error: Channel f7fee84016d554015f5166c0a0df6479942ef55fd70713883b0493493a38e13a with counterparty 0355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23 is not an unfunded, outbound channel ready to fund".to_owned(),
 	};
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100_000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100_000);
 }

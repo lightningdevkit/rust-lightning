@@ -288,7 +288,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	// PaymentPathFailed event
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[test]
@@ -2274,9 +2274,9 @@ fn do_during_funding_monitor_fail(
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 	close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, true);
 	let reason_a = ClosureReason::CounterpartyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason_a, &[node_b_id], 100000);
 	let reason_b = ClosureReason::LocallyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason_b, &[node_a_id], 100000);
 }
 
 #[test]
@@ -2514,7 +2514,8 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 
 	mine_transaction(&nodes[1], &bs_txn[0]);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [node_c_id], 100000);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[1], 1, reason, &[node_c_id], 100000);
 	check_closed_broadcast!(nodes[1], true);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	check_added_monitors!(nodes[1], 1);
@@ -3070,9 +3071,9 @@ fn test_temporary_error_during_shutdown() {
 	assert_eq!(txn_a.len(), 1);
 	check_spends!(txn_a[0], funding_tx);
 	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason_b, &[node_a_id], 100000);
 	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason_a, &[node_b_id], 100000);
 }
 
 #[test]
@@ -3309,7 +3310,7 @@ fn do_test_outbound_reload_without_init_mon(use_0conf: bool) {
 
 	let node_a_ser = nodes[0].node.encode();
 	reload_node!(nodes[0], &node_a_ser, &[], persister, new_chain_monitor, node_a_reload);
-	check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, ClosureReason::DisconnectedPeer, &[node_b_id], 100000);
 	assert!(nodes[0].node.list_channels().is_empty());
 }
 
@@ -3417,7 +3418,7 @@ fn do_test_inbound_reload_without_init_mon(use_0conf: bool, lock_commitment: boo
 	let node_b_ser = nodes[1].node.encode();
 	reload_node!(nodes[1], &node_b_ser, &[], persister, new_chain_monitor, node_b_reload);
 
-	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, ClosureReason::DisconnectedPeer, &[node_a_id], 100000);
 	assert!(nodes[1].node.list_channels().is_empty());
 }
 
@@ -3715,7 +3716,7 @@ fn do_test_inverted_mon_completion_order(
 		persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 		persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 		let reason = ClosureReason::OutdatedChannelManager;
-		check_closed_event(&nodes[1], 1, reason, false, &[node_c_id], 100_000);
+		check_closed_event(&nodes[1], 1, reason, &[node_c_id], 100_000);
 		check_added_monitors(&nodes[1], 2);
 
 		nodes[1].node.timer_tick_occurred();
@@ -3838,7 +3839,7 @@ fn do_test_durable_preimages_on_closed_channel(
 			check_closed_broadcast(&nodes[1], 1, true);
 			let reason =
 				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-			check_closed_event(&nodes[1], 1, reason, false, &[node_c_id], 100000);
+			check_closed_event(&nodes[1], 1, reason, &[node_c_id], 100000);
 		}
 
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
@@ -3850,7 +3851,7 @@ fn do_test_durable_preimages_on_closed_channel(
 		check_closed_broadcast(&nodes[1], 1, true);
 		let reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
+		check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 	}
 
 	// Now reload node B
@@ -3876,7 +3877,7 @@ fn do_test_durable_preimages_on_closed_channel(
 		message: err_msg.clone(),
 	};
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &node_b_id, err_msg).unwrap();
-	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 	check_added_monitors(&nodes[0], 1);
 	let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_closing_tx.len(), 1);
@@ -3906,7 +3907,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	if !close_chans_before_reload {
 		check_closed_broadcast(&nodes[1], 1, false);
 		let reason = ClosureReason::CommitmentTxConfirmed;
-		check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
+		check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 	}
 	nodes[1].node.timer_tick_occurred();
 	check_added_monitors(&nodes[1], mons_added);
@@ -4046,7 +4047,7 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &node_b_id, msg).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		check_closed_broadcast!(nodes[0], true);
-		check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 100_000);
+		check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100_000);
 		let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		mine_transaction_without_consistency_checks(&nodes[1], &as_closing_tx[0]);
 	}
@@ -4493,7 +4494,7 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-	check_closed_event!(nodes[0], 1, a_reason, [node_b_id], 1000000);
+	check_closed_event(&nodes[0], 1, a_reason, &[node_b_id], 1000000);
 	check_closed_broadcast!(nodes[0], true);
 
 	let as_commit_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -4502,7 +4503,8 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	mine_transaction(&nodes[1], &as_commit_tx[0]);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [node_a_id], 1000000);
+	let b_reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[1], 1, b_reason, &[node_a_id], 1000000);
 
 	// Now that B has a pending forwarded payment across it with the inbound edge on-chain, claim
 	// the payment on C and give B the preimage for it.
@@ -4569,7 +4571,7 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-	check_closed_event!(nodes[0], 1, a_reason, [node_b_id], 1000000);
+	check_closed_event(&nodes[0], 1, a_reason, &[node_b_id], 1000000);
 	check_closed_broadcast!(nodes[0], true);
 
 	let as_commit_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -4578,7 +4580,8 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 	mine_transaction(&nodes[1], &as_commit_tx[0]);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [node_a_id], 1000000);
+	let b_reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[1], 1, b_reason, &[node_a_id], 1000000);
 
 	// Now that B has a pending payment with the inbound HTLC on a closed channel, claim the
 	// payment on disk, but don't let the `ChannelMonitorUpdate` complete. This should prevent the

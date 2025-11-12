@@ -8,12 +8,11 @@ use common::{
 };
 
 use lightning::chain::{BestBlock, Filter};
-use lightning::check_closed_event;
 use lightning::events::ClosureReason;
 use lightning::ln::channelmanager::{ChainParameters, InterceptId};
 use lightning::ln::functional_test_utils::{
-	close_channel, create_chan_between_nodes, create_chanmon_cfgs, create_network,
-	create_node_cfgs, create_node_chanmgrs, Node,
+	check_closed_event, close_channel, create_chan_between_nodes, create_chanmon_cfgs,
+	create_network, create_node_cfgs, create_node_chanmgrs, Node,
 };
 use lightning::ln::msgs::Init;
 use lightning::ln::peer_handler::CustomMessageHandler;
@@ -1480,9 +1479,9 @@ fn dos_protection() {
 
 	close_channel(&service_node.inner, &client_node.inner, &channel_id, funding_tx, true);
 	let node_a_reason = ClosureReason::CounterpartyInitiatedCooperativeClosure;
-	check_closed_event!(service_node.inner, 1, node_a_reason, [client_node_id], 100000);
+	check_closed_event(&service_node.inner, 1, node_a_reason, &[client_node_id], 100000);
 	let node_b_reason = ClosureReason::LocallyInitiatedCooperativeClosure;
-	check_closed_event!(client_node.inner, 1, node_b_reason, [service_node_id], 100000);
+	check_closed_event(&client_node.inner, 1, node_b_reason, &[service_node_id], 100000);
 
 	// channel is now closed again -> should reject
 	assert_lsps5_reject(&service_node, &client_node);

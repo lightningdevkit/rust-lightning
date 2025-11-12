@@ -1726,7 +1726,7 @@ mod tests {
 
 		let reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event(&nodes[0], 1, reason, false, &[node_id_1], 100000);
+		check_closed_event(&nodes[0], 1, reason, &[node_id_1], 100000);
 		check_closed_broadcast!(nodes[0], true);
 		check_added_monitors!(nodes[0], 1);
 
@@ -1739,7 +1739,7 @@ mod tests {
 		check_closed_broadcast!(nodes[1], true);
 		let reason = ClosureReason::CommitmentTxConfirmed;
 		let node_id_0 = nodes[0].node.get_our_node_id();
-		check_closed_event(&nodes[1], 1, reason, false, &[node_id_0], 100000);
+		check_closed_event(&nodes[1], 1, reason, &[node_id_0], 100000);
 		check_added_monitors!(nodes[1], 1);
 
 		// Make sure everything is persisted as expected after close.
@@ -1776,7 +1776,7 @@ mod tests {
 			.unwrap();
 		let reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event(&nodes[1], 1, reason, false, &[node_id_0], 100000);
+		check_closed_event(&nodes[1], 1, reason, &[node_id_0], 100000);
 
 		{
 			let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();

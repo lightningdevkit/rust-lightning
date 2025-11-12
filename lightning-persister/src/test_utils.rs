@@ -1,14 +1,14 @@
 use lightning::events::ClosureReason;
 use lightning::ln::functional_test_utils::{
-	connect_block, create_announced_chan_between_nodes, create_chanmon_cfgs, create_dummy_block,
-	create_network, create_node_cfgs, create_node_chanmgrs, send_payment,
+	check_closed_event, connect_block, create_announced_chan_between_nodes, create_chanmon_cfgs,
+	create_dummy_block, create_network, create_node_cfgs, create_node_chanmgrs, send_payment,
 };
 use lightning::util::persist::{
 	migrate_kv_store_data, read_channel_monitors, KVStoreSync, MigratableKVStore,
 	KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
 };
 use lightning::util::test_utils;
-use lightning::{check_added_monitors, check_closed_broadcast, check_closed_event};
+use lightning::{check_added_monitors, check_closed_broadcast};
 
 use std::panic::RefUnwindSafe;
 
@@ -188,7 +188,7 @@ pub(crate) fn do_test_store<K: KVStoreSync + Sync>(store_0: &K, store_1: &K) {
 		.force_close_broadcasting_latest_txn(&chan_id, &node_b_id, message.clone())
 		.unwrap();
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 
@@ -204,13 +204,8 @@ pub(crate) fn do_test_store<K: KVStoreSync + Sync>(store_0: &K, store_1: &K) {
 		),
 	);
 	check_closed_broadcast!(nodes[1], true);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::CommitmentTxConfirmed,
-		[nodes[0].node.get_our_node_id()],
-		100000
-	);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], 100000);
 	check_added_monitors!(nodes[1], 1);
 
 	// Make sure everything is persisted as expected after close.

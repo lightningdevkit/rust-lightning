@@ -849,7 +849,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 
 	// On reload, the ChannelManager should realize it is stale compared to the ChannelMonitor and
 	// force-close the channel.
-	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager, [node_b_id], 100000);
+	let reason = ClosureReason::OutdatedChannelManager;
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[0].node.has_pending_payments());
 	nodes[0].node.timer_tick_occurred();
@@ -887,8 +888,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		} => {
 			assert_eq!(node_id, node_b_id);
 			nodes[1].node.handle_error(node_a_id, msg);
-			check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
-				&node_b_id)) }, [node_a_id], 100000);
+			check_closed_event(&nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
+				&node_b_id)) }, &[node_a_id], 100000);
 			check_added_monitors!(nodes[1], 1);
 			assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 			nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
@@ -1065,7 +1066,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 
 	// On reload, the ChannelManager should realize it is stale compared to the ChannelMonitor and
 	// force-close the channel.
-	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, ClosureReason::OutdatedChannelManager, &[node_b_id], 100000);
 	nodes[0].node.timer_tick_occurred();
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[0].node.has_pending_payments());
@@ -1100,7 +1101,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 				&node_b_id
 			);
 			let reason = ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(msg) };
-			check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+			check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 			check_added_monitors!(nodes[1], 1);
 			bs_commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		},
@@ -1272,7 +1273,7 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 
 	nodes[0].node.peer_disconnected(node_b_id);
 	nodes[1].node.peer_disconnected(node_a_id);
@@ -1294,7 +1295,8 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 	mine_transaction(&nodes[1], &commitment_tx);
 	check_closed_broadcast(&nodes[1], 1, false);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [node_a_id], 100000);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 	let htlc_success_tx = {
 		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
@@ -4340,7 +4342,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 			.unwrap();
 		let reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event!(&nodes[1], 1, reason, false, [node_d_id], 1000000);
+		check_closed_event(&nodes[1], 1, reason, &[node_d_id], 1000000);
 		check_closed_broadcast(&nodes[1], 1, true);
 		let bs_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(bs_tx.len(), 1);
@@ -4349,7 +4351,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		check_closed_broadcast(&nodes[3], 1, true);
 		check_added_monitors(&nodes[3], 1);
 		let reason = ClosureReason::CommitmentTxConfirmed;
-		check_closed_event!(&nodes[3], 1, reason, false, [node_b_id], 1000000);
+		check_closed_event(&nodes[3], 1, reason, &[node_b_id], 1000000);
 
 		nodes[3].node.claim_funds(payment_preimage);
 		check_added_monitors(&nodes[3], 2);
@@ -5049,7 +5051,7 @@ fn test_htlc_forward_considers_anchor_outputs_value() {
 
 	let err = "Remote HTLC add would put them under remote reserve value".to_owned();
 	let reason = ClosureReason::ProcessingError { err };
-	check_closed_event(&nodes[2], 1, reason, false, &[node_b_id], 1_000_000);
+	check_closed_event(&nodes[2], 1, reason, &[node_b_id], 1_000_000);
 	check_closed_broadcast(&nodes[2], 1, true);
 	check_added_monitors(&nodes[2], 1);
 }

@@ -80,7 +80,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		connect_block(&nodes[2], &create_dummy_block(nodes[2].best_block_hash(), 42, node_1_commitment_txn.clone()));
 		check_closed_broadcast!(nodes[2], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
 		check_added_monitors!(nodes[2], 1);
-		check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 100000);
+		check_closed_event(&nodes[2], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[1].node.get_our_node_id()], 100000);
 		let node_2_commitment_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(node_2_commitment_txn.len(), 1); // ChannelMonitor: 1 offered HTLC-Claim
 		check_spends!(node_2_commitment_txn[0], node_1_commitment_txn[0]);
@@ -114,7 +114,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	};
 	check_closed_broadcast!(nodes[1], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[2].node.get_our_node_id()], 100000);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[2].node.get_our_node_id()], 100000);
 	// Connect ANTI_REORG_DELAY - 2 blocks, giving us a confirmation count of ANTI_REORG_DELAY - 1.
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
 	check_added_monitors!(nodes[1], 0);
@@ -212,7 +212,7 @@ fn test_counterparty_revoked_reorg() {
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 1000000);
 
 	// Connect up to one block before the revoked transaction would be considered final, then do a
 	// reorg that disconnects the full chain and goes up to the height at which the revoked
@@ -390,12 +390,11 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	if reorg_after_reload || !reload_node {
 		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
 		check_added_monitors!(nodes[1], 1);
-		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Channel closed because of an exception: {}", expected_err)) }
-			, [nodes[0].node.get_our_node_id()], 100000);
+		let reason = ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Channel closed because of an exception: {}", expected_err)) };
+		check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], 100000);
 	}
 
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: expected_err.to_owned() },
-		[nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event(&nodes[0], 1, ClosureReason::ProcessingError { err: expected_err.to_owned() }, &[nodes[1].node.get_our_node_id()], 100000);
 
 	// Now check that we can create a new channel
 	if reload_node && !reorg_after_reload {
@@ -484,7 +483,7 @@ fn test_set_outpoints_partial_claiming() {
 	// Connect blocks on node A commitment transaction
 	mine_transaction(&nodes[0], &remote_txn[0]);
 	check_closed_broadcast!(nodes[0], true);
-	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 1000000);
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[1].node.get_our_node_id()], 1000000);
 	check_added_monitors!(nodes[0], 1);
 	// Verify node A broadcast tx claiming both HTLCs
 	{
@@ -585,11 +584,11 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	check_closed_broadcast!(nodes[0], true);
 	assert!(nodes[0].node.list_channels().is_empty());
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 1000000);
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[1].node.get_our_node_id()], 1000000);
 	check_closed_broadcast!(nodes[1], true);
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 1000000);
 
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
@@ -692,7 +691,7 @@ fn test_htlc_preimage_claim_holder_commitment_after_counterparty_commitment_reor
 		broadcasted_latest_txn: Some(true),
 		message: message.clone(),
 	};
-	check_closed_event(&nodes[0], 1, reason, false, &[nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 100000);
 
 	nodes[1]
 		.node
@@ -701,7 +700,7 @@ fn test_htlc_preimage_claim_holder_commitment_after_counterparty_commitment_reor
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-	check_closed_event(&nodes[1], 1, reason, false, &[nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], 100000);
 
 	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 	assert_eq!(txn.len(), 1);
@@ -781,7 +780,7 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-	check_closed_event(&nodes[0], 1, reason, false, &[nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 100000);
 
 	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 	assert_eq!(txn.len(), 1);
@@ -794,7 +793,7 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
-	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false, &[nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
 
 	disconnect_blocks(&nodes[0], 1);
 	disconnect_blocks(&nodes[1], 1);
@@ -860,7 +859,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(keyed_anchors: bool, p2a
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
-	check_closed_event(&nodes[0], 1, reason, false, &[nodes[1].node.get_our_node_id()], 100_000);
+	check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 100_000);
 	if keyed_anchors || p2a_anchor {
 		handle_bump_close_event(&nodes[0]);
 	}
@@ -895,7 +894,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(keyed_anchors: bool, p2a
 	check_closed_broadcast(&nodes[1], 1, !revoked_counterparty_commitment);
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-	check_closed_event(&nodes[1], 1, reason, false, &[nodes[0].node.get_our_node_id()], 100_000);
+	check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], 100_000);
 	if keyed_anchors || p2a_anchor {
 		handle_bump_close_event(&nodes[1]);
 	}
@@ -1033,7 +1032,7 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool, p2a
 	check_added_monitors(&nodes[1], 1);
 	let message = "Channel force-closed".to_owned();
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 10_000_000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 10_000_000);
 	handle_bump_close_event(&nodes[1]);
 
 	let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
@@ -1058,7 +1057,7 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool, p2a
 	}
 	check_closed_broadcast(&nodes[0], 1, false);
 	let reason = ClosureReason::CommitmentTxConfirmed;
-	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 10_000_000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 10_000_000);
 	check_added_monitors(&nodes[0], 1);
 
 	if let Some(ref a_tx) = anchor_tx {

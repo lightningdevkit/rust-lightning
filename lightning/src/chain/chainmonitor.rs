@@ -1596,10 +1596,10 @@ where
 mod tests {
 	use crate::chain::channelmonitor::ANTI_REORG_DELAY;
 	use crate::chain::{ChannelMonitorUpdateStatus, Watch};
+	use crate::check_added_monitors;
 	use crate::events::{ClosureReason, Event};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
-	use crate::{check_added_monitors, check_closed_event};
 	use crate::{expect_payment_path_successful, get_event_msg};
 
 	const CHAINSYNC_MONITOR_PARTITION_FACTOR: u32 = 5;
@@ -1780,7 +1780,7 @@ mod tests {
 			.unwrap();
 		let closure_reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event!(&nodes[0], 1, closure_reason, false, [node_c_id], 1000000);
+		check_closed_event(&nodes[0], 1, closure_reason, &[node_c_id], 1000000);
 		check_closed_broadcast(&nodes[0], 1, true);
 		let close_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(close_tx.len(), 1);
@@ -1789,7 +1789,7 @@ mod tests {
 		check_closed_broadcast(&nodes[2], 1, true);
 		check_added_monitors(&nodes[2], 1);
 		let closure_reason = ClosureReason::CommitmentTxConfirmed;
-		check_closed_event!(&nodes[2], 1, closure_reason, false, [node_a_id], 1000000);
+		check_closed_event(&nodes[2], 1, closure_reason, &[node_a_id], 1000000);
 
 		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
 		chanmon_cfgs[2].persister.chain_sync_monitor_persistences.lock().unwrap().clear();

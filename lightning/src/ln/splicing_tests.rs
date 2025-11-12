@@ -914,12 +914,12 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 	} else {
 		initial_channel_capacity
 	};
-	check_closed_event(&nodes[0], 1, closure_reason, false, &[node_id_1], closed_channel_capacity);
+	check_closed_event(&nodes[0], 1, closure_reason, &[node_id_1], closed_channel_capacity);
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 
 	let closure_reason = ClosureReason::CommitmentTxConfirmed;
-	check_closed_event(&nodes[1], 1, closure_reason, false, &[node_id_0], closed_channel_capacity);
+	check_closed_event(&nodes[1], 1, closure_reason, &[node_id_0], closed_channel_capacity);
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 

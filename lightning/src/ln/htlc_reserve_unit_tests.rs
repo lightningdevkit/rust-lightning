@@ -1086,9 +1086,9 @@ pub fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
 	assert_eq!(err_msg.data, "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value");
+	let reason = ClosureReason::ProcessingError { err: "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_string() };
 	check_added_monitors(&nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_string() },
-		[node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1276,7 +1276,7 @@ pub fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	assert_eq!(err_msg.data, "Remote HTLC add would put them under remote reserve value");
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data.clone() };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1395,7 +1395,7 @@ pub fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 	let reason = ClosureReason::ProcessingError {
 		err: "Remote side tried to send a 0-msat HTLC".to_string(),
 	};
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1551,7 +1551,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min()
 	assert!(regex::Regex::new(r"Remote side tried to send less than our minimum HTLC value\. Lower limit: \(\d+\)\. Actual: \(\d+\)").unwrap().is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1594,7 +1594,7 @@ pub fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	assert_eq!(err_msg.data, "Remote HTLC add would put them under remote reserve value");
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1662,7 +1662,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 		.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1697,7 +1697,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 		.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 1000000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 1000000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1727,7 +1727,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	assert_eq!(err_msg.data, "Remote provided CLTV expiry in seconds instead of block height");
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1793,7 +1793,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 		.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1837,7 +1837,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1881,7 +1881,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1924,7 +1924,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitme
 	.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1983,7 +1983,7 @@ pub fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 	assert_eq!(err_msg.data, "Remote tried to fulfill/fail an HTLC we couldn't find");
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -2044,7 +2044,7 @@ pub fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 		.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -2115,7 +2115,7 @@ pub fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_me
 	assert_eq!(err_msg.data, "Got update_fail_malformed_htlc with BADONION not set");
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 1000000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 1000000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -2262,7 +2262,7 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 		let reason = ClosureReason::ProcessingError { err };
-		check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], CHANNEL_VALUE_SAT);
+		check_closed_event(&nodes[1], 1, reason, &[node_a_id], CHANNEL_VALUE_SAT);
 		check_added_monitors(&nodes[1], 1);
 	} else {
 		// Now manually create the commitment_signed message corresponding to the update_add

@@ -1025,7 +1025,7 @@ fn do_test_async_holder_signatures(keyed_anchors: bool, p2a_anchor: bool, remote
 		check_closed_broadcast(&nodes[1], 1, true);
 		let reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100_000);
+		check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100_000);
 	} else {
 		nodes[0].disable_channel_signer_op(&node_b_id, &chan_id, SignerOp::SignHolderCommitment);
 		nodes[0].disable_channel_signer_op(
@@ -1100,7 +1100,7 @@ fn do_test_async_holder_signatures(keyed_anchors: bool, p2a_anchor: bool, remote
 	} else {
 		ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) }
 	};
-	check_closed_event(&nodes[0], 1, closure_reason, false, &[node_b_id], 100_000);
+	check_closed_event(&nodes[0], 1, closure_reason, &[node_b_id], 100_000);
 
 	// If the counterparty broadcast its latest commitment, we need to mine enough blocks for the
 	// HTLC timeout.
@@ -1319,9 +1319,9 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
 	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[0], 1, reason_a, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason_a, &[node_b_id], 100000);
 	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[1], 1, reason_b, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason_b, &[node_a_id], 100000);
 }
 
 #[test]

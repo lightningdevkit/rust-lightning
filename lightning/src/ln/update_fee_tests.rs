@@ -531,7 +531,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	check_added_monitors(&nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
 	let reason = ClosureReason::ProcessingError { err: err.to_string() };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], channel_value);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], channel_value);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -629,7 +629,7 @@ pub fn test_update_fee_that_saturates_subs() {
 	check_added_monitors(&nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
 	let reason = ClosureReason::ProcessingError { err: err.to_string() };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 10_000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 10_000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -734,9 +734,9 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	send_payment(&nodes[0], &[&nodes[1]], 800000);
 	close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
 	let node_a_reason = ClosureReason::CounterpartyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[0], 1, node_a_reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, node_a_reason, &[node_b_id], 100000);
 	let node_b_reason = ClosureReason::LocallyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[1], 1, node_b_reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, node_b_reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -858,9 +858,9 @@ pub fn test_update_fee() {
 	assert_eq!(get_feerate!(nodes[1], nodes[0], channel_id), feerate + 30);
 	close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
 	let node_a_reason = ClosureReason::CounterpartyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[0], 1, node_a_reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, node_a_reason, &[node_b_id], 100000);
 	let node_b_reason = ClosureReason::LocallyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[1], 1, node_b_reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, node_b_reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -995,7 +995,7 @@ pub fn accept_busted_but_better_fee() {
 				peer_feerate_sat_per_kw: 1000,
 				required_feerate_sat_per_kw: 5000,
 			};
-			check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+			check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 			check_closed_broadcast!(nodes[1], true);
 			check_added_monitors(&nodes[1], 1);
 		},
