@@ -14,6 +14,9 @@ function PIN_RELEASE_DEPS {
 	# syn 2.0.107 requires rustc 1.68.0
 	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
 
+	# quote 1.0.42 requires rustc 1.68.0
+	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
+
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
 
@@ -54,6 +57,7 @@ echo -e "\n\nTesting upgrade from prior versions of LDK"
 pushd lightning-tests
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
 cargo test
 popd
 
@@ -125,6 +129,7 @@ echo -e "\n\nTesting no_std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
 pushd no-std-check
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
 cargo check --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
