@@ -1,6 +1,6 @@
 [package]
 name = "lightning-background-processor"
-version = "0.2.0-rc1"
+version = "0.2.0-rc2"
 authors = ["Valentine Wallace <vwallace@protonmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning"
@@ -23,17 +23,17 @@ std = ["lightning/std", "lightning-liquidity/std", "bitcoin-io/std", "bitcoin_ha
 bitcoin = { version = "0.32.2", default-features = false }
 bitcoin_hashes = { version = "0.14.0", default-features = false }
 bitcoin-io = { version = "0.1.2", default-features = false }
-lightning = { version = "0.2.0-rc1", path = "../lightning", default-features = false }
-lightning-rapid-gossip-sync = { version = "0.2.0-rc1", path = "../lightning-rapid-gossip-sync", default-features = false }
-lightning-liquidity = { version = "0.2.0-rc1", path = "../lightning-liquidity", default-features = false }
+lightning = { version = "0.2.0-rc2", path = "../lightning", default-features = false }
+lightning-rapid-gossip-sync = { version = "0.2.0-rc2", path = "../lightning-rapid-gossip-sync", default-features = false }
+lightning-liquidity = { version = "0.2.0-rc2", path = "../lightning-liquidity", default-features = false }
 possiblyrandom = { version = "0.2", path = "../possiblyrandom", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1.35", features = [ "macros", "rt", "rt-multi-thread", "sync", "time" ] }
-lightning = { version = "0.2.0-rc1", path = "../lightning", features = ["_test_utils"] }
-lightning-invoice = { version = "0.34.0-rc1", path = "../lightning-invoice" }
-lightning-liquidity = { version = "0.2.0-rc1", path = "../lightning-liquidity", default-features = false, features = ["_test_utils"] }
-lightning-persister = { version = "0.2.0-rc1", path = "../lightning-persister" }
+lightning = { version = "0.2.0-rc2", path = "../lightning", features = ["_test_utils"] }
+lightning-invoice = { version = "0.34.0-rc2", path = "../lightning-invoice" }
+lightning-liquidity = { version = "0.2.0-rc2", path = "../lightning-liquidity", default-features = false, features = ["_test_utils"] }
+lightning-persister = { version = "0.2.0-rc2", path = "../lightning-persister" }
 
 [lints]
 workspace = true
