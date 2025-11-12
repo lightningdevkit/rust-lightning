@@ -17,6 +17,7 @@ use bitcoin::secp256k1::PublicKey;
 
 use core::cmp;
 use core::fmt;
+use core::fmt::Display;
 use core::ops::Deref;
 
 use crate::ln::types::ChannelId;
@@ -150,6 +151,13 @@ impl<$($args)?> Record<$($args)?> {
 			line,
 			payment_hash,
 		}
+	}
+}
+
+impl<$($args)?> Display for Record<$($args)?> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		let context = format!("{} [{}:{}]", self.level, self.module_path, self.line);
+		write!(f, "{:<48} {}", context, self.args)
 	}
 }
 } }

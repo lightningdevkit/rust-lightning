@@ -7350,7 +7350,7 @@ pub fn test_concurrent_monitor_claim() {
 
 	// Copy ChainMonitor to simulate watchtower Alice and update block height her ChannelMonitor timeout HTLC onchain
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-	let logger = test_utils::TestLogger::with_id(format!("node {}", "Alice"));
+	let logger = test_utils::TestLogger::with_id("alice".to_string());
 	let persister = test_utils::TestPersister::new();
 	let alice_broadcaster = test_utils::TestBroadcaster::with_blocks(Arc::new(Mutex::new(
 		nodes[0].blocks.lock().unwrap().clone(),
@@ -7401,7 +7401,7 @@ pub fn test_concurrent_monitor_claim() {
 
 	// Copy ChainMonitor to simulate watchtower Bob and make it receive a commitment update first.
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-	let logger = test_utils::TestLogger::with_id(format!("node {}", "Bob"));
+	let logger = test_utils::TestLogger::with_id("bob".to_string());
 	let persister = test_utils::TestPersister::new();
 	let bob_broadcaster =
 		test_utils::TestBroadcaster::with_blocks(Arc::clone(&alice_broadcaster.blocks));
