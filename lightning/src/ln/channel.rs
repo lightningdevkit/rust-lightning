@@ -15787,15 +15787,6 @@ mod tests {
 		}
 	}
 
-	#[cfg(ldk_test_vectors)]
-	fn public_from_secret_hex(
-		secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str,
-	) -> PublicKey {
-		assert!(cfg!(not(feature = "grind_signatures")));
-		let secret = SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap();
-		PublicKey::from_secret_key(&secp_ctx, &secret)
-	}
-
 	#[test]
 	fn upfront_shutdown_script_incompatibility() {
 		let mut features = channelmanager::provided_init_features(&UserConfig::default());
@@ -16497,7 +16488,6 @@ mod tests {
 	}
 
 	#[cfg(ldk_test_vectors)]
-	#[rustfmt::skip]
 	macro_rules! test_commitment_common {
 			( $chan: expr, $logger: expr, $secp_ctx: expr, $signer: expr, $holder_pubkeys: expr, $per_commitment_point: expr, $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $channel_type_features: expr, {
 				$( { $htlc_idx: expr, $counterparty_htlc_sig_hex: expr, $htlc_sig_hex: expr, $htlc_tx_hex: expr } ), *
@@ -16600,87 +16590,137 @@ mod tests {
 
 	#[cfg(ldk_test_vectors)]
 	#[test]
-	#[rustfmt::skip]
 	fn outbound_commitment_test() {
 		assert!(cfg!(not(feature = "grind_signatures")));
 
-		use bitcoin::sighash;
-		use bitcoin::consensus::encode::serialize;
-		use bitcoin::sighash::EcdsaSighashType;
-		use bitcoin::hex::FromHex;
-		use bitcoin::hash_types::Txid;
-		use bitcoin::hex::DisplayHex;
-		use bitcoin::secp256k1::Message;
-		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ecdsa::EcdsaChannelSigner};
-		use crate::types::payment::PaymentPreimage;
+		use crate::ln::chan_utils::{
+			ChannelPublicKeys, CounterpartyChannelTransactionParameters,
+			HolderCommitmentTransaction,
+		};
 		use crate::ln::channel::HTLCOutputInCommitment;
 		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
-		use crate::ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
-		use crate::util::logger::Logger;
+		use crate::sign::{ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, HTLCDescriptor};
 		use crate::sync::Arc;
+		use crate::types::payment::PaymentPreimage;
+		use crate::util::logger::Logger;
+		use crate::util::test_utils::{
+			preimage_from_hex, pubkey_from_hex, public_from_secret_hex, secret_from_hex,
+		};
+		use bitcoin::consensus::encode::serialize;
+		use bitcoin::hash_types::Txid;
+		use bitcoin::hex::DisplayHex;
+		use bitcoin::hex::FromHex;
+		use bitcoin::secp256k1::Message;
+		use bitcoin::sighash;
+		use bitcoin::sighash::EcdsaSighashType;
 		use core::str::FromStr;
 
 		// Test vectors from BOLT 3 Appendices C and F (anchors):
 		let feeest = TestFeeEstimator::new(15000);
-		let logger : Arc<dyn Logger> = Arc::new(TestLogger::new());
+		let logger: Arc<dyn Logger> = Arc::new(TestLogger::new());
 		let secp_ctx = Secp256k1::new();
 
 		let signer = InMemorySigner::new(
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
+			secret_from_hex("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749"),
+			secret_from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+			secret_from_hex("1111111111111111111111111111111111111111111111111111111111111111"),
+			secret_from_hex("1111111111111111111111111111111111111111111111111111111111111111"),
 			true,
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("3333333333333333333333333333333333333333333333333333333333333333").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
-
+			secret_from_hex("3333333333333333333333333333333333333333333333333333333333333333"),
+			secret_from_hex("1111111111111111111111111111111111111111111111111111111111111111"),
 			// These aren't set in the test vectors:
-			[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+			[
+				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff,
+			],
 			[0; 32],
 			[0; 32],
 		);
 
 		let holder_pubkeys = signer.pubkeys(&secp_ctx);
-		assert_eq!(holder_pubkeys.funding_pubkey.serialize()[..],
-				<Vec<u8>>::from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
+		assert_eq!(
+			holder_pubkeys.funding_pubkey,
+			pubkey_from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb")
+		);
 		let keys_provider = Keys { signer: signer.clone() };
 
-		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let counterparty_node_id =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_handshake_config.announce_for_forwarding = false;
-		let mut chan = OutboundV1Channel::<&Keys>::new(&LowerBoundedFeeEstimator::new(&feeest), &&keys_provider, &&keys_provider, counterparty_node_id, &channelmanager::provided_init_features(&config), 10_000_000, 0, 42, &config, 0, 42, None, &*logger).unwrap(); // Nothing uses their network key in this test
+		let mut chan = OutboundV1Channel::<&Keys>::new(
+			&LowerBoundedFeeEstimator::new(&feeest),
+			&&keys_provider,
+			&&keys_provider,
+			counterparty_node_id,
+			&channelmanager::provided_init_features(&config),
+			10_000_000,
+			0,
+			42,
+			&config,
+			0,
+			42,
+			None,
+			&*logger,
+		)
+		.unwrap(); // Nothing uses their network key in this test
 		chan.context.holder_dust_limit_satoshis = 546;
 		chan.funding.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
 
-		let funding_info = OutPoint{ txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
+		let funding_txid =
+			Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be")
+				.unwrap();
+		let funding_info = OutPoint { txid: funding_txid, index: 0 };
 
 		let counterparty_pubkeys = ChannelPublicKeys {
-			funding_pubkey: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
-			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_slice(&<Vec<u8>>::from_hex("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").unwrap()[..]).unwrap()),
-			payment_point: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444"),
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13")),
-			htlc_basepoint: HtlcBasepoint::from(public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444"))
+			funding_pubkey: public_from_secret_hex(
+				&secp_ctx,
+				"1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13",
+			),
+			revocation_basepoint: RevocationBasepoint::from(pubkey_from_hex(
+				"02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+			)),
+			payment_point: public_from_secret_hex(
+				&secp_ctx,
+				"4444444444444444444444444444444444444444444444444444444444444444",
+			),
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(public_from_secret_hex(
+				&secp_ctx,
+				"1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13",
+			)),
+			htlc_basepoint: HtlcBasepoint::from(public_from_secret_hex(
+				&secp_ctx,
+				"4444444444444444444444444444444444444444444444444444444444444444",
+			)),
 		};
-		chan.funding.channel_transaction_parameters.counterparty_parameters = Some(
-			CounterpartyChannelTransactionParameters {
+		chan.funding.channel_transaction_parameters.counterparty_parameters =
+			Some(CounterpartyChannelTransactionParameters {
 				pubkeys: counterparty_pubkeys.clone(),
-				selected_contest_delay: 144
+				selected_contest_delay: 144,
 			});
 		chan.funding.channel_transaction_parameters.funding_outpoint = Some(funding_info);
 
-		assert_eq!(counterparty_pubkeys.payment_point.serialize()[..],
-		           <Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
+		assert_eq!(
+			counterparty_pubkeys.payment_point,
+			pubkey_from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991"),
+		);
 
-		assert_eq!(counterparty_pubkeys.funding_pubkey.serialize()[..],
-		           <Vec<u8>>::from_hex("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1").unwrap()[..]);
+		assert_eq!(
+			counterparty_pubkeys.funding_pubkey,
+			pubkey_from_hex("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1")
+		);
 
-		assert_eq!(counterparty_pubkeys.htlc_basepoint.to_public_key().serialize()[..],
-		           <Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
+		assert_eq!(
+			counterparty_pubkeys.htlc_basepoint.to_public_key(),
+			pubkey_from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991")
+		);
 
 		// We can't just use build_holder_transaction_keys here as the per_commitment_secret is not
 		// derived from a commitment_seed, so instead we copy it here and call
 		// build_commitment_transaction.
-		let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
+		let per_commitment_secret =
+			secret_from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100");
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 
 		macro_rules! test_commitment {
@@ -16696,8 +16736,6 @@ mod tests {
 				test_commitment_common!(chan, logger, secp_ctx, signer, holder_pubkeys, per_commitment_point, $counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), $($remain)*);
 			};
 		}
-
-		#[rustfmt::skip]
 
 		// anchors: simple commitment tx with no HTLCs and single anchor
 		test_commitment_with_anchors!("30440220655bf909fb6fa81d086f1336ac72c97906dce29d1b166e305c99152d810e26e1022051f577faa46412c46707aaac46b65d50053550a66334e00a44af2706f27a8658",
@@ -16716,70 +16754,64 @@ mod tests {
 						 "30450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f7",
 						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80044a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a508b6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f701483045022100f89034eba16b2be0e5581f750a0a6309192b75cce0f202f0ee2b4ec0cc394850022076c65dc507fe42276152b7a3d90e961e678adbe966e916ecfe85e64d430e75f301475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
-		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 0,
-				amount_msat: 1000000,
-				cltv_expiry: 500,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0000000000000000000000000000000000000000000000000000000000000000").unwrap()).to_byte_array();
-			out
+		let payment_preimage_0 =
+			preimage_from_hex("0000000000000000000000000000000000000000000000000000000000000000");
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
+			htlc_id: 0,
+			amount_msat: 1000000,
+			cltv_expiry: 500,
+			payment_hash: PaymentHash::from(payment_preimage_0),
+			state: InboundHTLCState::Committed,
 		});
-		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 1,
-				amount_msat: 2000000,
-				cltv_expiry: 501,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).to_byte_array();
-			out
+
+		let payment_preimage_1 =
+			preimage_from_hex("0101010101010101010101010101010101010101010101010101010101010101");
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
+			htlc_id: 1,
+			amount_msat: 2000000,
+			cltv_expiry: 501,
+			payment_hash: PaymentHash::from(payment_preimage_1),
+			state: InboundHTLCState::Committed,
 		});
-		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 2,
-				amount_msat: 2000000,
-				cltv_expiry: 502,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-				hold_htlc: None,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap()).to_byte_array();
-			out
+
+		let payment_preimage_2 =
+			preimage_from_hex("0202020202020202020202020202020202020202020202020202020202020202");
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
+			htlc_id: 2,
+			amount_msat: 2000000,
+			cltv_expiry: 502,
+			payment_hash: PaymentHash::from(payment_preimage_2),
+			state: OutboundHTLCState::Committed,
+			source: HTLCSource::dummy(),
+			skimmed_fee_msat: None,
+			blinding_point: None,
+			send_timestamp: None,
+			hold_htlc: None,
 		});
-		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 3,
-				amount_msat: 3000000,
-				cltv_expiry: 503,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-				hold_htlc: None,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0303030303030303030303030303030303030303030303030303030303030303").unwrap()).to_byte_array();
-			out
+
+		let payment_preimage_3 =
+			preimage_from_hex("0303030303030303030303030303030303030303030303030303030303030303");
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
+			htlc_id: 3,
+			amount_msat: 3000000,
+			cltv_expiry: 503,
+			payment_hash: PaymentHash::from(payment_preimage_3),
+			state: OutboundHTLCState::Committed,
+			source: HTLCSource::dummy(),
+			skimmed_fee_msat: None,
+			blinding_point: None,
+			send_timestamp: None,
+			hold_htlc: None,
 		});
-		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 4,
-				amount_msat: 4000000,
-				cltv_expiry: 504,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0404040404040404040404040404040404040404040404040404040404040404").unwrap()).to_byte_array();
-			out
+
+		let payment_preimage_4 =
+			preimage_from_hex("0404040404040404040404040404040404040404040404040404040404040404");
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
+			htlc_id: 4,
+			amount_msat: 4000000,
+			cltv_expiry: 504,
+			payment_hash: PaymentHash::from(payment_preimage_4),
+			state: InboundHTLCState::Committed,
 		});
 
 		// commitment tx with all five HTLCs untrimmed (minimum feerate)
@@ -17011,7 +17043,8 @@ mod tests {
 		chan.context.feerate_per_kw = 2185;
 		chan.context.holder_dust_limit_satoshis = 2001;
 		let cached_channel_type = chan.funding.get_channel_type().clone();
-		chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("3044022040f63a16148cf35c8d3d41827f5ae7f7c3746885bb64d4d1b895892a83812b3e02202fcf95c2bf02c466163b3fa3ced6a24926fbb4035095a96842ef516e86ba54c0",
 		                 "3045022100cd8479cfe1edb1e5a1d487391e0451a469c7171e51e680183f19eb4321f20e9b02204eab7d5a6384b1b08e03baa6e4d9748dfd2b5ab2bae7e39604a0d0055bbffdd5",
@@ -17032,7 +17065,8 @@ mod tests {
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 3702;
 		chan.context.holder_dust_limit_satoshis = 546;
-		chan.funding.channel_transaction_parameters.channel_type_features = cached_channel_type.clone();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			cached_channel_type.clone();
 
 		test_commitment!("304502210092a587aeb777f869e7ff0d7898ea619ee26a3dacd1f3672b945eea600be431100220077ee9eae3528d15251f2a52b607b189820e57a6ccfac8d1af502b132ee40169",
 		                 "3045022100e5efb73c32d32da2d79702299b6317de6fb24a60476e3855926d78484dd1b3c802203557cb66a42c944ef06e00bcc4da35a5bcb2f185aab0f8e403e519e1d66aaf75",
@@ -17067,7 +17101,8 @@ mod tests {
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 3687;
 		chan.context.holder_dust_limit_satoshis = 3001;
-		chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("3045022100ad6c71569856b2d7ff42e838b4abe74a713426b37f22fa667a195a4c88908c6902202b37272b02a42dc6d9f4f82cab3eaf84ac882d9ed762859e1e75455c2c228377",
 		                 "3045022100c970799bcb33f43179eb43b3378a0a61991cf2923f69b36ef12548c3df0e6d500220413dc27d2e39ee583093adfcb7799be680141738babb31cc7b0669a777a31f5d",
@@ -17083,7 +17118,8 @@ mod tests {
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 4914;
 		chan.context.holder_dust_limit_satoshis = 546;
-		chan.funding.channel_transaction_parameters.channel_type_features = cached_channel_type.clone();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			cached_channel_type.clone();
 
 		test_commitment!("3045022100b4b16d5f8cc9fc4c1aff48831e832a0d8990e133978a66e302c133550954a44d022073573ce127e2200d316f6b612803a5c0c97b8d20e1e44dbe2ac0dd2fb8c95244",
 		                 "3045022100d72638bc6308b88bb6d45861aae83e5b9ff6e10986546e13bce769c70036e2620220320be7c6d66d22f30b9fcd52af66531505b1310ca3b848c19285b38d8a1a8c19",
@@ -17108,7 +17144,8 @@ mod tests {
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 4894;
 		chan.context.holder_dust_limit_satoshis = 4001;
-		chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("3045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b95",
 		                 "30450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd",
@@ -17118,7 +17155,8 @@ mod tests {
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 9651180;
 		chan.context.holder_dust_limit_satoshis = 546;
-		chan.funding.channel_transaction_parameters.channel_type_features = cached_channel_type.clone();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			cached_channel_type.clone();
 
 		test_commitment!("304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd3",
 		                 "3045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de",
@@ -17136,7 +17174,8 @@ mod tests {
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 6216010;
 		chan.context.holder_dust_limit_satoshis = 4001;
-		chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("30450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf",
 		                 "30450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1",
@@ -17156,49 +17195,41 @@ mod tests {
 		chan.funding.value_to_self_msat = 7_000_000_000 - 2_000_000;
 		chan.context.feerate_per_kw = 253;
 		chan.context.pending_inbound_htlcs.clear();
-		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 1,
-				amount_msat: 2000000,
-				cltv_expiry: 501,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).to_byte_array();
-			out
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
+			htlc_id: 1,
+			amount_msat: 2000000,
+			cltv_expiry: 501,
+			payment_hash: PaymentHash::from(payment_preimage_1),
+			state: InboundHTLCState::Committed,
 		});
+
 		chan.context.pending_outbound_htlcs.clear();
-		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 6,
-				amount_msat: 5000001,
-				cltv_expiry: 506,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-				hold_htlc: None,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
-			out
+		let payment_preimage_5 =
+			preimage_from_hex("0505050505050505050505050505050505050505050505050505050505050505");
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
+			htlc_id: 6,
+			amount_msat: 5000001,
+			cltv_expiry: 506,
+			payment_hash: PaymentHash::from(payment_preimage_5),
+			state: OutboundHTLCState::Committed,
+			source: HTLCSource::dummy(),
+			skimmed_fee_msat: None,
+			blinding_point: None,
+			send_timestamp: None,
+			hold_htlc: None,
 		});
-		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 5,
-				amount_msat: 5000000,
-				cltv_expiry: 505,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-				hold_htlc: None,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
-			out
+
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
+			htlc_id: 5,
+			amount_msat: 5000000,
+			cltv_expiry: 505,
+			payment_hash: PaymentHash::from(payment_preimage_5),
+			state: OutboundHTLCState::Committed,
+			source: HTLCSource::dummy(),
+			skimmed_fee_msat: None,
+			blinding_point: None,
+			send_timestamp: None,
+			hold_htlc: None,
 		});
 
 		test_commitment!("304402207d0870964530f97b62497b11153c551dca0a1e226815ef0a336651158da0f82402200f5378beee0e77759147b8a0a284decd11bfd2bc55c8fafa41c134fe996d43c8",
@@ -17219,7 +17250,8 @@ mod tests {
 		                  "020000000001014bdccf28653066a2c554cafeffdfe1e678e64a69b056684deb0c4fba909423ec02000000000000000001e1120000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220471c9f3ad92e49b13b7b8059f43ecf8f7887b0dccbb9fdb54bfe23d62a8ae332022024bd22fae0740e86a44228c35330da9526fd7306dffb2b9dc362d5e78abef7cc0147304402207157f452f2506d73c315192311893800cfb3cc235cc1185b1cfcc136b55230db022014be242dbc6c5da141fec4034e7f387f74d6ff1899453d72ba957467540e1ecb01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6868fa010000" }
 		} );
 
-		chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		test_commitment_with_anchors!("3044022027b38dfb654c34032ffb70bb43022981652fce923cbbe3cbe7394e2ade8b34230220584195b78da6e25c2e8da6b4308d9db25b65b64975db9266163ef592abb7c725",
 		                 "3045022100b4014970d9d7962853f3f85196144671d7d5d87426250f0a5fdaf9a55292e92502205360910c9abb397467e19dbd63d081deb4a3240903114c98cec0a23591b79b76",
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80074a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994d007000000000000220020fe0598d74fee2205cc3672e6e6647706b4f3099713b4661b62482c3addd04a5e881300000000000022002018e40f9072c44350f134bdc887bab4d9bdfc8aa468a25616c80e21757ba5dac7881300000000000022002018e40f9072c44350f134bdc887bab4d9bdfc8aa468a25616c80e21757ba5dac7c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994aad9c6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400483045022100b4014970d9d7962853f3f85196144671d7d5d87426250f0a5fdaf9a55292e92502205360910c9abb397467e19dbd63d081deb4a3240903114c98cec0a23591b79b7601473044022027b38dfb654c34032ffb70bb43022981652fce923cbbe3cbe7394e2ade8b34230220584195b78da6e25c2e8da6b4308d9db25b65b64975db9266163ef592abb7c72501475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
