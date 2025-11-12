@@ -67,7 +67,7 @@ use bitcoin::block::Block;
 use bitcoin::constants::genesis_block;
 use bitcoin::constants::ChainHash;
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{hex::FromHex, Hash};
 use bitcoin::network::Network;
 use bitcoin::script::{Builder, Script, ScriptBuf};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
@@ -105,6 +105,18 @@ pub fn pubkey(byte: u8) -> PublicKey {
 
 pub fn privkey(byte: u8) -> SecretKey {
 	SecretKey::from_slice(&[byte; 32]).unwrap()
+}
+
+pub fn secret_from_hex(hex: &str) -> SecretKey {
+	SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()).unwrap()
+}
+
+pub fn bytes_from_hex(hex: &str) -> Vec<u8> {
+	<Vec<u8>>::from_hex(hex).unwrap()
+}
+
+pub fn pubkey_from_hex(hex: &str) -> PublicKey {
+	PublicKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()).unwrap()
 }
 
 pub struct TestVecWriter(pub Vec<u8>);

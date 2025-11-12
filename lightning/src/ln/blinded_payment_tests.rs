@@ -9,7 +9,6 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::hashes::hex::FromHex;
 use bitcoin::hex::DisplayHex;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use bitcoin::secp256k1::ecdh::SharedSecret;
@@ -37,7 +36,7 @@ use crate::routing::router::{BlindedTail, Path, Payee, PaymentParameters, RouteH
 use crate::sign::{NodeSigner, PeerStorageKey, ReceiveAuthKey, Recipient};
 use crate::util::config::UserConfig;
 use crate::util::ser::{WithoutLength, Writeable};
-use crate::util::test_utils;
+use crate::util::test_utils::{self, bytes_from_hex, secret_from_hex, pubkey_from_hex};
 use lightning_invoice::RawBolt11Invoice;
 use types::features::Features;
 use crate::blinded_path::BlindedHop;
@@ -1493,18 +1492,6 @@ fn blinded_payment_path_padding() {
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]], payment_preimage);
-}
-
-fn secret_from_hex(hex: &str) -> SecretKey {
-	SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()).unwrap()
-}
-
-fn bytes_from_hex(hex: &str) -> Vec<u8> {
-	<Vec<u8>>::from_hex(hex).unwrap()
-}
-
-fn pubkey_from_hex(hex: &str) -> PublicKey {
-	PublicKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()).unwrap()
 }
 
 fn update_add_msg(
