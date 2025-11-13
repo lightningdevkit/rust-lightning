@@ -2172,7 +2172,7 @@ macro_rules! get_closing_signed_broadcast {
 		assert!(events.len() == 1 || events.len() == 2);
 		(
 			match events[events.len() - 1] {
-				MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
 					assert_eq!(msg.contents.channel_flags & 2, 2);
 					msg.clone()
 				},
@@ -2243,7 +2243,7 @@ pub fn check_closed_broadcast(
 		.into_iter()
 		.filter_map(|msg_event| {
 			match msg_event {
-				MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
 					assert_eq!(msg.contents.channel_flags & 2, 2);
 					None
 				},
@@ -4827,7 +4827,7 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(
 	let events_1 = nodes[a].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 2);
 	let as_update = match events_1[1] {
-		MessageSendEvent::BroadcastChannelUpdate { ref msg } => msg.clone(),
+		MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => msg.clone(),
 		_ => panic!("Unexpected event"),
 	};
 	match events_1[0] {
@@ -4864,7 +4864,7 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(
 	let events_2 = nodes[b].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), if needs_err_handle { 1 } else { 2 });
 	let bs_update = match events_2.last().unwrap() {
-		MessageSendEvent::BroadcastChannelUpdate { ref msg } => msg.clone(),
+		MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => msg.clone(),
 		_ => panic!("Unexpected event"),
 	};
 	if !needs_err_handle {

@@ -1522,9 +1522,9 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	}
 	fn handle_channel_update(
 		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelUpdate,
-	) -> Result<bool, msgs::LightningError> {
+	) -> Result<Option<(NodeId, NodeId)>, msgs::LightningError> {
 		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
-		Ok(true)
+		Ok(Some((NodeId::from_slice(&[2; 33]).unwrap(), NodeId::from_slice(&[3; 33]).unwrap())))
 	}
 	fn get_next_channel_announcement(
 		&self, starting_point: u64,

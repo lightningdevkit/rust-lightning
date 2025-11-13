@@ -717,7 +717,7 @@ pub fn channel_monitor_network_test() {
 		let events = nodes[3].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 		let close_chan_update_1 = match events[1] {
-			MessageSendEvent::BroadcastChannelUpdate { ref msg } => msg.clone(),
+			MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => msg.clone(),
 			_ => panic!("Unexpected event"),
 		};
 		match events[0] {
@@ -752,7 +752,7 @@ pub fn channel_monitor_network_test() {
 		let events = nodes[4].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 		let close_chan_update_2 = match events[1] {
-			MessageSendEvent::BroadcastChannelUpdate { ref msg } => msg.clone(),
+			MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => msg.clone(),
 			_ => panic!("Unexpected event"),
 		};
 		match events[0] {
@@ -2167,7 +2167,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 
 	// Ensure that the last remaining message event is the BroadcastChannelUpdate msg for chan_2
 	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
+		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. }, .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -6032,7 +6032,7 @@ pub fn test_announce_disable_channels() {
 	let mut chans_disabled = new_hash_map();
 	for e in msg_events {
 		match e {
-			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
 				assert_eq!(msg.contents.channel_flags & (1 << 1), 1 << 1); // The "channel disabled" bit should be set
 														   // Check that each channel gets updated exactly once
 				if chans_disabled
@@ -6083,7 +6083,7 @@ pub fn test_announce_disable_channels() {
 	assert_eq!(msg_events.len(), 3);
 	for e in msg_events {
 		match e {
-			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
 				assert_eq!(msg.contents.channel_flags & (1 << 1), 0); // The "channel disabled" bit should be off
 				match chans_disabled.remove(&msg.contents.short_channel_id) {
 					// Each update should have a higher timestamp than the previous one, replacing
@@ -8009,13 +8009,13 @@ pub fn test_error_chans_closed() {
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+		MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
 			assert_eq!(msg.contents.channel_flags & 2, 2);
 		},
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+		MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
 			assert_eq!(msg.contents.channel_flags & 2, 2);
 		},
 		_ => panic!("Unexpected event"),

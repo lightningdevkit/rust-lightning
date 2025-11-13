@@ -157,8 +157,8 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	}
 	fn handle_channel_update(
 		&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelUpdate,
-	) -> Result<bool, LightningError> {
-		Ok(false)
+	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
+		Ok(None)
 	}
 	fn get_next_channel_announcement(
 		&self, _starting_point: u64,
@@ -609,6 +609,19 @@ where
 	///
 	/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 	pub send_only_message_handler: SM,
+}
+
+/// A gossip message to be forwarded to all peers.
+enum BroadcastGossipMessage {
+	ChannelAnnouncement(msgs::ChannelAnnouncement),
+	NodeAnnouncement(msgs::NodeAnnouncement),
+	ChannelUpdate {
+		msg: msgs::ChannelUpdate,
+		/// One of the two channel endpoints.
+		node_id_1: NodeId,
+		/// One of the two channel endpoints.
+		node_id_2: NodeId,
+	},
 }
 
 /// Provides an object which can be used to send data to and which uniquely identifies a connection
@@ -1101,6 +1114,7 @@ pub struct PeerManager<
 	gossip_processing_backlog_lifted: AtomicBool,
 
 	node_signer: NS,
+	our_node_id: NodeId,
 
 	logger: L,
 	secp_ctx: Secp256k1<secp256k1::SignOnly>,
@@ -1315,6 +1329,9 @@ where
 		let ephemeral_hash = Sha256::from_engine(ephemeral_key_midstate.clone()).to_byte_array();
 		secp_ctx.seeded_randomize(&ephemeral_hash);
 
+		let our_node_pubkey =
+			node_signer.get_node_id(Recipient::Node).expect("node_id must be available");
+
 		PeerManager {
 			message_handler,
 			peers: FairRwLock::new(new_hash_map()),
@@ -1326,6 +1343,7 @@ where
 			gossip_processing_backlog_lifted: AtomicBool::new(false),
 			last_node_announcement_serial: AtomicU32::new(current_time),
 			logger,
+			our_node_id: NodeId::from_pubkey(&our_node_pubkey),
 			node_signer,
 			secp_ctx,
 		}
@@ -2045,10 +2063,7 @@ where
 		message: wire::Message<
 			<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage,
 		>,
-	) -> Result<
-		Option<wire::Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>>,
-		MessageHandlingError,
-	> {
+	) -> Result<Option<BroadcastGossipMessage>, MessageHandlingError> {
 		let their_node_id = peer_lock
 			.their_node_id
 			.expect("We know the peer's public key by the time we receive messages")
@@ -2390,10 +2405,7 @@ where
 			<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage,
 		>,
 		their_node_id: PublicKey, logger: &WithContext<'a, L>,
-	) -> Result<
-		Option<wire::Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>>,
-		MessageHandlingError,
-	> {
+	) -> Result<Option<BroadcastGossipMessage>, MessageHandlingError> {
 		if is_gossip_msg(message.type_id()) {
 			log_gossip!(logger, "Received message {:?} from {}", message, their_node_id);
 		} else {
@@ -2575,7 +2587,7 @@ where
 					.handle_channel_announcement(Some(their_node_id), &msg)
 					.map_err(|e| -> MessageHandlingError { e.into() })?
 				{
-					should_forward = Some(wire::Message::ChannelAnnouncement(msg));
+					should_forward = Some(BroadcastGossipMessage::ChannelAnnouncement(msg));
 				}
 				self.update_gossip_backlogged();
 			},
@@ -2585,7 +2597,7 @@ where
 					.handle_node_announcement(Some(their_node_id), &msg)
 					.map_err(|e| -> MessageHandlingError { e.into() })?
 				{
-					should_forward = Some(wire::Message::NodeAnnouncement(msg));
+					should_forward = Some(BroadcastGossipMessage::NodeAnnouncement(msg));
 				}
 				self.update_gossip_backlogged();
 			},
@@ -2594,11 +2606,12 @@ where
 				chan_handler.handle_channel_update(their_node_id, &msg);
 
 				let route_handler = &self.message_handler.route_handler;
-				if route_handler
+				if let Some((node_id_1, node_id_2)) = route_handler
 					.handle_channel_update(Some(their_node_id), &msg)
 					.map_err(|e| -> MessageHandlingError { e.into() })?
 				{
-					should_forward = Some(wire::Message::ChannelUpdate(msg));
+					should_forward =
+						Some(BroadcastGossipMessage::ChannelUpdate { msg, node_id_1, node_id_2 });
 				}
 				self.update_gossip_backlogged();
 			},
@@ -2652,20 +2665,23 @@ where
 	/// unless `allow_large_buffer` is set, in which case the message will be treated as critical
 	/// and delivered no matter the available buffer space.
 	fn forward_broadcast_msg(
-		&self, peers: &HashMap<Descriptor, Mutex<Peer>>,
-		msg: &wire::Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>,
+		&self, peers: &HashMap<Descriptor, Mutex<Peer>>, msg: &BroadcastGossipMessage,
 		except_node: Option<&PublicKey>, allow_large_buffer: bool,
 	) {
 		match msg {
-			wire::Message::ChannelAnnouncement(ref msg) => {
+			BroadcastGossipMessage::ChannelAnnouncement(ref msg) => {
 				log_gossip!(self.logger, "Sending message to all peers except {:?} or the announced channel's counterparties: {:?}", except_node, msg);
 				let encoded_msg = encode_msg!(msg);
+				let our_channel = self.our_node_id == msg.contents.node_id_1
+					|| self.our_node_id == msg.contents.node_id_2;
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					if !peer.handshake_complete()
-						|| !peer.should_forward_channel_announcement(msg.contents.short_channel_id)
-					{
+					if !peer.handshake_complete() {
+						continue;
+					}
+					let scid = msg.contents.short_channel_id;
+					if !our_channel && !peer.should_forward_channel_announcement(scid) {
 						continue;
 					}
 					debug_assert!(peer.their_node_id.is_some());
@@ -2696,7 +2712,7 @@ where
 					peer.gossip_broadcast_buffer.push_back(encoded_message);
 				}
 			},
-			wire::Message::NodeAnnouncement(ref msg) => {
+			BroadcastGossipMessage::NodeAnnouncement(ref msg) => {
 				log_gossip!(
 					self.logger,
 					"Sending message to all peers except {:?} or the announced node: {:?}",
@@ -2704,12 +2720,15 @@ where
 					msg
 				);
 				let encoded_msg = encode_msg!(msg);
+				let our_announcement = self.our_node_id == msg.contents.node_id;
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					if !peer.handshake_complete()
-						|| !peer.should_forward_node_announcement(msg.contents.node_id)
-					{
+					if !peer.handshake_complete() {
+						continue;
+					}
+					let node_id = msg.contents.node_id;
+					if !our_announcement && !peer.should_forward_node_announcement(node_id) {
 						continue;
 					}
 					debug_assert!(peer.their_node_id.is_some());
@@ -2738,7 +2757,7 @@ where
 					peer.gossip_broadcast_buffer.push_back(encoded_message);
 				}
 			},
-			wire::Message::ChannelUpdate(ref msg) => {
+			BroadcastGossipMessage::ChannelUpdate { msg, node_id_1, node_id_2 } => {
 				log_gossip!(
 					self.logger,
 					"Sending message to all peers except {:?}: {:?}",
@@ -2746,12 +2765,15 @@ where
 					msg
 				);
 				let encoded_msg = encode_msg!(msg);
+				let our_channel = self.our_node_id == *node_id_1 || self.our_node_id == *node_id_2;
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					if !peer.handshake_complete()
-						|| !peer.should_forward_channel_announcement(msg.contents.short_channel_id)
-					{
+					if !peer.handshake_complete() {
+						continue;
+					}
+					let scid = msg.contents.short_channel_id;
+					if !our_channel && !peer.should_forward_channel_announcement(scid) {
 						continue;
 					}
 					debug_assert!(peer.their_node_id.is_some());
@@ -2774,9 +2796,6 @@ where
 					let encoded_message = MessageBuf::from_encoded(&encoded_msg);
 					peer.gossip_broadcast_buffer.push_back(encoded_message);
 				}
-			},
-			_ => {
-				debug_assert!(false, "We shouldn't attempt to forward anything but gossip messages")
 			},
 		}
 	}
@@ -3129,13 +3148,15 @@ where
 						},
 						MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg } => {
 							log_debug!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
+							let node_id_1 = msg.contents.node_id_1;
+							let node_id_2 = msg.contents.node_id_2;
 							match route_handler.handle_channel_announcement(None, &msg) {
 								Ok(_)
 								| Err(LightningError {
 									action: msgs::ErrorAction::IgnoreDuplicateGossip,
 									..
 								}) => {
-									let forward = wire::Message::ChannelAnnouncement(msg);
+									let forward = BroadcastGossipMessage::ChannelAnnouncement(msg);
 									self.forward_broadcast_msg(
 										peers,
 										&forward,
@@ -3152,7 +3173,11 @@ where
 										action: msgs::ErrorAction::IgnoreDuplicateGossip,
 										..
 									}) => {
-										let forward = wire::Message::ChannelUpdate(msg);
+										let forward = BroadcastGossipMessage::ChannelUpdate {
+											msg,
+											node_id_1,
+											node_id_2,
+										};
 										self.forward_broadcast_msg(
 											peers,
 											&forward,
@@ -3164,7 +3189,7 @@ where
 								}
 							}
 						},
-						MessageSendEvent::BroadcastChannelUpdate { msg } => {
+						MessageSendEvent::BroadcastChannelUpdate { msg, node_id_1, node_id_2 } => {
 							log_debug!(self.logger, "Handling BroadcastChannelUpdate event in peer_handler for contents {:?}", msg.contents);
 							match route_handler.handle_channel_update(None, &msg) {
 								Ok(_)
@@ -3172,7 +3197,11 @@ where
 									action: msgs::ErrorAction::IgnoreDuplicateGossip,
 									..
 								}) => {
-									let forward = wire::Message::ChannelUpdate(msg);
+									let forward = BroadcastGossipMessage::ChannelUpdate {
+										msg,
+										node_id_1,
+										node_id_2,
+									};
 									self.forward_broadcast_msg(
 										peers,
 										&forward,
@@ -3191,7 +3220,7 @@ where
 									action: msgs::ErrorAction::IgnoreDuplicateGossip,
 									..
 								}) => {
-									let forward = wire::Message::NodeAnnouncement(msg);
+									let forward = BroadcastGossipMessage::NodeAnnouncement(msg);
 									self.forward_broadcast_msg(
 										peers,
 										&forward,
@@ -3668,7 +3697,7 @@ where
 		let _ = self.message_handler.route_handler.handle_node_announcement(None, &msg);
 		self.forward_broadcast_msg(
 			&*self.peers.read().unwrap(),
-			&wire::Message::NodeAnnouncement(msg),
+			&BroadcastGossipMessage::NodeAnnouncement(msg),
 			None,
 			true,
 		);
@@ -4409,8 +4438,6 @@ mod tests {
 
 	#[test]
 	fn test_forward_while_syncing() {
-		use crate::ln::peer_handler::tests::test_utils::get_dummy_channel_update;
-
 		// Test forwarding new channel announcements while we're doing syncing.
 		let cfgs = create_peermgr_cfgs(2);
 		cfgs[0].routing_handler.request_full_sync.store(true, Ordering::Release);
@@ -4457,11 +4484,19 @@ mod tests {
 		// At this point we should have sent channel announcements up to roughly SCID 150. Now
 		// build an updated update for SCID 100 and SCID 5000 and make sure only the one for SCID
 		// 100 gets forwarded
-		let msg_100 = get_dummy_channel_update(100);
-		let msg_ev_100 = MessageSendEvent::BroadcastChannelUpdate { msg: msg_100.clone() };
+		let msg_100 = test_utils::get_dummy_channel_update(100);
+		let msg_ev_100 = MessageSendEvent::BroadcastChannelUpdate {
+			msg: msg_100.clone(),
+			node_id_1: NodeId::from_slice(&[2; 33]).unwrap(),
+			node_id_2: NodeId::from_slice(&[3; 33]).unwrap(),
+		};
 
-		let msg_5000 = get_dummy_channel_update(5000);
-		let msg_ev_5000 = MessageSendEvent::BroadcastChannelUpdate { msg: msg_5000 };
+		let msg_5000 = test_utils::get_dummy_channel_update(5000);
+		let msg_ev_5000 = MessageSendEvent::BroadcastChannelUpdate {
+			msg: msg_5000,
+			node_id_1: NodeId::from_slice(&[2; 33]).unwrap(),
+			node_id_2: NodeId::from_slice(&[3; 33]).unwrap(),
+		};
 
 		fd_a.hang_writes.store(true, Ordering::Relaxed);
 
@@ -4868,6 +4903,71 @@ mod tests {
 
 		// For (None)
 		assert_eq!(filter_addresses(None), None);
+	}
+
+	#[test]
+	fn test_forward_gossip_for_our_channels_ignores_peer_filter() {
+		// Tests that gossip for channels where we are one of the endpoints is forwarded to all
+		// peers, regardless of any gossip filters they may have set. This ensures that updates
+		// for our own channels always propagate to all connected peers.
+
+		let cfgs = create_peermgr_cfgs(2);
+		let peers = create_network(2, &cfgs);
+
+		let id_0 = peers[0].node_signer.get_node_id(Recipient::Node).unwrap();
+
+		// Connect the peers and exchange the initial connection handshake (but not the final Init
+		// message).
+		let (mut fd_0_1, mut fd_1_0) = establish_connection(&peers[0], &peers[1]);
+
+		// Once peer 1 receives the Init message in the last read_event, it'll generate a
+		// `GossipTimestampFilter` which will request gossip. Instead we drop it here.
+		cfgs[1]
+			.routing_handler
+			.pending_events
+			.lock()
+			.unwrap()
+			.retain(|ev| !matches!(ev, MessageSendEvent::SendGossipTimestampFilter { .. }));
+
+		peers[1].process_events();
+		let data_1_0 = fd_1_0.outbound_data.lock().unwrap().split_off(0);
+		peers[0].read_event(&mut fd_0_1, &data_1_0).unwrap(); // Init message
+
+		peers[0].process_events();
+		assert!(fd_0_1.outbound_data.lock().unwrap().is_empty());
+		assert!(fd_1_0.outbound_data.lock().unwrap().is_empty());
+
+		let mut check_message_received = |expected_received: bool| {
+			let initial_count = cfgs[1].routing_handler.chan_upds_recvd.load(Ordering::Acquire);
+
+			peers[0].process_events();
+			let data_0_1 = fd_0_1.outbound_data.lock().unwrap().split_off(0);
+			assert_eq!(data_0_1.is_empty(), !expected_received);
+			peers[1].read_event(&mut fd_1_0, &data_0_1).unwrap();
+
+			let final_count = cfgs[1].routing_handler.chan_upds_recvd.load(Ordering::Acquire);
+			assert_eq!(final_count > initial_count, expected_received);
+		};
+
+		// Broadcast a gossip message that is unrelated to us and check that it doesn't get relayed
+		let unrelated_msg_ev = MessageSendEvent::BroadcastChannelUpdate {
+			msg: test_utils::get_dummy_channel_update(43),
+			node_id_1: NodeId::from_slice(&[2; 33]).unwrap(),
+			node_id_2: NodeId::from_slice(&[3; 33]).unwrap(),
+		};
+		cfgs[0].routing_handler.pending_events.lock().unwrap().push(unrelated_msg_ev);
+
+		check_message_received(false);
+
+		// Broadcast a gossip message that we're a party to and check that its relayed
+		let our_channel_msg_ev = MessageSendEvent::BroadcastChannelUpdate {
+			msg: test_utils::get_dummy_channel_update(43),
+			node_id_1: NodeId::from_pubkey(&id_0),
+			node_id_2: NodeId::from_slice(&[3; 33]).unwrap(),
+		};
+		cfgs[0].routing_handler.pending_events.lock().unwrap().push(our_channel_msg_ev);
+
+		check_message_received(true);
 	}
 
 	#[test]

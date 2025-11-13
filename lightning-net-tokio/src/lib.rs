@@ -660,8 +660,8 @@ mod tests {
 		}
 		fn handle_channel_update(
 			&self, _their_node_id: Option<PublicKey>, _msg: &ChannelUpdate,
-		) -> Result<bool, LightningError> {
-			Ok(false)
+		) -> Result<Option<(NodeId, NodeId)>, LightningError> {
+			Ok(None)
 		}
 		fn get_next_channel_announcement(
 			&self, _starting_point: u64,

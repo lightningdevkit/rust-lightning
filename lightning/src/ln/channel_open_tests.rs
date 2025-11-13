@@ -2337,7 +2337,7 @@ pub fn test_funding_and_commitment_tx_confirm_same_block() {
 		} else {
 			panic!();
 		}
-		if let MessageSendEvent::BroadcastChannelUpdate { ref msg } = msg_events.remove(0) {
+		if let MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } = msg_events.remove(0) {
 			assert_eq!(msg.contents.channel_flags & 2, 2);
 		} else {
 			panic!();

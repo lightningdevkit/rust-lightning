@@ -233,6 +233,10 @@ impl UtxoFuture {
 		// Note that we ignore errors as we don't disconnect peers anyway, so there's nothing to do
 		// with them.
 		let resolver = UtxoResolver(result);
+		let (node_id_1, node_id_2) = match &announcement {
+			ChannelAnnouncement::Full(signed_msg) => (signed_msg.contents.node_id_1, signed_msg.contents.node_id_2),
+			ChannelAnnouncement::Unsigned(msg) => (msg.node_id_1, msg.node_id_2),
+		};
 		match announcement {
 			ChannelAnnouncement::Full(signed_msg) => {
 				if graph.update_channel_from_announcement(&signed_msg, &Some(&resolver)).is_ok() {
@@ -270,6 +274,8 @@ impl UtxoFuture {
 					if graph.update_channel(&signed_msg).is_ok() {
 						res[res_idx] = Some(MessageSendEvent::BroadcastChannelUpdate {
 							msg: signed_msg,
+							node_id_1,
+							node_id_2,
 						});
 						res_idx += 1;
 					}
