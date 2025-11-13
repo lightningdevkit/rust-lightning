@@ -15,6 +15,7 @@
 
 use bitcoin::secp256k1::PublicKey;
 
+use core::cell::RefCell;
 use core::cmp;
 use core::fmt;
 use core::ops::Deref;
@@ -261,14 +262,59 @@ impl<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone> fmt::Display fo
 	}
 }
 
+thread_local! {
+	pub(crate) static TLS_LOGGER: RefCell<Option<&'static dyn Logger>> = RefCell::new(None);
+}
+
+pub struct LoggerScope<'a> {
+	_marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> LoggerScope<'a> {
+	pub fn new<L: Logger + 'a>(logger: &'a L) -> Self {
+		TLS_LOGGER.with(|cell| {
+			let mut borrow = cell.borrow_mut();
+
+			// Prevent nested scopes
+			if borrow.is_some() {
+				panic!("LoggerScope already active in this thread");
+			}
+
+			// Transmute is safe in practice because the RAII pattern ensures:
+			// - The TLS logger reference is only used while the guard exists.
+			// - The guard cannot outlive the logger (thanks to PhantomData<'a>).
+			let logger_ref: &dyn Logger = logger;
+			let logger_ref_static: &'static dyn Logger = unsafe { std::mem::transmute(logger_ref) };
+
+			*borrow = Some(logger_ref_static);
+		});
+		LoggerScope { _marker: std::marker::PhantomData }
+	}
+}
+
+impl<'a> Drop for LoggerScope<'a> {
+	fn drop(&mut self) {
+		TLS_LOGGER.with(|cell| {
+			*cell.borrow_mut() = None;
+		});
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::sync::Arc;
 	use crate::types::payment::PaymentHash;
-	use crate::util::logger::{Level, Logger, WithContext};
+	use crate::util::logger::{Level, Logger, LoggerScope, WithContext};
 	use crate::util::test_utils::TestLogger;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+	#[test]
+	fn logger_scope() {
+		let logger = TestLogger::new();
+		let _scope = LoggerScope::new(&logger);
+		log_info_tls!("Info")
+	}
 
 	#[test]
 	fn test_level_show() {

@@ -35,7 +35,7 @@ use crate::ln::types::ChannelId;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::sync::Mutex;
 use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
-use crate::util::logger::Logger;
+use crate::util::logger::{Logger, LoggerScope};
 use crate::util::native_async::FutureSpawner;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 use crate::util::wakers::Notifier;
@@ -1063,6 +1063,7 @@ where
 				Err(err) => return Err(err),
 			};
 
+			// let _scope = LoggerScope::new(&*self.logger); // DOES NOT WORK
 			monitor
 				.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger)
 				.map_err(|e| {
