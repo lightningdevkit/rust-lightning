@@ -57,7 +57,7 @@ use crate::prelude::hash_map::Entry;
 use crate::prelude::*;
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, NetworkGraph, NodeId};
 use crate::routing::log_approx;
-use crate::routing::router::{CandidateRouteHop, Path, PublicHopCandidate};
+use crate::routing::router::{BlindedPathCandidate, CandidateRouteHop, Path, PublicHopCandidate};
 use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
@@ -1681,6 +1681,17 @@ where
 		let (scid, target) = match candidate {
 			CandidateRouteHop::PublicHop(PublicHopCandidate { info, short_channel_id }) => {
 				(short_channel_id, info.target())
+			},
+			CandidateRouteHop::Blinded(BlindedPathCandidate { hint, .. }) => {
+				let total_inflight_amount_msat =
+					usage.amount_msat.saturating_add(usage.inflight_htlc_msat);
+				if usage.amount_msat > hint.payinfo.htlc_maximum_msat {
+					return u64::max_value();
+				} else if total_inflight_amount_msat > hint.payinfo.htlc_maximum_msat {
+					return score_params.considered_impossible_penalty_msat;
+				} else {
+					return 0;
+				}
 			},
 			_ => return 0,
 		};
