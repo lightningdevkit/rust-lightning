@@ -9479,6 +9479,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		for action in actions.into_iter() {
 			match action {
 				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim } => {
+					let logger = WithContext::from(&self.logger, None, None, Some(payment_hash));
+					log_trace!(logger, "Handling PaymentClaimed monitor update completion action");
+
 					if let Some((counterparty_node_id, chan_id, claim_ptr)) = pending_mpp_claim {
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						per_peer_state.get(&counterparty_node_id).map(|peer_state_mutex| {
@@ -9554,6 +9557,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						// `payment_id` should suffice to ensure we never spuriously drop a second
 						// event for a duplicate payment.
 						if !pending_events.contains(&event_action) {
+							log_trace!(logger, "Queuing PaymentClaimed event with event completion action {:?}", event_action.1);
 							pending_events.push_back(event_action);
 						}
 					}
@@ -17132,10 +17136,6 @@ where
 
 				let logger = WithChannelMonitor::from(&args.logger, monitor, None);
 				let channel_id = monitor.channel_id();
-				log_info!(
-					logger,
-					"Queueing monitor update to ensure missing channel is force closed",
-				);
 				let monitor_update = ChannelMonitorUpdate {
 					update_id: monitor.get_latest_update_id().saturating_add(1),
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
@@ -17143,6 +17143,11 @@ where
 					}],
 					channel_id: Some(monitor.channel_id()),
 				};
+				log_info!(
+					logger,
+					"Queueing monitor update {} to ensure missing channel is force closed",
+					monitor_update.update_id
+				);
 				let funding_txo = monitor.get_funding_txo();
 				let update = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
 					counterparty_node_id,
