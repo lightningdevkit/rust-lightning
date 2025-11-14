@@ -8905,8 +8905,8 @@ where
 					);
 					return_with_htlcs_to_fail!(htlcs_to_fail);
 				} else {
-					log_debug!(logger, "Received a valid revoke_and_ack with no reply necessary. {} monitor update.",
-						release_state_str);
+					log_debug!(logger, "Received a valid revoke_and_ack with no reply necessary. {} monitor update {}.",
+						release_state_str, monitor_update.update_id);
 
 					self.monitor_updating_paused(
 						false,
