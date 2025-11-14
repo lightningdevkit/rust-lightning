@@ -157,8 +157,9 @@ impl Router for FuzzRouter {
 	}
 
 	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
-		_amount_msats: Option<u64>, _secp_ctx: &Secp256k1<T>,
+		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
+		_first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs, _amount_msats: Option<u64>,
+		_secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		unreachable!()
 	}

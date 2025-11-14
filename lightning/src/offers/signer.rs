@@ -9,7 +9,6 @@
 
 //! Utilities for signing offer messages and verifying metadata.
 
-use crate::blinded_path::payment::UnauthenticatedReceiveTlvs;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::offers::merkle::TlvRecord;
@@ -41,16 +40,14 @@ const WITH_ENCRYPTED_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[4; 16];
 // The following `HMAC_INPUT` constants were previously used for authenticating fields in
 // `OffersContext`, but were removed in LDK v0.2 with the introduction of `ReceiveAuthKey`-based
 // authentication.
-// Their corresponding values (`[5; 16]` and `[7; 16]`) are now reserved and must not
+// Their corresponding values (`[5; 16]`, `[7; 16]` and `[8; 16]`) are now reserved and must not
 // be reused to ensure type confusion attacks are impossible.
 //
 // Reserved HMAC_INPUT values — do not reuse:
 //
 // const OFFER_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[5; 16];
 // const PAYMENT_HASH_HMAC_INPUT: &[u8; 16] = &[7; 16];
-
-// HMAC input for `ReceiveTlvs`. The HMAC is used in `blinded_path::payment::PaymentContext`.
-const PAYMENT_TLVS_HMAC_INPUT: &[u8; 16] = &[8; 16];
+// const PAYMENT_TLVS_HMAC_INPUT: &[u8; 16] = &[8; 16];
 
 /// Message metadata which possibly is derived from [`MetadataMaterial`] such that it can be
 /// verified.
@@ -448,28 +445,4 @@ fn hmac_for_message<'a>(
 	}
 
 	Ok(hmac)
-}
-
-pub(crate) fn hmac_for_payment_tlvs(
-	receive_tlvs: &UnauthenticatedReceiveTlvs, nonce: Nonce, expanded_key: &ExpandedKey,
-) -> Hmac<Sha256> {
-	const IV_BYTES: &[u8; IV_LEN] = b"LDK Payment TLVs";
-	let mut hmac = expanded_key.hmac_for_offer();
-	hmac.input(IV_BYTES);
-	hmac.input(&nonce.0);
-	hmac.input(PAYMENT_TLVS_HMAC_INPUT);
-	receive_tlvs.write(&mut hmac).unwrap();
-
-	Hmac::from_engine(hmac)
-}
-
-pub(crate) fn verify_payment_tlvs(
-	receive_tlvs: &UnauthenticatedReceiveTlvs, hmac: Hmac<Sha256>, nonce: Nonce,
-	expanded_key: &ExpandedKey,
-) -> Result<(), ()> {
-	if hmac_for_payment_tlvs(receive_tlvs, nonce, expanded_key) == hmac {
-		Ok(())
-	} else {
-		Err(())
-	}
 }

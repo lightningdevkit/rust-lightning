@@ -272,7 +272,6 @@ fn pass_async_payments_oms(
 fn create_static_invoice_builder<'a>(
 	recipient: &Node, offer: &'a Offer, offer_nonce: Nonce, relative_expiry: Option<Duration>,
 ) -> StaticInvoiceBuilder<'a> {
-	let entropy = recipient.keys_manager;
 	let amount_msat = offer.amount().and_then(|amount| match amount {
 		Amount::Bitcoin { amount_msats } => Some(amount_msats),
 		Amount::Currency { .. } => None,
@@ -296,7 +295,6 @@ fn create_static_invoice_builder<'a>(
 		.flow
 		.create_static_invoice_builder(
 			&recipient.router,
-			entropy,
 			offer,
 			offer_nonce,
 			payment_secret,
@@ -1861,7 +1859,7 @@ fn expired_static_invoice_payment_path() {
 			.advance_path_by_one(&nodes[1].keys_manager, &nodes[1].node, &secp_ctx)
 			.unwrap();
 		match blinded_path.decrypt_intro_payload(&nodes[2].keys_manager).unwrap().0 {
-			BlindedPaymentTlvs::Receive(tlvs) => tlvs.tlvs.payment_constraints.max_cltv_expiry,
+			BlindedPaymentTlvs::Receive(tlvs) => tlvs.payment_constraints.max_cltv_expiry,
 			_ => panic!(),
 		}
 	};
@@ -3107,7 +3105,6 @@ fn intercepted_hold_htlc() {
 		.flow
 		.test_create_blinded_payment_paths(
 			&recipient.router,
-			recipient.keys_manager,
 			first_hops,
 			None,
 			payment_secret,

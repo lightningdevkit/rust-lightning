@@ -9,26 +9,22 @@
 
 //! Data structures and methods for constructing [`BlindedPaymentPath`]s to send a payment over.
 
-use bitcoin::hashes::hmac::Hmac;
-use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use crate::blinded_path::utils::{self, BlindedPathWithPadding};
 use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
-use crate::crypto::streams::ChaChaPolyReadAdapter;
+use crate::crypto::streams::ChaChaDualPolyReadAdapter;
 use crate::io;
 use crate::io::Cursor;
 use crate::ln::channel_state::CounterpartyForwardingInfo;
-use crate::ln::channelmanager::Verification;
-use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::offers::invoice_request::InvoiceRequestFields;
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::OfferId;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
-use crate::sign::{EntropySource, NodeSigner, Recipient};
+use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey, Recipient};
 use crate::types::features::BlindedHopFeatures;
 use crate::types::payment::PaymentSecret;
 use crate::types::routing::RoutingFees;
@@ -93,8 +89,8 @@ pub struct BlindedPaymentPath {
 impl BlindedPaymentPath {
 	/// Create a one-hop blinded path for a payment.
 	pub fn one_hop<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		payee_node_id: PublicKey, payee_tlvs: ReceiveTlvs, min_final_cltv_expiry_delta: u16,
-		entropy_source: ES, secp_ctx: &Secp256k1<T>,
+		payee_node_id: PublicKey, local_node_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs,
+		min_final_cltv_expiry_delta: u16, entropy_source: ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, ()>
 	where
 		ES::Target: EntropySource,
@@ -105,6 +101,7 @@ impl BlindedPaymentPath {
 		Self::new(
 			&[],
 			payee_node_id,
+			local_node_receive_key,
 			payee_tlvs,
 			htlc_maximum_msat,
 			min_final_cltv_expiry_delta,
@@ -121,8 +118,8 @@ impl BlindedPaymentPath {
 	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
-		payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
-		entropy_source: ES, secp_ctx: &Secp256k1<T>,
+		local_node_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64,
+		min_final_cltv_expiry_delta: u16, entropy_source: ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, ()>
 	where
 		ES::Target: EntropySource,
@@ -136,7 +133,7 @@ impl BlindedPaymentPath {
 
 		let blinded_payinfo = compute_payinfo(
 			intermediate_nodes,
-			&payee_tlvs.tlvs,
+			&payee_tlvs,
 			htlc_maximum_msat,
 			min_final_cltv_expiry_delta,
 		)?;
@@ -150,6 +147,7 @@ impl BlindedPaymentPath {
 					payee_node_id,
 					payee_tlvs,
 					&blinding_secret,
+					local_node_receive_key,
 				),
 			},
 			payinfo: blinded_payinfo,
@@ -226,12 +224,19 @@ impl BlindedPaymentPath {
 		let control_tlvs_ss =
 			node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
+		let receive_auth_key = node_signer.get_receive_auth_key();
 		let encrypted_control_tlvs =
 			&self.inner_path.blinded_hops.get(0).ok_or(())?.encrypted_payload;
 		let mut s = Cursor::new(encrypted_control_tlvs);
 		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
-		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
-			Ok(ChaChaPolyReadAdapter { readable, .. }) => Ok((readable, control_tlvs_ss)),
+		let ChaChaDualPolyReadAdapter { readable, used_aad } =
+			ChaChaDualPolyReadAdapter::read(&mut reader, (rho, receive_auth_key.0))
+				.map_err(|_| ())?;
+
+		match (&readable, used_aad) {
+			(BlindedPaymentTlvs::Forward(_), false) | (BlindedPaymentTlvs::Receive(_), true) => {
+				Ok((readable, control_tlvs_ss))
+			},
 			_ => Err(()),
 		}
 	}
@@ -325,43 +330,14 @@ pub struct TrampolineForwardTlvs {
 
 /// Data to construct a [`BlindedHop`] for receiving a payment. This payload is custom to LDK and
 /// may not be valid if received by another lightning implementation.
-///
-/// Can only be constructed by calling [`UnauthenticatedReceiveTlvs::authenticate`].
 #[derive(Clone, Debug)]
 pub struct ReceiveTlvs {
-	/// The TLVs for which the HMAC in `authentication` is derived.
-	pub(crate) tlvs: UnauthenticatedReceiveTlvs,
-	/// An HMAC of `tlvs` along with a nonce used to construct it.
-	pub(crate) authentication: (Hmac<Sha256>, Nonce),
-}
-
-impl ReceiveTlvs {
-	/// Returns the underlying TLVs.
-	pub fn tlvs(&self) -> &UnauthenticatedReceiveTlvs {
-		&self.tlvs
-	}
-}
-
-/// An unauthenticated [`ReceiveTlvs`].
-#[derive(Clone, Debug)]
-pub struct UnauthenticatedReceiveTlvs {
 	/// Used to authenticate the sender of a payment to the receiver and tie MPP HTLCs together.
 	pub payment_secret: PaymentSecret,
 	/// Constraints for the receiver of this payment.
 	pub payment_constraints: PaymentConstraints,
 	/// Context for the receiver of this payment.
 	pub payment_context: PaymentContext,
-}
-
-impl UnauthenticatedReceiveTlvs {
-	/// Creates an authenticated [`ReceiveTlvs`], which includes an HMAC and the provide [`Nonce`]
-	/// that can be use later to verify it authenticity.
-	pub fn authenticate(self, nonce: Nonce, expanded_key: &ExpandedKey) -> ReceiveTlvs {
-		ReceiveTlvs {
-			authentication: (self.hmac_for_offer_payment(nonce, expanded_key), nonce),
-			tlvs: self,
-		}
-	}
 }
 
 /// Data to construct a [`BlindedHop`] for sending a payment over.
@@ -536,19 +512,12 @@ impl Writeable for TrampolineForwardTlvs {
 	}
 }
 
+// Note: The `authentication` TLV field was removed in LDK v0.3 following
+// the introduction of `ReceiveAuthKey`-based authentication for inbound
+// `BlindedPaymentPaths`s. Because we do not support receiving to those
+// contexts anymore (they will fail the `ReceiveAuthKey`-based
+// authentication checks), we can reuse that field here.
 impl Writeable for ReceiveTlvs {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		encode_tlv_stream!(w, {
-			(12, self.tlvs.payment_constraints, required),
-			(65536, self.tlvs.payment_secret, required),
-			(65537, self.tlvs.payment_context, required),
-			(65539, self.authentication, required),
-		});
-		Ok(())
-	}
-}
-
-impl Writeable for UnauthenticatedReceiveTlvs {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		encode_tlv_stream!(w, {
 			(12, self.payment_constraints, required),
@@ -583,7 +552,6 @@ impl Readable for BlindedPaymentTlvs {
 			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
 			(65537, payment_context, option),
-			(65539, authentication, option),
 		});
 
 		if let Some(short_channel_id) = scid {
@@ -602,12 +570,9 @@ impl Readable for BlindedPaymentTlvs {
 				return Err(DecodeError::InvalidValue);
 			}
 			Ok(BlindedPaymentTlvs::Receive(ReceiveTlvs {
-				tlvs: UnauthenticatedReceiveTlvs {
-					payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
-					payment_constraints: payment_constraints.0.unwrap(),
-					payment_context: payment_context.ok_or(DecodeError::InvalidValue)?,
-				},
-				authentication: authentication.ok_or(DecodeError::InvalidValue)?,
+				payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
+				payment_constraints: payment_constraints.0.unwrap(),
+				payment_context: payment_context.ok_or(DecodeError::InvalidValue)?,
 			}))
 		}
 	}
@@ -623,7 +588,6 @@ impl Readable for BlindedTrampolineTlvs {
 			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
 			(65537, payment_context, option),
-			(65539, authentication, option),
 		});
 
 		if let Some(next_trampoline) = next_trampoline {
@@ -642,30 +606,26 @@ impl Readable for BlindedTrampolineTlvs {
 				return Err(DecodeError::InvalidValue);
 			}
 			Ok(BlindedTrampolineTlvs::Receive(ReceiveTlvs {
-				tlvs: UnauthenticatedReceiveTlvs {
-					payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
-					payment_constraints: payment_constraints.0.unwrap(),
-					payment_context: payment_context.ok_or(DecodeError::InvalidValue)?,
-				},
-				authentication: authentication.ok_or(DecodeError::InvalidValue)?,
+				payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
+				payment_constraints: payment_constraints.0.unwrap(),
+				payment_context: payment_context.ok_or(DecodeError::InvalidValue)?,
 			}))
 		}
 	}
 }
 
-/// Represents the padding round off size (in bytes) that
-/// is used to pad payment bilnded path's [`BlindedHop`]
+/// Represents the padding round-off size (in bytes) used to pad payment blinded path's [`BlindedHop`].
 pub(crate) const PAYMENT_PADDING_ROUND_OFF: usize = 30;
 
 /// Construct blinded payment hops for the given `intermediate_nodes` and payee info.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
-	payee_tlvs: ReceiveTlvs, session_priv: &SecretKey,
+	payee_tlvs: ReceiveTlvs, session_priv: &SecretKey, local_node_receive_key: ReceiveAuthKey,
 ) -> Vec<BlindedHop> {
 	let pks = intermediate_nodes
 		.iter()
 		.map(|node| (node.node_id, None))
-		.chain(core::iter::once((payee_node_id, None)));
+		.chain(core::iter::once((payee_node_id, Some(local_node_receive_key))));
 	let tlvs = intermediate_nodes
 		.iter()
 		.map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
@@ -734,7 +694,7 @@ where
 }
 
 pub(super) fn compute_payinfo(
-	intermediate_nodes: &[PaymentForwardNode], payee_tlvs: &UnauthenticatedReceiveTlvs,
+	intermediate_nodes: &[PaymentForwardNode], payee_tlvs: &ReceiveTlvs,
 	payee_htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
 ) -> Result<BlindedPayInfo, ()> {
 	let (aggregated_base_fee, aggregated_prop_fee) =
@@ -857,7 +817,7 @@ impl_writeable_tlv_based!(Bolt12RefundContext, {});
 mod tests {
 	use crate::blinded_path::payment::{
 		Bolt12RefundContext, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentForwardNode,
-		PaymentRelay, UnauthenticatedReceiveTlvs,
+		PaymentRelay, ReceiveTlvs,
 	};
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
 	use crate::types::features::BlindedHopFeatures;
@@ -907,7 +867,7 @@ mod tests {
 				htlc_maximum_msat: u64::max_value(),
 			},
 		];
-		let recv_tlvs = UnauthenticatedReceiveTlvs {
+		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
@@ -925,7 +885,7 @@ mod tests {
 
 	#[test]
 	fn compute_payinfo_1_hop() {
-		let recv_tlvs = UnauthenticatedReceiveTlvs {
+		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
@@ -982,7 +942,7 @@ mod tests {
 				htlc_maximum_msat: u64::max_value(),
 			},
 		];
-		let recv_tlvs = UnauthenticatedReceiveTlvs {
+		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 3 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
@@ -1041,7 +1001,7 @@ mod tests {
 				htlc_maximum_msat: u64::max_value(),
 			},
 		];
-		let recv_tlvs = UnauthenticatedReceiveTlvs {
+		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
@@ -1110,7 +1070,7 @@ mod tests {
 				htlc_maximum_msat: 10_000,
 			},
 		];
-		let recv_tlvs = UnauthenticatedReceiveTlvs {
+		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),

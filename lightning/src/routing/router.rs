@@ -28,7 +28,7 @@ use crate::routing::gossip::{
 	DirectedChannelInfo, EffectiveCapacity, NetworkGraph, NodeId, ReadOnlyNetworkGraph,
 };
 use crate::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp};
-use crate::sign::EntropySource;
+use crate::sign::{EntropySource, ReceiveAuthKey};
 use crate::sync::Mutex;
 use crate::types::features::{
 	BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures,
@@ -129,8 +129,8 @@ where
 	fn create_blinded_payment_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	> (
-		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>
+		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey, first_hops: Vec<ChannelDetails>,
+		tlvs: ReceiveTlvs, amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PAYMENT_PATHS: usize = 3;
@@ -180,7 +180,9 @@ where
 
 				let cltv_expiry_delta = payment_relay.cltv_expiry_delta as u32;
 				let payment_constraints = PaymentConstraints {
-					max_cltv_expiry: tlvs.tlvs().payment_constraints.max_cltv_expiry + cltv_expiry_delta,
+					max_cltv_expiry: tlvs.payment_constraints
+						.max_cltv_expiry
+						.saturating_add(cltv_expiry_delta),
 					htlc_minimum_msat: details.inbound_htlc_minimum_msat.unwrap_or(0),
 				};
 				Some(PaymentForwardNode {
@@ -197,7 +199,7 @@ where
 			})
 			.map(|forward_node| {
 				BlindedPaymentPath::new(
-					&[forward_node], recipient, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA,
+					&[forward_node], recipient, local_node_receive_key, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA,
 					&*self.entropy_source, secp_ctx
 				)
 			})
@@ -209,7 +211,7 @@ where
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
 					BlindedPaymentPath::new(
-						&[], recipient, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source,
+						&[], recipient, local_node_receive_key, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source,
 						secp_ctx
 					).map(|path| vec![path])
 				} else {
@@ -243,8 +245,9 @@ impl Router for FixedRouter {
 	}
 
 	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
-		_amount_msats: Option<u64>, _secp_ctx: &Secp256k1<T>,
+		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
+		_first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs, _amount_msats: Option<u64>,
+		_secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		// Should be unreachable as this router is only intended to provide a one-time payment route.
 		debug_assert!(false);
@@ -281,10 +284,11 @@ pub trait Router {
 
 	/// Creates [`BlindedPaymentPath`]s for payment to the `recipient` node. The channels in `first_hops`
 	/// are assumed to be with the `recipient`'s peers. The payment secret and any constraints are
-	/// given in `tlvs`.
+	/// given in `tlvs`. The `local_node_receive_key` is required to authenticate the blinded payment paths.
 	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
+		first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs, amount_msats: Option<u64>,
+		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()>;
 }
 
