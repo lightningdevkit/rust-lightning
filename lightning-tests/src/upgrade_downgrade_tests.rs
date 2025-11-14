@@ -291,7 +291,7 @@ fn test_0_1_legacy_remote_key_derivation() {
 
 	mine_transaction(&nodes[0], &commitment_tx[0]);
 	let reason = ClosureReason::CommitmentTxConfirmed;
-	check_closed_event(&nodes[0], 1, reason, false, &[node_b_id], 100_000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100_000);
 	check_added_monitors(&nodes[0], 1);
 	check_closed_broadcast(&nodes[0], 1, false);
 

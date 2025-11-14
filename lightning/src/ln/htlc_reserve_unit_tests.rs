@@ -332,7 +332,7 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 	// the pending htlc should be promoted to committed
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &as_revoke_and_ack);
 	check_added_monitors(&nodes[0], 1);
-	let commitment_update_2 = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let commitment_update_2 = get_htlc_update_msgs(&nodes[0], &node_b_id);
 
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &as_commitment_signed);
 	let bs_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
@@ -507,7 +507,7 @@ pub fn channel_reserve_in_flight_removes() {
 	nodes[1].node.claim_funds(payment_preimage_1);
 	expect_payment_claimed!(nodes[1], payment_hash_1, payment_value_1);
 	check_added_monitors(&nodes[1], 1);
-	let mut bs_removes = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut bs_removes = get_htlc_update_msgs(&nodes[1], &node_a_id);
 
 	// This claim goes in B's holding cell, allowing us to have a pending B->A RAA which does not
 	// remove the second HTLC when we send the HTLC back from B to A.
@@ -530,11 +530,11 @@ pub fn channel_reserve_in_flight_removes() {
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_raa);
 	check_added_monitors(&nodes[1], 1);
-	let mut bs_cs = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let mut bs_cs = get_htlc_update_msgs(&nodes[1], &node_a_id);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_raa);
 	check_added_monitors(&nodes[0], 1);
-	let as_cs = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let as_cs = get_htlc_update_msgs(&nodes[0], &node_b_id);
 
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_cs.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
@@ -563,7 +563,7 @@ pub fn channel_reserve_in_flight_removes() {
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_raa);
 	check_added_monitors(&nodes[0], 1);
 	expect_payment_path_successful!(nodes[0]);
-	let as_cs = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let as_cs = get_htlc_update_msgs(&nodes[0], &node_b_id);
 
 	// Now that B doesn't have the second RAA anymore, but A still does, send a payment from B back
 	// to A to ensure that A doesn't count the almost-removed HTLC in update_add processing.
@@ -596,7 +596,7 @@ pub fn channel_reserve_in_flight_removes() {
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_raa);
 	check_added_monitors(&nodes[0], 1);
 	expect_payment_path_successful!(nodes[0]);
-	let as_cs = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let as_cs = get_htlc_update_msgs(&nodes[0], &node_b_id);
 
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_cs.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
@@ -683,7 +683,7 @@ pub fn holding_cell_htlc_counting() {
 	expect_htlc_failure_conditions(events, &[fail]);
 	check_added_monitors(&nodes[1], 1);
 
-	let bs_fail_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let bs_fail_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_fail_updates.update_fail_htlcs[0]);
 	let commitment = &bs_fail_updates.commitment_signed;
 	do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, true);
@@ -701,7 +701,7 @@ pub fn holding_cell_htlc_counting() {
 	let (bs_revoke_and_ack, bs_commitment_signed) = get_revoke_commit_msgs(&nodes[2], &node_b_id);
 	nodes[1].node.handle_revoke_and_ack(node_c_id, &bs_revoke_and_ack);
 	check_added_monitors(&nodes[1], 1);
-	let as_updates = get_htlc_update_msgs!(nodes[1], node_c_id);
+	let as_updates = get_htlc_update_msgs(&nodes[1], &node_c_id);
 
 	nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &bs_commitment_signed);
 	check_added_monitors(&nodes[1], 1);
@@ -1086,9 +1086,9 @@ pub fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
 	assert_eq!(err_msg.data, "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value");
+	let reason = ClosureReason::ProcessingError { err: "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_string() };
 	check_added_monitors(&nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_string() },
-		[node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1276,7 +1276,7 @@ pub fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	assert_eq!(err_msg.data, "Remote HTLC add would put them under remote reserve value");
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data.clone() };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1381,7 +1381,7 @@ pub fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	let mut updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let mut updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	updates.update_add_htlcs[0].amount_msat = 0;
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
@@ -1395,7 +1395,7 @@ pub fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 	let reason = ClosureReason::ProcessingError {
 		err: "Remote side tried to send a 0-msat HTLC".to_string(),
 	};
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1543,7 +1543,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min()
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	let mut updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let mut updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	updates.update_add_htlcs[0].amount_msat = htlc_minimum_msat - 1;
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 	assert!(nodes[1].node.list_channels().is_empty());
@@ -1551,7 +1551,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min()
 	assert!(regex::Regex::new(r"Remote side tried to send less than our minimum HTLC value\. Lower limit: \(\d+\)\. Actual: \(\d+\)").unwrap().is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1581,7 +1581,7 @@ pub fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	let mut updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let mut updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 
 	// Even though channel-initiator senders are required to respect the fee_spike_reserve,
 	// at this time channel-initiatee receivers are not required to enforce that senders
@@ -1594,7 +1594,7 @@ pub fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	assert_eq!(err_msg.data, "Remote HTLC add would put them under remote reserve value");
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1662,7 +1662,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 		.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1684,7 +1684,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	let mut updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let mut updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	updates.update_add_htlcs[0].amount_msat = get_channel_value_stat!(nodes[1], nodes[0], chan.2)
 		.counterparty_max_htlc_value_in_flight_msat
 		+ 1;
@@ -1697,7 +1697,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 		.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 1000000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 1000000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1718,7 +1718,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, reason, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	let mut updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let mut updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	updates.update_add_htlcs[0].cltv_expiry = 500000000;
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 
@@ -1727,7 +1727,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	assert_eq!(err_msg.data, "Remote provided CLTV expiry in seconds instead of block height");
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1751,7 +1751,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 
 	check_added_monitors(&nodes[0], 1);
-	let updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 
 	//Disconnect and Reconnect
@@ -1793,7 +1793,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 		.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1816,7 +1816,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 
 	check_added_monitors(&nodes[0], 1);
-	let updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 
 	let update_msg = msgs::UpdateFulfillHTLC {
@@ -1837,7 +1837,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1860,7 +1860,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	let updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 
 	let update_msg = msgs::UpdateFailHTLC {
@@ -1881,7 +1881,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1904,7 +1904,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitme
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	let updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 	let update_msg = msgs::UpdateFailMalformedHTLC {
 		channel_id: chan.2,
@@ -1924,7 +1924,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitme
 	.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1983,7 +1983,7 @@ pub fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 	assert_eq!(err_msg.data, "Remote tried to fulfill/fail an HTLC we couldn't find");
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -2044,7 +2044,7 @@ pub fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 		.is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -2068,7 +2068,7 @@ pub fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_me
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
-	let mut updates = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let mut updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	updates.update_add_htlcs[0].onion_routing_packet.version = 1; //Produce a malformed HTLC message
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
@@ -2115,7 +2115,7 @@ pub fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_me
 	assert_eq!(err_msg.data, "Got update_fail_malformed_htlc with BADONION not set");
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
-	check_closed_event!(nodes[0], 1, reason, [node_b_id], 1000000);
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 1000000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -2262,7 +2262,7 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 		let reason = ClosureReason::ProcessingError { err };
-		check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], CHANNEL_VALUE_SAT);
+		check_closed_event(&nodes[1], 1, reason, &[node_a_id], CHANNEL_VALUE_SAT);
 		check_added_monitors(&nodes[1], 1);
 	} else {
 		// Now manually create the commitment_signed message corresponding to the update_add

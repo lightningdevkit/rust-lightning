@@ -18533,7 +18533,7 @@ mod tests {
 		let fail = HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
 		check_added_monitors!(nodes[1], 1);
-		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
 		assert_eq!(updates.update_fail_htlcs.len(), 1);
@@ -18559,7 +18559,7 @@ mod tests {
 		expect_payment_claimed!(nodes[1], our_payment_hash, 200_000);
 		check_added_monitors!(nodes[1], 2);
 
-		let mut bs_1st_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let mut bs_1st_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_1st_updates.update_fulfill_htlcs.remove(0));
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_1st_updates.commitment_signed);
@@ -18567,7 +18567,7 @@ mod tests {
 		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
 		check_added_monitors!(nodes[1], 1);
-		let mut bs_2nd_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let mut bs_2nd_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_first_cs);
 		check_added_monitors!(nodes[1], 1);
 		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
@@ -18576,7 +18576,7 @@ mod tests {
 		check_added_monitors!(nodes[0], 1);
 		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
-		let as_second_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		let as_second_updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 		check_added_monitors!(nodes[0], 1);
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
 		check_added_monitors!(nodes[1], 1);
@@ -18653,7 +18653,7 @@ mod tests {
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
 		check_added_monitors!(nodes[1], 1);
-		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
 		assert_eq!(updates.update_fail_htlcs.len(), 1);
@@ -18700,7 +18700,7 @@ mod tests {
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
 		check_added_monitors!(nodes[1], 1);
-		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
 		assert_eq!(updates.update_fail_htlcs.len(), 1);
@@ -18749,7 +18749,7 @@ mod tests {
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
 		check_added_monitors!(nodes[1], 1);
-		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
 		assert_eq!(updates.update_fail_htlcs.len(), 1);
@@ -18796,7 +18796,7 @@ mod tests {
 			RecipientOnionFields::spontaneous_empty(), Some(test_preimage), PaymentId(mismatch_payment_hash.0), None, session_privs).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
-		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 		assert_eq!(updates.update_add_htlcs.len(), 1);
 		assert!(updates.update_fulfill_htlcs.is_empty());
 		assert!(updates.update_fail_htlcs.is_empty());
@@ -18807,7 +18807,7 @@ mod tests {
 		expect_and_process_pending_htlcs(&nodes[1], false);
 		expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash: mismatch_payment_hash }]);
 		check_added_monitors(&nodes[1], 1);
-		let _ = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		let _ = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 
 		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Payment preimage didn't match payment hash", 1);
 	}
@@ -18864,7 +18864,7 @@ mod tests {
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 100000);
+		check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 100000);
 
 		// Confirm that the channel_update was not sent immediately to node[1] but was cached.
 		let node_1_events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -18928,7 +18928,7 @@ mod tests {
 			.unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 1_000_000);
+		check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 1_000_000);
 
 		{
 			// Assert that nodes[1] is awaiting removal for nodes[0] once nodes[1] has been
@@ -18965,8 +18965,8 @@ mod tests {
 
 		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
-		check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer, [nodes[1].node.get_our_node_id()], 1_000_000);
-		check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer, [nodes[0].node.get_our_node_id()], 1_000_000);
+		check_closed_event(&nodes[0], 1, ClosureReason::DisconnectedPeer, &[nodes[1].node.get_our_node_id()], 1_000_000);
+		check_closed_event(&nodes[1], 1, ClosureReason::DisconnectedPeer, &[nodes[0].node.get_our_node_id()], 1_000_000);
 
 		// At this point the state for the peers should have been removed.
 		assert_eq!(nodes[0].node.per_peer_state.read().unwrap().len(), 0);
@@ -19412,7 +19412,7 @@ mod tests {
 		check_closed_broadcast(&nodes[0], 1, false);
 		check_added_monitors(&nodes[0], 1);
 		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event!(nodes[0], 1, reason, [nodes[1].node.get_our_node_id()], 100000);
+		check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 100000);
 		{
 			let txn = nodes[0].tx_broadcaster.txn_broadcast();
 			assert_eq!(txn.len(), 1);
@@ -19450,7 +19450,7 @@ mod tests {
 		let expected_close_reason = ClosureReason::ProcessingError {
 			err: "Peer sent an invalid channel_reestablish to force close in a non-standard way".to_string()
 		};
-		check_closed_event!(nodes[1], 1, expected_close_reason, [nodes[0].node.get_our_node_id()], 100000);
+		check_closed_event(&nodes[1], 1, expected_close_reason, &[nodes[0].node.get_our_node_id()], 100000);
 		{
 			let txn = nodes[1].tx_broadcaster.txn_broadcast();
 			assert_eq!(txn.len(), 1);

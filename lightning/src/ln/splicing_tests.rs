@@ -914,12 +914,12 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 	} else {
 		initial_channel_capacity
 	};
-	check_closed_event(&nodes[0], 1, closure_reason, false, &[node_id_1], closed_channel_capacity);
+	check_closed_event(&nodes[0], 1, closure_reason, &[node_id_1], closed_channel_capacity);
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 
 	let closure_reason = ClosureReason::CommitmentTxConfirmed;
-	check_closed_event(&nodes[1], 1, closure_reason, false, &[node_id_0], closed_channel_capacity);
+	check_closed_event(&nodes[1], 1, closure_reason, &[node_id_0], closed_channel_capacity);
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 
@@ -1067,7 +1067,7 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 	let initial_commit_sig_for_acceptor =
 		negotiate_splice_tx(&nodes[0], &nodes[1], channel_id, initiator_contribution);
 	assert_eq!(initial_commit_sig_for_acceptor.htlc_signatures.len(), 1);
-	let initial_commit_sig_for_initiator = get_htlc_update_msgs!(&nodes[1], node_id_0);
+	let initial_commit_sig_for_initiator = get_htlc_update_msgs(&nodes[1], &node_id_0);
 	assert_eq!(initial_commit_sig_for_initiator.commitment_signed.len(), 1);
 	assert_eq!(initial_commit_sig_for_initiator.commitment_signed[0].htlc_signatures.len(), 1);
 

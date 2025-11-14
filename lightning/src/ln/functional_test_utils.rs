@@ -1103,16 +1103,6 @@ pub fn get_htlc_update_msgs(node: &Node, recipient: &PublicKey) -> msgs::Commitm
 	}
 }
 
-#[macro_export]
-/// Gets an UpdateHTLCs MessageSendEvent
-///
-/// Don't use this, use the identically-named function instead.
-macro_rules! get_htlc_update_msgs {
-	($node: expr, $node_id: expr) => {
-		$crate::ln::functional_test_utils::get_htlc_update_msgs(&$node, &$node_id)
-	};
-}
-
 /// Fetches the first `msg_event` to the passed `node_id` in the passed `msg_events` vec.
 /// Returns the `msg_event`.
 ///
@@ -2359,6 +2349,20 @@ pub fn check_closed_events(node: &Node, expected_close_events: &[ExpectedCloseEv
 /// Check that a channel's closing channel events has been issued
 pub fn check_closed_event(
 	node: &Node, events_count: usize, expected_reason: ClosureReason,
+	expected_counterparty_node_ids: &[PublicKey], expected_channel_capacity: u64,
+) {
+	check_closed_event_internal(
+		node,
+		events_count,
+		expected_reason,
+		false,
+		expected_counterparty_node_ids,
+		expected_channel_capacity,
+	);
+}
+
+pub fn check_closed_event_internal(
+	node: &Node, events_count: usize, expected_reason: ClosureReason,
 	is_check_discard_funding: bool, expected_counterparty_node_ids: &[PublicKey],
 	expected_channel_capacity: u64,
 ) {
@@ -2382,33 +2386,6 @@ pub fn check_closed_event(
 		})
 		.collect::<Vec<_>>();
 	check_closed_events(node, expected_close_events.as_slice());
-}
-
-/// Check that a channel's closing channel events has been issued
-///
-/// Don't use this, use the identically-named function instead.
-#[macro_export]
-macro_rules! check_closed_event {
-	($node: expr, $events: expr, $reason: expr, $counterparty_node_ids: expr, $channel_capacity: expr) => {
-		check_closed_event!(
-			$node,
-			$events,
-			$reason,
-			false,
-			$counterparty_node_ids,
-			$channel_capacity
-		);
-	};
-	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr, $counterparty_node_ids: expr, $channel_capacity: expr) => {
-		$crate::ln::functional_test_utils::check_closed_event(
-			&$node,
-			$events,
-			$reason,
-			$is_check_discard_funding,
-			&$counterparty_node_ids,
-			$channel_capacity,
-		);
-	};
 }
 
 pub fn handle_bump_events(node: &Node, expected_close: bool, expected_htlc_count: usize) {
@@ -3442,7 +3419,7 @@ fn fail_payment_along_path<'a, 'b, 'c>(expected_path: &[&Node<'a, 'b, 'c>]) {
 
 	// iterate from the receiving node to the origin node and handle update fail htlc.
 	for (&node, &prev_node) in expected_path.iter().rev().zip(expected_path.iter().rev().skip(1)) {
-		let updates = get_htlc_update_msgs!(node, prev_node.node.get_our_node_id());
+		let updates = get_htlc_update_msgs(node, &prev_node.node.get_our_node_id());
 		prev_node
 			.node
 			.handle_update_fail_htlc(node.node.get_our_node_id(), &updates.update_fail_htlcs[0]);

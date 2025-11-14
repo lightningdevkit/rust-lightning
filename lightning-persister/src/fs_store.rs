@@ -720,7 +720,6 @@ mod tests {
 
 	use lightning::chain::chainmonitor::Persist;
 	use lightning::chain::ChannelMonitorUpdateStatus;
-	use lightning::check_closed_event;
 	use lightning::events::ClosureReason;
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::BaseMessageHandler;
@@ -884,7 +883,7 @@ mod tests {
 			.unwrap();
 		let reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+		check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 
 		// Set the store's directory to read-only, which should result in
@@ -928,7 +927,7 @@ mod tests {
 			.unwrap();
 		let reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+		check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
 		let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();

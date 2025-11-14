@@ -580,7 +580,7 @@ fn lock_in_htlc_for_static_invoice(
 	// The sender should lock in the held HTLC with their LSP right after receiving the static invoice.
 	sender.onion_messenger.handle_onion_message(om_peer, &static_invoice_om);
 	check_added_monitors(sender, 1);
-	let commitment_update = get_htlc_update_msgs!(sender, sender_lsp.node.get_our_node_id());
+	let commitment_update = get_htlc_update_msgs(&sender, &sender_lsp.node.get_our_node_id());
 	let update_add = commitment_update.update_add_htlcs[0].clone();
 	let payment_hash = update_add.payment_hash;
 	assert!(update_add.hold_htlc.is_some());
@@ -637,7 +637,7 @@ fn invalid_keysend_payment_secret() {
 			.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
 
-	let updates_2_1 = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	let updates_2_1 = get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
 	assert_eq!(updates_2_1.update_fail_malformed_htlcs.len(), 1);
 	let update_malformed = &updates_2_1.update_fail_malformed_htlcs[0];
 	assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
@@ -650,7 +650,7 @@ fn invalid_keysend_payment_secret() {
 		.handle_update_fail_malformed_htlc(nodes[2].node.get_our_node_id(), update_malformed);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates_2_1.commitment_signed, true, false);
 
-	let updates_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let updates_1_0 = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	assert_eq!(updates_1_0.update_fail_htlcs.len(), 1);
 	nodes[0].node.handle_update_fail_htlc(
 		nodes[1].node.get_our_node_id(),

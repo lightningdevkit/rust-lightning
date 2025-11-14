@@ -2424,7 +2424,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 		.with_payment_preimage(payment_preimage)
 		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
-	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let mut updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, true, PaymentFailedConditions::new());
@@ -2506,7 +2506,7 @@ fn no_double_pay_with_stale_channelmanager() {
 	let monitor_1 = get_monitor!(nodes[0], chan_id_1).encode();
 	reload_node!(nodes[0], &alice_chan_manager_serialized, &[&monitor_0, &monitor_1], persister, chain_monitor, alice_deserialized);
 	// The stale manager results in closing the channels.
-	check_closed_event!(nodes[0], 2, ClosureReason::OutdatedChannelManager, [bob_id, bob_id], 10_000_000);
+	check_closed_event(&nodes[0], 2, ClosureReason::OutdatedChannelManager, &[bob_id, bob_id], 10_000_000);
 	check_added_monitors!(nodes[0], 2);
 
 	// Alice receives a duplicate invoice, but the payment should be transitioned to Retryable by now.

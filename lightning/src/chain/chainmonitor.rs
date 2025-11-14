@@ -1596,11 +1596,10 @@ where
 mod tests {
 	use crate::chain::channelmonitor::ANTI_REORG_DELAY;
 	use crate::chain::{ChannelMonitorUpdateStatus, Watch};
+	use crate::check_added_monitors;
 	use crate::events::{ClosureReason, Event};
-	use crate::get_htlc_update_msgs;
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
-	use crate::{check_added_monitors, check_closed_event};
 	use crate::{expect_payment_path_successful, get_event_msg};
 
 	const CHAINSYNC_MONITOR_PARTITION_FACTOR: u32 = 5;
@@ -1691,7 +1690,7 @@ mod tests {
 		// Now manually walk the commitment signed dance - because we claimed two payments
 		// back-to-back it doesn't fit into the neat walk commitment_signed_dance does.
 
-		let mut updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+		let mut updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 		nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
 		expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
 		nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
@@ -1700,7 +1699,7 @@ mod tests {
 
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &as_first_raa);
 		check_added_monitors!(nodes[1], 1);
-		let mut bs_2nd_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
+		let mut bs_2nd_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 		nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_first_update);
 		check_added_monitors!(nodes[1], 1);
 		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
@@ -1781,7 +1780,7 @@ mod tests {
 			.unwrap();
 		let closure_reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event!(&nodes[0], 1, closure_reason, false, [node_c_id], 1000000);
+		check_closed_event(&nodes[0], 1, closure_reason, &[node_c_id], 1000000);
 		check_closed_broadcast(&nodes[0], 1, true);
 		let close_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(close_tx.len(), 1);
@@ -1790,7 +1789,7 @@ mod tests {
 		check_closed_broadcast(&nodes[2], 1, true);
 		check_added_monitors(&nodes[2], 1);
 		let closure_reason = ClosureReason::CommitmentTxConfirmed;
-		check_closed_event!(&nodes[2], 1, closure_reason, false, [node_a_id], 1000000);
+		check_closed_event(&nodes[2], 1, closure_reason, &[node_a_id], 1000000);
 
 		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
 		chanmon_cfgs[2].persister.chain_sync_monitor_persistences.lock().unwrap().clear();

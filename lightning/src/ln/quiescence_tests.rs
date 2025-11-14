@@ -104,7 +104,7 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 	check_added_monitors!(local_node, 1);
 
 	// Attempt to send an HTLC, but don't fully commit it yet.
-	let update_add = get_htlc_update_msgs!(local_node, remote_node_id);
+	let update_add = get_htlc_update_msgs(&local_node, &remote_node_id);
 	remote_node.node.handle_update_add_htlc(local_node_id, &update_add.update_add_htlcs[0]);
 	remote_node
 		.node
@@ -149,7 +149,7 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 	);
 	check_added_monitors(remote_node, 1);
 
-	let update_fail = get_htlc_update_msgs!(remote_node, local_node_id);
+	let update_fail = get_htlc_update_msgs(&remote_node, &local_node_id);
 	local_node.node.handle_update_fail_htlc(remote_node_id, &update_fail.update_fail_htlcs[0]);
 	local_node
 		.node
@@ -201,7 +201,7 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(&nodes[1], payment_hash, payment_amount);
 
-	let mut update = get_htlc_update_msgs!(&nodes[1], node_id_0);
+	let mut update = get_htlc_update_msgs(&nodes[1], &node_id_0);
 	nodes[0].node.handle_update_fulfill_htlc(node_id_1, update.update_fulfill_htlcs.remove(0));
 	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &update.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
@@ -313,7 +313,7 @@ fn test_quiescence_on_final_revoke_and_ack_pending_monitor_update() {
 	let stfu = get_event_msg!(&nodes[1], MessageSendEvent::SendStfu, node_id_0);
 	nodes[0].node.handle_stfu(node_id_1, &stfu);
 
-	let update_add = get_htlc_update_msgs!(&nodes[0], node_id_1);
+	let update_add = get_htlc_update_msgs(&nodes[0], &node_id_1);
 	nodes[1].node.handle_update_add_htlc(node_id_0, &update_add.update_add_htlcs[0]);
 	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &update_add.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
@@ -385,7 +385,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	nodes[0].node.send_payment_with_route(route2, payment_hash2, onion2, payment_id2).unwrap();
 	check_added_monitors!(&nodes[0], 1);
 
-	let update_add = get_htlc_update_msgs!(&nodes[0], node_id_1);
+	let update_add = get_htlc_update_msgs(&nodes[0], &node_id_1);
 	nodes[1].node.handle_update_add_htlc(node_id_0, &update_add.update_add_htlcs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_add.commitment_signed, false, false);
 	expect_and_process_pending_htlcs(&nodes[1], false);
@@ -413,7 +413,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 
 	// Now that quiescence is over, nodes are allowed to make updates again. nodes[1] will have its
 	// outbound HTLC finally go out, along with the fail/claim of nodes[0]'s payment.
-	let mut update = get_htlc_update_msgs!(&nodes[1], node_id_0);
+	let mut update = get_htlc_update_msgs(&nodes[1], &node_id_0);
 	check_added_monitors(&nodes[1], 1);
 	nodes[0].node.handle_update_add_htlc(node_id_1, &update.update_add_htlcs[0]);
 	if fail_htlc {
@@ -448,7 +448,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	}
 	check_added_monitors(&nodes[0], 1);
 
-	let mut update = get_htlc_update_msgs!(&nodes[0], node_id_1);
+	let mut update = get_htlc_update_msgs(&nodes[0], &node_id_1);
 	if fail_htlc {
 		nodes[1].node.handle_update_fail_htlc(node_id_0, &update.update_fail_htlcs[0]);
 	} else {

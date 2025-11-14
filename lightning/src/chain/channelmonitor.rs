@@ -7012,7 +7012,7 @@ mod tests {
 		check_spends!(htlc_txn[1], broadcast_tx);
 
 		check_closed_broadcast(&nodes[1], 1, true);
-		check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false, &[nodes[0].node.get_our_node_id()], 100000);
+		check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
 		check_added_monitors(&nodes[1], 1);
 	}
 

@@ -180,7 +180,7 @@ mod test {
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::logger::Logger;
 
-	use lightning::{expect_payment_claimed, get_htlc_update_msgs};
+	use lightning::expect_payment_claimed;
 	use lightning_types::string::UntrustedString;
 
 	use std::ops::Deref;
@@ -416,7 +416,7 @@ mod test {
 		nodes[0].onion_messenger.handle_onion_message(payee_id, &inv);
 
 		check_added_monitors(&nodes[0], 1);
-		let updates = get_htlc_update_msgs!(nodes[0], payee_id);
+		let updates = get_htlc_update_msgs(&nodes[0], &payee_id);
 		nodes[1].node.handle_update_add_htlc(payer_id, &updates.update_add_htlcs[0]);
 		do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
 		expect_and_process_pending_htlcs(&nodes[1], false);
@@ -450,7 +450,7 @@ mod test {
 		}
 
 		check_added_monitors(&nodes[1], 1);
-		let mut updates = get_htlc_update_msgs!(nodes[1], payer_id);
+		let mut updates = get_htlc_update_msgs(&nodes[1], &payer_id);
 		nodes[0].node.handle_update_fulfill_htlc(payee_id, updates.update_fulfill_htlcs.remove(0));
 		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 

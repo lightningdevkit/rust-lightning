@@ -189,23 +189,13 @@ fn test_htlc_claim_chunking() {
 
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(
-		nodes[0],
-		1,
-		ClosureReason::CommitmentTxConfirmed,
-		[nodes[1].node.get_our_node_id()],
-		CHAN_CAPACITY
-	);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], CHAN_CAPACITY);
 	assert!(nodes[0].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(
-		nodes[1],
-		1,
-		ClosureReason::CommitmentTxConfirmed,
-		[nodes[0].node.get_our_node_id()],
-		CHAN_CAPACITY
-	);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], CHAN_CAPACITY);
 	assert!(nodes[1].node.list_channels().is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
@@ -362,7 +352,7 @@ fn test_anchor_tx_too_big() {
 	check_closed_broadcast!(nodes[1], true);
 
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], CHAN_CAPACITY);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], CHAN_CAPACITY);
 
 	let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);

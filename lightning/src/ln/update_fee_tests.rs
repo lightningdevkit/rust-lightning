@@ -107,7 +107,7 @@ pub fn test_async_inbound_update_fee() {
 	check_added_monitors(&nodes[1], 1);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_revoke_and_ack); // deliver (2)
-	let bs_update = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let bs_update = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	assert!(bs_update.update_add_htlcs.is_empty()); // (4)
 	assert!(bs_update.update_fulfill_htlcs.is_empty()); // (4)
 	assert!(bs_update.update_fail_htlcs.is_empty()); // (4)
@@ -116,7 +116,7 @@ pub fn test_async_inbound_update_fee() {
 	check_added_monitors(&nodes[1], 1);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_revoke_and_ack); // deliver (3)
-	let as_update = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let as_update = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	assert!(as_update.update_add_htlcs.is_empty()); // (5)
 	assert!(as_update.update_fulfill_htlcs.is_empty()); // (5)
 	assert!(as_update.update_fail_htlcs.is_empty()); // (5)
@@ -289,7 +289,7 @@ pub fn test_multi_flight_update_fee() {
 
 	// Deliver (1), generating (3) and (4)
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_revoke_msg);
-	let as_second_update = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let as_second_update = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	check_added_monitors(&nodes[0], 1);
 	assert!(as_second_update.update_add_htlcs.is_empty());
 	assert!(as_second_update.update_fulfill_htlcs.is_empty());
@@ -439,7 +439,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	}
 	nodes[0].node.timer_tick_occurred();
 	check_added_monitors(&nodes[0], 1);
-	let update_msg = get_htlc_update_msgs!(nodes[0], node_b_id);
+	let update_msg = get_htlc_update_msgs(&nodes[0], &node_b_id);
 
 	nodes[1].node.handle_update_fee(node_a_id, &update_msg.update_fee.unwrap());
 
@@ -531,7 +531,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	check_added_monitors(&nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
 	let reason = ClosureReason::ProcessingError { err: err.to_string() };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], channel_value);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], channel_value);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -629,7 +629,7 @@ pub fn test_update_fee_that_saturates_subs() {
 	check_added_monitors(&nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
 	let reason = ClosureReason::ProcessingError { err: err.to_string() };
-	check_closed_event!(nodes[1], 1, reason, [node_a_id], 10_000);
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 10_000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -692,7 +692,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	check_added_monitors(&nodes[1], 1);
 	// AwaitingRemoteRevoke ends here
 
-	let commitment_update = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let commitment_update = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	assert_eq!(commitment_update.update_add_htlcs.len(), 1);
 	assert_eq!(commitment_update.update_fulfill_htlcs.len(), 0);
 	assert_eq!(commitment_update.update_fail_htlcs.len(), 0);
@@ -734,9 +734,9 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	send_payment(&nodes[0], &[&nodes[1]], 800000);
 	close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
 	let node_a_reason = ClosureReason::CounterpartyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[0], 1, node_a_reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, node_a_reason, &[node_b_id], 100000);
 	let node_b_reason = ClosureReason::LocallyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[1], 1, node_b_reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, node_b_reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -834,7 +834,7 @@ pub fn test_update_fee() {
 
 	// Deliver (6), creating (7):
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke_msg_0);
-	let commitment_update = get_htlc_update_msgs!(nodes[1], node_a_id);
+	let commitment_update = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	assert!(commitment_update.update_add_htlcs.is_empty());
 	assert!(commitment_update.update_fulfill_htlcs.is_empty());
 	assert!(commitment_update.update_fail_htlcs.is_empty());
@@ -858,9 +858,9 @@ pub fn test_update_fee() {
 	assert_eq!(get_feerate!(nodes[1], nodes[0], channel_id), feerate + 30);
 	close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
 	let node_a_reason = ClosureReason::CounterpartyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[0], 1, node_a_reason, [node_b_id], 100000);
+	check_closed_event(&nodes[0], 1, node_a_reason, &[node_b_id], 100000);
 	let node_b_reason = ClosureReason::LocallyInitiatedCooperativeClosure;
-	check_closed_event!(nodes[1], 1, node_b_reason, [node_a_id], 100000);
+	check_closed_event(&nodes[1], 1, node_b_reason, &[node_a_id], 100000);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -995,7 +995,7 @@ pub fn accept_busted_but_better_fee() {
 				peer_feerate_sat_per_kw: 1000,
 				required_feerate_sat_per_kw: 5000,
 			};
-			check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
+			check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 			check_closed_broadcast!(nodes[1], true);
 			check_added_monitors(&nodes[1], 1);
 		},
