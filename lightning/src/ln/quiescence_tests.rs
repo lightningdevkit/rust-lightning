@@ -101,7 +101,7 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 	let onion = RecipientOnionFields::secret_only(payment_secret);
 	let payment_id = PaymentId(payment_hash.0);
 	local_node.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
-	check_added_monitors!(local_node, 1);
+	check_added_monitors(&local_node, 1);
 
 	// Attempt to send an HTLC, but don't fully commit it yet.
 	let update_add = get_htlc_update_msgs(&local_node, &remote_node_id);
@@ -373,7 +373,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	let onion1 = RecipientOnionFields::secret_only(payment_secret1);
 	let payment_id1 = PaymentId(payment_hash1.0);
 	nodes[1].node.send_payment_with_route(route1, payment_hash1, onion1, payment_id1).unwrap();
-	check_added_monitors!(&nodes[1], 0);
+	check_added_monitors(&nodes[1], 0);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Send a payment in the opposite direction. Since nodes[0] hasn't sent its own `stfu` yet, it's
@@ -383,7 +383,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	let onion2 = RecipientOnionFields::secret_only(payment_secret2);
 	let payment_id2 = PaymentId(payment_hash2.0);
 	nodes[0].node.send_payment_with_route(route2, payment_hash2, onion2, payment_id2).unwrap();
-	check_added_monitors!(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let update_add = get_htlc_update_msgs(&nodes[0], &node_id_1);
 	nodes[1].node.handle_update_add_htlc(node_id_0, &update_add.update_add_htlcs[0]);

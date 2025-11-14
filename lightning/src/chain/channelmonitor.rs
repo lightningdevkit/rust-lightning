@@ -6911,10 +6911,7 @@ mod tests {
 	use crate::util::logger::Logger;
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::{TestBroadcaster, TestFeeEstimator, TestLogger};
-	use crate::{
-		check_added_monitors, check_spends, get_local_commitment_txn, get_monitor,
-		get_route_and_payment_hash,
-	};
+	use crate::{check_spends, get_local_commitment_txn, get_monitor, get_route_and_payment_hash};
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;
@@ -6973,7 +6970,7 @@ mod tests {
 		nodes[1].node.send_payment_with_route(route, payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
 		).unwrap();
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 
 		// Build a new ChannelMonitorUpdate which contains both the failing commitment tx update
 		// and provides the claim preimages for the two pending HTLCs. The first update generates

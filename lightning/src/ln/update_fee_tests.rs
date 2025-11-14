@@ -1124,7 +1124,7 @@ pub fn do_cannot_afford_on_holding_cell_release(
 	if let MessageSendEvent::SendRevokeAndACK { node_id, msg } = events.pop().unwrap() {
 		assert_eq!(node_id, node_a_id);
 		nodes[0].node.handle_revoke_and_ack(node_b_id, &msg);
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 	} else {
 		panic!();
 	}
