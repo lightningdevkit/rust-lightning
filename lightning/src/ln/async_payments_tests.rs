@@ -981,7 +981,7 @@ fn ignore_duplicate_invoice() {
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&always_online_node_id, &mut events);
 	let payment_hash = extract_payment_hash(&ev);
-	check_added_monitors!(sender, 1);
+	check_added_monitors(&sender, 1);
 
 	let route: &[&[&Node]] = &[&[always_online_node, async_recipient]];
 	let args = PassAlongPathArgs::new(sender, route[0], amt_msat, payment_hash, ev);
@@ -1060,7 +1060,7 @@ fn ignore_duplicate_invoice() {
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&always_online_node_id, &mut events);
 	let payment_hash = extract_payment_hash(&ev);
-	check_added_monitors!(sender, 1);
+	check_added_monitors(&sender, 1);
 
 	let args = PassAlongPathArgs::new(sender, route[0], amt_msat, payment_hash, ev)
 		.without_clearing_recipient_events();
@@ -1129,7 +1129,7 @@ fn async_receive_flow_success() {
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	let payment_hash = extract_payment_hash(&ev);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	// Receiving a duplicate release_htlc message doesn't result in duplicate payment.
 	nodes[0]
@@ -1519,7 +1519,7 @@ fn amount_doesnt_match_invreq() {
 	let mut ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	assert!(matches!(
 				ev, MessageSendEvent::UpdateHTLCs { ref updates, .. } if updates.update_add_htlcs.len() == 1));
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let route: &[&[&Node]] = &[&[&nodes[2], &nodes[3]]];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev);
 	let claimable_ev = do_pass_along_path(args).unwrap();
@@ -1723,7 +1723,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 		&[HTLCHandlingFailureType::Receive { payment_hash }],
 	);
 	nodes[2].node.process_pending_htlc_forwards();
-	check_added_monitors!(nodes[2], 1);
+	check_added_monitors(&nodes[2], 1);
 	fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1], &nodes[2]], true);
 
 	// Trigger a retry and make sure it fails after calling the closure that induces recipient
@@ -1735,7 +1735,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	let mut ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	assert!(matches!(
 						ev, MessageSendEvent::UpdateHTLCs { ref updates, .. } if updates.update_add_htlcs.len() == 1));
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
 		.without_claimable_event()
@@ -1749,7 +1749,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let mut ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev);
 	let claimable_ev = do_pass_along_path(args).unwrap();
@@ -1915,7 +1915,7 @@ fn expired_static_invoice_payment_path() {
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	let payment_hash = extract_payment_hash(&ev);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
@@ -2360,7 +2360,7 @@ fn refresh_static_invoices_for_used_offers() {
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&server.node.get_our_node_id(), &mut events);
 	let payment_hash = extract_payment_hash(&ev);
-	check_added_monitors!(sender, 1);
+	check_added_monitors(&sender, 1);
 
 	let route: &[&[&Node]] = &[&[server, recipient]];
 	let args = PassAlongPathArgs::new(sender, route[0], amt_msat, payment_hash, ev);
@@ -2694,7 +2694,7 @@ fn invoice_server_is_not_channel_peer() {
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&forwarding_node.node.get_our_node_id(), &mut events);
 	let payment_hash = extract_payment_hash(&ev);
-	check_added_monitors!(sender, 1);
+	check_added_monitors(&sender, 1);
 
 	let route: &[&[&Node]] = &[&[forwarding_node, recipient]];
 	let args = PassAlongPathArgs::new(sender, route[0], amt_msat, payment_hash, ev);
@@ -2933,7 +2933,7 @@ fn async_payment_e2e() {
 	let mut events = sender_lsp.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&invoice_server.node.get_our_node_id(), &mut events);
-	check_added_monitors!(sender_lsp, 1);
+	check_added_monitors(&sender_lsp, 1);
 
 	let path: &[&Node] = &[invoice_server, recipient];
 	let args = PassAlongPathArgs::new(sender_lsp, path, amt_msat, payment_hash, ev);
@@ -3170,7 +3170,7 @@ fn intercepted_hold_htlc() {
 	let mut events = lsp.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&recipient.node.get_our_node_id(), &mut events);
-	check_added_monitors!(lsp, 1);
+	check_added_monitors(&lsp, 1);
 
 	let path: &[&Node] = &[recipient];
 	let args = PassAlongPathArgs::new(lsp, path, amt_msat, payment_hash, ev);
@@ -3271,7 +3271,7 @@ fn async_payment_mpp() {
 
 	let expected_path: &[&Node] = &[recipient];
 	lsp_a.node.process_pending_htlc_forwards();
-	check_added_monitors!(lsp_a, 1);
+	check_added_monitors(&lsp_a, 1);
 	let mut events = lsp_a.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&recipient.node.get_our_node_id(), &mut events);
@@ -3280,7 +3280,7 @@ fn async_payment_mpp() {
 	do_pass_along_path(args);
 
 	lsp_b.node.process_pending_htlc_forwards();
-	check_added_monitors!(lsp_b, 1);
+	check_added_monitors(&lsp_b, 1);
 	let mut events = lsp_b.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&recipient.node.get_our_node_id(), &mut events);
@@ -3417,7 +3417,7 @@ fn release_htlc_races_htlc_onion_decode() {
 	let mut events = sender_lsp.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&invoice_server.node.get_our_node_id(), &mut events);
-	check_added_monitors!(sender_lsp, 1);
+	check_added_monitors(&sender_lsp, 1);
 
 	let path: &[&Node] = &[invoice_server, recipient];
 	let args = PassAlongPathArgs::new(sender_lsp, path, amt_msat, payment_hash, ev);

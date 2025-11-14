@@ -301,7 +301,7 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(
 	src.node
 		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
 		.unwrap();
-	check_added_monitors!(src, 1);
+	check_added_monitors(&src, 1);
 
 	// Pass the payment along the route.
 	let payment_event = {
@@ -528,7 +528,7 @@ fn do_test_async_raa_peer_disconnect(
 	src.node
 		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
 		.unwrap();
-	check_added_monitors!(src, 1);
+	check_added_monitors(&src, 1);
 
 	// Pass the payment along the route.
 	let payment_event = {
@@ -593,7 +593,7 @@ fn do_test_async_raa_peer_disconnect(
 			(latest_update, _) = channel_map.get(&chan_id).unwrap().clone();
 		}
 		dst.chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
-		check_added_monitors!(dst, 0);
+		check_added_monitors(&dst, 0);
 	}
 
 	// Expect the RAA
@@ -677,7 +677,7 @@ fn do_test_async_commitment_signature_peer_disconnect(
 	src.node
 		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
 		.unwrap();
-	check_added_monitors!(src, 1);
+	check_added_monitors(&src, 1);
 
 	// Pass the payment along the route.
 	let payment_event = {
@@ -743,7 +743,7 @@ fn do_test_async_commitment_signature_peer_disconnect(
 			(latest_update, _) = channel_map.get(&chan_id).unwrap().clone();
 		}
 		dst.chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
-		check_added_monitors!(dst, 0);
+		check_added_monitors(&dst, 0);
 	}
 
 	// Expect the RAA
@@ -813,14 +813,14 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 		.node
 		.send_payment_with_route(route, payment_hash_2, recipient_fields, payment_id)
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	get_htlc_update_msgs(&nodes[0], &node_b_id);
 
 	// Send back update_fulfill_htlc + commitment_signed for the first payment.
 	nodes[1].node.claim_funds(payment_preimage_1);
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	// Handle the update_fulfill_htlc, but fail to persist the monitor update when handling the
 	// commitment_signed.
@@ -844,7 +844,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 				let _ = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 			}
 			// No commitment_signed so get_event_msg's assert(len == 1) passes
-			check_added_monitors!(nodes[0], 1);
+			check_added_monitors(&nodes[0], 1);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -893,7 +893,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 			(latest_update, _) = channel_map.get(&chan_id).unwrap().clone();
 		}
 		nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
-		check_added_monitors!(nodes[0], 0);
+		check_added_monitors(&nodes[0], 0);
 	}
 
 	// Make sure that on signer_unblocked we have the same behavior (even though RAA is ready,
@@ -946,18 +946,18 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	nodes[1].node.handle_revoke_and_ack(node_a_id, as_resp.1.as_ref().unwrap());
 	let (bs_revoke_and_ack, bs_second_commitment_signed) =
 		get_revoke_commit_msgs(&nodes[1], &node_a_id);
-	check_added_monitors!(nodes[1], 2);
+	check_added_monitors(&nodes[1], 2);
 
 	// The rest of this is boilerplate for resolving the previous state.
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_revoke_and_ack);
 	let as_commitment_signed = get_htlc_update_msgs(&nodes[0], &node_b_id);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_second_commitment_signed);
 	let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	nodes[1]
 		.node
@@ -965,15 +965,15 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	let bs_second_revoke_and_ack =
 		get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_revoke_and_ack);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_second_revoke_and_ack);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	expect_and_process_pending_htlcs(&nodes[1], false);
 
