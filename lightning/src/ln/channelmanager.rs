@@ -3531,7 +3531,7 @@ macro_rules! handle_monitor_update_completion {
 			assert_eq!($chan.blocked_monitor_updates_pending(), 0);
 		}
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
-		let mut updates = $chan.monitor_updating_restored(&&logger,
+		let updates = $chan.monitor_updating_restored(&&logger,
 			&$self.node_signer, $self.chain_hash, &*$self.config.read().unwrap(),
 			$self.best_block.read().unwrap().height,
 			|htlc_id| $self.path_for_release_held_htlc(htlc_id, outbound_scid_alias, &channel_id, &counterparty_node_id));
@@ -3569,66 +3569,11 @@ macro_rules! handle_monitor_update_completion {
 		core::mem::drop($peer_state_lock);
 		core::mem::drop($per_peer_state_lock);
 
-		// If the channel belongs to a batch funding transaction, the progress of the batch
-		// should be updated as we have received funding_signed and persisted the monitor.
-		if let Some(txid) = unbroadcasted_batch_funding_txid {
-			let mut funding_batch_states = $self.funding_batch_states.lock().unwrap();
-			let mut batch_completed = false;
-			if let Some(batch_state) = funding_batch_states.get_mut(&txid) {
-				let channel_state = batch_state.iter_mut().find(|(chan_id, pubkey, _)| (
-					*chan_id == channel_id &&
-					*pubkey == counterparty_node_id
-				));
-				if let Some(channel_state) = channel_state {
-					channel_state.2 = true;
-				} else {
-					debug_assert!(false, "Missing channel batch state for channel which completed initial monitor update");
-				}
-				batch_completed = batch_state.iter().all(|(_, _, completed)| *completed);
-			} else {
-				debug_assert!(false, "Missing batch state for channel which completed initial monitor update");
-			}
-
-			// When all channels in a batched funding transaction have become ready, it is not necessary
-			// to track the progress of the batch anymore and the state of the channels can be updated.
-			if batch_completed {
-				let removed_batch_state = funding_batch_states.remove(&txid).into_iter().flatten();
-				let per_peer_state = $self.per_peer_state.read().unwrap();
-				let mut batch_funding_tx = None;
-				for (channel_id, counterparty_node_id, _) in removed_batch_state {
-					if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-						let mut peer_state = peer_state_mutex.lock().unwrap();
-						if let Some(funded_chan) = peer_state.channel_by_id
-							.get_mut(&channel_id)
-							.and_then(Channel::as_funded_mut)
-						{
-							batch_funding_tx = batch_funding_tx.or_else(|| funded_chan.context.unbroadcasted_funding(&funded_chan.funding));
-							funded_chan.set_batch_ready();
-							let mut pending_events = $self.pending_events.lock().unwrap();
-							emit_channel_pending_event!(pending_events, funded_chan);
-						}
-					}
-				}
-				if let Some(tx) = batch_funding_tx {
-					log_info!($self.logger, "Broadcasting batch funding transaction with txid {}", tx.compute_txid());
-					$self.tx_broadcaster.broadcast_transactions(&[&tx]);
-				}
-			}
-		}
-
-		$self.handle_monitor_update_completion_actions(update_actions);
-
-		if let Some(forwards) = htlc_forwards {
-			$self.forward_htlcs(&mut [forwards][..]);
-		}
-		if let Some(decode) = decode_update_add_htlcs {
-			$self.push_decode_update_add_htlcs(decode);
-		}
-		$self.finalize_claims(updates.finalized_claimed_htlcs);
-		for failure in updates.failed_htlcs.drain(..) {
-			let receiver = HTLCHandlingFailureType::Forward { node_id: Some(counterparty_node_id), channel_id };
-			$self.fail_htlc_backwards_internal(&failure.0, &failure.1, &failure.2, receiver, None);
-		}
+		$self.post_monitor_update_unlock(
+			channel_id, counterparty_node_id, unbroadcasted_batch_funding_txid, update_actions,
+			htlc_forwards, decode_update_add_htlcs, updates.finalized_claimed_htlcs,
+			updates.failed_htlcs,
+		);
 	} }
 }
 
@@ -9366,6 +9311,79 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// Gets the node_id held by this ChannelManager
 	pub fn get_our_node_id(&self) -> PublicKey {
 		self.our_network_pubkey
+	}
+
+	/// Handles actions which need to complete after a [`ChannelMonitorUpdate`] has been applied
+	/// which can happen after the per-peer state lock has been dropped.
+	fn post_monitor_update_unlock(
+		&self, channel_id: ChannelId, counterparty_node_id: PublicKey,
+		unbroadcasted_batch_funding_txid: Option<Txid>,
+		update_actions: Vec<MonitorUpdateCompletionAction>,
+		htlc_forwards: Option<PerSourcePendingForward>,
+		decode_update_add_htlcs: Option<(u64, Vec<msgs::UpdateAddHTLC>)>,
+		finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
+		failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+	) {
+		// If the channel belongs to a batch funding transaction, the progress of the batch
+		// should be updated as we have received funding_signed and persisted the monitor.
+		if let Some(txid) = unbroadcasted_batch_funding_txid {
+			let mut funding_batch_states = self.funding_batch_states.lock().unwrap();
+			let mut batch_completed = false;
+			if let Some(batch_state) = funding_batch_states.get_mut(&txid) {
+				let channel_state = batch_state.iter_mut().find(|(chan_id, pubkey, _)| (
+					*chan_id == channel_id &&
+					*pubkey == counterparty_node_id
+				));
+				if let Some(channel_state) = channel_state {
+					channel_state.2 = true;
+				} else {
+					debug_assert!(false, "Missing channel batch state for channel which completed initial monitor update");
+				}
+				batch_completed = batch_state.iter().all(|(_, _, completed)| *completed);
+			} else {
+				debug_assert!(false, "Missing batch state for channel which completed initial monitor update");
+			}
+
+			// When all channels in a batched funding transaction have become ready, it is not necessary
+			// to track the progress of the batch anymore and the state of the channels can be updated.
+			if batch_completed {
+				let removed_batch_state = funding_batch_states.remove(&txid).into_iter().flatten();
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				let mut batch_funding_tx = None;
+				for (channel_id, counterparty_node_id, _) in removed_batch_state {
+					if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+						let mut peer_state = peer_state_mutex.lock().unwrap();
+						if let Some(funded_chan) = peer_state.channel_by_id
+							.get_mut(&channel_id)
+							.and_then(Channel::as_funded_mut)
+						{
+							batch_funding_tx = batch_funding_tx.or_else(|| funded_chan.context.unbroadcasted_funding(&funded_chan.funding));
+							funded_chan.set_batch_ready();
+							let mut pending_events = self.pending_events.lock().unwrap();
+							emit_channel_pending_event!(pending_events, funded_chan);
+						}
+					}
+				}
+				if let Some(tx) = batch_funding_tx {
+					log_info!(self.logger, "Broadcasting batch funding transaction with txid {}", tx.compute_txid());
+					self.tx_broadcaster.broadcast_transactions(&[&tx]);
+				}
+			}
+		}
+
+		self.handle_monitor_update_completion_actions(update_actions);
+
+		if let Some(forwards) = htlc_forwards {
+			self.forward_htlcs(&mut [forwards][..]);
+		}
+		if let Some(decode) = decode_update_add_htlcs {
+			self.push_decode_update_add_htlcs(decode);
+		}
+		self.finalize_claims(finalized_claimed_htlcs);
+		for failure in failed_htlcs {
+			let receiver = HTLCHandlingFailureType::Forward { node_id: Some(counterparty_node_id), channel_id };
+			self.fail_htlc_backwards_internal(&failure.0, &failure.1, &failure.2, receiver, None);
+		}
 	}
 
 	#[rustfmt::skip]
