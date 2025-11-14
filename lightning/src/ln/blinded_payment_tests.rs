@@ -38,7 +38,7 @@ use crate::util::test_utils::{self, bytes_from_hex, pubkey_from_hex, secret_from
 use bitcoin::hex::DisplayHex;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
-use bitcoin::secp256k1::{schnorr, PublicKey, Scalar, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{schnorr, All, PublicKey, Scalar, Secp256k1, SecretKey};
 use lightning_invoice::RawBolt11Invoice;
 use types::features::Features;
 
@@ -2250,7 +2250,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
 						fee_msat: amt_msat,
-						cltv_expiry_delta: 24,
+						cltv_expiry_delta: 104,
 					},
 				],
 				hops: blinded_path.blinded_hops().to_vec(),
@@ -2282,9 +2282,225 @@ fn test_trampoline_single_hop_receive() {
 	do_test_trampoline_single_hop_receive(false);
 }
 
-fn do_test_trampoline_unblinded_receive(success: bool) {
-	// Simulate a payment of A (0) -> B (1) -> C(Trampoline) (2)
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum TrampolineTestCase {
+	Success,
+	Underpayment,
+	OuterCLTVLessThanTrampoline,
+}
 
+impl<'a> TrampolineTestCase {
+	fn payment_failed_conditions(
+		self, final_payment_amt: &'a [u8], final_cltv_delta: &'a [u8],
+	) -> Option<PaymentFailedConditions<'a>> {
+		match self {
+			TrampolineTestCase::Success => None,
+			TrampolineTestCase::Underpayment => {
+				Some(PaymentFailedConditions::new().expected_htlc_error_data(
+					LocalHTLCFailureReason::FinalIncorrectHTLCAmount,
+					final_payment_amt,
+				))
+			},
+			TrampolineTestCase::OuterCLTVLessThanTrampoline => {
+				Some(PaymentFailedConditions::new().expected_htlc_error_data(
+					LocalHTLCFailureReason::FinalIncorrectCLTVExpiry,
+					final_cltv_delta,
+				))
+			},
+		}
+	}
+
+	fn expected_log(&self) -> Option<(&str, &str, usize)> {
+		match self {
+			TrampolineTestCase::Success => None,
+			TrampolineTestCase::Underpayment => Some((
+				"lightning::ln::channelmanager",
+				"Trampoline onion's amt value exceeded the outer onion's",
+				1,
+			)),
+			TrampolineTestCase::OuterCLTVLessThanTrampoline => Some((
+				"lightning::ln::channelmanager",
+				"Trampoline onion's CLTV value exceeded the outer onion's",
+				1,
+			)),
+		}
+	}
+
+	fn outer_onion_cltv(&self, outer_cltv: u32) -> u32 {
+		if *self == TrampolineTestCase::OuterCLTVLessThanTrampoline {
+			return outer_cltv / 2;
+		}
+		outer_cltv
+	}
+
+	fn outer_onion_amt(&self, original_amt: u64) -> u64 {
+		if *self == TrampolineTestCase::Underpayment {
+			return original_amt / 2;
+		}
+		original_amt
+	}
+}
+
+#[test]
+fn test_trampoline_unblinded_receive() {
+	do_test_trampoline_relay(false, TrampolineTestCase::Success);
+	do_test_trampoline_relay(false, TrampolineTestCase::Underpayment);
+	do_test_trampoline_relay(false, TrampolineTestCase::OuterCLTVLessThanTrampoline);
+}
+
+#[test]
+fn test_trampoline_blinded_receive() {
+	do_test_trampoline_relay(true, TrampolineTestCase::Success);
+	do_test_trampoline_relay(true, TrampolineTestCase::Underpayment);
+	do_test_trampoline_relay(true, TrampolineTestCase::OuterCLTVLessThanTrampoline);
+}
+
+/// Creates a blinded tail where Carol receives via a blinded path.
+fn create_blinded_tail(
+	secp_ctx: &Secp256k1<All>, override_random_bytes: [u8; 32], carol_node_id: PublicKey,
+	carol_auth_key: ReceiveAuthKey, trampoline_cltv_expiry_delta: u32, final_value_msat: u64,
+	payment_secret: PaymentSecret,
+) -> BlindedTail {
+	let outer_session_priv = SecretKey::from_slice(&override_random_bytes).unwrap();
+	let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
+
+	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &trampoline_session_priv);
+	let carol_blinded_hops = {
+		let payee_tlvs = ReceiveTlvs {
+			payment_secret,
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::max_value(),
+				htlc_minimum_msat: final_value_msat,
+			},
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+		}
+		.encode();
+
+		let path = [((carol_node_id, Some(carol_auth_key)), WithoutLength(&payee_tlvs))];
+
+		blinded_path::utils::construct_blinded_hops(
+			&secp_ctx,
+			path.into_iter(),
+			&trampoline_session_priv,
+		)
+	};
+
+	BlindedTail {
+		trampoline_hops: vec![TrampolineHop {
+			pubkey: carol_node_id,
+			node_features: Features::empty(),
+			fee_msat: final_value_msat,
+			cltv_expiry_delta: trampoline_cltv_expiry_delta,
+		}],
+		hops: carol_blinded_hops,
+		blinding_point: carol_blinding_point,
+		excess_final_cltv_expiry_delta: 39,
+		final_value_msat,
+	}
+}
+
+// Creates a replacement onion that is used to produce scenarios that we don't support, specifically
+// payloads that send to unblinded receives and invalid payloads.
+fn replacement_onion(
+	test_case: TrampolineTestCase, secp_ctx: &Secp256k1<All>, override_random_bytes: [u8; 32],
+	route: Route, original_amt_msat: u64, starting_htlc_offset: u32, original_trampoline_cltv: u32,
+	payment_hash: PaymentHash, payment_secret: PaymentSecret, blinded: bool,
+) -> msgs::OnionPacket {
+	let outer_session_priv = SecretKey::from_slice(&override_random_bytes[..]).unwrap();
+	let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
+	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
+
+	let blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
+
+	// Rebuild our trampoline packet from the original route. If we want to test Carol receiving
+	// as an unblinded trampoline hop, we switch out her inner trampoline onion with a direct
+	// receive payload because LDK doesn't support unblinded trampoline receives.
+	let (trampoline_packet, outer_total_msat, outer_starting_htlc_offset) = {
+		let (mut trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) =
+			onion_utils::build_trampoline_onion_payloads(
+				&blinded_tail,
+				original_amt_msat,
+				&recipient_onion_fields,
+				starting_htlc_offset,
+				&None,
+			)
+			.unwrap();
+
+		if !blinded {
+			trampoline_payloads = vec![msgs::OutboundTrampolinePayload::Receive {
+				payment_data: Some(msgs::FinalOnionHopData {
+					payment_secret,
+					total_msat: original_amt_msat,
+				}),
+				sender_intended_htlc_amt_msat: original_amt_msat,
+				cltv_expiry_height: original_trampoline_cltv + starting_htlc_offset,
+			}];
+		}
+
+		let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(
+			&secp_ctx,
+			&blinded_tail,
+			&trampoline_session_priv,
+		);
+		let trampoline_packet = onion_utils::construct_trampoline_onion_packet(
+			trampoline_payloads,
+			trampoline_onion_keys,
+			override_random_bytes,
+			&payment_hash,
+			None,
+		)
+		.unwrap();
+
+		(trampoline_packet, outer_total_msat, outer_starting_htlc_offset)
+	};
+
+	// Use a different session key to construct the replacement onion packet. Note that the
+	// sender isn't aware of this and won't be able to decode the fulfill hold times.
+	let (mut outer_payloads, _, _) = onion_utils::build_onion_payloads(
+		&route.paths[0],
+		outer_total_msat,
+		&recipient_onion_fields,
+		outer_starting_htlc_offset,
+		&None,
+		None,
+		Some(trampoline_packet),
+	)
+	.unwrap();
+	assert_eq!(outer_payloads.len(), 2);
+
+	// If we're trying to test invalid payloads, we modify Carol's *outer* onion to have values
+	// that are inconsistent with her inner onion. We need to do this manually because we
+	// (obviously) can't construct an invalid onion with LDK's built in functions.
+	match &mut outer_payloads[1] {
+		msgs::OutboundOnionPayload::TrampolineEntrypoint {
+			amt_to_forward,
+			outgoing_cltv_value,
+			..
+		} => {
+			*amt_to_forward = test_case.outer_onion_amt(original_amt_msat);
+			let outer_cltv = original_trampoline_cltv + starting_htlc_offset;
+			*outgoing_cltv_value = test_case.outer_onion_cltv(outer_cltv);
+		},
+		_ => panic!("final payload is not trampoline entrypoint"),
+	}
+
+	let outer_onion_keys =
+		onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
+	onion_utils::construct_onion_packet(
+		outer_payloads,
+		outer_onion_keys,
+		override_random_bytes,
+		&payment_hash,
+	)
+	.unwrap()
+}
+
+// Test relay of payments to a trampoline, testing success and trampoline-related relay failures.
+// This test relies on manually replacing parts of our onion to:
+// - Test unblinded trampoline receives, which are not natively supported in LDK.
+// - To hit validation errors by manipulating the trampoline's outer packet. Without this, we would
+//   have to manually construct the onion.
+fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 	const TOTAL_NODE_COUNT: usize = 3;
 	let secp_ctx = Secp256k1::new();
 
@@ -2304,15 +2520,24 @@ fn do_test_trampoline_unblinded_receive(success: bool) {
 		);
 	}
 
+	let alice_node_id = nodes[0].node.get_our_node_id();
 	let bob_node_id = nodes[1].node().get_our_node_id();
 	let carol_node_id = nodes[2].node().get_our_node_id();
 
 	let alice_bob_scid = get_scid_from_channel_id(&nodes[0], alice_bob_chan.2);
 	let bob_carol_scid = get_scid_from_channel_id(&nodes[1], bob_carol_chan.2);
 
-	let amt_msat = 1000;
+	let original_amt_msat = 1000;
+	let original_trampoline_cltv = 72;
+	let starting_htlc_offset = 32;
+
 	let (payment_preimage, payment_hash, payment_secret) =
-		get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+		get_payment_preimage_hash(&nodes[2], Some(original_amt_msat), None);
+
+	// We need the session priv to replace the onion packet later.
+	let override_random_bytes = [42; 32];
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(override_random_bytes);
+
 	let route = Route {
 		paths: vec![Path {
 			hops: vec![
@@ -2335,29 +2560,22 @@ fn do_test_trampoline_unblinded_receive(success: bool) {
 					maybe_announced_channel: false,
 				},
 			],
-			blinded_tail: Some(BlindedTail {
-				trampoline_hops: vec![TrampolineHop {
-					pubkey: carol_node_id,
-					node_features: Features::empty(),
-					fee_msat: amt_msat,
-					cltv_expiry_delta: 24,
-				}],
-				// The blinded path data is unused because we replace the onion of the last hop
-				hops: vec![BlindedHop {
-					blinded_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
-					encrypted_payload: vec![42; 32],
-				}],
-				blinding_point: PublicKey::from_slice(&[2; 33]).unwrap(),
-				excess_final_cltv_expiry_delta: 39,
-				final_value_msat: amt_msat,
-			}),
+			// Create a blinded tail where Carol is receiving. In our unblinded test cases, we'll
+			// override this anyway (with a tail sending to an unblinded receive, which LDK doesn't
+			// allow).
+			blinded_tail: Some(create_blinded_tail(
+				&secp_ctx,
+				override_random_bytes,
+				carol_node_id,
+				nodes[2].keys_manager.get_receive_auth_key(),
+				original_trampoline_cltv,
+				original_amt_msat,
+				payment_secret,
+			)),
 		}],
 		route_params: None,
 	};
 
-	// We need the session priv to construct an invalid onion packet later.
-	let override_random_bytes = [42; 32];
-	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(override_random_bytes);
 	nodes[0]
 		.node
 		.send_payment_with_route(
@@ -2367,72 +2585,6 @@ fn do_test_trampoline_unblinded_receive(success: bool) {
 			PaymentId(payment_hash.0),
 		)
 		.unwrap();
-
-	let replacement_onion = {
-		// create a substitute onion where the last Trampoline hop is an unblinded receive, which we
-		// (deliberately) do not support out of the box, therefore necessitating this workaround
-		let outer_session_priv = SecretKey::from_slice(&override_random_bytes[..]).unwrap();
-		let trampoline_session_priv =
-			onion_utils::compute_trampoline_session_priv(&outer_session_priv);
-		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
-
-		let blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
-		let (_, _, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(
-			&blinded_tail,
-			amt_msat,
-			&recipient_onion_fields,
-			32,
-			&None,
-		)
-		.unwrap();
-		let trampoline_payloads = vec![msgs::OutboundTrampolinePayload::Receive {
-			payment_data: Some(msgs::FinalOnionHopData { payment_secret, total_msat: amt_msat }),
-			sender_intended_htlc_amt_msat: amt_msat,
-			cltv_expiry_height: 104,
-		}];
-
-		let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(
-			&secp_ctx,
-			&route.paths[0].blinded_tail.as_ref().unwrap(),
-			&trampoline_session_priv,
-		);
-		let trampoline_packet = onion_utils::construct_trampoline_onion_packet(
-			trampoline_payloads,
-			trampoline_onion_keys,
-			override_random_bytes,
-			&payment_hash,
-			None,
-		)
-		.unwrap();
-
-		// Use a different session key to construct the replacement onion packet. Note that the sender isn't aware of
-		// this and won't be able to decode the fulfill hold times.
-
-		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(
-			&route.paths[0],
-			amt_msat,
-			&recipient_onion_fields,
-			outer_starting_htlc_offset,
-			&None,
-			None,
-			Some(trampoline_packet),
-		)
-		.unwrap();
-		let outer_onion_keys = onion_utils::construct_onion_keys(
-			&secp_ctx,
-			&route.clone().paths[0],
-			&outer_session_priv,
-		);
-		let outer_packet = onion_utils::construct_onion_packet(
-			outer_payloads,
-			outer_onion_keys,
-			override_random_bytes,
-			&payment_hash,
-		)
-		.unwrap();
-
-		outer_packet
-	};
 
 	check_added_monitors!(&nodes[0], 1);
 
@@ -2446,26 +2598,86 @@ fn do_test_trampoline_unblinded_receive(success: bool) {
 		},
 		_ => panic!(),
 	};
+
+	// Replace the onion to test different scenarios:
+	// - If !blinded: Creates a payload sending to an unblinded trampoline
+	// - If blinded: Modifies outer onion to create outer/inner mismatches if testing failures
 	update_message.map(|msg| {
-		msg.onion_routing_packet = replacement_onion.clone();
+		msg.onion_routing_packet = replacement_onion(
+			test_case,
+			&secp_ctx,
+			override_random_bytes,
+			route,
+			original_amt_msat,
+			starting_htlc_offset,
+			original_trampoline_cltv,
+			payment_hash,
+			payment_secret,
+			blinded,
+		)
 	});
 
 	let route: &[&Node] = &[&nodes[1], &nodes[2]];
-	let args =
-		PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
-			.with_payment_secret(payment_secret);
-	do_pass_along_path(args);
-	if success {
-		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
-	} else {
-		fail_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_hash);
-	}
-}
+	let args = PassAlongPathArgs::new(
+		&nodes[0],
+		route,
+		original_amt_msat,
+		payment_hash,
+		first_message_event,
+	);
 
-#[test]
-fn test_trampoline_unblinded_receive() {
-	do_test_trampoline_unblinded_receive(true);
-	do_test_trampoline_unblinded_receive(false);
+	let amt_bytes = test_case.outer_onion_amt(original_amt_msat).to_be_bytes();
+	let cltv_bytes =
+		test_case.outer_onion_cltv(original_trampoline_cltv + starting_htlc_offset).to_be_bytes();
+	let payment_failure = test_case.payment_failed_conditions(&amt_bytes, &cltv_bytes).map(|p| {
+		if blinded {
+			PaymentFailedConditions::new()
+				.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionBlinding, &[0; 32])
+		} else {
+			p
+		}
+	});
+	let args = if payment_failure.is_some() {
+		args.with_payment_preimage(payment_preimage)
+			.without_claimable_event()
+			.expect_failure(HTLCHandlingFailureType::Receive { payment_hash })
+	} else {
+		args.with_payment_secret(payment_secret)
+	};
+
+	do_pass_along_path(args);
+
+	if let Some(failure) = payment_failure {
+		let node_updates = get_htlc_update_msgs(&nodes[2], &bob_node_id);
+		nodes[1].node.handle_update_fail_htlc(carol_node_id, &node_updates.update_fail_htlcs[0]);
+		do_commitment_signed_dance(
+			&nodes[1],
+			&nodes[2],
+			&node_updates.commitment_signed,
+			true,
+			false,
+		);
+
+		let node_updates = get_htlc_update_msgs(&nodes[1], &alice_node_id);
+		nodes[0].node.handle_update_fail_htlc(bob_node_id, &node_updates.update_fail_htlcs[0]);
+		do_commitment_signed_dance(
+			&nodes[0],
+			&nodes[1],
+			&node_updates.commitment_signed,
+			false,
+			false,
+		);
+
+		expect_payment_failed_conditions(&nodes[0], payment_hash, false, failure);
+
+		// Because we support blinded paths, we also assert on our expected logs to make sure
+		// that the failure reason hidden by obfuscated blinded errors is as expected.
+		if let Some((module, line, count)) = test_case.expected_log() {
+			nodes[2].logger.assert_log_contains(module, line, count);
+		}
+	} else {
+		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+	}
 }
 
 #[test]
