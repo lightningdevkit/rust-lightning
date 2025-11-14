@@ -2380,6 +2380,7 @@ mod fuzzy_internal_msgs {
 		BlindedReceive(InboundOnionBlindedReceivePayload),
 	}
 
+	#[derive(Debug)]
 	pub(crate) enum OutboundOnionPayload<'a> {
 		Forward {
 			short_channel_id: u64,
