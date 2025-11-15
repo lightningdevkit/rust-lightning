@@ -3255,176 +3255,6 @@ macro_rules! handle_error {
 	} };
 }
 
-/// Do not call this directly, use `convert_channel_err` instead.
-#[rustfmt::skip]
-macro_rules! locked_close_channel {
-	($self: ident, $chan_context: expr, UNFUNDED) => {{
-		$self.short_to_chan_info.write().unwrap().remove(&$chan_context.outbound_scid_alias());
-		// If the channel was never confirmed on-chain prior to its closure, remove the
-		// outbound SCID alias we used for it from the collision-prevention set. While we
-		// generally want to avoid ever re-using an outbound SCID alias across all channels, we
-		// also don't want a counterparty to be able to trivially cause a memory leak by simply
-		// opening a million channels with us which are closed before we ever reach the funding
-		// stage.
-		let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$chan_context.outbound_scid_alias());
-		debug_assert!(alias_removed);
-	}};
-	($self: ident, $peer_state: expr, $funded_chan: expr, $shutdown_res_mut: expr, FUNDED) => {{
-		if let Some((_, funding_txo, _, update)) = $shutdown_res_mut.monitor_update.take() {
-			handle_new_monitor_update_locked_actions_handled_by_caller!(
-				$self, funding_txo, update, $peer_state, $funded_chan.context
-			);
-		}
-		// If there's a possibility that we need to generate further monitor updates for this
-		// channel, we need to store the last update_id of it. However, we don't want to insert
-		// into the map (which prevents the `PeerState` from being cleaned up) for channels that
-		// never even got confirmations (which would open us up to DoS attacks).
-		let update_id = $funded_chan.context.get_latest_monitor_update_id();
-		if $funded_chan.funding.get_funding_tx_confirmation_height().is_some() || $funded_chan.context.minimum_depth(&$funded_chan.funding) == Some(0) || update_id > 1 {
-			let chan_id = $funded_chan.context.channel_id();
-			$peer_state.closed_channel_monitor_update_ids.insert(chan_id, update_id);
-		}
-		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
-		if let Some(short_id) = $funded_chan.funding.get_short_channel_id() {
-			short_to_chan_info.remove(&short_id);
-		} else {
-			// If the channel was never confirmed on-chain prior to its closure, remove the
-			// outbound SCID alias we used for it from the collision-prevention set. While we
-			// generally want to avoid ever re-using an outbound SCID alias across all channels, we
-			// also don't want a counterparty to be able to trivially cause a memory leak by simply
-			// opening a million channels with us which are closed before we ever reach the funding
-			// stage.
-			let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$funded_chan.context.outbound_scid_alias());
-			debug_assert!(alias_removed);
-		}
-		short_to_chan_info.remove(&$funded_chan.context.outbound_scid_alias());
-		for scid in $funded_chan.context.historical_scids() {
-			short_to_chan_info.remove(scid);
-		}
-	}}
-}
-
-/// When a channel is removed, two things need to happen:
-/// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
-/// (b) [`handle_error`] needs to be called without holding any locks (except
-///     [`ChannelManager::total_consistency_lock`]), which then calls
-///     [`ChannelManager::finish_close_channel`].
-///
-/// Note that this step can be skipped if the channel was never opened (through the creation of a
-/// [`ChannelMonitor`]/channel funding transaction) to begin with.
-///
-/// Returns `(boolean indicating if we should remove the Channel object from memory, a mapped
-/// error)`, except in the `COOP_CLOSE` case, where the bool is elided (it is always implicitly
-/// true).
-#[rustfmt::skip]
-macro_rules! convert_channel_err {
-	($self: ident, $peer_state: expr, $err: expr, $chan: expr, $close: expr, $locked_close: expr, $channel_id: expr, _internal) => { {
-		match $err {
-			ChannelError::Warn(msg) => {
-				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(msg), $channel_id))
-			},
-			ChannelError::WarnAndDisconnect(msg) => {
-				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::WarnAndDisconnect(msg), $channel_id))
-			},
-			ChannelError::Ignore(msg) => {
-				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id))
-			},
-			ChannelError::Abort(reason) => {
-				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Abort(reason), $channel_id))
-			},
-			ChannelError::Close((msg, reason)) => {
-				let (mut shutdown_res, chan_update) = $close(reason);
-				let logger = WithChannelContext::from(&$self.logger, &$chan.context(), None);
-				log_error!(logger, "Closed channel due to close-required error: {}", msg);
-				$locked_close(&mut shutdown_res, $chan);
-				let err =
-					MsgHandleErrInternal::from_finish_shutdown(msg, $channel_id, shutdown_res, chan_update);
-				(true, err)
-			},
-			ChannelError::SendError(msg) => {
-				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::SendError(msg), $channel_id))
-			},
-		}
-	} };
-	($self: ident, $peer_state: expr, $shutdown_result: expr, $funded_channel: expr, COOP_CLOSED) => { {
-		let chan_id = $funded_channel.context.channel_id();
-		let reason = ChannelError::Close(("Coop Closed".to_owned(), $shutdown_result.closure_reason.clone()));
-		let do_close = |_| {
-			(
-				$shutdown_result,
-				$self.get_channel_update_for_broadcast(&$funded_channel).ok(),
-			)
-		};
-		let mut locked_close = |shutdown_res_mut: &mut ShutdownResult, funded_channel: &mut FundedChannel<_>| {
-			locked_close_channel!($self, $peer_state, funded_channel, shutdown_res_mut, FUNDED);
-		};
-		let (close, mut err) =
-			convert_channel_err!($self, $peer_state, reason, $funded_channel, do_close, locked_close, chan_id, _internal);
-		err.dont_send_error_message();
-		debug_assert!(close);
-		err
-	} };
-	($self: ident, $peer_state: expr, $err: expr, $funded_channel: expr, FUNDED_CHANNEL) => { {
-		let chan_id = $funded_channel.context.channel_id();
-		let mut do_close = |reason| {
-			(
-				$funded_channel.force_shutdown(reason),
-				$self.get_channel_update_for_broadcast(&$funded_channel).ok(),
-			)
-		};
-		let mut locked_close = |shutdown_res_mut: &mut ShutdownResult, funded_channel: &mut FundedChannel<_>| {
-			locked_close_channel!($self, $peer_state, funded_channel, shutdown_res_mut, FUNDED);
-		};
-		convert_channel_err!($self, $peer_state, $err, $funded_channel, do_close, locked_close, chan_id, _internal)
-	} };
-	($self: ident, $peer_state: expr, $err: expr, $channel: expr, UNFUNDED_CHANNEL) => { {
-		let chan_id = $channel.context().channel_id();
-		let mut do_close = |reason| { ($channel.force_shutdown(reason), None) };
-		let locked_close = |_, chan: &mut Channel<_>| { locked_close_channel!($self, chan.context(), UNFUNDED); };
-		convert_channel_err!($self, $peer_state, $err, $channel, do_close, locked_close, chan_id, _internal)
-	} };
-	($self: ident, $peer_state: expr, $err: expr, $channel: expr) => {
-		match $channel.as_funded_mut() {
-			Some(funded_channel) => {
-				convert_channel_err!($self, $peer_state, $err, funded_channel, FUNDED_CHANNEL)
-			},
-			None => {
-				convert_channel_err!($self, $peer_state, $err, $channel, UNFUNDED_CHANNEL)
-			},
-		}
-	};
-}
-
-macro_rules! break_channel_entry {
-	($self: ident, $peer_state: expr, $res: expr, $entry: expr) => {
-		match $res {
-			Ok(res) => res,
-			Err(e) => {
-				let (drop, res) = convert_channel_err!($self, $peer_state, e, $entry.get_mut());
-				if drop {
-					$entry.remove_entry();
-				}
-				break Err(res);
-			},
-		}
-	};
-}
-
-macro_rules! try_channel_entry {
-	($self: ident, $peer_state: expr, $res: expr, $entry: expr) => {
-		match $res {
-			Ok(res) => res,
-			Err(e) => {
-				let (drop, res) = convert_channel_err!($self, $peer_state, e, $entry.get_mut());
-				if drop {
-					$entry.remove_entry();
-				}
-				return Err(res);
-			},
-		}
-	};
-}
-
 macro_rules! send_channel_ready {
 	($self: ident, $pending_msg_events: expr, $channel: expr, $channel_ready_msg: expr) => {{
 		if $channel.context.is_connected() {
@@ -3776,6 +3606,176 @@ macro_rules! handle_new_monitor_update {
 		}
 		update_completed
 	}};
+}
+
+/// Do not call this directly, use `convert_channel_err` instead.
+#[rustfmt::skip]
+macro_rules! locked_close_channel {
+	($self: ident, $chan_context: expr, UNFUNDED) => {{
+		$self.short_to_chan_info.write().unwrap().remove(&$chan_context.outbound_scid_alias());
+		// If the channel was never confirmed on-chain prior to its closure, remove the
+		// outbound SCID alias we used for it from the collision-prevention set. While we
+		// generally want to avoid ever re-using an outbound SCID alias across all channels, we
+		// also don't want a counterparty to be able to trivially cause a memory leak by simply
+		// opening a million channels with us which are closed before we ever reach the funding
+		// stage.
+		let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$chan_context.outbound_scid_alias());
+		debug_assert!(alias_removed);
+	}};
+	($self: ident, $peer_state: expr, $funded_chan: expr, $shutdown_res_mut: expr, FUNDED) => {{
+		if let Some((_, funding_txo, _, update)) = $shutdown_res_mut.monitor_update.take() {
+			handle_new_monitor_update_locked_actions_handled_by_caller!(
+				$self, funding_txo, update, $peer_state, $funded_chan.context
+			);
+		}
+		// If there's a possibility that we need to generate further monitor updates for this
+		// channel, we need to store the last update_id of it. However, we don't want to insert
+		// into the map (which prevents the `PeerState` from being cleaned up) for channels that
+		// never even got confirmations (which would open us up to DoS attacks).
+		let update_id = $funded_chan.context.get_latest_monitor_update_id();
+		if $funded_chan.funding.get_funding_tx_confirmation_height().is_some() || $funded_chan.context.minimum_depth(&$funded_chan.funding) == Some(0) || update_id > 1 {
+			let chan_id = $funded_chan.context.channel_id();
+			$peer_state.closed_channel_monitor_update_ids.insert(chan_id, update_id);
+		}
+		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
+		if let Some(short_id) = $funded_chan.funding.get_short_channel_id() {
+			short_to_chan_info.remove(&short_id);
+		} else {
+			// If the channel was never confirmed on-chain prior to its closure, remove the
+			// outbound SCID alias we used for it from the collision-prevention set. While we
+			// generally want to avoid ever re-using an outbound SCID alias across all channels, we
+			// also don't want a counterparty to be able to trivially cause a memory leak by simply
+			// opening a million channels with us which are closed before we ever reach the funding
+			// stage.
+			let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$funded_chan.context.outbound_scid_alias());
+			debug_assert!(alias_removed);
+		}
+		short_to_chan_info.remove(&$funded_chan.context.outbound_scid_alias());
+		for scid in $funded_chan.context.historical_scids() {
+			short_to_chan_info.remove(scid);
+		}
+	}}
+}
+
+/// When a channel is removed, two things need to happen:
+/// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
+/// (b) [`handle_error`] needs to be called without holding any locks (except
+///     [`ChannelManager::total_consistency_lock`]), which then calls
+///     [`ChannelManager::finish_close_channel`].
+///
+/// Note that this step can be skipped if the channel was never opened (through the creation of a
+/// [`ChannelMonitor`]/channel funding transaction) to begin with.
+///
+/// Returns `(boolean indicating if we should remove the Channel object from memory, a mapped
+/// error)`, except in the `COOP_CLOSE` case, where the bool is elided (it is always implicitly
+/// true).
+#[rustfmt::skip]
+macro_rules! convert_channel_err {
+	($self: ident, $peer_state: expr, $err: expr, $chan: expr, $close: expr, $locked_close: expr, $channel_id: expr, _internal) => { {
+		match $err {
+			ChannelError::Warn(msg) => {
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(msg), $channel_id))
+			},
+			ChannelError::WarnAndDisconnect(msg) => {
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::WarnAndDisconnect(msg), $channel_id))
+			},
+			ChannelError::Ignore(msg) => {
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id))
+			},
+			ChannelError::Abort(reason) => {
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Abort(reason), $channel_id))
+			},
+			ChannelError::Close((msg, reason)) => {
+				let (mut shutdown_res, chan_update) = $close(reason);
+				let logger = WithChannelContext::from(&$self.logger, &$chan.context(), None);
+				log_error!(logger, "Closed channel due to close-required error: {}", msg);
+				$locked_close(&mut shutdown_res, $chan);
+				let err =
+					MsgHandleErrInternal::from_finish_shutdown(msg, $channel_id, shutdown_res, chan_update);
+				(true, err)
+			},
+			ChannelError::SendError(msg) => {
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::SendError(msg), $channel_id))
+			},
+		}
+	} };
+	($self: ident, $peer_state: expr, $shutdown_result: expr, $funded_channel: expr, COOP_CLOSED) => { {
+		let chan_id = $funded_channel.context.channel_id();
+		let reason = ChannelError::Close(("Coop Closed".to_owned(), $shutdown_result.closure_reason.clone()));
+		let do_close = |_| {
+			(
+				$shutdown_result,
+				$self.get_channel_update_for_broadcast(&$funded_channel).ok(),
+			)
+		};
+		let mut locked_close = |shutdown_res_mut: &mut ShutdownResult, funded_channel: &mut FundedChannel<_>| {
+			locked_close_channel!($self, $peer_state, funded_channel, shutdown_res_mut, FUNDED);
+		};
+		let (close, mut err) =
+			convert_channel_err!($self, $peer_state, reason, $funded_channel, do_close, locked_close, chan_id, _internal);
+		err.dont_send_error_message();
+		debug_assert!(close);
+		err
+	} };
+	($self: ident, $peer_state: expr, $err: expr, $funded_channel: expr, FUNDED_CHANNEL) => { {
+		let chan_id = $funded_channel.context.channel_id();
+		let mut do_close = |reason| {
+			(
+				$funded_channel.force_shutdown(reason),
+				$self.get_channel_update_for_broadcast(&$funded_channel).ok(),
+			)
+		};
+		let mut locked_close = |shutdown_res_mut: &mut ShutdownResult, funded_channel: &mut FundedChannel<_>| {
+			locked_close_channel!($self, $peer_state, funded_channel, shutdown_res_mut, FUNDED);
+		};
+		convert_channel_err!($self, $peer_state, $err, $funded_channel, do_close, locked_close, chan_id, _internal)
+	} };
+	($self: ident, $peer_state: expr, $err: expr, $channel: expr, UNFUNDED_CHANNEL) => { {
+		let chan_id = $channel.context().channel_id();
+		let mut do_close = |reason| { ($channel.force_shutdown(reason), None) };
+		let locked_close = |_, chan: &mut Channel<_>| { locked_close_channel!($self, chan.context(), UNFUNDED); };
+		convert_channel_err!($self, $peer_state, $err, $channel, do_close, locked_close, chan_id, _internal)
+	} };
+	($self: ident, $peer_state: expr, $err: expr, $channel: expr) => {
+		match $channel.as_funded_mut() {
+			Some(funded_channel) => {
+				convert_channel_err!($self, $peer_state, $err, funded_channel, FUNDED_CHANNEL)
+			},
+			None => {
+				convert_channel_err!($self, $peer_state, $err, $channel, UNFUNDED_CHANNEL)
+			},
+		}
+	};
+}
+
+macro_rules! break_channel_entry {
+	($self: ident, $peer_state: expr, $res: expr, $entry: expr) => {
+		match $res {
+			Ok(res) => res,
+			Err(e) => {
+				let (drop, res) = convert_channel_err!($self, $peer_state, e, $entry.get_mut());
+				if drop {
+					$entry.remove_entry();
+				}
+				break Err(res);
+			},
+		}
+	};
+}
+
+macro_rules! try_channel_entry {
+	($self: ident, $peer_state: expr, $res: expr, $entry: expr) => {
+		match $res {
+			Ok(res) => res,
+			Err(e) => {
+				let (drop, res) = convert_channel_err!($self, $peer_state, e, $entry.get_mut());
+				if drop {
+					$entry.remove_entry();
+				}
+				return Err(res);
+			},
+		}
+	};
 }
 
 #[rustfmt::skip]
