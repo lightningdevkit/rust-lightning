@@ -3711,6 +3711,24 @@ where
 	})
 }
 
+fn convert_unfunded_channel_err_internal<SP: Deref, CM: AChannelManager>(
+	cm: &CM, err: ChannelError, chan: &mut Channel<SP>,
+) -> (bool, MsgHandleErrInternal)
+where
+	SP::Target: SignerProvider,
+{
+	let chan_id = chan.context().channel_id();
+	convert_channel_err_internal(err, chan_id, |reason, msg| {
+		let cm = cm.get_cm();
+		let logger = WithChannelContext::from(&cm.logger, chan.context(), None);
+
+		let shutdown_res = chan.force_shutdown(reason);
+		log_error!(logger, "Closed channel due to close-required error: {}", msg);
+		locked_close_channel!(cm, chan.context(), UNFUNDED);
+		(shutdown_res, None)
+	})
+}
+
 /// When a channel is removed, two things need to happen:
 /// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
 /// (b) [`handle_error`] needs to be called without holding any locks (except
@@ -3725,34 +3743,6 @@ where
 /// true).
 #[rustfmt::skip]
 macro_rules! convert_channel_err {
-	($self: ident, $peer_state: expr, $err: expr, $chan: expr, $close: expr, $locked_close: expr, $channel_id: expr, _internal) => { {
-		match $err {
-			ChannelError::Warn(msg) => {
-				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(msg), $channel_id))
-			},
-			ChannelError::WarnAndDisconnect(msg) => {
-				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::WarnAndDisconnect(msg), $channel_id))
-			},
-			ChannelError::Ignore(msg) => {
-				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id))
-			},
-			ChannelError::Abort(reason) => {
-				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Abort(reason), $channel_id))
-			},
-			ChannelError::Close((msg, reason)) => {
-				let (mut shutdown_res, chan_update) = $close(reason);
-				let logger = WithChannelContext::from(&$self.logger, &$chan.context(), None);
-				log_error!(logger, "Closed channel due to close-required error: {}", msg);
-				$locked_close(&mut shutdown_res, $chan);
-				let err =
-					MsgHandleErrInternal::from_finish_shutdown(msg, $channel_id, shutdown_res, chan_update);
-				(true, err)
-			},
-			ChannelError::SendError(msg) => {
-				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::SendError(msg), $channel_id))
-			},
-		}
-	} };
 	($self: ident, $peer_state: expr, $shutdown_result: expr, $funded_channel: expr, COOP_CLOSED) => { {
 		let reason = ChannelError::Close(("Coop Closed".to_owned(), $shutdown_result.closure_reason.clone()));
 		let closed_update_ids = &mut $peer_state.closed_channel_monitor_update_ids;
@@ -3769,10 +3759,7 @@ macro_rules! convert_channel_err {
 		convert_funded_channel_err_internal($self, closed_update_ids, in_flight_updates, None, $err, $funded_channel)
 	} };
 	($self: ident, $peer_state: expr, $err: expr, $channel: expr, UNFUNDED_CHANNEL) => { {
-		let chan_id = $channel.context().channel_id();
-		let mut do_close = |reason| { ($channel.force_shutdown(reason), None) };
-		let locked_close = |_, chan: &mut Channel<_>| { locked_close_channel!($self, chan.context(), UNFUNDED); };
-		convert_channel_err!($self, $peer_state, $err, $channel, do_close, locked_close, chan_id, _internal)
+		convert_unfunded_channel_err_internal($self, $err, $channel)
 	} };
 	($self: ident, $peer_state: expr, $err: expr, $channel: expr) => {
 		match $channel.as_funded_mut() {
@@ -3782,7 +3769,7 @@ macro_rules! convert_channel_err {
 				convert_funded_channel_err_internal($self, closed_update_ids, in_flight_updates, None, $err, funded_channel)
 			},
 			None => {
-				convert_channel_err!($self, $peer_state, $err, $channel, UNFUNDED_CHANNEL)
+				convert_unfunded_channel_err_internal($self, $err, $channel)
 			},
 		}
 	};
