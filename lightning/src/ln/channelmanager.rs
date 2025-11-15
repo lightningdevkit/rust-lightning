@@ -3566,11 +3566,11 @@ macro_rules! handle_post_close_monitor_update {
 /// later time.
 macro_rules! handle_new_monitor_update_locked_actions_handled_by_caller {
 	(
-		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $chan_context: expr
+		$self: ident, $funding_txo: expr, $update: expr, $in_flight_monitor_updates: expr, $chan_context: expr
 	) => {{
 		let (update_completed, _all_updates_complete) = handle_new_monitor_update_internal(
 			$self,
-			&mut $peer_state.in_flight_monitor_updates,
+			$in_flight_monitor_updates,
 			$chan_context.channel_id(),
 			$funding_txo,
 			$chan_context.get_counterparty_node_id(),
@@ -3622,10 +3622,10 @@ macro_rules! locked_close_channel {
 		let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$chan_context.outbound_scid_alias());
 		debug_assert!(alias_removed);
 	}};
-	($self: ident, $peer_state: expr, $funded_chan: expr, $shutdown_res_mut: expr, FUNDED) => {{
+	($self: ident, $closed_channel_monitor_update_ids: expr, $in_flight_monitor_updates: expr, $funded_chan: expr, $shutdown_res_mut: expr, FUNDED) => {{
 		if let Some((_, funding_txo, _, update)) = $shutdown_res_mut.monitor_update.take() {
 			handle_new_monitor_update_locked_actions_handled_by_caller!(
-				$self, funding_txo, update, $peer_state, $funded_chan.context
+				$self, funding_txo, update, $in_flight_monitor_updates, $funded_chan.context
 			);
 		}
 		// If there's a possibility that we need to generate further monitor updates for this
@@ -3635,7 +3635,7 @@ macro_rules! locked_close_channel {
 		let update_id = $funded_chan.context.get_latest_monitor_update_id();
 		if $funded_chan.funding.get_funding_tx_confirmation_height().is_some() || $funded_chan.context.minimum_depth(&$funded_chan.funding) == Some(0) || update_id > 1 {
 			let chan_id = $funded_chan.context.channel_id();
-			$peer_state.closed_channel_monitor_update_ids.insert(chan_id, update_id);
+			$closed_channel_monitor_update_ids.insert(chan_id, update_id);
 		}
 		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
 		if let Some(short_id) = $funded_chan.funding.get_short_channel_id() {
@@ -3655,6 +3655,60 @@ macro_rules! locked_close_channel {
 			short_to_chan_info.remove(scid);
 		}
 	}}
+}
+
+fn convert_channel_err_internal<
+	Close: FnOnce(ClosureReason, &str) -> (ShutdownResult, Option<(msgs::ChannelUpdate, NodeId, NodeId)>),
+>(
+	err: ChannelError, chan_id: ChannelId, close: Close,
+) -> (bool, MsgHandleErrInternal) {
+	match err {
+		ChannelError::Warn(msg) => {
+			(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(msg), chan_id))
+		},
+		ChannelError::WarnAndDisconnect(msg) => (
+			false,
+			MsgHandleErrInternal::from_chan_no_close(ChannelError::WarnAndDisconnect(msg), chan_id),
+		),
+		ChannelError::Ignore(msg) => {
+			(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), chan_id))
+		},
+		ChannelError::Abort(reason) => {
+			(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Abort(reason), chan_id))
+		},
+		ChannelError::Close((msg, reason)) => {
+			let (finish, chan_update) = close(reason, &msg);
+			(true, MsgHandleErrInternal::from_finish_shutdown(msg, chan_id, finish, chan_update))
+		},
+		ChannelError::SendError(msg) => {
+			(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::SendError(msg), chan_id))
+		},
+	}
+}
+
+fn convert_funded_channel_err_internal<SP: Deref, CM: AChannelManager<SP = SP>>(
+	cm: &CM, closed_update_ids: &mut BTreeMap<ChannelId, u64>,
+	in_flight_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
+	coop_close_shutdown_res: Option<ShutdownResult>, err: ChannelError,
+	chan: &mut FundedChannel<SP>,
+) -> (bool, MsgHandleErrInternal)
+where
+	SP::Target: SignerProvider,
+	CM::Watch: Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+{
+	let chan_id = chan.context.channel_id();
+	convert_channel_err_internal(err, chan_id, |reason, msg| {
+		let cm = cm.get_cm();
+		let logger = WithChannelContext::from(&cm.logger, &chan.context, None);
+
+		let mut shutdown_res =
+			if let Some(res) = coop_close_shutdown_res { res } else { chan.force_shutdown(reason) };
+		let chan_update = cm.get_channel_update_for_broadcast(chan).ok();
+
+		log_error!(logger, "Closed channel due to close-required error: {}", msg);
+		locked_close_channel!(cm, closed_update_ids, in_flight_updates, chan, shutdown_res, FUNDED);
+		(shutdown_res, chan_update)
+	})
 }
 
 /// When a channel is removed, two things need to happen:
@@ -3700,35 +3754,19 @@ macro_rules! convert_channel_err {
 		}
 	} };
 	($self: ident, $peer_state: expr, $shutdown_result: expr, $funded_channel: expr, COOP_CLOSED) => { {
-		let chan_id = $funded_channel.context.channel_id();
 		let reason = ChannelError::Close(("Coop Closed".to_owned(), $shutdown_result.closure_reason.clone()));
-		let do_close = |_| {
-			(
-				$shutdown_result,
-				$self.get_channel_update_for_broadcast(&$funded_channel).ok(),
-			)
-		};
-		let mut locked_close = |shutdown_res_mut: &mut ShutdownResult, funded_channel: &mut FundedChannel<_>| {
-			locked_close_channel!($self, $peer_state, funded_channel, shutdown_res_mut, FUNDED);
-		};
+		let closed_update_ids = &mut $peer_state.closed_channel_monitor_update_ids;
+		let in_flight_updates = &mut $peer_state.in_flight_monitor_updates;
 		let (close, mut err) =
-			convert_channel_err!($self, $peer_state, reason, $funded_channel, do_close, locked_close, chan_id, _internal);
+			convert_funded_channel_err_internal($self, closed_update_ids, in_flight_updates, Some($shutdown_result), reason, $funded_channel);
 		err.dont_send_error_message();
 		debug_assert!(close);
 		err
 	} };
 	($self: ident, $peer_state: expr, $err: expr, $funded_channel: expr, FUNDED_CHANNEL) => { {
-		let chan_id = $funded_channel.context.channel_id();
-		let mut do_close = |reason| {
-			(
-				$funded_channel.force_shutdown(reason),
-				$self.get_channel_update_for_broadcast(&$funded_channel).ok(),
-			)
-		};
-		let mut locked_close = |shutdown_res_mut: &mut ShutdownResult, funded_channel: &mut FundedChannel<_>| {
-			locked_close_channel!($self, $peer_state, funded_channel, shutdown_res_mut, FUNDED);
-		};
-		convert_channel_err!($self, $peer_state, $err, $funded_channel, do_close, locked_close, chan_id, _internal)
+		let closed_update_ids = &mut $peer_state.closed_channel_monitor_update_ids;
+		let in_flight_updates = &mut $peer_state.in_flight_monitor_updates;
+		convert_funded_channel_err_internal($self, closed_update_ids, in_flight_updates, None, $err, $funded_channel)
 	} };
 	($self: ident, $peer_state: expr, $err: expr, $channel: expr, UNFUNDED_CHANNEL) => { {
 		let chan_id = $channel.context().channel_id();
@@ -3739,7 +3777,9 @@ macro_rules! convert_channel_err {
 	($self: ident, $peer_state: expr, $err: expr, $channel: expr) => {
 		match $channel.as_funded_mut() {
 			Some(funded_channel) => {
-				convert_channel_err!($self, $peer_state, $err, funded_channel, FUNDED_CHANNEL)
+				let closed_update_ids = &mut $peer_state.closed_channel_monitor_update_ids;
+				let in_flight_updates = &mut $peer_state.in_flight_monitor_updates;
+				convert_funded_channel_err_internal($self, closed_update_ids, in_flight_updates, None, $err, funded_channel)
 			},
 			None => {
 				convert_channel_err!($self, $peer_state, $err, $channel, UNFUNDED_CHANNEL)
@@ -4506,7 +4546,8 @@ where
 			let mut has_uncompleted_channel = None;
 			for (channel_id, counterparty_node_id, state) in affected_channels {
 				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-					let mut peer_state = peer_state_mutex.lock().unwrap();
+					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+					let peer_state = &mut *peer_state_lock;
 					if let Some(mut chan) = peer_state.channel_by_id.remove(&channel_id) {
 						let reason = ClosureReason::FundingBatchClosure;
 						let err = ChannelError::Close((reason.to_string(), reason));
@@ -6350,9 +6391,10 @@ where
 					per_peer_state.get(&counterparty_node_id)
 						.map(|peer_state_mutex| peer_state_mutex.lock().unwrap())
 						.and_then(|mut peer_state| peer_state.channel_by_id.remove(&channel_id).map(|chan| (chan, peer_state)))
-						.map(|(mut chan, mut peer_state)| {
+						.map(|(mut chan, mut peer_state_lock)| {
 							let reason = ClosureReason::ProcessingError { err: e.clone() };
 							let err = ChannelError::Close((e.clone(), reason));
+							let peer_state = &mut *peer_state_lock;
 							let (_, e) =
 								convert_channel_err!(self, peer_state, err, &mut chan);
 							shutdown_results.push((Err(e), counterparty_node_id));
@@ -14385,7 +14427,7 @@ where
 													self,
 													funding_txo,
 													monitor_update,
-													peer_state,
+													&mut peer_state.in_flight_monitor_updates,
 													funded_channel.context
 												);
 												to_process_monitor_update_actions.push((
