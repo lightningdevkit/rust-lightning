@@ -55,7 +55,7 @@ use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
 };
-use crate::util::logger::{Logger, Record};
+use crate::util::logger::{Level, Logger, Record};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
 use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
@@ -80,6 +80,11 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning_invoice::RawBolt11Invoice;
+use tracing::field::{Field, Visit};
+use tracing::span::{Attributes, Id};
+use tracing::{event, Event, Metadata, Subscriber};
+use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::{layer, Layer};
 
 use crate::io;
 use crate::prelude::*;
@@ -87,11 +92,11 @@ use crate::sign::{EntropySource, NodeSigner, RandomBytes, Recipient, SignerProvi
 use crate::sync::{Arc, Mutex};
 use alloc::boxed::Box;
 use core::future::Future;
-use core::mem;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
 use core::time::Duration;
+use core::{fmt, mem};
 
 use bitcoin::psbt::Psbt;
 use bitcoin::Sequence;
@@ -1730,6 +1735,171 @@ impl Logger for TestLogger {
 				.or_insert(0) += 1;
 			println!("{}", s);
 		}
+	}
+}
+
+struct FieldVisitor {
+	name: Option<String>,
+}
+
+impl Visit for FieldVisitor {
+	fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+		if field.name() == "name" {
+			self.name = Some(value.to_string());
+		}
+	}
+
+	fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {}
+}
+
+pub struct HighlightLayer;
+
+impl<S> Layer<S> for HighlightLayer
+where
+	S: Subscriber + for<'a> LookupSpan<'a>,
+{
+	fn on_new_span(
+		&self, attrs: &tracing::span::Attributes<'_>, id: &Id,
+		ctx: tracing_subscriber::layer::Context<'_, S>,
+	) {
+		let span = ctx.span(id).unwrap();
+		let meta = span.metadata();
+		if meta.name() == "node" {
+			let mut visitor = FieldVisitor { name: None };
+			attrs.record(&mut visitor);
+
+			event!(
+				tracing::Level::INFO,
+				"NODE \x1b[1;34;47m {} \x1b[0m",
+				visitor.name.unwrap_or_default()
+			);
+		}
+	}
+}
+
+pub struct TestTracerLayer;
+
+#[derive(Debug, Default)]
+struct NodeInfo {
+	node_id: Option<String>,
+}
+
+struct NodeVisitor {
+	node_id: Option<String>,
+}
+
+impl NodeVisitor {
+	fn new() -> Self {
+		Self { node_id: None }
+	}
+}
+
+impl Visit for NodeVisitor {
+	fn record_str(&mut self, field: &Field, value: &str) {
+		if field.name() == "node_id" {
+			self.node_id = Some(value.to_string());
+		}
+	}
+	fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+		// if field.name() == "node_id" {
+		// 	self.node_id = Some(format!("{:?}", value));
+		// }
+	}
+}
+
+struct MessageVisitor {
+	message: Option<String>,
+}
+
+impl MessageVisitor {
+	fn new() -> Self {
+		Self { message: None }
+	}
+}
+
+impl Visit for MessageVisitor {
+	fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+		if field.name() == "message" {
+			self.message = Some(format!("{:?}", value));
+		}
+	}
+}
+
+impl<S> Layer<S> for TestTracerLayer
+where
+	S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+	fn on_new_span(
+		&self, attrs: &tracing::span::Attributes<'_>, id: &tracing::span::Id,
+		ctx: tracing_subscriber::layer::Context<'_, S>,
+	) {
+		let mut visitor = NodeVisitor::new();
+		attrs.record(&mut visitor);
+
+		let span = ctx.span(id).expect("span exists");
+		let mut extensions = span.extensions_mut();
+		let mut info = NodeInfo::default();
+		info.node_id = visitor.node_id;
+		extensions.insert(info);
+	}
+
+	fn on_record(
+		&self, id: &tracing::span::Id, values: &tracing::span::Record<'_>,
+		ctx: tracing_subscriber::layer::Context<'_, S>,
+	) {
+		let span = ctx.span(id).expect("span exists");
+		let mut visitor = NodeVisitor::new();
+		values.record(&mut visitor);
+
+		if let Some(node_id) = visitor.node_id {
+			let mut extensions = span.extensions_mut();
+			if let Some(info) = extensions.get_mut::<NodeInfo>() {
+				info.node_id = Some(node_id);
+			}
+		}
+	}
+
+	fn on_event(&self, event: &Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
+		let meta = event.metadata();
+		let level = *meta.level();
+
+		let mut visitor = MessageVisitor::new();
+		event.record(&mut visitor);
+		let message = visitor.message.unwrap_or_else(|| "<no message>".to_string());
+
+		// Walk up the span tree to find a node_id
+		let mut node_id = "?".to_string();
+		if let Some(span) = ctx.event_span(event) {
+			let mut current = Some(span);
+			while let Some(s) = current {
+				let extensions = s.extensions();
+				if let Some(info) = extensions.get::<NodeInfo>() {
+					if let Some(id_str) = &info.node_id {
+						node_id = id_str.clone();
+						break;
+					}
+				}
+				current = s.parent();
+			}
+		}
+
+		let log_level = match level {
+			tracing::Level::ERROR => "ERROR",
+			tracing::Level::WARN => "WARN",
+			tracing::Level::INFO => "INFO",
+			tracing::Level::DEBUG => "DEBUG",
+			tracing::Level::TRACE => "TRACE",
+		};
+
+		let context = format!(
+			"node {} {} [{}:{}]",
+			node_id,
+			log_level,
+			meta.module_path().unwrap_or("<unknown>"),
+			meta.line().unwrap_or(0)
+		);
+
+		println!("{:<55} {}", context, message);
 	}
 }
 

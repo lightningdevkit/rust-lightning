@@ -33,6 +33,7 @@ chrono = { version = "0.4", default-features = false, features = ["serde", "allo
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 backtrace = { version = "0.3", optional = true }
+tracing = "0.1.41"
 
 [dev-dependencies]
 lightning = { version = "0.2.0", path = "../lightning", default-features = false, features = ["_test_utils"] }

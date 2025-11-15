@@ -31,6 +31,7 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::{secp256k1, Sequence, SignedAmount};
+use tracing::Span;
 
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, OffersContext,
@@ -1859,6 +1860,57 @@ where
 	}
 }
 
+thread_local! {
+	static CURRENT_INSTANCE: RefCell<Option<String>> = RefCell::new(None);
+	static CURRENT_SPAN: RefCell<Option<Span>> = RefCell::new(None);
+	static IN_SPAN: RefCell<bool> = RefCell::new(false);
+}
+
+struct InSpanGuard {}
+
+impl Drop for InSpanGuard {
+	fn drop(&mut self) {
+		IN_SPAN.with(|in_span| {
+			*in_span.borrow_mut() = false;
+		});
+	}
+}
+
+fn enter_instance_span(name: String) -> Option<tracing::span::Span> {
+	// return None is IN_SPAN
+	if IN_SPAN.with(|in_span| *in_span.borrow()) {
+		return None;
+	}
+
+	// set IN_SPAN to true
+	IN_SPAN.with(|in_span| {
+		*in_span.borrow_mut() = true;
+	});
+
+	let mut span_to_enter: Option<Span> = None;
+
+	CURRENT_INSTANCE.with(|current_name| {
+		let mut current_name = current_name.borrow_mut();
+
+		if current_name.as_deref() != Some(&name) {
+			// Start a new span and store it
+			let span = tracing::info_span!("node", name);
+			CURRENT_SPAN.with(|s| *s.borrow_mut() = Some(span.clone())); // clone is cheap
+			*current_name = Some(name);
+			span_to_enter = Some(span);
+		} else {
+			// Reuse existing span
+			CURRENT_SPAN.with(|s| {
+				if let Some(span) = s.borrow().as_ref() {
+					span_to_enter = Some(span.clone());
+				}
+			});
+		}
+	});
+
+	span_to_enter
+}
+
 /// A lightning node's channel state machine and payment management logic, which facilitates
 /// sending, forwarding, and receiving payments through lightning channels.
 ///
@@ -2897,6 +2949,8 @@ pub struct ChannelManager<
 	signer_provider: SP,
 
 	logger: L,
+
+	node_id: String,
 }
 
 /// Chain-related parameters used to construct a new `ChannelManager`.
@@ -3896,6 +3950,7 @@ macro_rules! process_events_body {
 	}
 }
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -4013,7 +4068,13 @@ where
 
 			#[cfg(feature = "_test_utils")]
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
+
+			node_id : "?".to_string(),
 		}
+	}
+
+	pub fn set_node_id(&mut self, id: String) {
+		self.node_id = id;
 	}
 
 	/// Gets the current [`UserConfig`] which controls some global behavior and includes the
@@ -12793,6 +12854,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	}
 } }
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -13645,6 +13707,7 @@ where
 	}
 }
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -13986,6 +14049,7 @@ where
 	}
 }
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -14021,6 +14085,7 @@ where
 	}
 }
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -14082,6 +14147,7 @@ where
 	}
 }
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -14582,6 +14648,7 @@ where
 	}
 }
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -15157,6 +15224,7 @@ where
 	}
 }
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -15374,6 +15442,7 @@ where
 	}
 }
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -15644,6 +15713,7 @@ where
 	}
 }
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -16159,6 +16229,7 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 	(8, min_value_msat, required),
 });
 
+#[lightning_macros::auto_span_methods]
 impl<
 		M: Deref,
 		T: Deref,
@@ -18096,6 +18167,7 @@ where
 
 			#[cfg(feature = "_test_utils")]
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
+			node_id: "?".to_string(),
 		};
 
 		let mut processed_claims: HashSet<Vec<MPPClaimHTLCSource>> = new_hash_set();

@@ -183,7 +183,7 @@ macro_rules! log_given_level {
 #[macro_export]
 macro_rules! log_error {
 	($logger: expr, $($arg:tt)*) => (
-		$crate::log_given_level!($logger, $crate::util::logger::Level::Error, $($arg)*);
+		tracing::error!($($arg)*);
 	)
 }
 
@@ -191,7 +191,7 @@ macro_rules! log_error {
 #[macro_export]
 macro_rules! log_warn {
 	($logger: expr, $($arg:tt)*) => (
-		$crate::log_given_level!($logger, $crate::util::logger::Level::Warn, $($arg)*);
+		tracing::warn!($($arg)*);
 	)
 }
 
@@ -199,7 +199,7 @@ macro_rules! log_warn {
 #[macro_export]
 macro_rules! log_info {
 	($logger: expr, $($arg:tt)*) => (
-		$crate::log_given_level!($logger, $crate::util::logger::Level::Info, $($arg)*);
+		tracing::info!($($arg)*);
 	)
 }
 
@@ -207,7 +207,7 @@ macro_rules! log_info {
 #[macro_export]
 macro_rules! log_debug {
 	($logger: expr, $($arg:tt)*) => (
-		$crate::log_given_level!($logger, $crate::util::logger::Level::Debug, $($arg)*);
+		tracing::debug!($($arg)*);
 	)
 }
 
@@ -215,7 +215,7 @@ macro_rules! log_debug {
 #[macro_export]
 macro_rules! log_trace {
 	($logger: expr, $($arg:tt)*) => (
-		$crate::log_given_level!($logger, $crate::util::logger::Level::Trace, $($arg)*)
+		tracing::trace!($($arg)*);
 	)
 }
 

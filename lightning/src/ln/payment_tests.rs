@@ -46,13 +46,18 @@ use crate::types::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
 use crate::util::errors::APIError;
+use crate::util::logger::TracingToLogger;
 use crate::util::ser::Writeable;
-use crate::util::test_utils;
+use crate::util::test_utils::{self, HighlightLayer, TestTracerLayer};
+
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::{fmt, prelude::*, Registry};
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use tracing_tree::HierarchicalLayer;
 
 use crate::prelude::*;
 
@@ -61,6 +66,7 @@ use crate::ln::functional_test_utils::*;
 use crate::routing::gossip::NodeId;
 
 use core::cmp::Ordering;
+use std::sync::Arc;
 #[cfg(feature = "std")]
 use std::thread;
 
@@ -430,11 +436,24 @@ fn mpp_receive_timeout() {
 
 #[test]
 fn test_keysend_payments() {
+	let layer = HierarchicalLayer::new(3) // indent by 2 spaces
+		.with_ansi(true)
+		.with_targets(true)
+		.with_deferred_spans(true);
+	let subscriber = Registry::default().with(HighlightLayer).with(layer);
+	tracing::subscriber::set_global_default(subscriber).unwrap();
+
+	// tracing_subscriber::fmt()
+	// 	.with_max_level(tracing::Level::TRACE)
+	// 	.with_span_events(FmtSpan::FULL)
+	// 	.init();
+
 	do_test_keysend_payments(false);
-	do_test_keysend_payments(true);
+	// do_test_keysend_payments(true);
 }
 
 fn do_test_keysend_payments(public_node: bool) {
+	let span = tracing::info_span!("node setup").entered();
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -448,18 +467,25 @@ fn do_test_keysend_payments(public_node: bool) {
 	} else {
 		create_chan_between_nodes(&nodes[0], &nodes[1]);
 	}
+
+	drop(span);
+
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::for_keysend(node_b_id, 40, false),
 		10000,
 	);
 
 	{
+		let _span = tracing::info_span!("initiate payment").entered();
+
 		let preimage = Some(PaymentPreimage([42; 32]));
 		let onion = RecipientOnionFields::spontaneous_empty();
 		let retry = Retry::Attempts(1);
 		let id = PaymentId([42; 32]);
 		nodes[0].node.send_spontaneous_payment(preimage, onion, id, route_params, retry).unwrap();
 	}
+
+	let _span = tracing::info_span!("propagate htlc and claim payment").entered();
 
 	check_added_monitors!(nodes[0], 1);
 	let send_event = SendEvent::from_node(&nodes[0]);

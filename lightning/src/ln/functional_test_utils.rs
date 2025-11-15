@@ -4501,7 +4501,7 @@ pub fn create_node_chanmgrs<'a, 'b>(
 		let network = Network::Testnet;
 		let genesis_block = bitcoin::constants::genesis_block(network);
 		let params = ChainParameters { network, best_block: BestBlock::from_network(network) };
-		let node = ChannelManager::new(
+		let mut node = ChannelManager::new(
 			cfgs[i].fee_estimator,
 			&cfgs[i].chain_monitor,
 			cfgs[i].tx_broadcaster,
@@ -4519,6 +4519,11 @@ pub fn create_node_chanmgrs<'a, 'b>(
 			params,
 			genesis_block.header.time,
 		);
+
+		// Here we give the node its id. This is used by the auto_span_methods proc macro to enter the span in every pub
+		// fn.
+		node.set_node_id(format!("{}", i));
+
 		chanmgrs.push(node);
 	}
 
