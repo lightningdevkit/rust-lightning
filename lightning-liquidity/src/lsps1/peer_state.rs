@@ -21,9 +21,12 @@ pub(super) struct PeerState {
 }
 
 impl PeerState {
-	pub(super) fn insert_outbound_channel(
-		&mut self, order_id: LSPS1OrderId, channel: OutboundCRChannel,
+	pub(super) fn new_order(
+		&mut self, order_id: LSPS1OrderId, order_params: LSPS1OrderParams,
+		created_at: LSPSDateTime, payment_details: LSPS1PaymentInfo,
 	) {
+		let channel = OutboundCRChannel::new(order_params, created_at, payment_details);
+
 		self.outbound_channels_by_order_id.insert(order_id, channel);
 	}
 }

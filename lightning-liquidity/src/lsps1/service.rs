@@ -20,7 +20,7 @@ use super::msgs::{
 	LSPS1OrderState, LSPS1PaymentInfo, LSPS1Request, LSPS1Response,
 	LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 };
-use super::peer_state::{OutboundCRChannel, PeerState};
+use super::peer_state::PeerState;
 use crate::message_queue::MessageQueue;
 
 use crate::events::EventQueue;
@@ -190,13 +190,13 @@ where
 				match peer_state_lock.pending_requests.remove(&request_id) {
 					Some(LSPS1Request::CreateOrder(params)) => {
 						let order_id = self.generate_order_id();
-						let channel = OutboundCRChannel::new(
+
+						peer_state_lock.new_order(
+							order_id.clone(),
 							params.order.clone(),
 							created_at,
 							payment.clone(),
 						);
-
-						peer_state_lock.insert_outbound_channel(order_id.clone(), channel);
 
 						let response = LSPS1Response::CreateOrder(LSPS1CreateOrderResponse {
 							order: params.order,
