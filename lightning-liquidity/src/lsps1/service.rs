@@ -92,11 +92,11 @@ where
 	/// `CreateOrder` request and replied with a `CreateOrder` response containing
 	/// an `order_id`.
 	/// Pending requests that are still awaiting our response are deliberately NOT counted.
-	pub(crate) fn has_active_requests(&self, counterparty_node_id: &PublicKey) -> bool {
+	pub(crate) fn has_active_orders(&self, counterparty_node_id: &PublicKey) -> bool {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		outer_state_lock.get(counterparty_node_id).map_or(false, |inner| {
 			let peer_state = inner.lock().unwrap();
-			!peer_state.outbound_channels_by_order_id.is_empty()
+			peer_state.has_active_orders()
 		})
 	}
 
@@ -270,29 +270,26 @@ where
 
 		match outer_state_lock.get(&counterparty_node_id) {
 			Some(inner_state_lock) => {
-				let mut peer_state_lock = inner_state_lock.lock().unwrap();
-
-				if let Some(outbound_channel) =
-					peer_state_lock.outbound_channels_by_order_id.get_mut(&order_id)
-				{
-					let config = &outbound_channel.config;
-
-					let response = LSPS1Response::GetOrder(LSPS1CreateOrderResponse {
-						order_id,
-						order: config.order.clone(),
-						order_state,
-						created_at: config.created_at.clone(),
-						payment: config.payment.clone(),
-						channel,
-					});
-					let msg = LSPS1Message::Response(request_id, response).into();
-					message_queue_notifier.enqueue(&counterparty_node_id, msg);
-					Ok(())
-				} else {
-					Err(APIError::APIMisuseError {
+				let peer_state_lock = inner_state_lock.lock().unwrap();
+				let order =
+					peer_state_lock.get_order(&order_id).ok_or(APIError::APIMisuseError {
 						err: format!("Channel with order_id {} not found", order_id.0),
-					})
-				}
+					})?;
+
+				// FIXME: we need to actually remember the order state (and eventually persist it)
+				// here.
+
+				let response = LSPS1Response::GetOrder(LSPS1CreateOrderResponse {
+					order_id,
+					order: order.order_params.clone(),
+					order_state,
+					created_at: order.created_at.clone(),
+					payment: order.payment_details.clone(),
+					channel,
+				});
+				let msg = LSPS1Message::Response(request_id, response).into();
+				message_queue_notifier.enqueue(&counterparty_node_id, msg);
+				Ok(())
 			},
 			None => Err(APIError::APIMisuseError {
 				err: format!("No existing state with counterparty {}", counterparty_node_id),
