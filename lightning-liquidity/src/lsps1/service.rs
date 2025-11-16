@@ -40,8 +40,6 @@ use lightning::util::persist::KVStore;
 
 use bitcoin::secp256k1::PublicKey;
 
-use chrono::Utc;
-
 /// Server-side configuration options for bLIP-51 / LSPS1 channel requests.
 #[derive(Clone, Debug)]
 pub struct LSPS1ServiceConfig {
@@ -63,7 +61,6 @@ impl From<ChannelStateError> for LightningError {
 enum OutboundRequestState {
 	OrderCreated { order_id: LSPS1OrderId },
 	WaitingPayment { order_id: LSPS1OrderId },
-	Ready,
 }
 
 impl OutboundRequestState {
@@ -102,32 +99,17 @@ impl OutboundCRChannel {
 		self.state = self.state.awaiting_payment()?;
 		Ok(())
 	}
-
-	fn check_order_validity(&self, supported_options: &LSPS1Options) -> bool {
-		let order = &self.config.order;
-
-		is_valid(order, supported_options)
-	}
 }
 
 #[derive(Default)]
 struct PeerState {
 	outbound_channels_by_order_id: HashMap<LSPS1OrderId, OutboundCRChannel>,
-	request_to_cid: HashMap<LSPSRequestId, u128>,
 	pending_requests: HashMap<LSPSRequestId, LSPS1Request>,
 }
 
 impl PeerState {
 	fn insert_outbound_channel(&mut self, order_id: LSPS1OrderId, channel: OutboundCRChannel) {
 		self.outbound_channels_by_order_id.insert(order_id, channel);
-	}
-
-	fn insert_request(&mut self, request_id: LSPSRequestId, channel_id: u128) {
-		self.request_to_cid.insert(request_id, channel_id);
-	}
-
-	fn remove_outbound_channel(&mut self, order_id: LSPS1OrderId) {
-		self.outbound_channels_by_order_id.remove(&order_id);
 	}
 }
 
@@ -137,8 +119,8 @@ where
 	CM::Target: AChannelManager,
 {
 	entropy_source: ES,
-	channel_manager: CM,
-	chain_source: Option<C>,
+	_channel_manager: CM,
+	_chain_source: Option<C>,
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue<K>>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
@@ -158,8 +140,8 @@ where
 	) -> Self {
 		Self {
 			entropy_source,
-			channel_manager,
-			chain_source,
+			_channel_manager: channel_manager,
+			_chain_source: chain_source,
 			pending_messages,
 			pending_events,
 			per_peer_state: RwLock::new(new_hash_map()),
