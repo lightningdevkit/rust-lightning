@@ -157,9 +157,12 @@ where
 				.or_insert(Mutex::new(PeerState::default()));
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
-			peer_state_lock
-				.pending_requests
-				.insert(request_id.clone(), LSPS1Request::CreateOrder(params.clone()));
+			let request = LSPS1Request::CreateOrder(params.clone());
+			peer_state_lock.register_request(request_id.clone(), request).map_err(|e| {
+				let err = format!("Failed to handle request due to: {}", e);
+				let action = ErrorAction::IgnoreAndLog(Level::Error);
+				LightningError { err, action }
+			})?;
 		}
 
 		event_queue_notifier.enqueue(LSPS1ServiceEvent::RequestForPaymentDetails {
@@ -186,11 +189,15 @@ where
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+				let request = peer_state_lock.remove_request(&request_id).map_err(|e| {
+					debug_assert!(false, "Failed to send response due to: {}", e);
+					let err = format!("Failed to send response due to: {}", e);
+					APIError::APIMisuseError { err }
+				})?;
 
-				match peer_state_lock.pending_requests.remove(&request_id) {
-					Some(LSPS1Request::CreateOrder(params)) => {
+				match request {
+					LSPS1Request::CreateOrder(params) => {
 						let order_id = self.generate_order_id();
-
 						peer_state_lock.new_order(
 							order_id.clone(),
 							params.order.clone(),
@@ -201,6 +208,9 @@ where
 						let response = LSPS1Response::CreateOrder(LSPS1CreateOrderResponse {
 							order: params.order,
 							order_id,
+
+							// TODO, we need to set this in the peer/channel state, and send the
+							// set value here:
 							order_state: LSPS1OrderState::Created,
 							created_at,
 							payment,
@@ -210,14 +220,22 @@ where
 						message_queue_notifier.enqueue(counterparty_node_id, msg);
 						Ok(())
 					},
-
-					_ => Err(APIError::APIMisuseError {
-						err: format!("No pending buy request for request_id: {:?}", request_id),
-					}),
+					t => {
+						debug_assert!(
+							false,
+							"Failed to send response due to unexpected request type: {:?}",
+							t
+						);
+						let err = format!(
+							"Failed to send response due to unexpected request type: {:?}",
+							t
+						);
+						return Err(APIError::APIMisuseError { err });
+					},
 				}
 			},
 			None => Err(APIError::APIMisuseError {
-				err: format!("No state for the counterparty exists: {:?}", counterparty_node_id),
+				err: format!("No state for the counterparty exists: {}", counterparty_node_id),
 			}),
 		}
 	}
@@ -231,9 +249,13 @@ where
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
-				peer_state_lock
-					.pending_requests
-					.insert(request_id.clone(), LSPS1Request::GetOrder(params.clone()));
+
+				let request = LSPS1Request::GetOrder(params.clone());
+				peer_state_lock.register_request(request_id.clone(), request).map_err(|e| {
+					let err = format!("Failed to handle request due to: {}", e);
+					let action = ErrorAction::IgnoreAndLog(Level::Error);
+					LightningError { err, action }
+				})?;
 
 				event_queue_notifier.enqueue(LSPS1ServiceEvent::CheckPaymentConfirmation {
 					request_id,
