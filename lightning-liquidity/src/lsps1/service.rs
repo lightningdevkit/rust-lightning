@@ -181,7 +181,7 @@ where
 	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
 	pub fn send_payment_details(
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
-		payment: LSPS1PaymentInfo, created_at: LSPSDateTime,
+		payment_details: LSPS1PaymentInfo, created_at: LSPSDateTime,
 	) -> Result<(), APIError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
@@ -198,23 +198,21 @@ where
 				match request {
 					LSPS1Request::CreateOrder(params) => {
 						let order_id = self.generate_order_id();
-						peer_state_lock.new_order(
+						let order = peer_state_lock.new_order(
 							order_id.clone(),
-							params.order.clone(),
+							params.order,
 							created_at,
-							payment.clone(),
+							payment_details,
 						);
 
 						let response = LSPS1Response::CreateOrder(LSPS1CreateOrderResponse {
-							order: params.order,
+							order: order.order_params,
 							order_id,
 
-							// TODO, we need to set this in the peer/channel state, and send the
-							// set value here:
-							order_state: LSPS1OrderState::Created,
-							created_at,
-							payment,
-							channel: None,
+							order_state: order.order_state,
+							created_at: order.created_at,
+							payment: order.payment_details,
+							channel: order.channel_details,
 						});
 						let msg = LSPS1Message::Response(request_id, response).into();
 						message_queue_notifier.enqueue(counterparty_node_id, msg);
@@ -284,7 +282,7 @@ where
 	/// [`LSPS1ServiceEvent::CheckPaymentConfirmation`]: crate::lsps1::event::LSPS1ServiceEvent::CheckPaymentConfirmation
 	pub fn update_order_status(
 		&self, request_id: LSPSRequestId, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
-		order_state: LSPS1OrderState, channel: Option<LSPS1ChannelInfo>,
+		order_state: LSPS1OrderState, channel_details: Option<LSPS1ChannelInfo>,
 	) -> Result<(), APIError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
@@ -292,22 +290,20 @@ where
 
 		match outer_state_lock.get(&counterparty_node_id) {
 			Some(inner_state_lock) => {
-				let peer_state_lock = inner_state_lock.lock().unwrap();
-				let order =
-					peer_state_lock.get_order(&order_id).ok_or(APIError::APIMisuseError {
-						err: format!("Channel with order_id {} not found", order_id.0),
-					})?;
-
-				// FIXME: we need to actually remember the order state (and eventually persist it)
-				// here.
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+				let order = peer_state_lock
+					.update_order(&order_id, order_state, channel_details)
+					.map_err(|e| APIError::APIMisuseError {
+					err: format!("Failed to update order: {:?}", e),
+				})?;
 
 				let response = LSPS1Response::GetOrder(LSPS1CreateOrderResponse {
 					order_id,
 					order: order.order_params.clone(),
-					order_state,
+					order_state: order.order_state.clone(),
 					created_at: order.created_at.clone(),
 					payment: order.payment_details.clone(),
-					channel,
+					channel: order.channel_details.clone(),
 				});
 				let msg = LSPS1Message::Response(request_id, response).into();
 				message_queue_notifier.enqueue(&counterparty_node_id, msg);

@@ -9,7 +9,10 @@
 
 //! Contains peer state objects that are used by `LSPS1ServiceHandler`.
 
-use super::msgs::{LSPS1OrderId, LSPS1OrderParams, LSPS1PaymentInfo, LSPS1Request};
+use super::msgs::{
+	LSPS1ChannelInfo, LSPS1OrderId, LSPS1OrderParams, LSPS1OrderState, LSPS1PaymentInfo,
+	LSPS1Request,
+};
 
 use crate::lsps0::ser::{LSPSDateTime, LSPSRequestId};
 use crate::prelude::HashMap;
@@ -26,13 +29,31 @@ impl PeerState {
 	pub(super) fn new_order(
 		&mut self, order_id: LSPS1OrderId, order_params: LSPS1OrderParams,
 		created_at: LSPSDateTime, payment_details: LSPS1PaymentInfo,
-	) {
-		let channel_order = ChannelOrder { order_params, created_at, payment_details };
-		self.outbound_channels_by_order_id.insert(order_id, channel_order);
+	) -> ChannelOrder {
+		let order_state = LSPS1OrderState::Created;
+		let channel_details = None;
+		let channel_order = ChannelOrder {
+			order_params,
+			order_state,
+			created_at,
+			payment_details,
+			channel_details,
+		};
+		self.outbound_channels_by_order_id.insert(order_id, channel_order.clone());
+		channel_order
 	}
 
-	pub(super) fn get_order<'a>(&'a self, order_id: &LSPS1OrderId) -> Option<&'a ChannelOrder> {
-		self.outbound_channels_by_order_id.get(order_id)
+	pub(super) fn update_order<'a>(
+		&'a mut self, order_id: &LSPS1OrderId, order_state: LSPS1OrderState,
+		channel_details: Option<LSPS1ChannelInfo>,
+	) -> Result<&'a ChannelOrder, PeerStateError> {
+		let order = self
+			.outbound_channels_by_order_id
+			.get_mut(order_id)
+			.ok_or(PeerStateError::UnknownOrderId)?;
+		order.order_state = order_state;
+		order.channel_details = channel_details;
+		Ok(order)
 	}
 
 	pub(super) fn register_request(
@@ -60,6 +81,7 @@ impl PeerState {
 pub(super) enum PeerStateError {
 	UnknownRequestId,
 	DuplicateRequestId,
+	UnknownOrderId,
 }
 
 impl fmt::Display for PeerStateError {
@@ -67,12 +89,16 @@ impl fmt::Display for PeerStateError {
 		match self {
 			Self::UnknownRequestId => write!(f, "unknown request id"),
 			Self::DuplicateRequestId => write!(f, "duplicate request id"),
+			Self::UnknownOrderId => write!(f, "unknown order id"),
 		}
 	}
 }
 
+#[derive(Debug, Clone)]
 pub(super) struct ChannelOrder {
 	pub(super) order_params: LSPS1OrderParams,
+	pub(super) order_state: LSPS1OrderState,
 	pub(super) created_at: LSPSDateTime,
 	pub(super) payment_details: LSPS1PaymentInfo,
+	pub(super) channel_details: Option<LSPS1ChannelInfo>,
 }
