@@ -20,6 +20,7 @@ use super::msgs::{
 	LSPS1OrderState, LSPS1PaymentInfo, LSPS1Request, LSPS1Response,
 	LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 };
+use super::peer_state::{OutboundCRChannel, PeerState};
 use crate::message_queue::MessageQueue;
 
 use crate::events::EventQueue;
@@ -46,70 +47,6 @@ pub struct LSPS1ServiceConfig {
 	pub token: Option<String>,
 	/// The options supported by the LSP.
 	pub supported_options: Option<LSPS1Options>,
-}
-
-struct ChannelStateError(String);
-
-impl From<ChannelStateError> for LightningError {
-	fn from(value: ChannelStateError) -> Self {
-		LightningError { err: value.0, action: ErrorAction::IgnoreAndLog(Level::Info) }
-	}
-}
-
-#[derive(PartialEq, Debug)]
-enum OutboundRequestState {
-	OrderCreated { order_id: LSPS1OrderId },
-	WaitingPayment { order_id: LSPS1OrderId },
-}
-
-impl OutboundRequestState {
-	fn awaiting_payment(&self) -> Result<Self, ChannelStateError> {
-		match self {
-			OutboundRequestState::OrderCreated { order_id } => {
-				Ok(OutboundRequestState::WaitingPayment { order_id: order_id.clone() })
-			},
-			state => Err(ChannelStateError(format!("TODO. JIT Channel was in state: {:?}", state))),
-		}
-	}
-}
-
-struct OutboundLSPS1Config {
-	order: LSPS1OrderParams,
-	created_at: LSPSDateTime,
-	payment: LSPS1PaymentInfo,
-}
-
-struct OutboundCRChannel {
-	state: OutboundRequestState,
-	config: OutboundLSPS1Config,
-}
-
-impl OutboundCRChannel {
-	fn new(
-		order: LSPS1OrderParams, created_at: LSPSDateTime, order_id: LSPS1OrderId,
-		payment: LSPS1PaymentInfo,
-	) -> Self {
-		Self {
-			state: OutboundRequestState::OrderCreated { order_id },
-			config: OutboundLSPS1Config { order, created_at, payment },
-		}
-	}
-	fn awaiting_payment(&mut self) -> Result<(), LightningError> {
-		self.state = self.state.awaiting_payment()?;
-		Ok(())
-	}
-}
-
-#[derive(Default)]
-struct PeerState {
-	outbound_channels_by_order_id: HashMap<LSPS1OrderId, OutboundCRChannel>,
-	pending_requests: HashMap<LSPSRequestId, LSPS1Request>,
-}
-
-impl PeerState {
-	fn insert_outbound_channel(&mut self, order_id: LSPS1OrderId, channel: OutboundCRChannel) {
-		self.outbound_channels_by_order_id.insert(order_id, channel);
-	}
 }
 
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
