@@ -18,7 +18,7 @@ use core::fmt;
 
 #[derive(Default)]
 pub(super) struct PeerState {
-	outbound_channels_by_order_id: HashMap<LSPS1OrderId, OutboundCRChannel>,
+	outbound_channels_by_order_id: HashMap<LSPS1OrderId, ChannelOrder>,
 	pending_requests: HashMap<LSPSRequestId, LSPS1Request>,
 }
 
@@ -27,12 +27,12 @@ impl PeerState {
 		&mut self, order_id: LSPS1OrderId, order_params: LSPS1OrderParams,
 		created_at: LSPSDateTime, payment_details: LSPS1PaymentInfo,
 	) {
-		let channel = OutboundCRChannel::new(order_params, created_at, payment_details);
-		self.outbound_channels_by_order_id.insert(order_id, channel);
+		let channel_order = ChannelOrder { order_params, created_at, payment_details };
+		self.outbound_channels_by_order_id.insert(order_id, channel_order);
 	}
 
 	pub(super) fn get_order<'a>(&'a self, order_id: &LSPS1OrderId) -> Option<&'a ChannelOrder> {
-		self.outbound_channels_by_order_id.get(order_id).map(|channel| &channel.order)
+		self.outbound_channels_by_order_id.get(order_id)
 	}
 
 	pub(super) fn register_request(
@@ -75,16 +75,4 @@ pub(super) struct ChannelOrder {
 	pub(super) order_params: LSPS1OrderParams,
 	pub(super) created_at: LSPSDateTime,
 	pub(super) payment_details: LSPS1PaymentInfo,
-}
-
-struct OutboundCRChannel {
-	order: ChannelOrder,
-}
-
-impl OutboundCRChannel {
-	fn new(
-		order_params: LSPS1OrderParams, created_at: LSPSDateTime, payment_details: LSPS1PaymentInfo,
-	) -> Self {
-		Self { order: ChannelOrder { order_params, created_at, payment_details } }
-	}
 }
