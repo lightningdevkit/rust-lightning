@@ -14,10 +14,12 @@ use super::msgs::{LSPS1OrderId, LSPS1OrderParams, LSPS1PaymentInfo, LSPS1Request
 use crate::lsps0::ser::{LSPSDateTime, LSPSRequestId};
 use crate::prelude::HashMap;
 
+use core::fmt;
+
 #[derive(Default)]
 pub(super) struct PeerState {
 	outbound_channels_by_order_id: HashMap<LSPS1OrderId, OutboundCRChannel>,
-	pub(super) pending_requests: HashMap<LSPSRequestId, LSPS1Request>,
+	pending_requests: HashMap<LSPSRequestId, LSPS1Request>,
 }
 
 impl PeerState {
@@ -33,8 +35,39 @@ impl PeerState {
 		self.outbound_channels_by_order_id.get(order_id).map(|channel| &channel.order)
 	}
 
+	pub(super) fn register_request(
+		&mut self, request_id: LSPSRequestId, request: LSPS1Request,
+	) -> Result<(), PeerStateError> {
+		if self.pending_requests.contains_key(&request_id) {
+			return Err(PeerStateError::DuplicateRequestId);
+		}
+		self.pending_requests.insert(request_id, request);
+		Ok(())
+	}
+
+	pub(super) fn remove_request(
+		&mut self, request_id: &LSPSRequestId,
+	) -> Result<LSPS1Request, PeerStateError> {
+		self.pending_requests.remove(request_id).ok_or(PeerStateError::UnknownRequestId)
+	}
+
 	pub(super) fn has_active_requests(&self) -> bool {
 		!self.outbound_channels_by_order_id.is_empty()
+	}
+}
+
+#[derive(Debug, Copy, Clone)]
+pub(super) enum PeerStateError {
+	UnknownRequestId,
+	DuplicateRequestId,
+}
+
+impl fmt::Display for PeerStateError {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::UnknownRequestId => write!(f, "unknown request id"),
+			Self::DuplicateRequestId => write!(f, "duplicate request id"),
+		}
 	}
 }
 
