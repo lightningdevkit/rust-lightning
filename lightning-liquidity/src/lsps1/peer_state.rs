@@ -16,7 +16,7 @@ use crate::prelude::HashMap;
 
 #[derive(Default)]
 pub(super) struct PeerState {
-	pub(super) outbound_channels_by_order_id: HashMap<LSPS1OrderId, OutboundCRChannel>,
+	outbound_channels_by_order_id: HashMap<LSPS1OrderId, OutboundCRChannel>,
 	pub(super) pending_requests: HashMap<LSPSRequestId, LSPS1Request>,
 }
 
@@ -26,25 +26,32 @@ impl PeerState {
 		created_at: LSPSDateTime, payment_details: LSPS1PaymentInfo,
 	) {
 		let channel = OutboundCRChannel::new(order_params, created_at, payment_details);
-
 		self.outbound_channels_by_order_id.insert(order_id, channel);
+	}
+
+	pub(super) fn get_order<'a>(&'a self, order_id: &LSPS1OrderId) -> Option<&'a ChannelOrder> {
+		self.outbound_channels_by_order_id.get(order_id).map(|channel| &channel.order)
+	}
+
+	pub(super) fn has_active_requests(&self) -> bool {
+		!self.outbound_channels_by_order_id.is_empty()
 	}
 }
 
-pub(super) struct OutboundLSPS1Config {
-	pub(super) order: LSPS1OrderParams,
+pub(super) struct ChannelOrder {
+	pub(super) order_params: LSPS1OrderParams,
 	pub(super) created_at: LSPSDateTime,
-	pub(super) payment: LSPS1PaymentInfo,
+	pub(super) payment_details: LSPS1PaymentInfo,
 }
 
-pub(super) struct OutboundCRChannel {
-	pub(super) config: OutboundLSPS1Config,
+struct OutboundCRChannel {
+	order: ChannelOrder,
 }
 
 impl OutboundCRChannel {
-	pub(super) fn new(
-		order: LSPS1OrderParams, created_at: LSPSDateTime, payment: LSPS1PaymentInfo,
+	fn new(
+		order_params: LSPS1OrderParams, created_at: LSPSDateTime, payment_details: LSPS1PaymentInfo,
 	) -> Self {
-		Self { config: OutboundLSPS1Config { order, created_at, payment } }
+		Self { order: ChannelOrder { order_params, created_at, payment_details } }
 	}
 }
