@@ -193,7 +193,6 @@ where
 						let channel = OutboundCRChannel::new(
 							params.order.clone(),
 							created_at,
-							order_id.clone(),
 							payment.clone(),
 						);
 
@@ -232,28 +231,6 @@ where
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
-
-				let outbound_channel = peer_state_lock
-					.outbound_channels_by_order_id
-					.get_mut(&params.order_id)
-					.ok_or(LightningError {
-						err: format!(
-							"Received get order request for unknown order id {:?}",
-							params.order_id
-						),
-						action: ErrorAction::IgnoreAndLog(Level::Info),
-					})?;
-
-				if let Err(e) = outbound_channel.awaiting_payment() {
-					peer_state_lock.outbound_channels_by_order_id.remove(&params.order_id);
-					event_queue_notifier.enqueue(LSPS1ServiceEvent::Refund {
-						request_id,
-						counterparty_node_id: *counterparty_node_id,
-						order_id: params.order_id,
-					});
-					return Err(e);
-				}
-
 				peer_state_lock
 					.pending_requests
 					.insert(request_id.clone(), LSPS1Request::GetOrder(params.clone()));
