@@ -3660,7 +3660,11 @@ where
 
 		if let Some((_, funding_txo, _, update)) = shutdown_res.monitor_update.take() {
 			handle_new_monitor_update_locked_actions_handled_by_caller!(
-				cm, funding_txo, update, in_flight_monitor_updates, chan.context
+				cm,
+				funding_txo,
+				update,
+				in_flight_monitor_updates,
+				chan.context
 			);
 		}
 		// If there's a possibility that we need to generate further monitor updates for this
@@ -3668,7 +3672,9 @@ where
 		// into the map (which prevents the `PeerState` from being cleaned up) for channels that
 		// never even got confirmations (which would open us up to DoS attacks).
 		let update_id = chan.context.get_latest_monitor_update_id();
-		if chan.funding.get_funding_tx_confirmation_height().is_some() || chan.context.minimum_depth(&chan.funding) == Some(0) || update_id > 1 {
+		let funding_confirmed = chan.funding.get_funding_tx_confirmation_height().is_some();
+		let chan_zero_conf = chan.context.minimum_depth(&chan.funding) == Some(0);
+		if funding_confirmed || chan_zero_conf || update_id > 1 {
 			closed_channel_monitor_update_ids.insert(chan_id, update_id);
 		}
 		let mut short_to_chan_info = cm.short_to_chan_info.write().unwrap();
@@ -3681,7 +3687,8 @@ where
 			// also don't want a counterparty to be able to trivially cause a memory leak by simply
 			// opening a million channels with us which are closed before we ever reach the funding
 			// stage.
-			let alias_removed = cm.outbound_scid_aliases.lock().unwrap().remove(&chan.context.outbound_scid_alias());
+			let outbound_alias = chan.context.outbound_scid_alias();
+			let alias_removed = cm.outbound_scid_aliases.lock().unwrap().remove(&outbound_alias);
 			debug_assert!(alias_removed);
 		}
 		short_to_chan_info.remove(&chan.context.outbound_scid_alias());
@@ -3713,7 +3720,8 @@ where
 		// also don't want a counterparty to be able to trivially cause a memory leak by simply
 		// opening a million channels with us which are closed before we ever reach the funding
 		// stage.
-		let alias_removed = cm.outbound_scid_aliases.lock().unwrap().remove(&chan.context().outbound_scid_alias());
+		let outbound_alias = chan.context().outbound_scid_alias();
+		let alias_removed = cm.outbound_scid_aliases.lock().unwrap().remove(&outbound_alias);
 		debug_assert!(alias_removed);
 		(shutdown_res, None)
 	})
