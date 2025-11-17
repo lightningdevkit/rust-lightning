@@ -53,7 +53,7 @@ use crate::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::util::async_poll::{MaybeSend, MaybeSync};
 use crate::util::errors::APIError;
-use crate::util::logger::{Logger, WithContext};
+use crate::util::logger::{Logger, LoggerScope, WithContext};
 use crate::util::native_async::FutureSpawner;
 use crate::util::persist::{KVStore, MonitorName, MonitorUpdatingPersisterAsync};
 #[cfg(peer_storage)]
@@ -1426,6 +1426,8 @@ where
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
 				let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
+				let _scope = LoggerScope::new(&logger);
+
 				log_trace!(
 					logger,
 					"Updating ChannelMonitor to id {} for channel {}",

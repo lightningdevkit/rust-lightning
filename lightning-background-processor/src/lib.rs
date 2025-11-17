@@ -51,6 +51,7 @@ use lightning::routing::utxo::UtxoLookup;
 use lightning::sign::{
 	ChangeDestinationSource, ChangeDestinationSourceSync, EntropySource, OutputSpender,
 };
+use lightning::util::async_poll::{MaybeSend, MaybeSync};
 use lightning::util::logger::Logger;
 use lightning::util::persist::{
 	KVStore, KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
@@ -184,8 +185,8 @@ pub enum GossipSync<
 	U: Deref,
 	L: Deref,
 > where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	U::Target: UtxoLookup,
-	L::Target: Logger,
 {
 	/// Gossip sync via the lightning peer-to-peer network as defined by BOLT 7.
 	P2P(P),
@@ -203,8 +204,8 @@ impl<
 		L: Deref,
 	> GossipSync<P, R, G, U, L>
 where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	U::Target: UtxoLookup,
-	L::Target: Logger,
 {
 	fn network_graph(&self) -> Option<&G> {
 		match self {
@@ -237,8 +238,8 @@ impl<
 		L: Deref,
 	> GossipSync<P, &RapidGossipSync<G, L>, G, U, L>
 where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	U::Target: UtxoLookup,
-	L::Target: Logger,
 {
 	/// Initializes a new [`GossipSync::P2P`] variant.
 	pub fn p2p(gossip_sync: P) -> Self {
@@ -260,7 +261,7 @@ impl<
 		&'a (dyn UtxoLookup + Send + Sync),
 		L,
 	> where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	/// Initializes a new [`GossipSync::Rapid`] variant.
 	pub fn rapid(gossip_sync: R) -> Self {
@@ -277,7 +278,7 @@ impl<'a, L: Deref>
 		&'a (dyn UtxoLookup + Send + Sync),
 		L,
 	> where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	/// Initializes a new [`GossipSync::None`] variant.
 	pub fn none() -> Self {
@@ -287,7 +288,7 @@ impl<'a, L: Deref>
 
 fn handle_network_graph_update<L: Deref>(network_graph: &NetworkGraph<L>, event: &Event)
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	if let Event::PaymentPathFailed {
 		failure: PathFailure::OnPath { network_update: Some(ref upd) },
@@ -911,11 +912,11 @@ pub async fn process_events_async<
 	sleeper: Sleeper, mobile_interruptable_platform: bool, fetch_time: FetchTime,
 ) -> Result<(), lightning::io::Error>
 where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	UL::Target: UtxoLookup,
 	CF::Target: chain::Filter,
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
-	L::Target: Logger,
 	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
 	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
@@ -1382,11 +1383,11 @@ pub async fn process_events_async_with_kv_store_sync<
 	sleeper: Sleeper, mobile_interruptable_platform: bool, fetch_time: FetchTime,
 ) -> Result<(), lightning::io::Error>
 where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	UL::Target: UtxoLookup,
 	CF::Target: chain::Filter,
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
-	L::Target: Logger,
 	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
 	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
@@ -1500,7 +1501,7 @@ impl BackgroundProcessor {
 		CF::Target: 'static + chain::Filter,
 		T::Target: 'static + BroadcasterInterface,
 		F::Target: 'static + FeeEstimator,
-		L::Target: 'static + Logger,
+		L::Target: Logger + MaybeSend + MaybeSync,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
 		ES::Target: 'static + EntropySource,
 		CM::Target: AChannelManager,

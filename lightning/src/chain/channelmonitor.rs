@@ -3815,6 +3815,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					}
 				}));
 			}
+
+			log_info_tls!(
+				"Recording counterparty fulfillment of HTLC id {:?} with preimage {} in channel monitor",
+				*claimed_htlc_id,
+				*claimed_preimage
+			);
 			self.counterparty_fulfilled_htlcs.insert(*claimed_htlc_id, *claimed_preimage);
 		}
 

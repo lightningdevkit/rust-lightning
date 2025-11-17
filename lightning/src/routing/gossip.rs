@@ -37,10 +37,11 @@ use crate::ln::types::ChannelId;
 use crate::routing::utxo::{self, UtxoLookup, UtxoResolver};
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::types::string::PrintableString;
+use crate::util::async_poll::{MaybeSend, MaybeSync};
 use crate::util::indexed_map::{
 	Entry as IndexedMapEntry, IndexedMap, OccupiedEntry as IndexedMapOccupiedEntry,
 };
-use crate::util::logger::{Level, Logger};
+use crate::util::logger::{Level, Logger, LoggerScope};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 use crate::util::ser::{MaybeReadable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 
@@ -185,7 +186,7 @@ impl FromStr for NodeId {
 /// Represents the network as nodes and channels between them
 pub struct NetworkGraph<L: Deref>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	last_rapid_gossip_sync_timestamp: Mutex<Option<u32>>,
@@ -323,8 +324,8 @@ impl MaybeReadable for NetworkUpdate {
 /// serving historical announcements.
 pub struct P2PGossipSync<G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Deref>
 where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	U::Target: UtxoLookup,
-	L::Target: Logger,
 {
 	network_graph: G,
 	utxo_lookup: RwLock<Option<U>>,
@@ -335,8 +336,8 @@ where
 
 impl<G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Deref> P2PGossipSync<G, U, L>
 where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	U::Target: UtxoLookup,
-	L::Target: Logger,
 {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
 	/// assuming an existing [`NetworkGraph`].
@@ -416,7 +417,7 @@ where
 
 impl<L: Deref> NetworkGraph<L>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	/// Handles any network updates originating from [`Event`]s.
 	///
@@ -533,8 +534,8 @@ pub fn verify_channel_announcement<C: Verification>(
 impl<G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Deref> RoutingMessageHandler
 	for P2PGossipSync<G, U, L>
 where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	U::Target: UtxoLookup,
-	L::Target: Logger,
 {
 	fn handle_node_announcement(
 		&self, _their_node_id: Option<PublicKey>, msg: &msgs::NodeAnnouncement,
@@ -762,8 +763,8 @@ where
 impl<G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Deref> BaseMessageHandler
 	for P2PGossipSync<G, U, L>
 where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	U::Target: UtxoLookup,
-	L::Target: Logger,
 {
 	/// Initiates a stateless sync of routing gossip information with a peer
 	/// using [`gossip_queries`]. The default strategy used by this implementation
@@ -1634,7 +1635,7 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl<L: Deref> Writeable for NetworkGraph<L>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		self.test_node_counter_consistency();
@@ -1665,7 +1666,7 @@ where
 
 impl<L: Deref> ReadableArgs<L> for NetworkGraph<L>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	fn read<R: io::Read>(reader: &mut R, logger: L) -> Result<NetworkGraph<L>, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
@@ -1722,7 +1723,7 @@ where
 
 impl<L: Deref> fmt::Display for NetworkGraph<L>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		writeln!(f, "Network map\n[Channels]")?;
@@ -1737,10 +1738,10 @@ where
 	}
 }
 
-impl<L: Deref> Eq for NetworkGraph<L> where L::Target: Logger {}
+impl<L: Deref> Eq for NetworkGraph<L> where L::Target: Logger + MaybeSend + MaybeSync {}
 impl<L: Deref> PartialEq for NetworkGraph<L>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	fn eq(&self, other: &Self) -> bool {
 		// For a total lockorder, sort by position in memory and take the inner locks in that order.
@@ -1771,7 +1772,7 @@ const NODE_COUNT_ESTIMATE: usize = 20_000;
 
 impl<L: Deref> NetworkGraph<L>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	/// Creates a new, empty, network graph.
 	pub fn new(network: Network, logger: L) -> NetworkGraph<L> {
@@ -1845,6 +1846,8 @@ where
 	/// The unix timestamp provided by the most recent rapid gossip sync.
 	/// It will be set by the rapid sync process after every sync completion.
 	pub fn get_last_rapid_gossip_sync_timestamp(&self) -> Option<u32> {
+		let _scope = LoggerScope::new(&*self.logger); // DOES NOT WORK.
+
 		self.last_rapid_gossip_sync_timestamp.lock().unwrap().clone()
 	}
 

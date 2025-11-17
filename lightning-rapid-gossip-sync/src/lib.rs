@@ -87,6 +87,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use lightning::io;
 use lightning::ln::msgs::{DecodeError, LightningError};
 use lightning::routing::gossip::NetworkGraph;
+use lightning::util::async_poll::{MaybeSend, MaybeSync};
 use lightning::util::logger::Logger;
 
 /// Core functionality of this crate
@@ -134,7 +135,7 @@ impl From<LightningError> for GraphSyncError {
 /// [crate-level documentation]: crate
 pub struct RapidGossipSync<NG: Deref<Target = NetworkGraph<L>>, L: Deref>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	network_graph: NG,
 	logger: L,
@@ -143,7 +144,7 @@ where
 
 impl<NG: Deref<Target = NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	/// Instantiate a new [`RapidGossipSync`] instance.
 	pub fn new(network_graph: NG, logger: L) -> Self {

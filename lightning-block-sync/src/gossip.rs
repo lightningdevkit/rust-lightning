@@ -12,6 +12,7 @@ use bitcoin::transaction::{OutPoint, TxOut};
 use lightning::ln::peer_handler::APeerManager;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::{UtxoFuture, UtxoLookup, UtxoLookupError, UtxoResult};
+use lightning::util::async_poll::{MaybeSend, MaybeSync};
 use lightning::util::logger::Logger;
 use lightning::util::native_async::FutureSpawner;
 
@@ -127,8 +128,8 @@ pub struct GossipVerifier<
 	Blocks: Deref + Send + Sync + 'static + Clone,
 	L: Deref + Send + Sync + 'static,
 > where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	Blocks::Target: UtxoSource,
-	L::Target: Logger,
 {
 	source: Blocks,
 	peer_manager_wake: Arc<dyn Fn() + Send + Sync>,
@@ -142,8 +143,8 @@ const BLOCK_CACHE_SIZE: usize = 5;
 impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone, L: Deref + Send + Sync>
 	GossipVerifier<S, Blocks, L>
 where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	Blocks::Target: UtxoSource,
-	L::Target: Logger,
 {
 	/// Constructs a new [`GossipVerifier`].
 	///
@@ -251,8 +252,8 @@ where
 impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone, L: Deref + Send + Sync> Deref
 	for GossipVerifier<S, Blocks, L>
 where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	Blocks::Target: UtxoSource,
-	L::Target: Logger,
 {
 	type Target = Self;
 	fn deref(&self) -> &Self {
@@ -263,8 +264,8 @@ where
 impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone, L: Deref + Send + Sync> UtxoLookup
 	for GossipVerifier<S, Blocks, L>
 where
+	L::Target: Logger + MaybeSend + MaybeSync,
 	Blocks::Target: UtxoSource,
-	L::Target: Logger,
 {
 	fn get_utxo(&self, _chain_hash: &ChainHash, short_channel_id: u64) -> UtxoResult {
 		let res = UtxoFuture::new();

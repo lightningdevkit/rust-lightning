@@ -38,7 +38,7 @@ use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkGraph, NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey, Recipient};
 use crate::types::features::{InitFeatures, NodeFeatures};
-use crate::util::async_poll::{MultiResultFuturePoller, ResultFuture};
+use crate::util::async_poll::{MaybeSend, MaybeSync, MultiResultFuturePoller, ResultFuture};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::ser::Writeable;
 use crate::util::wakers::{Future, Notifier};
@@ -548,7 +548,7 @@ pub trait MessageRouter {
 /// message, and thus an `Err` is returned.
 pub struct DefaultMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 	ES::Target: EntropySource,
 {
 	network_graph: G,
@@ -565,7 +565,7 @@ pub(crate) const PADDED_PATH_LENGTH: usize = 4;
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> DefaultMessageRouter<G, L, ES>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 	ES::Target: EntropySource,
 {
 	/// Creates a [`DefaultMessageRouter`] using the given [`NetworkGraph`].
@@ -719,7 +719,7 @@ where
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter
 	for DefaultMessageRouter<G, L, ES>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 	ES::Target: EntropySource,
 {
 	fn find_path(
@@ -758,7 +758,7 @@ where
 /// message, and thus an `Err` is returned.
 pub struct NodeIdMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 	ES::Target: EntropySource,
 {
 	network_graph: G,
@@ -767,7 +767,7 @@ where
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> NodeIdMessageRouter<G, L, ES>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 	ES::Target: EntropySource,
 {
 	/// Creates a [`NodeIdMessageRouter`] using the given [`NetworkGraph`].
@@ -779,7 +779,7 @@ where
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter
 	for NodeIdMessageRouter<G, L, ES>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 	ES::Target: EntropySource,
 {
 	fn find_path(
