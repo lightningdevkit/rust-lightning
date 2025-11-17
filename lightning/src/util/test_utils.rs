@@ -67,7 +67,7 @@ use bitcoin::block::Block;
 use bitcoin::constants::genesis_block;
 use bitcoin::constants::ChainHash;
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{hex::FromHex, Hash};
 use bitcoin::network::Network;
 use bitcoin::script::{Builder, Script, ScriptBuf};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
@@ -80,6 +80,7 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning_invoice::RawBolt11Invoice;
+use lightning_types::payment::{PaymentHash, PaymentPreimage};
 
 use crate::io;
 use crate::prelude::*;
@@ -105,6 +106,33 @@ pub fn pubkey(byte: u8) -> PublicKey {
 
 pub fn privkey(byte: u8) -> SecretKey {
 	SecretKey::from_slice(&[byte; 32]).unwrap()
+}
+
+pub fn secret_from_hex(hex: &str) -> SecretKey {
+	SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()).unwrap()
+}
+
+pub fn bytes_from_hex(hex: &str) -> Vec<u8> {
+	<Vec<u8>>::from_hex(hex).unwrap()
+}
+
+pub fn pubkey_from_hex(hex: &str) -> PublicKey {
+	PublicKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()).unwrap()
+}
+
+pub fn preimage_from_hex(hex: &str) -> PaymentPreimage {
+	PaymentPreimage(<Vec<u8>>::from_hex(hex).unwrap().try_into().unwrap())
+}
+
+pub fn public_from_secret_hex(
+	secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str,
+) -> PublicKey {
+	let secret = SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap();
+	PublicKey::from_secret_key(&secp_ctx, &secret)
+}
+
+pub fn payment_hash_from_hex(hex: &str) -> PaymentHash {
+	PaymentHash(<Vec<u8>>::from_hex(hex).unwrap().try_into().unwrap())
 }
 
 pub struct TestVecWriter(pub Vec<u8>);

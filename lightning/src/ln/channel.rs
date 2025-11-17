@@ -15758,15 +15758,6 @@ mod tests {
 		}
 	}
 
-	#[cfg(ldk_test_vectors)]
-	fn public_from_secret_hex(
-		secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str,
-	) -> PublicKey {
-		assert!(cfg!(not(feature = "grind_signatures")));
-		let secret = SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap();
-		PublicKey::from_secret_key(&secp_ctx, &secret)
-	}
-
 	#[test]
 	fn upfront_shutdown_script_incompatibility() {
 		let mut features = channelmanager::provided_init_features(&UserConfig::default());
@@ -16468,119 +16459,20 @@ mod tests {
 	}
 
 	#[cfg(ldk_test_vectors)]
-	#[test]
-	#[rustfmt::skip]
-	fn outbound_commitment_test() {
-		assert!(cfg!(not(feature = "grind_signatures")));
-
-		use bitcoin::sighash;
-		use bitcoin::consensus::encode::serialize;
-		use bitcoin::sighash::EcdsaSighashType;
-		use bitcoin::hex::FromHex;
-		use bitcoin::hash_types::Txid;
-		use bitcoin::hex::DisplayHex;
-		use bitcoin::secp256k1::Message;
-		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ecdsa::EcdsaChannelSigner};
-		use crate::types::payment::PaymentPreimage;
-		use crate::ln::channel::HTLCOutputInCommitment;
-		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
-		use crate::ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
-		use crate::util::logger::Logger;
-		use crate::sync::Arc;
-		use core::str::FromStr;
-
-		// Test vectors from BOLT 3 Appendices C and F (anchors):
-		let feeest = TestFeeEstimator::new(15000);
-		let logger : Arc<dyn Logger> = Arc::new(TestLogger::new());
-		let secp_ctx = Secp256k1::new();
-
-		let signer = InMemorySigner::new(
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
-			true,
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("3333333333333333333333333333333333333333333333333333333333333333").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&<Vec<u8>>::from_hex("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
-
-			// These aren't set in the test vectors:
-			[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
-			[0; 32],
-			[0; 32],
-		);
-
-		let holder_pubkeys = signer.pubkeys(&secp_ctx);
-		assert_eq!(holder_pubkeys.funding_pubkey.serialize()[..],
-				<Vec<u8>>::from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
-		let keys_provider = Keys { signer: signer.clone() };
-
-		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let mut config = UserConfig::default();
-		config.channel_handshake_config.announce_for_forwarding = false;
-		let mut chan = OutboundV1Channel::<&Keys>::new(&LowerBoundedFeeEstimator::new(&feeest), &&keys_provider, &&keys_provider, counterparty_node_id, &channelmanager::provided_init_features(&config), 10_000_000, 0, 42, &config, 0, 42, None, &*logger).unwrap(); // Nothing uses their network key in this test
-		chan.context.holder_dust_limit_satoshis = 546;
-		chan.funding.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
-
-		let funding_info = OutPoint{ txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
-
-		let counterparty_pubkeys = ChannelPublicKeys {
-			funding_pubkey: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
-			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_slice(&<Vec<u8>>::from_hex("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").unwrap()[..]).unwrap()),
-			payment_point: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444"),
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13")),
-			htlc_basepoint: HtlcBasepoint::from(public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444"))
-		};
-		chan.funding.channel_transaction_parameters.counterparty_parameters = Some(
-			CounterpartyChannelTransactionParameters {
-				pubkeys: counterparty_pubkeys.clone(),
-				selected_contest_delay: 144
-			});
-		chan.funding.channel_transaction_parameters.funding_outpoint = Some(funding_info);
-
-		assert_eq!(counterparty_pubkeys.payment_point.serialize()[..],
-		           <Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
-
-		assert_eq!(counterparty_pubkeys.funding_pubkey.serialize()[..],
-		           <Vec<u8>>::from_hex("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1").unwrap()[..]);
-
-		assert_eq!(counterparty_pubkeys.htlc_basepoint.to_public_key().serialize()[..],
-		           <Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
-
-		// We can't just use build_holder_transaction_keys here as the per_commitment_secret is not
-		// derived from a commitment_seed, so instead we copy it here and call
-		// build_commitment_transaction.
-		let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
-		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
-
-		macro_rules! test_commitment {
-			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
-				chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
-				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::only_static_remote_key(), $($remain)*);
-			};
-		}
-
-		macro_rules! test_commitment_with_anchors {
-			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
-				chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
-				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), $($remain)*);
-			};
-		}
-
-		#[rustfmt::skip]
-		macro_rules! test_commitment_common {
-			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $channel_type_features: expr, {
-				$( { $htlc_idx: expr, $counterparty_htlc_sig_hex: expr, $htlc_sig_hex: expr, $htlc_tx_hex: expr } ), *
+	macro_rules! test_commitment_common {
+			( $chan: expr, $logger: expr, $secp_ctx: expr, $signer: expr, $holder_pubkeys: expr, $per_commitment_point: expr, $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $channel_type_features: expr, {
+				$( { $htlc_idx: expr, $counterparty_htlc_sig_hex: expr, $htlc_sig_hex: expr, $htlc_tx_hex: expr, $preimage: expr } ), *
 			} ) => { {
-				let commitment_data = chan.context.build_commitment_transaction(&chan.funding,
-					0xffffffffffff - 42, &per_commitment_point, true, false, &logger);
+				let commitment_data = $chan.context.build_commitment_transaction(&$chan.funding,
+					0xffffffffffff - 42, &$per_commitment_point, true, false, &$logger);
 				let commitment_tx = commitment_data.tx;
 				let trusted_tx = commitment_tx.trust();
 				let unsigned_tx = trusted_tx.built_transaction();
-				let redeemscript = chan.funding.get_funding_redeemscript();
+				let redeemscript = $chan.funding.get_funding_redeemscript();
 				let counterparty_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_sig_hex).unwrap()[..]).unwrap();
-				let sighash = unsigned_tx.get_sighash_all(&redeemscript, chan.funding.get_value_satoshis());
-				log_trace!(logger, "unsigned_tx = {}", serialize(&unsigned_tx.transaction).as_hex());
-				assert!(secp_ctx.verify_ecdsa(&sighash, &counterparty_signature, chan.funding.counterparty_funding_pubkey()).is_ok(), "verify counterparty commitment sig");
+				let sighash = unsigned_tx.get_sighash_all(&redeemscript, $chan.funding.get_value_satoshis());
+				log_trace!($logger, "unsigned_tx = {}", serialize(&unsigned_tx.transaction).as_hex());
+				assert!($secp_ctx.verify_ecdsa(&sighash, &counterparty_signature, $chan.funding.counterparty_funding_pubkey()).is_ok(), "verify counterparty commitment sig");
 
 				let mut per_htlc: Vec<(HTLCOutputInCommitment, Option<Signature>)> = Vec::new();
 				per_htlc.clear(); // Don't warn about excess mut for no-HTLC calls
@@ -16597,13 +16489,13 @@ mod tests {
 					commitment_tx.clone(),
 					counterparty_signature,
 					counterparty_htlc_sigs,
-					&holder_pubkeys.funding_pubkey,
-					chan.funding.counterparty_funding_pubkey()
+					&$holder_pubkeys.funding_pubkey,
+					$chan.funding.counterparty_funding_pubkey()
 				);
-				let holder_sig = signer.sign_holder_commitment(&chan.funding.channel_transaction_parameters, &holder_commitment_tx, &secp_ctx).unwrap();
+				let holder_sig = $signer.sign_holder_commitment(&$chan.funding.channel_transaction_parameters, &holder_commitment_tx, &$secp_ctx).unwrap();
 				assert_eq!(Signature::from_der(&<Vec<u8>>::from_hex($sig_hex).unwrap()[..]).unwrap(), holder_sig, "holder_sig");
 
-				let funding_redeemscript = chan.funding.get_funding_redeemscript();
+				let funding_redeemscript = $chan.funding.get_funding_redeemscript();
 				let tx = holder_commitment_tx.add_holder_sig(&funding_redeemscript, holder_sig);
 				assert_eq!(serialize(&tx)[..], <Vec<u8>>::from_hex($tx_hex).unwrap()[..], "tx");
 
@@ -16611,60 +16503,206 @@ mod tests {
 				let mut htlc_counterparty_sig_iter = holder_commitment_tx.counterparty_htlc_sigs.iter();
 
 				$({
-					log_trace!(logger, "verifying htlc {}", $htlc_idx);
+					let (htlc_sighashtype, num_anchors) = if $channel_type_features.supports_anchor_zero_fee_commitments() {
+						(EcdsaSighashType::SinglePlusAnyoneCanPay, 1)
+					} else if $channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+						(EcdsaSighashType::SinglePlusAnyoneCanPay, 2)
+					} else {
+						(EcdsaSighashType::All, 0)
+					};
+
+					log_trace!($logger, "verifying htlc {}", $htlc_idx);
 					let remote_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
 
 					let ref htlc = commitment_tx.nondust_htlcs()[$htlc_idx];
 					let keys = commitment_tx.trust().keys();
-					let mut htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.context.feerate_per_kw,
-						chan.funding.get_counterparty_selected_contest_delay().unwrap(),
+					let mut htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, $chan.context.feerate_per_kw,
+						$chan.funding.get_counterparty_selected_contest_delay().unwrap(),
 						&htlc, $channel_type_features, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, $channel_type_features, &keys);
-					let htlc_sighashtype = if $channel_type_features.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 					let htlc_sighash = Message::from_digest(sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap().as_raw_hash().to_byte_array());
-					assert!(secp_ctx.verify_ecdsa(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key.to_public_key()).is_ok(), "verify counterparty htlc sig");
+					assert!($secp_ctx.verify_ecdsa(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key.to_public_key()).is_ok(), "verify counterparty htlc sig");
 
-					let mut preimage: Option<PaymentPreimage> = None;
-					if !htlc.offered {
-						for i in 0..5 {
-							let out = PaymentHash(Sha256::hash(&[i; 32]).to_byte_array());
-							if out == htlc.payment_hash {
-								preimage = Some(PaymentPreimage([i; 32]));
-							}
-						}
-
-						assert!(preimage.is_some());
-					}
+					// Only HTLC success transactions for received htlcs should have a preimage supplied.
+					assert_eq!(htlc.offered, $preimage.is_none(), "htlc is offered: {}, with preimage: {:?}", htlc.offered, $preimage);
 
 					let htlc_counterparty_sig = htlc_counterparty_sig_iter.next().unwrap();
-					let htlc_holder_sig = signer.sign_holder_htlc_transaction(&htlc_tx, 0, &HTLCDescriptor {
+					let htlc_holder_sig = $signer.sign_holder_htlc_transaction(&htlc_tx, 0, &HTLCDescriptor {
 						channel_derivation_parameters: ChannelDerivationParameters {
-							value_satoshis: chan.funding.get_value_satoshis(),
-							keys_id: chan.context.channel_keys_id,
-							transaction_parameters: chan.funding.channel_transaction_parameters.clone(),
+							value_satoshis: $chan.funding.get_value_satoshis(),
+							keys_id: $chan.context.channel_keys_id,
+							transaction_parameters: $chan.funding.channel_transaction_parameters.clone(),
 						},
 						commitment_txid: trusted_tx.txid(),
 						per_commitment_number: trusted_tx.commitment_number(),
 						per_commitment_point: trusted_tx.per_commitment_point(),
 						feerate_per_kw: trusted_tx.negotiated_feerate_per_kw(),
 						htlc: htlc.clone(),
-						preimage: preimage.clone(),
+						preimage: $preimage.clone(),
 						counterparty_sig: *htlc_counterparty_sig,
-					}, &secp_ctx).unwrap();
-					let num_anchors = if $channel_type_features.supports_anchors_zero_fee_htlc_tx() { 2 } else { 0 };
+					}, &$secp_ctx).unwrap();
 					assert_eq!(htlc.transaction_output_index, Some($htlc_idx + num_anchors), "output index");
 
 					let signature = Signature::from_der(&<Vec<u8>>::from_hex($htlc_sig_hex).unwrap()[..]).unwrap();
 					assert_eq!(signature, htlc_holder_sig, "htlc sig");
 					htlc_tx.input[0].witness = chan_utils::build_htlc_input_witness(
-						&htlc_holder_sig, htlc_counterparty_sig, &preimage, &htlc_redeemscript,
+						&htlc_holder_sig, htlc_counterparty_sig, &$preimage, &htlc_redeemscript,
 						$channel_type_features,
 					);
-					log_trace!(logger, "htlc_tx = {}", serialize(&htlc_tx).as_hex());
+					log_trace!($logger, "htlc_tx = {}", serialize(&htlc_tx).as_hex());
 					assert_eq!(serialize(&htlc_tx)[..], <Vec<u8>>::from_hex($htlc_tx_hex).unwrap()[..], "htlc tx");
 				})*
 				assert!(htlc_counterparty_sig_iter.next().is_none());
 			} }
+		}
+
+	#[cfg(ldk_test_vectors)]
+	#[test]
+	fn outbound_commitment_test() {
+		assert!(cfg!(not(feature = "grind_signatures")));
+
+		use crate::ln::chan_utils::{
+			ChannelPublicKeys, CounterpartyChannelTransactionParameters,
+			HolderCommitmentTransaction,
+		};
+		use crate::ln::channel::HTLCOutputInCommitment;
+		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
+		use crate::sign::{ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, HTLCDescriptor};
+		use crate::sync::Arc;
+		use crate::types::payment::PaymentPreimage;
+		use crate::util::logger::Logger;
+		use crate::util::test_utils::{
+			preimage_from_hex, pubkey_from_hex, public_from_secret_hex, secret_from_hex,
+		};
+		use bitcoin::consensus::encode::serialize;
+		use bitcoin::hash_types::Txid;
+		use bitcoin::hex::DisplayHex;
+		use bitcoin::hex::FromHex;
+		use bitcoin::secp256k1::Message;
+		use bitcoin::sighash;
+		use bitcoin::sighash::EcdsaSighashType;
+		use core::str::FromStr;
+
+		// Test vectors from BOLT 3 Appendices C and F (anchors):
+		let feeest = TestFeeEstimator::new(15000);
+		let logger: Arc<dyn Logger> = Arc::new(TestLogger::new());
+		let secp_ctx = Secp256k1::new();
+
+		let signer = InMemorySigner::new(
+			secret_from_hex("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749"),
+			secret_from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+			secret_from_hex("1111111111111111111111111111111111111111111111111111111111111111"),
+			secret_from_hex("1111111111111111111111111111111111111111111111111111111111111111"),
+			true,
+			secret_from_hex("3333333333333333333333333333333333333333333333333333333333333333"),
+			secret_from_hex("1111111111111111111111111111111111111111111111111111111111111111"),
+			// These aren't set in the test vectors:
+			[
+				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff,
+			],
+			[0; 32],
+			[0; 32],
+		);
+
+		let holder_pubkeys = signer.pubkeys(&secp_ctx);
+		assert_eq!(
+			holder_pubkeys.funding_pubkey,
+			pubkey_from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb")
+		);
+		let keys_provider = Keys { signer: signer.clone() };
+
+		let counterparty_node_id =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let mut config = UserConfig::default();
+		config.channel_handshake_config.announce_for_forwarding = false;
+		let mut chan = OutboundV1Channel::<&Keys>::new(
+			&LowerBoundedFeeEstimator::new(&feeest),
+			&&keys_provider,
+			&&keys_provider,
+			counterparty_node_id,
+			&channelmanager::provided_init_features(&config),
+			10_000_000,
+			0,
+			42,
+			&config,
+			0,
+			42,
+			None,
+			&*logger,
+		)
+		.unwrap(); // Nothing uses their network key in this test
+		chan.context.holder_dust_limit_satoshis = 546;
+		chan.funding.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
+
+		let funding_txid =
+			Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be")
+				.unwrap();
+		let funding_info = OutPoint { txid: funding_txid, index: 0 };
+
+		let counterparty_pubkeys = ChannelPublicKeys {
+			funding_pubkey: public_from_secret_hex(
+				&secp_ctx,
+				"1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13",
+			),
+			revocation_basepoint: RevocationBasepoint::from(pubkey_from_hex(
+				"02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+			)),
+			payment_point: public_from_secret_hex(
+				&secp_ctx,
+				"4444444444444444444444444444444444444444444444444444444444444444",
+			),
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(public_from_secret_hex(
+				&secp_ctx,
+				"1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13",
+			)),
+			htlc_basepoint: HtlcBasepoint::from(public_from_secret_hex(
+				&secp_ctx,
+				"4444444444444444444444444444444444444444444444444444444444444444",
+			)),
+		};
+		chan.funding.channel_transaction_parameters.counterparty_parameters =
+			Some(CounterpartyChannelTransactionParameters {
+				pubkeys: counterparty_pubkeys.clone(),
+				selected_contest_delay: 144,
+			});
+		chan.funding.channel_transaction_parameters.funding_outpoint = Some(funding_info);
+
+		assert_eq!(
+			counterparty_pubkeys.payment_point,
+			pubkey_from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991"),
+		);
+
+		assert_eq!(
+			counterparty_pubkeys.funding_pubkey,
+			pubkey_from_hex("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1")
+		);
+
+		assert_eq!(
+			counterparty_pubkeys.htlc_basepoint.to_public_key(),
+			pubkey_from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991")
+		);
+
+		// We can't just use build_holder_transaction_keys here as the per_commitment_secret is not
+		// derived from a commitment_seed, so instead we copy it here and call
+		// build_commitment_transaction.
+		let per_commitment_secret =
+			secret_from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100");
+		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
+
+		macro_rules! test_commitment {
+			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
+				chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+				test_commitment_common!(chan, logger, secp_ctx, signer, holder_pubkeys, per_commitment_point, $counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::only_static_remote_key(), $($remain)*);
+			};
+		}
+
+		macro_rules! test_commitment_with_anchors {
+			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
+				chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+				test_commitment_common!(chan, logger, secp_ctx, signer, holder_pubkeys, per_commitment_point, $counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), $($remain)*);
+			};
 		}
 
 		// anchors: simple commitment tx with no HTLCs and single anchor
@@ -16684,70 +16722,64 @@ mod tests {
 						 "30450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f7",
 						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80044a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a508b6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f701483045022100f89034eba16b2be0e5581f750a0a6309192b75cce0f202f0ee2b4ec0cc394850022076c65dc507fe42276152b7a3d90e961e678adbe966e916ecfe85e64d430e75f301475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
-		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 0,
-				amount_msat: 1000000,
-				cltv_expiry: 500,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0000000000000000000000000000000000000000000000000000000000000000").unwrap()).to_byte_array();
-			out
+		let payment_preimage_0 =
+			preimage_from_hex("0000000000000000000000000000000000000000000000000000000000000000");
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
+			htlc_id: 0,
+			amount_msat: 1000000,
+			cltv_expiry: 500,
+			payment_hash: PaymentHash::from(payment_preimage_0),
+			state: InboundHTLCState::Committed,
 		});
-		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 1,
-				amount_msat: 2000000,
-				cltv_expiry: 501,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).to_byte_array();
-			out
+
+		let payment_preimage_1 =
+			preimage_from_hex("0101010101010101010101010101010101010101010101010101010101010101");
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
+			htlc_id: 1,
+			amount_msat: 2000000,
+			cltv_expiry: 501,
+			payment_hash: PaymentHash::from(payment_preimage_1),
+			state: InboundHTLCState::Committed,
 		});
-		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 2,
-				amount_msat: 2000000,
-				cltv_expiry: 502,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-				hold_htlc: None,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap()).to_byte_array();
-			out
+
+		let payment_preimage_2 =
+			preimage_from_hex("0202020202020202020202020202020202020202020202020202020202020202");
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
+			htlc_id: 2,
+			amount_msat: 2000000,
+			cltv_expiry: 502,
+			payment_hash: PaymentHash::from(payment_preimage_2),
+			state: OutboundHTLCState::Committed,
+			source: HTLCSource::dummy(),
+			skimmed_fee_msat: None,
+			blinding_point: None,
+			send_timestamp: None,
+			hold_htlc: None,
 		});
-		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 3,
-				amount_msat: 3000000,
-				cltv_expiry: 503,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-				hold_htlc: None,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0303030303030303030303030303030303030303030303030303030303030303").unwrap()).to_byte_array();
-			out
+
+		let payment_preimage_3 =
+			preimage_from_hex("0303030303030303030303030303030303030303030303030303030303030303");
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
+			htlc_id: 3,
+			amount_msat: 3000000,
+			cltv_expiry: 503,
+			payment_hash: PaymentHash::from(payment_preimage_3),
+			state: OutboundHTLCState::Committed,
+			source: HTLCSource::dummy(),
+			skimmed_fee_msat: None,
+			blinding_point: None,
+			send_timestamp: None,
+			hold_htlc: None,
 		});
-		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 4,
-				amount_msat: 4000000,
-				cltv_expiry: 504,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0404040404040404040404040404040404040404040404040404040404040404").unwrap()).to_byte_array();
-			out
+
+		let payment_preimage_4 =
+			preimage_from_hex("0404040404040404040404040404040404040404040404040404040404040404");
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
+			htlc_id: 4,
+			amount_msat: 4000000,
+			cltv_expiry: 504,
+			payment_hash: PaymentHash::from(payment_preimage_4),
+			state: InboundHTLCState::Committed,
 		});
 
 		// commitment tx with all five HTLCs untrimmed (minimum feerate)
@@ -16761,27 +16793,27 @@ mod tests {
 		                  { 0,
 		                  "3045022100d9e29616b8f3959f1d3d7f7ce893ffedcdc407717d0de8e37d808c91d3a7c50d022078c3033f6d00095c8720a4bc943c1b45727818c082e4e3ddbc6d3116435b624b",
 		                  "30440220636de5682ef0c5b61f124ec74e8aa2461a69777521d6998295dcea36bc3338110220165285594b23c50b28b82df200234566628a27bcd17f7f14404bd865354eb3ce",
-		                  "02000000000101ab84ff284f162cfbfef241f853b47d4368d171f9e2a1445160cd591c4c7d882b00000000000000000001e8030000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100d9e29616b8f3959f1d3d7f7ce893ffedcdc407717d0de8e37d808c91d3a7c50d022078c3033f6d00095c8720a4bc943c1b45727818c082e4e3ddbc6d3116435b624b014730440220636de5682ef0c5b61f124ec74e8aa2461a69777521d6998295dcea36bc3338110220165285594b23c50b28b82df200234566628a27bcd17f7f14404bd865354eb3ce012000000000000000000000000000000000000000000000000000000000000000008a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a914b8bcb07f6344b42ab04250c86a6e8b75d3fdbbc688527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f401b175ac686800000000" },
+		                  "02000000000101ab84ff284f162cfbfef241f853b47d4368d171f9e2a1445160cd591c4c7d882b00000000000000000001e8030000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100d9e29616b8f3959f1d3d7f7ce893ffedcdc407717d0de8e37d808c91d3a7c50d022078c3033f6d00095c8720a4bc943c1b45727818c082e4e3ddbc6d3116435b624b014730440220636de5682ef0c5b61f124ec74e8aa2461a69777521d6998295dcea36bc3338110220165285594b23c50b28b82df200234566628a27bcd17f7f14404bd865354eb3ce012000000000000000000000000000000000000000000000000000000000000000008a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a914b8bcb07f6344b42ab04250c86a6e8b75d3fdbbc688527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f401b175ac686800000000", Some(payment_preimage_0) },
 
 		                  { 1,
 		                  "30440220649fe8b20e67e46cbb0d09b4acea87dbec001b39b08dee7bdd0b1f03922a8640022037c462dff79df501cecfdb12ea7f4de91f99230bb544726f6e04527b1f896004",
 		                  "3045022100803159dee7935dba4a1d36a61055ce8fd62caa528573cc221ae288515405a252022029c59e7cffce374fe860100a4a63787e105c3cf5156d40b12dd53ff55ac8cf3f",
-		                  "02000000000101ab84ff284f162cfbfef241f853b47d4368d171f9e2a1445160cd591c4c7d882b01000000000000000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220649fe8b20e67e46cbb0d09b4acea87dbec001b39b08dee7bdd0b1f03922a8640022037c462dff79df501cecfdb12ea7f4de91f99230bb544726f6e04527b1f89600401483045022100803159dee7935dba4a1d36a61055ce8fd62caa528573cc221ae288515405a252022029c59e7cffce374fe860100a4a63787e105c3cf5156d40b12dd53ff55ac8cf3f01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000" },
+		                  "02000000000101ab84ff284f162cfbfef241f853b47d4368d171f9e2a1445160cd591c4c7d882b01000000000000000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220649fe8b20e67e46cbb0d09b4acea87dbec001b39b08dee7bdd0b1f03922a8640022037c462dff79df501cecfdb12ea7f4de91f99230bb544726f6e04527b1f89600401483045022100803159dee7935dba4a1d36a61055ce8fd62caa528573cc221ae288515405a252022029c59e7cffce374fe860100a4a63787e105c3cf5156d40b12dd53ff55ac8cf3f01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000", None::<PaymentPreimage> },
 
 		                  { 2,
 		                  "30440220770fc321e97a19f38985f2e7732dd9fe08d16a2efa4bcbc0429400a447faf49102204d40b417f3113e1b0944ae0986f517564ab4acd3d190503faf97a6e420d43352",
 		                  "3045022100a437cc2ce77400ecde441b3398fea3c3ad8bdad8132be818227fe3c5b8345989022069d45e7fa0ae551ec37240845e2c561ceb2567eacf3076a6a43a502d05865faa",
-		                  "02000000000101ab84ff284f162cfbfef241f853b47d4368d171f9e2a1445160cd591c4c7d882b02000000000000000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220770fc321e97a19f38985f2e7732dd9fe08d16a2efa4bcbc0429400a447faf49102204d40b417f3113e1b0944ae0986f517564ab4acd3d190503faf97a6e420d4335201483045022100a437cc2ce77400ecde441b3398fea3c3ad8bdad8132be818227fe3c5b8345989022069d45e7fa0ae551ec37240845e2c561ceb2567eacf3076a6a43a502d05865faa012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000" },
+		                  "02000000000101ab84ff284f162cfbfef241f853b47d4368d171f9e2a1445160cd591c4c7d882b02000000000000000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220770fc321e97a19f38985f2e7732dd9fe08d16a2efa4bcbc0429400a447faf49102204d40b417f3113e1b0944ae0986f517564ab4acd3d190503faf97a6e420d4335201483045022100a437cc2ce77400ecde441b3398fea3c3ad8bdad8132be818227fe3c5b8345989022069d45e7fa0ae551ec37240845e2c561ceb2567eacf3076a6a43a502d05865faa012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000", Some(payment_preimage_1) },
 
 		                  { 3,
 		                  "304402207bcbf4f60a9829b05d2dbab84ed593e0291836be715dc7db6b72a64caf646af802201e489a5a84f7c5cc130398b841d138d031a5137ac8f4c49c770a4959dc3c1363",
 		                  "304402203121d9b9c055f354304b016a36662ee99e1110d9501cb271b087ddb6f382c2c80220549882f3f3b78d9c492de47543cb9a697cecc493174726146536c5954dac7487",
-		                  "02000000000101ab84ff284f162cfbfef241f853b47d4368d171f9e2a1445160cd591c4c7d882b03000000000000000001b80b0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402207bcbf4f60a9829b05d2dbab84ed593e0291836be715dc7db6b72a64caf646af802201e489a5a84f7c5cc130398b841d138d031a5137ac8f4c49c770a4959dc3c13630147304402203121d9b9c055f354304b016a36662ee99e1110d9501cb271b087ddb6f382c2c80220549882f3f3b78d9c492de47543cb9a697cecc493174726146536c5954dac748701008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000" },
+		                  "02000000000101ab84ff284f162cfbfef241f853b47d4368d171f9e2a1445160cd591c4c7d882b03000000000000000001b80b0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402207bcbf4f60a9829b05d2dbab84ed593e0291836be715dc7db6b72a64caf646af802201e489a5a84f7c5cc130398b841d138d031a5137ac8f4c49c770a4959dc3c13630147304402203121d9b9c055f354304b016a36662ee99e1110d9501cb271b087ddb6f382c2c80220549882f3f3b78d9c492de47543cb9a697cecc493174726146536c5954dac748701008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000", None::<PaymentPreimage> },
 
 		                  { 4,
 		                  "3044022076dca5cb81ba7e466e349b7128cdba216d4d01659e29b96025b9524aaf0d1899022060de85697b88b21c749702b7d2cfa7dfeaa1f472c8f1d7d9c23f2bf968464b87",
 		                  "3045022100d9080f103cc92bac15ec42464a95f070c7fb6925014e673ee2ea1374d36a7f7502200c65294d22eb20d48564954d5afe04a385551919d8b2ddb4ae2459daaeee1d95",
-		                  "02000000000101ab84ff284f162cfbfef241f853b47d4368d171f9e2a1445160cd591c4c7d882b04000000000000000001a00f0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022076dca5cb81ba7e466e349b7128cdba216d4d01659e29b96025b9524aaf0d1899022060de85697b88b21c749702b7d2cfa7dfeaa1f472c8f1d7d9c23f2bf968464b8701483045022100d9080f103cc92bac15ec42464a95f070c7fb6925014e673ee2ea1374d36a7f7502200c65294d22eb20d48564954d5afe04a385551919d8b2ddb4ae2459daaeee1d95012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
+		                  "02000000000101ab84ff284f162cfbfef241f853b47d4368d171f9e2a1445160cd591c4c7d882b04000000000000000001a00f0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022076dca5cb81ba7e466e349b7128cdba216d4d01659e29b96025b9524aaf0d1899022060de85697b88b21c749702b7d2cfa7dfeaa1f472c8f1d7d9c23f2bf968464b8701483045022100d9080f103cc92bac15ec42464a95f070c7fb6925014e673ee2ea1374d36a7f7502200c65294d22eb20d48564954d5afe04a385551919d8b2ddb4ae2459daaeee1d95012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000", Some(payment_preimage_4)}
 		} );
 
 		// commitment tx with seven outputs untrimmed (maximum feerate)
@@ -16795,27 +16827,27 @@ mod tests {
 		                  { 0,
 		                  "30450221008437627f9ad84ac67052e2a414a4367b8556fd1f94d8b02590f89f50525cd33502205b9c21ff6e7fc864f2352746ad8ba59182510819acb644e25b8a12fc37bbf24f",
 		                  "30440220344b0deb055230d01703e6c7acd45853c4af2328b49b5d8af4f88a060733406602202ea64f2a43d5751edfe75503cbc35a62e3141b5ed032fa03360faf4ca66f670b",
-		                  "020000000001012cfb3e4788c206881d38f2996b6cb2109b5935acb527d14bdaa7b908afa9b2fe0000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221008437627f9ad84ac67052e2a414a4367b8556fd1f94d8b02590f89f50525cd33502205b9c21ff6e7fc864f2352746ad8ba59182510819acb644e25b8a12fc37bbf24f014730440220344b0deb055230d01703e6c7acd45853c4af2328b49b5d8af4f88a060733406602202ea64f2a43d5751edfe75503cbc35a62e3141b5ed032fa03360faf4ca66f670b012000000000000000000000000000000000000000000000000000000000000000008a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a914b8bcb07f6344b42ab04250c86a6e8b75d3fdbbc688527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f401b175ac686800000000" },
+		                  "020000000001012cfb3e4788c206881d38f2996b6cb2109b5935acb527d14bdaa7b908afa9b2fe0000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221008437627f9ad84ac67052e2a414a4367b8556fd1f94d8b02590f89f50525cd33502205b9c21ff6e7fc864f2352746ad8ba59182510819acb644e25b8a12fc37bbf24f014730440220344b0deb055230d01703e6c7acd45853c4af2328b49b5d8af4f88a060733406602202ea64f2a43d5751edfe75503cbc35a62e3141b5ed032fa03360faf4ca66f670b012000000000000000000000000000000000000000000000000000000000000000008a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a914b8bcb07f6344b42ab04250c86a6e8b75d3fdbbc688527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f401b175ac686800000000", Some(payment_preimage_0) },
 
 		                  { 1,
 		                  "304402205a67f92bf6845cf2892b48d874ac1daf88a36495cf8a06f93d83180d930a6f75022031da1621d95c3f335cc06a3056cf960199dae600b7cf89088f65fc53cdbef28c",
 		                  "30450221009e5e3822b0185c6799a95288c597b671d6cc69ab80f43740f00c6c3d0752bdda02206da947a74bd98f3175324dc56fdba86cc783703a120a6f0297537e60632f4c7f",
-		                  "020000000001012cfb3e4788c206881d38f2996b6cb2109b5935acb527d14bdaa7b908afa9b2fe0100000000000000000124060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402205a67f92bf6845cf2892b48d874ac1daf88a36495cf8a06f93d83180d930a6f75022031da1621d95c3f335cc06a3056cf960199dae600b7cf89088f65fc53cdbef28c014830450221009e5e3822b0185c6799a95288c597b671d6cc69ab80f43740f00c6c3d0752bdda02206da947a74bd98f3175324dc56fdba86cc783703a120a6f0297537e60632f4c7f01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000" },
+		                  "020000000001012cfb3e4788c206881d38f2996b6cb2109b5935acb527d14bdaa7b908afa9b2fe0100000000000000000124060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402205a67f92bf6845cf2892b48d874ac1daf88a36495cf8a06f93d83180d930a6f75022031da1621d95c3f335cc06a3056cf960199dae600b7cf89088f65fc53cdbef28c014830450221009e5e3822b0185c6799a95288c597b671d6cc69ab80f43740f00c6c3d0752bdda02206da947a74bd98f3175324dc56fdba86cc783703a120a6f0297537e60632f4c7f01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000", None::<PaymentPreimage> },
 
 		                  { 2,
 		                  "30440220437e21766054a3eef7f65690c5bcfa9920babbc5af92b819f772f6ea96df6c7402207173622024bd97328cfb26c6665e25c2f5d67c319443ccdc60c903217005d8c8",
 		                  "3045022100fcfc47e36b712624677626cef3dc1d67f6583bd46926a6398fe6b00b0c9a37760220525788257b187fc775c6370d04eadf34d06f3650a63f8df851cee0ecb47a1673",
-		                  "020000000001012cfb3e4788c206881d38f2996b6cb2109b5935acb527d14bdaa7b908afa9b2fe020000000000000000010a060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220437e21766054a3eef7f65690c5bcfa9920babbc5af92b819f772f6ea96df6c7402207173622024bd97328cfb26c6665e25c2f5d67c319443ccdc60c903217005d8c801483045022100fcfc47e36b712624677626cef3dc1d67f6583bd46926a6398fe6b00b0c9a37760220525788257b187fc775c6370d04eadf34d06f3650a63f8df851cee0ecb47a1673012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000" },
+		                  "020000000001012cfb3e4788c206881d38f2996b6cb2109b5935acb527d14bdaa7b908afa9b2fe020000000000000000010a060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220437e21766054a3eef7f65690c5bcfa9920babbc5af92b819f772f6ea96df6c7402207173622024bd97328cfb26c6665e25c2f5d67c319443ccdc60c903217005d8c801483045022100fcfc47e36b712624677626cef3dc1d67f6583bd46926a6398fe6b00b0c9a37760220525788257b187fc775c6370d04eadf34d06f3650a63f8df851cee0ecb47a1673012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000", Some(payment_preimage_1) },
 
 		                  { 3,
 		                  "304402207436e10737e4df499fc051686d3e11a5bb2310e4d1f1e691d287cef66514791202207cb58e71a6b7a42dd001b7e3ae672ea4f71ea3e1cd412b742e9124abb0739c64",
 		                  "3045022100e78211b8409afb7255ffe37337da87f38646f1faebbdd61bc1920d69e3ead67a02201a626305adfcd16bfb7e9340928d9b6305464eab4aa4c4a3af6646e9b9f69dee",
-		                  "020000000001012cfb3e4788c206881d38f2996b6cb2109b5935acb527d14bdaa7b908afa9b2fe030000000000000000010c0a0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402207436e10737e4df499fc051686d3e11a5bb2310e4d1f1e691d287cef66514791202207cb58e71a6b7a42dd001b7e3ae672ea4f71ea3e1cd412b742e9124abb0739c6401483045022100e78211b8409afb7255ffe37337da87f38646f1faebbdd61bc1920d69e3ead67a02201a626305adfcd16bfb7e9340928d9b6305464eab4aa4c4a3af6646e9b9f69dee01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000" },
+		                  "020000000001012cfb3e4788c206881d38f2996b6cb2109b5935acb527d14bdaa7b908afa9b2fe030000000000000000010c0a0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402207436e10737e4df499fc051686d3e11a5bb2310e4d1f1e691d287cef66514791202207cb58e71a6b7a42dd001b7e3ae672ea4f71ea3e1cd412b742e9124abb0739c6401483045022100e78211b8409afb7255ffe37337da87f38646f1faebbdd61bc1920d69e3ead67a02201a626305adfcd16bfb7e9340928d9b6305464eab4aa4c4a3af6646e9b9f69dee01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000", None::<PaymentPreimage> },
 
 		                  { 4,
 		                  "30450221009acd6a827a76bfee50806178dfe0495cd4e1d9c58279c194c7b01520fe68cb8d022024d439047c368883e570997a7d40f0b430cb5a742f507965e7d3063ae3feccca",
 		                  "3044022048762cf546bbfe474f1536365ea7c416e3c0389d60558bc9412cb148fb6ab68202207215d7083b75c96ff9d2b08c59c34e287b66820f530b486a9aa4cdd9c347d5b9",
-		                  "020000000001012cfb3e4788c206881d38f2996b6cb2109b5935acb527d14bdaa7b908afa9b2fe04000000000000000001da0d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221009acd6a827a76bfee50806178dfe0495cd4e1d9c58279c194c7b01520fe68cb8d022024d439047c368883e570997a7d40f0b430cb5a742f507965e7d3063ae3feccca01473044022048762cf546bbfe474f1536365ea7c416e3c0389d60558bc9412cb148fb6ab68202207215d7083b75c96ff9d2b08c59c34e287b66820f530b486a9aa4cdd9c347d5b9012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
+		                  "020000000001012cfb3e4788c206881d38f2996b6cb2109b5935acb527d14bdaa7b908afa9b2fe04000000000000000001da0d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221009acd6a827a76bfee50806178dfe0495cd4e1d9c58279c194c7b01520fe68cb8d022024d439047c368883e570997a7d40f0b430cb5a742f507965e7d3063ae3feccca01473044022048762cf546bbfe474f1536365ea7c416e3c0389d60558bc9412cb148fb6ab68202207215d7083b75c96ff9d2b08c59c34e287b66820f530b486a9aa4cdd9c347d5b9012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000", Some(payment_preimage_4)}
 		} );
 
 		// commitment tx with six outputs untrimmed (minimum feerate)
@@ -16829,22 +16861,22 @@ mod tests {
 		                  { 0,
 		                  "3045022100a031202f3be94678f0e998622ee95ebb6ada8da1e9a5110228b5e04a747351e4022010ca6a21e18314ed53cfaae3b1f51998552a61a468e596368829a50ce40110e0",
 		                  "304502210097e1873b57267730154595187a34949d3744f52933070c74757005e61ce2112e02204ecfba2aa42d4f14bdf8bad4206bb97217b702e6c433e0e1b0ce6587e6d46ec6",
-		                  "020000000001010f44041fdfba175987cf4e6135ba2a154e3b7fb96483dc0ed5efc0678e5b6bf10000000000000000000123060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100a031202f3be94678f0e998622ee95ebb6ada8da1e9a5110228b5e04a747351e4022010ca6a21e18314ed53cfaae3b1f51998552a61a468e596368829a50ce40110e00148304502210097e1873b57267730154595187a34949d3744f52933070c74757005e61ce2112e02204ecfba2aa42d4f14bdf8bad4206bb97217b702e6c433e0e1b0ce6587e6d46ec601008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000" },
+		                  "020000000001010f44041fdfba175987cf4e6135ba2a154e3b7fb96483dc0ed5efc0678e5b6bf10000000000000000000123060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100a031202f3be94678f0e998622ee95ebb6ada8da1e9a5110228b5e04a747351e4022010ca6a21e18314ed53cfaae3b1f51998552a61a468e596368829a50ce40110e00148304502210097e1873b57267730154595187a34949d3744f52933070c74757005e61ce2112e02204ecfba2aa42d4f14bdf8bad4206bb97217b702e6c433e0e1b0ce6587e6d46ec601008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000", None::<PaymentPreimage> },
 
 		                  { 1,
 		                  "304402202361012a634aee7835c5ecdd6413dcffa8f404b7e77364c792cff984e4ee71e90220715c5e90baa08daa45a7439b1ee4fa4843ed77b19c058240b69406606d384124",
 		                  "3044022019de73b00f1d818fb388e83b2c8c31f6bce35ac624e215bc12f88f9dc33edf48022006ff814bb9f700ee6abc3294e146fac3efd4f13f0005236b41c0a946ee00c9ae",
-		                  "020000000001010f44041fdfba175987cf4e6135ba2a154e3b7fb96483dc0ed5efc0678e5b6bf10100000000000000000109060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402202361012a634aee7835c5ecdd6413dcffa8f404b7e77364c792cff984e4ee71e90220715c5e90baa08daa45a7439b1ee4fa4843ed77b19c058240b69406606d38412401473044022019de73b00f1d818fb388e83b2c8c31f6bce35ac624e215bc12f88f9dc33edf48022006ff814bb9f700ee6abc3294e146fac3efd4f13f0005236b41c0a946ee00c9ae012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000" },
+		                  "020000000001010f44041fdfba175987cf4e6135ba2a154e3b7fb96483dc0ed5efc0678e5b6bf10100000000000000000109060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402202361012a634aee7835c5ecdd6413dcffa8f404b7e77364c792cff984e4ee71e90220715c5e90baa08daa45a7439b1ee4fa4843ed77b19c058240b69406606d38412401473044022019de73b00f1d818fb388e83b2c8c31f6bce35ac624e215bc12f88f9dc33edf48022006ff814bb9f700ee6abc3294e146fac3efd4f13f0005236b41c0a946ee00c9ae012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000", Some(payment_preimage_1) },
 
 		                  { 2,
 		                  "304402207e8e82cd71ed4febeb593732c260456836e97d81896153ecd2b3cf320ca6861702202dd4a30f68f98ced7cc56a36369ac1fdd978248c5ff4ed204fc00cc625532989",
 		                  "3045022100bd0be6100c4fd8f102ec220e1b053e4c4e2ecca25615490150007b40d314dc3902201a1e0ea266965b43164d9e6576f58fa6726d42883dd1c3996d2925c2e2260796",
-		                  "020000000001010f44041fdfba175987cf4e6135ba2a154e3b7fb96483dc0ed5efc0678e5b6bf1020000000000000000010b0a0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402207e8e82cd71ed4febeb593732c260456836e97d81896153ecd2b3cf320ca6861702202dd4a30f68f98ced7cc56a36369ac1fdd978248c5ff4ed204fc00cc62553298901483045022100bd0be6100c4fd8f102ec220e1b053e4c4e2ecca25615490150007b40d314dc3902201a1e0ea266965b43164d9e6576f58fa6726d42883dd1c3996d2925c2e226079601008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000" },
+		                  "020000000001010f44041fdfba175987cf4e6135ba2a154e3b7fb96483dc0ed5efc0678e5b6bf1020000000000000000010b0a0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402207e8e82cd71ed4febeb593732c260456836e97d81896153ecd2b3cf320ca6861702202dd4a30f68f98ced7cc56a36369ac1fdd978248c5ff4ed204fc00cc62553298901483045022100bd0be6100c4fd8f102ec220e1b053e4c4e2ecca25615490150007b40d314dc3902201a1e0ea266965b43164d9e6576f58fa6726d42883dd1c3996d2925c2e226079601008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000", None::<PaymentPreimage> },
 
 		                  { 3,
 		                  "3044022024cd52e4198c8ae0e414a86d86b5a65ea7450f2eb4e783096736d93395eca5ce022078f0094745b45be4d4b2b04dd5978c9e66ba49109e5704403e84aaf5f387d6be",
 		                  "3045022100bbfb9d0a946d420807c86e985d636cceb16e71c3694ed186316251a00cbd807202207773223f9a337e145f64673825be9b30d07ef1542c82188b264bedcf7cda78c6",
-		                  "020000000001010f44041fdfba175987cf4e6135ba2a154e3b7fb96483dc0ed5efc0678e5b6bf103000000000000000001d90d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022024cd52e4198c8ae0e414a86d86b5a65ea7450f2eb4e783096736d93395eca5ce022078f0094745b45be4d4b2b04dd5978c9e66ba49109e5704403e84aaf5f387d6be01483045022100bbfb9d0a946d420807c86e985d636cceb16e71c3694ed186316251a00cbd807202207773223f9a337e145f64673825be9b30d07ef1542c82188b264bedcf7cda78c6012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
+		                  "020000000001010f44041fdfba175987cf4e6135ba2a154e3b7fb96483dc0ed5efc0678e5b6bf103000000000000000001d90d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022024cd52e4198c8ae0e414a86d86b5a65ea7450f2eb4e783096736d93395eca5ce022078f0094745b45be4d4b2b04dd5978c9e66ba49109e5704403e84aaf5f387d6be01483045022100bbfb9d0a946d420807c86e985d636cceb16e71c3694ed186316251a00cbd807202207773223f9a337e145f64673825be9b30d07ef1542c82188b264bedcf7cda78c6012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000", Some(payment_preimage_4) }
 		} );
 
 		// anchors: commitment tx with six outputs untrimmed (minimum dust limit)
@@ -16859,22 +16891,22 @@ mod tests {
 		                  { 0,
 		                  "3045022100e04d160a326432659fe9fb127304c1d348dfeaba840081bdc57d8efd902a48d8022008a824e7cf5492b97e4d9e03c06a09f822775a44f6b5b2533a2088904abfc282",
 		                  "3045022100b7c49846466b13b190ff739bbe3005c105482fc55539e55b1c561f76b6982b6c02200e5c35808619cf543c8405cff9fedd25f333a4a2f6f6d5e8af8150090c40ef09",
-		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320002000000000100000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e04d160a326432659fe9fb127304c1d348dfeaba840081bdc57d8efd902a48d8022008a824e7cf5492b97e4d9e03c06a09f822775a44f6b5b2533a2088904abfc28283483045022100b7c49846466b13b190ff739bbe3005c105482fc55539e55b1c561f76b6982b6c02200e5c35808619cf543c8405cff9fedd25f333a4a2f6f6d5e8af8150090c40ef0901008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6851b27568f6010000" },
+		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320002000000000100000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e04d160a326432659fe9fb127304c1d348dfeaba840081bdc57d8efd902a48d8022008a824e7cf5492b97e4d9e03c06a09f822775a44f6b5b2533a2088904abfc28283483045022100b7c49846466b13b190ff739bbe3005c105482fc55539e55b1c561f76b6982b6c02200e5c35808619cf543c8405cff9fedd25f333a4a2f6f6d5e8af8150090c40ef0901008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6851b27568f6010000", None::<PaymentPreimage> },
 
 		                  { 1,
 		                  "3045022100fbdc3c367ce3bf30796025cc590ee1f2ce0e72ae1ac19f5986d6d0a4fc76211f02207e45ae9267e8e820d188569604f71d1abd11bd385d58853dd7dc034cdb3e9a6e",
 		                  "3045022100d29330f24db213b262068706099b39c15fa7e070c3fcdf8836c09723fc4d365602203ce57d01e9f28601e461a0b5c4a50119b270bde8b70148d133a6849c70b115ac",
-		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320003000000000100000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100fbdc3c367ce3bf30796025cc590ee1f2ce0e72ae1ac19f5986d6d0a4fc76211f02207e45ae9267e8e820d188569604f71d1abd11bd385d58853dd7dc034cdb3e9a6e83483045022100d29330f24db213b262068706099b39c15fa7e070c3fcdf8836c09723fc4d365602203ce57d01e9f28601e461a0b5c4a50119b270bde8b70148d133a6849c70b115ac012001010101010101010101010101010101010101010101010101010101010101018d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac6851b2756800000000" },
+		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320003000000000100000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100fbdc3c367ce3bf30796025cc590ee1f2ce0e72ae1ac19f5986d6d0a4fc76211f02207e45ae9267e8e820d188569604f71d1abd11bd385d58853dd7dc034cdb3e9a6e83483045022100d29330f24db213b262068706099b39c15fa7e070c3fcdf8836c09723fc4d365602203ce57d01e9f28601e461a0b5c4a50119b270bde8b70148d133a6849c70b115ac012001010101010101010101010101010101010101010101010101010101010101018d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac6851b2756800000000", Some(payment_preimage_1) },
 
 		                  { 2,
 		                  "3044022066c5ef625cee3ddd2bc7b6bfb354b5834cf1cc6d52dd972fb41b7b225437ae4a022066cb85647df65c6b87a54e416dcdcca778a776c36a9643d2b5dc793c9b29f4c1",
 		                  "304402202d4ce515cd9000ec37575972d70b8d24f73909fb7012e8ebd8c2066ef6fe187902202830b53e64ea565fecd0f398100691da6bb2a5cf9bb0d1926f1d71d05828a11e",
-		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320004000000000100000001b80b0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022066c5ef625cee3ddd2bc7b6bfb354b5834cf1cc6d52dd972fb41b7b225437ae4a022066cb85647df65c6b87a54e416dcdcca778a776c36a9643d2b5dc793c9b29f4c18347304402202d4ce515cd9000ec37575972d70b8d24f73909fb7012e8ebd8c2066ef6fe187902202830b53e64ea565fecd0f398100691da6bb2a5cf9bb0d1926f1d71d05828a11e01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000" },
+		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320004000000000100000001b80b0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022066c5ef625cee3ddd2bc7b6bfb354b5834cf1cc6d52dd972fb41b7b225437ae4a022066cb85647df65c6b87a54e416dcdcca778a776c36a9643d2b5dc793c9b29f4c18347304402202d4ce515cd9000ec37575972d70b8d24f73909fb7012e8ebd8c2066ef6fe187902202830b53e64ea565fecd0f398100691da6bb2a5cf9bb0d1926f1d71d05828a11e01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000", None::<PaymentPreimage> },
 
 		                  { 3,
 		                  "3044022022c7e11595c53ee89a57ca76baf0aed730da035952d6ab3fe6459f5eff3b337a022075e10cc5f5fd724a35ce4087a5d03cd616698626c69814032132b50bb97dc615",
 		                  "3045022100b20cd63e0587d1711beaebda4730775c4ac8b8b2ec78fe18a0c44c3f168c25230220079abb7fc4924e2fca5950842e5b9e416735585026914570078c4ef62f286226",
-		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320005000000000100000001a00f0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022022c7e11595c53ee89a57ca76baf0aed730da035952d6ab3fe6459f5eff3b337a022075e10cc5f5fd724a35ce4087a5d03cd616698626c69814032132b50bb97dc61583483045022100b20cd63e0587d1711beaebda4730775c4ac8b8b2ec78fe18a0c44c3f168c25230220079abb7fc4924e2fca5950842e5b9e416735585026914570078c4ef62f286226012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
+		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320005000000000100000001a00f0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022022c7e11595c53ee89a57ca76baf0aed730da035952d6ab3fe6459f5eff3b337a022075e10cc5f5fd724a35ce4087a5d03cd616698626c69814032132b50bb97dc61583483045022100b20cd63e0587d1711beaebda4730775c4ac8b8b2ec78fe18a0c44c3f168c25230220079abb7fc4924e2fca5950842e5b9e416735585026914570078c4ef62f286226012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000", Some(payment_preimage_4) }
 		} );
 
 		// commitment tx with six outputs untrimmed (maximum feerate)
@@ -16889,22 +16921,22 @@ mod tests {
 		                  { 0,
 		                  "3045022100f33513ee38abf1c582876f921f8fddc06acff48e04515532a32d3938de938ffd02203aa308a2c1863b7d6fdf53159a1465bf2e115c13152546cc5d74483ceaa7f699",
 		                  "3045022100a637902a5d4c9ba9e7c472a225337d5aac9e2e3f6744f76e237132e7619ba0400220035c60d784a031c0d9f6df66b7eab8726a5c25397399ee4aa960842059eb3f9d",
-		                  "02000000000101adbe717a63fb658add30ada1e6e12ed257637581898abe475c11d7bbcd65bd4d0000000000000000000175020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100f33513ee38abf1c582876f921f8fddc06acff48e04515532a32d3938de938ffd02203aa308a2c1863b7d6fdf53159a1465bf2e115c13152546cc5d74483ceaa7f69901483045022100a637902a5d4c9ba9e7c472a225337d5aac9e2e3f6744f76e237132e7619ba0400220035c60d784a031c0d9f6df66b7eab8726a5c25397399ee4aa960842059eb3f9d01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000" },
+		                  "02000000000101adbe717a63fb658add30ada1e6e12ed257637581898abe475c11d7bbcd65bd4d0000000000000000000175020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100f33513ee38abf1c582876f921f8fddc06acff48e04515532a32d3938de938ffd02203aa308a2c1863b7d6fdf53159a1465bf2e115c13152546cc5d74483ceaa7f69901483045022100a637902a5d4c9ba9e7c472a225337d5aac9e2e3f6744f76e237132e7619ba0400220035c60d784a031c0d9f6df66b7eab8726a5c25397399ee4aa960842059eb3f9d01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000", None::<PaymentPreimage> },
 
 		                  { 1,
 		                  "3045022100ce07682cf4b90093c22dc2d9ab2a77ad6803526b655ef857221cc96af5c9e0bf02200f501cee22e7a268af40b555d15a8237c9f36ad67ef1841daf9f6a0267b1e6df",
 		                  "3045022100e57e46234f8782d3ff7aa593b4f7446fb5316c842e693dc63ee324fd49f6a1c302204a2f7b44c48bd26e1554422afae13153eb94b29d3687b733d18930615fb2db61",
-		                  "02000000000101adbe717a63fb658add30ada1e6e12ed257637581898abe475c11d7bbcd65bd4d0100000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100ce07682cf4b90093c22dc2d9ab2a77ad6803526b655ef857221cc96af5c9e0bf02200f501cee22e7a268af40b555d15a8237c9f36ad67ef1841daf9f6a0267b1e6df01483045022100e57e46234f8782d3ff7aa593b4f7446fb5316c842e693dc63ee324fd49f6a1c302204a2f7b44c48bd26e1554422afae13153eb94b29d3687b733d18930615fb2db61012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000" },
+		                  "02000000000101adbe717a63fb658add30ada1e6e12ed257637581898abe475c11d7bbcd65bd4d0100000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100ce07682cf4b90093c22dc2d9ab2a77ad6803526b655ef857221cc96af5c9e0bf02200f501cee22e7a268af40b555d15a8237c9f36ad67ef1841daf9f6a0267b1e6df01483045022100e57e46234f8782d3ff7aa593b4f7446fb5316c842e693dc63ee324fd49f6a1c302204a2f7b44c48bd26e1554422afae13153eb94b29d3687b733d18930615fb2db61012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000", Some(payment_preimage_1) },
 
 		                  { 2,
 		                  "3045022100e3e35492e55f82ec0bc2f317ffd7a486d1f7024330fe9743c3559fc39f32ef0c02203d1d4db651fc388a91d5ad8ecdd8e83673063bc8eefe27cfd8c189090e3a23e0",
 		                  "3044022068613fb1b98eb3aec7f44c5b115b12343c2f066c4277c82b5f873dfe68f37f50022028109b4650f3f528ca4bfe9a467aff2e3e43893b61b5159157119d5d95cf1c18",
-		                  "02000000000101adbe717a63fb658add30ada1e6e12ed257637581898abe475c11d7bbcd65bd4d020000000000000000015d060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e3e35492e55f82ec0bc2f317ffd7a486d1f7024330fe9743c3559fc39f32ef0c02203d1d4db651fc388a91d5ad8ecdd8e83673063bc8eefe27cfd8c189090e3a23e001473044022068613fb1b98eb3aec7f44c5b115b12343c2f066c4277c82b5f873dfe68f37f50022028109b4650f3f528ca4bfe9a467aff2e3e43893b61b5159157119d5d95cf1c1801008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000" },
+		                  "02000000000101adbe717a63fb658add30ada1e6e12ed257637581898abe475c11d7bbcd65bd4d020000000000000000015d060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e3e35492e55f82ec0bc2f317ffd7a486d1f7024330fe9743c3559fc39f32ef0c02203d1d4db651fc388a91d5ad8ecdd8e83673063bc8eefe27cfd8c189090e3a23e001473044022068613fb1b98eb3aec7f44c5b115b12343c2f066c4277c82b5f873dfe68f37f50022028109b4650f3f528ca4bfe9a467aff2e3e43893b61b5159157119d5d95cf1c1801008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000", None::<PaymentPreimage> },
 
 		                  { 3,
 		                  "304402207475aeb0212ef9bf5130b60937817ad88c9a87976988ef1f323f026148cc4a850220739fea17ad3257dcad72e509c73eebe86bee30b178467b9fdab213d631b109df",
 		                  "3045022100d315522e09e7d53d2a659a79cb67fef56d6c4bddf3f46df6772d0d20a7beb7c8022070bcc17e288607b6a72be0bd83368bb6d53488db266c1cdb4d72214e4f02ac33",
-		                  "02000000000101adbe717a63fb658add30ada1e6e12ed257637581898abe475c11d7bbcd65bd4d03000000000000000001f2090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402207475aeb0212ef9bf5130b60937817ad88c9a87976988ef1f323f026148cc4a850220739fea17ad3257dcad72e509c73eebe86bee30b178467b9fdab213d631b109df01483045022100d315522e09e7d53d2a659a79cb67fef56d6c4bddf3f46df6772d0d20a7beb7c8022070bcc17e288607b6a72be0bd83368bb6d53488db266c1cdb4d72214e4f02ac33012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
+		                  "02000000000101adbe717a63fb658add30ada1e6e12ed257637581898abe475c11d7bbcd65bd4d03000000000000000001f2090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402207475aeb0212ef9bf5130b60937817ad88c9a87976988ef1f323f026148cc4a850220739fea17ad3257dcad72e509c73eebe86bee30b178467b9fdab213d631b109df01483045022100d315522e09e7d53d2a659a79cb67fef56d6c4bddf3f46df6772d0d20a7beb7c8022070bcc17e288607b6a72be0bd83368bb6d53488db266c1cdb4d72214e4f02ac33012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000", Some(payment_preimage_4) }
 		} );
 
 		// commitment tx with five outputs untrimmed (minimum feerate)
@@ -16918,17 +16950,17 @@ mod tests {
 		                  { 0,
 		                  "304402205f6b6d12d8d2529fb24f4445630566cf4abbd0f9330ab6c2bdb94222d6a2a0c502202f556258ae6f05b193749e4c541dfcc13b525a5422f6291f073f15617ba8579b",
 		                  "30440220150b11069454da70caf2492ded9e0065c9a57f25ac2a4c52657b1d15b6c6ed85022068a38833b603c8892717206383611bad210f1cbb4b1f87ea29c6c65b9e1cb3e5",
-		                  "02000000000101403ad7602b43293497a3a2235a12ecefda4f3a1f1d06e49b1786d945685de1ff0000000000000000000174020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402205f6b6d12d8d2529fb24f4445630566cf4abbd0f9330ab6c2bdb94222d6a2a0c502202f556258ae6f05b193749e4c541dfcc13b525a5422f6291f073f15617ba8579b014730440220150b11069454da70caf2492ded9e0065c9a57f25ac2a4c52657b1d15b6c6ed85022068a38833b603c8892717206383611bad210f1cbb4b1f87ea29c6c65b9e1cb3e501008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000" },
+		                  "02000000000101403ad7602b43293497a3a2235a12ecefda4f3a1f1d06e49b1786d945685de1ff0000000000000000000174020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402205f6b6d12d8d2529fb24f4445630566cf4abbd0f9330ab6c2bdb94222d6a2a0c502202f556258ae6f05b193749e4c541dfcc13b525a5422f6291f073f15617ba8579b014730440220150b11069454da70caf2492ded9e0065c9a57f25ac2a4c52657b1d15b6c6ed85022068a38833b603c8892717206383611bad210f1cbb4b1f87ea29c6c65b9e1cb3e501008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000", None::<PaymentPreimage> },
 
 		                  { 1,
 		                  "3045022100f960dfb1c9aee7ce1437efa65b523e399383e8149790e05d8fed27ff6e42fe0002202fe8613e062ffe0b0c518cc4101fba1c6de70f64a5bcc7ae663f2efae43b8546",
 		                  "30450221009a6ed18e6873bc3644332a6ee21c152a5b102821865350df7a8c74451a51f9f2022050d801fb4895d7d7fbf452824c0168347f5c0cbe821cf6a97a63af5b8b2563c6",
-		                  "02000000000101403ad7602b43293497a3a2235a12ecefda4f3a1f1d06e49b1786d945685de1ff010000000000000000015c060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100f960dfb1c9aee7ce1437efa65b523e399383e8149790e05d8fed27ff6e42fe0002202fe8613e062ffe0b0c518cc4101fba1c6de70f64a5bcc7ae663f2efae43b8546014830450221009a6ed18e6873bc3644332a6ee21c152a5b102821865350df7a8c74451a51f9f2022050d801fb4895d7d7fbf452824c0168347f5c0cbe821cf6a97a63af5b8b2563c601008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000" },
+		                  "02000000000101403ad7602b43293497a3a2235a12ecefda4f3a1f1d06e49b1786d945685de1ff010000000000000000015c060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100f960dfb1c9aee7ce1437efa65b523e399383e8149790e05d8fed27ff6e42fe0002202fe8613e062ffe0b0c518cc4101fba1c6de70f64a5bcc7ae663f2efae43b8546014830450221009a6ed18e6873bc3644332a6ee21c152a5b102821865350df7a8c74451a51f9f2022050d801fb4895d7d7fbf452824c0168347f5c0cbe821cf6a97a63af5b8b2563c601008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000", None::<PaymentPreimage> },
 
 		                  { 2,
 		                  "3045022100ae5fc7717ae684bc1fcf9020854e5dbe9842c9e7472879ac06ff95ac2bb10e4e022057728ada4c00083a3e65493fb5d50a232165948a1a0f530ef63185c2c8c56504",
 		                  "30440220408ad3009827a8fccf774cb285587686bfb2ed041f89a89453c311ce9c8ee0f902203c7392d9f8306d3a46522a66bd2723a7eb2628cb2d9b34d4c104f1766bf37502",
-		                  "02000000000101403ad7602b43293497a3a2235a12ecefda4f3a1f1d06e49b1786d945685de1ff02000000000000000001f1090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100ae5fc7717ae684bc1fcf9020854e5dbe9842c9e7472879ac06ff95ac2bb10e4e022057728ada4c00083a3e65493fb5d50a232165948a1a0f530ef63185c2c8c56504014730440220408ad3009827a8fccf774cb285587686bfb2ed041f89a89453c311ce9c8ee0f902203c7392d9f8306d3a46522a66bd2723a7eb2628cb2d9b34d4c104f1766bf37502012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
+		                  "02000000000101403ad7602b43293497a3a2235a12ecefda4f3a1f1d06e49b1786d945685de1ff02000000000000000001f1090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100ae5fc7717ae684bc1fcf9020854e5dbe9842c9e7472879ac06ff95ac2bb10e4e022057728ada4c00083a3e65493fb5d50a232165948a1a0f530ef63185c2c8c56504014730440220408ad3009827a8fccf774cb285587686bfb2ed041f89a89453c311ce9c8ee0f902203c7392d9f8306d3a46522a66bd2723a7eb2628cb2d9b34d4c104f1766bf37502012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000", Some(payment_preimage_4) }
 		} );
 
 		// commitment tx with five outputs untrimmed (maximum feerate)
@@ -16942,17 +16974,17 @@ mod tests {
 		                  { 0,
 		                  "3045022100939726680351a7856c1bc386d4a1f422c7d29bd7b56afc139570f508474e6c40022023175a799ccf44c017fbaadb924c40b2a12115a5b7d0dfd3228df803a2de8450",
 		                  "304502210099c98c2edeeee6ec0fb5f3bea8b79bb016a2717afa9b5072370f34382de281d302206f5e2980a995e045cf90a547f0752a7ee99d48547bc135258fe7bc07e0154301",
-		                  "02000000000101153cd825fdb3aa624bfe513e8031d5d08c5e582fb3d1d1fe8faf27d3eed410cd0000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100939726680351a7856c1bc386d4a1f422c7d29bd7b56afc139570f508474e6c40022023175a799ccf44c017fbaadb924c40b2a12115a5b7d0dfd3228df803a2de84500148304502210099c98c2edeeee6ec0fb5f3bea8b79bb016a2717afa9b5072370f34382de281d302206f5e2980a995e045cf90a547f0752a7ee99d48547bc135258fe7bc07e015430101008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000" },
+		                  "02000000000101153cd825fdb3aa624bfe513e8031d5d08c5e582fb3d1d1fe8faf27d3eed410cd0000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100939726680351a7856c1bc386d4a1f422c7d29bd7b56afc139570f508474e6c40022023175a799ccf44c017fbaadb924c40b2a12115a5b7d0dfd3228df803a2de84500148304502210099c98c2edeeee6ec0fb5f3bea8b79bb016a2717afa9b5072370f34382de281d302206f5e2980a995e045cf90a547f0752a7ee99d48547bc135258fe7bc07e015430101008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000", None::<PaymentPreimage> },
 
 		                  { 1,
 		                  "3044022021bb883bf324553d085ba2e821cad80c28ef8b303dbead8f98e548783c02d1600220638f9ef2a9bba25869afc923f4b5dc38be3bb459f9efa5d869392d5f7779a4a0",
 		                  "3045022100fd85bd7697b89c08ec12acc8ba89b23090637d83abd26ca37e01ae93e67c367302202b551fe69386116c47f984aab9c8dfd25d864dcde5d3389cfbef2447a85c4b77",
-		                  "02000000000101153cd825fdb3aa624bfe513e8031d5d08c5e582fb3d1d1fe8faf27d3eed410cd010000000000000000010a060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022021bb883bf324553d085ba2e821cad80c28ef8b303dbead8f98e548783c02d1600220638f9ef2a9bba25869afc923f4b5dc38be3bb459f9efa5d869392d5f7779a4a001483045022100fd85bd7697b89c08ec12acc8ba89b23090637d83abd26ca37e01ae93e67c367302202b551fe69386116c47f984aab9c8dfd25d864dcde5d3389cfbef2447a85c4b7701008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000" },
+		                  "02000000000101153cd825fdb3aa624bfe513e8031d5d08c5e582fb3d1d1fe8faf27d3eed410cd010000000000000000010a060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022021bb883bf324553d085ba2e821cad80c28ef8b303dbead8f98e548783c02d1600220638f9ef2a9bba25869afc923f4b5dc38be3bb459f9efa5d869392d5f7779a4a001483045022100fd85bd7697b89c08ec12acc8ba89b23090637d83abd26ca37e01ae93e67c367302202b551fe69386116c47f984aab9c8dfd25d864dcde5d3389cfbef2447a85c4b7701008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000", None::<PaymentPreimage> },
 
 		                  { 2,
 		                  "3045022100c9e6f0454aa598b905a35e641a70cc9f67b5f38cc4b00843a041238c4a9f1c4a0220260a2822a62da97e44583e837245995ca2e36781769c52f19e498efbdcca262b",
 		                  "30450221008a9f2ea24cd455c2b64c1472a5fa83865b0a5f49a62b661801e884cf2849af8302204d44180e50bf6adfcf1c1e581d75af91aba4e28681ce4a5ee5f3cbf65eca10f3",
-		                  "02000000000101153cd825fdb3aa624bfe513e8031d5d08c5e582fb3d1d1fe8faf27d3eed410cd020000000000000000019a090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100c9e6f0454aa598b905a35e641a70cc9f67b5f38cc4b00843a041238c4a9f1c4a0220260a2822a62da97e44583e837245995ca2e36781769c52f19e498efbdcca262b014830450221008a9f2ea24cd455c2b64c1472a5fa83865b0a5f49a62b661801e884cf2849af8302204d44180e50bf6adfcf1c1e581d75af91aba4e28681ce4a5ee5f3cbf65eca10f3012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
+		                  "02000000000101153cd825fdb3aa624bfe513e8031d5d08c5e582fb3d1d1fe8faf27d3eed410cd020000000000000000019a090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100c9e6f0454aa598b905a35e641a70cc9f67b5f38cc4b00843a041238c4a9f1c4a0220260a2822a62da97e44583e837245995ca2e36781769c52f19e498efbdcca262b014830450221008a9f2ea24cd455c2b64c1472a5fa83865b0a5f49a62b661801e884cf2849af8302204d44180e50bf6adfcf1c1e581d75af91aba4e28681ce4a5ee5f3cbf65eca10f3012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000", Some(payment_preimage_4) }
 		} );
 
 		// commitment tx with four outputs untrimmed (minimum feerate)
@@ -16966,12 +16998,12 @@ mod tests {
 		                  { 0,
 		                  "3045022100e57b845066a06ee7c2cbfc29eabffe52daa9bf6f6de760066d04df9f9b250e0002202ffb197f0e6e0a77a75a9aff27014bd3de83b7f748d7efef986abe655e1dd50e",
 		                  "3045022100ecc8c6529d0b2316d046f0f0757c1e1c25a636db168ec4f3aa1b9278df685dc0022067ae6b65e936f1337091f7b18a15935b608c5f2cdddb2f892ed0babfdd376d76",
-		                  "020000000001018130a10f09b13677ba2885a8bca32860f3a952e5912b829a473639b5a2c07b900000000000000000000109060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e57b845066a06ee7c2cbfc29eabffe52daa9bf6f6de760066d04df9f9b250e0002202ffb197f0e6e0a77a75a9aff27014bd3de83b7f748d7efef986abe655e1dd50e01483045022100ecc8c6529d0b2316d046f0f0757c1e1c25a636db168ec4f3aa1b9278df685dc0022067ae6b65e936f1337091f7b18a15935b608c5f2cdddb2f892ed0babfdd376d7601008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000" },
+		                  "020000000001018130a10f09b13677ba2885a8bca32860f3a952e5912b829a473639b5a2c07b900000000000000000000109060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e57b845066a06ee7c2cbfc29eabffe52daa9bf6f6de760066d04df9f9b250e0002202ffb197f0e6e0a77a75a9aff27014bd3de83b7f748d7efef986abe655e1dd50e01483045022100ecc8c6529d0b2316d046f0f0757c1e1c25a636db168ec4f3aa1b9278df685dc0022067ae6b65e936f1337091f7b18a15935b608c5f2cdddb2f892ed0babfdd376d7601008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000", None::<PaymentPreimage>},
 
 		                  { 1,
 		                  "3045022100d193b7ecccad8057571620a0b1ffa6c48e9483311723b59cf536043b20bc51550220546d4bd37b3b101ecda14f6c907af46ec391abce1cd9c7ce22b1a62b534f2f2a",
 		                  "3044022014d66f11f9cacf923807eba49542076c5fe5cccf252fb08fe98c78ef3ca6ab5402201b290dbe043cc512d9d78de074a5a129b8759bc6a6c546b190d120b690bd6e82",
-		                  "020000000001018130a10f09b13677ba2885a8bca32860f3a952e5912b829a473639b5a2c07b900100000000000000000199090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100d193b7ecccad8057571620a0b1ffa6c48e9483311723b59cf536043b20bc51550220546d4bd37b3b101ecda14f6c907af46ec391abce1cd9c7ce22b1a62b534f2f2a01473044022014d66f11f9cacf923807eba49542076c5fe5cccf252fb08fe98c78ef3ca6ab5402201b290dbe043cc512d9d78de074a5a129b8759bc6a6c546b190d120b690bd6e82012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
+		                  "020000000001018130a10f09b13677ba2885a8bca32860f3a952e5912b829a473639b5a2c07b900100000000000000000199090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100d193b7ecccad8057571620a0b1ffa6c48e9483311723b59cf536043b20bc51550220546d4bd37b3b101ecda14f6c907af46ec391abce1cd9c7ce22b1a62b534f2f2a01473044022014d66f11f9cacf923807eba49542076c5fe5cccf252fb08fe98c78ef3ca6ab5402201b290dbe043cc512d9d78de074a5a129b8759bc6a6c546b190d120b690bd6e82012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000", Some(payment_preimage_4) }
 		} );
 
 		// anchors: commitment tx with four outputs untrimmed (minimum dust limit)
@@ -16979,7 +17011,8 @@ mod tests {
 		chan.context.feerate_per_kw = 2185;
 		chan.context.holder_dust_limit_satoshis = 2001;
 		let cached_channel_type = chan.funding.get_channel_type().clone();
-		chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("3044022040f63a16148cf35c8d3d41827f5ae7f7c3746885bb64d4d1b895892a83812b3e02202fcf95c2bf02c466163b3fa3ced6a24926fbb4035095a96842ef516e86ba54c0",
 		                 "3045022100cd8479cfe1edb1e5a1d487391e0451a469c7171e51e680183f19eb4321f20e9b02204eab7d5a6384b1b08e03baa6e4d9748dfd2b5ab2bae7e39604a0d0055bbffdd5",
@@ -16988,19 +17021,20 @@ mod tests {
 		                  { 0,
 		                  "304402206870514a72ad6e723ff7f1e0370d7a33c1cd2a0b9272674143ebaf6a1d02dee102205bd953c34faf5e7322e9a1c0103581cb090280fda4f1039ee8552668afa90ebb",
 		                  "30440220669de9ca7910eff65a7773ebd14a9fc371fe88cde5b8e2a81609d85c87ac939b02201ac29472fa4067322e92d75b624942d60be5050139b20bb363db75be79eb946f",
-		                  "02000000000101ac13a7715f80b8e52dda43c6929cade5521bdced3a405da02b443f1ffb1e33cc02000000000100000001b80b0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402206870514a72ad6e723ff7f1e0370d7a33c1cd2a0b9272674143ebaf6a1d02dee102205bd953c34faf5e7322e9a1c0103581cb090280fda4f1039ee8552668afa90ebb834730440220669de9ca7910eff65a7773ebd14a9fc371fe88cde5b8e2a81609d85c87ac939b02201ac29472fa4067322e92d75b624942d60be5050139b20bb363db75be79eb946f01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000" },
+		                  "02000000000101ac13a7715f80b8e52dda43c6929cade5521bdced3a405da02b443f1ffb1e33cc02000000000100000001b80b0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402206870514a72ad6e723ff7f1e0370d7a33c1cd2a0b9272674143ebaf6a1d02dee102205bd953c34faf5e7322e9a1c0103581cb090280fda4f1039ee8552668afa90ebb834730440220669de9ca7910eff65a7773ebd14a9fc371fe88cde5b8e2a81609d85c87ac939b02201ac29472fa4067322e92d75b624942d60be5050139b20bb363db75be79eb946f01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000", None::<PaymentPreimage> },
 
 		                  { 1,
 		                  "3045022100949e8dd938da56445b1cdfdebe1b7efea086edd05d89910d205a1e2e033ce47102202cbd68b5262ab144d9ec12653f87dfb0bb6bd05d1f58ae1e523f028eaefd7271",
 		                  "3045022100e3104ed8b239f8019e5f0a1a73d7782a94a8c36e7984f476c3a0b3cb0e62e27902207e3d52884600985f8a2098e53a5c30dd6a5e857733acfaa07ab2162421ed2688",
-		                  "02000000000101ac13a7715f80b8e52dda43c6929cade5521bdced3a405da02b443f1ffb1e33cc03000000000100000001a00f0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100949e8dd938da56445b1cdfdebe1b7efea086edd05d89910d205a1e2e033ce47102202cbd68b5262ab144d9ec12653f87dfb0bb6bd05d1f58ae1e523f028eaefd727183483045022100e3104ed8b239f8019e5f0a1a73d7782a94a8c36e7984f476c3a0b3cb0e62e27902207e3d52884600985f8a2098e53a5c30dd6a5e857733acfaa07ab2162421ed2688012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
+		                  "02000000000101ac13a7715f80b8e52dda43c6929cade5521bdced3a405da02b443f1ffb1e33cc03000000000100000001a00f0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100949e8dd938da56445b1cdfdebe1b7efea086edd05d89910d205a1e2e033ce47102202cbd68b5262ab144d9ec12653f87dfb0bb6bd05d1f58ae1e523f028eaefd727183483045022100e3104ed8b239f8019e5f0a1a73d7782a94a8c36e7984f476c3a0b3cb0e62e27902207e3d52884600985f8a2098e53a5c30dd6a5e857733acfaa07ab2162421ed2688012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000", Some(payment_preimage_4) }
 		} );
 
 		// commitment tx with four outputs untrimmed (maximum feerate)
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 3702;
 		chan.context.holder_dust_limit_satoshis = 546;
-		chan.funding.channel_transaction_parameters.channel_type_features = cached_channel_type.clone();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			cached_channel_type.clone();
 
 		test_commitment!("304502210092a587aeb777f869e7ff0d7898ea619ee26a3dacd1f3672b945eea600be431100220077ee9eae3528d15251f2a52b607b189820e57a6ccfac8d1af502b132ee40169",
 		                 "3045022100e5efb73c32d32da2d79702299b6317de6fb24a60476e3855926d78484dd1b3c802203557cb66a42c944ef06e00bcc4da35a5bcb2f185aab0f8e403e519e1d66aaf75",
@@ -17009,12 +17043,12 @@ mod tests {
 		                  { 0,
 		                  "304402206fa54c11f98c3bae1e93df43fc7affeb05b476bf8060c03e29c377c69bc08e8b0220672701cce50d5c379ff45a5d2cfe48ac44973adb066ac32608e21221d869bb89",
 		                  "304402206e36c683ebf2cb16bcef3d5439cf8b53cd97280a365ed8acd7abb85a8ba5f21c02206e8621edfc2a5766cbc96eb67fd501127ff163eb6b85518a39f7d4974aef126f",
-		                  "020000000001018db483bff65c70ee71d8282aeec5a880e2e2b39e45772bda5460403095c62e3f0000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402206fa54c11f98c3bae1e93df43fc7affeb05b476bf8060c03e29c377c69bc08e8b0220672701cce50d5c379ff45a5d2cfe48ac44973adb066ac32608e21221d869bb890147304402206e36c683ebf2cb16bcef3d5439cf8b53cd97280a365ed8acd7abb85a8ba5f21c02206e8621edfc2a5766cbc96eb67fd501127ff163eb6b85518a39f7d4974aef126f01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000" },
+		                  "020000000001018db483bff65c70ee71d8282aeec5a880e2e2b39e45772bda5460403095c62e3f0000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402206fa54c11f98c3bae1e93df43fc7affeb05b476bf8060c03e29c377c69bc08e8b0220672701cce50d5c379ff45a5d2cfe48ac44973adb066ac32608e21221d869bb890147304402206e36c683ebf2cb16bcef3d5439cf8b53cd97280a365ed8acd7abb85a8ba5f21c02206e8621edfc2a5766cbc96eb67fd501127ff163eb6b85518a39f7d4974aef126f01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000", None::<PaymentPreimage> },
 
 		                  { 1,
 		                  "3044022057649739b0eb74d541ead0dfdb3d4b2c15aa192720031044c3434c67812e5ca902201e5ede42d960ae551707f4a6b34b09393cf4dee2418507daa022e3550dbb5817",
 		                  "304402207faad26678c8850e01b4a0696d60841f7305e1832b786110ee9075cb92ed14a30220516ef8ee5dfa80824ea28cbcec0dd95f8b847146257c16960db98507db15ffdc",
-		                  "020000000001018db483bff65c70ee71d8282aeec5a880e2e2b39e45772bda5460403095c62e3f0100000000000000000176050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022057649739b0eb74d541ead0dfdb3d4b2c15aa192720031044c3434c67812e5ca902201e5ede42d960ae551707f4a6b34b09393cf4dee2418507daa022e3550dbb58170147304402207faad26678c8850e01b4a0696d60841f7305e1832b786110ee9075cb92ed14a30220516ef8ee5dfa80824ea28cbcec0dd95f8b847146257c16960db98507db15ffdc012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
+		                  "020000000001018db483bff65c70ee71d8282aeec5a880e2e2b39e45772bda5460403095c62e3f0100000000000000000176050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022057649739b0eb74d541ead0dfdb3d4b2c15aa192720031044c3434c67812e5ca902201e5ede42d960ae551707f4a6b34b09393cf4dee2418507daa022e3550dbb58170147304402207faad26678c8850e01b4a0696d60841f7305e1832b786110ee9075cb92ed14a30220516ef8ee5dfa80824ea28cbcec0dd95f8b847146257c16960db98507db15ffdc012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000", Some(payment_preimage_4) }
 		} );
 
 		// commitment tx with three outputs untrimmed (minimum feerate)
@@ -17028,14 +17062,15 @@ mod tests {
 		                  { 0,
 		                  "3045022100c34c61735f93f2e324cc873c3b248111ccf8f6db15d5969583757010d4ad2b4602207867bb919b2ddd6387873e425345c9b7fd18d1d66aba41f3607bc2896ef3c30a",
 		                  "3045022100988c143e2110067117d2321bdd4bd16ca1734c98b29290d129384af0962b634e02206c1b02478878c5f547018b833986578f90c3e9be669fe5788ad0072a55acbb05",
-		                  "0200000000010120060e4a29579d429f0f27c17ee5f1ee282f20d706d6f90b63d35946d8f3029a0000000000000000000175050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100c34c61735f93f2e324cc873c3b248111ccf8f6db15d5969583757010d4ad2b4602207867bb919b2ddd6387873e425345c9b7fd18d1d66aba41f3607bc2896ef3c30a01483045022100988c143e2110067117d2321bdd4bd16ca1734c98b29290d129384af0962b634e02206c1b02478878c5f547018b833986578f90c3e9be669fe5788ad0072a55acbb05012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
+		                  "0200000000010120060e4a29579d429f0f27c17ee5f1ee282f20d706d6f90b63d35946d8f3029a0000000000000000000175050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100c34c61735f93f2e324cc873c3b248111ccf8f6db15d5969583757010d4ad2b4602207867bb919b2ddd6387873e425345c9b7fd18d1d66aba41f3607bc2896ef3c30a01483045022100988c143e2110067117d2321bdd4bd16ca1734c98b29290d129384af0962b634e02206c1b02478878c5f547018b833986578f90c3e9be669fe5788ad0072a55acbb05012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000", Some(payment_preimage_4) }
 		} );
 
 		// anchors: commitment tx with three outputs untrimmed (minimum dust limit)
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 3687;
 		chan.context.holder_dust_limit_satoshis = 3001;
-		chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("3045022100ad6c71569856b2d7ff42e838b4abe74a713426b37f22fa667a195a4c88908c6902202b37272b02a42dc6d9f4f82cab3eaf84ac882d9ed762859e1e75455c2c228377",
 		                 "3045022100c970799bcb33f43179eb43b3378a0a61991cf2923f69b36ef12548c3df0e6d500220413dc27d2e39ee583093adfcb7799be680141738babb31cc7b0669a777a31f5d",
@@ -17044,14 +17079,15 @@ mod tests {
 		                  { 0,
 		                  "3044022017b558a3cf5f0cb94269e2e927b29ed22bd2416abb8a7ce6de4d1256f359b93602202e9ca2b1a23ea3e69f433c704e327739e219804b8c188b1d52f74fd5a9de954c",
 		                  "3045022100af7a8b7c7ff2080c68995254cb66d64d9954edcc5baac3bb4f27ed2d29aaa6120220421c27da7a60574a9263f271e0f3bd34594ec6011095190022b3b54596ea03de",
-		                  "02000000000101542562b326c08e3a076d9cfca2be175041366591da334d8d513ff1686fd95a6002000000000100000001a00f0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022017b558a3cf5f0cb94269e2e927b29ed22bd2416abb8a7ce6de4d1256f359b93602202e9ca2b1a23ea3e69f433c704e327739e219804b8c188b1d52f74fd5a9de954c83483045022100af7a8b7c7ff2080c68995254cb66d64d9954edcc5baac3bb4f27ed2d29aaa6120220421c27da7a60574a9263f271e0f3bd34594ec6011095190022b3b54596ea03de012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
+		                  "02000000000101542562b326c08e3a076d9cfca2be175041366591da334d8d513ff1686fd95a6002000000000100000001a00f0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022017b558a3cf5f0cb94269e2e927b29ed22bd2416abb8a7ce6de4d1256f359b93602202e9ca2b1a23ea3e69f433c704e327739e219804b8c188b1d52f74fd5a9de954c83483045022100af7a8b7c7ff2080c68995254cb66d64d9954edcc5baac3bb4f27ed2d29aaa6120220421c27da7a60574a9263f271e0f3bd34594ec6011095190022b3b54596ea03de012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000", Some(payment_preimage_4) }
 		} );
 
 		// commitment tx with three outputs untrimmed (maximum feerate)
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 4914;
 		chan.context.holder_dust_limit_satoshis = 546;
-		chan.funding.channel_transaction_parameters.channel_type_features = cached_channel_type.clone();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			cached_channel_type.clone();
 
 		test_commitment!("3045022100b4b16d5f8cc9fc4c1aff48831e832a0d8990e133978a66e302c133550954a44d022073573ce127e2200d316f6b612803a5c0c97b8d20e1e44dbe2ac0dd2fb8c95244",
 		                 "3045022100d72638bc6308b88bb6d45861aae83e5b9ff6e10986546e13bce769c70036e2620220320be7c6d66d22f30b9fcd52af66531505b1310ca3b848c19285b38d8a1a8c19",
@@ -17060,7 +17096,7 @@ mod tests {
 		                  { 0,
 		                  "3045022100f43591c156038ba217756006bb3c55f7d113a325cdd7d9303c82115372858d68022016355b5aadf222bc8d12e426c75f4a03423917b2443a103eb2a498a3a2234374",
 		                  "30440220585dee80fafa264beac535c3c0bb5838ac348b156fdc982f86adc08dfc9bfd250220130abb82f9f295cc9ef423dcfef772fde2acd85d9df48cc538981d26a10a9c10",
-		                  "02000000000101a9172908eace869cc35128c31fc2ab502f72e4dff31aab23e0244c4b04b11ab00000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100f43591c156038ba217756006bb3c55f7d113a325cdd7d9303c82115372858d68022016355b5aadf222bc8d12e426c75f4a03423917b2443a103eb2a498a3a2234374014730440220585dee80fafa264beac535c3c0bb5838ac348b156fdc982f86adc08dfc9bfd250220130abb82f9f295cc9ef423dcfef772fde2acd85d9df48cc538981d26a10a9c10012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
+		                  "02000000000101a9172908eace869cc35128c31fc2ab502f72e4dff31aab23e0244c4b04b11ab00000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100f43591c156038ba217756006bb3c55f7d113a325cdd7d9303c82115372858d68022016355b5aadf222bc8d12e426c75f4a03423917b2443a103eb2a498a3a2234374014730440220585dee80fafa264beac535c3c0bb5838ac348b156fdc982f86adc08dfc9bfd250220130abb82f9f295cc9ef423dcfef772fde2acd85d9df48cc538981d26a10a9c10012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000", Some(payment_preimage_4) }
 		} );
 
 		// commitment tx with two outputs untrimmed (minimum feerate)
@@ -17076,7 +17112,8 @@ mod tests {
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 4894;
 		chan.context.holder_dust_limit_satoshis = 4001;
-		chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("3045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b95",
 		                 "30450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd",
@@ -17086,7 +17123,8 @@ mod tests {
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 9651180;
 		chan.context.holder_dust_limit_satoshis = 546;
-		chan.funding.channel_transaction_parameters.channel_type_features = cached_channel_type.clone();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			cached_channel_type.clone();
 
 		test_commitment!("304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd3",
 		                 "3045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de",
@@ -17104,7 +17142,8 @@ mod tests {
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 6216010;
 		chan.context.holder_dust_limit_satoshis = 4001;
-		chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 		test_commitment_with_anchors!("30450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf",
 		                 "30450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1",
@@ -17124,49 +17163,41 @@ mod tests {
 		chan.funding.value_to_self_msat = 7_000_000_000 - 2_000_000;
 		chan.context.feerate_per_kw = 253;
 		chan.context.pending_inbound_htlcs.clear();
-		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 1,
-				amount_msat: 2000000,
-				cltv_expiry: 501,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).to_byte_array();
-			out
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
+			htlc_id: 1,
+			amount_msat: 2000000,
+			cltv_expiry: 501,
+			payment_hash: PaymentHash::from(payment_preimage_1),
+			state: InboundHTLCState::Committed,
 		});
+
 		chan.context.pending_outbound_htlcs.clear();
-		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 6,
-				amount_msat: 5000001,
-				cltv_expiry: 506,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-				hold_htlc: None,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
-			out
+		let payment_preimage_5 =
+			preimage_from_hex("0505050505050505050505050505050505050505050505050505050505050505");
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
+			htlc_id: 6,
+			amount_msat: 5000001,
+			cltv_expiry: 506,
+			payment_hash: PaymentHash::from(payment_preimage_5),
+			state: OutboundHTLCState::Committed,
+			source: HTLCSource::dummy(),
+			skimmed_fee_msat: None,
+			blinding_point: None,
+			send_timestamp: None,
+			hold_htlc: None,
 		});
-		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 5,
-				amount_msat: 5000000,
-				cltv_expiry: 505,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-				hold_htlc: None,
-			};
-			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
-			out
+
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
+			htlc_id: 5,
+			amount_msat: 5000000,
+			cltv_expiry: 505,
+			payment_hash: PaymentHash::from(payment_preimage_5),
+			state: OutboundHTLCState::Committed,
+			source: HTLCSource::dummy(),
+			skimmed_fee_msat: None,
+			blinding_point: None,
+			send_timestamp: None,
+			hold_htlc: None,
 		});
 
 		test_commitment!("304402207d0870964530f97b62497b11153c551dca0a1e226815ef0a336651158da0f82402200f5378beee0e77759147b8a0a284decd11bfd2bc55c8fafa41c134fe996d43c8",
@@ -17176,18 +17207,19 @@ mod tests {
 		                  { 0,
 		                  "3045022100b470fe12e5b7fea9eccb8cbff1972cea4f96758041898982a02bcc7f9d56d50b0220338a75b2afaab4ec00cdd2d9273c68c7581ff5a28bcbb40c4d138b81f1d45ce5",
 		                  "3044022017b90c65207522a907fb6a137f9dd528b3389465a8ae72308d9e1d564f512cf402204fc917b4f0e88604a3e994f85bfae7c7c1f9d9e9f78e8cd112e0889720d9405b",
-		                  "020000000001014bdccf28653066a2c554cafeffdfe1e678e64a69b056684deb0c4fba909423ec000000000000000000011f070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100b470fe12e5b7fea9eccb8cbff1972cea4f96758041898982a02bcc7f9d56d50b0220338a75b2afaab4ec00cdd2d9273c68c7581ff5a28bcbb40c4d138b81f1d45ce501473044022017b90c65207522a907fb6a137f9dd528b3389465a8ae72308d9e1d564f512cf402204fc917b4f0e88604a3e994f85bfae7c7c1f9d9e9f78e8cd112e0889720d9405b012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000" },
+		                  "020000000001014bdccf28653066a2c554cafeffdfe1e678e64a69b056684deb0c4fba909423ec000000000000000000011f070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100b470fe12e5b7fea9eccb8cbff1972cea4f96758041898982a02bcc7f9d56d50b0220338a75b2afaab4ec00cdd2d9273c68c7581ff5a28bcbb40c4d138b81f1d45ce501473044022017b90c65207522a907fb6a137f9dd528b3389465a8ae72308d9e1d564f512cf402204fc917b4f0e88604a3e994f85bfae7c7c1f9d9e9f78e8cd112e0889720d9405b012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000", Some(payment_preimage_1) },
 		                  { 1,
 		                  "3045022100b575379f6d8743cb0087648f81cfd82d17a97fbf8f67e058c65ce8b9d25df9500220554a210d65b02d9f36c6adf0f639430ca8293196ba5089bf67cc3a9813b7b00a",
 		                  "3045022100ee2e16b90930a479b13f8823a7f14b600198c838161160b9436ed086d3fc57e002202a66fa2324f342a17129949c640bfe934cbc73a869ba7c06aa25c5a3d0bfb53d",
-		                  "020000000001014bdccf28653066a2c554cafeffdfe1e678e64a69b056684deb0c4fba909423ec01000000000000000001e1120000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100b575379f6d8743cb0087648f81cfd82d17a97fbf8f67e058c65ce8b9d25df9500220554a210d65b02d9f36c6adf0f639430ca8293196ba5089bf67cc3a9813b7b00a01483045022100ee2e16b90930a479b13f8823a7f14b600198c838161160b9436ed086d3fc57e002202a66fa2324f342a17129949c640bfe934cbc73a869ba7c06aa25c5a3d0bfb53d01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6868f9010000" },
+		                  "020000000001014bdccf28653066a2c554cafeffdfe1e678e64a69b056684deb0c4fba909423ec01000000000000000001e1120000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100b575379f6d8743cb0087648f81cfd82d17a97fbf8f67e058c65ce8b9d25df9500220554a210d65b02d9f36c6adf0f639430ca8293196ba5089bf67cc3a9813b7b00a01483045022100ee2e16b90930a479b13f8823a7f14b600198c838161160b9436ed086d3fc57e002202a66fa2324f342a17129949c640bfe934cbc73a869ba7c06aa25c5a3d0bfb53d01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6868f9010000", None::<PaymentPreimage> },
 		                  { 2,
 		                  "30440220471c9f3ad92e49b13b7b8059f43ecf8f7887b0dccbb9fdb54bfe23d62a8ae332022024bd22fae0740e86a44228c35330da9526fd7306dffb2b9dc362d5e78abef7cc",
 		                  "304402207157f452f2506d73c315192311893800cfb3cc235cc1185b1cfcc136b55230db022014be242dbc6c5da141fec4034e7f387f74d6ff1899453d72ba957467540e1ecb",
-		                  "020000000001014bdccf28653066a2c554cafeffdfe1e678e64a69b056684deb0c4fba909423ec02000000000000000001e1120000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220471c9f3ad92e49b13b7b8059f43ecf8f7887b0dccbb9fdb54bfe23d62a8ae332022024bd22fae0740e86a44228c35330da9526fd7306dffb2b9dc362d5e78abef7cc0147304402207157f452f2506d73c315192311893800cfb3cc235cc1185b1cfcc136b55230db022014be242dbc6c5da141fec4034e7f387f74d6ff1899453d72ba957467540e1ecb01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6868fa010000" }
+		                  "020000000001014bdccf28653066a2c554cafeffdfe1e678e64a69b056684deb0c4fba909423ec02000000000000000001e1120000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220471c9f3ad92e49b13b7b8059f43ecf8f7887b0dccbb9fdb54bfe23d62a8ae332022024bd22fae0740e86a44228c35330da9526fd7306dffb2b9dc362d5e78abef7cc0147304402207157f452f2506d73c315192311893800cfb3cc235cc1185b1cfcc136b55230db022014be242dbc6c5da141fec4034e7f387f74d6ff1899453d72ba957467540e1ecb01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6868fa010000", None::<PaymentPreimage> }
 		} );
 
-		chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		test_commitment_with_anchors!("3044022027b38dfb654c34032ffb70bb43022981652fce923cbbe3cbe7394e2ade8b34230220584195b78da6e25c2e8da6b4308d9db25b65b64975db9266163ef592abb7c725",
 		                 "3045022100b4014970d9d7962853f3f85196144671d7d5d87426250f0a5fdaf9a55292e92502205360910c9abb397467e19dbd63d081deb4a3240903114c98cec0a23591b79b76",
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80074a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994d007000000000000220020fe0598d74fee2205cc3672e6e6647706b4f3099713b4661b62482c3addd04a5e881300000000000022002018e40f9072c44350f134bdc887bab4d9bdfc8aa468a25616c80e21757ba5dac7881300000000000022002018e40f9072c44350f134bdc887bab4d9bdfc8aa468a25616c80e21757ba5dac7c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994aad9c6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400483045022100b4014970d9d7962853f3f85196144671d7d5d87426250f0a5fdaf9a55292e92502205360910c9abb397467e19dbd63d081deb4a3240903114c98cec0a23591b79b7601473044022027b38dfb654c34032ffb70bb43022981652fce923cbbe3cbe7394e2ade8b34230220584195b78da6e25c2e8da6b4308d9db25b65b64975db9266163ef592abb7c72501475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
@@ -17195,16 +17227,402 @@ mod tests {
 		                  { 0,
 		                  "30440220078fe5343dab88c348a3a8a9c1a9293259dbf35507ae971702cc39dd623ea9af022011ed0c0f35243cd0bb4d9ca3c772379b2b5f4af93140e9fdc5600dfec1cdb0c2",
 		                  "304402205df665e2908c7690d2d33eb70e6e119958c28febe141a94ed0dd9a55ce7c8cfc0220364d02663a5d019af35c5cd5fda9465d985d85bbd12db207738d61163449a424",
-		                  "020000000001013d060d0305c9616eaabc21d41fae85bcb5477b5d7f1c92aa429cf15339bbe1c402000000000100000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220078fe5343dab88c348a3a8a9c1a9293259dbf35507ae971702cc39dd623ea9af022011ed0c0f35243cd0bb4d9ca3c772379b2b5f4af93140e9fdc5600dfec1cdb0c28347304402205df665e2908c7690d2d33eb70e6e119958c28febe141a94ed0dd9a55ce7c8cfc0220364d02663a5d019af35c5cd5fda9465d985d85bbd12db207738d61163449a424012001010101010101010101010101010101010101010101010101010101010101018d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac6851b2756800000000" },
+		                  "020000000001013d060d0305c9616eaabc21d41fae85bcb5477b5d7f1c92aa429cf15339bbe1c402000000000100000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220078fe5343dab88c348a3a8a9c1a9293259dbf35507ae971702cc39dd623ea9af022011ed0c0f35243cd0bb4d9ca3c772379b2b5f4af93140e9fdc5600dfec1cdb0c28347304402205df665e2908c7690d2d33eb70e6e119958c28febe141a94ed0dd9a55ce7c8cfc0220364d02663a5d019af35c5cd5fda9465d985d85bbd12db207738d61163449a424012001010101010101010101010101010101010101010101010101010101010101018d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac6851b2756800000000", Some(payment_preimage_1) },
 		                  { 1,
 		                  "304402202df6bf0f98a42cfd0172a16bded7d1b16c14f5f42ba23f5c54648c14b647531302200fe1508626817f23925bb56951d5e4b2654c751743ab6db48a6cce7dda17c01c",
 		                  "304402203f99ec05cdd89558a23683b471c1dcce8f6a92295f1fff3b0b5d21be4d4f97ea022019d29070690fc2c126fe27cc4ab2f503f289d362721b2efa7418e7fddb939a5b",
-		                  "020000000001013d060d0305c9616eaabc21d41fae85bcb5477b5d7f1c92aa429cf15339bbe1c40300000000010000000188130000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402202df6bf0f98a42cfd0172a16bded7d1b16c14f5f42ba23f5c54648c14b647531302200fe1508626817f23925bb56951d5e4b2654c751743ab6db48a6cce7dda17c01c8347304402203f99ec05cdd89558a23683b471c1dcce8f6a92295f1fff3b0b5d21be4d4f97ea022019d29070690fc2c126fe27cc4ab2f503f289d362721b2efa7418e7fddb939a5b01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6851b27568f9010000" },
+		                  "020000000001013d060d0305c9616eaabc21d41fae85bcb5477b5d7f1c92aa429cf15339bbe1c40300000000010000000188130000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402202df6bf0f98a42cfd0172a16bded7d1b16c14f5f42ba23f5c54648c14b647531302200fe1508626817f23925bb56951d5e4b2654c751743ab6db48a6cce7dda17c01c8347304402203f99ec05cdd89558a23683b471c1dcce8f6a92295f1fff3b0b5d21be4d4f97ea022019d29070690fc2c126fe27cc4ab2f503f289d362721b2efa7418e7fddb939a5b01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6851b27568f9010000", None::<PaymentPreimage> },
 		                  { 2,
 		                  "3045022100bd206b420c495f3aa714d3ea4766cbe95441deacb5d2f737f1913349aee7c2ae02200249d2c950dd3b15326bf378ae5d2b871d33d6737f5d70735f3de8383140f2a1",
 		                  "3045022100f2cd35e385b9b7e15b92a5d78d120b6b2c5af4e974bc01e884c5facb3bb5966c0220706e0506477ce809a40022d6de8e041e9ef13136c45abee9c36f58a01fdb188b",
-		                  "020000000001013d060d0305c9616eaabc21d41fae85bcb5477b5d7f1c92aa429cf15339bbe1c40400000000010000000188130000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100bd206b420c495f3aa714d3ea4766cbe95441deacb5d2f737f1913349aee7c2ae02200249d2c950dd3b15326bf378ae5d2b871d33d6737f5d70735f3de8383140f2a183483045022100f2cd35e385b9b7e15b92a5d78d120b6b2c5af4e974bc01e884c5facb3bb5966c0220706e0506477ce809a40022d6de8e041e9ef13136c45abee9c36f58a01fdb188b01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6851b27568fa010000" }
+		                  "020000000001013d060d0305c9616eaabc21d41fae85bcb5477b5d7f1c92aa429cf15339bbe1c40400000000010000000188130000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100bd206b420c495f3aa714d3ea4766cbe95441deacb5d2f737f1913349aee7c2ae02200249d2c950dd3b15326bf378ae5d2b871d33d6737f5d70735f3de8383140f2a183483045022100f2cd35e385b9b7e15b92a5d78d120b6b2c5af4e974bc01e884c5facb3bb5966c0220706e0506477ce809a40022d6de8e041e9ef13136c45abee9c36f58a01fdb188b01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6851b27568fa010000", None::<PaymentPreimage> }
 		} );
+	}
+
+	// Test vectors from bolt03/zero_fee_commitments.json
+	#[cfg(ldk_test_vectors)]
+	#[test]
+	fn zero_fee_commitment_test_vectors() {
+		use crate::chain::transaction::OutPoint;
+		use crate::ln::chan_utils::{
+			CounterpartyChannelTransactionParameters, HolderCommitmentTransaction,
+		};
+		use crate::ln::channel::HTLCOutputInCommitment;
+		use crate::sign::{ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, HTLCDescriptor};
+		use crate::sync::Arc;
+		use crate::types::features::ChannelTypeFeatures;
+		use crate::types::payment::PaymentPreimage;
+		use crate::util::config::UserConfig;
+		use crate::util::logger::Logger;
+		use crate::util::test_utils::{
+			payment_hash_from_hex, preimage_from_hex, pubkey_from_hex, secret_from_hex,
+		};
+		use bitcoin::consensus::encode::serialize;
+		use bitcoin::hash_types::Txid;
+		use bitcoin::hex::{DisplayHex, FromHex};
+		use bitcoin::secp256k1::{Message, Secp256k1};
+		use bitcoin::sighash;
+		use bitcoin::sighash::EcdsaSighashType;
+		use core::str::FromStr;
+
+		let feeest = TestFeeEstimator::new(250); // Fee doesn't matter
+		let logger: Arc<dyn Logger> = Arc::new(TestLogger::new());
+		let secp_ctx = Secp256k1::new();
+
+		let alice_funding_privkey =
+			secret_from_hex("8f567cb6382507019349a47623902aa65d7a142ac85462eeb63dc11799ac2bb9");
+		let alice_payment_basepoint_secret =
+			secret_from_hex("94f29d20a225ea2f7093331ba0f0f28a9382d8ed08e1fd121329925cd0c01b6d");
+		let alice_delayed_payment_basepoint_secret =
+			secret_from_hex("e9d4e1935bf16e948d76ad007baf0646df023af38f41bcf2c8799336949d291e");
+		let alice_htlc_basepoint_secret =
+			secret_from_hex("f699038ef4f95b6b16b22a5c04fcb3c508d68d02cd2f86cf197e0fac451681b0");
+		// Not set in test vectors, not required because we're signing Alice's commitment.
+		let alice_revocation_base_secret =
+			secret_from_hex("1111111111111111111111111111111111111111111111111111111111111111");
+
+		let alice_signer = InMemorySigner::new(
+			alice_funding_privkey,
+			alice_revocation_base_secret,
+			alice_payment_basepoint_secret,
+			alice_payment_basepoint_secret,
+			true,
+			alice_delayed_payment_basepoint_secret,
+			alice_htlc_basepoint_secret,
+			// Not provided in test vectors.
+			[0xff; 32],
+			[0; 32],
+			[0; 32],
+		);
+		let alice_keys_provider = Keys { signer: alice_signer.clone() };
+		let alice_pubkeys = alice_signer.pubkeys(&secp_ctx);
+
+		let bob_funding_privkey =
+			secret_from_hex("4d22d96f0c0ccecffee4554d20ed43e51235917508ee292d281235bb7ebe0e3e");
+		let bob_payment_basepoint_secret =
+			secret_from_hex("580bff39085f3a6ae8b1f32905e67366c522ea8f2418391145b2e98f1a7cb3f2");
+		let bob_htlc_basepoint_secret =
+			secret_from_hex("32df9c4dd46ab6210e74e81e15282106f8db883f45674eabb3324166c6513062");
+		let bob_revocation_base_secret =
+			secret_from_hex("2222222222222222222222222222222222222222222222222222222222222222");
+		let bob_delayed_payment_basepoint_secret =
+			secret_from_hex("2222222222222222222222222222222222222222222222222222222222222222");
+
+		let bob_signer = InMemorySigner::new(
+			bob_funding_privkey,
+			bob_revocation_base_secret,
+			bob_payment_basepoint_secret,
+			bob_payment_basepoint_secret,
+			true,
+			bob_delayed_payment_basepoint_secret,
+			bob_htlc_basepoint_secret,
+			// Not provided in test vectors.
+			[0xff; 32],
+			[0; 32],
+			[0; 32],
+		);
+
+		// Test vectors only provide revocation_basepoint for bob, override it here.
+		let mut bob_pubkeys = bob_signer.pubkeys(&secp_ctx);
+		bob_pubkeys.revocation_basepoint = RevocationBasepoint(pubkey_from_hex(
+			"026788d019ed90149cbc9aa5ff26dd7f1a6d3cd1bee8bf36cf7d8310fbd3606b14",
+		));
+
+		// Node id for alice and bob doesn't matter to our test vectors.
+		let bob_node_id = crate::util::test_utils::pubkey(2);
+		let mut config = UserConfig::default();
+		config.manually_accept_inbound_channels = true;
+		config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+
+		let mut chan = OutboundV1Channel::<&Keys>::new(
+			&LowerBoundedFeeEstimator::new(&feeest),
+			&&alice_keys_provider,
+			&&alice_keys_provider,
+			bob_node_id,
+			&crate::ln::channelmanager::provided_init_features(&config),
+			10_000_000,
+			0,
+			0,
+			&config,
+			0,
+			0,
+			None,
+			&*logger,
+		)
+		.unwrap();
+
+		chan.funding.counterparty_selected_channel_reserve_satoshis = Some(0);
+		chan.funding.holder_selected_channel_reserve_satoshis = 0;
+
+		let funding_txid_str = "4b70a2ee47b3005a6316ff87055e94c6b3d433d0fd3b384c9ecf7813843c1eae";
+		let funding_info = OutPoint { txid: Txid::from_str(funding_txid_str).unwrap(), index: 1 };
+
+		// Must override alice's keys because we use a fixed revocation_basepoint.
+		chan.funding.channel_transaction_parameters.holder_pubkeys = alice_pubkeys.clone();
+		chan.funding.channel_transaction_parameters.counterparty_parameters =
+			Some(CounterpartyChannelTransactionParameters {
+				pubkeys: bob_pubkeys.clone(),
+				selected_contest_delay: 720,
+			});
+		chan.funding.channel_transaction_parameters.funding_outpoint = Some(funding_info);
+		chan.funding.channel_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_fee_commitments();
+
+		let per_commitment_point =
+			pubkey_from_hex("0275d12130c276b4274358a328901f8fc47e6c72629102e4b46c9f27dd2c1dda98");
+
+		macro_rules! test_commitment_with_zero_fee {
+			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
+				chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_fee_commitments();
+				test_commitment_common!(chan, logger, secp_ctx, alice_signer, alice_pubkeys, per_commitment_point,
+				$counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_fee_commitments(), $($remain)*);
+			};
+		}
+
+		// Commitment transaction without HTLCs, both outputs untrimmed
+		chan.funding.value_to_self_msat = 8000000000;
+		test_commitment_with_zero_fee!(
+			"3045022100a05afcdfaf045a0a7b6adb194dcda430bb8e47db8c6d1536b2a94bd98fed77ed02206d580dcd5cba42aebed39515fbd00fdd90480825ae23cce87eef1f1711e2125e",
+			"304502210094afa18972599f7a78b06467bd11d742875baf74aa9e516a775720564671fd8e02206b9ed5f48fb92a1c19543d67f29ee3bd43afee1ec1af6f7f9b4e3371beb82162",
+			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef800300000000000000000451024e7380841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152ea00127a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0400483045022100a05afcdfaf045a0a7b6adb194dcda430bb8e47db8c6d1536b2a94bd98fed77ed02206d580dcd5cba42aebed39515fbd00fdd90480825ae23cce87eef1f1711e2125e0148304502210094afa18972599f7a78b06467bd11d742875baf74aa9e516a775720564671fd8e02206b9ed5f48fb92a1c19543d67f29ee3bd43afee1ec1af6f7f9b4e3371beb8216201475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {});
+
+		// Commitment transaction without HTLCs, one output trimmed below maximum anchor amount
+		chan.context.holder_dust_limit_satoshis = 330;
+		chan.funding.value_to_self_msat = 9999800000;
+		test_commitment_with_zero_fee!(
+			"3045022100a13c79500a9b30eba7af13418816b54aea1da0bdf41c0aa10f53a29017080d5602201a11bcc10f99c4334f778ea94e83db63d2409ff10e9e95b4260ac0dba27a490f",
+			"30440220706abbc90e9ab70a7e1f0f28b24baf2f105e49b7a41bf3b5e694f060806fc54402206020a5e51e437c027610a59f0252ac075dfb2b8e5b45f49149e9532935ba5e7a",
+			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8002c8000000000000000451024e73b895980000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0400483045022100a13c79500a9b30eba7af13418816b54aea1da0bdf41c0aa10f53a29017080d5602201a11bcc10f99c4334f778ea94e83db63d2409ff10e9e95b4260ac0dba27a490f014730440220706abbc90e9ab70a7e1f0f28b24baf2f105e49b7a41bf3b5e694f060806fc54402206020a5e51e437c027610a59f0252ac075dfb2b8e5b45f49149e9532935ba5e7a01475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {});
+
+		// Commitment transaction without HTLCs, one output trimmed above maximum anchor amount
+		chan.context.holder_dust_limit_satoshis = 15000;
+		chan.funding.value_to_self_msat = 9990000000;
+		test_commitment_with_zero_fee!(
+        "304402204042ce57689bb7e52af7fb9ec28d6610674ce00e5e438bb1119acfb91aad6386022065de45c4fe52d86249d80397f2c85e143550cb14b3de0cd1e6a54d0622a2bbd4",
+        "30450221009fb4e444e9fe2d7db0f867704745c8ea2e4e1018b5986fd8cb9d9facdc1bb1be02202d6589a20ea8a8e3594eac3c99bad523139a36e313a66c6302e619786cb42396",
+		"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8002f0000000000000000451024e73706f980000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a040047304402204042ce57689bb7e52af7fb9ec28d6610674ce00e5e438bb1119acfb91aad6386022065de45c4fe52d86249d80397f2c85e143550cb14b3de0cd1e6a54d0622a2bbd4014830450221009fb4e444e9fe2d7db0f867704745c8ea2e4e1018b5986fd8cb9d9facdc1bb1be02202d6589a20ea8a8e3594eac3c99bad523139a36e313a66c6302e619786cb4239601475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {});
+
+		// Commitment transaction with all HTLCs above dust limit
+		chan.context.holder_dust_limit_satoshis = 5000;
+		chan.funding.value_to_self_msat = 8000000000;
+
+		let htlc_in_preimage =
+			preimage_from_hex("108cd7067c8ed6f3734b7b67ec153cfa83c40755b75c65e414e934099e6993aa");
+		assert_eq!(
+			payment_hash_from_hex(
+				"23877c9093799487a8d49c7d6aaff7e06b9831c547400605252e7b07f7ae638a",
+			),
+			PaymentHash::from(htlc_in_preimage),
+		);
+		chan.context.pending_inbound_htlcs.extend([1, 2, 5].map(|id| InboundHTLCOutput {
+			htlc_id: id,
+			amount_msat: 5000000,
+			cltv_expiry: 920150,
+			payment_hash: PaymentHash::from(htlc_in_preimage),
+			state: InboundHTLCState::Committed,
+		}));
+
+		chan.context.pending_outbound_htlcs.extend(
+			[
+				(5, "72c9386ba5a9d97b821d855930236d39c48dab5b1c2efe9ada44e2fbadcff983"),
+				(8, "10b879729e8ddd44f2cfcf3cad6d62be535ca74e293c5ed4a59bd0dcbdad7ca1"),
+				(13, "72c9386ba5a9d97b821d855930236d39c48dab5b1c2efe9ada44e2fbadcff983"),
+			]
+			.map(|(htlc_id, hash_str)| OutboundHTLCOutput {
+				htlc_id,
+				amount_msat: 25000000,
+				cltv_expiry: 920141,
+				payment_hash: payment_hash_from_hex(hash_str),
+				state: OutboundHTLCState::Committed,
+				source: HTLCSource::dummy(),
+				skimmed_fee_msat: None,
+				blinding_point: None,
+				send_timestamp: None,
+				hold_htlc: None,
+			}),
+		);
+
+		test_commitment_with_zero_fee!(
+			"30450221008e951c6305b8d661de280234019d664d7a706b6dc22c23f5488b6b141480d1c202207975f2c477d6fb26ac51b9aa81c1d2b35bb724cebbf21a63e5d7ef3d6e273baf",
+			"3045022100ea978743401f2834d516ea434c0396c919e22465b4d2e359e61e6783535a89b30220475e2dbcc204016472b8eb9437e237a26ca102c1aa16812baa7ae522cc6291e8",
+		"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef800900000000000000000451024e73881300000000000022002075254560bb02c207015847abfda36d3a1b882e78c3f04b08325aac21c53989dc881300000000000022002075254560bb02c207015847abfda36d3a1b882e78c3f04b08325aac21c53989dc881300000000000022002075254560bb02c207015847abfda36d3a1b882e78c3f04b08325aac21c53989dca8610000000000002200200963a1f3e47b8d2a35664f70de49d3331b4499da201004868a9104271f0cd93ba8610000000000002200205b138be4da633f087be191275d3ce30828ae32d1630853fcbf66d22ca6fe2636a8610000000000002200205b138be4da633f087be191275d3ce30828ae32d1630853fcbf66d22ca6fe2636e8491e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152ea08ed780000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a04004830450221008e951c6305b8d661de280234019d664d7a706b6dc22c23f5488b6b141480d1c202207975f2c477d6fb26ac51b9aa81c1d2b35bb724cebbf21a63e5d7ef3d6e273baf01483045022100ea978743401f2834d516ea434c0396c919e22465b4d2e359e61e6783535a89b30220475e2dbcc204016472b8eb9437e237a26ca102c1aa16812baa7ae522cc6291e801475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {
+			{0,
+					"3045022100b82fff4e0652b305cc93f5f8e45362c55591c9ddb8e05a168c5df177ad8ff7ba022061827439423e660099d4c924257314656939b36180bf21b3a253bdd56f9f2b6b",
+					"3044022024832648de0dc603b955b7b6a8ada64cc305affaf7357b018f481fb7e0c48c8d0220716568bee37589c5b67c941768fb10e10f48c1cc66b1128664455b99749a7c2a",
+					"03000000000101c3b4fad51418c874498af12060d49477c154845040e3584104ae641c542c0135010000000000000000018813000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0500483045022100b82fff4e0652b305cc93f5f8e45362c55591c9ddb8e05a168c5df177ad8ff7ba022061827439423e660099d4c924257314656939b36180bf21b3a253bdd56f9f2b6b83473044022024832648de0dc603b955b7b6a8ada64cc305affaf7357b018f481fb7e0c48c8d0220716568bee37589c5b67c941768fb10e10f48c1cc66b1128664455b99749a7c2a0120108cd7067c8ed6f3734b7b67ec153cfa83c40755b75c65e414e934099e6993aa8b76a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c8201208763a914f4c8e88504a23ed3e390ea80300c834f0eb79a6c88527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae677503560a0eb175ac686800000000", Some(htlc_in_preimage) },
+			{1,
+					"3045022100c25f58229c0f9f985ef85235877268aad5da9cdcbceeb4425e668c97df2bfc920220053bca5957e55cdaa0734ba9a1b7a3eb0bdeced1d4496196d9d9de8ff1b20d2e",
+					"3045022100d2f99843a7b29ec1b5044d2dc99f118d25157cdfc07213975a3e0bbc57f22e0a022000ac6b2dab53f34877c376d074d433c599721ea58c113bb7d2b7a540abbaab79",
+					"03000000000101c3b4fad51418c874498af12060d49477c154845040e3584104ae641c542c0135020000000000000000018813000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0500483045022100c25f58229c0f9f985ef85235877268aad5da9cdcbceeb4425e668c97df2bfc920220053bca5957e55cdaa0734ba9a1b7a3eb0bdeced1d4496196d9d9de8ff1b20d2e83483045022100d2f99843a7b29ec1b5044d2dc99f118d25157cdfc07213975a3e0bbc57f22e0a022000ac6b2dab53f34877c376d074d433c599721ea58c113bb7d2b7a540abbaab790120108cd7067c8ed6f3734b7b67ec153cfa83c40755b75c65e414e934099e6993aa8b76a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c8201208763a914f4c8e88504a23ed3e390ea80300c834f0eb79a6c88527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae677503560a0eb175ac686800000000", Some(htlc_in_preimage) },
+			{2,
+					"3045022100948054ef219ec5af7494224f65ad6fab9cfd415d7260cb70a4719e99d421871f02205a41957a428b7820cef844c41cd06d8443f55953e000f4e40658175544a012ce",
+					"3045022100efab186c9f98ff2326c56d26e0a4f0f58afc94fc241faae4334a944d277d7f3802207a79eb3f17fa874eca67c4245b670e51ca8d89d3bc02b2a8712ec28e71479eba",
+					"03000000000101c3b4fad51418c874498af12060d49477c154845040e3584104ae641c542c0135030000000000000000018813000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0500483045022100948054ef219ec5af7494224f65ad6fab9cfd415d7260cb70a4719e99d421871f02205a41957a428b7820cef844c41cd06d8443f55953e000f4e40658175544a012ce83483045022100efab186c9f98ff2326c56d26e0a4f0f58afc94fc241faae4334a944d277d7f3802207a79eb3f17fa874eca67c4245b670e51ca8d89d3bc02b2a8712ec28e71479eba0120108cd7067c8ed6f3734b7b67ec153cfa83c40755b75c65e414e934099e6993aa8b76a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c8201208763a914f4c8e88504a23ed3e390ea80300c834f0eb79a6c88527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae677503560a0eb175ac686800000000", Some(htlc_in_preimage) },
+			{3,
+				"3045022100f2890a34be31987e4cc3e17f71d5174bb85121e57bb0105e8aa6793f6f057a42022000d0e11ffb3217bb91f1b8babb43e2726889cf3281bfaffa3b3b1c9970fa7109",
+				"304402200373b0e0533fa0140ae10df40b93bb599920ce582d0a9d07398499554591659e02207f6ef44097b4e850bae0a4b5d6e0778a056e32ccd403ea88c62004d84e91a0af",
+				"03000000000101c3b4fad51418c874498af12060d49477c154845040e3584104ae641c542c013504000000000000000001a861000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0500483045022100f2890a34be31987e4cc3e17f71d5174bb85121e57bb0105e8aa6793f6f057a42022000d0e11ffb3217bb91f1b8babb43e2726889cf3281bfaffa3b3b1c9970fa71098347304402200373b0e0533fa0140ae10df40b93bb599920ce582d0a9d07398499554591659e02207f6ef44097b4e850bae0a4b5d6e0778a056e32ccd403ea88c62004d84e91a0af01008576a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c820120876475527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae67a914504170790db95d43716b136806e6a0fdf06e39e488ac68684d0a0e00", None::<PaymentPreimage> },
+			{4,
+				"30440220450536f38c6fde3e8777ad9c6d0a505ff44812de86fc82f0f2a0f4ce11f6ac7a022053306d3739ddd8a5cd8e2acba63b2076927200701762b314fb83faafcfcc3893",
+				"3045022100e506e7ccb18b31fd3785477a3cfd885d7c21bf6eb9f5368cb321913208ae8e31022074c186967bf90a5583b46f445a6cb12fb6f2bf83805e048b486b8da29a553a46",
+				"03000000000101c3b4fad51418c874498af12060d49477c154845040e3584104ae641c542c013505000000000000000001a861000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a05004730440220450536f38c6fde3e8777ad9c6d0a505ff44812de86fc82f0f2a0f4ce11f6ac7a022053306d3739ddd8a5cd8e2acba63b2076927200701762b314fb83faafcfcc389383483045022100e506e7ccb18b31fd3785477a3cfd885d7c21bf6eb9f5368cb321913208ae8e31022074c186967bf90a5583b46f445a6cb12fb6f2bf83805e048b486b8da29a553a4601008576a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c820120876475527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae67a914488ed834d26f1a1dc5e3428e1e1a214f743e6a2488ac68684d0a0e00", None::<PaymentPreimage> },
+			{5,
+				"3044022061b73271a1b6b5a1bd8e15c58b08320c72da0a1db19493abbfc6f74b5fa80c2c022030ff309d3413b9661fc8f8f2b5fd14bc733c239cc7ba8b971fd562263e62bf3b",
+				"304402207559852cd036af82658949c28e4922f7351756616f8d04703e8060889b4b484e022050d997e1684826dc61bf0d88d9d08c01b8fcf67958ac7a177c320a1a70305fb0",
+				"03000000000101c3b4fad51418c874498af12060d49477c154845040e3584104ae641c542c013506000000000000000001a861000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0500473044022061b73271a1b6b5a1bd8e15c58b08320c72da0a1db19493abbfc6f74b5fa80c2c022030ff309d3413b9661fc8f8f2b5fd14bc733c239cc7ba8b971fd562263e62bf3b8347304402207559852cd036af82658949c28e4922f7351756616f8d04703e8060889b4b484e022050d997e1684826dc61bf0d88d9d08c01b8fcf67958ac7a177c320a1a70305fb001008576a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c820120876475527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae67a914488ed834d26f1a1dc5e3428e1e1a214f743e6a2488ac68684d0a0e00", None::<PaymentPreimage> }
+			});
+
+		// Commitment transaction with dust HTLCs below maximum anchor amount
+		chan.context.holder_dust_limit_satoshis = 1000;
+		chan.funding.value_to_self_msat = 8000000000;
+		chan.context.pending_inbound_htlcs.clear();
+		chan.context.pending_outbound_htlcs.clear();
+
+		let htlc_0_in_preimage =
+			preimage_from_hex("d3ad493d19860e4744491cf0795c0bc96a8e2a49ebb30afadae7a7d077aa93b2");
+		let htlc_0_in_hash = PaymentHash::from(htlc_0_in_preimage);
+		assert_eq!(
+			payment_hash_from_hex(
+				"ffa4f37b6d7dc03fecaaed8d36ebbea6d199e820e386e4549a69ce733f39f29f",
+			),
+			htlc_0_in_hash,
+			"test vector hash does not match ours",
+		);
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
+			htlc_id: 0,
+			amount_msat: 100000,
+			cltv_expiry: 920125,
+			payment_hash: htlc_0_in_hash,
+			state: InboundHTLCState::Committed,
+		});
+
+		let htlc_1_in_preimage =
+			preimage_from_hex("5591b96c0a6a03f51c27bfa658149260bd2fe5e2ce83130ce50d0229a3a947c5");
+		let htlc_1_in_hash = PaymentHash::from(htlc_1_in_preimage);
+		assert_eq!(
+			payment_hash_from_hex(
+				"72c9386ba5a9d97b821d855930236d39c48dab5b1c2efe9ada44e2fbadcff983",
+			),
+			htlc_1_in_hash,
+			"test vector hash does not match ours",
+		);
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
+			htlc_id: 1,
+			amount_msat: 49900000,
+			cltv_expiry: 920125,
+			payment_hash: htlc_1_in_hash,
+			state: InboundHTLCState::Committed,
+		});
+
+		chan.context.pending_outbound_htlcs.extend(
+			[(0, 10000000), (1, 130000), (2, 10000000)].map(|(htlc_id, amount_msat)| {
+				OutboundHTLCOutput {
+					htlc_id,
+					amount_msat,
+					cltv_expiry: 920140,
+					payment_hash: payment_hash_from_hex(
+						"29a74a69c5941d402838f7e1a95c2b2ec534d79524b2582f48df7bc519ebaecf",
+					),
+					state: OutboundHTLCState::Committed,
+					source: HTLCSource::dummy(),
+					skimmed_fee_msat: None,
+					blinding_point: None,
+					send_timestamp: None,
+					hold_htlc: None,
+				}
+			}),
+		);
+
+		test_commitment_with_zero_fee!(
+		"3045022100cb7b6ae16b80c1ad74baea6f37be3581ca60915da75a03be3b377493f3359cc302203b591047f669cce31215c8a5a6039d5fd8dbfd8d6b53af39a619e6541d6bcf31",
+		"3045022100a661444a0800fe5e8bf9ecdef3631610e834485503b8e58d64d08ed5e88ebb2d0220248944d134cadf36cef90d05785ece9432727e81f0f66958a903baa0d69061cd",
+		"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8006e6000000000000000451024e73102700000000000022002081cd2904fc5581e6459d9375384af1223e6bd4fd112f3505e87b81e622a48cb7102700000000000022002081cd2904fc5581e6459d9375384af1223e6bd4fd112f3505e87b81e622a48cb7ecc20000000000002200207c2edfefe2690c02efde0c461b8a9283ed2a68968109306be4cb5fa848bd7a7630c11d0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152ea5ec3790000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0400483045022100cb7b6ae16b80c1ad74baea6f37be3581ca60915da75a03be3b377493f3359cc302203b591047f669cce31215c8a5a6039d5fd8dbfd8d6b53af39a619e6541d6bcf3101483045022100a661444a0800fe5e8bf9ecdef3631610e834485503b8e58d64d08ed5e88ebb2d0220248944d134cadf36cef90d05785ece9432727e81f0f66958a903baa0d69061cd01475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {
+			{0,
+				"30450221009beeb028f6de6f925a986f3aaac7931bd46779b5a2dc8e82ae0509cf0174468002205a2761d34b276752f7f6e62c013c9509104a831df1f4b91a692bb8ad48285d31",
+				"3045022100c04dd0b08fd50bfc921de2a5d09840aab97b116e95ffd09cc11470404280be1202204aee1cd187f0074c5b80bae98981d232168daba5bde67adc7539b1a55a5a6709",
+				"03000000000101d8211cfec4c28b189edcf7b12b739bfbc0f77e44cc6fab67e50fa23cc78481c5010000000000000000011027000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a05004830450221009beeb028f6de6f925a986f3aaac7931bd46779b5a2dc8e82ae0509cf0174468002205a2761d34b276752f7f6e62c013c9509104a831df1f4b91a692bb8ad48285d3183483045022100c04dd0b08fd50bfc921de2a5d09840aab97b116e95ffd09cc11470404280be1202204aee1cd187f0074c5b80bae98981d232168daba5bde67adc7539b1a55a5a670901008576a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c820120876475527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae67a91489baf9f76be304292b0314ffa9c61eb794b05dd188ac68684c0a0e00", None::<PaymentPreimage> },
+			{1,
+				"304402203a6ed1dc27298cfb030a5ff0f237b5288e263bd3cfe13ced890f3559e7c25db10220713167cc374f850a2f414dd8988f87cbfe978ba56b8c5cf690aa3c2d357a174c",
+				"3045022100c2f636b397f0fd6731b04323a0743aee902f01ac2e8bdac72548ab5380fecd0f02206ee5c57fac4c5255018bc687ae46a97a9781b7d87722d3c73b8bc93d951f713f",
+				"03000000000101d8211cfec4c28b189edcf7b12b739bfbc0f77e44cc6fab67e50fa23cc78481c5020000000000000000011027000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a050047304402203a6ed1dc27298cfb030a5ff0f237b5288e263bd3cfe13ced890f3559e7c25db10220713167cc374f850a2f414dd8988f87cbfe978ba56b8c5cf690aa3c2d357a174c83483045022100c2f636b397f0fd6731b04323a0743aee902f01ac2e8bdac72548ab5380fecd0f02206ee5c57fac4c5255018bc687ae46a97a9781b7d87722d3c73b8bc93d951f713f01008576a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c820120876475527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae67a91489baf9f76be304292b0314ffa9c61eb794b05dd188ac68684c0a0e00", None::<PaymentPreimage> },
+			{2,
+				"3045022100bbafdb3eeb4ab737859798753e0685f203294b6225c1300c9db6867a6f5fde180220769ca281abe51e93d707262ab3f45c54f5ec0ad3529836de0536b24e635e1c9f",
+				"304402200f60ba0673e03a25cd8ab2f2d8fe4e0bc3ac7ffafe932e7a76afb3be7189b4f50220541a02e557d7ff2ccf0f5be4fa22291d07ecf67d8666dffba55e76ecbb5b9bf9",
+				"03000000000101d8211cfec4c28b189edcf7b12b739bfbc0f77e44cc6fab67e50fa23cc78481c503000000000000000001ecc2000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0500483045022100bbafdb3eeb4ab737859798753e0685f203294b6225c1300c9db6867a6f5fde180220769ca281abe51e93d707262ab3f45c54f5ec0ad3529836de0536b24e635e1c9f8347304402200f60ba0673e03a25cd8ab2f2d8fe4e0bc3ac7ffafe932e7a76afb3be7189b4f50220541a02e557d7ff2ccf0f5be4fa22291d07ecf67d8666dffba55e76ecbb5b9bf901205591b96c0a6a03f51c27bfa658149260bd2fe5e2ce83130ce50d0229a3a947c58b76a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c8201208763a914488ed834d26f1a1dc5e3428e1e1a214f743e6a2488527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae6775033d0a0eb175ac686800000000",
+				Some(htlc_1_in_preimage) }
+		});
+
+		// Commitment transaction with dust HTLCs above maximum anchor amount
+		chan.context.holder_dust_limit_satoshis = 2500;
+		chan.funding.value_to_self_msat = 8000000000;
+		chan.context.pending_inbound_htlcs.clear();
+		chan.context.pending_outbound_htlcs.clear();
+
+		let htlc_2_in_preimage =
+			preimage_from_hex("108cd7067c8ed6f3734b7b67ec153cfa83c40755b75c65e414e934099e6993aa");
+		let htlc_2_in_hash = PaymentHash::from(htlc_2_in_preimage);
+		assert_eq!(
+			payment_hash_from_hex(
+				"23877c9093799487a8d49c7d6aaff7e06b9831c547400605252e7b07f7ae638a",
+			),
+			htlc_2_in_hash,
+		);
+		chan.context.pending_inbound_htlcs.extend(
+			[
+				(0, 2000000, 920125, htlc_0_in_hash),
+				(1, 5000000, 920130, htlc_0_in_hash),
+				(2, 5000000, 920130, htlc_2_in_hash),
+			]
+			.map(|(id, amount_msat, cltv_expiry, payment_hash)| InboundHTLCOutput {
+				htlc_id: id,
+				amount_msat,
+				cltv_expiry,
+				payment_hash,
+				state: InboundHTLCState::Committed,
+			}),
+		);
+
+		let htlc_0_out_hash = "1a04764fd402b5557cba89ec3c4d8931b0225d6436923c65c079ce64a55084c4";
+		let htlc_1_out_hash = "29a74a69c5941d402838f7e1a95c2b2ec534d79524b2582f48df7bc519ebaecf";
+		let htlc_2_out_hash = "10b879729e8ddd44f2cfcf3cad6d62be535ca74e293c5ed4a59bd0dcbdad7ca1";
+
+		chan.context.pending_outbound_htlcs.extend(
+			[
+				(0, 1000000, 920125, htlc_0_out_hash),
+				(1, 1000000, 920130, htlc_1_out_hash),
+				(2, 10000000, 920130, htlc_2_out_hash),
+			]
+			.map(|(id, amount_msat, cltv_expiry, hash)| OutboundHTLCOutput {
+				htlc_id: id,
+				amount_msat,
+				cltv_expiry,
+				payment_hash: payment_hash_from_hex(hash),
+				state: OutboundHTLCState::Committed,
+				source: HTLCSource::dummy(),
+				skimmed_fee_msat: None,
+				blinding_point: None,
+				send_timestamp: None,
+				hold_htlc: None,
+			}),
+		);
+
+		test_commitment_with_zero_fee!(
+			  "3045022100f706457b6f58634a64d86a403b622018d1cdf08064f08eaaf90ed47cbdfc81f002200b23d77b8151d0e907850d313b87cf53f0a1e8aef871cbb5ec3ef7f3af513261",
+			  "3045022100cf3f7201781764693b8bb2db1a703c62fe9cb992103d4d950e9d1806e2e4c49202203993f5bfcc1f91617d48f22a10f2400ca298f42499d8389d4396bcad8750e883",
+			  "03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8006f0000000000000000451024e7388130000000000002200202cb7b4a1ac1ca2aa06918f6933a9bf3a6ab777abfca18ac22fb4eeec587faf048813000000000000220020fd9f3b68e5a818a53f020ab09d1c956ead78f28b3c22950dc0d73568f797c92210270000000000002200200963a1f3e47b8d2a35664f70de49d3331b4499da201004868a9104271f0cd93ba0551e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152ea20e3790000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0400483045022100f706457b6f58634a64d86a403b622018d1cdf08064f08eaaf90ed47cbdfc81f002200b23d77b8151d0e907850d313b87cf53f0a1e8aef871cbb5ec3ef7f3af51326101483045022100cf3f7201781764693b8bb2db1a703c62fe9cb992103d4d950e9d1806e2e4c49202203993f5bfcc1f91617d48f22a10f2400ca298f42499d8389d4396bcad8750e88301475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {
+				{0,
+					"3044022072f786f54d93d9b1780bd3c605a434a2ae097852c6af75b18a23ea3e7cb995de02205608d310544bed398c406cf8f6cdeadbf119a8808c38415dbc93c82733168fc6",
+					"3045022100e5e66a86053e6adda1b02786d9e8b9b7057026b8d81263fe5414d6b7660e70c7022055ff89300da995e2c8122e997338dac2d5ea2f526dcb243b9e7c1eb380155e10",
+					"0300000000010142bb3321b077161ea560097e1b149edef504e00f1e2c6a77bbe4ad2aed6fde07010000000000000000018813000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0500473044022072f786f54d93d9b1780bd3c605a434a2ae097852c6af75b18a23ea3e7cb995de02205608d310544bed398c406cf8f6cdeadbf119a8808c38415dbc93c82733168fc683483045022100e5e66a86053e6adda1b02786d9e8b9b7057026b8d81263fe5414d6b7660e70c7022055ff89300da995e2c8122e997338dac2d5ea2f526dcb243b9e7c1eb380155e100120d3ad493d19860e4744491cf0795c0bc96a8e2a49ebb30afadae7a7d077aa93b28b76a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c8201208763a91416a189e9fcfe9edc8c6930da3dd87cebf44045a388527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae677503420a0eb175ac686800000000", Some(htlc_0_in_preimage) },
+				{1,
+					"30440220444371784d52a13dedec1baedd0a5f10cc78727a873614cf6981696e0ef9d28502202961336e7e0cbb530c4e5dda0a628bc21b5ce8e3f1e6274bd7ee20cf7b697421",
+					"304402205b1693a32569a757d0928c163aae56a3986e3d53741ba0a9db5aac1289752aa3022002c8ef3e377a2461800e98cbfc40b31511d39e02473152943d959dcfd55e7c9e",
+					"0300000000010142bb3321b077161ea560097e1b149edef504e00f1e2c6a77bbe4ad2aed6fde07020000000000000000018813000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a05004730440220444371784d52a13dedec1baedd0a5f10cc78727a873614cf6981696e0ef9d28502202961336e7e0cbb530c4e5dda0a628bc21b5ce8e3f1e6274bd7ee20cf7b6974218347304402205b1693a32569a757d0928c163aae56a3986e3d53741ba0a9db5aac1289752aa3022002c8ef3e377a2461800e98cbfc40b31511d39e02473152943d959dcfd55e7c9e0120108cd7067c8ed6f3734b7b67ec153cfa83c40755b75c65e414e934099e6993aa8b76a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c8201208763a914f4c8e88504a23ed3e390ea80300c834f0eb79a6c88527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae677503420a0eb175ac686800000000", Some(htlc_2_in_preimage) },
+				{2,
+					"3045022100eee7c19343ad58d9381a808fcd14af0c1e05bd56bd16c25c5ad8980af68b2df9022046acc611280afabcd82ef4a256d1f42be6618bc12d83bcd138141fb4915d256f",
+					"3045022100e6c8d81693cd3a03db0777b31e9318f8b8eb5f275817116dce8a72064d096bee02206439ddcac93a2756e1079e955245e2ac1924d874ba8388de9d497e4286cc20cb",
+					"0300000000010142bb3321b077161ea560097e1b149edef504e00f1e2c6a77bbe4ad2aed6fde07030000000000000000011027000000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0500483045022100eee7c19343ad58d9381a808fcd14af0c1e05bd56bd16c25c5ad8980af68b2df9022046acc611280afabcd82ef4a256d1f42be6618bc12d83bcd138141fb4915d256f83483045022100e6c8d81693cd3a03db0777b31e9318f8b8eb5f275817116dce8a72064d096bee02206439ddcac93a2756e1079e955245e2ac1924d874ba8388de9d497e4286cc20cb01008576a914ef8968bbfe34ad740642784d7b1efaebfd5b23ec8763ac672103d8507a026fb30bcd48ee9c765c7346470d0d397661d43dd2eb601f661ab92a0b7c820120876475527c2103c26117339025855b87deda5e138d438b2098881a5e6f81f72a60310faef473c652ae67a914504170790db95d43716b136806e6a0fdf06e39e488ac6868420a0e00", None::<PaymentPreimage>}
+		});
 	}
 
 	#[test]
