@@ -37,10 +37,10 @@ use crate::ln::types::ChannelId;
 use crate::routing::utxo::{self, UtxoLookup, UtxoResolver};
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::types::string::PrintableString;
+use crate::util::async_poll::{MaybeSend, MaybeSync};
 use crate::util::indexed_map::{
 	Entry as IndexedMapEntry, IndexedMap, OccupiedEntry as IndexedMapOccupiedEntry,
 };
-use crate::util::async_poll::{MaybeSend, MaybeSync};
 use crate::util::logger::{Level, Logger};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 use crate::util::ser::{MaybeReadable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
@@ -1735,10 +1735,7 @@ where
 	}
 }
 
-impl<L: Deref> Eq for NetworkGraph<L>
-where
-	L::Target: Logger + MaybeSend + MaybeSync,
-{}
+impl<L: Deref> Eq for NetworkGraph<L> where L::Target: Logger + MaybeSend + MaybeSync {}
 impl<L: Deref> PartialEq for NetworkGraph<L>
 where
 	L::Target: Logger + MaybeSend + MaybeSync,

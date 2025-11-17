@@ -1935,9 +1935,8 @@ where
 }
 
 #[cfg(c_bindings)]
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Score for ProbabilisticScorer<G, L>
-where
-	L::Target: Logger + MaybeSend + MaybeSync,
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Score for ProbabilisticScorer<G, L> where
+	L::Target: Logger + MaybeSend + MaybeSync
 {
 }
 
