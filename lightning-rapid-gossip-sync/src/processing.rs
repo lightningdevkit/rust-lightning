@@ -10,6 +10,7 @@ use lightning::ln::msgs::{
 	UnsignedNodeAnnouncement,
 };
 use lightning::routing::gossip::{NetworkGraph, NodeAlias, NodeId};
+use lightning::util::async_poll::{MaybeSend, MaybeSync};
 use lightning::util::logger::Logger;
 use lightning::util::ser::{BigSize, FixedLengthReader, Readable};
 use lightning::{log_debug, log_given_level, log_gossip, log_trace, log_warn};
@@ -39,7 +40,7 @@ const STALE_RGS_UPDATE_AGE_LIMIT_SECS: u64 = 60 * 60 * 24 * 14;
 
 impl<NG: Deref<Target = NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L>
 where
-	L::Target: Logger,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	#[cfg(feature = "std")]
 	pub(crate) fn update_network_graph_from_byte_stream<R: io::Read>(

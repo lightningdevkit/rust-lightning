@@ -1953,7 +1953,7 @@ where
 /// # fn read_channel_monitors() -> Vec<ChannelMonitor<lightning::sign::InMemorySigner>> { vec![] }
 /// # fn example<
 /// #     'a,
-/// #     L: lightning::util::logger::Logger,
+/// #     L: lightning::util::logger::Logger + Send + Sync,
 /// #     ES: lightning::sign::EntropySource,
 /// #     S: for <'b> lightning::routing::scoring::LockableScore<'b, ScoreLookUp = SL>,
 /// #     SL: lightning::routing::scoring::ScoreLookUp<ScoreParams = SP>,
