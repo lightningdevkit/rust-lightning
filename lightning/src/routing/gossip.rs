@@ -41,7 +41,7 @@ use crate::util::async_poll::{MaybeSend, MaybeSync};
 use crate::util::indexed_map::{
 	Entry as IndexedMapEntry, IndexedMap, OccupiedEntry as IndexedMapOccupiedEntry,
 };
-use crate::util::logger::{Level, Logger};
+use crate::util::logger::{Level, Logger, LoggerScope};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 use crate::util::ser::{MaybeReadable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 
@@ -1843,6 +1843,8 @@ where
 	/// The unix timestamp provided by the most recent rapid gossip sync.
 	/// It will be set by the rapid sync process after every sync completion.
 	pub fn get_last_rapid_gossip_sync_timestamp(&self) -> Option<u32> {
+		let _scope = LoggerScope::new(&*self.logger); // DOES NOT WORK.
+
 		self.last_rapid_gossip_sync_timestamp.lock().unwrap().clone()
 	}
 

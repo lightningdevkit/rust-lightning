@@ -271,7 +271,7 @@ pub struct LoggerScope<'a> {
 }
 
 impl<'a> LoggerScope<'a> {
-	pub fn new<L: Logger + 'a>(logger: &'a L) -> Self {
+	pub fn new(logger: &'a dyn Logger) -> Self {
 		TLS_LOGGER.with(|cell| {
 			let mut borrow = cell.borrow_mut();
 
@@ -280,11 +280,8 @@ impl<'a> LoggerScope<'a> {
 				panic!("LoggerScope already active in this thread");
 			}
 
-			// Transmute is safe in practice because the RAII pattern ensures:
-			// - The TLS logger reference is only used while the guard exists.
-			// - The guard cannot outlive the logger (thanks to PhantomData<'a>).
-			let logger_ref: &dyn Logger = logger;
-			let logger_ref_static: &'static dyn Logger = unsafe { std::mem::transmute(logger_ref) };
+			let logger_ref_static: &'static dyn Logger =
+				unsafe { std::mem::transmute::<&'a dyn Logger, &'static dyn Logger>(logger) };
 
 			*borrow = Some(logger_ref_static);
 		});
