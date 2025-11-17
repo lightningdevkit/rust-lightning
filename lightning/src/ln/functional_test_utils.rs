@@ -5526,3 +5526,13 @@ pub fn create_batch_channel_funding<'a, 'b, 'c>(
 	}
 	return (tx, funding_created_msgs);
 }
+
+pub fn get_scid_from_channel_id<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, channel_id: ChannelId) -> u64 {
+	node.node()
+		.list_channels()
+		.iter()
+		.find(|c| c.channel_id == channel_id)
+		.unwrap()
+		.short_channel_id
+		.unwrap()
+}
