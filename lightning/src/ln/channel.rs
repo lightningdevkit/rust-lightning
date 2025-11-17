@@ -5209,8 +5209,8 @@ where
 			{
 				log_info!(
 					logger,
-					"Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.",
-					&self.channel_id(),
+					"Attempting to fail HTLC due to fee spike buffer violation. Rebalancing is required.",
+
 				);
 				return Err(LocalHTLCFailureReason::FeeSpikeBuffer);
 			}
@@ -6273,11 +6273,7 @@ where
 	{
 		let signatures = self.get_initial_counterparty_commitment_signatures(funding, logger);
 		if let Some((signature, htlc_signatures)) = signatures {
-			log_info!(
-				logger,
-				"Generated commitment_signed for peer for channel {}",
-				&self.channel_id()
-			);
+			log_info!(logger, "Generated commitment_signed for peer",);
 			if matches!(self.channel_state, ChannelState::FundingNegotiated(_)) {
 				// We shouldn't expect any HTLCs before `ChannelReady`.
 				debug_assert!(htlc_signatures.is_empty());
@@ -6378,9 +6374,9 @@ where
 
 					log_info!(
 						logger,
-						"Funding txid {} for channel {} confirmed in block {}",
+						"Funding txid {} confirmed in block {}",
 						funding_txo.txid,
-						&self.channel_id(),
+
 						block_hash,
 					);
 
@@ -7358,8 +7354,7 @@ where
 			}
 			log_trace!(
 				logger,
-				"Adding HTLC claim to holding_cell in channel {}! Current state: {}",
-				&self.context.channel_id(),
+				"Adding HTLC claim to holding_cell! Current state: {}",
 				self.context.channel_state.to_u32()
 			);
 			self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
@@ -7390,9 +7385,8 @@ where
 			}
 			log_trace!(
 				logger,
-				"Upgrading HTLC {} to LocalRemoved with a Fulfill in channel {}!",
+				"Upgrading HTLC {} to LocalRemoved with a Fulfill!",
 				&htlc.payment_hash,
-				&self.context.channel_id
 			);
 			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(
 				payment_preimage_arg.clone(),
@@ -7552,13 +7546,13 @@ where
 					_ => {}
 				}
 			}
-			log_trace!(logger, "Placing failure for HTLC ID {} in holding cell in channel {}.", htlc_id_arg, &self.context.channel_id());
+			log_trace!(logger, "Placing failure for HTLC ID {} in holding cell.", htlc_id_arg);
 			self.context.holding_cell_htlc_updates.push(err_contents.to_htlc_update_awaiting_ack(htlc_id_arg));
 			return Ok(None);
 		}
 
-		log_trace!(logger, "Failing HTLC ID {} back with {} message in channel {}.", htlc_id_arg,
-			E::Message::name(), &self.context.channel_id());
+		log_trace!(logger, "Failing HTLC ID {} back with {} message.", htlc_id_arg,
+			E::Message::name());
 		{
 			let htlc = &mut self.context.pending_inbound_htlcs[pending_idx];
 			htlc.state = err_contents.clone().to_inbound_htlc_state();
@@ -7925,15 +7919,17 @@ where
 			let counterparty_bitcoin_tx = counterparty_trusted_tx.built_transaction();
 			log_trace!(
 				logger,
-				"Splice initial counterparty tx for channel {} is: txid {} tx {}",
-				&self.context.channel_id(),
+				"Splice initial counterparty tx is: txid {} tx {}",
 				counterparty_bitcoin_tx.txid,
 				encode::serialize_hex(&counterparty_bitcoin_tx.transaction)
 			);
 		}
 
-		log_info!(logger, "Received splice initial commitment_signed from peer for channel {} with funding txid {}",
-			&self.context.channel_id(), pending_splice_funding.get_funding_txo().unwrap().txid);
+		log_info!(
+			logger,
+			"Received splice initial commitment_signed from peer with funding txid {}",
+			pending_splice_funding.get_funding_txo().unwrap().txid
+		);
 
 		self.context.latest_monitor_update_id += 1;
 		let monitor_update = ChannelMonitorUpdate {
@@ -8231,8 +8227,8 @@ where
 				self.context.latest_monitor_update_id = monitor_update.update_id;
 				monitor_update.updates.append(&mut additional_update.updates);
 			}
-			log_debug!(logger, "Received valid commitment_signed from peer in channel {}, updated HTLC state but awaiting a monitor update resolution to reply.",
-				&self.context.channel_id);
+			log_debug!(logger, "Received valid commitment_signed from peer, updated HTLC state but awaiting a monitor update resolution to reply.",
+				);
 			return Ok(self.push_ret_blockable_mon_update(monitor_update));
 		}
 
@@ -8300,14 +8296,13 @@ where
 		{
 			log_trace!(
 				logger,
-				"Freeing holding cell with {} HTLC updates{} in channel {}",
+				"Freeing holding cell with {} HTLC updates{}",
 				self.context.holding_cell_htlc_updates.len(),
 				if self.context.holding_cell_update_fee.is_some() {
 					" and a fee update"
 				} else {
 					""
 				},
-				&self.context.channel_id()
 			);
 
 			let mut monitor_update = ChannelMonitorUpdate {
@@ -8364,7 +8359,12 @@ where
 								update_add_count += 1;
 							},
 							Err((_, msg)) => {
-								log_info!(logger, "Failed to send HTLC with payment_hash {} due to {} in channel {}", &payment_hash, msg, &self.context.channel_id());
+								log_info!(
+									logger,
+									"Failed to send HTLC with payment_hash {} due to {}",
+									&payment_hash,
+									msg
+								);
 								// If we fail to send here, then this HTLC should be failed
 								// backwards. Failing to send here indicates that this HTLC may
 								// keep being put back into the holding cell without ever being
@@ -8457,8 +8457,8 @@ where
 			self.context.latest_monitor_update_id = monitor_update.update_id;
 			monitor_update.updates.append(&mut additional_update.updates);
 
-			log_debug!(logger, "Freeing holding cell in channel {} resulted in {}{} HTLCs added, {} HTLCs fulfilled, and {} HTLCs failed.",
-				&self.context.channel_id(), if update_fee.is_some() { "a fee update, " } else { "" },
+			log_debug!(logger, "Freeing holding cell resulted in {}{} HTLCs added, {} HTLCs fulfilled, and {} HTLCs failed.",
+				if update_fee.is_some() { "a fee update, " } else { "" },
 				update_add_count, update_fulfill_count, update_fail_count);
 
 			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
@@ -8595,11 +8595,7 @@ where
 			self.context.announcement_sigs_state = AnnouncementSigsState::PeerReceived;
 		}
 
-		log_trace!(
-			logger,
-			"Updating HTLCs on receipt of RAA in channel {}...",
-			&self.context.channel_id()
-		);
+		log_trace!(logger, "Updating HTLCs on receipt of RAA...");
 		let mut to_forward_infos = Vec::new();
 		let mut pending_update_adds = Vec::new();
 		let mut revoked_htlcs = Vec::new();
@@ -8823,8 +8819,8 @@ where
 				self.context.latest_monitor_update_id = monitor_update.update_id;
 				monitor_update.updates.append(&mut additional_update.updates);
 
-				log_debug!(logger, "Received a valid revoke_and_ack for channel {} with holding cell HTLCs freed. {} monitor update.",
-					&self.context.channel_id(), release_state_str);
+				log_debug!(logger, "Received a valid revoke_and_ack with holding cell HTLCs freed. {} monitor update.",
+					release_state_str);
 
 				self.monitor_updating_paused(
 					false,
@@ -8852,8 +8848,7 @@ where
 
 					log_debug!(
 						logger,
-						"Received a valid revoke_and_ack for channel {}. {} monitor update.",
-						&self.context.channel_id(),
+						"Received a valid revoke_and_ack. {} monitor update.",
 						release_state_str
 					);
 					if self.context.channel_state.can_generate_new_commitment() {
@@ -8869,12 +8864,7 @@ where
 						} else {
 							"can continue progress"
 						};
-						log_debug!(
-							logger,
-							"Holding back commitment update until channel {} {}",
-							&self.context.channel_id,
-							reason
-						);
+						log_debug!(logger, "Holding back commitment update until {}", reason);
 					}
 
 					self.monitor_updating_paused(
@@ -8887,8 +8877,8 @@ where
 					);
 					return_with_htlcs_to_fail!(htlcs_to_fail);
 				} else {
-					log_debug!(logger, "Received a valid revoke_and_ack for channel {} with no reply necessary. {} monitor update.",
-						&self.context.channel_id(), release_state_str);
+					log_debug!(logger, "Received a valid revoke_and_ack with no reply necessary. {} monitor update.",
+						release_state_str);
 
 					self.monitor_updating_paused(
 						false,
@@ -8942,9 +8932,8 @@ where
 				{
 					log_info!(
 						logger,
-						"Sending 0conf splice_locked txid {} to our peer for channel {}",
+						"Sending 0conf splice_locked txid {} to our peer",
 						splice_txid,
-						&self.context.channel_id
 					);
 				}
 
@@ -9619,12 +9608,12 @@ where
 			}
 		}
 		if !self.holder_commitment_point.can_advance() {
-			log_trace!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the next per-commitment point is not available",
-				&self.context.channel_id(), self.holder_commitment_point.next_transaction_number());
+			log_trace!(logger, "Last revoke-and-ack pending for sequence {} because the next per-commitment point is not available",
+				self.holder_commitment_point.next_transaction_number());
 		}
 		if per_commitment_secret.is_none() {
-			log_trace!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the next per-commitment secret for {} is not available",
-				&self.context.channel_id(), self.holder_commitment_point.next_transaction_number(),
+			log_trace!(logger, "Last revoke-and-ack pending for sequence {} because the next per-commitment secret for {} is not available",
+				self.holder_commitment_point.next_transaction_number(),
 				self.holder_commitment_point.next_transaction_number() + 2);
 		}
 		// Technically if HolderCommitmentPoint::can_advance is false,
@@ -9633,8 +9622,8 @@ where
 		// CS before we have any commitment point available. Blocking our
 		// RAA here is a convenient way to make sure that post-funding
 		// we're only ever waiting on one commitment point at a time.
-		log_trace!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the next per-commitment point is not available",
-			&self.context.channel_id(), self.holder_commitment_point.next_transaction_number());
+		log_trace!(logger, "Last revoke-and-ack pending for sequence {} because the next per-commitment point is not available",
+			self.holder_commitment_point.next_transaction_number());
 		self.context.signer_pending_revoke_and_ack = true;
 		None
 	}
@@ -9714,8 +9703,8 @@ where
 			None
 		};
 
-		log_trace!(logger, "Regenerating latest commitment update in channel {} with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
-				&self.context.channel_id(), if update_fee.is_some() { " update_fee," } else { "" },
+		log_trace!(logger, "Regenerating latest commitment update with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
+				if update_fee.is_some() { " update_fee," } else { "" },
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		let commitment_signed = if let Ok(update) = self.send_commitment_no_state_update(logger) {
 			if self.context.signer_pending_commitment_update {
@@ -10054,9 +10043,9 @@ where
 
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
-				log_debug!(logger, "Reconnected channel {} with only lost outbound RAA", &self.context.channel_id());
+				log_debug!(logger, "Reconnected with only lost outbound RAA");
 			} else {
-				log_debug!(logger, "Reconnected channel {} with no loss", &self.context.channel_id());
+				log_debug!(logger, "Reconnected with no loss");
 			}
 
 			Ok(ReestablishResponses {
@@ -10079,9 +10068,9 @@ where
 			assert!(tx_signatures.is_none());
 
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
-				log_debug!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx", &self.context.channel_id());
+				log_debug!(logger, "Reconnected channel with lost outbound RAA and lost remote commitment tx");
 			} else {
-				log_debug!(logger, "Reconnected channel {} with only lost remote commitment tx", &self.context.channel_id());
+				log_debug!(logger, "Reconnected channel with only lost remote commitment tx");
 			}
 
 			if self.context.channel_state.is_monitor_update_in_progress() {
@@ -10099,7 +10088,7 @@ where
 			} else {
 				let commitment_update = if self.context.resend_order == RAACommitmentOrder::RevokeAndACKFirst
 					&& self.context.signer_pending_revoke_and_ack {
-					log_trace!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx, but unable to send due to resend order, waiting on signer for revoke and ack", &self.context.channel_id());
+					log_trace!(logger, "Reconnected channel with lost outbound RAA and lost remote commitment tx, but unable to send due to resend order, waiting on signer for revoke and ack");
 					self.context.signer_pending_commitment_update = true;
 					None
 				} else {
@@ -10107,7 +10096,7 @@ where
 				};
 				let raa = if self.context.resend_order == RAACommitmentOrder::CommitmentFirst
 					&& self.context.signer_pending_commitment_update && required_revoke.is_some() {
-					log_trace!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx, but unable to send due to resend order, waiting on signer for commitment update", &self.context.channel_id());
+					log_trace!(logger, "Reconnected channel with lost outbound RAA and lost remote commitment tx, but unable to send due to resend order, waiting on signer for commitment update");
 					self.context.signer_pending_revoke_and_ack = true;
 					None
 				} else {
@@ -10910,14 +10899,12 @@ where
 	pub fn on_startup_drop_completed_blocked_mon_updates_through<L: Logger>(
 		&mut self, logger: &L, loaded_mon_update_id: u64,
 	) {
-		let channel_id = self.context.channel_id();
 		self.context.blocked_monitor_updates.retain(|update| {
 			if update.update.update_id <= loaded_mon_update_id {
 				log_info!(
 					logger,
-					"Dropping completed ChannelMonitorUpdate id {} on channel {} due to a stale ChannelManager",
+					"Dropping completed ChannelMonitorUpdate id {} due to a stale ChannelManager",
 					update.update.update_id,
-					channel_id,
 				);
 				false
 			} else {
@@ -11130,21 +11117,11 @@ where
 				return None;
 			}
 		} else {
-			log_info!(
-				logger,
-				"Waiting on splice_locked txid {} for channel {}",
-				splice_txid,
-				&self.context.channel_id,
-			);
+			log_info!(logger, "Waiting on splice_locked txid {}", splice_txid);
 			return None;
 		}
 
-		log_info!(
-			logger,
-			"Promoting splice funding txid {} for channel {}",
-			splice_txid,
-			&self.context.channel_id,
-		);
+		log_info!(logger, "Promoting splice funding txid {}", splice_txid);
 
 		let discarded_funding = {
 			// Scope `funding` to avoid unintentionally using it later since it is swapped below.
@@ -11250,7 +11227,7 @@ where
 				}
 
 				if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
-					log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
+					log_info!(logger, "Sending a channel_ready to our peer");
 					let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
 					return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), announcement_sigs));
 				}
@@ -11376,7 +11353,7 @@ where
 			let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
 				self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 			} else { None };
-			log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
+			log_info!(logger, "Sending a channel_ready to our peer");
 			return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), timed_out_htlcs, announcement_sigs));
 		}
 
@@ -11399,7 +11376,7 @@ where
 			}
 		} else if !self.funding.is_outbound() && self.funding.funding_tx_confirmed_in.is_none() &&
 				height >= self.context.channel_creation_height + FUNDING_CONF_DEADLINE_BLOCKS {
-			log_info!(logger, "Closing channel {} due to funding timeout", &self.context.channel_id);
+			log_info!(logger, "Closing channel due to funding timeout");
 			// If funding_tx_confirmed_in is unset, the channel must not be active
 			assert!(self.context.channel_state <= ChannelState::ChannelReady(ChannelReadyFlags::new()));
 			assert!(!self.context.channel_state.is_our_channel_ready());
@@ -11445,9 +11422,9 @@ where
 					height,
 				) {
 					log_info!(
-						logger, "Sending splice_locked txid {} to our peer for channel {}",
+						logger, "Sending splice_locked txid {} to our peer",
 						splice_locked.splice_txid,
-						&self.context.channel_id
+
 					);
 
 					let (funding_txo, monitor_update, announcement_sigs, discarded_funding) = chain_node_signer
@@ -11608,7 +11585,7 @@ where
 			return None;
 		}
 
-		log_trace!(logger, "Creating an announcement_signatures message for channel {}", &self.context.channel_id());
+		log_trace!(logger, "Creating an announcement_signatures message");
 		let announcement = match self.get_channel_announcement(node_signer, chain_hash, user_config) {
 			Ok(a) => a,
 			Err(e) => {
@@ -11816,7 +11793,7 @@ where
 		let dummy_pubkey = PublicKey::from_slice(&pk).unwrap();
 		let remote_last_secret = if self.context.counterparty_next_commitment_transaction_number + 1 < INITIAL_COMMITMENT_NUMBER {
 			let remote_last_secret = self.context.commitment_secrets.get_secret(self.context.counterparty_next_commitment_transaction_number + 2).unwrap();
-			log_trace!(logger, "Enough info to generate a Data Loss Protect with per_commitment_secret {} for channel {}", log_bytes!(remote_last_secret), &self.context.channel_id());
+			log_trace!(logger, "Enough info to generate a Data Loss Protect with per_commitment_secret {}", log_bytes!(remote_last_secret));
 			remote_last_secret
 		} else {
 			log_info!(logger, "Sending a data_loss_protect with no previous remote per_commitment_secret for channel {}", &self.context.channel_id());
@@ -12436,12 +12413,7 @@ where
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 	{
-		log_info!(
-			logger,
-			"Received splice_locked txid {} from our peer for channel {}",
-			msg.splice_txid,
-			&self.context.channel_id,
-		);
+		log_info!(logger, "Received splice_locked txid {} from our peer", msg.splice_txid,);
 
 		let pending_splice = match self.pending_splice.as_mut() {
 			Some(pending_splice) => pending_splice,
@@ -12463,9 +12435,8 @@ where
 		if pending_splice.sent_funding_txid.is_none() {
 			log_info!(
 				logger,
-				"Waiting for enough confirmations to send splice_locked txid {} for channel {}",
+				"Waiting for enough confirmations to send splice_locked txid {}",
 				msg.splice_txid,
-				&self.context.channel_id,
 			);
 			return Ok(None);
 		}
@@ -12824,19 +12795,19 @@ where
 					htlc_signatures = res.1;
 
 					let trusted_tx = counterparty_commitment_tx.trust();
-					log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} -> {} in channel {}",
+					log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} -> {}",
 						encode::serialize_hex(&trusted_tx.built_transaction().transaction),
 						&trusted_tx.txid(), encode::serialize_hex(&funding.get_funding_redeemscript()),
-						log_bytes!(signature.serialize_compact()[..]), &self.context.channel_id());
+						log_bytes!(signature.serialize_compact()[..]));
 
 					let counterparty_keys = trusted_tx.keys();
 					debug_assert_eq!(htlc_signatures.len(), trusted_tx.nondust_htlcs().len());
 					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(trusted_tx.nondust_htlcs()) {
-						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
+						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {}",
 							encode::serialize_hex(&chan_utils::build_htlc_transaction(&trusted_tx.txid(), trusted_tx.negotiated_feerate_per_kw(), funding.get_holder_selected_contest_delay(), htlc, funding.get_channel_type(), &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
 							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, funding.get_channel_type(), &counterparty_keys)),
 							log_bytes!(counterparty_keys.broadcaster_htlc_key.to_public_key().serialize()),
-							log_bytes!(htlc_sig.serialize_compact()[..]), &self.context.channel_id());
+							log_bytes!(htlc_sig.serialize_compact()[..]));
 					}
 				}
 

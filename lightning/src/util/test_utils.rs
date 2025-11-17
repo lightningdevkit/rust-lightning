@@ -1700,9 +1700,7 @@ impl TestLogger {
 
 impl Logger for TestLogger {
 	fn log(&self, record: Record) {
-		let context =
-			format!("{} {} [{}:{}]", self.id, record.level, record.module_path, record.line);
-		let s = format!("{:<55} {}", context, record.args);
+		let s = format!("{:<6} {}", self.id, record);
 		#[cfg(ldk_bench)]
 		{
 			// When benchmarking, we don't actually want to print logs, but we do want to format

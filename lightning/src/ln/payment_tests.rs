@@ -2297,8 +2297,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		nodes[1].node.forward_intercepted_htlc(intercept_id, &chan_id, node_c_id, outbound_amt);
 	let err = format!(
 		"Channel with id {} not found for the passed counterparty node_id {}",
-		log_bytes!([42; 32]),
-		node_c_id,
+		chan_id, node_c_id,
 	);
 	assert_eq!(unknown_chan_id_err, Err(APIError::ChannelUnavailable { err }));
 

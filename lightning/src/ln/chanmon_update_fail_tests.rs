@@ -150,8 +150,7 @@ fn test_monitor_and_persister_update_fail() {
 				}
 				logger.assert_log_regex(
 					"lightning::chain::chainmonitor",
-					regex::Regex::new("Failed to update ChannelMonitor for channel [0-9a-f]*.")
-						.unwrap(),
+					regex::Regex::new("Failed to update ChannelMonitor").unwrap(),
 					1,
 				);
 

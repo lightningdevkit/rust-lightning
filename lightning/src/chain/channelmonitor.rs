@@ -4223,8 +4223,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			log_info!(logger, "Applying pre-0.1 force close update to monitor {} with {} change(s).",
 				log_funding_info!(self), updates.updates.len());
 		} else {
-			log_info!(logger, "Applying update to monitor {}, bringing update_id from {} to {} with {} change(s).",
-				log_funding_info!(self), self.latest_update_id, updates.update_id, updates.updates.len());
+			log_info!(logger, "Applying update, bringing update_id from {} to {} with {} change(s).",
+				self.latest_update_id, updates.update_id, updates.updates.len());
 		}
 
 		// ChannelMonitor updates may be applied after force close if we receive a preimage for a
@@ -4351,7 +4351,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger, true);
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
-						log_error!(logger, "    in channel monitor for channel {}!", &self.channel_id());
+						log_error!(logger, "    in channel monitor!");
 						log_error!(logger, "    Read the docs for ChannelMonitor::broadcast_latest_holder_commitment_txn to take manual action!");
 					} else {
 						// If we generated a MonitorEvent::HolderForceClosed, the ChannelManager
@@ -5479,7 +5479,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				} else {
 					"".to_string()
 				};
-				log_info!(logger, "{desc} for channel {} confirmed with txid {txid}{action}", self.channel_id());
+				log_info!(logger, "{desc} confirmed with txid {txid}{action}");
 
 				self.alternative_funding_confirmed = Some((txid, height));
 
@@ -5531,8 +5531,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							.map(|(txid, _)| txid)
 							.unwrap_or_else(|| self.funding.funding_txid())
 					);
-					log_info!(logger, "Channel {} closed by funding output spend in txid {txid}",
-						self.channel_id());
+					log_info!(logger, "Channel closed by funding output spend in txid {txid}");
 					if !self.funding_spend_seen {
 						self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(()));
 					}

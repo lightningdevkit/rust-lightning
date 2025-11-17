@@ -580,11 +580,7 @@ where
 
 		let has_pending_claims = monitor_state.monitor.has_pending_claims();
 		if has_pending_claims || get_partition_key(channel_id) % partition_factor == 0 {
-			log_trace!(
-				logger,
-				"Syncing Channel Monitor for channel {}",
-				log_funding_info!(monitor)
-			);
+			log_trace!(logger, "Syncing Channel Monitor");
 			// Even though we don't track monitor updates from chain-sync as pending, we still want
 			// updates per-channel to be well-ordered so that users don't see a
 			// `ChannelMonitorUpdate` after a channel persist for a channel with the same
@@ -592,11 +588,9 @@ where
 			let _pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
 			match self.persister.update_persisted_channel(monitor.persistence_key(), None, monitor)
 			{
-				ChannelMonitorUpdateStatus::Completed => log_trace!(
-					logger,
-					"Finished syncing Channel Monitor for channel {} for block-data",
-					log_funding_info!(monitor)
-				),
+				ChannelMonitorUpdateStatus::Completed => {
+					log_trace!(logger, "Finished syncing Channel Monitor for block-data")
+				},
 				ChannelMonitorUpdateStatus::InProgress => {
 					log_trace!(
 						logger,
@@ -961,16 +955,12 @@ where
 		}
 		if have_monitors_to_prune {
 			let mut monitors = self.monitors.write().unwrap();
-			monitors.retain(|channel_id, monitor_holder| {
+			monitors.retain(|_channel_id, monitor_holder| {
 				let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor, None);
 				let (is_fully_resolved, _) =
 					monitor_holder.monitor.check_and_update_full_resolution_status(&logger);
 				if is_fully_resolved {
-					log_info!(
-						logger,
-						"Archiving fully resolved ChannelMonitor for channel ID {}",
-						channel_id
-					);
+					log_info!(logger, "Archiving fully resolved ChannelMonitor");
 					self.persister
 						.archive_persisted_channel(monitor_holder.monitor.persistence_key());
 					false
@@ -1106,11 +1096,7 @@ where
 			},
 			hash_map::Entry::Vacant(e) => e,
 		};
-		log_trace!(
-			logger,
-			"Loaded existing ChannelMonitor for channel {}",
-			log_funding_info!(monitor)
-		);
+		log_trace!(logger, "Loaded existing ChannelMonitor");
 		if let Some(ref chain_source) = self.chain_source {
 			monitor.load_outputs_to_watch(chain_source, &self.logger);
 		}
@@ -1366,25 +1352,17 @@ where
 			},
 			hash_map::Entry::Vacant(e) => e,
 		};
-		log_trace!(logger, "Got new ChannelMonitor for channel {}", log_funding_info!(monitor));
+		log_trace!(logger, "Got new ChannelMonitor");
 		let update_id = monitor.get_latest_update_id();
 		let mut pending_monitor_updates = Vec::new();
 		let persist_res = self.persister.persist_new_channel(monitor.persistence_key(), &monitor);
 		match persist_res {
 			ChannelMonitorUpdateStatus::InProgress => {
-				log_info!(
-					logger,
-					"Persistence of new ChannelMonitor for channel {} in progress",
-					log_funding_info!(monitor)
-				);
+				log_info!(logger, "Persistence of new ChannelMonitor in progress",);
 				pending_monitor_updates.push(update_id);
 			},
 			ChannelMonitorUpdateStatus::Completed => {
-				log_info!(
-					logger,
-					"Persistence of new ChannelMonitor for channel {} completed",
-					log_funding_info!(monitor)
-				);
+				log_info!(logger, "Persistence of new ChannelMonitor completed",);
 			},
 			ChannelMonitorUpdateStatus::UnrecoverableError => {
 				let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
@@ -1426,12 +1404,7 @@ where
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
 				let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
-				log_trace!(
-					logger,
-					"Updating ChannelMonitor to id {} for channel {}",
-					update.update_id,
-					log_funding_info!(monitor)
-				);
+				log_trace!(logger, "Updating ChannelMonitor to id {}", update.update_id,);
 
 				// We hold a `pending_monitor_updates` lock through `update_monitor` to ensure we
 				// have well-ordered updates from the users' point of view. See the
@@ -1452,7 +1425,7 @@ where
 					// We don't want to persist a `monitor_update` which results in a failure to apply later
 					// while reading `channel_monitor` with updates from storage. Instead, we should persist
 					// the entire `channel_monitor` here.
-					log_warn!(logger, "Failed to update ChannelMonitor for channel {}. Going ahead and persisting the entire ChannelMonitor", log_funding_info!(monitor));
+					log_warn!(logger, "Failed to update ChannelMonitor. Going ahead and persisting the entire ChannelMonitor");
 					self.persister.update_persisted_channel(
 						monitor.persistence_key(),
 						None,
@@ -1468,18 +1441,17 @@ where
 				match persist_res {
 					ChannelMonitorUpdateStatus::InProgress => {
 						pending_monitor_updates.push(update_id);
-						log_debug!(logger,
-							"Persistence of ChannelMonitorUpdate id {:?} for channel {} in progress",
+						log_debug!(
+							logger,
+							"Persistence of ChannelMonitorUpdate id {:?} in progress",
 							update_id,
-							log_funding_info!(monitor)
 						);
 					},
 					ChannelMonitorUpdateStatus::Completed => {
 						log_debug!(
 							logger,
-							"Persistence of ChannelMonitorUpdate id {:?} for channel {} completed",
+							"Persistence of ChannelMonitorUpdate id {:?} completed",
 							update_id,
-							log_funding_info!(monitor)
 						);
 					},
 					ChannelMonitorUpdateStatus::UnrecoverableError => {

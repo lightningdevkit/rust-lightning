@@ -192,7 +192,7 @@ mod test {
 	}
 	impl Logger for TestLogger {
 		fn log(&self, record: lightning::util::logger::Record) {
-			eprintln!("{}: {}", self.node, record.args);
+			eprintln!("{:<8} {}", self.node, record);
 		}
 	}
 	impl Deref for TestLogger {

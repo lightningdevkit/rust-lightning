@@ -964,8 +964,12 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 			},
 			_ => panic!("Unexpected event"),
 		};
-		nodes[1].logger.assert_log("lightning::ln::channel",
-		format!("Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", raa_msg.channel_id), 1);
+		nodes[1].logger.assert_log(
+			"lightning::ln::channel",
+			"Attempting to fail HTLC due to fee spike buffer violation. Rebalancing is required."
+				.to_string(),
+			1,
+		);
 
 		check_added_monitors(&nodes[1], 3);
 	} else {
@@ -2412,8 +2416,12 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 			},
 			_ => panic!("Unexpected event"),
 		};
-		nodes[1].logger.assert_log("lightning::ln::channel",
-			format!("Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", raa_msg.channel_id), 1);
+		nodes[1].logger.assert_log(
+			"lightning::ln::channel",
+			"Attempting to fail HTLC due to fee spike buffer violation. Rebalancing is required."
+				.to_string(),
+			1,
+		);
 
 		check_added_monitors(&nodes[1], 3);
 	}
