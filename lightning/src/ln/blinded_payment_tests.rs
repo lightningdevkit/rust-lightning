@@ -2282,7 +2282,6 @@ fn test_trampoline_single_hop_receive() {
 	do_test_trampoline_single_hop_receive(false);
 }
 
-#[rustfmt::skip]
 fn do_test_trampoline_unblinded_receive(success: bool) {
 	// Simulate a payment of A (0) -> B (1) -> C(Trampoline) (2)
 
@@ -2291,24 +2290,46 @@ fn do_test_trampoline_unblinded_receive(success: bool) {
 
 	let chanmon_cfgs = create_chanmon_cfgs(TOTAL_NODE_COUNT);
 	let node_cfgs = create_node_cfgs(TOTAL_NODE_COUNT, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(TOTAL_NODE_COUNT, &node_cfgs, &vec![None; TOTAL_NODE_COUNT]);
+	let node_chanmgrs =
+		create_node_chanmgrs(TOTAL_NODE_COUNT, &node_cfgs, &vec![None; TOTAL_NODE_COUNT]);
 	let mut nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
 
-	let (_, _, chan_id_alice_bob, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
-	let (_, _, chan_id_bob_carol, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let (_, _, chan_id_alice_bob, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let (_, _, chan_id_bob_carol, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
-	for i in 0..TOTAL_NODE_COUNT { // connect all nodes' blocks
-		connect_blocks(&nodes[i], (TOTAL_NODE_COUNT as u32) * CHAN_CONFIRM_DEPTH + 1 - nodes[i].best_block_info().1);
+	for i in 0..TOTAL_NODE_COUNT {
+		// connect all nodes' blocks
+		connect_blocks(
+			&nodes[i],
+			(TOTAL_NODE_COUNT as u32) * CHAN_CONFIRM_DEPTH + 1 - nodes[i].best_block_info().1,
+		);
 	}
 
 	let bob_node_id = nodes[1].node().get_our_node_id();
 	let carol_node_id = nodes[2].node().get_our_node_id();
 
-	let alice_bob_scid = nodes[0].node().list_channels().iter().find(|c| c.channel_id == chan_id_alice_bob).unwrap().short_channel_id.unwrap();
-	let bob_carol_scid = nodes[1].node().list_channels().iter().find(|c| c.channel_id == chan_id_bob_carol).unwrap().short_channel_id.unwrap();
+	let alice_bob_scid = nodes[0]
+		.node()
+		.list_channels()
+		.iter()
+		.find(|c| c.channel_id == chan_id_alice_bob)
+		.unwrap()
+		.short_channel_id
+		.unwrap();
+	let bob_carol_scid = nodes[1]
+		.node()
+		.list_channels()
+		.iter()
+		.find(|c| c.channel_id == chan_id_bob_carol)
+		.unwrap()
+		.short_channel_id
+		.unwrap();
 
 	let amt_msat = 1000;
-	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+	let (payment_preimage, payment_hash, payment_secret) =
+		get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 	let route = Route {
 		paths: vec![Path {
 			hops: vec![
@@ -2322,7 +2343,6 @@ fn do_test_trampoline_unblinded_receive(success: bool) {
 					cltv_expiry_delta: 48,
 					maybe_announced_channel: false,
 				},
-
 				// Carol
 				RouteHop {
 					pubkey: carol_node_id,
@@ -2332,7 +2352,7 @@ fn do_test_trampoline_unblinded_receive(success: bool) {
 					fee_msat: 0,
 					cltv_expiry_delta: 48,
 					maybe_announced_channel: false,
-				}
+				},
 			],
 			blinded_tail: Some(BlindedTail {
 				trampoline_hops: vec![
@@ -2347,12 +2367,12 @@ fn do_test_trampoline_unblinded_receive(success: bool) {
 				// The blinded path data is unused because we replace the onion of the last hop
 				hops: vec![BlindedHop {
 					blinded_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
-					encrypted_payload: vec![42; 32]
+					encrypted_payload: vec![42; 32],
 				}],
 				blinding_point: PublicKey::from_slice(&[2; 33]).unwrap(),
 				excess_final_cltv_expiry_delta: 39,
 				final_value_msat: amt_msat,
-			})
+			}),
 		}],
 		route_params: None,
 	};
@@ -2360,46 +2380,78 @@ fn do_test_trampoline_unblinded_receive(success: bool) {
 	// We need the session priv to construct an invalid onion packet later.
 	let override_random_bytes = [42; 32];
 	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(override_random_bytes);
-	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
+	nodes[0]
+		.node
+		.send_payment_with_route(
+			route.clone(),
+			payment_hash,
+			RecipientOnionFields::spontaneous_empty(),
+			PaymentId(payment_hash.0),
+		)
+		.unwrap();
 
 	let replacement_onion = {
 		// create a substitute onion where the last Trampoline hop is an unblinded receive, which we
 		// (deliberately) do not support out of the box, therefore necessitating this workaround
 		let outer_session_priv = SecretKey::from_slice(&override_random_bytes[..]).unwrap();
-		let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
+		let trampoline_session_priv =
+			onion_utils::compute_trampoline_session_priv(&outer_session_priv);
 		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 
 		let blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
-		let (_, _, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, amt_msat, &recipient_onion_fields, 32, &None).unwrap();
+		let (_, _, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(
+			&blinded_tail,
+			amt_msat,
+			&recipient_onion_fields,
+			32,
+			&None,
+		)
+		.unwrap();
 		let trampoline_payloads = vec![msgs::OutboundTrampolinePayload::Receive {
-			payment_data: Some(msgs::FinalOnionHopData {
-				payment_secret,
-				total_msat: amt_msat,
-			}),
+			payment_data: Some(msgs::FinalOnionHopData { payment_secret, total_msat: amt_msat }),
 			sender_intended_htlc_amt_msat: amt_msat,
 			cltv_expiry_height: 104,
 		}];
 
-		let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &trampoline_session_priv);
+		let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(
+			&secp_ctx,
+			&route.paths[0].blinded_tail.as_ref().unwrap(),
+			&trampoline_session_priv,
+		);
 		let trampoline_packet = onion_utils::construct_trampoline_onion_packet(
 			trampoline_payloads,
 			trampoline_onion_keys,
 			override_random_bytes,
 			&payment_hash,
 			None,
-		).unwrap();
+		)
+		.unwrap();
 
 		// Use a different session key to construct the replacement onion packet. Note that the sender isn't aware of
 		// this and won't be able to decode the fulfill hold times.
 
-		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], amt_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
-		let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
+		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(
+			&route.paths[0],
+			amt_msat,
+			&recipient_onion_fields,
+			outer_starting_htlc_offset,
+			&None,
+			None,
+			Some(trampoline_packet),
+		)
+		.unwrap();
+		let outer_onion_keys = onion_utils::construct_onion_keys(
+			&secp_ctx,
+			&route.clone().paths[0],
+			&outer_session_priv,
+		);
 		let outer_packet = onion_utils::construct_onion_packet(
 			outer_payloads,
 			outer_onion_keys,
 			override_random_bytes,
 			&payment_hash,
-		).unwrap();
+		)
+		.unwrap();
 
 		outer_packet
 	};
@@ -2408,21 +2460,23 @@ fn do_test_trampoline_unblinded_receive(success: bool) {
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	let mut first_message_event = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let mut first_message_event =
+		remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	let mut update_message = match first_message_event {
 		MessageSendEvent::UpdateHTLCs { ref mut updates, .. } => {
 			assert_eq!(updates.update_add_htlcs.len(), 1);
 			updates.update_add_htlcs.get_mut(0)
 		},
-		_ => panic!()
+		_ => panic!(),
 	};
 	update_message.map(|msg| {
 		msg.onion_routing_packet = replacement_onion.clone();
 	});
 
 	let route: &[&Node] = &[&nodes[1], &nodes[2]];
-	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
-		.with_payment_secret(payment_secret);
+	let args =
+		PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
+			.with_payment_secret(payment_secret);
 	do_pass_along_path(args);
 	if success {
 		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
