@@ -1729,12 +1729,12 @@ where
 	/// Append a message to a peer's pending outbound/write buffer
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
 		let their_node_id = peer.their_node_id.map(|p| p.0);
-		if let Some(node_id) = their_node_id {
+		if their_node_id.is_some() {
 			let logger = WithContext::from(&self.logger, their_node_id, None, None);
 			if is_gossip_msg(message.type_id()) {
-				log_gossip!(logger, "Enqueueing message {:?} to {}", message, node_id);
+				log_gossip!(logger, "Enqueueing message {:?}", message);
 			} else {
-				log_trace!(logger, "Enqueueing message {:?} to {}", message, node_id);
+				log_trace!(logger, "Enqueueing message {:?}", message);
 			}
 		} else {
 			debug_assert!(false, "node_id should be set by the time we send a message");
@@ -1842,7 +1842,7 @@ where
 							let logger = WithContext::from(&self.logger, Some(their_node_id), None, None);
 							match self.node_id_to_descriptor.lock().unwrap().entry(their_node_id) {
 								hash_map::Entry::Occupied(e) => {
-									log_trace!(logger, "Got second connection with {}, closing", their_node_id);
+									log_trace!(logger, "Got second connection, closing");
 									// Unset `their_node_id` so that we don't generate a peer_disconnected event
 									peer.their_node_id = None;
 									// Check that the peers map is consistent with the
@@ -1852,7 +1852,7 @@ where
 									return Err(PeerHandleError { })
 								},
 								hash_map::Entry::Vacant(entry) => {
-									log_debug!(logger, "Finished noise handshake for connection with {}", their_node_id);
+									log_debug!(logger, "Finished noise handshake for connection");
 									entry.insert(peer_descriptor.clone())
 								},
 							};
@@ -2141,8 +2141,7 @@ where
 			if msg.features.requires_unknown_bits_from(&our_features) {
 				log_debug!(
 					logger,
-					"Peer {} requires features unknown to us: {:?}",
-					their_node_id,
+					"Peer requires features unknown to us: {:?}",
 					msg.features.required_unknown_bits_from(&our_features)
 				);
 				return Err(PeerHandleError {}.into());
@@ -2162,12 +2161,7 @@ where
 				return Err(PeerHandleError {}.into());
 			}
 
-			log_info!(
-				logger,
-				"Received peer Init message from {}: {}",
-				their_node_id,
-				msg.features
-			);
+			log_info!(logger, "Received Init message: {}", msg.features);
 
 			// For peers not supporting gossip queries start sync now, otherwise wait until we receive a filter.
 			if msg.features.initial_routing_sync() && !msg.features.supports_gossip_queries() {
@@ -2177,20 +2171,12 @@ where
 			let inbound = peer_lock.inbound_connection;
 			let route_handler = &self.message_handler.route_handler;
 			if let Err(()) = route_handler.peer_connected(their_node_id, &msg, inbound) {
-				log_debug!(
-					logger,
-					"Route Handler decided we couldn't communicate with peer {}",
-					their_node_id,
-				);
+				log_debug!(logger, "Route Handler decided we couldn't communicate with peer");
 				return Err(PeerHandleError {}.into());
 			}
 			let chan_handler = &self.message_handler.chan_handler;
 			if let Err(()) = chan_handler.peer_connected(their_node_id, &msg, inbound) {
-				log_debug!(
-					logger,
-					"Channel Handler decided we couldn't communicate with peer {}",
-					their_node_id,
-				);
+				log_debug!(logger, "Channel Handler decided we couldn't communicate with peer");
 				self.message_handler.route_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError {}.into());
 			}
@@ -2209,8 +2195,7 @@ where
 			if let Err(()) = custom_handler.peer_connected(their_node_id, &msg, inbound) {
 				log_debug!(
 					logger,
-					"Custom Message Handler decided we couldn't communicate with peer {}",
-					their_node_id,
+					"Custom Message Handler decided we couldn't communicate with peer"
 				);
 				self.message_handler.route_handler.peer_disconnected(their_node_id);
 				self.message_handler.chan_handler.peer_disconnected(their_node_id);
@@ -2221,8 +2206,7 @@ where
 			if let Err(()) = sends_handler.peer_connected(their_node_id, &msg, inbound) {
 				log_debug!(
 					logger,
-					"Sending-Only Message Handler decided we couldn't communicate with peer {}",
-					their_node_id,
+					"Sending-Only Message Handler decided we couldn't communicate with peer"
 				);
 				self.message_handler.route_handler.peer_disconnected(their_node_id);
 				self.message_handler.chan_handler.peer_disconnected(their_node_id);
@@ -2235,7 +2219,7 @@ where
 			peer_lock.their_features = Some(msg.features);
 			return Ok(None);
 		} else if peer_lock.their_features.is_none() {
-			log_debug!(logger, "Peer {} sent non-Init first message", their_node_id);
+			log_debug!(logger, "Peer sent non-Init first message");
 			return Err(PeerHandleError {}.into());
 		}
 
@@ -2407,9 +2391,9 @@ where
 		their_node_id: PublicKey, logger: &WithContext<'a, L>,
 	) -> Result<Option<BroadcastGossipMessage>, MessageHandlingError> {
 		if is_gossip_msg(message.type_id()) {
-			log_gossip!(logger, "Received message {:?} from {}", message, their_node_id);
+			log_gossip!(logger, "Received message {:?}", message);
 		} else {
-			log_trace!(logger, "Received message {:?} from {}", message, their_node_id);
+			log_trace!(logger, "Received message {:?}", message);
 		}
 
 		let mut should_forward = None;
@@ -2435,12 +2419,7 @@ where
 				}
 			},
 			wire::Message::Warning(msg) => {
-				log_debug!(
-					logger,
-					"Got warning message from {}: {}",
-					their_node_id,
-					PrintableString(&msg.data)
-				);
+				log_debug!(logger, "Got warning message: {}", PrintableString(&msg.data));
 			},
 
 			wire::Message::Ping(msg) => {
@@ -3128,8 +3107,7 @@ where
 									Some(msg.channel_id),
 									None
 								),
-								"Handling Shutdown event in peer_handler for node {}",
-								node_id
+								"Handling Shutdown event in peer_handler",
 							);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
@@ -3239,8 +3217,11 @@ where
 							}
 						},
 						MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
-							log_trace!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendChannelUpdate event in peer_handler for node {} for channel {}",
-									node_id, msg.contents.short_channel_id);
+							log_trace!(
+								WithContext::from(&self.logger, Some(*node_id), None, None),
+								"Handling SendChannelUpdate event in peer_handler for channel {}",
+								msg.contents.short_channel_id
+							);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::HandleError { node_id, action } => {
@@ -3248,11 +3229,11 @@ where
 							match action {
 								msgs::ErrorAction::DisconnectPeer { msg } => {
 									if let Some(msg) = msg.as_ref() {
-										log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
-											node_id, msg.data);
+										log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler with message {}",
+											msg.data);
 									} else {
-										log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler for node {}",
-											node_id);
+										log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler",
+											 );
 									}
 									// We do not have the peers write lock, so we just store that we're
 									// about to disconnect the peer and do it after we finish
@@ -3263,8 +3244,8 @@ where
 									peers_to_disconnect.insert(node_id, msg);
 								},
 								msgs::ErrorAction::DisconnectPeerWithWarning { msg } => {
-									log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
-										node_id, msg.data);
+									log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler with message {}",
+										 msg.data);
 									// We do not have the peers write lock, so we just store that we're
 									// about to disconnect the peer and do it after we finish
 									// processing most messages.
@@ -3275,21 +3256,19 @@ where
 									log_given_level!(
 										logger,
 										level,
-										"Received a HandleError event to be ignored for node {}",
-										node_id,
+										"Received a HandleError event to be ignored",
 									);
 								},
 								msgs::ErrorAction::IgnoreDuplicateGossip => {},
 								msgs::ErrorAction::IgnoreError => {
 									log_debug!(
 										logger,
-										"Received a HandleError event to be ignored for node {}",
-										node_id,
+										"Received a HandleError event to be ignored",
 									);
 								},
 								msgs::ErrorAction::SendErrorMessage { ref msg } => {
-									log_trace!(logger, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
-											node_id,
+									log_trace!(logger, "Handling SendErrorMessage HandleError event in peer_handler with message {}",
+
 											msg.data);
 									self.enqueue_message(
 										&mut *get_peer_for_forwarding!(&node_id)?,
@@ -3300,8 +3279,8 @@ where
 									ref msg,
 									ref log_level,
 								} => {
-									log_given_level!(logger, *log_level, "Handling SendWarningMessage HandleError event in peer_handler for node {} with message {}",
-											node_id,
+									log_given_level!(logger, *log_level, "Handling SendWarningMessage HandleError event in peer_handler with message {}",
+
 											msg.data);
 									self.enqueue_message(
 										&mut *get_peer_for_forwarding!(&node_id)?,
@@ -3311,21 +3290,21 @@ where
 							}
 						},
 						MessageSendEvent::SendChannelRangeQuery { ref node_id, ref msg } => {
-							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendChannelRangeQuery event in peer_handler for node {} with first_blocknum={}, number_of_blocks={}",
-								node_id,
+							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendChannelRangeQuery event in peer_handler with first_blocknum={}, number_of_blocks={}",
+
 								msg.first_blocknum,
 								msg.number_of_blocks);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendShortIdsQuery { ref node_id, ref msg } => {
-							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendShortIdsQuery event in peer_handler for node {} with num_scids={}",
-								node_id,
+							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendShortIdsQuery event in peer_handler with num_scids={}",
+
 								msg.short_channel_ids.len());
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendReplyChannelRange { ref node_id, ref msg } => {
-							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendReplyChannelRange event in peer_handler for node {} with num_scids={} first_blocknum={} number_of_blocks={}, sync_complete={}",
-								node_id,
+							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendReplyChannelRange event in peer_handler with num_scids={} first_blocknum={} number_of_blocks={}, sync_complete={}",
+
 								msg.short_channel_ids.len(),
 								msg.first_blocknum,
 								msg.number_of_blocks,
@@ -3333,8 +3312,8 @@ where
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendGossipTimestampFilter { ref node_id, ref msg } => {
-							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendGossipTimestampFilter event in peer_handler for node {} with first_timestamp={}, timestamp_range={}",
-								node_id,
+							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendGossipTimestampFilter event in peer_handler with first_timestamp={}, timestamp_range={}",
+
 								msg.first_timestamp,
 								msg.timestamp_range);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
@@ -3445,8 +3424,7 @@ where
 		if let Some((node_id, _)) = peer.their_node_id {
 			log_trace!(
 				WithContext::from(&self.logger, Some(node_id), None, None),
-				"Disconnecting peer with id {} due to {}",
-				node_id,
+				"Disconnecting peer due to {}",
 				reason
 			);
 			self.message_handler.route_handler.peer_disconnected(node_id);
@@ -3471,12 +3449,7 @@ where
 				let peer = peer_lock.lock().unwrap();
 				if let Some((node_id, _)) = peer.their_node_id {
 					let logger = WithContext::from(&self.logger, Some(node_id), None, None);
-					log_trace!(
-						logger,
-						"Handling disconnection of peer {} because {}",
-						node_id,
-						reason
-					);
+					log_trace!(logger, "Handling disconnection of peer because {}", reason);
 					let removed = self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
 					debug_assert!(removed.is_some(), "descriptor maps should be consistent");
 					if !peer.handshake_complete() {
