@@ -6740,16 +6740,13 @@ where
 					}
 				},
 				None => {
-					let error = format!(
-						"Channel not found for the passed counterparty node_id {next_node_id}"
-					);
 					let logger = WithContext::from(
 						&self.logger,
 						Some(next_node_id),
 						Some(*next_hop_channel_id),
 						None,
 					);
-					log_error!(logger, "{error} when attempting to forward intercepted HTLC");
+					log_error!(logger, "Channel not found for the passed counterparty node_id {next_node_id} when attempting to forward intercepted HTLC");
 					return Err(APIError::ChannelUnavailable {
 						err: format!(
 						"Channel with id {next_hop_channel_id} not found for the passed counterparty node_id {next_node_id}"
