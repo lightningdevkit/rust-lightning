@@ -1089,6 +1089,7 @@ where
 						let contact_secrets = ContactSecrets::new(
 							contact_secret_bytes.try_into().ok()?
 						);
+
 						let payer_offer = Offer::try_from(payer_offer_bytes.to_vec()).ok()?;
 
 						Some(events::ContactInfo { contact_secrets, payer_offer })
@@ -1112,17 +1113,19 @@ where
 						let payer_offer_bytes = invreq.payer_offer();
 
 						match (contact_secret_bytes, payer_offer_bytes) {
-							(Some(secret), Some(offer_bytes)) => {
+							(Some(secret), Some(payer_offer_bytes)) => {
 								use crate::offers::contacts::ContactSecrets;
-								use crate::offers::offer::Offer;
 
 								let contact_secrets = secret.try_into().ok()
 									.map(|s| ContactSecrets::new(s));
-								let payer_offer = Offer::try_from(offer_bytes.to_vec()).ok();
 
-								contact_secrets.and_then(|cs| payer_offer.map(|po|
-									events::ContactInfo { contact_secrets: cs, payer_offer: po }
-								))
+								let payer_offer = crate::offers::offer::Offer::try_from(payer_offer_bytes.to_vec()).ok();
+
+								contact_secrets.and_then(|cs|
+									payer_offer.and_then(|po|
+										Some(events::ContactInfo { contact_secrets: cs, payer_offer: po })
+									)
+								)
 							},
 							_ => None,
 						}
