@@ -175,6 +175,7 @@ mod test {
 	use lightning::onion_message::messenger::{
 		AOnionMessenger, Destination, MessageRouter, OnionMessagePath, OnionMessenger,
 	};
+	use lightning::routing::router::DEFAULT_PAYMENT_DUMMY_HOPS;
 	use lightning::sign::{KeysManager, NodeSigner, ReceiveAuthKey, Recipient};
 	use lightning::types::features::InitFeatures;
 	use lightning::types::payment::PaymentHash;
@@ -419,6 +420,12 @@ mod test {
 		let updates = get_htlc_update_msgs(&nodes[0], &payee_id);
 		nodes[1].node.handle_update_add_htlc(payer_id, &updates.update_add_htlcs[0]);
 		do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
+
+		for _ in 0..DEFAULT_PAYMENT_DUMMY_HOPS {
+			assert!(nodes[1].node.needs_pending_htlc_processing());
+			nodes[1].node.process_pending_htlc_forwards();
+		}
+
 		expect_and_process_pending_htlcs(&nodes[1], false);
 
 		let claimable_events = nodes[1].node.get_and_clear_pending_events();
