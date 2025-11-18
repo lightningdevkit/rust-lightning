@@ -1079,7 +1079,7 @@ where
 					// Extract ContactInfo from invoice_request if present
 					let contact_info = invoice_request.and_then(|inv_req| {
 						let contact_secret_bytes = inv_req.contact_secret()?;
-						let payer_offer_bytes = inv_req.payer_offer()?;
+						let payer_offer = inv_req.payer_offer()?;
 
 						// Deserialize into ContactInfo
 						use crate::offers::contacts::ContactSecrets;
@@ -1089,8 +1089,6 @@ where
 						let contact_secrets = ContactSecrets::new(
 							contact_secret_bytes.try_into().ok()?
 						);
-
-						let payer_offer = Offer::try_from(payer_offer_bytes.to_vec()).ok()?;
 
 						Some(events::ContactInfo { contact_secrets, payer_offer })
 					});
@@ -1110,21 +1108,17 @@ where
 					// Extract ContactInfo from invreq
 					let contact_info = {
 						let contact_secret_bytes = invreq.contact_secret();
-						let payer_offer_bytes = invreq.payer_offer();
+						let payer_offer = invreq.payer_offer();
 
-						match (contact_secret_bytes, payer_offer_bytes) {
-							(Some(secret), Some(payer_offer_bytes)) => {
+						match (contact_secret_bytes, payer_offer) {
+							(Some(secret), Some(payer_offer)) => {
 								use crate::offers::contacts::ContactSecrets;
 
 								let contact_secrets = secret.try_into().ok()
 									.map(|s| ContactSecrets::new(s));
 
-								let payer_offer = crate::offers::offer::Offer::try_from(payer_offer_bytes.to_vec()).ok();
-
 								contact_secrets.and_then(|cs|
-									payer_offer.and_then(|po|
-										Some(events::ContactInfo { contact_secrets: cs, payer_offer: po })
-									)
+									Some(events::ContactInfo { contact_secrets: cs, payer_offer })
 								)
 							},
 							_ => None,
