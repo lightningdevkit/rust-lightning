@@ -60,10 +60,10 @@ use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
 	FundedChannel, FundingTxSigned, InboundV1Channel, OutboundV1Channel, PendingV2Channel,
 	ReconnectionMsg, ShutdownResult, SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch,
-	WithChannelContext,
+	WithChannelContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 };
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::funding::SpliceContribution;
+use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::inbound_payment;
 use crate::ln::interactivetxs::InteractiveTxMessageSend;
 use crate::ln::msgs;
@@ -9865,6 +9865,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			false,
 			user_channel_id,
 			config_overrides,
+			0,
+			vec![],
 		)
 	}
 
@@ -9896,6 +9898,56 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			true,
 			user_channel_id,
 			config_overrides,
+			0,
+			vec![],
+		)
+	}
+
+	/// Accepts a request to open a dual-funded channel with a contribution provided by us after an
+	/// [`Event::OpenChannelRequest`].
+	///
+	/// The [`Event::OpenChannelRequest::channel_negotiation_type`] field will indicate the open channel
+	/// request is for a dual-funded channel when the variant is `InboundChannelFunds::DualFunded`.
+	///
+	/// The `temporary_channel_id` parameter indicates which inbound channel should be accepted,
+	/// and the `counterparty_node_id` parameter is the id of the peer which has requested to open
+	/// the channel.
+	///
+	/// The `user_channel_id` parameter will be provided back in
+	/// [`Event::ChannelClosed::user_channel_id`] to allow tracking of which events correspond
+	/// with which `accept_inbound_channel_*` call.
+	///
+	/// The `funding_inputs` parameter provides the `txin`s along with their previous transactions, and
+	/// a corresponding witness weight for each input that will be used to contribute towards our
+	/// portion of the channel value. Our contribution will be calculated as the total value of these
+	/// inputs minus the fees we need to cover for the interactive funding transaction. The witness
+	/// weights must correspond to the witnesses you will provide through [`ChannelManager::funding_transaction_signed`]
+	/// after receiving [`Event::FundingTransactionReadyForSigning`].
+	///
+	/// Note that this method will return an error and reject the channel if it requires support for
+	/// zero confirmations.
+	// TODO(dual_funding): Discussion on complications with 0conf dual-funded channels where "locking"
+	// of UTXOs used for funding would be required and other issues.
+	// See https://diyhpl.us/~bryan/irc/bitcoin/bitcoin-dev/linuxfoundation-pipermail/lightning-dev/2023-May/003922.txt
+	///
+	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
+	/// [`Event::OpenChannelRequest::channel_negotiation_type`]: events::Event::OpenChannelRequest::channel_negotiation_type
+	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
+	/// [`Event::FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
+	/// [`ChannelManager::funding_transaction_signed`]: ChannelManager::funding_transaction_signed
+	pub fn accept_inbound_channel_with_contribution(
+		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>,
+		our_funding_satoshis: u64, funding_inputs: Vec<FundingTxInput>,
+	) -> Result<(), APIError> {
+		self.do_accept_inbound_channel(
+			temporary_channel_id,
+			counterparty_node_id,
+			false,
+			user_channel_id,
+			config_overrides,
+			our_funding_satoshis,
+			funding_inputs,
 		)
 	}
 
@@ -9903,8 +9955,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	#[rustfmt::skip]
 	fn do_accept_inbound_channel(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool,
-		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>
+		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>, our_funding_satoshis: u64,
+		funding_inputs: Vec<FundingTxInput>
 	) -> Result<(), APIError> {
+		// We do this check early as we will cast this to i64 for the NegotiationContext, and this is the
+		// actual upper bound which is less than i64::MAX.
+		if our_funding_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
+			return Err(APIError::APIMisuseError{err: format!("the funding contribution must be smaller than the total bitcoin supply, it was {} satoshis", our_funding_satoshis)});
+		}
 
 		let mut config = self.config.read().unwrap().clone();
 
@@ -9962,7 +10020,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							&self.channel_type_features(), &peer_state.latest_features,
 							&open_channel_msg,
 							user_channel_id, &config, best_block_height,
-							&self.logger,
+							&self.logger, our_funding_satoshis, funding_inputs,
 						).map_err(|e| {
 							let channel_id = open_channel_msg.common_fields.temporary_channel_id;
 							MsgHandleErrInternal::from_chan_no_close(e, channel_id)
@@ -10248,7 +10306,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 					self.get_our_node_id(), *counterparty_node_id, &self.channel_type_features(),
 					&peer_state.latest_features, msg, user_channel_id,
-					&self.config.read().unwrap(), best_block_height, &self.logger,
+					&self.config.read().unwrap(), best_block_height, &self.logger, 0, vec![],
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
 				let message_send_event = MessageSendEvent::SendAcceptChannelV2 {
 					node_id: *counterparty_node_id,

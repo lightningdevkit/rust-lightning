@@ -27,6 +27,7 @@ use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::test_channel_signer::SignerOp;
 
+use bitcoin::key::{constants::SECRET_KEY_SIZE, Keypair, Secp256k1};
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{Amount, OutPoint as BitcoinOutPoint, ScriptBuf, Transaction, TxOut};
 
@@ -43,10 +44,17 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 	// Amount being added to the channel through the splice-in
 	let splice_in_sats = 20_000;
 
+	let secp_ctx = Secp256k1::new();
+	let initiator_external_keypair =
+		Keypair::from_seckey_slice(&secp_ctx, &[2; SECRET_KEY_SIZE]).unwrap();
+
 	// Create additional inputs, but insufficient
 	let extra_splice_funding_input_sats = splice_in_sats - 1;
-	let funding_inputs =
-		create_dual_funding_utxos_with_prev_txs(&nodes[0], &[extra_splice_funding_input_sats]);
+	let funding_inputs = create_dual_funding_utxos_with_prev_txs(
+		&nodes[0],
+		&[extra_splice_funding_input_sats],
+		&initiator_external_keypair.public_key(),
+	);
 
 	let contribution = SpliceContribution::SpliceIn {
 		value: Amount::from_sat(splice_in_sats),
