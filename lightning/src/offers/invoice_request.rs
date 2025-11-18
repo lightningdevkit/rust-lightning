@@ -264,7 +264,7 @@ macro_rules! invoice_request_builder_methods { (
 	///
 	/// [`ContactSecrets`]: crate::offers::contacts::ContactSecrets
 	pub fn contact_secrets($($self_mut)* $self: $self_type, contact_secrets: crate::offers::contacts::ContactSecrets) -> $return_type {
-		$self.invoice_request.invreq_contact_secret = Some(contact_secrets.primary_secret().to_vec());
+		$self.invoice_request.invreq_contact_secret = Some(*contact_secrets.primary_secret());
 		$return_value
 	}
 
@@ -714,7 +714,7 @@ pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
 	quantity: Option<u64>,
 	payer_note: Option<String>,
 	offer_from_hrn: Option<HumanReadableName>,
-	invreq_contact_secret: Option<Vec<u8>>,
+	invreq_contact_secret: Option<[u8; 32]>,
 	invreq_payer_offer: Option<Vec<u8>>,
 	#[cfg(test)]
 	experimental_bar: Option<u64>,
@@ -779,7 +779,7 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	}
 
 	/// Returns the contact secret if present in the invoice request.
-	pub fn contact_secret(&$self) -> Option<&[u8]> {
+	pub fn contact_secret(&$self) -> Option<[u8; 32]> {
 		$contents.contact_secret()
 	}
 
@@ -1095,7 +1095,7 @@ macro_rules! fields_accessor {
 			} = &$inner;
 
 			// Extract BLIP-42 contact information if present
-			let contact_secret = $self.contact_secret().and_then(|bytes| bytes.try_into().ok());
+			let contact_secret = $self.contact_secret();
 			let payer_offer = $self
 				.payer_offer()
 				.and_then(|bytes| crate::offers::offer::Offer::try_from(bytes.to_vec()).ok());
@@ -1227,8 +1227,8 @@ impl InvoiceRequestContents {
 		&self.inner.offer_from_hrn
 	}
 
-	pub(super) fn contact_secret(&self) -> Option<&[u8]> {
-		self.inner.invreq_contact_secret.as_ref().map(|secret| secret.as_slice())
+	pub(super) fn contact_secret(&self) -> Option<[u8; 32]> {
+		self.inner.invreq_contact_secret
 	}
 
 	pub(super) fn payer_offer(&self) -> Option<&[u8]> {
