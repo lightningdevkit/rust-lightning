@@ -13,11 +13,10 @@
 //! We're also able to figure out when incoming payments have been made by one of our contacts.
 //! See [bLIP 42](https://github.com/lightning/blips/blob/master/blip-0042.md) for more details.
 
-use crate::blinded_path::IntroductionNode;
 use crate::offers::offer::Offer;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::secp256k1::Scalar;
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use core::fmt;
 
 #[allow(unused_imports)]
@@ -81,66 +80,7 @@ impl fmt::Display for ContactAddress {
 	}
 }
 
-/// When we receive an invoice_request containing a contact address, we don't immediately fetch
-/// the offer from the BIP 353 address, because this could otherwise be used as a DoS vector
-/// since we haven't received a payment yet.
-///
-/// After receiving the payment, we resolve the BIP 353 address to store the contact.
-/// In the invoice_request, they committed to the signing key used for their offer.
-/// We verify that the offer uses this signing key, otherwise the BIP 353 address most likely
-/// doesn't belong to them.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UnverifiedContactAddress {
-	address: ContactAddress,
-	expected_offer_signing_key: PublicKey,
-}
 
-// FIXME: this can be simply a function call?
-impl UnverifiedContactAddress {
-	/// Creates a new [`UnverifiedContactAddress`].
-	pub fn new(address: ContactAddress, expected_offer_signing_key: PublicKey) -> Self {
-		Self { address, expected_offer_signing_key }
-	}
-
-	/// Returns the contact address.
-	pub fn address(&self) -> &ContactAddress {
-		&self.address
-	}
-
-	/// Returns the expected offer signing key.
-	pub fn expected_offer_signing_key(&self) -> PublicKey {
-		self.expected_offer_signing_key
-	}
-
-	/// Verify that the offer obtained by resolving the BIP 353 address matches the
-	/// invoice_request commitment.
-	///
-	/// If this returns false, it means that either:
-	///  - the contact address doesn't belong to the node
-	///  - or they changed the signing key of the offer associated with their BIP 353 address
-	///
-	/// Since the second case should be very infrequent, it's more likely that the remote node
-	/// is malicious and we shouldn't store them in our contacts list.
-	pub fn verify(&self, offer: &Offer) -> bool {
-		// Check if the expected key matches the offer's issuer ID
-		if let Some(issuer_id) = offer.issuer_signing_pubkey() {
-			if issuer_id == self.expected_offer_signing_key {
-				return true;
-			}
-		}
-
-		// Check if the expected key matches any of the blinded path node IDs
-		for path in offer.paths() {
-			if let IntroductionNode::NodeId(node_id) = path.introduction_node() {
-				if *node_id == self.expected_offer_signing_key {
-					return true;
-				}
-			}
-		}
-
-		false
-	}
-}
 
 /// Contact secrets are used to mutually authenticate payments.
 ///
