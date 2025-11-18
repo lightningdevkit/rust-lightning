@@ -9827,12 +9827,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
-	#[rustfmt::skip]
 	fn do_accept_inbound_channel(
-		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool,
-		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>
+		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		accept_0conf: bool, user_channel_id: u128,
+		config_overrides: Option<ChannelConfigOverrides>,
 	) -> Result<(), APIError> {
-
 		let mut config = self.config.read().unwrap().clone();
 
 		// Apply configuration overrides.
@@ -9840,17 +9839,23 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			config.apply(&overrides);
 		};
 
-		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(*temporary_channel_id), None);
+		let logger = WithContext::from(
+			&self.logger,
+			Some(*counterparty_node_id),
+			Some(*temporary_channel_id),
+			None,
+		);
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let peers_without_funded_channels =
-			self.peers_without_funded_channels(|peer| { peer.total_channel_count() > 0 });
+			self.peers_without_funded_channels(|peer| peer.total_channel_count() > 0);
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-		.ok_or_else(|| {
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 			log_error!(logger, "Can't find peer matching the passed counterparty node_id");
 
-			let err_str = format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}");
+			let err_str = format!(
+				"Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"
+			);
 			APIError::ChannelUnavailable { err: err_str }
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -9865,42 +9870,63 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			Some(unaccepted_channel) => {
 				let best_block_height = self.best_block.read().unwrap().height;
 				match unaccepted_channel.open_channel_msg {
-					OpenChannelMessage::V1(open_channel_msg) => {
-						InboundV1Channel::new(
-							&self.fee_estimator, &self.entropy_source, &self.signer_provider, *counterparty_node_id,
-							&self.channel_type_features(), &peer_state.latest_features, &open_channel_msg,
-							user_channel_id, &config, best_block_height, &self.logger, accept_0conf
-						).map_err(|err| MsgHandleErrInternal::from_chan_no_close(err, *temporary_channel_id)
-						).map(|mut channel| {
-							let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-							let message_send_event = channel.accept_inbound_channel(&&logger).map(|msg| {
+					OpenChannelMessage::V1(open_channel_msg) => InboundV1Channel::new(
+						&self.fee_estimator,
+						&self.entropy_source,
+						&self.signer_provider,
+						*counterparty_node_id,
+						&self.channel_type_features(),
+						&peer_state.latest_features,
+						&open_channel_msg,
+						user_channel_id,
+						&config,
+						best_block_height,
+						&self.logger,
+						accept_0conf,
+					)
+					.map_err(|err| {
+						MsgHandleErrInternal::from_chan_no_close(err, *temporary_channel_id)
+					})
+					.map(|mut channel| {
+						let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+						let message_send_event =
+							channel.accept_inbound_channel(&&logger).map(|msg| {
 								MessageSendEvent::SendAcceptChannel {
 									node_id: *counterparty_node_id,
 									msg,
 								}
 							});
-							(*temporary_channel_id, Channel::from(channel), message_send_event)
-						})
-					},
-					OpenChannelMessage::V2(open_channel_msg) => {
-						PendingV2Channel::new_inbound(
-							&self.fee_estimator, &self.entropy_source, &self.signer_provider,
-							self.get_our_node_id(), *counterparty_node_id,
-							&self.channel_type_features(), &peer_state.latest_features,
-							&open_channel_msg,
-							user_channel_id, &config, best_block_height,
-							&self.logger,
-						).map_err(|e| {
-							let channel_id = open_channel_msg.common_fields.temporary_channel_id;
-							MsgHandleErrInternal::from_chan_no_close(e, channel_id)
-						}).map(|channel| {
-							let message_send_event =  MessageSendEvent::SendAcceptChannelV2 {
-								node_id: channel.context.get_counterparty_node_id(),
-								msg: channel.accept_inbound_dual_funded_channel()
-							};
-							(channel.context.channel_id(), Channel::from(channel), Some(message_send_event))
-						})
-					},
+						(*temporary_channel_id, Channel::from(channel), message_send_event)
+					}),
+					OpenChannelMessage::V2(open_channel_msg) => PendingV2Channel::new_inbound(
+						&self.fee_estimator,
+						&self.entropy_source,
+						&self.signer_provider,
+						self.get_our_node_id(),
+						*counterparty_node_id,
+						&self.channel_type_features(),
+						&peer_state.latest_features,
+						&open_channel_msg,
+						user_channel_id,
+						&config,
+						best_block_height,
+						&self.logger,
+					)
+					.map_err(|e| {
+						let channel_id = open_channel_msg.common_fields.temporary_channel_id;
+						MsgHandleErrInternal::from_chan_no_close(e, channel_id)
+					})
+					.map(|channel| {
+						let message_send_event = MessageSendEvent::SendAcceptChannelV2 {
+							node_id: channel.context.get_counterparty_node_id(),
+							msg: channel.accept_inbound_dual_funded_channel(),
+						};
+						(
+							channel.context.channel_id(),
+							Channel::from(channel),
+							Some(message_send_event),
+						)
+					}),
 				}
 			},
 			None => {
@@ -9908,7 +9934,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				log_error!(logger, "{}", err_str);
 
 				return Err(APIError::APIMisuseError { err: err_str });
-			}
+			},
 		};
 
 		// We have to match below instead of map_err on the above as in the map_err closure the borrow checker
@@ -9919,13 +9945,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				mem::drop(peer_state_lock);
 				mem::drop(per_peer_state);
 				// TODO(dunxen): Find/make less icky way to do this.
-				match handle_error!(self, Result::<(), MsgHandleErrInternal>::Err(err), *counterparty_node_id) {
-					Ok(_) => unreachable!("`handle_error` only returns Err as we've passed in an Err"),
+				match handle_error!(
+					self,
+					Result::<(), MsgHandleErrInternal>::Err(err),
+					*counterparty_node_id
+				) {
+					Ok(_) => {
+						unreachable!("`handle_error` only returns Err as we've passed in an Err")
+					},
 					Err(e) => {
 						return Err(APIError::ChannelUnavailable { err: e.err });
 					},
 				}
-			}
+			},
 		};
 
 		if accept_0conf {
@@ -9934,9 +9966,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		} else if channel.funding().get_channel_type().requires_zero_conf() {
 			let send_msg_err_event = MessageSendEvent::HandleError {
 				node_id: channel.context().get_counterparty_node_id(),
-				action: msgs::ErrorAction::SendErrorMessage{
-					msg: msgs::ErrorMessage { channel_id: *temporary_channel_id, data: "No zero confirmation channels accepted".to_owned(), }
-				}
+				action: msgs::ErrorAction::SendErrorMessage {
+					msg: msgs::ErrorMessage {
+						channel_id: *temporary_channel_id,
+						data: "No zero confirmation channels accepted".to_owned(),
+					},
+				},
 			};
 			debug_assert!(peer_state.is_connected);
 			peer_state.pending_msg_events.push(send_msg_err_event);
@@ -9951,13 +9986,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			if is_only_peer_channel && peers_without_funded_channels >= MAX_UNFUNDED_CHANNEL_PEERS {
 				let send_msg_err_event = MessageSendEvent::HandleError {
 					node_id: channel.context().get_counterparty_node_id(),
-					action: msgs::ErrorAction::SendErrorMessage{
-						msg: msgs::ErrorMessage { channel_id: *temporary_channel_id, data: "Have too many peers with unfunded channels, not accepting new ones".to_owned(), }
-					}
+					action: msgs::ErrorAction::SendErrorMessage {
+						msg: msgs::ErrorMessage {
+							channel_id: *temporary_channel_id,
+							data:
+								"Have too many peers with unfunded channels, not accepting new ones"
+									.to_owned(),
+						},
+					},
 				};
 				debug_assert!(peer_state.is_connected);
 				peer_state.pending_msg_events.push(send_msg_err_event);
-				let err_str = "Too many peers with unfunded channels, refusing to accept new ones".to_owned();
+				let err_str =
+					"Too many peers with unfunded channels, refusing to accept new ones".to_owned();
 				log_error!(logger, "{}", err_str);
 
 				return Err(APIError::APIMisuseError { err: err_str });
@@ -13671,7 +13712,6 @@ where
 		provided_init_features(&self.config.read().unwrap())
 	}
 
-	#[rustfmt::skip]
 	fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut splice_failed_events = Vec::new();
@@ -13779,7 +13819,10 @@ where
 					debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
 					peer_state.is_connected = false;
 					peer_state.ok_to_remove(true)
-				} else { debug_assert!(false, "Unconnected peer disconnected"); true }
+				} else {
+					debug_assert!(false, "Unconnected peer disconnected");
+					true
+				}
 			};
 			if remove_peer {
 				per_peer_state.remove(&counterparty_node_id);
@@ -13804,11 +13847,16 @@ where
 		});
 	}
 
-	#[rustfmt::skip]
-	fn peer_connected(&self, counterparty_node_id: PublicKey, init_msg: &msgs::Init, inbound: bool) -> Result<(), ()> {
+	fn peer_connected(
+		&self, counterparty_node_id: PublicKey, init_msg: &msgs::Init, inbound: bool,
+	) -> Result<(), ()> {
 		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), None, None);
 		if !init_msg.features.supports_static_remote_key() {
-			log_debug!(logger, "Peer {} does not support static remote key, disconnecting", log_pubkey!(counterparty_node_id));
+			log_debug!(
+				logger,
+				"Peer {} does not support static remote key, disconnecting",
+				log_pubkey!(counterparty_node_id)
+			);
 			return Err(());
 		}
 
@@ -13819,8 +13867,10 @@ where
 			// peer immediately (as long as it doesn't have funded channels). If we have a bunch of
 			// unfunded channels taking up space in memory for disconnected peers, we still let new
 			// peers connect, but we'll reject new channels from them.
-			let connected_peers_without_funded_channels = self.peers_without_funded_channels(|node| node.is_connected);
-			let inbound_peer_limited = inbound && connected_peers_without_funded_channels >= MAX_NO_CHANNEL_PEERS;
+			let connected_peers_without_funded_channels =
+				self.peers_without_funded_channels(|node| node.is_connected);
+			let inbound_peer_limited =
+				inbound && connected_peers_without_funded_channels >= MAX_NO_CHANNEL_PEERS;
 
 			{
 				let mut peer_state_lock = self.per_peer_state.write().unwrap();
@@ -13848,9 +13898,9 @@ where
 						peer_state.latest_features = init_msg.features.clone();
 
 						let best_block_height = self.best_block.read().unwrap().height;
-						if inbound_peer_limited &&
-							Self::unfunded_channel_count(&*peer_state, best_block_height) ==
-							peer_state.channel_by_id.len()
+						if inbound_peer_limited
+							&& Self::unfunded_channel_count(&*peer_state, best_block_height)
+								== peer_state.channel_by_id.len()
 						{
 							res = Err(());
 							return NotifyOption::SkipPersistNoEvents;
@@ -13859,7 +13909,10 @@ where
 						debug_assert!(peer_state.pending_msg_events.is_empty());
 						peer_state.pending_msg_events.clear();
 
-						debug_assert!(!peer_state.is_connected, "A peer shouldn't be connected twice");
+						debug_assert!(
+							!peer_state.is_connected,
+							"A peer shouldn't be connected twice"
+						);
 						peer_state.is_connected = true;
 					},
 				}
@@ -13876,27 +13929,26 @@ where
 				if !peer_state.peer_storage.is_empty() {
 					pending_msg_events.push(MessageSendEvent::SendPeerStorageRetrieval {
 						node_id: counterparty_node_id.clone(),
-						msg: msgs::PeerStorageRetrieval {
-							data: peer_state.peer_storage.clone()
-						},
+						msg: msgs::PeerStorageRetrieval { data: peer_state.peer_storage.clone() },
 					});
 				}
 
 				for (_, chan) in peer_state.channel_by_id.iter_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 					match chan.peer_connected_get_handshake(self.chain_hash, &&logger) {
-						ReconnectionMsg::Reestablish(msg) =>
+						ReconnectionMsg::Reestablish(msg) => {
 							pending_msg_events.push(MessageSendEvent::SendChannelReestablish {
 								node_id: chan.context().get_counterparty_node_id(),
 								msg,
-							}),
-						ReconnectionMsg::Open(OpenChannelMessage::V1(msg)) =>
-							pending_msg_events.push(MessageSendEvent::SendOpenChannel {
+							})
+						},
+						ReconnectionMsg::Open(OpenChannelMessage::V1(msg)) => pending_msg_events
+							.push(MessageSendEvent::SendOpenChannel {
 								node_id: chan.context().get_counterparty_node_id(),
 								msg,
 							}),
-						ReconnectionMsg::Open(OpenChannelMessage::V2(msg)) =>
-							pending_msg_events.push(MessageSendEvent::SendOpenChannelV2 {
+						ReconnectionMsg::Open(OpenChannelMessage::V2(msg)) => pending_msg_events
+							.push(MessageSendEvent::SendOpenChannelV2 {
 								node_id: chan.context().get_counterparty_node_id(),
 								msg,
 							}),
