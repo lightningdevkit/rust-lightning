@@ -784,7 +784,7 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	}
 
 	/// Returns the payer offer if present in the invoice request.
-	pub fn payer_offer(&$self) -> Option<&[u8]> {
+	pub fn payer_offer(&$self) -> Option<crate::offers::offer::Offer> {
 		$contents.payer_offer()
 	}
 } }
@@ -1096,9 +1096,7 @@ macro_rules! fields_accessor {
 
 			// Extract BLIP-42 contact information if present
 			let contact_secret = $self.contact_secret();
-			let payer_offer = $self
-				.payer_offer()
-				.and_then(|bytes| crate::offers::offer::Offer::try_from(bytes.to_vec()).ok());
+			let payer_offer = $self.payer_offer();
 
 			InvoiceRequestFields {
 				payer_signing_pubkey: *payer_signing_pubkey,
@@ -1231,8 +1229,8 @@ impl InvoiceRequestContents {
 		self.inner.invreq_contact_secret
 	}
 
-	pub(super) fn payer_offer(&self) -> Option<&[u8]> {
-		self.inner.invreq_payer_offer.as_ref().map(|offer| offer.as_slice())
+	pub(super) fn payer_offer(&self) -> Option<crate::offers::offer::Offer> {
+		self.inner.invreq_payer_offer.as_ref().and_then(|bytes| crate::offers::offer::Offer::try_from(bytes.clone()).ok())
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef<'_> {
