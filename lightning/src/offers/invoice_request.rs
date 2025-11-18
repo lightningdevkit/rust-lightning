@@ -1373,7 +1373,7 @@ tlv_stream!(
 	ExperimentalInvoiceRequestTlvStreamRef<'a>,
 	EXPERIMENTAL_INVOICE_REQUEST_TYPES,
 	{
-		(2_000_001_729, invreq_contact_secret: (Vec<u8>, WithoutLength)),
+		(2_000_001_729, invreq_contact_secret: [u8; 32]),
 		(2_000_001_731, invreq_payer_offer: (Vec<u8>, WithoutLength)),
 		(2_000_001_733, invreq_payer_bip_353_name: (Vec<u8>, WithoutLength)),
 		// When adding experimental TLVs, update EXPERIMENTAL_TLV_ALLOCATION_SIZE accordingly in
@@ -1385,7 +1385,7 @@ tlv_stream!(
 tlv_stream!(
 	ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef<'a>,
 	EXPERIMENTAL_INVOICE_REQUEST_TYPES, {
-		(2_000_001_729, invreq_contact_secret: (Vec<u8>, WithoutLength)),
+		(2_000_001_729, invreq_contact_secret: [u8; 32]),
 		(2_000_001_731, invreq_payer_offer: (Vec<u8>, WithoutLength)),
 		(2_000_001_733, invreq_payer_bip_353_name: (Vec<u8>, WithoutLength)),
 		(2_999_999_999, experimental_bar: (u64, HighZeroBytesDroppedBigSize)),
