@@ -17552,6 +17552,47 @@ mod tests {
 				Some(htlc_1_in_preimage) }
 		});
 
+		// Commitment transaction with similar dust HTLCs below maximum anchor amount
+		chan.context.holder_dust_limit_satoshis = 546;
+		chan.context.pending_inbound_htlcs.clear();
+		chan.context.pending_outbound_htlcs.clear();
+
+		chan.context.pending_inbound_htlcs.extend([(0, htlc_0_in_hash), (1, htlc_1_in_hash)].map(
+			|(htlc_id, payment_hash)| InboundHTLCOutput {
+				htlc_id,
+				amount_msat: 30000,
+				payment_hash,
+				cltv_expiry: 920125,
+				state: InboundHTLCState::Committed,
+			},
+		));
+
+		chan.context.pending_outbound_htlcs.extend(
+			[
+				(0, "29a74a69c5941d402838f7e1a95c2b2ec534d79524b2582f48df7bc519ebaecf"),
+				(1, "1a04764fd402b5557cba89ec3c4d8931b0225d6436923c65c079ce64a55084c4"),
+				(2, "29a74a69c5941d402838f7e1a95c2b2ec534d79524b2582f48df7bc519ebaecf"),
+				(3, "29a74a69c5941d402838f7e1a95c2b2ec534d79524b2582f48df7bc519ebaecf"),
+			]
+			.map(|(id, hash)| OutboundHTLCOutput {
+				htlc_id: id,
+				amount_msat: 30000,
+				cltv_expiry: 920125,
+				payment_hash: payment_hash_from_hex(hash),
+				state: OutboundHTLCState::Committed,
+				source: HTLCSource::dummy(),
+				skimmed_fee_msat: None,
+				blinding_point: None,
+				send_timestamp: None,
+				hold_htlc: None,
+			}),
+		);
+
+		test_commitment_with_zero_fee!(
+			"3044022034f22696dd7501d65fc117af3edcfed535eb301317fe35eef08658b571fca4d0022030ff6276cff9e22968f8b08f92a1d4f2c37fe4da29de095df4841d32bdaa501b",
+			"30450221009c820c376715329110045b3cf90f59838fd2f86b16774cb5ccccbd6a62830d9602205f2d970bef2589a5e37035937ab7db0461223e429b943b38ecf577e32b7b4572",
+			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8003b4000000000000000451024e7344841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152ea88117a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0400473044022034f22696dd7501d65fc117af3edcfed535eb301317fe35eef08658b571fca4d0022030ff6276cff9e22968f8b08f92a1d4f2c37fe4da29de095df4841d32bdaa501b014830450221009c820c376715329110045b3cf90f59838fd2f86b16774cb5ccccbd6a62830d9602205f2d970bef2589a5e37035937ab7db0461223e429b943b38ecf577e32b7b457201475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {});
+
 		// Commitment transaction with dust HTLCs above maximum anchor amount
 		chan.context.holder_dust_limit_satoshis = 2500;
 		chan.funding.value_to_self_msat = 8000000000;
