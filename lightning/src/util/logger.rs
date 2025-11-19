@@ -101,7 +101,8 @@ macro_rules! impl_record {
 pub struct Record<$($args)?> {
 	/// The verbosity level of the message.
 	pub level: Level,
-	/// The node id of the peer pertaining to the logged record.
+	/// The node id of the peer pertaining to the logged record. Since peer_id is not repeated in the message body,
+	/// include it in the log output so entries remain clear.
 	///
 	/// Note that in some cases a [`Self::channel_id`] may be filled in but this may still be
 	/// `None`, depending on if the peer information is readily available in LDK when the log is
@@ -123,7 +124,8 @@ pub struct Record<$($args)?> {
 	pub file: &'static str,
 	/// The line containing the message.
 	pub line: u32,
-	/// The payment hash.
+	/// The payment hash. Since payment_hash is not repeated in the message body, include it in the log output so
+	/// entries remain clear.
 	///
 	/// Note that this is only filled in for logs pertaining to a specific payment, and will be
 	/// `None` for logs which are not directly related to a payment.
@@ -279,8 +281,9 @@ impl<'fmt: 'r, 'r> Write for SubstringFormatter<'fmt, 'r> {
 /// A trait encapsulating the operations required of a logger. Keep in mind that log messages might not be entirely
 /// self-explanatory and may need accompanying context fields to be fully understood.
 pub trait Logger {
-	/// Logs the [`Record`]. Since the record's [`Record::channel_id`] is not embedded in the message body, log
-	/// implementations should print it alongside the message to keep entries clear.
+	/// Logs the [`Record`]. Since [`Record::channel_id`], [`Record::peer_id`] and [`Record::payment_hash`] are not
+	/// embedded in the message body, log implementations should print those alongside the message to keep entries
+	/// clear.
 	fn log(&self, record: Record);
 }
 
