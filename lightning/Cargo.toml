@@ -23,6 +23,7 @@ _externalize_tests = ["inventory", "_test_utils"]
 # Allow signing of local transactions that may have been revoked or will be revoked, for functional testing (e.g. justice tx handling).
 # This is unsafe to use in production because it may result in the counterparty publishing taking our funds.
 unsafe_revoked_tx_signing = []
+safe_channels = []
 
 std = []
 
