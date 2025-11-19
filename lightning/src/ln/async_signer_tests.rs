@@ -11,6 +11,7 @@
 //! properly with a signer implementation that asynchronously derives signatures.
 
 use crate::prelude::*;
+use crate::util::ser::Writeable;
 use bitcoin::secp256k1::Secp256k1;
 
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
@@ -20,7 +21,7 @@ use crate::ln::chan_utils::ClosingTransaction;
 use crate::ln::channel::DISCONNECT_PEER_AWAITING_RESPONSE_TICKS;
 use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent};
 use crate::ln::{functional_test_utils::*, msgs};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::SignerProvider;
@@ -1446,4 +1447,105 @@ fn test_no_disconnect_while_async_commitment_signed_expecting_remote_revoke_and_
 	};
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().into_iter().any(has_disconnect_event));
+}
+
+#[test]
+fn test_async_panic_on_stale_state() {
+	// Test that we panic if the counterparty sends us a `channel_reestablish` message with a
+	// `next_remote_commitment_number` greater than what we know with a valid corresponding secret,
+	// proving that we have lost state, when we have an async signer that is not able to immediately
+	// fetch the corresponding point to verify.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let stale_persister;
+	let stale_chain_monitor;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let stale_node;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let encoded_stale_node_1 = nodes[1].node.encode();
+	let encoded_stale_monitor_1 = get_monitor!(nodes[1], chan_id).encode();
+
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	reload_node!(
+		nodes[1],
+		encoded_stale_node_1,
+		&[&encoded_stale_monitor_1],
+		stale_persister,
+		stale_chain_monitor,
+		stale_node
+	);
+
+	nodes[1].disable_channel_signer_op(&node_id_0, &chan_id, SignerOp::GetPerCommitmentPoint);
+
+	connect_nodes(&nodes[0], &nodes[1]);
+	let reestablish_0_to_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(node_id_0, &reestablish_0_to_1[0]);
+
+	nodes[1].enable_channel_signer_op(&node_id_0, &chan_id, SignerOp::GetPerCommitmentPoint);
+	std::panic::catch_unwind(|| nodes[1].node.signer_unblocked(None)).unwrap_err();
+	nodes[1].logger.assert_log_contains(
+		"lightning::ln::channel",
+		"We have fallen behind - we have received proof that if we broadcast our counterparty is going to claim all our funds.",
+		1,
+	);
+
+	std::panic::catch_unwind(|| drop(nodes)).unwrap_err();
+}
+
+#[test]
+fn test_async_force_close_on_invalid_secret_for_stale_state() {
+	// Test that we force close a channel if the counterparty sends us a `channel_reestablish`
+	// message with a `next_remote_commitment_number` greater than what we know with an invalid
+	// corresponding secret when we have an async signer that is not able to immediately fetch the
+	// corresponding point to verify.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	nodes[1].disable_channel_signer_op(&node_id_0, &chan_id, SignerOp::GetPerCommitmentPoint);
+
+	connect_nodes(&nodes[0], &nodes[1]);
+	let mut reestablish_0_to_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	let _ = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	reestablish_0_to_1[0].next_remote_commitment_number += 1;
+	nodes[1].node.handle_channel_reestablish(node_id_0, &reestablish_0_to_1[0]);
+
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	match &msg_events[0] {
+		MessageSendEvent::HandleError {
+			action: ErrorAction::DisconnectPeerWithWarning { .. },
+			..
+		} => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	nodes[1].enable_channel_signer_op(&node_id_0, &chan_id, SignerOp::GetPerCommitmentPoint);
+	nodes[1].node.signer_unblocked(None);
+
+	let closure_reason = ClosureReason::ProcessingError {
+		err: "Peer sent a channel_reestablish indicating we're stale with an invalid commitment secret".to_owned(),
+	};
+	check_added_monitors(&nodes[1], 1);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_closed_event(&nodes[1], 1, closure_reason, &[node_id_0], 100_000);
 }

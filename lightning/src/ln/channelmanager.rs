@@ -12249,15 +12249,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		// Returns whether we should remove this channel as it's just been closed.
-		let unblock_chan = |chan: &mut Channel<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| -> Option<ShutdownResult> {
+		let unblock_chan = |chan: &mut Channel<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| -> Result<Option<ShutdownResult>, ChannelError> {
 			let channel_id = chan.context().channel_id();
 			let outbound_scid_alias = chan.context().outbound_scid_alias();
 			let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 			let node_id = chan.context().get_counterparty_node_id();
-			if let Some(msgs) = chan.signer_maybe_unblocked(
-				self.chain_hash, &&logger,
-				|htlc_id| self.path_for_release_held_htlc(htlc_id, outbound_scid_alias, &channel_id, &node_id)
-			) {
+			let cbp = |htlc_id| self.path_for_release_held_htlc(htlc_id, outbound_scid_alias, &channel_id, &node_id);
+			let msgs = chan.signer_maybe_unblocked(self.chain_hash, &&logger, cbp)?;
+			if let Some(msgs) = msgs {
 				if chan.context().is_connected() {
 					if let Some(msg) = msgs.open_channel {
 						pending_msg_events.push(MessageSendEvent::SendOpenChannel {
@@ -12326,9 +12325,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					debug_assert!(msgs.channel_ready.is_none());
 					debug_assert!(msgs.signed_closing_tx.is_none());
 				}
-				msgs.shutdown_result
+				Ok(msgs.shutdown_result)
 			} else {
-				None
+				Ok(None)
 			}
 		};
 
@@ -12345,7 +12344,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			peer_state.channel_by_id.retain(|_, chan| {
 				let shutdown_result = match channel_opt {
 					Some((_, channel_id)) if chan.context().channel_id() != channel_id => None,
-					_ => unblock_chan(chan, &mut peer_state.pending_msg_events),
+					_ => match unblock_chan(chan, &mut peer_state.pending_msg_events) {
+						Ok(shutdown_result) => shutdown_result,
+						Err(err) => {
+							let (_, err) = convert_channel_err!(self, peer_state, err, chan);
+							shutdown_results.push((Err(err), *cp_id));
+							return false;
+						},
+					},
 				};
 				if let Some(shutdown) = shutdown_result {
 					let context = chan.context();

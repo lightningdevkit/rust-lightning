@@ -1220,6 +1220,13 @@ struct HolderCommitmentPoint {
 	current_point: Option<PublicKey>,
 	next_point: PublicKey,
 	pending_next_point: Option<PublicKey>,
+
+	// Track the two latest revoked points such that we no longer need to reach a potentially async
+	// signer on channel reestablish. We would otherwise need to retrieve one or both of these
+	// points from the signer to verify the received
+	// [`msgs::ChannelReestablish::your_last_per_commitment_secret`].
+	previous_revoked_point: Option<PublicKey>,
+	last_revoked_point: Option<PublicKey>,
 }
 
 impl HolderCommitmentPoint {
@@ -1229,6 +1236,8 @@ impl HolderCommitmentPoint {
 	{
 		Some(HolderCommitmentPoint {
 			next_transaction_number: INITIAL_COMMITMENT_NUMBER,
+			previous_revoked_point: None,
+			last_revoked_point: None,
 			current_point: None,
 			next_point: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, secp_ctx).ok()?,
 			pending_next_point: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx).ok(),
@@ -1237,6 +1246,14 @@ impl HolderCommitmentPoint {
 
 	pub fn can_advance(&self) -> bool {
 		self.pending_next_point.is_some()
+	}
+
+	pub fn previous_revoked_point(&self) -> Option<PublicKey> {
+		self.previous_revoked_point
+	}
+
+	pub fn last_revoked_point(&self) -> Option<PublicKey> {
+		self.last_revoked_point
 	}
 
 	pub fn current_transaction_number(&self) -> u64 {
@@ -1304,6 +1321,8 @@ impl HolderCommitmentPoint {
 		if let Some(next_point) = self.pending_next_point {
 			*self = Self {
 				next_transaction_number: self.next_transaction_number - 1,
+				previous_revoked_point: self.last_revoked_point,
+				last_revoked_point: self.current_point,
 				current_point: Some(self.next_point),
 				next_point,
 				pending_next_point: None,
@@ -1582,13 +1601,13 @@ where
 	#[rustfmt::skip]
 	pub fn signer_maybe_unblocked<L: Deref, CBP>(
 		&mut self, chain_hash: ChainHash, logger: &L, path_for_release_htlc: CBP
-	) -> Option<SignerResumeUpdates> where L::Target: Logger, CBP: Fn(u64) -> BlindedMessagePath {
+	) -> Result<Option<SignerResumeUpdates>, ChannelError> where L::Target: Logger, CBP: Fn(u64) -> BlindedMessagePath {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::Funded(chan) => Some(chan.signer_maybe_unblocked(logger, path_for_release_htlc)),
+			ChannelPhase::Funded(chan) => chan.signer_maybe_unblocked(logger, path_for_release_htlc).map(|r| Some(r)),
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let (open_channel, funding_created) = chan.signer_maybe_unblocked(chain_hash, logger);
-				Some(SignerResumeUpdates {
+				Ok(Some(SignerResumeUpdates {
 					commitment_update: None,
 					revoke_and_ack: None,
 					open_channel,
@@ -1600,11 +1619,11 @@ where
 					closing_signed: None,
 					signed_closing_tx: None,
 					shutdown_result: None,
-				})
+				}))
 			},
 			ChannelPhase::UnfundedInboundV1(chan) => {
 				let accept_channel = chan.signer_maybe_unblocked(logger);
-				Some(SignerResumeUpdates {
+				Ok(Some(SignerResumeUpdates {
 					commitment_update: None,
 					revoke_and_ack: None,
 					open_channel: None,
@@ -1616,9 +1635,9 @@ where
 					closing_signed: None,
 					signed_closing_tx: None,
 					shutdown_result: None,
-				})
+				}))
 			},
-			ChannelPhase::UnfundedV2(_) => None,
+			ChannelPhase::UnfundedV2(_) => Ok(None),
 		}
 	}
 
@@ -2915,6 +2934,10 @@ where
 	/// Similar to [`Self::signer_pending_commitment_update`] but we're waiting to send a
 	/// [`msgs::ChannelReady`].
 	signer_pending_channel_ready: bool,
+	// Upon receiving a [`msgs::ChannelReestablish`] message with a `next_remote_commitment_number`
+	// indicating that our state may be stale, we set this to the received last-revoked commitment
+	// number and secret to perform the verification when the signer is ready.
+	signer_pending_stale_state_verification: Option<(u64, SecretKey)>,
 
 	// pending_update_fee is filled when sending and receiving update_fee.
 	//
@@ -3617,6 +3640,7 @@ where
 			signer_pending_funding: false,
 			signer_pending_closing: false,
 			signer_pending_channel_ready: false,
+			signer_pending_stale_state_verification: None,
 
 			last_sent_closing_fee: None,
 			last_received_closing_sig: None,
@@ -3855,6 +3879,7 @@ where
 			signer_pending_funding: false,
 			signer_pending_closing: false,
 			signer_pending_channel_ready: false,
+			signer_pending_stale_state_verification: None,
 
 			last_sent_closing_fee: None,
 			last_received_closing_sig: None,
@@ -9471,7 +9496,18 @@ where
 	#[rustfmt::skip]
 	pub fn signer_maybe_unblocked<L: Deref, CBP>(
 		&mut self, logger: &L, path_for_release_htlc: CBP
-	) -> SignerResumeUpdates where L::Target: Logger, CBP: Fn(u64) -> BlindedMessagePath {
+	) -> Result<SignerResumeUpdates, ChannelError> where L::Target: Logger, CBP: Fn(u64) -> BlindedMessagePath {
+		if let Some((commitment_number, commitment_secret)) = self.context.signer_pending_stale_state_verification.clone() {
+			if let Ok(expected_point) = self.context.holder_signer.as_ref()
+				.get_per_commitment_point(commitment_number, &self.context.secp_ctx)
+			{
+				self.context.signer_pending_stale_state_verification.take();
+				if expected_point != PublicKey::from_secret_key(&self.context.secp_ctx, &commitment_secret) {
+					return Err(ChannelError::close("Peer sent a channel_reestablish indicating we're stale with an invalid commitment secret".to_owned()));
+				}
+				Self::panic_on_stale_state(logger);
+			}
+		}
 		if !self.holder_commitment_point.can_advance() {
 			log_trace!(logger, "Attempting to update holder per-commitment point...");
 			self.holder_commitment_point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
@@ -9555,7 +9591,7 @@ where
 			if signed_closing_tx.is_some() { "a" } else { "no" },
 			if shutdown_result.is_some() { "a" } else { "no" });
 
-		SignerResumeUpdates {
+		Ok(SignerResumeUpdates {
 			commitment_update,
 			revoke_and_ack,
 			open_channel: None,
@@ -9567,7 +9603,7 @@ where
 			closing_signed,
 			signed_closing_tx,
 			shutdown_result,
-		}
+		})
 	}
 
 	fn get_last_revoke_and_ack<CBP, L: Deref>(
@@ -9748,6 +9784,25 @@ where
 		}
 	}
 
+	fn panic_on_stale_state<L: Deref>(logger: &L)
+	where
+		L::Target: Logger,
+	{
+		macro_rules! log_and_panic {
+			($err_msg: expr) => {
+				log_error!(logger, $err_msg);
+				panic!($err_msg);
+			};
+		}
+		log_and_panic!("We have fallen behind - we have received proof that if we broadcast our counterparty is going to claim all our funds.\n\
+			This implies you have restarted with lost ChannelMonitor and ChannelManager state, the first of which is a violation of the LDK chain::Watch requirements.\n\
+			More specifically, this means you have a bug in your implementation that can cause loss of funds, or you are running with an old backup, which is unsafe.\n\
+			If you have restored from an old backup and wish to claim any available funds, you should restart with\n\
+			an empty ChannelManager and no ChannelMonitors, reconnect to peer(s), ensure they've force-closed all of your\n\
+			previous channels and that the closure transaction(s) have confirmed on-chain,\n\
+			then restart with an empty ChannelManager and the latest ChannelMonitors that you do have.");
+	}
+
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
 	#[rustfmt::skip]
@@ -9781,28 +9836,34 @@ where
 
 		let our_commitment_transaction = INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.current_transaction_number();
 		if msg.next_remote_commitment_number > 0 {
-			let expected_point = self.context.holder_signer.as_ref()
-				.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.context.secp_ctx)
-				.expect("TODO: async signing is not yet supported for per commitment points upon channel reestablishment");
 			let given_secret = SecretKey::from_slice(&msg.your_last_per_commitment_secret)
 				.map_err(|_| ChannelError::close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
-			if expected_point != PublicKey::from_secret_key(&self.context.secp_ctx, &given_secret) {
-				return Err(ChannelError::close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided".to_owned()));
-			}
 			if msg.next_remote_commitment_number > our_commitment_transaction {
-				macro_rules! log_and_panic {
-					($err_msg: expr) => {
-						log_error!(logger, $err_msg);
-						panic!($err_msg);
-					}
+				let given_commitment_number = INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1;
+				let expected_point = self.context.holder_signer.as_ref()
+					.get_per_commitment_point(given_commitment_number, &self.context.secp_ctx)
+					.ok();
+				if expected_point.is_none() {
+					self.context.signer_pending_stale_state_verification = Some((given_commitment_number, given_secret));
+					log_info!(logger, "Waiting on async signer to verify stale state proof");
+					return Err(ChannelError::WarnAndDisconnect("Channel is not ready to be reestablished yet".to_owned()));
 				}
-				log_and_panic!("We have fallen behind - we have received proof that if we broadcast our counterparty is going to claim all our funds.\n\
-					This implies you have restarted with lost ChannelMonitor and ChannelManager state, the first of which is a violation of the LDK chain::Watch requirements.\n\
-					More specifically, this means you have a bug in your implementation that can cause loss of funds, or you are running with an old backup, which is unsafe.\n\
-					If you have restored from an old backup and wish to claim any available funds, you should restart with\n\
-					an empty ChannelManager and no ChannelMonitors, reconnect to peer(s), ensure they've force-closed all of your\n\
-					previous channels and that the closure transaction(s) have confirmed on-chain,\n\
-					then restart with an empty ChannelManager and the latest ChannelMonitors that you do have.");
+				if expected_point != Some(PublicKey::from_secret_key(&self.context.secp_ctx, &given_secret)) {
+					return Err(ChannelError::close("Peer sent a channel_reestablish indicating we're stale with an invalid commitment secret".to_owned()));
+				}
+				Self::panic_on_stale_state(logger);
+			} else if msg.next_remote_commitment_number == our_commitment_transaction {
+				let expected_point = self.holder_commitment_point.last_revoked_point()
+					.expect("The last revoked commitment point must exist when the state has advanced");
+				if expected_point != PublicKey::from_secret_key(&self.context.secp_ctx, &given_secret) {
+					return Err(ChannelError::close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided".to_owned()));
+				}
+			} else if msg.next_remote_commitment_number + 1 == our_commitment_transaction {
+				let expected_point = self.holder_commitment_point.previous_revoked_point()
+					.expect("The previous revoked commitment point must exist when they are one state behind");
+				if expected_point != PublicKey::from_secret_key(&self.context.secp_ctx, &given_secret) {
+					return Err(ChannelError::close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided".to_owned()));
+				}
 			}
 		}
 
@@ -14732,6 +14793,10 @@ where
 		}
 		let is_manual_broadcast = Some(self.context.is_manual_broadcast);
 
+		let holder_commitment_point_previous_revoked =
+			self.holder_commitment_point.previous_revoked_point();
+		let holder_commitment_point_last_revoked =
+			self.holder_commitment_point.last_revoked_point();
 		let holder_commitment_point_current = self.holder_commitment_point.current_point();
 		let holder_commitment_point_next = self.holder_commitment_point.next_point();
 		let holder_commitment_point_pending_next = self.holder_commitment_point.pending_next_point;
@@ -14793,6 +14858,8 @@ where
 			(65, self.quiescent_action, option), // Added in 0.2
 			(67, pending_outbound_held_htlc_flags, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags, optional_vec), // Added in 0.2
+			(71, holder_commitment_point_previous_revoked, option), // Added in 0.3
+			(73, holder_commitment_point_last_revoked, option), // Added in 0.3
 		});
 
 		Ok(())
@@ -15144,6 +15211,8 @@ where
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
 		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
 
+		let mut holder_commitment_point_previous_revoked_opt: Option<PublicKey> = None;
+		let mut holder_commitment_point_last_revoked_opt: Option<PublicKey> = None;
 		let mut holder_commitment_point_current_opt: Option<PublicKey> = None;
 		let mut holder_commitment_point_next_opt: Option<PublicKey> = None;
 		let mut holder_commitment_point_pending_next_opt: Option<PublicKey> = None;
@@ -15207,6 +15276,8 @@ where
 			(65, quiescent_action, upgradable_option), // Added in 0.2
 			(67, pending_outbound_held_htlc_flags_opt, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags_opt, optional_vec), // Added in 0.2
+			(71, holder_commitment_point_previous_revoked_opt, option), // Added in 0.3
+			(73, holder_commitment_point_last_revoked_opt, option), // Added in 0.3
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -15422,9 +15493,37 @@ where
 				}
 			});
 
+			let previous_revoked_point =
+				holder_commitment_point_previous_revoked_opt.or_else(|| {
+					if holder_commitment_next_transaction_number > INITIAL_COMMITMENT_NUMBER - 3 {
+						None
+					} else {
+						Some(holder_signer
+						.get_per_commitment_point(
+							holder_commitment_next_transaction_number + 3,
+							&secp_ctx,
+						)
+						.expect("Must be able to derive the previous revoked commitment point upon channel restoration"))
+					}
+				});
+			let last_revoked_point = holder_commitment_point_last_revoked_opt.or_else(|| {
+				if holder_commitment_next_transaction_number > INITIAL_COMMITMENT_NUMBER - 2 {
+					None
+				} else {
+					Some(holder_signer
+						.get_per_commitment_point(
+							holder_commitment_next_transaction_number + 2,
+							&secp_ctx,
+						)
+						.expect("Must be able to derive the last revoked commitment point upon channel restoration"))
+				}
+			});
+
 			match (holder_commitment_point_next_opt, holder_commitment_point_pending_next_opt) {
 				(Some(next_point), pending_next_point) => HolderCommitmentPoint {
 					next_transaction_number: holder_commitment_next_transaction_number,
+					previous_revoked_point,
+					last_revoked_point,
 					current_point,
 					next_point,
 					pending_next_point,
@@ -15445,6 +15544,8 @@ where
 						);
 					HolderCommitmentPoint {
 						next_transaction_number: holder_commitment_next_transaction_number,
+						previous_revoked_point,
+						last_revoked_point,
 						current_point,
 						next_point,
 						pending_next_point: Some(pending_next_point),
@@ -15531,6 +15632,7 @@ where
 				signer_pending_funding: false,
 				signer_pending_closing: false,
 				signer_pending_channel_ready: false,
+				signer_pending_stale_state_verification: None,
 
 				pending_update_fee,
 				holding_cell_update_fee,
