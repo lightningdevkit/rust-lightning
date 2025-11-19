@@ -3926,6 +3926,7 @@ mod tests {
 	use crate::blinded_path::BlindedHop;
 	use crate::chain::transaction::OutPoint;
 	use crate::crypto::chacha20::ChaCha20;
+	use crate::ln::chan_utils::make_funding_redeemscript;
 	use crate::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
 	use crate::ln::channelmanager;
 	use crate::ln::msgs::{UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -3984,6 +3985,10 @@ mod tests {
 				outbound_htlc_maximum_msat: None,
 			},
 			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
+			funding_redeem_script: Some(make_funding_redeemscript(
+				&PublicKey::from_slice(&[2; 33]).unwrap(),
+				&PublicKey::from_slice(&[2; 33]).unwrap(),
+			)),
 			channel_type: None,
 			short_channel_id,
 			outbound_scid_alias: None,
@@ -9384,6 +9389,7 @@ pub(crate) mod bench_utils {
 	use std::io::Read;
 
 	use crate::chain::transaction::OutPoint;
+	use crate::ln::chan_utils::make_funding_redeemscript;
 	use crate::ln::channel_state::{ChannelCounterparty, ChannelShutdownState};
 	use crate::ln::channelmanager;
 	use crate::ln::types::ChannelId;
@@ -9479,6 +9485,10 @@ pub(crate) mod bench_utils {
 			funding_txo: Some(OutPoint {
 				txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0
 			}),
+			funding_redeem_script: Some(make_funding_redeemscript(
+				&PublicKey::from_slice(&[2; 33]).unwrap(),
+				&PublicKey::from_slice(&[2; 33]).unwrap(),
+			)),
 			channel_type: None,
 			short_channel_id: Some(1),
 			inbound_scid_alias: None,

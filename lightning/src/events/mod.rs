@@ -1413,6 +1413,10 @@ pub enum Event {
 		///
 		/// Will be `None` for channels created prior to LDK version 0.0.122.
 		channel_type: Option<ChannelTypeFeatures>,
+		/// The witness script that is used to lock the channel's funding output to commitment transactions.
+		///
+		/// This field will be `None` for objects serialized with LDK versions prior to 0.2.0.
+		funding_redeem_script: Option<ScriptBuf>,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is ready to be used. This event
 	/// is emitted when
@@ -2234,6 +2238,7 @@ impl Writeable for Event {
 				ref counterparty_node_id,
 				ref funding_txo,
 				ref channel_type,
+				ref funding_redeem_script,
 			} => {
 				31u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -2243,6 +2248,7 @@ impl Writeable for Event {
 					(4, former_temporary_channel_id, required),
 					(6, counterparty_node_id, required),
 					(8, funding_txo, required),
+					(9, funding_redeem_script, option),
 				});
 			},
 			&Event::ConnectionNeeded { .. } => {
@@ -2815,6 +2821,7 @@ impl MaybeReadable for Event {
 					let mut counterparty_node_id = RequiredWrapper(None);
 					let mut funding_txo = RequiredWrapper(None);
 					let mut channel_type = None;
+					let mut funding_redeem_script = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(1, channel_type, option),
@@ -2822,6 +2829,7 @@ impl MaybeReadable for Event {
 						(4, former_temporary_channel_id, required),
 						(6, counterparty_node_id, required),
 						(8, funding_txo, required),
+						(9, funding_redeem_script, option),
 					});
 
 					Ok(Some(Event::ChannelPending {
@@ -2831,6 +2839,7 @@ impl MaybeReadable for Event {
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						funding_txo: funding_txo.0.unwrap(),
 						channel_type,
+						funding_redeem_script,
 					}))
 				};
 				f()

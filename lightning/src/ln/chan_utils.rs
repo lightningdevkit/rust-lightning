@@ -1121,12 +1121,17 @@ impl ChannelTransactionParameters {
 		}
 	}
 
-	#[rustfmt::skip]
 	pub(crate) fn make_funding_redeemscript(&self) -> ScriptBuf {
-		make_funding_redeemscript(
-			&self.holder_pubkeys.funding_pubkey,
-			&self.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey
-		)
+		self.make_funding_redeemscript_opt().unwrap()
+	}
+
+	pub(crate) fn make_funding_redeemscript_opt(&self) -> Option<ScriptBuf> {
+		self.counterparty_parameters.as_ref().map(|p| {
+			make_funding_redeemscript(
+				&self.holder_pubkeys.funding_pubkey,
+				&p.pubkeys.funding_pubkey,
+			)
+		})
 	}
 
 	/// Returns the counterparty's pubkeys.

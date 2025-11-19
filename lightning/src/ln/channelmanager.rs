@@ -3303,6 +3303,8 @@ macro_rules! emit_channel_pending_event {
 	($locked_events: expr, $channel: expr) => {
 		if $channel.context.should_emit_channel_pending_event() {
 			let funding_txo = $channel.funding.get_funding_txo().unwrap();
+			let funding_redeem_script =
+				Some($channel.funding.channel_transaction_parameters.make_funding_redeemscript());
 			$locked_events.push_back((
 				events::Event::ChannelPending {
 					channel_id: $channel.context.channel_id(),
@@ -3311,6 +3313,7 @@ macro_rules! emit_channel_pending_event {
 					user_channel_id: $channel.context.get_user_id(),
 					funding_txo: funding_txo.into_bitcoin_outpoint(),
 					channel_type: Some($channel.funding.get_channel_type().clone()),
+					funding_redeem_script,
 				},
 				None,
 			));
