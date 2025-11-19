@@ -1536,6 +1536,8 @@ pub enum Event {
 		/// The features that this channel will operate with. Currently, these will be the same
 		/// features that the channel was opened with, but in the future splices may change them.
 		channel_type: ChannelTypeFeatures,
+		/// The witness script that is used to lock the channel's funding output to commitment transactions.
+		new_funding_redeem_script: ScriptBuf,
 	},
 	/// Used to indicate that a splice for the given `channel_id` has failed.
 	///
@@ -2313,6 +2315,7 @@ impl Writeable for Event {
 				ref counterparty_node_id,
 				ref new_funding_txo,
 				ref channel_type,
+				ref new_funding_redeem_script,
 			} => {
 				50u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -2321,6 +2324,7 @@ impl Writeable for Event {
 					(5, user_channel_id, required),
 					(7, counterparty_node_id, required),
 					(9, new_funding_txo, required),
+					(11, new_funding_redeem_script, required),
 				});
 			},
 			&Event::SpliceFailed {
@@ -2936,6 +2940,7 @@ impl MaybeReadable for Event {
 						(5, user_channel_id, required),
 						(7, counterparty_node_id, required),
 						(9, new_funding_txo, required),
+						(11, new_funding_redeem_script, required),
 					});
 
 					Ok(Some(Event::SplicePending {
@@ -2944,6 +2949,7 @@ impl MaybeReadable for Event {
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						new_funding_txo: new_funding_txo.0.unwrap(),
 						channel_type: channel_type.0.unwrap(),
+						new_funding_redeem_script: new_funding_redeem_script.0.unwrap(),
 					}))
 				};
 				f()

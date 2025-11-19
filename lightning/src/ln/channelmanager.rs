@@ -6459,6 +6459,8 @@ where
 											user_channel_id: chan.context.get_user_id(),
 											new_funding_txo: splice_negotiated.funding_txo,
 											channel_type: splice_negotiated.channel_type,
+											new_funding_redeem_script: splice_negotiated
+												.funding_redeem_script,
 										},
 										None,
 									));
@@ -9615,6 +9617,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									user_channel_id: channel.context.get_user_id(),
 									new_funding_txo: splice_negotiated.funding_txo,
 									channel_type: splice_negotiated.channel_type,
+									new_funding_redeem_script: splice_negotiated.funding_redeem_script,
 								},
 								None,
 							));
@@ -10644,6 +10647,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									user_channel_id: chan.context.get_user_id(),
 									new_funding_txo: splice_negotiated.funding_txo,
 									channel_type: splice_negotiated.channel_type,
+									new_funding_redeem_script: splice_negotiated.funding_redeem_script,
 								},
 								None,
 							));
