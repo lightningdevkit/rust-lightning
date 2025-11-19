@@ -22,31 +22,36 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 
 export RUST_BACKTRACE=1
 
-echo -e "\n\nChecking the workspace, except lightning-transaction-sync."
+echo "::group::Checking the workspace, except lightning-transaction-sync."
 cargo check --verbose --color always
 
 WORKSPACE_MEMBERS=( $(cat Cargo.toml | tr '\n' '\r' | sed 's/\r    //g' | tr '\r' '\n' | grep '^members =' | sed 's/members.*=.*\[//' | tr -d '"' | tr ',' ' ') )
 
-echo -e "\n\nTesting the workspace, except lightning-transaction-sync."
+echo "::endgroup::"
+echo "::group::Testing the workspace, except lightning-transaction-sync."
 cargo test --verbose --color always
 
-echo -e "\n\nTesting upgrade from prior versions of LDK"
+echo "::endgroup::"
+echo "::group::Testing upgrade from prior versions of LDK"
 pushd lightning-tests
 cargo test
 popd
 
-echo -e "\n\nChecking and building docs for all workspace members individually..."
+echo "::endgroup::"
+echo "::group::Checking and building docs for all workspace members individually..."
 for DIR in "${WORKSPACE_MEMBERS[@]}"; do
 	cargo check -p "$DIR" --verbose --color always
 	cargo doc -p "$DIR" --document-private-items
 done
 
-echo -e "\n\nChecking and testing lightning with features"
+echo "::endgroup::"
+echo "::group::Checking and testing lightning with features"
 cargo test -p lightning --verbose --color always --features dnssec
 cargo check -p lightning --verbose --color always --features dnssec
 cargo doc -p lightning --document-private-items --features dnssec
 
-echo -e "\n\nChecking and testing Block Sync Clients with features"
+echo "::endgroup::"
+echo "::group::Checking and testing Block Sync Clients with features"
 
 cargo test -p lightning-block-sync --verbose --color always --features rest-client
 cargo check -p lightning-block-sync --verbose --color always --features rest-client
@@ -57,19 +62,23 @@ cargo check -p lightning-block-sync --verbose --color always --features rpc-clie
 cargo test -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
 cargo check -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
 
-echo -e "\n\nChecking and testing lightning-persister with features"
+echo "::endgroup::"
+echo "::group::Checking and testing lightning-persister with features"
 cargo test -p lightning-persister --verbose --color always --features tokio
 cargo check -p lightning-persister --verbose --color always --features tokio
 cargo doc -p lightning-persister --document-private-items --features tokio
 
-echo -e "\n\nTest Custom Message Macros"
+echo "::endgroup::"
+echo "::group::Test Custom Message Macros"
 cargo test -p lightning-custom-message --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 
-echo -e "\n\nTest backtrace-debug builds"
+echo "::endgroup::"
+echo "::group::Test backtrace-debug builds"
 cargo test -p lightning --verbose --color always --features backtrace
 
-echo -e "\n\nTesting no_std builds"
+echo "::endgroup::"
+echo "::group::Testing no_std builds"
 for DIR in lightning-invoice lightning-rapid-gossip-sync lightning-liquidity; do
 	cargo test -p $DIR --verbose --color always --no-default-features
 done
@@ -77,7 +86,8 @@ done
 cargo test -p lightning --verbose --color always --no-default-features
 cargo test -p lightning-background-processor --verbose --color always --no-default-features
 
-echo -e "\n\nTesting c_bindings builds"
+echo "::endgroup::"
+echo "::group::Testing c_bindings builds"
 # Note that because `$RUSTFLAGS` is not passed through to doctest builds we cannot selectively
 # disable doctests in `c_bindings` so we skip doctests entirely here.
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test --verbose --color always --lib --bins --tests
@@ -92,14 +102,16 @@ done
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning-background-processor --verbose --color always --no-default-features --lib --bins --tests
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning --verbose --color always --no-default-features --lib --bins --tests
 
-echo -e "\n\nTesting other crate-specific builds"
+echo "::endgroup::"
+echo "::group::Testing other crate-specific builds"
 # Note that outbound_commitment_test only runs in this mode because of hardcoded signature values
 RUSTFLAGS="$RUSTFLAGS --cfg=ldk_test_vectors" cargo test -p lightning --verbose --color always --no-default-features --features=std
 # This one only works for lightning-invoice
 # check that compile with no_std and serde works in lightning-invoice
 cargo test -p lightning-invoice --verbose --color always --no-default-features --features serde
 
-echo -e "\n\nTesting no_std build on a downstream no-std crate"
+echo "::endgroup::"
+echo "::group::Testing no_std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
 pushd no-std-check
 cargo check --verbose --color always
@@ -120,7 +132,8 @@ if [ -f "$(which arm-none-eabi-gcc)" ]; then
 	popd
 fi
 
-echo -e "\n\nTest cfg-flag builds"
+echo "::endgroup::"
+echo "::group::Test cfg-flag builds"
 RUSTFLAGS="--cfg=taproot" cargo test --verbose --color always -p lightning
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 RUSTFLAGS="--cfg=simple_close" cargo test --verbose --color always -p lightning
@@ -128,3 +141,4 @@ RUSTFLAGS="--cfg=simple_close" cargo test --verbose --color always -p lightning
 RUSTFLAGS="--cfg=lsps1_service" cargo test --verbose --color always -p lightning-liquidity
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 RUSTFLAGS="--cfg=peer_storage" cargo test --verbose --color always -p lightning
+echo "::endgroup::"
