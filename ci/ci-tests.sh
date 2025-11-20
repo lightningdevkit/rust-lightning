@@ -8,6 +8,12 @@ RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
 # which we do here.
 # Further crates which appear only as dev-dependencies are pinned further down.
 function PIN_RELEASE_DEPS {
+	# Starting with version 2.0.107, the `syn` crate has an MSRV of rustc 1.68
+	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
+
+	# Starting with version 1.0.42, the `quote` crate has an MSRV of rustc 1.68
+	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
+
 	# Starting with version 1.39.0, the `tokio` crate has an MSRV of rustc 1.70.0
 	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio --precise "1.38.1" --verbose
 
@@ -53,6 +59,8 @@ done
 
 echo -e "\n\nTesting upgrade from prior versions of LDK"
 pushd lightning-tests
+[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
 cargo test
 popd
