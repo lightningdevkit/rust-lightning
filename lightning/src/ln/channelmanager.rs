@@ -8988,6 +8988,19 @@ impl<
 			debug_assert_ne!(peer.held_by_thread(), LockHeldState::HeldByThread);
 		}
 
+		let push_forward_htlcs_failure =
+			|prev_outbound_scid_alias: u64, failure: HTLCForwardInfo| {
+				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
+				match forward_htlcs.entry(prev_outbound_scid_alias) {
+					hash_map::Entry::Occupied(mut entry) => {
+						entry.get_mut().push(failure);
+					},
+					hash_map::Entry::Vacant(entry) => {
+						entry.insert(vec![failure]);
+					},
+				}
+			};
+
 		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
 		//identify whether we sent it or not based on the (I presume) very different runtime
 		//between the branches here. We should make this async and move it into the forward HTLCs
@@ -9054,45 +9067,19 @@ impl<
 					if blinded_failure.is_some() { "blinded " } else { "" },
 					onion_error
 				);
-				// In case of trampoline + phantom we prioritize the trampoline failure over the phantom failure.
-				// TODO: Correctly wrap the error packet twice if failing back a trampoline + phantom HTLC.
-				let secondary_shared_secret = trampoline_shared_secret.or(*phantom_shared_secret);
-				let failure = match blinded_failure {
-					Some(BlindedFailure::FromIntroductionNode) => {
-						let blinded_onion_error = HTLCFailReason::reason(
-							LocalHTLCFailureReason::InvalidOnionBlinding,
-							vec![0; 32],
-						);
-						let err_packet = blinded_onion_error.get_encrypted_failure_packet(
-							incoming_packet_shared_secret,
-							&secondary_shared_secret,
-						);
-						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
-					},
-					Some(BlindedFailure::FromBlindedNode) => HTLCForwardInfo::FailMalformedHTLC {
-						htlc_id: *htlc_id,
-						failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
-						sha256_of_onion: [0; 32],
-					},
-					None => {
-						let err_packet = onion_error.get_encrypted_failure_packet(
-							incoming_packet_shared_secret,
-							&secondary_shared_secret,
-						);
-						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
-					},
-				};
 
-				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
-				match forward_htlcs.entry(*prev_outbound_scid_alias) {
-					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(failure);
-					},
-					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec![failure]);
-					},
-				}
-				mem::drop(forward_htlcs);
+				push_forward_htlcs_failure(
+					*prev_outbound_scid_alias,
+					get_htlc_forward_failure(
+						blinded_failure,
+						onion_error,
+						incoming_packet_shared_secret,
+						trampoline_shared_secret,
+						phantom_shared_secret,
+						*htlc_id,
+					),
+				);
+
 				let mut pending_events = self.pending_events.lock().unwrap();
 				pending_events.push_back((
 					events::Event::HTLCHandlingFailed {
@@ -13858,6 +13845,43 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.sign(|_| signature)
 			.map(|invoice| Bolt11Invoice::from_signed(invoice).unwrap())
 			.map_err(|e| SignOrCreationError::SignError(e))
+	}
+}
+
+/// Constructs an HTLC forward failure for sending back to the previous hop, converting to a blinded
+/// failure where appropriate.
+///
+/// When both trampoline and phantom secrets are present, the trampoline secret takes priority
+/// for error encryption.
+fn get_htlc_forward_failure(
+	blinded_failure: &Option<BlindedFailure>, onion_error: &HTLCFailReason,
+	incoming_packet_shared_secret: &[u8; 32], trampoline_shared_secret: &Option<[u8; 32]>,
+	phantom_shared_secret: &Option<[u8; 32]>, htlc_id: u64,
+) -> HTLCForwardInfo {
+	// TODO: Correctly wrap the error packet twice if failing back a trampoline + phantom HTLC.
+	let secondary_shared_secret = trampoline_shared_secret.or(*phantom_shared_secret);
+	match blinded_failure {
+		Some(BlindedFailure::FromIntroductionNode) => {
+			let blinded_onion_error =
+				HTLCFailReason::reason(LocalHTLCFailureReason::InvalidOnionBlinding, vec![0; 32]);
+			let err_packet = blinded_onion_error.get_encrypted_failure_packet(
+				incoming_packet_shared_secret,
+				&secondary_shared_secret,
+			);
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet }
+		},
+		Some(BlindedFailure::FromBlindedNode) => HTLCForwardInfo::FailMalformedHTLC {
+			htlc_id,
+			failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
+			sha256_of_onion: [0; 32],
+		},
+		None => {
+			let err_packet = onion_error.get_encrypted_failure_packet(
+				incoming_packet_shared_secret,
+				&secondary_shared_secret,
+			);
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet }
+		},
 	}
 }
 
