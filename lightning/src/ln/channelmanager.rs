@@ -1296,6 +1296,10 @@ impl MaybeReadable for EventUnblockedChannel {
 }
 
 #[derive(Debug)]
+/// Note that these run after all *non-blocked* [`ChannelMonitorUpdate`]s have been persisted.
+/// Thus, they're primarily useful for (and currently only used for) claims, where the
+/// [`ChannelMonitorUpdate`] we care about is a preimage update, which bypass the monitor update
+/// blocking logic entirely and can never be blocked.
 pub(crate) enum MonitorUpdateCompletionAction {
 	/// Indicates that a payment ultimately destined for us was claimed and we should emit an
 	/// [`events::Event::PaymentClaimed`] to the user if we haven't yet generated such an event for
@@ -1580,6 +1584,11 @@ where
 	/// same `temporary_channel_id` (or final `channel_id` in the case of 0conf channels or prior
 	/// to funding appearing on-chain), the downstream `ChannelMonitor` set is required to ensure
 	/// duplicates do not occur, so such channels should fail without a monitor update completing.
+	///
+	/// Note that these run after all *non-blocked* [`ChannelMonitorUpdate`]s have been persisted.
+	/// Thus, they're primarily useful for (and currently only used for) claims, where the
+	/// [`ChannelMonitorUpdate`] we care about is a preimage update, which bypass the monitor
+	/// update blocking logic entirely and can never be blocked.
 	monitor_update_blocked_actions: BTreeMap<ChannelId, Vec<MonitorUpdateCompletionAction>>,
 	/// If another channel's [`ChannelMonitorUpdate`] needs to complete before a channel we have
 	/// with this peer can complete an RAA [`ChannelMonitorUpdate`] (e.g. because the RAA update
@@ -3346,85 +3355,96 @@ macro_rules! emit_initial_channel_ready_event {
 /// You should not add new direct calls to this, generally, rather rely on
 /// `handle_new_monitor_update` or [`ChannelManager::channel_monitor_updated`] to call it for you.
 ///
-/// Requires that `$chan.blocked_monitor_updates_pending() == 0` and the in-flight monitor update
-/// set for this channel is empty!
+/// Requires that  the in-flight monitor update set for this channel is empty!
 macro_rules! handle_monitor_update_completion {
 	($self: ident, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => {{
 		let chan_id = $chan.context.channel_id();
 		let outbound_alias = $chan.context().outbound_scid_alias();
 		let cp_node_id = $chan.context.get_counterparty_node_id();
+
 		#[cfg(debug_assertions)]
 		{
 			let in_flight_updates = $peer_state.in_flight_monitor_updates.get(&chan_id);
 			assert!(in_flight_updates.map(|(_, updates)| updates.is_empty()).unwrap_or(true));
-			assert_eq!($chan.blocked_monitor_updates_pending(), 0);
+			assert!($chan.is_awaiting_monitor_update());
 		}
+
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
-		let updates = $chan.monitor_updating_restored(
-			&&logger,
-			&$self.node_signer,
-			$self.chain_hash,
-			&*$self.config.read().unwrap(),
-			$self.best_block.read().unwrap().height,
-			|htlc_id| {
-				$self.path_for_release_held_htlc(htlc_id, outbound_alias, &chan_id, &cp_node_id)
-			},
-		);
-		let channel_update = if updates.channel_ready.is_some()
-			&& $chan.context.is_usable()
-			&& $peer_state.is_connected
-		{
-			// We only send a channel_update in the case where we are just now sending a
-			// channel_ready and the channel is in a usable state. We may re-send a
-			// channel_update later through the announcement_signatures process for public
-			// channels, but there's no reason not to just inform our counterparty of our fees
-			// now.
-			if let Ok((msg, _, _)) = $self.get_channel_update_for_unicast($chan) {
-				Some(MessageSendEvent::SendChannelUpdate { node_id: cp_node_id, msg })
-			} else {
-				None
-			}
-		} else {
-			None
-		};
 
 		let update_actions =
 			$peer_state.monitor_update_blocked_actions.remove(&chan_id).unwrap_or(Vec::new());
 
-		let (htlc_forwards, decode_update_add_htlcs) = $self.handle_channel_resumption(
-			&mut $peer_state.pending_msg_events,
-			$chan,
-			updates.raa,
-			updates.commitment_update,
-			updates.commitment_order,
-			updates.accepted_htlcs,
-			updates.pending_update_adds,
-			updates.funding_broadcastable,
-			updates.channel_ready,
-			updates.announcement_sigs,
-			updates.tx_signatures,
-			None,
-			updates.channel_ready_order,
-		);
-		if let Some(upd) = channel_update {
-			$peer_state.pending_msg_events.push(upd);
+		if $chan.blocked_monitor_updates_pending() != 0 {
+			mem::drop($peer_state_lock);
+			mem::drop($per_peer_state_lock);
+
+			log_debug!(logger, "Channel has blocked monitor updates, completing update actions but leaving channel blocked");
+			$self.handle_monitor_update_completion_actions(update_actions);
+		} else {
+			log_debug!(logger, "Channel is open and awaiting update, resuming it");
+			let updates = $chan.monitor_updating_restored(
+				&&logger,
+				&$self.node_signer,
+				$self.chain_hash,
+				&*$self.config.read().unwrap(),
+				$self.best_block.read().unwrap().height,
+				|htlc_id| {
+					$self.path_for_release_held_htlc(htlc_id, outbound_alias, &chan_id, &cp_node_id)
+				},
+			);
+			let channel_update = if updates.channel_ready.is_some()
+				&& $chan.context.is_usable()
+				&& $peer_state.is_connected
+			{
+				// We only send a channel_update in the case where we are just now sending a
+				// channel_ready and the channel is in a usable state. We may re-send a
+				// channel_update later through the announcement_signatures process for public
+				// channels, but there's no reason not to just inform our counterparty of our fees
+				// now.
+				if let Ok((msg, _, _)) = $self.get_channel_update_for_unicast($chan) {
+					Some(MessageSendEvent::SendChannelUpdate { node_id: cp_node_id, msg })
+				} else {
+					None
+				}
+			} else {
+				None
+			};
+
+			let (htlc_forwards, decode_update_add_htlcs) = $self.handle_channel_resumption(
+				&mut $peer_state.pending_msg_events,
+				$chan,
+				updates.raa,
+				updates.commitment_update,
+				updates.commitment_order,
+				updates.accepted_htlcs,
+				updates.pending_update_adds,
+				updates.funding_broadcastable,
+				updates.channel_ready,
+				updates.announcement_sigs,
+				updates.tx_signatures,
+				None,
+				updates.channel_ready_order,
+			);
+			if let Some(upd) = channel_update {
+				$peer_state.pending_msg_events.push(upd);
+			}
+
+			let unbroadcasted_batch_funding_txid =
+				$chan.context.unbroadcasted_batch_funding_txid(&$chan.funding);
+			core::mem::drop($peer_state_lock);
+			core::mem::drop($per_peer_state_lock);
+
+			$self.post_monitor_update_unlock(
+				chan_id,
+				cp_node_id,
+				unbroadcasted_batch_funding_txid,
+				update_actions,
+				htlc_forwards,
+				decode_update_add_htlcs,
+				updates.finalized_claimed_htlcs,
+				updates.failed_htlcs,
+			);
 		}
-
-		let unbroadcasted_batch_funding_txid =
-			$chan.context.unbroadcasted_batch_funding_txid(&$chan.funding);
-		core::mem::drop($peer_state_lock);
-		core::mem::drop($per_peer_state_lock);
-
-		$self.post_monitor_update_unlock(
-			chan_id,
-			cp_node_id,
-			unbroadcasted_batch_funding_txid,
-			update_actions,
-			htlc_forwards,
-			decode_update_add_htlcs,
-			updates.finalized_claimed_htlcs,
-			updates.failed_htlcs,
-		);
 	}};
 }
 
@@ -3595,7 +3615,7 @@ macro_rules! handle_new_monitor_update {
 			$update,
 			WithChannelContext::from(&$self.logger, &$chan.context, None),
 		);
-		if all_updates_complete && $chan.blocked_monitor_updates_pending() == 0 {
+		if all_updates_complete {
 			handle_monitor_update_completion!(
 				$self,
 				$peer_state_lock,
@@ -9813,12 +9833,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.and_then(Channel::as_funded_mut)
 		{
 			if chan.is_awaiting_monitor_update() {
-				if chan.blocked_monitor_updates_pending() == 0 {
-					log_trace!(logger, "Channel is open and awaiting update, resuming it");
-					handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
-				} else {
-					log_trace!(logger, "Channel is open and awaiting update, leaving it blocked due to a blocked monitor update");
-				}
+				handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
 			} else {
 				log_trace!(logger, "Channel is open but not awaiting update");
 			}
