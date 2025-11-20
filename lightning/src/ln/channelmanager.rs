@@ -18267,6 +18267,76 @@ where
 			}
 		}
 
+		// Remove HTLCs from `forward_htlcs` if they are also present in `decode_update_add_htlcs`.
+		//
+		// In the future, the full set of pending HTLCs will be pulled from `Channel{Monitor}` data and
+		// placed in `ChannelManager::decode_update_add_htlcs` on read, to be handled on the next call
+		// to `process_pending_htlc_forwards`. This is part of a larger effort to remove the requirement
+		// of regularly persisting the `ChannelManager`. The new pipeline is supported for HTLC forwards
+		// received on LDK 0.3+ but not <= 0.2, so prune non-legacy HTLCs from `forward_htlcs`.
+		forward_htlcs_legacy.retain(|scid, pending_fwds| {
+			for fwd in pending_fwds {
+				let (prev_scid, prev_htlc_id) = match fwd {
+					HTLCForwardInfo::AddHTLC(htlc) => {
+						(htlc.prev_outbound_scid_alias, htlc.prev_htlc_id)
+					},
+					HTLCForwardInfo::FailHTLC { htlc_id, .. }
+					| HTLCForwardInfo::FailMalformedHTLC { htlc_id, .. } => (*scid, *htlc_id),
+				};
+				if let Some(pending_update_adds) = decode_update_add_htlcs.get_mut(&prev_scid) {
+					if pending_update_adds
+						.iter()
+						.any(|update_add| update_add.htlc_id == prev_htlc_id)
+					{
+						return false;
+					}
+				}
+			}
+			true
+		});
+		// Remove intercepted HTLC forwards if they are also present in `decode_update_add_htlcs`. See
+		// the above comment.
+		pending_intercepted_htlcs_legacy.retain(|id, fwd| {
+			let prev_scid = fwd.prev_outbound_scid_alias;
+			if let Some(pending_update_adds) = decode_update_add_htlcs.get_mut(&prev_scid) {
+				if pending_update_adds
+					.iter()
+					.any(|update_add| update_add.htlc_id == fwd.prev_htlc_id)
+				{
+					pending_events_read.retain(
+						|(ev, _)| !matches!(ev, Event::HTLCIntercepted { intercept_id, .. } if intercept_id == id),
+					);
+					return false;
+				}
+			}
+			if !pending_events_read.iter().any(
+				|(ev, _)| matches!(ev, Event::HTLCIntercepted { intercept_id, .. } if intercept_id == id),
+			) {
+				match create_htlc_intercepted_event(*id, &fwd) {
+					Ok(ev) => pending_events_read.push_back((ev, None)),
+					Err(()) => debug_assert!(false),
+				}
+			}
+			true
+		});
+		// Add legacy update_adds that were received on LDK <= 0.2 that are not present in the
+		// `decode_update_add_htlcs` map that was rebuilt from `Channel{Monitor}` data, see above
+		// comment.
+		for (scid, legacy_update_adds) in decode_update_add_htlcs_legacy.drain() {
+			match decode_update_add_htlcs.entry(scid) {
+				hash_map::Entry::Occupied(mut update_adds) => {
+					for legacy_update_add in legacy_update_adds {
+						if !update_adds.get().contains(&legacy_update_add) {
+							update_adds.get_mut().push(legacy_update_add);
+						}
+					}
+				},
+				hash_map::Entry::Vacant(entry) => {
+					entry.insert(legacy_update_adds);
+				},
+			}
+		}
+
 		let best_block = BestBlock::new(best_block_hash, best_block_height);
 		let flow = OffersMessageFlow::new(
 			chain_hash,
@@ -18296,7 +18366,7 @@ where
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs_legacy),
 
 			forward_htlcs: Mutex::new(forward_htlcs_legacy),
-			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs_legacy),
+			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs),
 			claimable_payments: Mutex::new(ClaimablePayments {
 				claimable_payments,
 				pending_claiming_payments: pending_claiming_payments.unwrap(),
