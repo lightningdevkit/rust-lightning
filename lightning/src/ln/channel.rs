@@ -7778,6 +7778,20 @@ where
 		Ok(())
 	}
 
+	/// Useful for reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
+	pub(super) fn get_inbound_committed_update_adds(&self) -> Vec<msgs::UpdateAddHTLC> {
+		self.context
+			.pending_inbound_htlcs
+			.iter()
+			.filter_map(|htlc| match htlc.state {
+				InboundHTLCState::Committed { ref update_add_htlc_opt } => {
+					update_add_htlc_opt.clone()
+				},
+				_ => None,
+			})
+			.collect()
+	}
+
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
 	fn mark_outbound_htlc_removed(
