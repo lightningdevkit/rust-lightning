@@ -63,6 +63,7 @@ pushd lightning-tests
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
 cargo test
+[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
 
 echo -e "\n\nChecking and testing Block Sync Clients with features"
