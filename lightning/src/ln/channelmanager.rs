@@ -17200,7 +17200,11 @@ where
 
 		const MAX_ALLOC_SIZE: usize = 1024 * 64;
 		let forward_htlcs_count: u64 = Readable::read(reader)?;
-		let mut forward_htlcs = hash_map_with_capacity(cmp::min(forward_htlcs_count as usize, 128));
+		// This map is read but may no longer be used because we'll attempt to rebuild the set of HTLC
+		// forwards from the `Channel{Monitor}`s instead, as a step towards removing the requirement of
+		// regularly persisting the `ChannelManager`.
+		let mut forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>> =
+			hash_map_with_capacity(cmp::min(forward_htlcs_count as usize, 128));
 		for _ in 0..forward_htlcs_count {
 			let short_channel_id = Readable::read(reader)?;
 			let pending_forwards_count: u64 = Readable::read(reader)?;
@@ -17211,7 +17215,7 @@ where
 			for _ in 0..pending_forwards_count {
 				pending_forwards.push(Readable::read(reader)?);
 			}
-			forward_htlcs.insert(short_channel_id, pending_forwards);
+			forward_htlcs_legacy.insert(short_channel_id, pending_forwards);
 		}
 
 		let claimable_htlcs_count: u64 = Readable::read(reader)?;
@@ -17299,12 +17303,18 @@ where
 			};
 		}
 
+		// Some maps are read but may no longer be used because we attempt to rebuild the pending HTLC
+		// set from the `Channel{Monitor}`s instead, as a step towards removing the requirement of
+		// regularly persisting the `ChannelManager`.
+		let mut pending_intercepted_htlcs_legacy: Option<HashMap<InterceptId, PendingAddHTLCInfo>> =
+			Some(new_hash_map());
+		let mut decode_update_add_htlcs_legacy: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> =
+			None;
+
 		// pending_outbound_payments_no_retry is for compatibility with 0.0.101 clients.
 		let mut pending_outbound_payments_no_retry: Option<HashMap<PaymentId, HashSet<[u8; 32]>>> =
 			None;
 		let mut pending_outbound_payments = None;
-		let mut pending_intercepted_htlcs: Option<HashMap<InterceptId, PendingAddHTLCInfo>> =
-			Some(new_hash_map());
 		let mut received_network_pubkey: Option<PublicKey> = None;
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
@@ -17322,13 +17332,12 @@ where
 		let mut in_flight_monitor_updates: Option<
 			HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>,
 		> = None;
-		let mut decode_update_add_htlcs: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> = None;
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
-			(2, pending_intercepted_htlcs, option),
+			(2, pending_intercepted_htlcs_legacy, option),
 			(3, pending_outbound_payments, option),
 			(4, pending_claiming_payments, option),
 			(5, received_network_pubkey, option),
@@ -17339,13 +17348,14 @@ where
 			(10, legacy_in_flight_monitor_updates, option),
 			(11, probing_cookie_secret, option),
 			(13, claimable_htlc_onion_fields, optional_vec),
-			(14, decode_update_add_htlcs, option),
+			(14, decode_update_add_htlcs_legacy, option),
 			(15, inbound_payment_id_secret, option),
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
 		});
-		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
+		let mut decode_update_add_htlcs_legacy =
+			decode_update_add_htlcs_legacy.unwrap_or_else(|| new_hash_map());
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.entropy_source.get_secure_random_bytes());
@@ -17719,12 +17729,12 @@ where
 								// `pending_intercepted_htlcs`, we were apparently not persisted after
 								// the monitor was when forwarding the payment.
 								dedup_decode_update_add_htlcs(
-									&mut decode_update_add_htlcs,
+									&mut decode_update_add_htlcs_legacy,
 									&prev_hop_data,
 									"HTLC was forwarded to the closed channel",
 									&args.logger,
 								);
-								forward_htlcs.retain(|_, forwards| {
+								forward_htlcs_legacy.retain(|_, forwards| {
 									forwards.retain(|forward| {
 										if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
 											if pending_forward_matches_htlc(&htlc_info) {
@@ -17736,7 +17746,7 @@ where
 									});
 									!forwards.is_empty()
 								});
-								pending_intercepted_htlcs.as_mut().unwrap().retain(|intercepted_id, htlc_info| {
+								pending_intercepted_htlcs_legacy.as_mut().unwrap().retain(|intercepted_id, htlc_info| {
 									if pending_forward_matches_htlc(&htlc_info) {
 										log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
 											&htlc.payment_hash, &monitor.channel_id());
@@ -18234,10 +18244,10 @@ where
 
 			inbound_payment_key: expanded_inbound_key,
 			pending_outbound_payments: pending_outbounds,
-			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
+			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs_legacy.unwrap()),
 
-			forward_htlcs: Mutex::new(forward_htlcs),
-			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs),
+			forward_htlcs: Mutex::new(forward_htlcs_legacy),
+			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs_legacy),
 			claimable_payments: Mutex::new(ClaimablePayments {
 				claimable_payments,
 				pending_claiming_payments: pending_claiming_payments.unwrap(),
