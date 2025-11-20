@@ -508,7 +508,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 #[cfg(feature = "std")]
 fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, not_stale: bool) {
-	use crate::ln::channelmanager::Retry;
+	use crate::ln::outbound_payment::Retry;
 	use crate::types::string::UntrustedString;
 	// When we get a data_loss_protect proving we're behind, we immediately panic as the
 	// chain::Watch API requirements have been violated (e.g. the user restored from a backup). The
@@ -1171,6 +1171,91 @@ fn removed_payment_no_manager_persistence() {
 	}
 
 	expect_payment_failed!(nodes[0], payment_hash, false);
+}
+
+#[test]
+fn manager_persisted_pre_outbound_edge_forward() {
+	do_manager_persisted_pre_outbound_edge_forward(false);
+}
+
+#[test]
+fn manager_persisted_pre_outbound_edge_intercept_forward() {
+	do_manager_persisted_pre_outbound_edge_forward(true);
+}
+
+fn do_manager_persisted_pre_outbound_edge_forward(intercept_htlc: bool) {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let mut intercept_forwards_config = test_default_channel_config();
+	intercept_forwards_config.accept_intercept_htlcs = true;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), None]);
+	let nodes_1_deserialized;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
+
+	// Lock in the HTLC from node_a <> node_b.
+	let amt_msat = 5000;
+	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
+	if intercept_htlc {
+		route.paths[0].hops[1].short_channel_id = nodes[1].node.get_intercept_scid();
+	}
+	nodes[0].node.send_payment_with_route(route, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
+
+	// Decode the HTLC onion but don't forward it to the next hop, such that the HTLC ends up in
+	// `ChannelManager::forward_htlcs` or `ChannelManager::pending_intercepted_htlcs`.
+	nodes[1].node.test_process_pending_update_add_htlcs();
+
+	// Disconnect peers and reload the forwarding node_b.
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(nodes[1].node.get_our_node_id());
+
+	let node_b_encoded = nodes[1].node.encode();
+
+	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
+	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
+	reload_node!(nodes[1], node_b_encoded, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
+
+	reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[0]));
+	let mut args_b_c = ReconnectArgs::new(&nodes[1], &nodes[2]);
+	args_b_c.send_channel_ready = (true, true);
+	args_b_c.send_announcement_sigs = (true, true);
+	reconnect_nodes(args_b_c);
+
+	// Forward the HTLC and ensure we can claim it post-reload.
+	nodes[1].node.process_pending_htlc_forwards();
+
+	if intercept_htlc {
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		let (intercept_id, expected_outbound_amt_msat) = match events[0] {
+			Event::HTLCIntercepted { intercept_id, expected_outbound_amount_msat, .. } => {
+				(intercept_id, expected_outbound_amount_msat)
+			},
+			_ => panic!()
+		};
+		nodes[1].node.forward_intercepted_htlc(intercept_id, &chan_id_2,
+			nodes[2].node.get_our_node_id(), expected_outbound_amt_msat).unwrap();
+		nodes[1].node.process_pending_htlc_forwards();
+	}
+	check_added_monitors(&nodes[1], 1);
+
+	let updates = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &updates.commitment_signed, false, false);
+	expect_and_process_pending_htlcs(&nodes[2], false);
+
+	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, amt_msat, None, nodes[2].node.get_our_node_id());
+	let path: &[&[_]] = &[&[&nodes[1], &nodes[2]]];
+	do_claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], path, payment_preimage));
+	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 }
 
 #[test]

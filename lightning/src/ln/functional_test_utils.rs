@@ -1382,9 +1382,10 @@ macro_rules! reload_node {
 		$node.onion_messenger.set_async_payments_handler(&$new_channelmanager);
 	};
 	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+		let config = $node.node.get_current_config();
 		reload_node!(
 			$node,
-			test_default_channel_config(),
+			config,
 			$chanman_encoded,
 			$monitors_encoded,
 			$persister,
