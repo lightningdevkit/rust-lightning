@@ -14110,7 +14110,7 @@ where
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
 		their_features: &InitFeatures, msg: &msgs::OpenChannelV2, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, logger: &L, our_funding_contribution: Amount,
-		our_funding_inputs: Vec<FundingTxInput>,
+		our_funding_inputs: Vec<FundingTxInput>, change_script: Option<ScriptBuf>,
 	) -> Result<Self, ChannelError>
 		where ES::Target: EntropySource,
 			  F::Target: FeeEstimator,
@@ -14170,7 +14170,7 @@ where
 			shared_funding_input: None,
 			our_funding_inputs: our_funding_inputs.clone(),
 			our_funding_outputs: Vec::new(),
-			change_script: None,
+			change_script,
 		};
 
 		let mut interactive_tx_constructor = funding_negotiation_context

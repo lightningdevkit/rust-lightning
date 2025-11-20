@@ -30,7 +30,7 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, Amount, Sequence};
+use bitcoin::{secp256k1, Amount, ScriptBuf, Sequence};
 
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, OffersContext,
@@ -9816,6 +9816,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			config_overrides,
 			Amount::ZERO,
 			vec![],
+			None,
 		)
 	}
 
@@ -9849,6 +9850,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			config_overrides,
 			Amount::ZERO,
 			vec![],
+			None,
 		)
 	}
 
@@ -9887,6 +9889,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>,
 		our_funding_contribution: Amount, funding_inputs: Vec<FundingTxInput>,
+		change_script: Option<ScriptBuf>,
 	) -> Result<(), APIError> {
 		self.do_accept_inbound_channel(
 			temporary_channel_id,
@@ -9896,6 +9899,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			config_overrides,
 			our_funding_contribution,
 			funding_inputs,
+			change_script,
 		)
 	}
 
@@ -9903,7 +9907,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn do_accept_inbound_channel(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 		accept_0conf: bool, user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>,
-		our_funding_contribution: Amount, funding_inputs: Vec<FundingTxInput>
+		our_funding_contribution: Amount, funding_inputs: Vec<FundingTxInput>,
+		change_script: Option<ScriptBuf>,
 	) -> Result<(), APIError> {
 		if our_funding_contribution > Amount::MAX_MONEY {
 			return Err(APIError::APIMisuseError {
@@ -9967,7 +9972,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							&self.channel_type_features(), &peer_state.latest_features,
 							&open_channel_msg,
 							user_channel_id, &config, best_block_height,
-							&self.logger, our_funding_contribution, funding_inputs,
+							&self.logger, our_funding_contribution, funding_inputs, change_script,
 						).map_err(|e| {
 							let channel_id = open_channel_msg.common_fields.temporary_channel_id;
 							MsgHandleErrInternal::from_chan_no_close(e, channel_id)
@@ -10253,7 +10258,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 					self.get_our_node_id(), *counterparty_node_id, &self.channel_type_features(),
 					&peer_state.latest_features, msg, user_channel_id,
-					&self.config.read().unwrap(), best_block_height, &self.logger, Amount::ZERO, vec![],
+					&self.config.read().unwrap(), best_block_height, &self.logger, Amount::ZERO, vec![], None,
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
 				let message_send_event = MessageSendEvent::SendAcceptChannelV2 {
 					node_id: *counterparty_node_id,
