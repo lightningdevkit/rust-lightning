@@ -19,11 +19,12 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
-use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
+use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields, Retry};
 use crate::ln::channel::{AnnouncementSigsState, ChannelPhase};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
+use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_utils::TestBroadcaster;
@@ -3030,7 +3031,7 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 		assert!(a.is_none());
 
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
-		check_added_monitors(&nodes[1], 0);
+		check_added_monitors(&nodes[1], 1);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
@@ -3040,8 +3041,8 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 	if let Event::PaymentPathSuccessful { .. } = events[2] {} else { panic!(); }
 	if let Event::PaymentForwarded { .. } = events[1] {} else { panic!(); }
 
-	// The event processing should release the last RAA updates on both channels.
-	check_added_monitors(&nodes[1], 2);
+	// The event processing should release the last RAA update.
+	check_added_monitors(&nodes[1], 1);
 
 	// When we fetch the next update the message getter will generate the next update for nodes[2],
 	// generating a further monitor update.
@@ -4270,4 +4271,122 @@ fn test_single_channel_multiple_mpp() {
 	let raa = get_event_msg!(nodes[8], MessageSendEvent::SendRevokeAndACK, node_7_id);
 	nodes[7].node.handle_revoke_and_ack(node_8_id, &raa);
 	check_added_monitors(&nodes[7], 1);
+}
+
+#[test]
+fn test_mpp_claim_to_holding_cell() {
+	// Previously, if an MPP payment was claimed while one channel was AwaitingRAA (causing the
+	// HTLC claim to go into the holding cell), and the RAA came in before the async monitor
+	// update with the preimage completed, the channel could hang waiting on itself.
+	// This tests that behavior.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+	let node_d_id = nodes[3].node.get_our_node_id();
+
+	// First open channels in a diamond and deliver the MPP payment.
+	let chan_1_scid = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+	let chan_2_scid = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
+	let (chan_3_update, _, chan_3_id, ..) = create_announced_chan_between_nodes(&nodes, 1, 3);
+	let chan_3_scid = chan_3_update.contents.short_channel_id;
+	let (chan_4_update, _, chan_4_id, ..) = create_announced_chan_between_nodes(&nodes, 2, 3);
+	let chan_4_scid = chan_4_update.contents.short_channel_id;
+
+	let (mut route, payment_hash, preimage_1, payment_secret) =
+		get_route_and_payment_hash!(&nodes[0], nodes[3], 500_000);
+	let path = route.paths[0].clone();
+	route.paths.push(path);
+	route.paths[0].hops[0].pubkey = node_b_id;
+	route.paths[0].hops[0].short_channel_id = chan_1_scid;
+	route.paths[0].hops[1].short_channel_id = chan_3_scid;
+	route.paths[0].hops[1].fee_msat = 250_000;
+	route.paths[1].hops[0].pubkey = node_c_id;
+	route.paths[1].hops[0].short_channel_id = chan_2_scid;
+	route.paths[1].hops[1].short_channel_id = chan_4_scid;
+	route.paths[1].hops[1].fee_msat = 250_000;
+	let paths = &[&[&nodes[1], &nodes[3]][..], &[&nodes[2], &nodes[3]][..]];
+	send_along_route_with_secret(&nodes[0], route, paths, 500_000, payment_hash, payment_secret);
+
+	// Put the C <-> D channel into AwaitingRaa
+	let (preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[3]);
+	let onion = RecipientOnionFields::secret_only(payment_secret_2);
+	let id = PaymentId([42; 32]);
+	let pay_params = PaymentParameters::from_node_id(node_d_id, TEST_FINAL_CLTV);
+	let route_params = RouteParameters::from_payment_params_and_value(pay_params, 400_000);
+	nodes[2].node.send_payment(payment_hash_2, onion, id, route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[2], 1);
+
+	let mut payment_event = SendEvent::from_node(&nodes[2]);
+	nodes[3].node.handle_update_add_htlc(node_c_id, &payment_event.msgs[0]);
+	nodes[3].node.handle_commitment_signed(node_c_id, &payment_event.commitment_msg);
+	check_added_monitors(&nodes[3], 1);
+
+	let (raa, cs) = get_revoke_commit_msgs(&nodes[3], &node_c_id);
+	nodes[2].node.handle_revoke_and_ack(node_d_id, &raa);
+	check_added_monitors(&nodes[2], 1);
+
+	nodes[2].node.handle_commitment_signed(node_d_id, &cs);
+	check_added_monitors(&nodes[2], 1);
+
+	let cs_raa = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, node_d_id);
+
+	// Now claim the payment, completing both channel monitor updates async
+	// In the current code, the C <-> D channel happens to be the `durable_preimage_channel`,
+	// improving coverage somewhat but it isn't strictly critical to the test.
+	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[3].node.claim_funds(preimage_1);
+	check_added_monitors(&nodes[3], 2);
+
+	// Complete the B <-> D monitor update, freeing the first fulfill.
+	let (outpoint, latest_id, _) = nodes[3].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_3_id).unwrap().clone();
+	nodes[3].chain_monitor.chain_monitor.channel_monitor_updated(outpoint, latest_id).unwrap();
+
+	let mut b_claim = get_htlc_update_msgs(&nodes[3], &node_b_id);
+
+	// When we deliver the pre-claim RAA, node D will shove the monitor update into the blocked
+	// state since we have a pending MPP payment which is blocking RAA monitor updates.
+	nodes[3].node.handle_revoke_and_ack(node_c_id, &cs_raa);
+	check_added_monitors(&nodes[3], 0);
+
+	// Finally, complete the C <-> D monitor update. Previously, this unlock failed to be processed
+	// due to the existence of the blocked RAA update above.
+	let (outpoint, latest_id, _) = nodes[3].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_4_id).unwrap().clone();
+	nodes[3].chain_monitor.chain_monitor.channel_monitor_updated(outpoint, latest_id).unwrap();
+	// Once we process monitor events (in this case by checking for the `PaymentClaimed` event, the
+	// RAA monitor update blocked above will be released.
+	let events = nodes[3].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	if let Event::PaymentClaimed { .. } = &events[0] {
+	} else {
+		panic!("Unexpected event: {events:?}");
+	}
+	if let Event::PendingHTLCsForwardable { .. } = &events[1] {
+	} else {
+		panic!("Unexpected event: {events:?}");
+	}
+	check_added_monitors(&nodes[3], 1);
+
+	// After the RAA monitor update completes, the C <-> D channel will be able to generate its
+	// fulfill updates as well.
+	let mut c_claim = get_htlc_update_msgs(&nodes[3], &node_c_id);
+	check_added_monitors(&nodes[3], 1);
+
+	// Finally, clear all the pending payments.
+	let path = [&[&nodes[1], &nodes[3]][..], &[&nodes[2], &nodes[3]][..]];
+	let mut args = ClaimAlongRouteArgs::new(&nodes[0], &path[..], preimage_1);
+	let b_claim_msgs = (b_claim.update_fulfill_htlcs.pop().unwrap(), b_claim.commitment_signed);
+	let c_claim_msgs = (c_claim.update_fulfill_htlcs.pop().unwrap(), c_claim.commitment_signed);
+	let claims = vec![(b_claim_msgs, node_b_id), (c_claim_msgs, node_c_id)];
+	pass_claimed_payment_along_route_from_ev(250_000, claims, args);
+
+	expect_payment_sent(&nodes[0], preimage_1, None, true, true);
+
+	nodes[3].node.process_pending_htlc_forwards();
+	expect_payment_claimable!(nodes[3], payment_hash_2, payment_secret_2, 400_000);
+	claim_payment(&nodes[2], &[&nodes[3]], preimage_2);
 }
