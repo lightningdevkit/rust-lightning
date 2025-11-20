@@ -17307,7 +17307,7 @@ where
 		// set from the `Channel{Monitor}`s instead, as a step towards removing the requirement of
 		// regularly persisting the `ChannelManager`.
 		let mut pending_intercepted_htlcs_legacy: Option<HashMap<InterceptId, PendingAddHTLCInfo>> =
-			Some(new_hash_map());
+			None;
 		let mut decode_update_add_htlcs_legacy: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> =
 			None;
 
@@ -17356,6 +17356,8 @@ where
 		});
 		let mut decode_update_add_htlcs_legacy =
 			decode_update_add_htlcs_legacy.unwrap_or_else(|| new_hash_map());
+		let mut pending_intercepted_htlcs_legacy =
+			pending_intercepted_htlcs_legacy.unwrap_or_else(|| new_hash_map());
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.entropy_source.get_secure_random_bytes());
@@ -17746,7 +17748,7 @@ where
 									});
 									!forwards.is_empty()
 								});
-								pending_intercepted_htlcs_legacy.as_mut().unwrap().retain(|intercepted_id, htlc_info| {
+								pending_intercepted_htlcs_legacy.retain(|intercepted_id, htlc_info| {
 									if pending_forward_matches_htlc(&htlc_info) {
 										log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
 											&htlc.payment_hash, &monitor.channel_id());
@@ -18244,7 +18246,7 @@ where
 
 			inbound_payment_key: expanded_inbound_key,
 			pending_outbound_payments: pending_outbounds,
-			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs_legacy.unwrap()),
+			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs_legacy),
 
 			forward_htlcs: Mutex::new(forward_htlcs_legacy),
 			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs_legacy),
