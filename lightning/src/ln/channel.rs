@@ -13946,6 +13946,8 @@ where
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
+	funding_tx_locktime: LockTime,
+	#[allow(unused)] // TODO(dual_funding): Remove once initiating V2 channels is enabled.
 	pub funding_negotiation_context: Option<FundingNegotiationContext>,
 	/// The current interactive transaction construction session under negotiation.
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
@@ -14021,6 +14023,7 @@ where
 			funding,
 			context,
 			unfunded_context,
+			funding_tx_locktime,
 			funding_negotiation_context: Some(funding_negotiation_context),
 			interactive_tx_constructor: None,
 		};
@@ -14096,7 +14099,7 @@ where
 			},
 			funding_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
 			second_per_commitment_point,
-			locktime: self.funding_tx_locktime().to_consensus_u32(),
+			locktime: self.funding_tx_locktime.to_consensus_u32(),
 			require_confirmed_inputs: None,
 		}
 	}
@@ -14160,12 +14163,13 @@ where
 			&funding.get_counterparty_pubkeys().revocation_basepoint);
 		context.channel_id = channel_id;
 
+		let funding_tx_locktime = LockTime::from_consensus(msg.locktime);
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: false,
 			our_funding_contribution: our_funding_contribution
 				.to_signed()
 				.expect("our_funding_contribution should not be greater than Amount::MAX_MONEY"),
-			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
+			funding_tx_locktime,
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
 			our_funding_inputs: our_funding_inputs.clone(),
@@ -14194,9 +14198,10 @@ where
 		Ok(Self {
 			funding,
 			context,
+			unfunded_context,
+			funding_tx_locktime,
 			funding_negotiation_context: None,
 			interactive_tx_constructor: Some(interactive_tx_constructor),
-			unfunded_context,
 		})
 	}
 
@@ -14277,20 +14282,6 @@ where
 
 	pub fn our_funding_contribution(&self) -> Amount {
 		Amount::from_sat(self.funding.value_to_self_msat / 1000)
-	}
-
-	pub fn funding_tx_locktime(&self) -> LockTime {
-		self.funding_negotiation_context
-			.as_ref()
-			.map(|context| context.funding_tx_locktime)
-			.or_else(|| {
-				self.interactive_tx_constructor
-					.as_ref()
-					.map(|constructor| constructor.funding_tx_locktime())
-			})
-			.expect(
-				"either funding_negotiation_context or interactive_tx_constructor should be set",
-			)
 	}
 }
 

@@ -1947,7 +1947,6 @@ pub(super) struct InteractiveTxConstructor {
 	is_initiator: bool,
 	initiator_first_message: Option<InteractiveTxMessageSend>,
 	channel_id: ChannelId,
-	funding_tx_locktime: AbsoluteLockTime,
 	inputs_to_contribute: Vec<(SerialId, InputOwned)>,
 	outputs_to_contribute: Vec<(SerialId, OutputOwned)>,
 	next_input_index: Option<usize>,
@@ -2113,7 +2112,6 @@ impl InteractiveTxConstructor {
 			is_initiator,
 			initiator_first_message: None,
 			channel_id,
-			funding_tx_locktime,
 			inputs_to_contribute,
 			outputs_to_contribute,
 			next_input_index,
@@ -2131,10 +2129,6 @@ impl InteractiveTxConstructor {
 			}
 		}
 		Ok(constructor)
-	}
-
-	pub(super) fn funding_tx_locktime(&self) -> AbsoluteLockTime {
-		self.funding_tx_locktime
 	}
 
 	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
