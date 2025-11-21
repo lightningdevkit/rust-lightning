@@ -1172,7 +1172,7 @@ fn test_onion_failure() {
 		&payment_secret,
 		|_| {},
 		|| {
-			nodes[1].node.process_pending_update_add_htlcs();
+			nodes[1].node.test_process_pending_update_add_htlcs();
 			for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
 				for f in pending_forwards.iter_mut() {
 					match f {
@@ -1201,7 +1201,7 @@ fn test_onion_failure() {
 		&payment_secret,
 		|_| {},
 		|| {
-			nodes[1].node.process_pending_update_add_htlcs();
+			nodes[1].node.test_process_pending_update_add_htlcs();
 			// violate amt_to_forward > msg.amount_msat
 			for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
 				for f in pending_forwards.iter_mut() {
@@ -2440,7 +2440,7 @@ fn test_phantom_onion_hmac_failure() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
-	nodes[1].node.process_pending_update_add_htlcs();
+	nodes[1].node.test_process_pending_update_add_htlcs();
 
 	// Modify the payload so the phantom hop's HMAC is bogus.
 	let sha256_of_onion = {
@@ -2513,7 +2513,7 @@ fn test_phantom_invalid_onion_payload() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
-	nodes[1].node.process_pending_update_add_htlcs();
+	nodes[1].node.test_process_pending_update_add_htlcs();
 
 	// Modify the onion packet to have an invalid payment amount.
 	for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
@@ -2612,7 +2612,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
-	nodes[1].node.process_pending_update_add_htlcs();
+	nodes[1].node.test_process_pending_update_add_htlcs();
 
 	// Modify the payload so the phantom hop's HMAC is bogus.
 	for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
