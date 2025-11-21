@@ -2202,6 +2202,17 @@ pub(crate) enum Hop {
 		/// Bytes of the onion packet we're forwarding.
 		new_packet_bytes: [u8; ONION_DATA_LEN],
 	},
+	/// This onion payload is dummy, and needs to be peeled by us.
+	Dummy {
+		/// Onion payload data used in interpreting the dummy hop
+		intro_node_blinding_point: Option<PublicKey>,
+		/// Shared secret that was used to decrypt next_hop_data.
+		shared_secret: SharedSecret,
+		/// HMAC of the next hop's onion packet.
+		next_hop_hmac: [u8; 32],
+		/// Bytes of the onion packet we're forwarding.
+		new_packet_bytes: [u8; ONION_DATA_LEN],
+	},
 	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
 	/// verifying the incoming payment.
 	Receive {
@@ -2256,6 +2267,7 @@ impl Hop {
 		match self {
 			Hop::Forward { shared_secret, .. } => shared_secret,
 			Hop::BlindedForward { shared_secret, .. } => shared_secret,
+			Hop::Dummy { shared_secret, .. } => shared_secret,
 			Hop::TrampolineForward { outer_shared_secret, .. } => outer_shared_secret,
 			Hop::TrampolineBlindedForward { outer_shared_secret, .. } => outer_shared_secret,
 			Hop::Receive { shared_secret, .. } => shared_secret,
@@ -2323,6 +2335,12 @@ where
 						new_packet_bytes,
 					})
 				},
+				msgs::InboundOnionPayload::Dummy { intro_node_blinding_point } => Ok(Hop::Dummy {
+					intro_node_blinding_point,
+					shared_secret,
+					next_hop_hmac,
+					new_packet_bytes,
+				}),
 				_ => {
 					if blinding_point.is_some() {
 						return Err(OnionDecodeErr::Malformed {

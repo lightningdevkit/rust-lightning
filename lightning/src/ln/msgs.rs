@@ -2355,6 +2355,7 @@ mod fuzzy_internal_msgs {
 		Receive(InboundOnionReceivePayload),
 		BlindedForward(InboundOnionBlindedForwardPayload),
 		BlindedReceive(InboundOnionBlindedReceivePayload),
+		Dummy { intro_node_blinding_point: Option<PublicKey> },
 	}
 
 	pub struct InboundTrampolineForwardPayload {
@@ -3693,6 +3694,17 @@ where
 						intro_node_blinding_point,
 						next_blinding_override,
 					}))
+				},
+				ChaChaDualPolyReadAdapter { readable: BlindedPaymentTlvs::Dummy, used_aad } => {
+					if amt.is_some()
+						|| cltv_value.is_some() || total_msat.is_some()
+						|| keysend_preimage.is_some()
+						|| invoice_request.is_some()
+						|| !used_aad
+					{
+						return Err(DecodeError::InvalidValue);
+					}
+					Ok(Self::Dummy { intro_node_blinding_point })
 				},
 				ChaChaDualPolyReadAdapter {
 					readable: BlindedPaymentTlvs::Receive(receive_tlvs),

@@ -74,6 +74,9 @@ pub struct DefaultRouter<
 	score_params: SP,
 }
 
+/// Default number of Dummy Hops
+pub const DEFAULT_PAYMENT_DUMMY_HOPS: usize = 3;
+
 impl<
 		G: Deref<Target = NetworkGraph<L>>,
 		L: Deref,
@@ -198,9 +201,9 @@ where
 				})
 			})
 			.map(|forward_node| {
-				BlindedPaymentPath::new(
-					&[forward_node], recipient, local_node_receive_key, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA,
-					&*self.entropy_source, secp_ctx
+				BlindedPaymentPath::new_with_dummy_hops(
+					&[forward_node], recipient, DEFAULT_PAYMENT_DUMMY_HOPS, local_node_receive_key, tlvs.clone(), u64::MAX,
+					MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source, secp_ctx
 				)
 			})
 			.take(MAX_PAYMENT_PATHS)
@@ -210,9 +213,9 @@ where
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
-					BlindedPaymentPath::new(
-						&[], recipient, local_node_receive_key, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source,
-						secp_ctx
+					BlindedPaymentPath::new_with_dummy_hops(
+						&[], recipient, DEFAULT_PAYMENT_DUMMY_HOPS, local_node_receive_key, tlvs, u64::MAX,
+						MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source, secp_ctx
 					).map(|path| vec![path])
 				} else {
 					Err(())
