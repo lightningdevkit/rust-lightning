@@ -6794,7 +6794,15 @@ where
 		Ok(())
 	}
 
-	pub(crate) fn process_pending_update_add_htlcs(&self) -> bool {
+	#[cfg(any(test, feature = "_test_utils"))]
+	/// Process any pending inbound [`msgs::UpdateAddHTLC`] messages, decoding the onion and placing
+	/// the pending HTLC in `ChannelManager::forward_htlcs` or
+	/// `ChannelManager::pending_intercepted_htlcs` as well as generating relevant [`Event`]s.
+	pub fn test_process_pending_update_add_htlcs(&self) -> bool {
+		self.process_pending_update_add_htlcs()
+	}
+
+	fn process_pending_update_add_htlcs(&self) -> bool {
 		let mut should_persist = false;
 		let mut decode_update_add_htlcs = new_hash_map();
 		mem::swap(&mut decode_update_add_htlcs, &mut self.decode_update_add_htlcs.lock().unwrap());

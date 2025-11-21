@@ -966,7 +966,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	let mut intercept_id = None;
 	let mut expected_outbound_amount_msat = None;
 	if use_intercept {
-		nodes[1].node.process_pending_update_add_htlcs();
+		nodes[1].node.test_process_pending_update_add_htlcs();
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
