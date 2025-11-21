@@ -259,7 +259,7 @@ fn test_manager_serialize_deserialize_events() {
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&node_a, &node_b.node.get_our_node_id(), channel_value, 42);
 
 	node_a.node.funding_transaction_generated(temporary_channel_id, node_b.node.get_our_node_id(), tx.clone()).unwrap();
-	check_added_monitors!(node_a, 0);
+	check_added_monitors(&node_a, 0);
 
 	let funding_created = get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id());
 	let channel_id = ChannelId::v1_from_funding_txid(
@@ -462,7 +462,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	for monitor in node_0_monitors.drain(..) {
 		assert_eq!(nodes[0].chain_monitor.watch_channel(monitor.channel_id(), monitor),
 			Ok(ChannelMonitorUpdateStatus::Completed));
-		check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	}
 	nodes[0].node = &nodes_0_deserialized;
 
@@ -474,7 +474,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		check_spends!(txn[0], funding_tx);
 		assert_eq!(txn[0].input[0].previous_output.txid, funding_tx.compute_txid());
 	}
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	// nodes[1] and nodes[2] have no lost state with nodes[0]...
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
@@ -647,7 +647,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 			.node
 			.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id(), message.clone())
 			.unwrap();
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 		check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 1000000);
@@ -697,7 +697,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 		assert_eq!(err_msgs_0.len(), 1);
 		nodes[1].node.handle_error(nodes[0].node.get_our_node_id(), &err_msgs_0[0]);
 		assert!(nodes[1].node.list_usable_channels().is_empty());
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		check_closed_event(&nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id())) }
 			, &[nodes[0].node.get_our_node_id()], 1000000);
 		check_closed_broadcast!(nodes[1], false);
@@ -754,7 +754,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 
 	nodes[0].node.send_payment_with_route(route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
-	check_added_monitors!(nodes[0], 2);
+	check_added_monitors(&nodes[0], 2);
 
 	// Send the payment through to nodes[3] *without* clearing the PaymentClaimable event
 	let mut send_events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -785,7 +785,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 	expect_payment_claimable!(nodes[3], payment_hash, payment_secret, 15_000_000);
 
 	nodes[3].node.claim_funds(payment_preimage);
-	check_added_monitors!(nodes[3], 2);
+	check_added_monitors(&nodes[3], 2);
 	expect_payment_claimed!(nodes[3], payment_hash, 15_000_000);
 
 	// Now fetch one of the two updated ChannelMonitors from nodes[3], and restart pretending we
@@ -881,7 +881,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 		// Once we call `get_and_clear_pending_msg_events` the holding cell is cleared and the HTLC
 		// claim should fly.
 		let mut ds_msgs = nodes[3].node.get_and_clear_pending_msg_events();
-		check_added_monitors!(nodes[3], 1);
+		check_added_monitors(&nodes[3], 1);
 		assert_eq!(ds_msgs.len(), 2);
 		if let MessageSendEvent::SendChannelUpdate { .. } = ds_msgs[0] {} else { panic!(); }
 
@@ -889,7 +889,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 			MessageSendEvent::UpdateHTLCs { mut updates, .. } => {
 				let mut fulfill = updates.update_fulfill_htlcs.remove(0);
 				nodes[2].node.handle_update_fulfill_htlc(nodes[3].node.get_our_node_id(), fulfill);
-				check_added_monitors!(nodes[2], 1);
+				check_added_monitors(&nodes[2], 1);
 				let cs_updates = get_htlc_update_msgs(&nodes[2], &nodes[0].node.get_our_node_id());
 				expect_payment_forwarded!(nodes[2], nodes[0], nodes[3], Some(1000), false, false);
 				do_commitment_signed_dance(&nodes[2], &nodes[3], &updates.commitment_signed, false, true);
@@ -951,7 +951,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV;
 	nodes[0].node.send_payment_with_route(route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), payment_id).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let payment_event = SendEvent::from_node(&nodes[0]);
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
@@ -985,7 +985,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	let payment_event = SendEvent::from_node(&nodes[1]);
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
 	nodes[2].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &payment_event.commitment_msg);
-	check_added_monitors!(nodes[2], 1);
+	check_added_monitors(&nodes[2], 1);
 
 	if claim_htlc {
 		get_monitor!(nodes[2], chan_id_2).provide_payment_preimage_unsafe_legacy(
@@ -1005,7 +1005,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	let cs_commitment_tx = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(cs_commitment_tx.len(), if claim_htlc { 2 } else { 1 });
 
-	check_added_monitors!(nodes[2], 1);
+	check_added_monitors(&nodes[2], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[2], 1, reason, &[nodes[1].node.get_our_node_id()], 100000);
 	check_closed_broadcast!(nodes[2], true);
@@ -1031,7 +1031,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	nodes[1].node.timer_tick_occurred();
 	let bs_commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_commitment_tx.len(), 1);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
@@ -1064,7 +1064,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	} else {
 		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, true);
 	}
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let mut update = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	if claim_htlc {
@@ -1124,7 +1124,7 @@ fn removed_payment_no_manager_persistence() {
 		&nodes[2],
 		&[HTLCHandlingFailureType::Receive { payment_hash }]
 	);
-	check_added_monitors!(nodes[2], 1);
+	check_added_monitors(&nodes[2], 1);
 	let events = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
@@ -1159,7 +1159,7 @@ fn removed_payment_no_manager_persistence() {
 		&nodes[1],
 		&[HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]
 	);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
@@ -1266,7 +1266,7 @@ fn test_htlc_localremoved_persistence() {
 		RecipientOnionFields::spontaneous_empty(), PaymentId(mismatch_payment_hash.0), &route).unwrap();
 	nodes[0].node.test_send_payment_internal(&route, mismatch_payment_hash,
 		RecipientOnionFields::spontaneous_empty(), Some(test_preimage), PaymentId(mismatch_payment_hash.0), None, session_privs).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);

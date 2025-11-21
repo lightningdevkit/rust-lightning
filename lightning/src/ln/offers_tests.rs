@@ -2414,7 +2414,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 		Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), keysend_payment_id,
 		route_params, Retry::Attempts(0)
 	).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
@@ -2482,7 +2482,7 @@ fn no_double_pay_with_stale_channelmanager() {
 	let expected_route: &[&[&Node]] = &[&[&nodes[1]], &[&nodes[1]]];
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
-	check_added_monitors!(nodes[0], 2);
+	check_added_monitors(&nodes[0], 2);
 
 	let ev = remove_first_msg_event_to_node(&bob_id, &mut events);
 	let args = PassAlongPathArgs::new(&nodes[0], expected_route[0], amt_msat, payment_hash, ev)
@@ -2507,7 +2507,7 @@ fn no_double_pay_with_stale_channelmanager() {
 	reload_node!(nodes[0], &alice_chan_manager_serialized, &[&monitor_0, &monitor_1], persister, chain_monitor, alice_deserialized);
 	// The stale manager results in closing the channels.
 	check_closed_event(&nodes[0], 2, ClosureReason::OutdatedChannelManager, &[bob_id, bob_id], 10_000_000);
-	check_added_monitors!(nodes[0], 2);
+	check_added_monitors(&nodes[0], 2);
 
 	// Alice receives a duplicate invoice, but the payment should be transitioned to Retryable by now.
 	nodes[0].onion_messenger.handle_onion_message(bob_id, &invoice_om);
