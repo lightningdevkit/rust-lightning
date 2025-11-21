@@ -62,6 +62,8 @@ pub use onion_utils::process_onion_failure;
 pub use onion_utils::AttributionData;
 
 #[cfg(test)]
+mod accountable_tests;
+#[cfg(test)]
 #[allow(unused_mut)]
 mod async_payments_tests;
 #[cfg(test)]

@@ -839,6 +839,7 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 		skimmed_fee_msat: None,
 		blinding_point: None,
 		hold_htlc: None,
+		accountable: None,
 	};
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &msg);
@@ -1082,6 +1083,7 @@ pub fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 		skimmed_fee_msat: None,
 		blinding_point: None,
 		hold_htlc: None,
+		accountable: None,
 	};
 
 	nodes[0].node.handle_update_add_htlc(node_b_id, &msg);
@@ -1266,6 +1268,7 @@ pub fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 		skimmed_fee_msat: None,
 		blinding_point: None,
 		hold_htlc: None,
+		accountable: None,
 	};
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &msg);
@@ -1650,6 +1653,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 		skimmed_fee_msat: None,
 		blinding_point: None,
 		hold_htlc: None,
+		accountable: None,
 	};
 
 	for i in 0..50 {
@@ -2256,6 +2260,7 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 		skimmed_fee_msat: None,
 		blinding_point: None,
 		hold_htlc: None,
+		accountable: None,
 	};
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &msg);

@@ -68,8 +68,8 @@ use crate::ln::inbound_payment;
 use crate::ln::interactivetxs::InteractiveTxMessageSend;
 use crate::ln::msgs;
 use crate::ln::msgs::{
-	BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError,
-	MessageSendEvent,
+	accountable_into_bool, BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate,
+	DecodeError, LightningError, MessageSendEvent,
 };
 use crate::ln::onion_payment::{
 	check_incoming_htlc_cltv, create_fwd_pending_htlc_info, create_recv_pending_htlc_info,
@@ -427,6 +427,9 @@ pub struct PendingHTLCInfo {
 	/// This is used to allow LSPs to take fees as a part of payments, without the sender having to
 	/// shoulder them.
 	pub skimmed_fee_msat: Option<u64>,
+	/// An experimental field indicating whether our node's reputation would be held accountable
+	/// for the timely resolution of the received HTLC.
+	pub incoming_accountable: Option<bool>,
 }
 
 #[derive(Clone, Debug)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
@@ -5080,7 +5083,7 @@ where
 				let current_height: u32 = self.best_block.read().unwrap().height;
 				create_recv_pending_htlc_info(decoded_hop, shared_secret, msg.payment_hash,
 					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
-					current_height)
+					accountable_into_bool(msg.accountable), current_height)
 			},
 			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
 				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
@@ -5307,6 +5310,7 @@ where
 							onion_packet,
 							None,
 							hold_htlc_at_next_hop,
+							false, // Not accountable by default for sender.
 							&self.fee_estimator,
 							&&logger,
 						);
@@ -7194,6 +7198,7 @@ where
 								payment_hash,
 								outgoing_amt_msat,
 								outgoing_cltv_value,
+								incoming_accountable,
 								..
 							},
 					} = payment;
@@ -7292,6 +7297,7 @@ where
 								Some(phantom_shared_secret),
 								false,
 								None,
+								incoming_accountable,
 								current_height,
 							);
 							match create_res {
@@ -7401,6 +7407,7 @@ where
 								outgoing_cltv_value,
 								routing,
 								skimmed_fee_msat,
+								incoming_accountable,
 								..
 							},
 						..
@@ -7501,6 +7508,7 @@ where
 						onion_packet.clone(),
 						*skimmed_fee_msat,
 						next_blinding_point,
+						incoming_accountable.unwrap_or(false),
 						&self.fee_estimator,
 						&&logger,
 					) {
@@ -15940,6 +15948,7 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(8, outgoing_cltv_value, required),
 	(9, incoming_amt_msat, option),
 	(10, skimmed_fee_msat, option),
+	(11, incoming_accountable, option),
 });
 
 impl Writeable for HTLCFailureMsg {
@@ -19375,7 +19384,7 @@ mod tests {
 		if let Err(crate::ln::channelmanager::InboundHTLCErr { reason, .. }) =
 			create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 				sender_intended_amt_msat - extra_fee_msat - 1, 42, None, true, Some(extra_fee_msat),
-				current_height)
+				None, current_height)
 		{
 			assert_eq!(reason, LocalHTLCFailureReason::FinalIncorrectHTLCAmount);
 		} else { panic!(); }
@@ -19398,7 +19407,7 @@ mod tests {
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 		assert!(create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat),
-			current_height).is_ok());
+			None, current_height).is_ok());
 	}
 
 	#[test]
@@ -19423,7 +19432,7 @@ mod tests {
 				custom_tlvs: Vec::new(),
 			},
 			shared_secret: SharedSecret::from_bytes([0; 32]),
-		}, [0; 32], PaymentHash([0; 32]), 100, TEST_FINAL_CLTV + 1, None, true, None, current_height);
+		}, [0; 32], PaymentHash([0; 32]), 100, TEST_FINAL_CLTV + 1, None, true, None, None, current_height);
 
 		// Should not return an error as this condition:
 		// https://github.com/lightning/bolts/blob/4dcc377209509b13cf89a4b91fde7d478f5b46d8/04-onion-routing.md?plain=1#L334
