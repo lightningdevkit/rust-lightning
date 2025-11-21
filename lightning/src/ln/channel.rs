@@ -6862,6 +6862,9 @@ pub struct SpliceFundingNegotiated {
 
 	/// The features that this channel will operate with.
 	pub channel_type: ChannelTypeFeatures,
+
+	/// The redeem script of the funding output.
+	pub funding_redeem_script: ScriptBuf,
 }
 
 /// Information about a splice funding negotiation that has failed.
@@ -8939,12 +8942,14 @@ where
 				let funding_txo =
 					funding.get_funding_txo().expect("funding outpoint should be set");
 				let channel_type = funding.get_channel_type().clone();
+				let funding_redeem_script = funding.get_funding_redeemscript();
 
 				pending_splice.negotiated_candidates.push(funding);
 
 				let splice_negotiated = SpliceFundingNegotiated {
 					funding_txo: funding_txo.into_bitcoin_outpoint(),
 					channel_type,
+					funding_redeem_script,
 				};
 
 				let splice_locked = pending_splice.check_get_splice_locked(

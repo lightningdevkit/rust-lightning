@@ -450,6 +450,10 @@ pub struct ChannelDetails {
 	///
 	/// This field is empty for objects serialized with LDK versions prior to 0.0.122.
 	pub pending_outbound_htlcs: Vec<OutboundHTLCDetails>,
+	/// The witness script that is used to lock the channel's funding output to commitment transactions.
+	///
+	/// This field will be `None` for objects serialized with LDK versions prior to 0.2.0.
+	pub funding_redeem_script: Option<bitcoin::ScriptBuf>,
 }
 
 impl ChannelDetails {
@@ -473,6 +477,21 @@ impl ChannelDetails {
 	/// [`Route`]: crate::routing::router::Route
 	pub fn get_outbound_payment_scid(&self) -> Option<u64> {
 		self.short_channel_id.or(self.outbound_scid_alias)
+	}
+
+	/// Gets the funding output for this channel, if available.
+	///
+	/// During a splice, the funding output will change and this value will be updated
+	/// after the splice transaction has reached sufficient confirmations and we've
+	/// exchanged `splice_locked` messages.
+	pub fn get_funding_output(&self) -> Option<bitcoin::TxOut> {
+		match self.funding_redeem_script.as_ref() {
+			None => None,
+			Some(redeem_script) => Some(bitcoin::TxOut {
+				value: bitcoin::Amount::from_sat(self.channel_value_satoshis),
+				script_pubkey: redeem_script.to_p2wsh(),
+			}),
+		}
 	}
 
 	pub(super) fn from_channel<SP: Deref, F: Deref>(
@@ -509,6 +528,9 @@ impl ChannelDetails {
 				outbound_htlc_maximum_msat: context.get_counterparty_htlc_maximum_msat(funding),
 			},
 			funding_txo: funding.get_funding_txo(),
+			funding_redeem_script: funding
+				.channel_transaction_parameters
+				.make_funding_redeemscript_opt(),
 			// Note that accept_channel (or open_channel) is always the first message, so
 			// `have_received_message` indicates that type negotiation has completed.
 			channel_type: if context.have_received_message() {
@@ -583,6 +605,7 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(41, channel_shutdown_state, option),
 	(43, pending_inbound_htlcs, optional_vec),
 	(45, pending_outbound_htlcs, optional_vec),
+	(47, funding_redeem_script, option),
 	(_unused, user_channel_id, (static_value,
 		_user_channel_id_low.unwrap_or(0) as u128 | ((_user_channel_id_high.unwrap_or(0) as u128) << 64)
 	)),
@@ -627,6 +650,7 @@ mod tests {
 	use crate::{
 		chain::transaction::OutPoint,
 		ln::{
+			chan_utils::make_funding_redeemscript,
 			channel_state::{
 				InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails,
 				OutboundHTLCStateDetails,
@@ -658,6 +682,10 @@ mod tests {
 				txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(),
 				index: 1,
 			}),
+			funding_redeem_script: Some(make_funding_redeemscript(
+				&PublicKey::from_slice(&[2; 33]).unwrap(),
+				&PublicKey::from_slice(&[2; 33]).unwrap(),
+			)),
 			channel_type: None,
 			short_channel_id: None,
 			outbound_scid_alias: None,
