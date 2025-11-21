@@ -987,7 +987,7 @@ fn ignore_duplicate_invoice() {
 	let args = PassAlongPathArgs::new(sender, route[0], amt_msat, payment_hash, ev);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let (res, _) =
+	let (res, _, _) =
 		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice.clone())));
 
@@ -1072,7 +1072,7 @@ fn ignore_duplicate_invoice() {
 	};
 
 	// After paying invoice, check that static invoice is ignored.
-	let res = claim_payment(sender, route[0], payment_preimage);
+	let (res, _) = claim_payment(sender, route[0], payment_preimage);
 	assert_eq!(res, Some(PaidBolt12Invoice::Bolt12Invoice(invoice)));
 
 	sender.onion_messenger.handle_onion_message(always_online_node_id, &static_invoice_om);
@@ -1141,7 +1141,7 @@ fn async_receive_flow_success() {
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let (res, _) =
+	let (res, _, _) =
 		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
@@ -2941,7 +2941,7 @@ fn async_payment_e2e() {
 
 	let route: &[&[&Node]] = &[&[sender_lsp, invoice_server, recipient]];
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let (res, _) =
+	let (res, _, _) =
 		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
@@ -3178,7 +3178,7 @@ fn intercepted_hold_htlc() {
 
 	let route: &[&[&Node]] = &[&[lsp, recipient]];
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let (res, _) =
+	let (res, _, _) =
 		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
@@ -3425,7 +3425,7 @@ fn release_htlc_races_htlc_onion_decode() {
 
 	let route: &[&[&Node]] = &[&[sender_lsp, invoice_server, recipient]];
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let (res, _) =
+	let (res, _, _) =
 		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
