@@ -123,7 +123,7 @@ pub struct AvailableBalances {
 	pub next_outbound_htlc_minimum_msat: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FeeUpdateState {
 	// Inbound states mirroring InboundHTLCState
 	RemoteAnnounced,
@@ -138,16 +138,33 @@ enum FeeUpdateState {
 	Outbound,
 }
 
-#[derive(Debug)]
+impl_writeable_tlv_based_enum!(FeeUpdateState,
+	(0, RemoteAnnounced) => {},
+	(1, AwaitingRemoteRevokeToAnnounce) => {},
+	(2, Outbound) => {},
+);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum InboundHTLCRemovalReason {
 	FailRelay(msgs::OnionErrorPacket),
 	FailMalformed { sha256_of_onion: [u8; 32], failure_code: u16 },
 	Fulfill { preimage: PaymentPreimage, attribution_data: Option<AttributionData> },
 }
 
+impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,
+	(1, FailMalformed) => {
+		(0, sha256_of_onion, required),
+		(1, failure_code, required),
+	},
+	(2, Fulfill) => {
+		(0, preimage, required),
+		(1, attribution_data, required),
+	},
+	{0, FailRelay} => (),
+);
+
 /// Represents the resolution status of an inbound HTLC.
-#[cfg_attr(test, derive(Debug))]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum InboundHTLCResolution {
 	/// Resolved implies the action we must take with the inbound HTLC has already been determined,
 	/// i.e., we already know whether it must be failed back or forwarded.
@@ -170,7 +187,7 @@ impl_writeable_tlv_based_enum!(InboundHTLCResolution,
 	},
 );
 
-#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum InboundHTLCState {
 	/// Offered by remote, to be included in next local commitment tx. I.e., the remote sent an
 	/// update_add_htlc message for this HTLC.
@@ -224,6 +241,14 @@ enum InboundHTLCState {
 	/// ChannelMonitor::provide_latest_local_commitment_tx will not include this HTLC.
 	LocalRemoved(InboundHTLCRemovalReason),
 }
+
+impl_writeable_tlv_based_enum!(InboundHTLCState,
+	(3, Committed) => {},	// Strangely this one needs to come first?!?
+	{0, RemoteAnnounced} => (),
+	{1, AwaitingRemoteRevokeToAnnounce} => (),
+	{2, AwaitingAnnouncedRemoteRevoke} => (),
+	{4, LocalRemoved} => (),
+);
 
 impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
 	fn from(state: &InboundHTLCState) -> Option<InboundHTLCStateDetails> {
@@ -301,7 +326,7 @@ impl InboundHTLCState {
 	}
 }
 
-#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct InboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -310,8 +335,15 @@ struct InboundHTLCOutput {
 	state: InboundHTLCState,
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(Clone, PartialEq))]
+impl_writeable_tlv_based!(InboundHTLCOutput, {
+	(0, htlc_id, required),
+	(1, amount_msat, required),
+	(2, cltv_expiry, required),
+	(3, payment_hash, required),
+	(4, state, required),
+});
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum OutboundHTLCState {
 	/// Added by us and included in a commitment_signed (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -343,6 +375,14 @@ enum OutboundHTLCState {
 	/// revoke_and_ack to drop completely.
 	AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome),
 }
+
+impl_writeable_tlv_based_enum!(OutboundHTLCState,
+	(3, Committed) => {},	// Strangely this one needs to come first?!?
+	{0, LocalAnnounced} => (),
+	{1, RemoteRemoved} => (),
+	{2, AwaitingRemoteRevokeToRemove} => (),
+	{4, AwaitingRemovedRemoteRevoke} => (),
+);
 
 impl From<&OutboundHTLCState> for OutboundHTLCStateDetails {
 	fn from(state: &OutboundHTLCState) -> OutboundHTLCStateDetails {
@@ -410,8 +450,7 @@ impl OutboundHTLCState {
 	}
 }
 
-#[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum OutboundHTLCOutcome {
 	/// We started always filling in the preimages here in 0.0.105, and the requirement
 	/// that the preimages always be filled in was added in 0.2.
@@ -422,6 +461,14 @@ enum OutboundHTLCOutcome {
 	Failure(HTLCFailReason),
 }
 
+impl_writeable_tlv_based_enum!(OutboundHTLCOutcome,
+	(0, Success) => {
+		(0, preimage, required),
+		(1, attribution_data, required),
+	},
+	{1, Failure} => (),
+);
+
 impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
 	fn into(self) -> Option<&'a HTLCFailReason> {
 		match self {
@@ -431,8 +478,7 @@ impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
 	}
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(Clone, PartialEq))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct OutboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -446,9 +492,21 @@ struct OutboundHTLCOutput {
 	hold_htlc: Option<()>,
 }
 
+impl_writeable_tlv_based!(OutboundHTLCOutput, {
+	(0, htlc_id, required),
+	(1, amount_msat, required),
+	(2, cltv_expiry, required),
+	(3, payment_hash, required),
+	(4, state, required),
+	(5, source, required),
+	(6, blinding_point, required),
+	(7, skimmed_fee_msat, required),
+	(8, send_timestamp, required),
+	(9, hold_htlc, required),
+});
+
 /// See AwaitingRemoteRevoke ChannelState for more info
-#[derive(Debug)]
-#[cfg_attr(test, derive(Clone, PartialEq))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum HTLCUpdateAwaitingACK {
 	AddHTLC {
 		// TODO: Time out if we're getting close to cltv_expiry
@@ -478,6 +536,33 @@ enum HTLCUpdateAwaitingACK {
 		sha256_of_onion: [u8; 32],
 	},
 }
+
+impl_writeable_tlv_based_enum!(HTLCUpdateAwaitingACK,
+	(0, AddHTLC) => {
+		(0, amount_msat, required),
+		(1, cltv_expiry, required),
+		(2, payment_hash, required),
+		(3, source, required),
+		(4, onion_routing_packet, required),
+		(5, skimmed_fee_msat, required),
+		(6, blinding_point, required),
+		(7, hold_htlc, required),
+	},
+	(1, ClaimHTLC) => {
+		(0, payment_preimage, required),
+		(1, attribution_data, required),
+		(2, htlc_id, required),
+	},
+	(2, FailHTLC) => {
+		(0, htlc_id, required),
+		(1, err_packet, required),
+	},
+	(3, FailMalformedHTLC) => {
+		(0, htlc_id, required),
+		(1, failure_code, required),
+		(2, sha256_of_onion, required),
+	}
+);
 
 macro_rules! define_state_flags {
 	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr, $get: ident, $set: ident, $clear: ident)),*], $extra_flags: expr) => {
@@ -716,6 +801,19 @@ enum ChannelState {
 	/// We've successfully negotiated a `closing_signed` dance. At this point, the `ChannelManager`
 	/// is about to drop us, but we store this anyway.
 	ShutdownComplete,
+}
+
+impl Writeable for ChannelState {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_u32().write(w)
+	}
+}
+
+impl Readable for ChannelState {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let state_u32 = u32::read(r)?;
+		ChannelState::from_u32(state_u32).map_err(|_| DecodeError::InvalidValue)
+	}
 }
 
 macro_rules! impl_state_flag {
@@ -1031,7 +1129,7 @@ macro_rules! secp_check {
 /// spamming the network with updates if the connection is flapping. Instead, we "stage" updates to
 /// our channel_update message and track the current state here.
 /// See implementation at [`super::channelmanager::ChannelManager::timer_tick_occurred`].
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum ChannelUpdateStatus {
 	/// We've announced the channel as enabled and are connected to our peer.
 	Enabled,
@@ -1044,8 +1142,7 @@ pub(super) enum ChannelUpdateStatus {
 }
 
 /// We track when we sent an `AnnouncementSignatures` to our peer in a few states, described here.
-#[cfg_attr(test, derive(Debug))]
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Debug, Eq)]
 pub enum AnnouncementSigsState {
 	/// We have not sent our peer an `AnnouncementSignatures` yet, or our peer disconnected since
 	/// we sent the last `AnnouncementSignatures`.
@@ -1225,7 +1322,7 @@ pub(crate) struct DisconnectResult {
 /// Tracks the transaction number, along with current and next commitment points.
 /// This consolidates the logic to advance our commitment number and request new
 /// commitment points from our signer.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct HolderCommitmentPoint {
 	next_transaction_number: u64,
 	current_point: Option<PublicKey>,
@@ -1239,6 +1336,15 @@ struct HolderCommitmentPoint {
 	previous_revoked_point: Option<PublicKey>,
 	last_revoked_point: Option<PublicKey>,
 }
+
+impl_writeable_tlv_based!(HolderCommitmentPoint, {
+	(0, next_transaction_number, required),
+	(1, current_point, required),
+	(2, next_point, required),
+	(3, pending_next_point, required),
+	(4, previous_revoked_point, required),
+	(5, last_revoked_point, required),
+});
 
 impl HolderCommitmentPoint {
 	#[rustfmt::skip]
@@ -1433,7 +1539,7 @@ pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 14 * 24 * 6 * 4;
 #[cfg(test)]
 pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
 }
@@ -2384,6 +2490,53 @@ pub(super) struct FundingScope {
 	minimum_depth_override: Option<u32>,
 }
 
+impl Eq for FundingScope {}
+
+impl PartialEq for FundingScope {
+	fn eq(&self, other: &Self) -> bool {
+		self.value_to_self_msat == other.value_to_self_msat
+			&& self.counterparty_selected_channel_reserve_satoshis
+				== other.counterparty_selected_channel_reserve_satoshis
+			&& self.holder_selected_channel_reserve_satoshis
+				== other.holder_selected_channel_reserve_satoshis
+			&& self.channel_transaction_parameters == other.channel_transaction_parameters
+			&& self.funding_transaction == other.funding_transaction
+			&& self.funding_tx_confirmed_in == other.funding_tx_confirmed_in
+			&& self.funding_tx_confirmation_height == other.funding_tx_confirmation_height
+			&& self.short_channel_id == other.short_channel_id
+			&& self.minimum_depth_override == other.minimum_depth_override
+	}
+}
+
+impl Clone for FundingScope {
+	fn clone(&self) -> Self {
+		FundingScope {
+			value_to_self_msat: self.value_to_self_msat,
+			counterparty_selected_channel_reserve_satoshis: self
+				.counterparty_selected_channel_reserve_satoshis,
+			holder_selected_channel_reserve_satoshis: self.holder_selected_channel_reserve_satoshis,
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new(
+				*self.holder_max_commitment_tx_output.lock().unwrap(),
+			),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new(
+				*self.counterparty_max_commitment_tx_output.lock().unwrap(),
+			),
+			#[cfg(any(test, fuzzing))]
+			next_local_fee: Mutex::new(*self.next_local_fee.lock().unwrap()),
+			#[cfg(any(test, fuzzing))]
+			next_remote_fee: Mutex::new(*self.next_remote_fee.lock().unwrap()),
+			channel_transaction_parameters: self.channel_transaction_parameters.clone(),
+			funding_transaction: self.funding_transaction.clone(),
+			funding_tx_confirmed_in: self.funding_tx_confirmed_in,
+			funding_tx_confirmation_height: self.funding_tx_confirmation_height,
+			short_channel_id: self.short_channel_id,
+			minimum_depth_override: self.minimum_depth_override,
+		}
+	}
+}
+
 impl Writeable for FundingScope {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
@@ -2670,7 +2823,7 @@ impl FundingScope {
 /// Information about pending attempts at funding a channel. This includes funding currently under
 /// negotiation and any negotiated attempts waiting enough on-chain confirmations. More than one
 /// such attempt indicates use of RBF to increase the chances of confirmation.
-#[derive(Debug)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 struct PendingFunding {
 	funding_negotiation: Option<FundingNegotiation>,
 
@@ -2692,7 +2845,7 @@ impl_writeable_tlv_based!(PendingFunding, {
 	(7, received_funding_txid, option),
 });
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum FundingNegotiation {
 	AwaitingAck {
 		context: FundingNegotiationContext,
@@ -2772,7 +2925,7 @@ impl PendingFunding {
 	}
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SpliceInstructions {
 	adjusted_funding_contribution: SignedAmount,
 	our_funding_inputs: Vec<FundingTxInput>,
@@ -2800,7 +2953,7 @@ impl_writeable_tlv_based!(SpliceInstructions, {
 	(11, locktime, required),
 });
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum QuiescentAction {
 	Splice(SpliceInstructions),
 	#[cfg(any(test, fuzzing))]
@@ -6617,7 +6770,7 @@ fn check_v2_funding_inputs_sufficient(
 }
 
 /// Context for negotiating channels (dual-funded V2 open, splicing)
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FundingNegotiationContext {
 	/// Whether we initiated the funding negotiation.
 	pub is_initiator: bool,
