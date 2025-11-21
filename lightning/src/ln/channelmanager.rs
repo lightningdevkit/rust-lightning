@@ -207,8 +207,7 @@ use crate::ln::script::ShutdownScript;
 // our payment, which we can use to decode errors or inform the user that the payment was sent.
 
 /// Information about where a received HTLC('s onion) has indicated the HTLC should go.
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub enum PendingHTLCRouting {
 	/// An HTLC which should be forwarded on to another node.
 	Forward {
@@ -386,8 +385,7 @@ impl PendingHTLCRouting {
 
 /// Information about an incoming HTLC, including the [`PendingHTLCRouting`] describing where it
 /// should go next.
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub struct PendingHTLCInfo {
 	/// Further routing details based on whether the HTLC is being forwarded or received.
 	pub routing: PendingHTLCRouting,
@@ -429,15 +427,14 @@ pub struct PendingHTLCInfo {
 	pub skimmed_fee_msat: Option<u64>,
 }
 
-#[derive(Clone, Debug)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum HTLCFailureMsg {
 	Relay(msgs::UpdateFailHTLC),
 	Malformed(msgs::UpdateFailMalformedHTLC),
 }
 
 /// Stores whether we can't forward an HTLC or relevant forwarding info
-#[cfg_attr(test, derive(Debug))]
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum PendingHTLCStatus {
 	Forward(PendingHTLCInfo),
 	Fail(HTLCFailureMsg),
@@ -1009,13 +1006,18 @@ impl MsgHandleErrInternal {
 /// be sent in the order they appear in the return value, however sometimes the order needs to be
 /// variable at runtime (eg FundedChannel::channel_reestablish needs to re-send messages in the order
 /// they were originally sent). In those cases, this enum is also returned.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) enum RAACommitmentOrder {
 	/// Send the CommitmentUpdate messages first
 	CommitmentFirst,
 	/// Send the RevokeAndACK message first
 	RevokeAndACKFirst,
 }
+
+impl_writeable_tlv_based_enum!(RAACommitmentOrder,
+	(0, CommitmentFirst) => {},
+	(1, RevokeAndACKFirst) => {},
+);
 
 /// Similar to scenarios used by [`RAACommitmentOrder`], this determines whether a `channel_ready`
 /// message should be sent first (i.e., prior to a `commitment_update`) or after the initial
