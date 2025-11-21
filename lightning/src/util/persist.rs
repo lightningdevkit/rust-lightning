@@ -16,10 +16,11 @@ use alloc::sync::Arc;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::{BlockHash, Txid};
 
+use core::convert::Infallible;
 use core::future::Future;
 use core::mem;
 use core::ops::Deref;
-use core::pin::Pin;
+use core::pin::{pin, Pin};
 use core::str::FromStr;
 use core::task;
 
@@ -34,7 +35,9 @@ use crate::chain::transaction::OutPoint;
 use crate::ln::types::ChannelId;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::sync::Mutex;
-use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
+use crate::util::async_poll::{
+	dummy_waker, MaybeSend, MaybeSync, MultiResultFuturePoller, ResultFuture, TwoFutureJoiner,
+};
 use crate::util::logger::Logger;
 use crate::util::native_async::FutureSpawner;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
@@ -216,34 +219,34 @@ where
 {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> AsyncResult<'static, Vec<u8>, io::Error> {
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + 'static + MaybeSend {
 		let res = self.0.read(primary_namespace, secondary_namespace, key);
 
-		Box::pin(async move { res })
+		async move { res }
 	}
 
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> AsyncResult<'static, (), io::Error> {
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
 		let res = self.0.write(primary_namespace, secondary_namespace, key, buf);
 
-		Box::pin(async move { res })
+		async move { res }
 	}
 
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
-	) -> AsyncResult<'static, (), io::Error> {
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
 		let res = self.0.remove(primary_namespace, secondary_namespace, key, lazy);
 
-		Box::pin(async move { res })
+		async move { res }
 	}
 
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> AsyncResult<'static, Vec<String>, io::Error> {
+	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend {
 		let res = self.0.list(primary_namespace, secondary_namespace);
 
-		Box::pin(async move { res })
+		async move { res }
 	}
 }
 
@@ -283,16 +286,18 @@ pub trait KVStore {
 	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> AsyncResult<'static, Vec<u8>, io::Error>;
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + 'static + MaybeSend;
 	/// Persists the given data under the given `key`.
 	///
-	/// The order of multiple writes to the same key needs to be retained while persisting
-	/// asynchronously. In other words, if two writes to the same key occur, the state (as seen by
-	/// [`Self::read`]) must either see the first write then the second, or only ever the second,
-	/// no matter when the futures complete (and must always contain the second write once the
-	/// second future completes). The state should never contain the first write after the second
-	/// write's future completes, nor should it contain the second write, then contain the first
-	/// write at any point thereafter (even if the second write's future hasn't yet completed).
+	/// Note that this is *not* an `async fn`. Rather, the order of multiple writes to the same key
+	/// (as defined by the order of the synchronous function calls) needs to be retained while
+	/// persisting asynchronously. In other words, if two writes to the same key occur, the state
+	/// (as seen by [`Self::read`]) must either see the first write then the second, or only ever
+	/// the second, no matter when the futures complete (and must always contain the second write
+	/// once the second future completes). The state should never contain the first write after the
+	/// second write's future completes, nor should it contain the second write, then contain the
+	/// first write at any point thereafter (even if the second write's future hasn't yet
+	/// completed).
 	///
 	/// One way to ensure this requirement is met is by assigning a version number to each write
 	/// before returning the future, and then during asynchronous execution, ensuring that the
@@ -303,13 +308,17 @@ pub trait KVStore {
 	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present in the store.
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> AsyncResult<'static, (), io::Error>;
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
 	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
 	/// remove the given `key` at some point in time after the method returns, e.g., as part of an
 	/// eventual batch deletion of multiple keys. As a consequence, subsequent calls to
 	/// [`KVStoreSync::list`] might include the removed key until the changes are actually persisted.
+	///
+	/// Note that similar to [`Self::write`] this is *not* an `async fn`, but rather a sync fn
+	/// which defines the order of writes to a given key, but which may complete its operation
+	/// asynchronously.
 	///
 	/// Note that while setting the `lazy` flag reduces the I/O burden of multiple subsequent
 	/// `remove` calls, it also influences the atomicity guarantees as lazy `remove`s could
@@ -321,12 +330,13 @@ pub trait KVStore {
 	/// to the same key which occur before a removal completes must cancel/overwrite the pending
 	/// removal.
 	///
+	///
 	/// Returns successfully if no data will be stored for the given `primary_namespace`,
 	/// `secondary_namespace`, and `key`, independently of whether it was present before its
 	/// invokation or not.
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
-	) -> AsyncResult<'static, (), io::Error>;
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend;
 	/// Returns a list of keys that are stored under the given `secondary_namespace` in
 	/// `primary_namespace`.
 	///
@@ -334,7 +344,7 @@ pub trait KVStore {
 	/// returned keys. Returns an empty list if `primary_namespace` or `secondary_namespace` is unknown.
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> AsyncResult<'static, Vec<String>, io::Error>;
+	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend;
 }
 
 /// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
@@ -482,7 +492,11 @@ where
 
 struct PanicingSpawner;
 impl FutureSpawner for PanicingSpawner {
-	fn spawn<T: Future<Output = ()> + MaybeSend + 'static>(&self, _: T) {
+	type E = Infallible;
+	type SpawnedFutureResult<O> = Box<dyn Future<Output = Result<O, Infallible>> + Unpin>;
+	fn spawn<O, T: Future<Output = O> + MaybeSend + 'static>(
+		&self, _: T,
+	) -> Self::SpawnedFutureResult<O> {
 		unreachable!();
 	}
 }
@@ -490,8 +504,7 @@ impl FutureSpawner for PanicingSpawner {
 fn poll_sync_future<F: Future>(future: F) -> F::Output {
 	let mut waker = dummy_waker();
 	let mut ctx = task::Context::from_waker(&mut waker);
-	// TODO A future MSRV bump to 1.68 should allow for the pin macro
-	match Pin::new(&mut Box::pin(future)).poll(&mut ctx) {
+	match pin!(future).poll(&mut ctx) {
 		task::Poll::Ready(result) => result,
 		task::Poll::Pending => {
 			// In a sync context, we can't wait for the future to complete.
@@ -562,15 +575,6 @@ fn poll_sync_future<F: Future>(future: F) -> F::Output {
 /// [`MonitorUpdatingPersister::read_all_channel_monitors_with_updates`]. Alternatively, users can
 /// list channel monitors themselves and load channels individually using
 /// [`MonitorUpdatingPersister::read_channel_monitor_with_updates`].
-///
-/// ## EXTREMELY IMPORTANT
-///
-/// It is extremely important that your [`KVStoreSync::read`] implementation uses the
-/// [`io::ErrorKind::NotFound`] variant correctly: that is, when a file is not found, and _only_ in
-/// that circumstance (not when there is really a permissions error, for example). This is because
-/// neither channel monitor reading function lists updates. Instead, either reads the monitor, and
-/// using its stored `update_id`, synthesizes update storage keys, and tries them in sequence until
-/// one is not found. All _other_ errors will be bubbled up in the function's [`Result`].
 ///
 /// # Pruning stale channel updates
 ///
@@ -645,10 +649,6 @@ where
 	}
 
 	/// Reads all stored channel monitors, along with any stored updates for them.
-	///
-	/// It is extremely important that your [`KVStoreSync::read`] implementation uses the
-	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
-	/// documentation for [`MonitorUpdatingPersister`].
 	pub fn read_all_channel_monitors_with_updates(
 		&self,
 	) -> Result<
@@ -659,10 +659,6 @@ where
 	}
 
 	/// Read a single channel monitor, along with any stored updates for it.
-	///
-	/// It is extremely important that your [`KVStoreSync::read`] implementation uses the
-	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
-	/// documentation for [`MonitorUpdatingPersister`].
 	///
 	/// For `monitor_key`, channel storage keys can be the channel's funding [`OutPoint`], with an
 	/// underscore `_` between txid and index for v1 channels. For example, given:
@@ -857,9 +853,9 @@ where
 
 	/// Reads all stored channel monitors, along with any stored updates for them.
 	///
-	/// It is extremely important that your [`KVStore::read`] implementation uses the
-	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
-	/// documentation for [`MonitorUpdatingPersister`].
+	/// While the reads themselves are performend in parallel, deserializing the
+	/// [`ChannelMonitor`]s is not. For large [`ChannelMonitor`]s actively used for forwarding,
+	/// this may substantially limit the parallelism of this method.
 	pub async fn read_all_channel_monitors_with_updates(
 		&self,
 	) -> Result<
@@ -869,22 +865,69 @@ where
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
-		let mut res = Vec::with_capacity(monitor_list.len());
+		let mut futures = Vec::with_capacity(monitor_list.len());
 		for monitor_key in monitor_list {
-			let result =
-				self.0.maybe_read_channel_monitor_with_updates(monitor_key.as_str()).await?;
-			if let Some(read_res) = result {
+			futures.push(ResultFuture::Pending(Box::pin(async move {
+				self.0.maybe_read_channel_monitor_with_updates(monitor_key.as_str()).await
+			})));
+		}
+		let future_results = MultiResultFuturePoller::new(futures).await;
+		let mut res = Vec::with_capacity(future_results.len());
+		for result in future_results {
+			if let Some(read_res) = result? {
 				res.push(read_res);
 			}
 		}
 		Ok(res)
 	}
 
-	/// Read a single channel monitor, along with any stored updates for it.
+	/// Reads all stored channel monitors, along with any stored updates for them, in parallel.
 	///
-	/// It is extremely important that your [`KVStoreSync::read`] implementation uses the
-	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
-	/// documentation for [`MonitorUpdatingPersister`].
+	/// Because deserializing large [`ChannelMonitor`]s from forwarding nodes is often CPU-bound,
+	/// this version of [`Self::read_all_channel_monitors_with_updates`] uses the [`FutureSpawner`]
+	/// to parallelize deserialization as well as the IO operations.
+	///
+	/// Because [`FutureSpawner`] requires that the spawned future be `'static` (matching `tokio`
+	/// and other multi-threaded runtime requirements), this method requires that `self` be an
+	/// `Arc` that can live for `'static` and be sent and accessed across threads.
+	pub async fn read_all_channel_monitors_with_updates_parallel(
+		self: &Arc<Self>,
+	) -> Result<
+		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
+		io::Error,
+	> where
+		K: MaybeSend + MaybeSync + 'static,
+		L: MaybeSend + MaybeSync + 'static,
+		ES: MaybeSend + MaybeSync + 'static,
+		SP: MaybeSend + MaybeSync + 'static,
+		BI: MaybeSend + MaybeSync + 'static,
+		FE: MaybeSend + MaybeSync + 'static,
+		<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend,
+	{
+		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
+		let mut futures = Vec::with_capacity(monitor_list.len());
+		for monitor_key in monitor_list {
+			let us = Arc::clone(&self);
+			futures.push(ResultFuture::Pending(self.0.future_spawner.spawn(async move {
+				us.0.maybe_read_channel_monitor_with_updates(monitor_key.as_str()).await
+			})));
+		}
+		let future_results = MultiResultFuturePoller::new(futures).await;
+		let mut res = Vec::with_capacity(future_results.len());
+		for result in future_results {
+			match result {
+				Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Future was cancelled")),
+				Ok(Err(e)) => return Err(e),
+				Ok(Ok(Some(read_res))) => res.push(read_res),
+				Ok(Ok(None)) => {},
+			}
+		}
+		Ok(res)
+	}
+
+	/// Read a single channel monitor, along with any stored updates for it.
 	///
 	/// For `monitor_key`, channel storage keys can be the channel's funding [`OutPoint`], with an
 	/// underscore `_` between txid and index for v1 channels. For example, given:
@@ -946,7 +989,7 @@ where
 		let future = inner.persist_new_channel(monitor_name, monitor);
 		let channel_id = monitor.channel_id();
 		let completion = (monitor.channel_id(), monitor.get_latest_update_id());
-		self.0.future_spawner.spawn(async move {
+		let _runs_free = self.0.future_spawner.spawn(async move {
 			match future.await {
 				Ok(()) => {
 					inner.async_completed_updates.lock().unwrap().push(completion);
@@ -978,7 +1021,7 @@ where
 			None
 		};
 		let inner = Arc::clone(&self.0);
-		self.0.future_spawner.spawn(async move {
+		let _runs_free = self.0.future_spawner.spawn(async move {
 			match future.await {
 				Ok(()) => if let Some(completion) = completion {
 					inner.async_completed_updates.lock().unwrap().push(completion);
@@ -996,7 +1039,7 @@ where
 
 	pub(crate) fn spawn_async_archive_persisted_channel(&self, monitor_name: MonitorName) {
 		let inner = Arc::clone(&self.0);
-		self.0.future_spawner.spawn(async move {
+		let _runs_free = self.0.future_spawner.spawn(async move {
 			inner.archive_persisted_channel(monitor_name).await;
 		});
 	}
@@ -1005,6 +1048,9 @@ where
 		mem::take(&mut *self.0.async_completed_updates.lock().unwrap())
 	}
 }
+
+trait MaybeSendableFuture: Future<Output = Result<(), io::Error>> + MaybeSend {}
+impl<F: Future<Output = Result<(), io::Error>> + MaybeSend> MaybeSendableFuture for F {}
 
 impl<K: Deref, S: FutureSpawner, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
 	MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
@@ -1041,28 +1087,29 @@ where
 		io::Error,
 	> {
 		let monitor_name = MonitorName::from_str(monitor_key)?;
-		let read_res = self.maybe_read_monitor(&monitor_name, monitor_key).await?;
-		let (block_hash, monitor) = match read_res {
+		let read_future = pin!(self.maybe_read_monitor(&monitor_name, monitor_key));
+		let list_future = pin!(self
+			.kv_store
+			.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key));
+		let (read_res, list_res) = TwoFutureJoiner::new(read_future, list_future).await;
+		let (block_hash, monitor) = match read_res? {
 			Some(res) => res,
 			None => return Ok(None),
 		};
-		let mut current_update_id = monitor.get_latest_update_id();
-		// TODO: Parallelize this loop by speculatively reading a batch of updates
-		loop {
-			current_update_id = match current_update_id.checked_add(1) {
-				Some(next_update_id) => next_update_id,
-				None => break,
-			};
-			let update_name = UpdateName::from(current_update_id);
-			let update = match self.read_monitor_update(monitor_key, &update_name).await {
-				Ok(update) => update,
-				Err(err) if err.kind() == io::ErrorKind::NotFound => {
-					// We can't find any more updates, so we are done.
-					break;
-				},
-				Err(err) => return Err(err),
-			};
-
+		let current_update_id = monitor.get_latest_update_id();
+		let updates: Result<Vec<_>, _> =
+			list_res?.into_iter().map(|name| UpdateName::new(name)).collect();
+		let mut updates = updates?;
+		updates.sort_unstable();
+		let updates_to_load = updates.iter().filter(|update| update.0 > current_update_id);
+		let mut update_futures = Vec::with_capacity(updates_to_load.clone().count());
+		for update_name in updates_to_load {
+			update_futures.push(ResultFuture::Pending(Box::pin(async move {
+				(update_name, self.read_monitor_update(monitor_key, update_name).await)
+			})));
+		}
+		for (update_name, update_res) in MultiResultFuturePoller::new(update_futures).await {
+			let update = update_res?;
 			monitor
 				.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger)
 				.map_err(|e| {
@@ -1179,9 +1226,9 @@ where
 		Ok(())
 	}
 
-	fn persist_new_channel<ChannelSigner: EcdsaChannelSigner>(
-		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
-	) -> impl Future<Output = Result<(), io::Error>> {
+	fn persist_new_channel<'a, ChannelSigner: EcdsaChannelSigner>(
+		&'a self, monitor_name: MonitorName, monitor: &'a ChannelMonitor<ChannelSigner>,
+	) -> Pin<Box<dyn MaybeSendableFuture<Output = Result<(), io::Error>> + 'static>> {
 		// Determine the proper key for this monitor
 		let monitor_key = monitor_name.to_string();
 		// Serialize and write the new monitor
@@ -1200,7 +1247,10 @@ where
 		// completion of the write. This ensures monitor persistence ordering is preserved.
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		self.kv_store.write(primary, secondary, monitor_key.as_str(), monitor_bytes)
+		// There's no real reason why this needs to be boxed, but dropping it rams into the "hidden
+		// type for impl... captures lifetime that does not appear in bounds" issue. This can
+		// trivially be dropped once we upgrade to edition 2024/MSRV 1.85.
+		Box::pin(self.kv_store.write(primary, secondary, monitor_key.as_str(), monitor_bytes))
 	}
 
 	fn update_persisted_channel<'a, ChannelSigner: EcdsaChannelSigner + 'a>(
@@ -1226,12 +1276,10 @@ where
 				// write method, allowing it to do its queueing immediately, and then return a
 				// future for the completion of the write. This ensures monitor persistence
 				// ordering is preserved.
-				res_a = Some(self.kv_store.write(
-					primary,
-					&monitor_key,
-					update_name.as_str(),
-					update.encode(),
-				));
+				let encoded = update.encode();
+				res_a = Some(async move {
+					self.kv_store.write(primary, &monitor_key, update_name.as_str(), encoded).await
+				});
 			} else {
 				// We could write this update, but it meets criteria of our design that calls for a full monitor write.
 				// Note that this is NOT an async function, but rather calls the *sync* KVStore
@@ -1448,7 +1496,7 @@ impl core::fmt::Display for MonitorName {
 /// let monitor_name = "some_monitor_name";
 /// let storage_key = format!("channel_monitor_updates/{}/{}", monitor_name, update_name.as_str());
 /// ```
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UpdateName(pub u64, String);
 
 impl UpdateName {
