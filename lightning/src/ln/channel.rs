@@ -141,8 +141,8 @@ enum FeeUpdateState {
 #[derive(Debug)]
 enum InboundHTLCRemovalReason {
 	FailRelay(msgs::OnionErrorPacket),
-	FailMalformed(([u8; 32], u16)),
-	Fulfill(PaymentPreimage, Option<AttributionData>),
+	FailMalformed { sha256_of_onion: [u8; 32], failure_code: u16 },
+	Fulfill { preimage: PaymentPreimage, attribution_data: Option<AttributionData> },
 }
 
 /// Represents the resolution status of an inbound HTLC.
@@ -238,9 +238,9 @@ impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
 				Some(InboundHTLCStateDetails::Committed),
 			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(_)) =>
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed(_)) =>
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed{..}) =>
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_, _)) =>
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill{..}) =>
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill),
 		}
 	}
@@ -272,9 +272,9 @@ impl InboundHTLCState {
 
 	fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(preimage, _)) => {
-				Some(*preimage)
-			},
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill {
+				preimage, ..
+			}) => Some(*preimage),
 			_ => None,
 		}
 	}
@@ -4594,8 +4594,8 @@ where
 			.pending_inbound_htlcs
 			.iter()
 			.filter(|InboundHTLCOutput { state, .. }| match (state, local) {
-				(InboundHTLCState::LocalRemoved(Fulfill(_, _)), true) => false,
-				(InboundHTLCState::LocalRemoved(Fulfill(_, _)), false) => true,
+				(InboundHTLCState::LocalRemoved(Fulfill { .. }), true) => false,
+				(InboundHTLCState::LocalRemoved(Fulfill { .. }), false) => true,
 				_ => false,
 			})
 			.map(|InboundHTLCOutput { amount_msat, .. }| amount_msat)
@@ -6809,7 +6809,10 @@ impl FailHTLCContents for ([u8; 32], u16) {
 		}
 	}
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
-		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed(self))
+		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed {
+			sha256_of_onion: self.0,
+			failure_code: self.1,
+		})
 	}
 	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
 		HTLCUpdateAwaitingACK::FailMalformedHTLC {
@@ -7308,7 +7311,7 @@ where
 				match htlc.state {
 					InboundHTLCState::Committed => {},
 					InboundHTLCState::LocalRemoved(ref reason) => {
-						if let &InboundHTLCRemovalReason::Fulfill(_, _) = reason {
+						if let &InboundHTLCRemovalReason::Fulfill { .. } = reason {
 						} else {
 							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", &htlc.payment_hash, &self.context.channel_id());
 							debug_assert!(
@@ -7416,10 +7419,10 @@ where
 				"Upgrading HTLC {} to LocalRemoved with a Fulfill!",
 				&htlc.payment_hash,
 			);
-			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(
-				payment_preimage_arg.clone(),
+			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill {
+				preimage: payment_preimage_arg.clone(),
 				attribution_data,
-			));
+			});
 		}
 
 		UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, update_blocked: false }
@@ -8645,7 +8648,7 @@ where
 			pending_inbound_htlcs.retain(|htlc| {
 				if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
 					log_trace!(logger, " ...removing inbound LocalRemoved {}", &htlc.payment_hash);
-					if let &InboundHTLCRemovalReason::Fulfill(_, _) = reason {
+					if let &InboundHTLCRemovalReason::Fulfill { .. } = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
 					}
 					*expecting_peer_commitment_signed = true;
@@ -8720,10 +8723,10 @@ where
 											},
 											HTLCFailureMsg::Malformed(msg) => {
 												htlc.state = InboundHTLCState::LocalRemoved(
-													InboundHTLCRemovalReason::FailMalformed((
-														msg.sha256_of_onion,
-														msg.failure_code,
-													)),
+													InboundHTLCRemovalReason::FailMalformed {
+														sha256_of_onion: msg.sha256_of_onion,
+														failure_code: msg.failure_code,
+													},
 												);
 												update_fail_malformed_htlcs.push(msg)
 											},
@@ -9708,25 +9711,22 @@ where
 							attribution_data: err_packet.attribution_data.clone(),
 						});
 					},
-					&InboundHTLCRemovalReason::FailMalformed((
-						ref sha256_of_onion,
-						ref failure_code,
-					)) => {
+					&InboundHTLCRemovalReason::FailMalformed {
+						sha256_of_onion: ref hash,
+						failure_code: ref code,
+					} => {
 						update_fail_malformed_htlcs.push(msgs::UpdateFailMalformedHTLC {
 							channel_id: self.context.channel_id(),
 							htlc_id: htlc.htlc_id,
-							sha256_of_onion: sha256_of_onion.clone(),
-							failure_code: failure_code.clone(),
+							sha256_of_onion: hash.clone(),
+							failure_code: code.clone(),
 						});
 					},
-					&InboundHTLCRemovalReason::Fulfill(
-						ref payment_preimage,
-						ref attribution_data,
-					) => {
+					&InboundHTLCRemovalReason::Fulfill { ref preimage, ref attribution_data } => {
 						update_fulfill_htlcs.push(msgs::UpdateFulfillHTLC {
 							channel_id: self.context.channel_id(),
 							htlc_id: htlc.htlc_id,
-							payment_preimage: payment_preimage.clone(),
+							payment_preimage: preimage.clone(),
 							attribution_data: attribution_data.clone(),
 						});
 					},
@@ -14505,11 +14505,14 @@ where
 							data.write(writer)?;
 							removed_htlc_attribution_data.push(&attribution_data);
 						},
-						InboundHTLCRemovalReason::FailMalformed((hash, code)) => {
+						InboundHTLCRemovalReason::FailMalformed {
+							sha256_of_onion: hash,
+							failure_code: code,
+						} => {
 							1u8.write(writer)?;
 							(hash, code).write(writer)?;
 						},
-						InboundHTLCRemovalReason::Fulfill(preimage, attribution_data) => {
+						InboundHTLCRemovalReason::Fulfill { preimage, attribution_data } => {
 							2u8.write(writer)?;
 							preimage.write(writer)?;
 							removed_htlc_attribution_data.push(&attribution_data);
@@ -14955,8 +14958,17 @@ where
 								data: Readable::read(reader)?,
 								attribution_data: None,
 							}),
-							1 => InboundHTLCRemovalReason::FailMalformed(Readable::read(reader)?),
-							2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?, None),
+							1 => {
+								let (hash, code) = Readable::read(reader)?;
+								InboundHTLCRemovalReason::FailMalformed {
+									sha256_of_onion: hash,
+									failure_code: code,
+								}
+							},
+							2 => InboundHTLCRemovalReason::Fulfill {
+								preimage: Readable::read(reader)?,
+								attribution_data: None,
+							},
 							_ => return Err(DecodeError::InvalidValue),
 						};
 						InboundHTLCState::LocalRemoved(reason)
@@ -15414,7 +15426,7 @@ where
 						InboundHTLCRemovalReason::FailRelay(ref mut packet) => {
 							Some(&mut packet.attribution_data)
 						},
-						InboundHTLCRemovalReason::Fulfill(_, ref mut attribution_data) => {
+						InboundHTLCRemovalReason::Fulfill { ref mut attribution_data, .. } => {
 							Some(attribution_data)
 						},
 						_ => None,
