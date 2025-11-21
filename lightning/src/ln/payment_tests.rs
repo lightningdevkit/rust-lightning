@@ -635,7 +635,7 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	nodes[3].node.handle_update_add_htlc(node_b_id, &update_add_1);
 	do_commitment_signed_dance(&nodes[3], &nodes[1], &update_1.commitment_signed, false, true);
 	expect_htlc_failure_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
-	nodes[3].node.process_pending_update_add_htlcs();
+	nodes[3].node.test_process_pending_update_add_htlcs();
 
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
 	for (_, pending_forwards) in nodes[3].node.forward_htlcs.lock().unwrap().iter_mut() {
@@ -684,7 +684,7 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	nodes[3].node.handle_update_add_htlc(node_c_id, &update_add_3);
 	do_commitment_signed_dance(&nodes[3], &nodes[2], &update_3.commitment_signed, false, true);
 	expect_htlc_failure_conditions(nodes[3].node.get_and_clear_pending_events(), &[]);
-	nodes[3].node.process_pending_update_add_htlcs();
+	nodes[3].node.test_process_pending_update_add_htlcs();
 
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
 	for (_, pending_forwards) in nodes[3].node.forward_htlcs.lock().unwrap().iter_mut() {
