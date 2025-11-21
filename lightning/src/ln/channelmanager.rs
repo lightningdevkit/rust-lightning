@@ -41,6 +41,8 @@ use crate::chain;
 use crate::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
 };
+#[cfg(feature = "safe_channels")]
+use crate::chain::channelmonitor::UpdateChannelState;
 use crate::chain::channelmonitor::{
 	Balance, ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 	WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER,
@@ -9113,7 +9115,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}],
 			channel_id: Some(prev_hop.channel_id),
 			#[cfg(feature = "safe_channels")]
-			encoded_channel: None,
+			channel_state: None,
 		};
 
 		// We don't have any idea if this is a duplicate claim without interrogating the
@@ -10447,7 +10449,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Vacant(e) => {
 				#[cfg(feature = "safe_channels")]
 				{
-					monitor.update_encoded_channel(chan.encode());
+					monitor.update_channel_state(UpdateChannelState::Funded((&mut chan).into()));
 				}
 				let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 				if let Ok(persist_state) = monitor_res {
@@ -10615,7 +10617,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					.and_then(|(funded_chan, monitor)| {
 						#[cfg(feature = "safe_channels")]
 						{
-							monitor.update_encoded_channel(funded_chan.encode());
+							monitor.update_channel_state(UpdateChannelState::Funded(funded_chan.into()));
 						}
 						self.chain_monitor
 							.watch_channel(funded_chan.context.channel_id(), monitor)
@@ -11337,7 +11339,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					if let Some(monitor) = monitor_opt {
 						#[cfg(feature = "safe_channels")]
 						{
-							monitor.update_encoded_channel(chan.encode());
+							monitor.update_channel_state(UpdateChannelState::Funded(chan.into()));
 						}
 						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
@@ -13764,7 +13766,7 @@ where
 							htlc: htlc_id,
 						}],
 						#[cfg(feature = "safe_channels")]
-						encoded_channel: None,
+						channel_state: None,
 					};
 
 					let during_startup =
@@ -17161,7 +17163,7 @@ where
 					}],
 					channel_id: Some(monitor.channel_id()),
 					#[cfg(feature = "safe_channels")]
-					encoded_channel: Some(Vec::new()),
+					channel_state: Some(UpdateChannelState::Closed),
 				};
 				log_info!(
 					logger,
@@ -17801,7 +17803,7 @@ where
 													htlc: htlc_id,
 												}],
 												#[cfg(feature = "safe_channels")]
-												encoded_channel: None,
+												channel_state: None,
 											},
 										});
 									}
