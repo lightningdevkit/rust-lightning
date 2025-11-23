@@ -95,7 +95,7 @@ use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferFromHrn, RecurrenceFields};
+use crate::offers::offer::{InboundRecurrenceSessionData, Offer, OfferFromHrn, RecurrenceFields};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::Refund;
 use crate::offers::static_invoice::StaticInvoice;
@@ -2671,6 +2671,20 @@ pub struct ChannelManager<
 	#[cfg(not(test))]
 	flow: OffersMessageFlow<MR, L>,
 
+	/// Tracks all active inbound recurrence sessions for this node.
+	///
+	/// Each entry is keyed by the payer’s `payer_signing_pubkey` from the
+	/// initial `invoice_request`. The associated `InboundRecurrenceSessionData` stores
+	/// everything the payee needs to validate incoming `invoice_request`s
+	/// and generate invoices for the appropriate recurrence period.
+	///
+	/// This is used by the payee to:
+	/// - verify the correctness of each incoming `invoice_request`
+	///   (period offset, counter, basetime, etc.)
+	/// - ensure continuity across periods
+	/// - maintain recurrence state until cancellation or completion.
+	active_inbound_recurrence_sessions: Mutex<HashMap<PublicKey, InboundRecurrenceSessionData>>,
+
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) best_block: RwLock<BestBlock>,
@@ -3959,6 +3973,8 @@ where
 			tx_broadcaster,
 			router,
 			flow,
+
+			active_inbound_recurrence_sessions: Mutex::new(new_hash_map()),
 
 			best_block: RwLock::new(params.best_block),
 
@@ -17285,6 +17301,7 @@ where
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
+		let mut active_inbound_recurrence_sessions = Some(new_hash_map());
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs, option),
@@ -17303,6 +17320,7 @@ where
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
+			(23, active_inbound_recurrence_sessions, option),
 		});
 		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
@@ -18196,6 +18214,10 @@ where
 			tx_broadcaster: args.tx_broadcaster,
 			router: args.router,
 			flow,
+
+			active_inbound_recurrence_sessions: Mutex::new(
+				active_inbound_recurrence_sessions.unwrap(),
+			),
 
 			best_block: RwLock::new(best_block),
 

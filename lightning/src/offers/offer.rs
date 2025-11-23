@@ -861,6 +861,71 @@ impl Readable for RecurrenceLimit {
 	}
 }
 
+/// State required for a node to act as a BOLT12 recurrence payee.
+///
+/// This tracks the information needed to validate incoming
+/// `invoice_request`s for a given recurrence session and
+/// to produce consistent invoices across all periods.
+pub struct InboundRecurrenceSessionData {
+	/// Recurrence period
+	pub recurrence_fields: RecurrenceFields,
+
+	/// The period offset established by the payer in the first
+	/// recurrence-enabled `invoice_request`.
+	///
+	/// This is `Some(offset)` only when the original Offer defined an explicit
+	/// `recurrence_base`. In that case, every subsequent invoice must use the
+	/// **same** offset to remain aligned with the Offer’s schedule.
+	///
+	/// If the Offer did not define a basetime, this will be `None` and period
+	/// alignment is determined solely by the `recurrence_basetime`.
+	pub invoice_request_start: Option<u32>,
+
+	/// The next expected recurrence period counter.
+	///
+	/// Instead of storing the last seen `recurrence_counter`, we store the
+	/// *next expected counter*. This simplifies validation:
+	/// `incoming_counter == next_payable_counter`
+	/// means the payer is correctly advancing through periods.
+	///
+	/// This also avoids off-by-one confusion and gives the payee a single,
+	/// stable point of truth for the expected next invoice.
+	pub next_payable_counter: u32,
+
+	/// The recurrence anchor time for this session.
+	///
+	/// This is:
+	/// - the Offer’s `recurrence_base` if one was provided, or
+	/// - the `created_at` timestamp of the **first** invoice otherwise.
+	///
+	/// This value must remain identical across *all* invoices in the session,
+	/// and is a requirement of the BOLT12 spec. The payee uses it to populate
+	/// `invoice_recurrence_basetime` consistently for every period.
+	pub recurrence_basetime: u64,
+
+	/// The valid time window for receiving the next recurrence-enabled
+	/// `invoice_request`.
+	///
+	/// This window is defined as:
+	/// - the start of the next recurrence period, and
+	/// - the end of the corresponding paywindow (or the full period length
+	///   if no explicit paywindow is defined).
+	///
+	/// If an `invoice_request` arrives **before** the start of this window,
+	/// the payer is early and the request is ignored.
+	/// If no valid `invoice_request` arrives **by the end** of this window,
+	/// the recurrence period is considered missed and the session is void.
+	pub next_invoice_request_window: (u64, u64),
+}
+
+impl_writeable_tlv_based!(InboundRecurrenceSessionData, {
+	(0, recurrence_fields, required),
+	(2, invoice_request_start, option),
+	(4, next_payable_counter, required),
+	(6, recurrence_basetime, required),
+	(8, next_invoice_request_window, required),
+});
+
 /// Represents the recurrence-related fields in an Offer.
 ///
 /// Design note:
