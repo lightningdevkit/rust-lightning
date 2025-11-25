@@ -50,7 +50,7 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch};
 use crate::events::{
 	self, ClosureReason, Event, EventHandler, EventsProvider, HTLCHandlingFailureType,
-	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
+	InboundChannelFunds, PaymentFailureReason, PaymentPurpose, ReplayEvent,
 };
 use crate::events::{FundingInfo, PaidBolt12Invoice};
 use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
@@ -93,7 +93,9 @@ use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};
 use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestVerifiedFromOffer};
+use crate::offers::invoice_request::{
+	InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer,
+};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferFromHrn, RecurrenceData, RecurrenceFields};
 use crate::offers::parse::Bolt12SemanticError;
@@ -9514,6 +9516,32 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						payment_id,
 						durable_preimage_channel,
 					}) = payment {
+						// At this point, the payment has been successfully claimed. If it belongs
+						// to a recurring offer, we can safely advance the recurrence state.
+
+						match &purpose {
+							PaymentPurpose::Bolt12OfferPayment {
+								payment_context: Bolt12OfferContext {
+									invoice_request: InvoiceRequestFields {
+										payer_signing_pubkey,
+										recurrence_counter: Some(paid_counter),
+										..
+									},
+									..
+								},
+								..
+							} => {
+								let mut sessions = self.active_recurrence_sessions.lock().unwrap();
+
+								if let Some(data) = sessions.get_mut(payer_signing_pubkey) {
+									if data.next_payable_counter == *paid_counter {
+										data.next_payable_counter += 1;
+									}
+								}
+							},
+							_ => {}
+						}
+
 						let event = events::Event::PaymentClaimed {
 							payment_hash,
 							purpose,
