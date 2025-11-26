@@ -9,6 +9,7 @@
 
 use crate::prelude::*;
 
+use crate::io::Write;
 use crate::ln::msgs;
 use crate::ln::msgs::LightningError;
 use crate::ln::wire;
@@ -26,7 +27,7 @@ use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::crypto::utils::hkdf_extract_expand_twice;
-use crate::util::ser::VecWriter;
+use crate::util::ser::{BigSize, VecWriter, Writeable};
 
 use core::ops::Deref;
 
@@ -555,9 +556,69 @@ impl PeerChannelEncryptor {
 		}
 	}
 
+	fn maybe_add_message_padding(&self, buffer: &mut Vec<u8>) {
+		// In the base case, a serialized UpdateAddHTLC message is 1450 bytes: 32 (channel_id) + 8
+		// (htlc_id) + 8 (amount_msat) + 32 (payment_hash) + 4 (cltv_expiry) + 1366
+		// (onion_routing_packet). When including the additional 2 (encrypted message length) + 16
+		// (encrypted message length MAC) + 2 (type) bytes, this has us at 1470 bytes
+		// pre-encryption. As the encryption step adds 16 more bytes for the MAC of the encrypted
+		// message itself, resulting in 1486 bytes TCP payload.
+		//
+		// As this base case however doesn't take into account any potential optional fields that
+		// might be set on UpdateAddHTLC (such as the `path_key` for route blinding or other TLVs),
+		// we opt to add another 50 bytes of leeway to our padding threshold size.
+		//
+		// Note that anything above this threshold won't get padded and will stand out in monitored
+		// network traffic.
+		const PADDING_THRESHOLD_BYTES: usize = 1470 + 50;
+
+		let orig_buffer_len = buffer.len();
+		let padding_len =
+			PADDING_THRESHOLD_BYTES.checked_sub(orig_buffer_len).map_or(0, |expected_len| {
+				// As the TLV's length BigSize grows as we add more padding bytes, we might end up with
+				// slightly larger messages than expected. To that end, we here account for this and
+				// reduce the number of padding bytes by any serialized length of the BigSize beyond 1.
+				//
+				// TODO: This method risks that by subtracting the overhead we fall again just below
+				// the `BigSize` steps which could leak the original padding len (and hence the
+				// original message size). We should look into making this even more exact.
+				let big_size_overhead =
+					BigSize(expected_len as u64).serialized_length().saturating_sub(1);
+				expected_len.saturating_sub(big_size_overhead)
+			});
+
+		// We always add type and length headers so unpadded messages just at
+		// PADDING_THRESHOLD_BYTES don't stand out.
+		BigSize(u64::max_value())
+			.write(buffer)
+			.expect("In-memory messages must never fail to serialize");
+		BigSize(padding_len as u64)
+			.write(buffer)
+			.expect("In-memory messages must never fail to serialize");
+		let mut bytes_written: usize = 0;
+		while bytes_written < padding_len {
+			// Write padding in 32-byte chunks if possible.
+			const PAD_BYTES_LEN: usize = 32;
+			let pad_bytes = [42u8; PAD_BYTES_LEN];
+			let bytes_to_write = (padding_len - bytes_written).min(PAD_BYTES_LEN);
+			buffer
+				.write_all(&pad_bytes[..bytes_to_write])
+				.expect("In-memory messages must never fail to serialize");
+			bytes_written += bytes_to_write;
+		}
+
+		#[cfg(debug_assertions)]
+		if orig_buffer_len < PADDING_THRESHOLD_BYTES {
+			debug_assert_eq!(buffer.len(), PADDING_THRESHOLD_BYTES + 9 + 1);
+		}
+	}
+
 	/// Encrypts the given pre-serialized message, returning the encrypted version.
 	/// panics if msg.len() > 65535 or Noise handshake has not finished.
-	pub fn encrypt_buffer(&mut self, mut msg: MessageBuf) -> Vec<u8> {
+	pub fn encrypt_buffer(&mut self, mut msg: MessageBuf, should_pad: bool) -> Vec<u8> {
+		if should_pad {
+			self.maybe_add_message_padding(&mut msg.0);
+		}
 		self.encrypt_message_with_header_0s(&mut msg.0);
 		msg.0
 	}
@@ -565,13 +626,15 @@ impl PeerChannelEncryptor {
 	/// Encrypts the given message, returning the encrypted version.
 	/// panics if the length of `message`, once encoded, is greater than 65535 or if the Noise
 	/// handshake has not finished.
-	pub fn encrypt_message<M: wire::Type>(&mut self, message: &M) -> Vec<u8> {
+	pub fn encrypt_message<M: wire::Type>(&mut self, message: &M, should_pad: bool) -> Vec<u8> {
 		// Allocate a buffer with 2KB, fitting most common messages. Reserve the first 16+2 bytes
 		// for the 2-byte message type prefix and its MAC.
 		let mut res = VecWriter(Vec::with_capacity(MSG_BUF_ALLOC_SIZE));
 		res.0.resize(16 + 2, 0);
 		wire::write(message, &mut res).expect("In-memory messages must never fail to serialize");
-
+		if should_pad {
+			self.maybe_add_message_padding(&mut res.0);
+		}
 		self.encrypt_message_with_header_0s(&mut res.0);
 		res.0
 	}
@@ -1015,7 +1078,7 @@ mod tests {
 
 		for i in 0..1005 {
 			let msg = [0x68, 0x65, 0x6c, 0x6c, 0x6f];
-			let mut res = outbound_peer.encrypt_buffer(MessageBuf::from_encoded(&msg));
+			let mut res = outbound_peer.encrypt_buffer(MessageBuf::from_encoded(&msg), false);
 			assert_eq!(res.len(), 5 + 2 * 16 + 2);
 
 			let len_header = res[0..2 + 16].to_vec();
@@ -1060,7 +1123,7 @@ mod tests {
 	fn max_message_len_encryption() {
 		let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
 		let msg = [4u8; LN_MAX_MSG_LEN + 1];
-		outbound_peer.encrypt_buffer(MessageBuf::from_encoded(&msg));
+		outbound_peer.encrypt_buffer(MessageBuf::from_encoded(&msg), false);
 	}
 
 	#[test]
