@@ -226,22 +226,25 @@ enum InboundHTLCState {
 }
 
 impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
-	#[rustfmt::skip]
 	fn from(state: &InboundHTLCState) -> Option<InboundHTLCStateDetails> {
 		match state {
 			InboundHTLCState::RemoteAnnounced(_) => None,
-			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) =>
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
-			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) =>
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
-			InboundHTLCState::Committed =>
-				Some(InboundHTLCStateDetails::Committed),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(_)) =>
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed{..}) =>
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill{..}) =>
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill),
+			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) => {
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
+			},
+			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) => {
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
+			},
+			InboundHTLCState::Committed => Some(InboundHTLCStateDetails::Committed),
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(_)) => {
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail)
+			},
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed { .. }) => {
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail)
+			},
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill { .. }) => {
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill)
+			},
 		}
 	}
 }
@@ -342,25 +345,27 @@ enum OutboundHTLCState {
 }
 
 impl From<&OutboundHTLCState> for OutboundHTLCStateDetails {
-	#[rustfmt::skip]
 	fn from(state: &OutboundHTLCState) -> OutboundHTLCStateDetails {
 		match state {
-			OutboundHTLCState::LocalAnnounced(_) =>
-				OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd,
-			OutboundHTLCState::Committed =>
-				OutboundHTLCStateDetails::Committed,
+			OutboundHTLCState::LocalAnnounced(_) => {
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd
+			},
+			OutboundHTLCState::Committed => OutboundHTLCStateDetails::Committed,
 			// RemoteRemoved states are ignored as the state is transient and the remote has not committed to
 			// the state yet.
-			OutboundHTLCState::RemoteRemoved(_) =>
-				OutboundHTLCStateDetails::Committed,
-			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success{..}) =>
-				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
-			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Failure(_)) =>
-				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
-			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success{..}) =>
-				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
-			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Failure(_)) =>
-				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
+			OutboundHTLCState::RemoteRemoved(_) => OutboundHTLCStateDetails::Committed,
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success {
+				..
+			}) => OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Failure(_)) => {
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure
+			},
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success {
+				..
+			}) => OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Failure(_)) => {
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure
+			},
 		}
 	}
 }
@@ -389,14 +394,17 @@ impl OutboundHTLCState {
 		}
 	}
 
-	#[rustfmt::skip]
 	fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success{preimage, ..})
-			| OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success{preimage, ..})
-			| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success{preimage, ..}) => {
-				Some(*preimage)
-			},
+			OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success { preimage, .. })
+			| OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success {
+				preimage,
+				..
+			})
+			| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success {
+				preimage,
+				..
+			}) => Some(*preimage),
 			_ => None,
 		}
 	}
@@ -7765,14 +7773,18 @@ where
 
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
-	#[rustfmt::skip]
-	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, outcome: OutboundHTLCOutcome) -> Result<&OutboundHTLCOutput, ChannelError> {
+	fn mark_outbound_htlc_removed(
+		&mut self, htlc_id: u64, outcome: OutboundHTLCOutcome,
+	) -> Result<&OutboundHTLCOutput, ChannelError> {
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
 				if let OutboundHTLCOutcome::Success { ref preimage, .. } = outcome {
 					let payment_hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
 					if payment_hash != htlc.payment_hash {
-						return Err(ChannelError::close(format!("Remote tried to fulfill HTLC ({}) with an incorrect preimage", htlc_id)));
+						return Err(ChannelError::close(format!(
+							"Remote tried to fulfill HTLC ({}) with an incorrect preimage",
+							htlc_id
+						)));
 					}
 				}
 				match htlc.state {
@@ -12712,26 +12724,38 @@ where
 			.expect("At least one FundingScope is always provided")
 	}
 
-	#[rustfmt::skip]
-	fn build_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> ChannelMonitorUpdate where L::Target: Logger {
+	fn build_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> ChannelMonitorUpdate
+	where
+		L::Target: Logger,
+	{
 		log_trace!(logger, "Updating HTLC state for a newly-sent commitment_signed...");
 		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
 		// fail to generate this, we still are at least at a position where upgrading their status
 		// is acceptable.
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
-			let new_state = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref forward_info) = &htlc.state {
-				Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info.clone()))
-			} else { None };
+			let new_state =
+				if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref forward_info) =
+					&htlc.state
+				{
+					Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info.clone()))
+				} else {
+					None
+				};
 			if let Some(state) = new_state {
 				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
 				htlc.state = state;
 			}
 		}
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
-			if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
+			if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) =
+				&mut htlc.state
+			{
 				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
 				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
-				let mut reason = OutboundHTLCOutcome::Success { preimage:PaymentPreimage([0u8; 32]), attribution_data:None };
+				let mut reason = OutboundHTLCOutcome::Success {
+					preimage: PaymentPreimage([0u8; 32]),
+					attribution_data: None,
+				};
 				mem::swap(outcome, &mut reason);
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
 			}
@@ -12749,10 +12773,11 @@ where
 		let update = if self.pending_funding().is_empty() {
 			let (htlcs_ref, counterparty_commitment_tx) =
 				self.build_commitment_no_state_update(&self.funding, logger);
-			let htlc_outputs = htlcs_ref.into_iter()
-				.map(|(htlc, htlc_source)| (
-					htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone()))
-				))
+			let htlc_outputs = htlcs_ref
+				.into_iter()
+				.map(|(htlc, htlc_source)| {
+					(htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))
+				})
 				.collect();
 
 			// Soon, we will switch this to `LatestCounterpartyCommitment`,
@@ -12761,10 +12786,17 @@ where
 				commitment_txid: counterparty_commitment_tx.trust().txid(),
 				htlc_outputs,
 				commitment_number: self.context.counterparty_next_commitment_transaction_number,
-				their_per_commitment_point: self.context.counterparty_next_commitment_point.unwrap(),
+				their_per_commitment_point: self
+					.context
+					.counterparty_next_commitment_point
+					.unwrap(),
 				feerate_per_kw: Some(counterparty_commitment_tx.negotiated_feerate_per_kw()),
-				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
-				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
+				to_broadcaster_value_sat: Some(
+					counterparty_commitment_tx.to_broadcaster_value_sat(),
+				),
+				to_countersignatory_value_sat: Some(
+					counterparty_commitment_tx.to_countersignatory_value_sat(),
+				),
 			}
 		} else {
 			let mut htlc_data = None;
@@ -12774,19 +12806,22 @@ where
 					let (htlcs_ref, counterparty_commitment_tx) =
 						self.build_commitment_no_state_update(funding, logger);
 					if htlc_data.is_none() {
-						let nondust_htlc_sources = htlcs_ref.iter()
+						let nondust_htlc_sources = htlcs_ref
+							.iter()
 							// We check !offered as this is the HTLC from the counterparty's point of view.
-							.filter(|(htlc, _)| !htlc.offered && htlc.transaction_output_index.is_some())
-							.map(|(_, source)| source.expect("Outbound HTLC must have a source").clone())
+							.filter(|(htlc, _)| {
+								!htlc.offered && htlc.transaction_output_index.is_some()
+							})
+							.map(|(_, source)| {
+								source.expect("Outbound HTLC must have a source").clone()
+							})
 							.collect();
-						let dust_htlcs = htlcs_ref.into_iter()
+						let dust_htlcs = htlcs_ref
+							.into_iter()
 							.filter(|(htlc, _)| htlc.transaction_output_index.is_none())
 							.map(|(htlc, source)| (htlc, source.cloned()))
 							.collect();
-						htlc_data = Some(CommitmentHTLCData {
-							nondust_htlc_sources,
-							dust_htlcs,
-						});
+						htlc_data = Some(CommitmentHTLCData { nondust_htlc_sources, dust_htlcs });
 					}
 					counterparty_commitment_tx
 				})
