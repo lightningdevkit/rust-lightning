@@ -15876,6 +15876,14 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 		features.set_htlc_hold_optional();
 	}
 
+	if config.enable_htlc_hold {
+		features.set_htlc_hold_optional();
+	}
+
+	if config.enable_message_padding {
+		features.set_message_padding_optional();
+	}
+
 	features
 }
 
