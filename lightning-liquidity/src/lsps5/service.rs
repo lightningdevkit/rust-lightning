@@ -244,15 +244,17 @@ where
 		})
 	}
 
-	pub(crate) async fn persist(&self) -> Result<(), lightning::io::Error> {
+	pub(crate) async fn persist(&self) -> Result<bool, lightning::io::Error> {
 		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
 		// introduce some batching to upper-bound the number of requests inflight at any given
 		// time.
 
+		let mut did_persist = false;
+
 		if self.persistence_in_flight.fetch_add(1, Ordering::AcqRel) > 0 {
 			// If we're not the first event processor to get here, just return early, the increment
 			// we just did will be treated as "go around again" at the end.
-			return Ok(());
+			return Ok(did_persist);
 		}
 
 		loop {
@@ -277,6 +279,7 @@ where
 			for client_id in need_persist.into_iter() {
 				debug_assert!(!need_remove.contains(&client_id));
 				self.persist_peer_state(client_id).await?;
+				did_persist = true;
 			}
 
 			for client_id in need_remove {
@@ -311,6 +314,7 @@ where
 				}
 				if let Some(future) = future_opt {
 					future.await?;
+					did_persist = true;
 				} else {
 					self.persist_peer_state(client_id).await?;
 				}
@@ -325,7 +329,7 @@ where
 			break;
 		}
 
-		Ok(())
+		Ok(did_persist)
 	}
 
 	fn check_prune_stale_webhooks<'a>(
