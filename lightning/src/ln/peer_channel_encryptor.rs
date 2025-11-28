@@ -13,7 +13,7 @@ use crate::io::Write;
 use crate::ln::msgs;
 use crate::ln::msgs::LightningError;
 use crate::ln::wire;
-use crate::sign::{NodeSigner, Recipient};
+use crate::sign::{EntropySource, NodeSigner, RandomBytes, Recipient};
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
@@ -106,8 +106,8 @@ enum NoiseState {
 
 pub struct PeerChannelEncryptor {
 	their_node_id: Option<PublicKey>, // filled in for outbound, or inbound after noise_state is Finished
-
 	noise_state: NoiseState,
+	padding_entropy_source: RandomBytes,
 }
 
 impl PeerChannelEncryptor {
@@ -119,6 +119,12 @@ impl PeerChannelEncryptor {
 		sha.input(&their_node_id.serialize()[..]);
 		let h = Sha256::from_engine(sha).to_byte_array();
 
+		let mut padding_seed_engine = Sha256::engine();
+		padding_seed_engine.input(b"LDK MESSAGE PADDING");
+		padding_seed_engine.input(&h);
+		let padding_seed = Sha256::from_engine(padding_seed_engine).to_byte_array();
+		let padding_entropy_source = RandomBytes::new(padding_seed);
+
 		PeerChannelEncryptor {
 			their_node_id: Some(their_node_id),
 			noise_state: NoiseState::InProgress {
@@ -126,6 +132,7 @@ impl PeerChannelEncryptor {
 				directional_state: DirectionalNoiseState::Outbound { ie: ephemeral_key },
 				bidirectional_state: BidirectionalNoiseState { h, ck: NOISE_CK },
 			},
+			padding_entropy_source,
 		}
 	}
 
@@ -139,6 +146,12 @@ impl PeerChannelEncryptor {
 		sha.input(&our_node_id.serialize()[..]);
 		let h = Sha256::from_engine(sha).to_byte_array();
 
+		let mut padding_seed_engine = Sha256::engine();
+		padding_seed_engine.input(b"LDK MESSAGE PADDING");
+		padding_seed_engine.input(&h);
+		let padding_seed = Sha256::from_engine(padding_seed_engine).to_byte_array();
+		let padding_entropy_source = RandomBytes::new(padding_seed);
+
 		PeerChannelEncryptor {
 			their_node_id: None,
 			noise_state: NoiseState::InProgress {
@@ -150,6 +163,7 @@ impl PeerChannelEncryptor {
 				},
 				bidirectional_state: BidirectionalNoiseState { h, ck: NOISE_CK },
 			},
+			padding_entropy_source,
 		}
 	}
 
@@ -599,7 +613,7 @@ impl PeerChannelEncryptor {
 		while bytes_written < padding_len {
 			// Write padding in 32-byte chunks if possible.
 			const PAD_BYTES_LEN: usize = 32;
-			let pad_bytes = [42u8; PAD_BYTES_LEN];
+			let pad_bytes = self.padding_entropy_source.get_secure_random_bytes();
 			let bytes_to_write = (padding_len - bytes_written).min(PAD_BYTES_LEN);
 			buffer
 				.write_all(&pad_bytes[..bytes_to_write])
