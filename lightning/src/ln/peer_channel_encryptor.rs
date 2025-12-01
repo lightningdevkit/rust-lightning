@@ -425,7 +425,10 @@ impl PeerChannelEncryptor {
 			rck: ck,
 		};
 
-		Ok(self.their_node_id.unwrap().clone())
+		let their_node_id = self.their_node_id.as_ref().unwrap();
+		eprintln!("[PQ-DEBUG] Finished Noise handshake with {}", their_node_id);
+
+		Ok(their_node_id.clone())
 	}
 
 	/// Builds sendable bytes for a message.

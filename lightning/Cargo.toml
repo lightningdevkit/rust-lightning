@@ -30,6 +30,20 @@ dnssec = ["dnssec-prover/validation"]
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
 grind_signatures = []
 
+# Enable post-quantum / hybrid Noise (BOLT-8) handshake logic in the core library.
+# This pulls in the PQ KEM + signature stacks and AEAD primitives you used in the overlay.
+pq_handshake = [
+    "std",
+    "ml-kem",
+    "ml-dsa",
+    "chacha20poly1305",
+    "hkdf",
+    "sha3",
+    "rand",
+    "rand_core",
+    "getrandom",
+]
+
 default = ["std", "grind_signatures"]
 
 [dependencies]
@@ -47,6 +61,18 @@ regex = { version = "1.5.6", optional = true }
 backtrace = { version = "0.3", optional = true }
 
 libm = { version = "0.2", default-features = false }
+
+# --- Post-quantum cryptography ---
+ml-kem = { version = "0.2.1", optional = true }
+ml-dsa = { version = "0.0.4", optional = true }
+chacha20poly1305 = { version = "0.10", optional = true }
+hkdf = { version = "0.12", optional = true }
+sha3 = { version = "0.10", optional = true }
+
+# Random number generation - ensure compatibility
+rand       = { version = "0.8", optional = true }
+rand_core  = { version = "=0.10.0-rc-2", optional = true }
+getrandom  = { version = "0.2", optional = true }
 
 [dev-dependencies]
 regex = "1.5.6"

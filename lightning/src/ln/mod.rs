@@ -34,6 +34,8 @@ pub mod bolt11_payment;
 pub mod peer_channel_encryptor;
 #[cfg(not(fuzzing))]
 pub(crate) mod peer_channel_encryptor;
+#[cfg(feature = "pq_handshake")]
+pub mod pq;
 
 #[cfg(fuzzing)]
 pub mod channel;

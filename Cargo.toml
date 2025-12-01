@@ -67,4 +67,5 @@ check-cfg = [
     "cfg(splicing)",
     "cfg(async_payments)",
     "cfg(dual_funding)",
+    "cfg(pq_handshake)",
 ]
