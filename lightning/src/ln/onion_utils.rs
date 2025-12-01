@@ -1800,6 +1800,9 @@ impl_from_u16_for_htlc_reason!(
 		InvalidOnionPayload,
 		MPPTimeout,
 		InvalidOnionBlinding,
+		TemporaryTrampolineFailure,
+		TrampolineFeeOrExpiryInsufficient,
+		UnknownNextTrampoline,
 	]
 );
 
