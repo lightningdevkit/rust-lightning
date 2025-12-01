@@ -13872,7 +13872,9 @@ where
 							&MessageSendEvent::UpdateHTLCs { .. } => false,
 							&MessageSendEvent::SendRevokeAndACK { .. } => false,
 							&MessageSendEvent::SendClosingSigned { .. } => false,
+							#[cfg(simple_close)]
 							&MessageSendEvent::SendClosingComplete { .. } => false,
+							#[cfg(simple_close)]
 							&MessageSendEvent::SendClosingSig { .. } => false,
 							&MessageSendEvent::SendShutdown { .. } => false,
 							&MessageSendEvent::SendChannelReestablish { .. } => false,

@@ -565,12 +565,12 @@ impl PeerChannelEncryptor {
 	/// Encrypts the given message, returning the encrypted version.
 	/// panics if the length of `message`, once encoded, is greater than 65535 or if the Noise
 	/// handshake has not finished.
-	pub fn encrypt_message<M: wire::Type>(&mut self, message: &M) -> Vec<u8> {
+	pub fn encrypt_message<T: wire::Type>(&mut self, message: wire::Message<T>) -> Vec<u8> {
 		// Allocate a buffer with 2KB, fitting most common messages. Reserve the first 16+2 bytes
 		// for the 2-byte message type prefix and its MAC.
 		let mut res = VecWriter(Vec::with_capacity(MSG_BUF_ALLOC_SIZE));
 		res.0.resize(16 + 2, 0);
-		wire::write(message, &mut res).expect("In-memory messages must never fail to serialize");
+		wire::write(&message, &mut res).expect("In-memory messages must never fail to serialize");
 
 		self.encrypt_message_with_header_0s(&mut res.0);
 		res.0
