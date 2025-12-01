@@ -788,8 +788,8 @@ pub fn accountable_from_bool(value: bool) -> ExperimentalAccountable {
 }
 
 /// Converts the accountable signal on the wire to a boolean signal.
-pub fn accountable_into_bool(accountable: ExperimentalAccountable) -> Option<bool> {
-	accountable.map(|v| v == 7)
+pub fn accountable_into_bool(accountable: ExperimentalAccountable) -> bool {
+	accountable.is_some_and(|v| v == 7)
 }
 
 /// An [`onion message`] to be sent to or received from a peer.
