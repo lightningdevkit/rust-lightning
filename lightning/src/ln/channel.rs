@@ -17730,6 +17730,7 @@ mod tests {
 				blinding_point: None,
 				send_timestamp: None,
 				hold_htlc: None,
+				accountable: false,
 			}),
 		);
 
@@ -17906,6 +17907,7 @@ mod tests {
 					blinding_point: None,
 					send_timestamp: None,
 					hold_htlc: None,
+					accountable: false,
 				},
 			),
 		);
@@ -17943,6 +17945,7 @@ mod tests {
 					blinding_point: None,
 					send_timestamp: None,
 					hold_htlc: None,
+					accountable: false,
 				},
 			),
 		);
@@ -17980,6 +17983,7 @@ mod tests {
 					blinding_point: None,
 					send_timestamp: None,
 					hold_htlc: None,
+					accountable: false,
 				},
 			),
 		);
