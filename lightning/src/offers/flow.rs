@@ -574,6 +574,33 @@ where
 		Ok((builder.into(), nonce))
 	}
 
+	/// Creates a minimal [`OfferBuilder`] with derived metadata but no blinded paths.
+	///
+	/// This is useful for scenarios where size constraints require the smallest possible offer,
+	/// such as including a payer offer in a BLIP-42 invoice request. The resulting offer uses
+	/// derived metadata (so invoice requests can be verified) but has no blinded paths, making
+	/// it very compact (~70 bytes).
+	///
+	/// # Privacy
+	///
+	/// This offer exposes the derived signing pubkey directly without any blinded path privacy.
+	/// This is acceptable for BLIP-42 use cases where the payer is intentionally sharing
+	/// their contact information with the recipient.
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	pub fn create_compact_offer_builder<ES: Deref>(
+		&self, entropy_source: ES,
+	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
+	where
+		ES::Target: EntropySource,
+	{
+		// Use the internal builder but don't add any paths
+		self.create_offer_builder_intern(&*entropy_source, |_, _, _| {
+			Ok(core::iter::empty())
+		})
+		.map(|(builder, _)| builder)
+	}
+
 	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by the
 	/// [`OffersMessageFlow`], and any corresponding [`InvoiceRequest`] can be verified using
 	/// [`Self::verify_invoice_request`]. The offer will expire at `absolute_expiry` if `Some`,

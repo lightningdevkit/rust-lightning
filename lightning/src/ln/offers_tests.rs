@@ -2659,17 +2659,17 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	assert!(invoice_request.payer_offer().is_some());
 
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
-	bob.onion_messenger.handle_onion_message(bob_id, &onion_message);
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
 
 	let (invoice, _reply_path) = extract_invoice(alice, &onion_message);
-	assert_eq!(invoice.amount_msats(), 10_000_000);
+	assert_eq!(invoice.amount_msats(), 5_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 
-	route_bolt12_payment(bob, &[alice], &invoice);
-	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+	route_bolt12_payment(alice, &[bob], &invoice);
+	expect_recent_payment!(alice, RecentPaymentDetails::Pending, payment_id);
 
-	let (_, alice_payment_preimage) = match get_event!(alice, Event::PaymentClaimable) {
+	let (_, bob_payment_preimage) = match get_event!(bob, Event::PaymentClaimable) {
 		Event::PaymentClaimable { purpose, .. } => {
 			let preimage = match purpose.preimage() {
 				Some(p) => p,
@@ -2677,9 +2677,9 @@ fn pay_offer_and_add_contacts_info_blip42() {
 			};
 			(purpose, preimage)
 		},
-		_ => panic!("No Event::PaymentClaimable for Alice"),
+		_ => panic!("No Event::PaymentClaimable for Bob"),
 	};
 
-	let (_, _) = claim_payment(bob, &[alice], alice_payment_preimage);
-	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+	let (_, _) = claim_payment(alice, &[bob], bob_payment_preimage);
+	expect_recent_payment!(alice, RecentPaymentDetails::Fulfilled, payment_id);
 }
