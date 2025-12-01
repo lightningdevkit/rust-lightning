@@ -444,7 +444,7 @@ struct OutboundHTLCOutput {
 	skimmed_fee_msat: Option<u64>,
 	send_timestamp: Option<Duration>,
 	hold_htlc: Option<()>,
-	accountable: Option<bool>,
+	accountable: bool,
 }
 
 /// See AwaitingRemoteRevoke ChannelState for more info
@@ -9722,7 +9722,7 @@ where
 					skimmed_fee_msat: htlc.skimmed_fee_msat,
 					blinding_point: htlc.blinding_point,
 					hold_htlc: htlc.hold_htlc,
-					accountable: accountable_from_bool(htlc.accountable.unwrap_or(false)),
+					accountable: accountable_from_bool(htlc.accountable),
 				});
 			}
 		}
@@ -12704,7 +12704,7 @@ where
 			skimmed_fee_msat,
 			send_timestamp,
 			hold_htlc: hold_htlc.then(|| ()),
-			accountable: Some(accountable),
+			accountable,
 		});
 		self.context.next_holder_htlc_id += 1;
 
@@ -14585,7 +14585,7 @@ where
 		let mut pending_outbound_skimmed_fees: Vec<Option<u64>> = Vec::new();
 		let mut pending_outbound_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 		let mut pending_outbound_held_htlc_flags: Vec<Option<()>> = Vec::new();
-		let mut pending_outbound_accountable: Vec<Option<bool>> = Vec::new();
+		let mut pending_outbound_accountable: Vec<bool> = Vec::new();
 
 		(self.context.pending_outbound_htlcs.len() as u64).write(writer)?;
 		for htlc in self.context.pending_outbound_htlcs.iter() {
@@ -15099,7 +15099,7 @@ where
 				blinding_point: None,
 				send_timestamp: None,
 				hold_htlc: None,
-				accountable: None,
+				accountable: false,
 			});
 		}
 
@@ -15322,7 +15322,7 @@ where
 		let mut pending_outbound_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
 		let mut holding_cell_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
 		let mut holding_cell_accountable: Option<Vec<bool>> = None;
-		let mut pending_outbound_accountable_opt: Option<Vec<Option<bool>>> = None;
+		let mut pending_outbound_accountable: Option<Vec<bool>> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -15373,7 +15373,7 @@ where
 			(71, holder_commitment_point_previous_revoked_opt, option), // Added in 0.3
 			(73, holder_commitment_point_last_revoked_opt, option), // Added in 0.3
 			(75, holding_cell_accountable, optional_vec), // Added in 0.3
-			(77, pending_outbound_accountable_opt, optional_vec), // Added in 0.3
+			(77, pending_outbound_accountable, optional_vec), // Added in 0.3
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -15510,7 +15510,7 @@ where
 				return Err(DecodeError::InvalidValue);
 			}
 		}
-		if let Some(held_htlcs) = pending_outbound_accountable_opt {
+		if let Some(held_htlcs) = pending_outbound_accountable {
 			let mut iter = held_htlcs.into_iter();
 			for htlc in pending_outbound_htlcs.iter_mut() {
 				htlc.accountable = iter.next().ok_or(DecodeError::InvalidValue)?;
@@ -16123,7 +16123,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
-			accountable: None,
+			accountable: false,
 		});
 
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
@@ -16579,7 +16579,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
-			accountable: None,
+			accountable: false,
 		};
 		let mut pending_outbound_htlcs = vec![dummy_outbound_output.clone(); 10];
 		for (idx, htlc) in pending_outbound_htlcs.iter_mut().enumerate() {
@@ -16978,7 +16978,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
-			accountable: None,
+			accountable: false,
 		});
 
 		let payment_preimage_3 =
@@ -16994,7 +16994,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
-			accountable: None,
+			accountable: false,
 		});
 
 		let payment_preimage_4 =
@@ -17410,7 +17410,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
-			accountable: None,
+			accountable: false,
 		});
 
 		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
@@ -17424,7 +17424,7 @@ mod tests {
 			blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
-			accountable: None,
+			accountable: false,
 		});
 
 		test_commitment!("304402207d0870964530f97b62497b11153c551dca0a1e226815ef0a336651158da0f82402200f5378beee0e77759147b8a0a284decd11bfd2bc55c8fafa41c134fe996d43c8",
@@ -17666,7 +17666,7 @@ mod tests {
 				blinding_point: None,
 				send_timestamp: None,
 				hold_htlc: None,
-				accountable: None,
+				accountable: false,
 			}),
 		);
 
@@ -17812,7 +17812,7 @@ mod tests {
 					blinding_point: None,
 					send_timestamp: None,
 					hold_htlc: None,
-					accountable: None,
+					accountable: false,
 				}
 			}),
 		);
@@ -17869,7 +17869,7 @@ mod tests {
 				blinding_point: None,
 				send_timestamp: None,
 				hold_htlc: None,
-				accountable: None,
+				accountable: false,
 			}),
 		);
 
@@ -18040,7 +18040,7 @@ mod tests {
 				blinding_point: None,
 				send_timestamp: None,
 				hold_htlc: None,
-				accountable: None,
+				accountable: false,
 			}),
 		);
 
