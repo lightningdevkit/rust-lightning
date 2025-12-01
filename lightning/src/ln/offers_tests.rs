@@ -2607,7 +2607,7 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	let contact_info = contact_info.unwrap();
 
 	assert!(invoice_request.contact_secret().is_some());
-	assert_eq!(invoice_request.contact_secret().unwrap(), contact_info.contact_secrets.primary_secret());
+	assert_eq!(invoice_request.contact_secret().unwrap(), *contact_info.contact_secrets.primary_secret());
 
 	let alice_invoice_request_fields = match alice_payment_purpose {
 		PaymentPurpose::Bolt12OfferPayment { payment_context, .. } => {
