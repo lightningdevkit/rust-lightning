@@ -51,7 +51,7 @@ use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, Paym
 use crate::blinded_path::message::OffersContext;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{self, Bolt12PaymentError, OptionalOfferPaymentParams, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry};
-use crate::offers::contacts::ContactSecrets;
+use crate::offers::contacts::{compute_contact_secret, ContactSecrets};
 use crate::offers::offer::Offer;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
@@ -2564,8 +2564,22 @@ fn pay_offer_and_add_contacts_info_blip42() {
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 
+	// Compute Bob's contact secret for BLIP-42 contact management
+	// Bob is node 1, so his seed is [1u8; 32]
+	let bob_seed = [1u8; 32];
+	let secp_ctx = Secp256k1::new();
+	let bob_master_key = bitcoin::bip32::Xpriv::new_master(Network::Testnet, &bob_seed).unwrap();
+	let bob_private_key = bob_master_key
+		.derive_priv(&secp_ctx, &bitcoin::bip32::ChildNumber::Hardened { index: 0 })
+		.expect("derivation failed")
+		.private_key;
+	let bob_contact_secrets = compute_contact_secret(&bob_private_key, &offer);
+
 	let payment_id = PaymentId([1; 32]);
-	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	bob.node.pay_for_offer(&offer, None, payment_id, OptionalOfferPaymentParams {
+		contact_secrects: Some(bob_contact_secrets),
+		..Default::default()
+	}).unwrap();
 
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
