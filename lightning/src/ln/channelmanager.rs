@@ -97,7 +97,10 @@ use crate::offers::invoice_request::{
 	InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer,
 };
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{InboundRecurrenceSessionData, Offer, OfferFromHrn, RecurrenceFields};
+use crate::offers::offer::{
+	InboundRecurrenceSessionData, Offer, OfferFromHrn, OutboundRecurrenceSessionData,
+	RecurrenceFields,
+};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::Refund;
 use crate::offers::static_invoice::StaticInvoice;
@@ -626,6 +629,35 @@ impl Readable for PaymentId {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(PaymentId(buf))
+	}
+}
+
+/// A user-provided identifier used to uniquely identify an outbound recurrence session.
+///
+/// The same `RecurrenceId` must be supplied across successive calls to
+/// `ChannelManager::pay_for_recurrence` in order to continue a given recurrence
+/// session and maintain a stable payer identity.
+///
+/// This type is not exported to bindings users; bindings APIs use a raw `[u8; 32]`
+/// representation directly.
+#[derive(Hash, Copy, Clone, PartialEq, Eq)]
+pub struct RecurrenceId(pub [u8; Self::LENGTH]);
+
+impl RecurrenceId {
+	/// Number of bytes in the id.
+	pub const LENGTH: usize = 32;
+}
+
+impl Writeable for RecurrenceId {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for RecurrenceId {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(RecurrenceId(buf))
 	}
 }
 
@@ -2687,6 +2719,10 @@ pub struct ChannelManager<
 	/// - maintain recurrence state until cancellation or completion.
 	active_inbound_recurrence_sessions: Mutex<HashMap<PublicKey, InboundRecurrenceSessionData>>,
 
+	/// Tracks all the active outbound recurrence session for this node.
+	active_outbound_recurrence_sessions:
+		Mutex<HashMap<RecurrenceId, OutboundRecurrenceSessionData>>,
+
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) best_block: RwLock<BestBlock>,
@@ -3977,6 +4013,7 @@ where
 			flow,
 
 			active_inbound_recurrence_sessions: Mutex::new(new_hash_map()),
+			active_outbound_recurrence_sessions: Mutex::new(new_hash_map()),
 
 			best_block: RwLock::new(params.best_block),
 
@@ -17447,6 +17484,7 @@ where
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
 		let mut active_inbound_recurrence_sessions = Some(new_hash_map());
+		let mut active_outbound_recurrence_sessions = Some(new_hash_map());
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs, option),
@@ -17466,6 +17504,7 @@ where
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
 			(23, active_inbound_recurrence_sessions, option),
+			(25, active_outbound_recurrence_sessions, option),
 		});
 		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
@@ -18362,6 +18401,9 @@ where
 
 			active_inbound_recurrence_sessions: Mutex::new(
 				active_inbound_recurrence_sessions.unwrap(),
+			),
+			active_outbound_recurrence_sessions: Mutex::new(
+				active_outbound_recurrence_sessions.unwrap(),
 			),
 
 			best_block: RwLock::new(best_block),
