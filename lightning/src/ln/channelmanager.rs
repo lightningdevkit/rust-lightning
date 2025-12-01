@@ -7536,7 +7536,7 @@ where
 						onion_packet.clone(),
 						*skimmed_fee_msat,
 						next_blinding_point,
-						incoming_accountable.unwrap_or(false),
+						*incoming_accountable,
 						&self.fee_estimator,
 						&&logger,
 					) {

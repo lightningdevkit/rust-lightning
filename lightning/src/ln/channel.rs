@@ -62,7 +62,7 @@ use crate::ln::interactivetxs::{
 	InteractiveTxSigningSession, NegotiationError, SharedOwnedInput, SharedOwnedOutput,
 	TX_COMMON_FIELDS_WEIGHT,
 };
-use crate::ln::msgs::{self, accountable_from_bool};
+use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
 use crate::ln::onion_utils::{
 	AttributionData, HTLCFailReason, LocalHTLCFailureReason, HOLD_TIME_UNIT_MILLIS,
@@ -462,7 +462,7 @@ enum HTLCUpdateAwaitingACK {
 		skimmed_fee_msat: Option<u64>,
 		blinding_point: Option<PublicKey>,
 		hold_htlc: Option<()>,
-		accountable: Option<bool>,
+		accountable: bool,
 	},
 	ClaimHTLC {
 		payment_preimage: PaymentPreimage,
@@ -8397,7 +8397,7 @@ where
 							skimmed_fee_msat,
 							blinding_point,
 							hold_htlc.is_some(),
-							accountable.unwrap_or(false),
+							accountable,
 							fee_estimator,
 							logger,
 						) {
@@ -12680,7 +12680,7 @@ where
 				skimmed_fee_msat,
 				blinding_point,
 				hold_htlc: hold_htlc.then(|| ()),
-				accountable: Some(accountable),
+				accountable,
 			});
 			return Ok(false);
 		}
@@ -14637,7 +14637,7 @@ where
 			Vec::with_capacity(holding_cell_htlc_update_count);
 		let mut holding_cell_held_htlc_flags: Vec<Option<()>> =
 			Vec::with_capacity(holding_cell_htlc_update_count);
-		let mut holding_cell_accountable_flags: Vec<Option<bool>> =
+		let mut holding_cell_accountable_flags: Vec<bool> =
 			Vec::with_capacity(holding_cell_htlc_update_count);
 		// Vec of (htlc_id, failure_code, sha256_of_onion)
 		let mut malformed_htlcs: Vec<(u64, u16, [u8; 32])> = Vec::new();
@@ -15113,7 +15113,7 @@ where
 					skimmed_fee_msat: None,
 					blinding_point: None,
 					hold_htlc: None,
-					accountable: None,
+					accountable: false,
 				},
 				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
 					payment_preimage: Readable::read(reader)?,
@@ -15315,7 +15315,7 @@ where
 
 		let mut pending_outbound_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
 		let mut holding_cell_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
-		let mut holding_cell_accountable_opt: Option<Vec<Option<bool>>> = None;
+		let mut holding_cell_accountable: Option<Vec<bool>> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -15365,7 +15365,7 @@ where
 			(69, holding_cell_held_htlc_flags_opt, optional_vec), // Added in 0.2
 			(71, holder_commitment_point_previous_revoked_opt, option), // Added in 0.3
 			(73, holder_commitment_point_last_revoked_opt, option), // Added in 0.3
-			(75, holding_cell_accountable_opt, optional_vec), // Added in 0.3
+			(75, holding_cell_accountable, optional_vec), // Added in 0.3
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -15490,7 +15490,7 @@ where
 			}
 		}
 
-		if let Some(accountable_htlcs) = holding_cell_accountable_opt {
+		if let Some(accountable_htlcs) = holding_cell_accountable {
 			let mut iter = accountable_htlcs.into_iter();
 			for htlc in holding_cell_htlc_updates.iter_mut() {
 				if let HTLCUpdateAwaitingACK::AddHTLC { ref mut accountable, .. } = htlc {
@@ -16587,7 +16587,7 @@ mod tests {
 			skimmed_fee_msat: None,
 			blinding_point: None,
 			hold_htlc: None,
-			accountable: None,
+			accountable: false,
 		};
 		let dummy_holding_cell_claim_htlc = |attribution_data| HTLCUpdateAwaitingACK::ClaimHTLC {
 			payment_preimage: PaymentPreimage([42; 32]),
