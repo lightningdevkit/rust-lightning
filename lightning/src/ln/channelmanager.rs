@@ -9090,7 +9090,74 @@ impl<
 					None,
 				));
 			},
-			HTLCSource::TrampolineForward { .. } => todo!(),
+			HTLCSource::TrampolineForward {
+				previous_hop_data,
+				incoming_trampoline_shared_secret,
+				..
+			} => {
+				let decoded_onion_failure =
+					onion_error.decode_onion_failure(&self.secp_ctx, &self.logger, &source);
+				log_trace!(
+					WithContext::from(&self.logger, None, None, Some(*payment_hash)),
+					"Trampoline forward failed downstream on {}",
+					if let Some(scid) = decoded_onion_failure.short_channel_id {
+						scid.to_string()
+					} else {
+						"unknown channel".to_string()
+					},
+				);
+				let incoming_trampoline_shared_secret = Some(*incoming_trampoline_shared_secret);
+
+				// TODO: when we receive a failure from a single outgoing trampoline HTLC, we don't
+				// necessarily want to fail all of our incoming HTLCs back yet. We may have other
+				// outgoing HTLCs that need to resolve first. This will be tracked in our
+				// pending_outbound_payments in a followup.
+				for current_hop_data in previous_hop_data {
+					let HTLCPreviousHopData {
+						prev_outbound_scid_alias,
+						htlc_id,
+						incoming_packet_shared_secret,
+						blinded_failure,
+						channel_id,
+						..
+					} = current_hop_data;
+					log_trace!(
+						WithContext::from(&self.logger, None, Some(*channel_id), Some(*payment_hash)),
+						"Failing {}HTLC with payment_hash {} backwards from us following Trampoline forwarding failure: {:?}",
+						if blinded_failure.is_some() { "blinded " } else { "" }, &payment_hash, onion_error
+					);
+					let onion_error = HTLCFailReason::reason(
+						LocalHTLCFailureReason::TemporaryTrampolineFailure,
+						Vec::new(),
+					);
+					push_forward_htlcs_failure(
+						*prev_outbound_scid_alias,
+						get_htlc_forward_failure(
+							blinded_failure,
+							&onion_error,
+							incoming_packet_shared_secret,
+							&incoming_trampoline_shared_secret,
+							&None,
+							*htlc_id,
+						),
+					);
+				}
+
+				// We only want to emit a single event for trampoline failures, so we do it once
+				// we've failed back all of our incoming HTLCs.
+				let mut pending_events = self.pending_events.lock().unwrap();
+				pending_events.push_back((
+					events::Event::HTLCHandlingFailed {
+						prev_channel_ids: previous_hop_data
+							.iter()
+							.map(|prev| prev.channel_id)
+							.collect(),
+						failure_type,
+						failure_reason: Some(onion_error.into()),
+					},
+					None,
+				));
+			},
 		}
 	}
 
