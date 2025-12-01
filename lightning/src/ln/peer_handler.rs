@@ -1144,12 +1144,11 @@ impl From<LightningError> for MessageHandlingError {
 	}
 }
 
-macro_rules! encode_msg {
-	($msg: expr) => {{
-		let mut buffer = VecWriter(Vec::with_capacity(MSG_BUF_ALLOC_SIZE));
-		wire::write($msg, &mut buffer).unwrap();
-		buffer.0
-	}};
+fn encode_message<T: wire::Type>(message: wire::Message<T>) -> Vec<u8> {
+	let mut buffer = VecWriter(Vec::with_capacity(MSG_BUF_ALLOC_SIZE));
+	message.type_id().write(&mut buffer).expect("In-memory messages must never fail to serialize");
+	message.write(&mut buffer).expect("In-memory messages must never fail to serialize");
+	buffer.0
 }
 
 impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref, NS: Deref, SM: Deref>
@@ -2068,7 +2067,7 @@ where
 		for msg in msgs_to_forward.drain(..) {
 			self.forward_broadcast_msg(
 				&*peers,
-				&msg,
+				msg,
 				peer_node_id.as_ref().map(|(pk, _)| pk),
 				false,
 			);
@@ -2661,22 +2660,25 @@ where
 	/// unless `allow_large_buffer` is set, in which case the message will be treated as critical
 	/// and delivered no matter the available buffer space.
 	fn forward_broadcast_msg(
-		&self, peers: &HashMap<Descriptor, Mutex<Peer>>, msg: &BroadcastGossipMessage,
+		&self, peers: &HashMap<Descriptor, Mutex<Peer>>, msg: BroadcastGossipMessage,
 		except_node: Option<&PublicKey>, allow_large_buffer: bool,
 	) {
 		match msg {
-			BroadcastGossipMessage::ChannelAnnouncement(ref msg) => {
+			BroadcastGossipMessage::ChannelAnnouncement(msg) => {
 				log_gossip!(self.logger, "Sending message to all peers except {:?} or the announced channel's counterparties: {:?}", except_node, msg);
-				let encoded_msg = encode_msg!(msg);
 				let our_channel = self.our_node_id == msg.contents.node_id_1
 					|| self.our_node_id == msg.contents.node_id_2;
-
+				let scid = msg.contents.short_channel_id;
+				let node_id_1 = msg.contents.node_id_1;
+				let node_id_2 = msg.contents.node_id_2;
+				let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
+					Message::ChannelAnnouncement(msg);
+				let encoded_msg = encode_message(msg);
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
 					if !peer.handshake_complete() {
 						continue;
 					}
-					let scid = msg.contents.short_channel_id;
 					if !our_channel && !peer.should_forward_channel_announcement(scid) {
 						continue;
 					}
@@ -2693,9 +2695,7 @@ where
 						continue;
 					}
 					if let Some((_, their_node_id)) = peer.their_node_id {
-						if their_node_id == msg.contents.node_id_1
-							|| their_node_id == msg.contents.node_id_2
-						{
+						if their_node_id == node_id_1 || their_node_id == node_id_2 {
 							continue;
 						}
 					}
@@ -2708,23 +2708,25 @@ where
 					peer.gossip_broadcast_buffer.push_back(encoded_message);
 				}
 			},
-			BroadcastGossipMessage::NodeAnnouncement(ref msg) => {
+			BroadcastGossipMessage::NodeAnnouncement(msg) => {
 				log_gossip!(
 					self.logger,
 					"Sending message to all peers except {:?} or the announced node: {:?}",
 					except_node,
 					msg
 				);
-				let encoded_msg = encode_msg!(msg);
 				let our_announcement = self.our_node_id == msg.contents.node_id;
+				let msg_node_id = msg.contents.node_id;
 
+				let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
+					Message::NodeAnnouncement(msg);
+				let encoded_msg = encode_message(msg);
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
 					if !peer.handshake_complete() {
 						continue;
 					}
-					let node_id = msg.contents.node_id;
-					if !our_announcement && !peer.should_forward_node_announcement(node_id) {
+					if !our_announcement && !peer.should_forward_node_announcement(msg_node_id) {
 						continue;
 					}
 					debug_assert!(peer.their_node_id.is_some());
@@ -2740,7 +2742,7 @@ where
 						continue;
 					}
 					if let Some((_, their_node_id)) = peer.their_node_id {
-						if their_node_id == msg.contents.node_id {
+						if their_node_id == msg_node_id {
 							continue;
 						}
 					}
@@ -2760,15 +2762,16 @@ where
 					except_node,
 					msg
 				);
-				let encoded_msg = encode_msg!(msg);
-				let our_channel = self.our_node_id == *node_id_1 || self.our_node_id == *node_id_2;
-
+				let our_channel = self.our_node_id == node_id_1 || self.our_node_id == node_id_2;
+				let scid = msg.contents.short_channel_id;
+				let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
+					Message::ChannelUpdate(msg);
+				let encoded_msg = encode_message(msg);
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
 					if !peer.handshake_complete() {
 						continue;
 					}
-					let scid = msg.contents.short_channel_id;
 					if !our_channel && !peer.should_forward_channel_announcement(scid) {
 						continue;
 					}
@@ -3201,7 +3204,7 @@ where
 									let forward = BroadcastGossipMessage::ChannelAnnouncement(msg);
 									self.forward_broadcast_msg(
 										peers,
-										&forward,
+										forward,
 										None,
 										from_chan_handler,
 									);
@@ -3222,7 +3225,7 @@ where
 										};
 										self.forward_broadcast_msg(
 											peers,
-											&forward,
+											forward,
 											None,
 											from_chan_handler,
 										);
@@ -3246,7 +3249,7 @@ where
 									};
 									self.forward_broadcast_msg(
 										peers,
-										&forward,
+										forward,
 										None,
 										from_chan_handler,
 									);
@@ -3265,7 +3268,7 @@ where
 									let forward = BroadcastGossipMessage::NodeAnnouncement(msg);
 									self.forward_broadcast_msg(
 										peers,
-										&forward,
+										forward,
 										None,
 										from_chan_handler,
 									);
@@ -3742,7 +3745,7 @@ where
 		let _ = self.message_handler.route_handler.handle_node_announcement(None, &msg);
 		self.forward_broadcast_msg(
 			&*self.peers.read().unwrap(),
-			&BroadcastGossipMessage::NodeAnnouncement(msg),
+			BroadcastGossipMessage::NodeAnnouncement(msg),
 			None,
 			true,
 		);
@@ -4557,7 +4560,8 @@ mod tests {
 			assert_eq!(peer.gossip_broadcast_buffer.len(), 1);
 
 			let pending_msg = &peer.gossip_broadcast_buffer[0];
-			let expected = encode_msg!(&msg_100);
+			let msg: Message<()> = Message::ChannelUpdate(msg_100);
+			let expected = encode_message(msg);
 			assert_eq!(expected, pending_msg.fetch_encoded_msg_with_type_pfx());
 		}
 	}

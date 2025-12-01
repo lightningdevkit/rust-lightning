@@ -12,7 +12,9 @@ use crate::prelude::*;
 use crate::ln::msgs;
 use crate::ln::msgs::LightningError;
 use crate::ln::wire;
+use crate::ln::wire::Type;
 use crate::sign::{NodeSigner, Recipient};
+use crate::util::ser::Writeable;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
@@ -570,7 +572,9 @@ impl PeerChannelEncryptor {
 		// for the 2-byte message type prefix and its MAC.
 		let mut res = VecWriter(Vec::with_capacity(MSG_BUF_ALLOC_SIZE));
 		res.0.resize(16 + 2, 0);
-		wire::write(&message, &mut res).expect("In-memory messages must never fail to serialize");
+
+		message.type_id().write(&mut res).expect("In-memory messages must never fail to serialize");
+		message.write(&mut res).expect("In-memory messages must never fail to serialize");
 
 		self.encrypt_message_with_header_0s(&mut res.0);
 		res.0
