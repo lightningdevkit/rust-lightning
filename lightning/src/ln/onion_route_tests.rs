@@ -133,7 +133,7 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 		.node
 		.send_payment_with_route(route.clone(), *payment_hash, recipient_onion, payment_id)
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	// temper update_add (0 => 1)
 	let mut update_add_0 = update_0.update_add_htlcs[0].clone();
@@ -170,7 +170,7 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 			expect_htlc_forward!(&nodes[1]);
 
 			let update_1 = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
-			check_added_monitors!(&nodes[1], 1);
+			check_added_monitors(&nodes[1], 1);
 			assert_eq!(update_1.update_add_htlcs.len(), 1);
 			// tamper update_add (1 => 2)
 			let mut update_add_1 = update_1.update_add_htlcs[0].clone();
@@ -202,7 +202,7 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 				},
 				_ => {},
 			}
-			check_added_monitors!(&nodes[2], 1);
+			check_added_monitors(&nodes[2], 1);
 
 			let update_2_1 = get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
 			assert!(update_2_1.update_fail_htlcs.len() == 1);
@@ -405,7 +405,7 @@ fn test_fee_failures() {
 		.node
 		.send_payment_with_route(route.clone(), payment_hash_success, recipient_onion, payment_id)
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	pass_along_route(
 		&nodes[0],
 		&[&[&nodes[1], &nodes[2]]],
@@ -456,7 +456,7 @@ fn test_fee_failures() {
 		.node
 		.send_payment_with_route(route, payment_hash_success, recipient_onion, payment_id)
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	pass_along_route(
 		&nodes[0],
 		&[&[&nodes[1], &nodes[2]]],
@@ -1548,7 +1548,7 @@ fn test_overshoot_final_cltv() {
 		.send_payment_with_route(route, payment_hash, recipient_onion, payment_id)
 		.unwrap();
 
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	let mut update_add_0 = update_0.update_add_htlcs[0].clone();
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add_0);
@@ -1567,7 +1567,7 @@ fn test_overshoot_final_cltv() {
 	}
 	expect_and_process_pending_htlcs(&nodes[1], false);
 
-	check_added_monitors!(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	let update_1 = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
 	let mut update_add_1 = update_1.update_add_htlcs[0].clone();
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &update_add_1);
@@ -2285,7 +2285,7 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 		.node
 		.send_payment_with_route(route, payment_hash, recipient_onion, PaymentId(payment_hash.0))
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
@@ -2300,7 +2300,7 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 		&nodes[1],
 		&[HTLCHandlingFailureType::Receive { payment_hash }],
 	);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -2435,7 +2435,7 @@ fn test_phantom_onion_hmac_failure() {
 		.node
 		.send_payment_with_route(route, payment_hash, recipient_onion, PaymentId(payment_hash.0))
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
@@ -2470,7 +2470,7 @@ fn test_phantom_onion_hmac_failure() {
 	);
 	nodes[1].node.process_pending_htlc_forwards();
 	let update_1 = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-	check_added_monitors!(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
@@ -2508,7 +2508,7 @@ fn test_phantom_invalid_onion_payload() {
 		.node
 		.send_payment_with_route(route.clone(), payment_hash, recipient_onion, payment_id)
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
@@ -2571,7 +2571,7 @@ fn test_phantom_invalid_onion_payload() {
 	);
 	nodes[1].node.process_pending_htlc_forwards();
 	let update_1 = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-	check_added_monitors!(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
@@ -2607,7 +2607,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 		.node
 		.send_payment_with_route(route, payment_hash, recipient_onion, PaymentId(payment_hash.0))
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
@@ -2637,7 +2637,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	);
 	nodes[1].node.process_pending_htlc_forwards();
 	let update_1 = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-	check_added_monitors!(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
@@ -2676,7 +2676,7 @@ fn test_phantom_failure_too_low_cltv() {
 		.node
 		.send_payment_with_route(route, payment_hash, recipient_onion, PaymentId(payment_hash.0))
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
@@ -2691,7 +2691,7 @@ fn test_phantom_failure_too_low_cltv() {
 	);
 	nodes[1].node.process_pending_htlc_forwards();
 	let update_1 = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-	check_added_monitors!(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
@@ -2729,7 +2729,7 @@ fn test_phantom_failure_modified_cltv() {
 		.node
 		.send_payment_with_route(route, payment_hash, recipient_onion, PaymentId(payment_hash.0))
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
@@ -2784,7 +2784,7 @@ fn test_phantom_failure_expires_too_soon() {
 		.node
 		.send_payment_with_route(route, payment_hash, recipient_onion, PaymentId(payment_hash.0))
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
@@ -2834,7 +2834,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 		.node
 		.send_payment_with_route(route, payment_hash, recipient_onion, PaymentId(payment_hash.0))
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
@@ -2851,7 +2851,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 	);
 	nodes[1].node.process_pending_htlc_forwards();
 	let update_1 = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-	check_added_monitors!(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
@@ -2904,7 +2904,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 		.node
 		.send_payment_with_route(route.clone(), payment_hash, recipient_onion, payment_id)
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
@@ -2954,7 +2954,7 @@ fn test_phantom_failure_reject_payment() {
 		.node
 		.send_payment_with_route(route.clone(), payment_hash, recipient_onion, payment_id)
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
@@ -2981,7 +2981,7 @@ fn test_phantom_failure_reject_payment() {
 	nodes[1].node.process_pending_htlc_forwards();
 
 	let update_1 = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-	check_added_monitors!(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);

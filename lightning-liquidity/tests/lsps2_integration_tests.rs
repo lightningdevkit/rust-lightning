@@ -7,19 +7,11 @@ use common::{
 	get_lsps_message, LSPSNodes, LSPSNodesWithPayer, LiquidityNode,
 };
 
-use lightning::check_added_monitors;
 use lightning::events::{ClosureReason, Event};
 use lightning::get_event_msg;
 use lightning::ln::channelmanager::PaymentId;
 use lightning::ln::channelmanager::Retry;
-use lightning::ln::functional_test_utils::create_funding_transaction;
-use lightning::ln::functional_test_utils::do_commitment_signed_dance;
-use lightning::ln::functional_test_utils::expect_channel_pending_event;
-use lightning::ln::functional_test_utils::expect_channel_ready_event;
-use lightning::ln::functional_test_utils::expect_payment_sent;
-use lightning::ln::functional_test_utils::test_default_channel_config;
-use lightning::ln::functional_test_utils::SendEvent;
-use lightning::ln::functional_test_utils::{connect_blocks, create_chan_between_nodes_with_value};
+use lightning::ln::functional_test_utils::*;
 use lightning::ln::msgs::BaseMessageHandler;
 use lightning::ln::msgs::ChannelMessageHandler;
 use lightning::ln::msgs::MessageSendEvent;
@@ -1226,7 +1218,7 @@ fn client_trusts_lsp_end_to_end_test() {
 		)
 		.unwrap();
 
-	check_added_monitors!(payer_node, 1);
+	check_added_monitors(&payer_node, 1);
 	let events = payer_node.node.get_and_clear_pending_msg_events();
 	let ev = SendEvent::from_event(events[0].clone());
 	service_node.inner.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
@@ -1566,7 +1558,7 @@ fn create_channel_with_manual_broadcast(
 	let funding_created =
 		get_event_msg!(service_node, MessageSendEvent::SendFundingCreated, *client_node_id);
 	client_node.node.handle_funding_created(*service_node_id, &funding_created);
-	check_added_monitors!(client_node.inner, 1);
+	check_added_monitors(&client_node.inner, 1);
 
 	let bs_signed_locked = client_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(bs_signed_locked.len(), 2);
@@ -1602,7 +1594,7 @@ fn create_channel_with_manual_broadcast(
 				_ => panic!("Unexpected event"),
 			}
 			expect_channel_pending_event(&client_node, &service_node_id);
-			check_added_monitors!(service_node.inner, 1);
+			check_added_monitors(&service_node.inner, 1);
 
 			as_channel_ready =
 				get_event_msg!(service_node, MessageSendEvent::SendChannelReady, *client_node_id);
@@ -1699,7 +1691,7 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 		)
 		.unwrap();
 
-	check_added_monitors!(payer_node, 1);
+	check_added_monitors(&payer_node, 1);
 	let events = payer_node.node.get_and_clear_pending_msg_events();
 	let ev = SendEvent::from_event(events[0].clone());
 	service_node.inner.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
@@ -1890,7 +1882,7 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 		)
 		.unwrap();
 
-	check_added_monitors!(payer_node, 1);
+	check_added_monitors(&payer_node, 1);
 	let events = payer_node.node.get_and_clear_pending_msg_events();
 	let ev = SendEvent::from_event(events[0].clone());
 	service_node.inner.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
@@ -2227,7 +2219,7 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 		)
 		.unwrap();
 
-	check_added_monitors!(payer_node, 1);
+	check_added_monitors(&payer_node, 1);
 	let events = payer_node.node.get_and_clear_pending_msg_events();
 	let ev = SendEvent::from_event(events[0].clone());
 	service_node.inner.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
