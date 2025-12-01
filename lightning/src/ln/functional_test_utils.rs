@@ -1124,7 +1124,9 @@ pub fn remove_first_msg_event_to_node(
 		MessageSendEvent::UpdateHTLCs { node_id, .. } => node_id == msg_node_id,
 		MessageSendEvent::SendRevokeAndACK { node_id, .. } => node_id == msg_node_id,
 		MessageSendEvent::SendClosingSigned { node_id, .. } => node_id == msg_node_id,
+		#[cfg(simple_close)]
 		MessageSendEvent::SendClosingComplete { node_id, .. } => node_id == msg_node_id,
+		#[cfg(simple_close)]
 		MessageSendEvent::SendClosingSig { node_id, .. } => node_id == msg_node_id,
 		MessageSendEvent::SendShutdown { node_id, .. } => node_id == msg_node_id,
 		MessageSendEvent::SendChannelReestablish { node_id, .. } => node_id == msg_node_id,
