@@ -1,10 +1,12 @@
-use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, Retry};
+use crate::ln::channelmanager::{
+	HTLCForwardInfo, PaymentId, PendingAddHTLCInfo, PendingHTLCInfo, RecipientOnionFields, Retry,
+};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{accountable_from_bool, ChannelMessageHandler, ExperimentalAccountable};
 use crate::routing::router::{PaymentParameters, RouteParameters};
 
 fn test_accountable_forwarding_with_override(
-	override_accountable: ExperimentalAccountable, expected_forwarded: ExperimentalAccountable,
+	override_accountable: ExperimentalAccountable, expected_forwarded: bool,
 ) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -45,14 +47,35 @@ fn test_accountable_forwarding_with_override(
 	let updates_bc = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
 	assert_eq!(updates_bc.update_add_htlcs.len(), 1);
 	let htlc_bc = &updates_bc.update_add_htlcs[0];
+	let expected_acountable_signal = accountable_from_bool(expected_forwarded);
 	assert_eq!(
-		htlc_bc.accountable, expected_forwarded,
+		htlc_bc.accountable, expected_acountable_signal,
 		"B -> C should have accountable = {:?}",
-		expected_forwarded
+		expected_acountable_signal
 	);
 
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), htlc_bc);
 	do_commitment_signed_dance(&nodes[2], &nodes[1], &updates_bc.commitment_signed, false, false);
+
+	// Accountable signal is not surfaced in PaymentClaimable, so we do our next-best and check
+	// that the received htlcs that will be processed has the signal set as we expect. We manually
+	// process pending update adds so that we can access the htlc in forward_htlcs.
+	nodes[2].node.test_process_pending_update_add_htlcs();
+	{
+		let fwds_lock = nodes[2].node.forward_htlcs.lock().unwrap();
+		let recvs = fwds_lock.get(&0).unwrap();
+		assert_eq!(recvs.len(), 1);
+		match recvs[0] {
+			HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+				forward_info: PendingHTLCInfo { incoming_accountable, .. },
+				..
+			}) => {
+				assert_eq!(incoming_accountable, expected_forwarded)
+			},
+			_ => panic!("Unexpected forward"),
+		}
+	}
+
 	expect_and_process_pending_htlcs(&nodes[2], false);
 	check_added_monitors(&nodes[2], 0);
 	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, 100_000);
@@ -62,7 +85,7 @@ fn test_accountable_forwarding_with_override(
 #[test]
 fn test_accountable_signal() {
 	// Tests forwarding of accountable signal for various incoming signal values.
-	test_accountable_forwarding_with_override(None, accountable_from_bool(false));
-	test_accountable_forwarding_with_override(Some(7), accountable_from_bool(true));
-	test_accountable_forwarding_with_override(Some(3), accountable_from_bool(false));
+	test_accountable_forwarding_with_override(None, false);
+	test_accountable_forwarding_with_override(Some(7), true);
+	test_accountable_forwarding_with_override(Some(3), false);
 }
