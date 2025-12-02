@@ -11384,12 +11384,12 @@ where
 				} else {
 					debug_assert!(false);
 				}
-				if self.context.minimum_depth(&self.funding).expect("set for a ready channel") > 1 {
+				if self.context.minimum_depth(&self.funding).expect("set for a ready channel") > 0 {
 					// Reset the original short_channel_id so that we'll generate a closure
 					// `channel_update` broadcast event.
 					self.funding.short_channel_id = original_scid;
-					let err_reason = format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.",
-						self.context.minimum_depth.unwrap(), funding_tx_confirmations);
+					let err_reason = format!("Funding transaction was un-confirmed, originally locked at {} confs.",
+						self.context.minimum_depth.unwrap());
 					return Err(ClosureReason::ProcessingError { err: err_reason });
 				}
 			}
