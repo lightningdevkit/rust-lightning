@@ -180,6 +180,16 @@
 TODO release stats
 
 
+# 0.1.8 - Dec 2, 2025 - "Async Update Completion"
+
+## Bug Fixes
+ * In cases where an MPP payment is claimed while one channel is waiting on a
+   counterparty's `revoke_and_ack` message and the `revoke_and_ack` message is
+   received prior to the asynchronous completion of the MPP-claim
+   `ChannelMonitorUpdate`, the channel will no longer hang (#4236).
+ * Deserializing invalid `Duration`s can no longer panic (#4172).
+
+
 # 0.1.7 - Oct 21, 2025 - "Unstable Release CI"
 
 ## Bug Fixes
