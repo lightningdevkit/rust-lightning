@@ -3911,6 +3911,25 @@ macro_rules! process_events_body {
 	}
 }
 
+/// Creates an [`Event::HTLCIntercepted`] from a [`PendingAddHTLCInfo`]. We generate this event in a
+/// few places so this DRYs the code.
+fn create_htlc_intercepted_event(
+	intercept_id: InterceptId, pending_add: &PendingAddHTLCInfo,
+) -> Result<Event, ()> {
+	let inbound_amount_msat = pending_add.forward_info.incoming_amt_msat.ok_or(())?;
+	let requested_next_hop_scid = match pending_add.forward_info.routing {
+		PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
+		_ => return Err(()),
+	};
+	Ok(Event::HTLCIntercepted {
+		requested_next_hop_scid,
+		payment_hash: pending_add.forward_info.payment_hash,
+		inbound_amount_msat,
+		expected_outbound_amount_msat: pending_add.forward_info.outgoing_amt_msat,
+		intercept_id,
+	})
+}
+
 impl<
 		M: Deref,
 		T: Deref,
@@ -11486,22 +11505,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 						match pending_intercepts.entry(intercept_id) {
 							hash_map::Entry::Vacant(entry) => {
-								new_intercept_events.push_back((
-									events::Event::HTLCIntercepted {
-										requested_next_hop_scid: scid,
-										payment_hash,
-										inbound_amount_msat: pending_add
-											.forward_info
-											.incoming_amt_msat
-											.unwrap(),
-										expected_outbound_amount_msat: pending_add
-											.forward_info
-											.outgoing_amt_msat,
-										intercept_id,
-									},
-									None,
-								));
-								entry.insert(pending_add);
+								if let Ok(intercept_ev) =
+									create_htlc_intercepted_event(intercept_id, &pending_add)
+								{
+									new_intercept_events.push_back((intercept_ev, None));
+									entry.insert(pending_add);
+								} else {
+									debug_assert!(false);
+									fail_intercepted_htlc(pending_add);
+								}
 							},
 							hash_map::Entry::Occupied(_) => {
 								log_info!(
