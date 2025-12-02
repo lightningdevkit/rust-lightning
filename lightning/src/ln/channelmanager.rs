@@ -3574,10 +3574,16 @@ macro_rules! handle_monitor_update_completion {
 			$self.handle_monitor_update_completion_actions(update_actions);
 		} else {
 			log_debug!(logger, "Channel is open and awaiting update, resuming it");
-			let mut updates = $chan.monitor_updating_restored(&&logger,
-				&$self.node_signer, $self.chain_hash, &*$self.config.read().unwrap(),
+			let mut updates = $chan.monitor_updating_restored(
+				&&logger,
+				&$self.node_signer,
+				$self.chain_hash,
+				&*$self.config.read().unwrap(),
 				$self.best_block.read().unwrap().height,
-				|htlc_id| $self.path_for_release_held_htlc(htlc_id, outbound_scid_alias, &channel_id, &counterparty_node_id));
+				|htlc_id| {
+					$self.path_for_release_held_htlc(htlc_id, outbound_scid_alias, &channel_id, &counterparty_node_id)
+				},
+			);
 			let channel_update = if updates.channel_ready.is_some()
 				&& $chan.context.is_usable()
 				&& $peer_state.is_connected
@@ -3588,27 +3594,37 @@ macro_rules! handle_monitor_update_completion {
 				// channels, but there's no reason not to just inform our counterparty of our fees
 				// now.
 				if let Ok(msg) = $self.get_channel_update_for_unicast($chan) {
-					Some(MessageSendEvent::SendChannelUpdate {
-						node_id: counterparty_node_id,
-						msg,
-					})
-				} else { None }
-			} else { None };
+					Some(MessageSendEvent::SendChannelUpdate { node_id: counterparty_node_id, msg })
+				} else {
+					None
+				}
+			} else {
+				None
+			};
 
 			let (htlc_forwards, decode_update_add_htlcs) = $self.handle_channel_resumption(
-				&mut $peer_state.pending_msg_events, $chan, updates.raa,
-				updates.commitment_update, updates.commitment_order, updates.accepted_htlcs,
-				updates.pending_update_adds, updates.funding_broadcastable, updates.channel_ready,
-				updates.announcement_sigs, updates.tx_signatures, None, updates.channel_ready_order,
+				&mut $peer_state.pending_msg_events,
+				$chan,
+				updates.raa,
+				updates.commitment_update,
+				updates.commitment_order,
+				updates.accepted_htlcs,
+				updates.pending_update_adds,
+				updates.funding_broadcastable,
+				updates.channel_ready,
+				updates.announcement_sigs,
+				updates.tx_signatures,
+				None,
+				updates.channel_ready_order,
 			);
 			if let Some(upd) = channel_update {
 				$peer_state.pending_msg_events.push(upd);
 			}
 
-			let unbroadcasted_batch_funding_txid = $chan.context.unbroadcasted_batch_funding_txid(&$chan.funding);
+			let unbroadcasted_batch_funding_txid =
+				$chan.context.unbroadcasted_batch_funding_txid(&$chan.funding);
 			core::mem::drop($peer_state_lock);
 			core::mem::drop($per_peer_state_lock);
-
 
 			// If the channel belongs to a batch funding transaction, the progress of the batch
 			// should be updated as we have received funding_signed and persisted the monitor.
