@@ -229,6 +229,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(),
 								index: 0,
 							}),
+							funding_redeem_script: None,
 							channel_type: None,
 							short_channel_id: Some(scid),
 							inbound_scid_alias: None,
