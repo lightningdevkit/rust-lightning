@@ -756,6 +756,7 @@ impl Default for OptionalOfferPaymentParams {
 pub(crate) enum SentHTLCId {
 	PreviousHopData { prev_outbound_scid_alias: u64, htlc_id: u64 },
 	OutboundRoute { session_priv: [u8; SECRET_KEY_SIZE] },
+	TrampolineForward { session_priv: [u8; SECRET_KEY_SIZE] },
 }
 impl SentHTLCId {
 	pub(crate) fn from_source(source: &HTLCSource) -> Self {
@@ -776,6 +777,9 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 		(2, htlc_id, required),
 	},
 	(2, OutboundRoute) => {
+		(0, session_priv, required),
+	},
+	(4, TrampolineForward) => {
 		(0, session_priv, required),
 	},
 );
