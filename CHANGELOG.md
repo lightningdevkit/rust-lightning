@@ -1,4 +1,4 @@
-# 0.2 - TODO: Add release date, 2025 - "Natively Asynchronous Splicing"
+# 0.2 - Dec 2, 2025 - "Natively Asynchronous Splicing"
 
 ## API Updates
 
@@ -177,7 +177,45 @@
    (#4045, #4046).
  * LDK now requires the `channel_type` feature in line with spec updates (#3896)
 
-TODO release stats
+In total, this release features 259 files changed, 114539 insertions, 45150
+deletions in 1628 commits since 0.1 from 36 authors, in alphabetical order:
+
+ * Aditya Sharma
+ * Alec Chen
+ * Anonymous
+ * Anyitechs
+ * Arik Sosman
+ * Austin Mackillop
+ * Carla Kirk-Cohen
+ * Chuks Agbakuru
+ * Devrandom
+ * Duncan Dean
+ * Elias Rohrer
+ * Erick Cestari
+ * Fedeparma74
+ * Fuyin
+ * Ian Slane
+ * Jeffrey Czyz
+ * Jesse de Wit
+ * Joost Jager
+ * Leo Nash
+ * Martin Saposnic
+ * Matt Corallo
+ * Matt Morehouse
+ * Maurice Poirrier Chuden
+ * Philip Kannegaard Hayes
+ * Prabhat Verma
+ * Valentine Wallace
+ * Vincenzo Palazzo
+ * Willem Van Lint
+ * Wilmer Paulino
+ * YI
+ * benthecarman
+ * elnosh
+ * moisesPompilio
+ * olegkubrakov
+ * optout
+ * shaavan
 
 
 # 0.1.8 - Dec 2, 2025 - "Async Update Completion"
