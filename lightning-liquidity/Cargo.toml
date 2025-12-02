@@ -1,6 +1,6 @@
 [package]
 name = "lightning-liquidity"
-version = "0.2.0-rc2"
+version = "0.2.0"
 authors = ["John Cantrell <johncantrell97@gmail.com>", "Elias Rohrer <dev@tnull.de>"]
 homepage = "https://lightningdevkit.org/"
 license = "MIT OR Apache-2.0"
@@ -21,10 +21,10 @@ backtrace = ["dep:backtrace"]
 _test_utils = []
 
 [dependencies]
-lightning = { version = "0.2.0-rc2", path = "../lightning", default-features = false }
-lightning-types = { version = "0.3.0-rc2", path = "../lightning-types", default-features = false }
-lightning-invoice = { version = "0.34.0-rc2", path = "../lightning-invoice", default-features = false, features = ["serde"] }
-lightning-macros = { version = "0.2.0-rc2", path = "../lightning-macros" }
+lightning = { version = "0.2.0", path = "../lightning", default-features = false }
+lightning-types = { version = "0.3.0", path = "../lightning-types", default-features = false }
+lightning-invoice = { version = "0.34.0", path = "../lightning-invoice", default-features = false, features = ["serde"] }
+lightning-macros = { version = "0.2.0", path = "../lightning-macros" }
 
 bitcoin = { version = "0.32.2", default-features = false, features = ["serde"] }
 
@@ -34,9 +34,9 @@ serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 backtrace = { version = "0.3", optional = true }
 
 [dev-dependencies]
-lightning = { version = "0.2.0-rc2", path = "../lightning", default-features = false, features = ["_test_utils"] }
-lightning-invoice = { version = "0.34.0-rc2", path = "../lightning-invoice", default-features = false, features = ["serde", "std"] }
-lightning-persister = { version = "0.2.0-rc2", path = "../lightning-persister", default-features = false }
+lightning = { version = "0.2.0", path = "../lightning", default-features = false, features = ["_test_utils"] }
+lightning-invoice = { version = "0.34.0", path = "../lightning-invoice", default-features = false, features = ["serde", "std"] }
+lightning-persister = { version = "0.2.0", path = "../lightning-persister", default-features = false }
 
 proptest = "1.0.0"
 tokio = { version = "1.35", default-features = false, features = [ "rt-multi-thread", "time", "sync", "macros" ] }

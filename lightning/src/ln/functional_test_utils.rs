@@ -1109,7 +1109,7 @@ pub fn get_htlc_update_msgs(node: &Node, recipient: &PublicKey) -> msgs::Commitm
 			assert_eq!(node_id, recipient);
 			(*updates).clone()
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {events:?}"),
 	}
 }
 
@@ -3042,9 +3042,9 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 		bitcoin::hashes::sha256::Hash::hash(&expected_payment_preimage.0).to_byte_array(),
 	);
 	if expect_per_path_claims {
-		assert!(events.len() > 1);
+		assert!(events.len() > 1, "{events:?}");
 	} else {
-		assert_eq!(events.len(), 1);
+		assert_eq!(events.len(), 1, "{events:?}");
 	}
 	if expect_post_ev_mon_update {
 		check_added_monitors(node, 1);
@@ -3877,19 +3877,38 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	}
 }
 
+macro_rules! single_fulfill_commit_from_ev {
+	($ev: expr) => {
+		match $ev {
+			&MessageSendEvent::UpdateHTLCs {
+				ref node_id,
+				ref channel_id,
+				updates:
+					msgs::CommitmentUpdate {
+						ref update_add_htlcs,
+						ref update_fulfill_htlcs,
+						ref update_fail_htlcs,
+						ref update_fail_malformed_htlcs,
+						ref update_fee,
+						ref commitment_signed,
+					},
+			} => {
+				assert!(update_add_htlcs.is_empty());
+				assert_eq!(update_fulfill_htlcs.len(), 1);
+				assert!(update_fail_htlcs.is_empty());
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert!(update_fee.is_none());
+				assert!(commitment_signed.iter().all(|cs| cs.channel_id == *channel_id));
+				((update_fulfill_htlcs[0].clone(), commitment_signed.clone()), node_id.clone())
+			},
+			_ => panic!("Unexpected event"),
+		}
+	};
+}
+
 pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
-	let ClaimAlongRouteArgs {
-		origin_node,
-		expected_paths,
-		expected_extra_fees,
-		expected_min_htlc_overpay,
-		skip_last,
-		payment_preimage: our_payment_preimage,
-		allow_1_msat_fee_overpay,
-		custom_tlvs,
-	} = args;
-	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
-	assert_eq!(claim_event.len(), 1);
+	let claim_event = args.expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
+	assert_eq!(claim_event.len(), 1, "{claim_event:?}");
 	#[allow(unused)]
 	let mut fwd_amt_msat = 0;
 	match claim_event[0] {
@@ -3904,11 +3923,11 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 			ref onion_fields,
 			..
 		} => {
-			assert_eq!(preimage, our_payment_preimage);
-			assert_eq!(htlcs.len(), expected_paths.len()); // One per path.
+			assert_eq!(preimage, args.payment_preimage);
+			assert_eq!(htlcs.len(), args.expected_paths.len()); // One per path.
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
-			assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, custom_tlvs);
-			check_claimed_htlcs_match_route(origin_node, expected_paths, htlcs);
+			assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, args.custom_tlvs);
+			check_claimed_htlcs_match_route(args.origin_node, args.expected_paths, htlcs);
 			fwd_amt_msat = amount_msat;
 		},
 		Event::PaymentClaimed {
@@ -3922,59 +3941,29 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 			ref onion_fields,
 			..
 		} => {
-			assert_eq!(&payment_hash.0, &Sha256::hash(&our_payment_preimage.0)[..]);
-			assert_eq!(htlcs.len(), expected_paths.len()); // One per path.
+			assert_eq!(&payment_hash.0, &Sha256::hash(&args.payment_preimage.0)[..]);
+			assert_eq!(htlcs.len(), args.expected_paths.len()); // One per path.
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
-			assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, custom_tlvs);
-			check_claimed_htlcs_match_route(origin_node, expected_paths, htlcs);
+			assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, args.custom_tlvs);
+			check_claimed_htlcs_match_route(args.origin_node, args.expected_paths, htlcs);
 			fwd_amt_msat = amount_msat;
 		},
 		_ => panic!(),
 	}
 
-	check_added_monitors!(expected_paths[0].last().unwrap(), expected_paths.len());
+	check_added_monitors(args.expected_paths[0].last().unwrap(), args.expected_paths.len());
 
-	let mut expected_total_fee_msat = 0;
-
-	macro_rules! msgs_from_ev {
-		($ev: expr) => {
-			match $ev {
-				&MessageSendEvent::UpdateHTLCs {
-					ref node_id,
-					ref channel_id,
-					updates:
-						msgs::CommitmentUpdate {
-							ref update_add_htlcs,
-							ref update_fulfill_htlcs,
-							ref update_fail_htlcs,
-							ref update_fail_malformed_htlcs,
-							ref update_fee,
-							ref commitment_signed,
-						},
-				} => {
-					assert!(update_add_htlcs.is_empty());
-					assert_eq!(update_fulfill_htlcs.len(), 1);
-					assert!(update_fail_htlcs.is_empty());
-					assert!(update_fail_malformed_htlcs.is_empty());
-					assert!(update_fee.is_none());
-					assert!(commitment_signed.iter().all(|cs| cs.channel_id == *channel_id));
-					((update_fulfill_htlcs[0].clone(), commitment_signed.clone()), node_id.clone())
-				},
-				_ => panic!("Unexpected event"),
-			}
-		};
-	}
 	let mut per_path_msgs: Vec<(
 		(msgs::UpdateFulfillHTLC, Vec<msgs::CommitmentSigned>),
 		PublicKey,
-	)> = Vec::with_capacity(expected_paths.len());
-	let mut events = expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), expected_paths.len());
+	)> = Vec::with_capacity(args.expected_paths.len());
+	let mut events = args.expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), args.expected_paths.len());
 
 	if events.len() == 1 {
-		per_path_msgs.push(msgs_from_ev!(&events[0]));
+		per_path_msgs.push(single_fulfill_commit_from_ev!(&events[0]));
 	} else {
-		for expected_path in expected_paths.iter() {
+		for expected_path in args.expected_paths.iter() {
 			// For MPP payments, we want the fulfill message from the payee to the penultimate hop in the
 			// path.
 			let penultimate_hop_node_id = expected_path
@@ -3983,11 +3972,33 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 				.skip(1)
 				.next()
 				.map(|n| n.node.get_our_node_id())
-				.unwrap_or(origin_node.node.get_our_node_id());
+				.unwrap_or(args.origin_node.node.get_our_node_id());
 			let ev = remove_first_msg_event_to_node(&penultimate_hop_node_id, &mut events);
-			per_path_msgs.push(msgs_from_ev!(&ev));
+			per_path_msgs.push(single_fulfill_commit_from_ev!(&ev));
 		}
 	}
+
+	pass_claimed_payment_along_route_from_ev(fwd_amt_msat, per_path_msgs, args)
+}
+
+pub fn pass_claimed_payment_along_route_from_ev(
+	each_htlc_claim_amt_msat: u64,
+	mut per_path_msgs: Vec<((msgs::UpdateFulfillHTLC, Vec<msgs::CommitmentSigned>), PublicKey)>,
+	args: ClaimAlongRouteArgs,
+) -> u64 {
+	let ClaimAlongRouteArgs {
+		origin_node,
+		expected_paths,
+		expected_extra_fees,
+		expected_min_htlc_overpay,
+		skip_last,
+		payment_preimage: our_payment_preimage,
+		allow_1_msat_fee_overpay,
+		..
+	} = args;
+
+	let mut fwd_amt_msat = each_htlc_claim_amt_msat;
+	let mut expected_total_fee_msat = 0;
 
 	for (i, (expected_route, (path_msgs, next_hop))) in
 		expected_paths.iter().zip(per_path_msgs.drain(..)).enumerate()
@@ -4069,7 +4080,7 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 				let new_next_msgs = if $new_msgs {
 					let events = $node.node.get_and_clear_pending_msg_events();
 					assert_eq!(events.len(), 1);
-					let (res, nexthop) = msgs_from_ev!(&events[0]);
+					let (res, nexthop) = single_fulfill_commit_from_ev!(&events[0]);
 					expected_next_node = nexthop;
 					Some(res)
 				} else {
