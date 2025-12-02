@@ -48,11 +48,8 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 	let funding_inputs =
 		create_dual_funding_utxos_with_prev_txs(&nodes[0], &[extra_splice_funding_input_sats]);
 
-	let contribution = SpliceContribution::SpliceIn {
-		value: Amount::from_sat(splice_in_sats),
-		inputs: funding_inputs,
-		change_script: None,
-	};
+	let contribution =
+		SpliceContribution::splice_in(Amount::from_sat(splice_in_sats), funding_inputs, None);
 
 	// Initiate splice-in, with insufficient input contribution
 	let res = nodes[0].node.splice_channel(
@@ -425,12 +422,10 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 	let (_, _, channel_id, _) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 50_000_000);
 
-	let contribution = SpliceContribution::SpliceOut {
-		outputs: vec![TxOut {
-			value: Amount::from_sat(1_000),
-			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-		}],
-	};
+	let contribution = SpliceContribution::splice_out(vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}]);
 	nodes[0]
 		.node
 		.splice_channel(
@@ -683,12 +678,10 @@ fn test_config_reject_inbound_splices() {
 	let (_, _, channel_id, _) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 50_000_000);
 
-	let contribution = SpliceContribution::SpliceOut {
-		outputs: vec![TxOut {
-			value: Amount::from_sat(1_000),
-			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-		}],
-	};
+	let contribution = SpliceContribution::splice_out(vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}]);
 	nodes[0]
 		.node
 		.splice_channel(
@@ -746,14 +739,14 @@ fn test_splice_in() {
 
 	let coinbase_tx1 = provide_anchor_reserves(&nodes);
 	let coinbase_tx2 = provide_anchor_reserves(&nodes);
-	let initiator_contribution = SpliceContribution::SpliceIn {
-		value: Amount::from_sat(initial_channel_value_sat * 2),
-		inputs: vec![
+	let initiator_contribution = SpliceContribution::splice_in(
+		Amount::from_sat(initial_channel_value_sat * 2),
+		vec![
 			FundingTxInput::new_p2wpkh(coinbase_tx1, 0).unwrap(),
 			FundingTxInput::new_p2wpkh(coinbase_tx2, 0).unwrap(),
 		],
-		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
-	};
+		Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	);
 
 	let splice_tx = splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution);
 	mine_transaction(&nodes[0], &splice_tx);
@@ -785,18 +778,16 @@ fn test_splice_out() {
 
 	let _ = send_payment(&nodes[0], &[&nodes[1]], 100_000);
 
-	let initiator_contribution = SpliceContribution::SpliceOut {
-		outputs: vec![
-			TxOut {
-				value: Amount::from_sat(initial_channel_value_sat / 4),
-				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-			},
-			TxOut {
-				value: Amount::from_sat(initial_channel_value_sat / 4),
-				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
-			},
-		],
-	};
+	let initiator_contribution = SpliceContribution::splice_out(vec![
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		},
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+		},
+	]);
 
 	let splice_tx = splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution);
 	mine_transaction(&nodes[0], &splice_tx);
@@ -854,11 +845,11 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 	let payment_amount = 1_000_000;
 	let (preimage1, payment_hash1, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
 	let splice_in_amount = initial_channel_capacity / 2;
-	let initiator_contribution = SpliceContribution::SpliceIn {
-		value: Amount::from_sat(splice_in_amount),
-		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 0).unwrap()],
-		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
-	};
+	let initiator_contribution = SpliceContribution::splice_in(
+		Amount::from_sat(splice_in_amount),
+		vec![FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 0).unwrap()],
+		Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	);
 	let splice_tx = splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution);
 	let (preimage2, payment_hash2, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
 	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS;
@@ -1052,18 +1043,16 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 	route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	// Negotiate the splice up until the nodes exchange `tx_complete`.
-	let initiator_contribution = SpliceContribution::SpliceOut {
-		outputs: vec![
-			TxOut {
-				value: Amount::from_sat(initial_channel_value_sat / 4),
-				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-			},
-			TxOut {
-				value: Amount::from_sat(initial_channel_value_sat / 4),
-				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
-			},
-		],
-	};
+	let initiator_contribution = SpliceContribution::splice_out(vec![
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		},
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+		},
+	]);
 	let initial_commit_sig_for_acceptor =
 		negotiate_splice_tx(&nodes[0], &nodes[1], channel_id, initiator_contribution);
 	assert_eq!(initial_commit_sig_for_acceptor.htlc_signatures.len(), 1);
@@ -1340,12 +1329,10 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 	nodes[1].node.peer_disconnected(node_id_0);
 
 	let splice_out_sat = initial_channel_value_sat / 4;
-	let node_0_contribution = SpliceContribution::SpliceOut {
-		outputs: vec![TxOut {
-			value: Amount::from_sat(splice_out_sat),
-			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-		}],
-	};
+	let node_0_contribution = SpliceContribution::splice_out(vec![TxOut {
+		value: Amount::from_sat(splice_out_sat),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}]);
 	nodes[0]
 		.node
 		.splice_channel(
@@ -1358,12 +1345,10 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 		.unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	let node_1_contribution = SpliceContribution::SpliceOut {
-		outputs: vec![TxOut {
-			value: Amount::from_sat(splice_out_sat),
-			script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
-		}],
-	};
+	let node_1_contribution = SpliceContribution::splice_out(vec![TxOut {
+		value: Amount::from_sat(splice_out_sat),
+		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+	}]);
 	nodes[1]
 		.node
 		.splice_channel(
@@ -1616,11 +1601,11 @@ fn disconnect_on_unexpected_interactive_tx_message() {
 
 	let coinbase_tx = provide_anchor_reserves(&nodes);
 	let splice_in_amount = initial_channel_capacity / 2;
-	let contribution = SpliceContribution::SpliceIn {
-		value: Amount::from_sat(splice_in_amount),
-		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
-		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
-	};
+	let contribution = SpliceContribution::splice_in(
+		Amount::from_sat(splice_in_amount),
+		vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
+		Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	);
 
 	// Complete interactive-tx construction, but fail by having the acceptor send a duplicate
 	// tx_complete instead of commitment_signed.
@@ -1656,11 +1641,11 @@ fn fail_splice_on_interactive_tx_error() {
 
 	let coinbase_tx = provide_anchor_reserves(&nodes);
 	let splice_in_amount = initial_channel_capacity / 2;
-	let contribution = SpliceContribution::SpliceIn {
-		value: Amount::from_sat(splice_in_amount),
-		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
-		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
-	};
+	let contribution = SpliceContribution::splice_in(
+		Amount::from_sat(splice_in_amount),
+		vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
+		Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	);
 
 	// Fail during interactive-tx construction by having the acceptor echo back tx_add_input instead
 	// of sending tx_complete. The failure occurs because the serial id will have the wrong parity.
@@ -1762,11 +1747,11 @@ fn fail_splice_on_tx_abort() {
 
 	let coinbase_tx = provide_anchor_reserves(&nodes);
 	let splice_in_amount = initial_channel_capacity / 2;
-	let contribution = SpliceContribution::SpliceIn {
-		value: Amount::from_sat(splice_in_amount),
-		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
-		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
-	};
+	let contribution = SpliceContribution::splice_in(
+		Amount::from_sat(splice_in_amount),
+		vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
+		Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	);
 
 	// Fail during interactive-tx construction by having the acceptor send tx_abort instead of
 	// tx_complete.
@@ -1816,11 +1801,11 @@ fn fail_splice_on_channel_close() {
 
 	let coinbase_tx = provide_anchor_reserves(&nodes);
 	let splice_in_amount = initial_channel_capacity / 2;
-	let contribution = SpliceContribution::SpliceIn {
-		value: Amount::from_sat(splice_in_amount),
-		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
-		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
-	};
+	let contribution = SpliceContribution::splice_in(
+		Amount::from_sat(splice_in_amount),
+		vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
+		Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	);
 
 	// Close the channel before completion of interactive-tx construction.
 	let _ = complete_splice_handshake(initiator, acceptor, channel_id, contribution.clone());
@@ -1867,11 +1852,11 @@ fn fail_quiescent_action_on_channel_close() {
 
 	let coinbase_tx = provide_anchor_reserves(&nodes);
 	let splice_in_amount = initial_channel_capacity / 2;
-	let contribution = SpliceContribution::SpliceIn {
-		value: Amount::from_sat(splice_in_amount),
-		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
-		change_script: Some(nodes[0].wallet_source.get_change_script().unwrap()),
-	};
+	let contribution = SpliceContribution::splice_in(
+		Amount::from_sat(splice_in_amount),
+		vec![FundingTxInput::new_p2wpkh(coinbase_tx, 0).unwrap()],
+		Some(nodes[0].wallet_source.get_change_script().unwrap()),
+	);
 
 	// Close the channel before completion of STFU handshake.
 	initiator
@@ -1960,23 +1945,19 @@ fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forw
 
 	// Splice both channels, lock them, and connect enough blocks to trigger the legacy SCID pruning
 	// logic while the HTLC is still pending.
-	let contribution = SpliceContribution::SpliceOut {
-		outputs: vec![TxOut {
-			value: Amount::from_sat(1_000),
-			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-		}],
-	};
+	let contribution = SpliceContribution::splice_out(vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}]);
 	let splice_tx_0_1 = splice_channel(&nodes[0], &nodes[1], channel_id_0_1, contribution);
 	for node in &nodes {
 		mine_transaction(node, &splice_tx_0_1);
 	}
 
-	let contribution = SpliceContribution::SpliceOut {
-		outputs: vec![TxOut {
-			value: Amount::from_sat(1_000),
-			script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
-		}],
-	};
+	let contribution = SpliceContribution::splice_out(vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+	}]);
 	let splice_tx_1_2 = splice_channel(&nodes[1], &nodes[2], channel_id_1_2, contribution);
 	for node in &nodes {
 		mine_transaction(node, &splice_tx_1_2);
