@@ -22,6 +22,7 @@ use bitcoin::constants::ChainHash;
 use bitcoin::key::constants::SECRET_KEY_SIZE;
 use bitcoin::network::Network;
 use bitcoin::transaction::Transaction;
+use lightning_macros::log_scope;
 
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hmac::Hmac;
@@ -5442,6 +5443,7 @@ where
 	/// [`UpdateHTLCs`]: MessageSendEvent::UpdateHTLCs
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
+	#[log_scope(name = "send_payment")]
 	pub fn send_payment(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry,
