@@ -146,7 +146,9 @@
    `ListProtocols` message (#3785).
  * A rare race which might lead `PeerManager` (and `lightning-net-tokio`) to
    stop reading from a peer until a new message is sent to that peer has been
-   fixed (#4168).
+   fixed. Note that this changed the semantics of the
+   `SocketDescriptor::send_data` method without changing its signature, check
+   that your implementation matches the new documentation (#4168).
  * The fields in `SocketAddress::OnionV3` are now correctly parsed, and the
    `Display` for such addresses is now lowercase (#4090).
  * `PeerManager` is now more conservative about disconnecting peers which aren't
