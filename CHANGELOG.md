@@ -40,11 +40,13 @@
    pre-signed transactions, relying on anchor bumps instead. They also utilize
    the new TRUC + ephemeral dust policy in Bitcoin Core 29 to substantially
    improve the lightning security model. This requires having a path of Bitcoin
-   Core 29+ nodes between you and a miner for transactions to be mined. This
-   only works with LDK peers, and feature signaling may change in a future
-   version of LDK, breaking compatibility. This is negotiated automatically for
-   manually-accepted inbound channels and negotiated for outbound channels based
-   on `ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`.
+   Core 29+ nodes between you and a miner for transactions to be mined. Bitcoin
+   Knots blocks these transactions by default, and is not recommended for use
+   with a lightning node. 0FC channels currently only work with LDK peers, and
+   feature signaling may change in a future version of LDK, breaking
+   compatibility. This is negotiated automatically for manually-accepted inbound
+   channels and negotiated for outbound channels based on
+   `ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`.
  * `Event::BumpTransaction` is now always generated even if the transaction has
    sufficient fee. This allows you to manage transaction broadcasting more
    granularly for anchor channels (#4001).
