@@ -9440,8 +9440,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	#[rustfmt::skip]
-	fn handle_monitor_update_completion_actions<I: IntoIterator<Item=MonitorUpdateCompletionAction>>(&self, actions: I) {
+	fn handle_monitor_update_completion_actions<
+		I: IntoIterator<Item = MonitorUpdateCompletionAction>,
+	>(
+		&self, actions: I,
+	) {
 		debug_assert_ne!(self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
 		debug_assert_ne!(self.claimable_payments.held_by_thread(), LockHeldState::HeldByThread);
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
@@ -9450,40 +9453,71 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		for action in actions.into_iter() {
 			match action {
-				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim } => {
-					let (peer_id, chan_id) = pending_mpp_claim.as_ref().map(|c| (Some(c.0), Some(c.1))).unwrap_or_default();
-					let logger = WithContext::from(&self.logger, peer_id, chan_id, Some(payment_hash));
+				MonitorUpdateCompletionAction::PaymentClaimed {
+					payment_hash,
+					pending_mpp_claim,
+				} => {
+					let (peer_id, chan_id) = pending_mpp_claim
+						.as_ref()
+						.map(|c| (Some(c.0), Some(c.1)))
+						.unwrap_or_default();
+					let logger =
+						WithContext::from(&self.logger, peer_id, chan_id, Some(payment_hash));
 					log_trace!(logger, "Handling PaymentClaimed monitor update completion action");
 
 					if let Some((counterparty_node_id, chan_id, claim_ptr)) = pending_mpp_claim {
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						per_peer_state.get(&counterparty_node_id).map(|peer_state_mutex| {
 							let mut peer_state = peer_state_mutex.lock().unwrap();
-							let blockers_entry = peer_state.actions_blocking_raa_monitor_updates.entry(chan_id);
+							let blockers_entry =
+								peer_state.actions_blocking_raa_monitor_updates.entry(chan_id);
 							if let btree_map::Entry::Occupied(mut blockers) = blockers_entry {
-								blockers.get_mut().retain(|blocker|
-									if let &RAAMonitorUpdateBlockingAction::ClaimedMPPPayment { pending_claim } = &blocker {
+								blockers.get_mut().retain(|blocker| {
+									if let &RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
+										pending_claim,
+									} = &blocker
+									{
 										if *pending_claim == claim_ptr {
-											let mut pending_claim_state_lock = pending_claim.0.lock().unwrap();
-											let pending_claim_state = &mut *pending_claim_state_lock;
-											pending_claim_state.channels_without_preimage.retain(|(cp, cid)| {
-												let this_claim =
-													*cp == counterparty_node_id && *cid == chan_id;
-												if this_claim {
-													pending_claim_state.channels_with_preimage.push((*cp, *cid));
-													false
-												} else { true }
-											});
-											if pending_claim_state.channels_without_preimage.is_empty() {
-												for (cp, cid) in pending_claim_state.channels_with_preimage.iter() {
+											let mut pending_claim_state_lock =
+												pending_claim.0.lock().unwrap();
+											let pending_claim_state =
+												&mut *pending_claim_state_lock;
+											pending_claim_state.channels_without_preimage.retain(
+												|(cp, cid)| {
+													let this_claim = *cp == counterparty_node_id
+														&& *cid == chan_id;
+													if this_claim {
+														pending_claim_state
+															.channels_with_preimage
+															.push((*cp, *cid));
+														false
+													} else {
+														true
+													}
+												},
+											);
+											if pending_claim_state
+												.channels_without_preimage
+												.is_empty()
+											{
+												for (cp, cid) in pending_claim_state
+													.channels_with_preimage
+													.iter()
+												{
 													let freed_chan = (*cp, *cid, blocker.clone());
 													freed_channels.push(freed_chan);
 												}
 											}
-											!pending_claim_state.channels_without_preimage.is_empty()
-										} else { true }
-									} else { true }
-								);
+											!pending_claim_state
+												.channels_without_preimage
+												.is_empty()
+										} else {
+											true
+										}
+									} else {
+										true
+									}
+								});
 								if blockers.get().is_empty() {
 									blockers.remove();
 								}
@@ -9491,7 +9525,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						});
 					}
 
-					let payment = self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
+					let payment = self
+						.claimable_payments
+						.lock()
+						.unwrap()
+						.pending_claiming_payments
+						.remove(&payment_hash);
 					if let Some(ClaimingPayment {
 						amount_msat,
 						payment_purpose: purpose,
@@ -9501,7 +9540,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						onion_fields,
 						payment_id,
 						durable_preimage_channel,
-					}) = payment {
+					}) = payment
+					{
 						let event = events::Event::PaymentClaimed {
 							payment_hash,
 							purpose,
@@ -9512,8 +9552,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							onion_fields,
 							payment_id,
 						};
-						let action = if let Some((outpoint, counterparty_node_id, channel_id))
-							= durable_preimage_channel
+						let action = if let Some((outpoint, counterparty_node_id, channel_id)) =
+							durable_preimage_channel
 						{
 							Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
 								channel_funding_outpoint: Some(outpoint),
@@ -9530,13 +9570,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						// `payment_id` should suffice to ensure we never spuriously drop a second
 						// event for a duplicate payment.
 						if !pending_events.contains(&event_action) {
-							log_trace!(logger, "Queuing PaymentClaimed event with event completion action {:?}", event_action.1);
+							log_trace!(
+								logger,
+								"Queuing PaymentClaimed event with event completion action {:?}",
+								event_action.1
+							);
 							pending_events.push_back(event_action);
 						}
 					}
 				},
 				MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
-					event, downstream_counterparty_and_funding_outpoint
+					event,
+					downstream_counterparty_and_funding_outpoint,
 				} => {
 					self.pending_events.lock().unwrap().push_back((event, None));
 					if let Some(unblocked) = downstream_counterparty_and_funding_outpoint {
@@ -9548,7 +9593,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 				},
 				MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
-					downstream_counterparty_node_id, downstream_channel_id, blocking_action,
+					downstream_counterparty_node_id,
+					downstream_channel_id,
+					blocking_action,
 				} => {
 					self.handle_monitor_update_release(
 						downstream_counterparty_node_id,
