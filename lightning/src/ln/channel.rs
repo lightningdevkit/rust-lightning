@@ -6707,12 +6707,12 @@ impl FundingNegotiationContext {
 					},
 				}
 			};
-			let mut change_output =
-				TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
+			let mut change_output = TxOut { value: change_value, script_pubkey: change_script };
 			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
 			let change_output_fee =
 				fee_for_weight(self.funding_feerate_sat_per_1000_weight, change_output_weight);
-			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
+			let change_value_decreased_with_fee =
+				change_value.to_sat().saturating_sub(change_output_fee);
 			// Check dust limit again
 			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
 				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
