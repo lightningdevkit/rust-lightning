@@ -1,4 +1,4 @@
-# 0.2 - TODO: Add release date, 2025 - "Natively Asynchronous Splicing"
+# 0.2 - Dec 2, 2025 - "Natively Asynchronous Splicing"
 
 ## API Updates
 
@@ -40,11 +40,13 @@
    pre-signed transactions, relying on anchor bumps instead. They also utilize
    the new TRUC + ephemeral dust policy in Bitcoin Core 29 to substantially
    improve the lightning security model. This requires having a path of Bitcoin
-   Core 29+ nodes between you and a miner for transactions to be mined. This
-   only works with LDK peers, and feature signaling may change in a future
-   version of LDK, breaking compatibility. This is negotiated automatically for
-   manually-accepted inbound channels and negotiated for outbound channels based
-   on `ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`.
+   Core 29+ nodes between you and a miner for transactions to be mined. Bitcoin
+   Knots blocks these transactions by default, and is not recommended for use
+   with a lightning node. 0FC channels currently only work with LDK peers, and
+   feature signaling may change in a future version of LDK, breaking
+   compatibility. This is negotiated automatically for manually-accepted inbound
+   channels and negotiated for outbound channels based on
+   `ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`.
  * `Event::BumpTransaction` is now always generated even if the transaction has
    sufficient fee. This allows you to manage transaction broadcasting more
    granularly for anchor channels (#4001).
@@ -144,7 +146,9 @@
    `ListProtocols` message (#3785).
  * A rare race which might lead `PeerManager` (and `lightning-net-tokio`) to
    stop reading from a peer until a new message is sent to that peer has been
-   fixed (#4168).
+   fixed. Note that this changed the semantics of the
+   `SocketDescriptor::send_data` method without changing its signature, check
+   that your implementation matches the new documentation (#4168).
  * The fields in `SocketAddress::OnionV3` are now correctly parsed, and the
    `Display` for such addresses is now lowercase (#4090).
  * `PeerManager` is now more conservative about disconnecting peers which aren't
@@ -177,7 +181,55 @@
    (#4045, #4046).
  * LDK now requires the `channel_type` feature in line with spec updates (#3896)
 
-TODO release stats
+In total, this release features 259 files changed, 114539 insertions, 45150
+deletions in 1628 commits since 0.1 from 36 authors, in alphabetical order:
+
+ * Aditya Sharma
+ * Alec Chen
+ * Anonymous
+ * Anyitechs
+ * Arik Sosman
+ * Austin Mackillop
+ * Carla Kirk-Cohen
+ * Chuks Agbakuru
+ * Devrandom
+ * Duncan Dean
+ * Elias Rohrer
+ * Erick Cestari
+ * Fedeparma74
+ * Fuyin
+ * Ian Slane
+ * Jeffrey Czyz
+ * Jesse de Wit
+ * Joost Jager
+ * Leo Nash
+ * Martin Saposnic
+ * Matt Corallo
+ * Matt Morehouse
+ * Maurice Poirrier Chuden
+ * Philip Kannegaard Hayes
+ * Prabhat Verma
+ * Valentine Wallace
+ * Vincenzo Palazzo
+ * Willem Van Lint
+ * Wilmer Paulino
+ * YI
+ * benthecarman
+ * elnosh
+ * moisesPompilio
+ * olegkubrakov
+ * optout
+ * shaavan
+
+
+# 0.1.8 - Dec 2, 2025 - "Async Update Completion"
+
+## Bug Fixes
+ * In cases where an MPP payment is claimed while one channel is waiting on a
+   counterparty's `revoke_and_ack` message and the `revoke_and_ack` message is
+   received prior to the asynchronous completion of the MPP-claim
+   `ChannelMonitorUpdate`, the channel will no longer hang (#4236).
+ * Deserializing invalid `Duration`s can no longer panic (#4172).
 
 
 # 0.1.7 - Oct 21, 2025 - "Unstable Release CI"
