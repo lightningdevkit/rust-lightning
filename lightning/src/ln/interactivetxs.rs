@@ -2338,9 +2338,6 @@ pub(super) fn calculate_change_output_value(
 	context: &FundingNegotiationContext, is_splice: bool, shared_output_funding_script: &ScriptBuf,
 	change_output_dust_limit: u64,
 ) -> Result<Option<Amount>, AbortReason> {
-	assert!(context.our_funding_contribution > SignedAmount::ZERO);
-	let our_funding_contribution = context.our_funding_contribution.to_unsigned().unwrap();
-
 	let mut total_input_value = Amount::ZERO;
 	let mut our_funding_inputs_weight = 0u64;
 	for FundingTxInput { utxo, .. } in context.our_funding_inputs.iter() {
@@ -2354,6 +2351,7 @@ pub(super) fn calculate_change_output_value(
 	let total_output_value = funding_outputs
 		.iter()
 		.fold(Amount::ZERO, |total, out| total.checked_add(out.value).unwrap_or(Amount::MAX));
+
 	let our_funding_outputs_weight = funding_outputs.iter().fold(0u64, |weight, out| {
 		weight.saturating_add(get_output_weight(&out.script_pubkey).to_wu())
 	});
@@ -2379,18 +2377,21 @@ pub(super) fn calculate_change_output_value(
 
 	let contributed_fees =
 		Amount::from_sat(fee_for_weight(context.funding_feerate_sat_per_1000_weight, weight));
-	let net_total_less_fees = total_input_value
-		.checked_sub(total_output_value)
-		.unwrap_or(Amount::ZERO)
-		.checked_sub(contributed_fees)
-		.unwrap_or(Amount::ZERO);
-	if net_total_less_fees < our_funding_contribution {
+
+	let contributed_input_value =
+		context.our_funding_contribution + total_output_value.to_signed().unwrap();
+	assert!(contributed_input_value > SignedAmount::ZERO);
+	let contributed_input_value = contributed_input_value.unsigned_abs();
+
+	let total_input_value_less_fees =
+		total_input_value.checked_sub(contributed_fees).unwrap_or(Amount::ZERO);
+	if total_input_value_less_fees < contributed_input_value {
 		// Not enough to cover contribution plus fees
 		return Err(AbortReason::InsufficientFees);
 	}
 
-	let remaining_value = net_total_less_fees
-		.checked_sub(our_funding_contribution)
+	let remaining_value = total_input_value_less_fees
+		.checked_sub(contributed_input_value)
 		.expect("remaining_value should not be negative");
 	if remaining_value.to_sat() < change_output_dust_limit {
 		// Enough to cover contribution plus fees, but leftover is below dust limit; no change
