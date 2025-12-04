@@ -61,8 +61,38 @@ impl SpliceContribution {
 		Self { value: -value_removed, inputs: vec![], outputs, change_script: None }
 	}
 
-	pub(super) fn value(&self) -> SignedAmount {
+	/// Creates a contribution for when funds are both added to and removed from a channel.
+	///
+	/// Note that `value_added` represents the value added by `inputs` but should not account for
+	/// value removed by `outputs`. The net value contributed can be obtained by calling
+	/// [`SpliceContribution::net_value`].
+	pub fn splice_in_and_out(
+		value_added: Amount, inputs: Vec<FundingTxInput>, outputs: Vec<TxOut>,
+		change_script: Option<ScriptBuf>,
+	) -> Self {
+		let splice_in = Self::splice_in(value_added, inputs, change_script);
+		let splice_out = Self::splice_out(outputs);
+
+		Self {
+			value: splice_in.value + splice_out.value,
+			inputs: splice_in.inputs,
+			outputs: splice_out.outputs,
+			change_script: splice_in.change_script,
+		}
+	}
+
+	/// The net value contributed to a channel by the splice. If negative, more value will be
+	/// spliced out than spliced in.
+	pub fn net_value(&self) -> SignedAmount {
 		self.value
+	}
+
+	pub(super) fn input_value(&self) -> Amount {
+		(self.net_value() + self.output_value().to_signed().expect("")).to_unsigned().expect("")
+	}
+
+	pub(super) fn output_value(&self) -> Amount {
+		self.outputs.iter().map(|txout| txout.value).sum::<Amount>()
 	}
 
 	pub(super) fn inputs(&self) -> &[FundingTxInput] {
