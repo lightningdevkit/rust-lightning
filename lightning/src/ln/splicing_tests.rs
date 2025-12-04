@@ -877,6 +877,170 @@ fn test_splice_out() {
 	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
 }
 
+#[test]
+fn test_splice_in_and_out() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let _ = send_payment(&nodes[0], &[&nodes[1]], 100_000);
+
+	let coinbase_tx1 = provide_anchor_reserves(&nodes);
+	let coinbase_tx2 = provide_anchor_reserves(&nodes);
+
+	// Contribute a net negative value, with fees taken from the contributed inputs and the
+	// remaining value sent to change
+	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
+	let added_value = Amount::from_sat(htlc_limit_msat / 1000);
+	let removed_value = added_value * 2;
+	let change_script = ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros());
+	let fees = if cfg!(feature = "grind_signatures") {
+		Amount::from_sat(383)
+	} else {
+		Amount::from_sat(384)
+	};
+
+	assert!(htlc_limit_msat > initial_channel_value_sat / 2 * 1000);
+
+	let initiator_contribution = SpliceContribution::splice_in_and_out(
+		added_value,
+		vec![
+			FundingTxInput::new_p2wpkh(coinbase_tx1, 0).unwrap(),
+			FundingTxInput::new_p2wpkh(coinbase_tx2, 0).unwrap(),
+		],
+		vec![
+			TxOut {
+				value: removed_value / 2,
+				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+			},
+			TxOut {
+				value: removed_value / 2,
+				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+			},
+		],
+		Some(change_script.clone()),
+	);
+
+	let splice_tx = splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+	let expected_change = Amount::ONE_BTC * 2 - added_value - fees;
+	assert_eq!(
+		splice_tx.output.iter().find(|txout| txout.script_pubkey == change_script).unwrap().value,
+		expected_change,
+	);
+
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+
+	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
+	assert!(htlc_limit_msat < added_value.to_sat() * 1000);
+	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
+
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+
+	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
+	assert!(htlc_limit_msat < added_value.to_sat() * 1000);
+	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
+
+	let coinbase_tx1 = provide_anchor_reserves(&nodes);
+	let coinbase_tx2 = provide_anchor_reserves(&nodes);
+
+	// Contribute a net positive value, with fees taken from the contributed inputs and the
+	// remaining value sent to change
+	let added_value = Amount::from_sat(initial_channel_value_sat * 2);
+	let removed_value = added_value / 2;
+	let change_script = ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros());
+	let fees = if cfg!(feature = "grind_signatures") {
+		Amount::from_sat(383)
+	} else {
+		Amount::from_sat(384)
+	};
+
+	let initiator_contribution = SpliceContribution::splice_in_and_out(
+		added_value,
+		vec![
+			FundingTxInput::new_p2wpkh(coinbase_tx1, 0).unwrap(),
+			FundingTxInput::new_p2wpkh(coinbase_tx2, 0).unwrap(),
+		],
+		vec![
+			TxOut {
+				value: removed_value / 2,
+				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+			},
+			TxOut {
+				value: removed_value / 2,
+				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+			},
+		],
+		Some(change_script.clone()),
+	);
+
+	let splice_tx = splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+	let expected_change = Amount::ONE_BTC * 2 - added_value - fees;
+	assert_eq!(
+		splice_tx.output.iter().find(|txout| txout.script_pubkey == change_script).unwrap().value,
+		expected_change,
+	);
+
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+
+	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
+	assert_eq!(htlc_limit_msat, 0);
+
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+
+	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
+	assert!(htlc_limit_msat > initial_channel_value_sat / 2 * 1000);
+	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
+
+	let coinbase_tx1 = provide_anchor_reserves(&nodes);
+	let coinbase_tx2 = provide_anchor_reserves(&nodes);
+
+	// Fail adding a net contribution value of zero
+	let added_value = Amount::from_sat(initial_channel_value_sat * 2);
+	let removed_value = added_value;
+	let change_script = ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros());
+
+	let initiator_contribution = SpliceContribution::splice_in_and_out(
+		added_value,
+		vec![
+			FundingTxInput::new_p2wpkh(coinbase_tx1, 0).unwrap(),
+			FundingTxInput::new_p2wpkh(coinbase_tx2, 0).unwrap(),
+		],
+		vec![
+			TxOut {
+				value: removed_value / 2,
+				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+			},
+			TxOut {
+				value: removed_value / 2,
+				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+			},
+		],
+		Some(change_script),
+	);
+
+	assert_eq!(
+		nodes[0].node.splice_channel(
+			&channel_id,
+			&nodes[1].node.get_our_node_id(),
+			initiator_contribution,
+			FEERATE_FLOOR_SATS_PER_KW,
+			None,
+		),
+		Err(APIError::APIMisuseError {
+			err: format!("Channel {} cannot be spliced; contribution cannot be zero", channel_id),
+		}),
+	);
+}
+
 #[cfg(test)]
 #[derive(PartialEq)]
 enum SpliceStatus {
