@@ -29,8 +29,9 @@ use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::test_channel_signer::SignerOp;
 
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{Amount, OutPoint as BitcoinOutPoint, ScriptBuf, Transaction, TxOut};
+use bitcoin::{Amount, OutPoint as BitcoinOutPoint, ScriptBuf, Transaction, TxOut, WPubkeyHash};
 
 #[test]
 fn test_splicing_not_supported_api_error() {
@@ -800,16 +801,27 @@ fn test_splice_in() {
 
 	let coinbase_tx1 = provide_anchor_reserves(&nodes);
 	let coinbase_tx2 = provide_anchor_reserves(&nodes);
+
+	let added_value = Amount::from_sat(initial_channel_value_sat * 2);
+	let change_script = ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros());
+	let fees = Amount::from_sat(321);
+
 	let initiator_contribution = SpliceContribution::splice_in(
-		Amount::from_sat(initial_channel_value_sat * 2),
+		added_value,
 		vec![
 			FundingTxInput::new_p2wpkh(coinbase_tx1, 0).unwrap(),
 			FundingTxInput::new_p2wpkh(coinbase_tx2, 0).unwrap(),
 		],
-		Some(nodes[0].wallet_source.get_change_script().unwrap()),
+		Some(change_script.clone()),
 	);
 
 	let splice_tx = splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+	let expected_change = Amount::ONE_BTC * 2 - added_value - fees;
+	assert_eq!(
+		splice_tx.output.iter().find(|txout| txout.script_pubkey == change_script).unwrap().value,
+		expected_change,
+	);
+
 	mine_transaction(&nodes[0], &splice_tx);
 	mine_transaction(&nodes[1], &splice_tx);
 
