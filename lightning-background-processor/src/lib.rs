@@ -1228,12 +1228,20 @@ where
 		}
 
 		if let Some(liquidity_manager) = liquidity_manager.as_ref() {
-			log_trace!(logger, "Persisting LiquidityManager...");
 			let fut = async {
-				liquidity_manager.get_lm().persist().await.map_err(|e| {
-					log_error!(logger, "Persisting LiquidityManager failed: {}", e);
-					e
-				})
+				liquidity_manager
+					.get_lm()
+					.persist()
+					.await
+					.map(|did_persist| {
+						if did_persist {
+							log_trace!(logger, "Persisted LiquidityManager.");
+						}
+					})
+					.map_err(|e| {
+						log_error!(logger, "Persisting LiquidityManager failed: {}", e);
+						e
+					})
 			};
 			futures.set_e(Box::pin(fut));
 		}

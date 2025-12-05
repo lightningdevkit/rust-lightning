@@ -129,12 +129,12 @@ where
 		EventQueueNotifierGuard(self)
 	}
 
-	pub async fn persist(&self) -> Result<(), lightning::io::Error> {
+	pub async fn persist(&self) -> Result<bool, lightning::io::Error> {
 		let fut = {
 			let mut state_lock = self.state.lock().unwrap();
 
 			if !state_lock.needs_persist {
-				return Ok(());
+				return Ok(false);
 			}
 
 			state_lock.needs_persist = false;
@@ -153,7 +153,7 @@ where
 			e
 		})?;
 
-		Ok(())
+		Ok(true)
 	}
 }
 
