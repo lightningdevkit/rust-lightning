@@ -4767,8 +4767,17 @@ where
 			Err(e) => return Err(e),
 		};
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
+		let mut peer_state = peer_state_mutex.lock().unwrap();
+		if !peer_state.latest_features.supports_splicing() {
+			return Err(APIError::ChannelUnavailable {
+				err: "Peer does not support splicing".to_owned(),
+			});
+		}
+		if !peer_state.latest_features.supports_quiescence() {
+			return Err(APIError::ChannelUnavailable {
+				err: "Peer does not support quiescence, a splicing prerequisite".to_owned(),
+			});
+		}
 
 		// Look for the channel
 		match peer_state.channel_by_id.entry(*channel_id) {
