@@ -18,7 +18,8 @@ use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
 use crate::events::{self, PaidBolt12Invoice, PaymentFailureReason};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{
-	EventCompletionAction, HTLCSource, PaymentCompleteUpdate, PaymentId,
+	EventCompletionAction, HTLCSource, OptionalBolt11PaymentParams, PaymentCompleteUpdate,
+	PaymentId,
 };
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
@@ -949,8 +950,7 @@ where
 	pub(super) fn pay_for_bolt11_invoice<R: Deref, ES: Deref, NS: Deref, IH, SP>(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId,
 		amount_msats: Option<u64>,
-		route_params_config: RouteParametersConfig,
-		retry_strategy: Retry,
+		optional_params: OptionalBolt11PaymentParams,
 		router: &R,
 		first_hops: Vec<ChannelDetails>, compute_inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32,
@@ -972,19 +972,20 @@ where
 			(None, None) => return Err(Bolt11PaymentError::InvalidAmount),
 		};
 
-		let mut recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
+		let mut recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret())
+			.with_custom_tlvs(optional_params.custom_tlvs);
 		recipient_onion.payment_metadata = invoice.payment_metadata().map(|v| v.clone());
 
 		let payment_params = PaymentParameters::from_bolt11_invoice(invoice)
-			.with_user_config_ignoring_fee_limit(route_params_config);
+			.with_user_config_ignoring_fee_limit(optional_params.route_params_config);
 
 		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amount);
 
-		if let Some(max_fee_msat) = route_params_config.max_total_routing_fee_msat {
+		if let Some(max_fee_msat) = optional_params.route_params_config.max_total_routing_fee_msat {
 			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
 		}
 
-		self.send_payment_for_non_bolt12_invoice(payment_id, payment_hash, recipient_onion, None, retry_strategy, route_params,
+		self.send_payment_for_non_bolt12_invoice(payment_id, payment_hash, recipient_onion, None, optional_params.retry_strategy, route_params,
 			router, first_hops, compute_inflight_htlcs,
 			entropy_source, node_signer, best_block_height,
 			pending_events, send_payment_along_path

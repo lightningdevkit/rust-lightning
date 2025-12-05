@@ -615,8 +615,8 @@ mod test {
 	use super::*;
 	use crate::chain::channelmonitor::HTLC_FAIL_BACK_BUFFER;
 	use crate::ln::channelmanager::{
-		Bolt11InvoiceParameters, PaymentId, PhantomRouteHints, RecipientOnionFields, Retry,
-		MIN_FINAL_CLTV_EXPIRY_DELTA,
+		Bolt11InvoiceParameters, OptionalBolt11PaymentParams, PaymentId, PhantomRouteHints,
+		RecipientOnionFields, Retry, MIN_FINAL_CLTV_EXPIRY_DELTA,
 	};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -707,10 +707,14 @@ mod test {
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan.inbound_htlc_minimum_msat);
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_maximum_msat, chan.inbound_htlc_maximum_msat);
 
-		let retry = Retry::Attempts(0);
 		nodes[0]
 			.node
-			.pay_for_bolt11_invoice(&invoice, PaymentId([42; 32]), None, Default::default(), retry)
+			.pay_for_bolt11_invoice(
+				&invoice,
+				PaymentId([42; 32]),
+				None,
+				OptionalBolt11PaymentParams::default(),
+			)
 			.unwrap();
 		check_added_monitors(&nodes[0], 1);
 

@@ -5403,11 +5403,10 @@ fn max_out_mpp_path() {
 		..Default::default()
 	};
 	let invoice = nodes[2].node.create_bolt11_invoice(invoice_params).unwrap();
-	let route_params_cfg = crate::routing::router::RouteParametersConfig::default();
+	let optional_params = crate::ln::channelmanager::OptionalBolt11PaymentParams::default();
 
 	let id = PaymentId([42; 32]);
-	let retry = Retry::Attempts(0);
-	nodes[0].node.pay_for_bolt11_invoice(&invoice, id, None, route_params_cfg, retry).unwrap();
+	nodes[0].node.pay_for_bolt11_invoice(&invoice, id, None, optional_params).unwrap();
 
 	assert!(nodes[0].node.list_recent_payments().len() == 1);
 	check_added_monitors(&nodes[0], 2); // one monitor update per MPP part

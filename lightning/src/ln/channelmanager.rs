@@ -85,8 +85,8 @@ use crate::ln::our_peer_storage::{EncryptedOurPeerStorage, PeerStorageMonitorHol
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{
-	OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs,
-	StaleExpiration,
+	OutboundPayments, PendingOutboundPayment, RecipientCustomTlvs, RetryableInvoiceRequest,
+	SendAlongPathArgs, StaleExpiration,
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
@@ -671,6 +671,36 @@ impl Readable for InterceptId {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(InterceptId(buf))
+	}
+}
+
+/// Optional arguments to [`ChannelManager::pay_for_bolt11_invoice`]
+///
+/// These fields will often not need to be set, and the provided [`Self::default`] can be used.
+pub struct OptionalBolt11PaymentParams {
+	/// A set of custom tlvs, user can send along the payment.
+	pub custom_tlvs: RecipientCustomTlvs,
+	/// Pathfinding options which tweak how the path is constructed to the recipient.
+	pub route_params_config: RouteParametersConfig,
+	/// The number of tries or time during which we'll retry this payment if some paths to the
+	/// recipient fail.
+	///
+	/// Once the retry limit is reached, further path failures will not be retried and the payment
+	/// will ultimately fail once all pending paths have failed (generating an
+	/// [`Event::PaymentFailed`]).
+	pub retry_strategy: Retry,
+}
+
+impl Default for OptionalBolt11PaymentParams {
+	fn default() -> Self {
+		Self {
+			custom_tlvs: RecipientCustomTlvs::new(vec![]).unwrap(),
+			route_params_config: Default::default(),
+			#[cfg(feature = "std")]
+			retry_strategy: Retry::Timeout(core::time::Duration::from_secs(2)),
+			#[cfg(not(feature = "std"))]
+			retry_strategy: Retry::Attempts(3),
+		}
 	}
 }
 
@@ -2277,19 +2307,19 @@ where
 /// # use bitcoin::hashes::Hash;
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::types::payment::PaymentHash;
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
-/// # use lightning::routing::router::RouteParametersConfig;
+/// # use lightning::ln::channelmanager::{AChannelManager, OptionalBolt11PaymentParams, PaymentId, RecentPaymentDetails, Retry};
 /// # use lightning_invoice::Bolt11Invoice;
 /// #
 /// # fn example<T: AChannelManager>(
-/// #     channel_manager: T, invoice: &Bolt11Invoice, route_params_config: RouteParametersConfig,
+/// #     channel_manager: T, invoice: &Bolt11Invoice, optional_params: OptionalBolt11PaymentParams,
 /// #     retry: Retry
 /// # ) {
 /// # let channel_manager = channel_manager.get_cm();
 /// # let payment_id = PaymentId([42; 32]);
 /// # let payment_hash = invoice.payment_hash();
+///
 /// match channel_manager.pay_for_bolt11_invoice(
-///     invoice, payment_id, None, route_params_config, retry
+///     invoice, payment_id, None, optional_params
 /// ) {
 ///     Ok(()) => println!("Sending payment with hash {}", payment_hash),
 ///     Err(e) => println!("Failed sending payment with hash {}: {:?}", payment_hash, e),
@@ -5498,7 +5528,7 @@ where
 	/// To use default settings, call the function with [`RouteParametersConfig::default`].
 	pub fn pay_for_bolt11_invoice(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
-		route_params_config: RouteParametersConfig, retry_strategy: Retry,
+		optional_params: OptionalBolt11PaymentParams,
 	) -> Result<(), Bolt11PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -5506,8 +5536,7 @@ where
 			invoice,
 			payment_id,
 			amount_msats,
-			route_params_config,
-			retry_strategy,
+			optional_params,
 			&self.router,
 			self.list_usable_channels(),
 			|| self.compute_inflight_htlcs(),
