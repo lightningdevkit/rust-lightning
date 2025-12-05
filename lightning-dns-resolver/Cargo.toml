@@ -10,7 +10,7 @@ edition = "2021"
 rust-version = "1.75"
 
 [dependencies]
-lightning = { version = "0.2.0", path = "../lightning", default-features = false }
+lightning = { version = "0.3.0", path = "../lightning", default-features = false }
 lightning-types = { version = "0.3.0", path = "../lightning-types", default-features = false }
 dnssec-prover = { version = "0.6", default-features = false, features = [ "std", "tokio" ] }
 tokio = { version = "1.0", default-features = false, features = ["rt"] }
@@ -18,4 +18,4 @@ tokio = { version = "1.0", default-features = false, features = ["rt"] }
 [dev-dependencies]
 bitcoin = { version = "0.32" }
 tokio = { version = "1.0", default-features = false, features = ["macros", "time"] }
-lightning = { version = "0.2.0", path = "../lightning", features = ["dnssec", "_test_utils"] }
+lightning = { version = "0.3.0", path = "../lightning", features = ["dnssec", "_test_utils"] }
