@@ -17,7 +17,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 bitcoin = "0.32.2"
-lightning = { version = "0.2.0", path = "../lightning" }
+lightning = { version = "0.3.0", path = "../lightning" }
 
 [lints]
 workspace = true

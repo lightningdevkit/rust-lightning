@@ -15,7 +15,7 @@ default = ["std"]
 std = ["bitcoin-io/std", "bitcoin_hashes/std"]
 
 [dependencies]
-lightning = { version = "0.2.0", path = "../lightning", default-features = false }
+lightning = { version = "0.3.0", path = "../lightning", default-features = false }
 bitcoin = { version = "0.32.2", default-features = false }
 bitcoin_hashes = { version = "0.14.0", default-features = false }
 bitcoin-io = { version = "0.1.2", default-features = false }
@@ -24,7 +24,7 @@ bitcoin-io = { version = "0.1.2", default-features = false }
 criterion = { version = "0.4", optional = true, default-features = false }
 
 [dev-dependencies]
-lightning = { version = "0.2.0", path = "../lightning", features = ["_test_utils"] }
+lightning = { version = "0.3.0", path = "../lightning", features = ["_test_utils"] }
 
 [lints]
 workspace = true
