@@ -726,7 +726,7 @@ impl crate::util::ser::Readable for ChannelConfig {
 }
 
 /// A parallel struct to [`ChannelConfig`] to define partial updates.
-#[derive(Default)]
+#[derive(Copy, Clone, Default)]
 pub struct ChannelConfigUpdate {
 	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound over the channel. See
 	/// [`ChannelConfig::forwarding_fee_proportional_millionths`].
@@ -859,7 +859,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 ///
 /// `Default::default()` provides sane defaults for most configurations
 /// (but currently with zero relay fees!)
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct UserConfig {
 	/// Channel handshake config that we propose to our counterparty.
 	pub channel_handshake_config: ChannelHandshakeConfig,
@@ -1033,7 +1033,7 @@ impl Readable for UserConfig {
 }
 
 /// Config structure for overriding channel parameters.
-#[derive(Default)]
+#[derive(Copy, Clone, Default)]
 pub struct ChannelConfigOverrides {
 	/// Overrides for channel handshake parameters.
 	pub handshake_overrides: Option<ChannelHandshakeConfigUpdate>,
@@ -1056,7 +1056,7 @@ impl UserConfig {
 }
 
 /// Config structure for overriding channel handshake parameters.
-#[derive(Default)]
+#[derive(Copy, Clone, Default)]
 pub struct ChannelHandshakeConfigUpdate {
 	/// Overrides the percentage of the channel value we will cap the total value of outstanding inbound HTLCs to. See
 	/// [`ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel`].
