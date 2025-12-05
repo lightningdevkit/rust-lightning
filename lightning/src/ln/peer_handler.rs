@@ -1574,8 +1574,7 @@ where
 					if let Some(next_onion_message) =
 						handler.next_onion_message_for_peer(peer_node_id)
 					{
-						let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-							Message::OnionMessage(next_onion_message);
+						let msg = Message::OnionMessage(next_onion_message);
 						self.enqueue_message(peer, msg);
 					}
 				}
@@ -1597,20 +1596,15 @@ where
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(
 								announce.contents.short_channel_id + 1,
 							);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::ChannelAnnouncement(announce);
+							let msg = Message::ChannelAnnouncement(announce);
 							self.enqueue_message(peer, msg);
 
 							if let Some(update_a) = update_a_option {
-								let msg: Message<
-									<CMH::Target as CustomMessageReader>::CustomMessage,
-								> = Message::ChannelUpdate(update_a);
+								let msg = Message::ChannelUpdate(update_a);
 								self.enqueue_message(peer, msg);
 							}
 							if let Some(update_b) = update_b_option {
-								let msg: Message<
-									<CMH::Target as CustomMessageReader>::CustomMessage,
-								> = Message::ChannelUpdate(update_b);
+								let msg = Message::ChannelUpdate(update_b);
 								self.enqueue_message(peer, msg);
 							}
 						} else {
@@ -1622,8 +1616,7 @@ where
 						let handler = &self.message_handler.route_handler;
 						if let Some(msg) = handler.get_next_node_announcement(None) {
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::NodeAnnouncement(msg);
+							let msg = Message::NodeAnnouncement(msg);
 							self.enqueue_message(peer, msg);
 						} else {
 							peer.sync_status = InitSyncTracker::NoSyncRequested;
@@ -1634,8 +1627,7 @@ where
 						let handler = &self.message_handler.route_handler;
 						if let Some(msg) = handler.get_next_node_announcement(Some(&sync_node_id)) {
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::NodeAnnouncement(msg);
+							let msg = Message::NodeAnnouncement(msg);
 							self.enqueue_message(peer, msg);
 						} else {
 							peer.sync_status = InitSyncTracker::NoSyncRequested;
@@ -1744,7 +1736,10 @@ where
 	}
 
 	/// Append a message to a peer's pending outbound/write buffer
-	fn enqueue_message<T: wire::Type>(&self, peer: &mut Peer, message: Message<T>) {
+	fn enqueue_message(
+		&self, peer: &mut Peer,
+		message: Message<<CMH::Target as CustomMessageReader>::CustomMessage>,
+	) {
 		let their_node_id = peer.their_node_id.map(|p| p.0);
 		if their_node_id.is_some() {
 			let logger = WithContext::from(&self.logger, their_node_id, None, None);
@@ -1809,13 +1804,13 @@ where
 									},
 									msgs::ErrorAction::SendErrorMessage { msg } => {
 										log_debug!(logger, "Error handling message{}; sending error message with: {}", OptionalFromDebugger(&peer_node_id), e.err);
-										let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> = Message::Error(msg);
+										let msg = Message::Error(msg);
 										self.enqueue_message($peer, msg);
 										continue;
 									},
 									msgs::ErrorAction::SendWarningMessage { msg, log_level } => {
 										log_given_level!(logger, log_level, "Error handling message{}; sending warning message with: {}", OptionalFromDebugger(&peer_node_id), e.err);
-										let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> = Message::Warning(msg);
+										let msg = Message::Warning(msg);
 										self.enqueue_message($peer, msg);
 										continue;
 									},
@@ -1911,8 +1906,7 @@ where
 									peer.their_socket_address.clone(),
 								),
 							};
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::Init(resp);
+							let msg = Message::Init(resp);
 							self.enqueue_message(peer, msg);
 						},
 						NextNoiseStep::ActThree => {
@@ -1933,8 +1927,7 @@ where
 									peer.their_socket_address.clone(),
 								),
 							};
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::Init(resp);
+							let msg = Message::Init(resp);
 							self.enqueue_message(peer, msg);
 						},
 						NextNoiseStep::NoiseComplete => {
@@ -1995,8 +1988,10 @@ where
 												let channel_id = ChannelId::new_zero();
 												let data = "Unsupported message compression: zlib"
 													.to_owned();
-												let msg = msgs::WarningMessage { channel_id, data };
-												let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> = Message::Warning(msg);
+												let msg = Message::Warning(msgs::WarningMessage {
+													channel_id,
+													data,
+												});
 												self.enqueue_message(peer, msg);
 												continue;
 											},
@@ -2007,8 +2002,10 @@ where
 													"Unreadable/bogus gossip message of type {}",
 													ty
 												);
-												let msg = msgs::WarningMessage { channel_id, data };
-												let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> = Message::Warning(msg);
+												let msg = Message::Warning(msgs::WarningMessage {
+													channel_id,
+													data,
+												});
 												self.enqueue_message(peer, msg);
 												continue;
 											},
@@ -2444,8 +2441,7 @@ where
 			Message::Ping(msg) => {
 				if msg.ponglen < 65532 {
 					let resp = msgs::Pong { byteslen: msg.ponglen };
-					let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-						Message::Pong(resp);
+					let msg = Message::Pong(resp);
 					self.enqueue_message(&mut *peer_mutex.lock().unwrap(), msg);
 				}
 			},
@@ -2885,8 +2881,7 @@ where
 								"Handling SendPeerStorage event in peer_handler for {}",
 								node_id,
 							);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::PeerStorage(msg);
+							let msg = Message::PeerStorage(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendPeerStorageRetrieval { ref node_id, msg } => {
@@ -2895,40 +2890,35 @@ where
 								"Handling SendPeerStorageRetrieval event in peer_handler for {}",
 								node_id,
 							);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::PeerStorageRetrieval(msg);
+							let msg = Message::PeerStorageRetrieval(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendAcceptChannel { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.common_fields.temporary_channel_id), None), "Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.common_fields.temporary_channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::AcceptChannel(msg);
+							let msg = Message::AcceptChannel(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendAcceptChannelV2 { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.common_fields.temporary_channel_id), None), "Handling SendAcceptChannelV2 event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.common_fields.temporary_channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::AcceptChannelV2(msg);
+							let msg = Message::AcceptChannelV2(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendOpenChannel { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.common_fields.temporary_channel_id), None), "Handling SendOpenChannel event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.common_fields.temporary_channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::OpenChannel(msg);
+							let msg = Message::OpenChannel(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendOpenChannelV2 { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.common_fields.temporary_channel_id), None), "Handling SendOpenChannelV2 event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.common_fields.temporary_channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::OpenChannelV2(msg);
+							let msg = Message::OpenChannelV2(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendFundingCreated { ref node_id, msg } => {
@@ -2938,24 +2928,21 @@ where
 									ChannelId::v1_from_funding_txid(msg.funding_txid.as_byte_array(), msg.funding_output_index));
 							// TODO: If the peer is gone we should generate a DiscardFunding event
 							// indicating to the wallet that they should just throw away this funding transaction
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::FundingCreated(msg);
+							let msg = Message::FundingCreated(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendFundingSigned { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendFundingSigned event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::FundingSigned(msg);
+							let msg = Message::FundingSigned(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendChannelReady { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendChannelReady event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::ChannelReady(msg);
+							let msg = Message::ChannelReady(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendStfu { ref node_id, msg } => {
@@ -2968,8 +2955,7 @@ where
 							log_debug!(logger, "Handling SendStfu event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::Stfu(msg);
+							let msg = Message::Stfu(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendSpliceInit { ref node_id, msg } => {
@@ -2982,8 +2968,7 @@ where
 							log_debug!(logger, "Handling SendSpliceInit event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::SpliceInit(msg);
+							let msg = Message::SpliceInit(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendSpliceAck { ref node_id, msg } => {
@@ -2996,8 +2981,7 @@ where
 							log_debug!(logger, "Handling SendSpliceAck event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::SpliceAck(msg);
+							let msg = Message::SpliceAck(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendSpliceLocked { ref node_id, msg } => {
@@ -3010,88 +2994,77 @@ where
 							log_debug!(logger, "Handling SendSpliceLocked event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::SpliceLocked(msg);
+							let msg = Message::SpliceLocked(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendTxAddInput { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendTxAddInput event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::TxAddInput(msg);
+							let msg = Message::TxAddInput(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendTxAddOutput { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendTxAddOutput event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::TxAddOutput(msg);
+							let msg = Message::TxAddOutput(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendTxRemoveInput { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendTxRemoveInput event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::TxRemoveInput(msg);
+							let msg = Message::TxRemoveInput(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendTxRemoveOutput { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendTxRemoveOutput event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::TxRemoveOutput(msg);
+							let msg = Message::TxRemoveOutput(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendTxComplete { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendTxComplete event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::TxComplete(msg);
+							let msg = Message::TxComplete(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendTxSignatures { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendTxSignatures event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::TxSignatures(msg);
+							let msg = Message::TxSignatures(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendTxInitRbf { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendTxInitRbf event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::TxInitRbf(msg);
+							let msg = Message::TxInitRbf(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendTxAckRbf { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendTxAckRbf event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::TxAckRbf(msg);
+							let msg = Message::TxAckRbf(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendTxAbort { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendTxAbort event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::TxAbort(msg);
+							let msg = Message::TxAbort(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendAnnouncementSignatures { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendAnnouncementSignatures event in peer_handler for node {} for channel {})",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::AnnouncementSignatures(msg);
+							let msg = Message::AnnouncementSignatures(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::UpdateHTLCs {
@@ -3116,33 +3089,23 @@ where
 									channel_id);
 							let mut peer = get_peer_for_forwarding!(node_id)?;
 							for msg in update_fulfill_htlcs {
-								let msg: Message<
-									<CMH::Target as CustomMessageReader>::CustomMessage,
-								> = Message::UpdateFulfillHTLC(msg);
+								let msg = Message::UpdateFulfillHTLC(msg);
 								self.enqueue_message(&mut *peer, msg);
 							}
 							for msg in update_fail_htlcs {
-								let msg: Message<
-									<CMH::Target as CustomMessageReader>::CustomMessage,
-								> = Message::UpdateFailHTLC(msg);
+								let msg = Message::UpdateFailHTLC(msg);
 								self.enqueue_message(&mut *peer, msg);
 							}
 							for msg in update_fail_malformed_htlcs {
-								let msg: Message<
-									<CMH::Target as CustomMessageReader>::CustomMessage,
-								> = Message::UpdateFailMalformedHTLC(msg);
+								let msg = Message::UpdateFailMalformedHTLC(msg);
 								self.enqueue_message(&mut *peer, msg);
 							}
 							for msg in update_add_htlcs {
-								let msg: Message<
-									<CMH::Target as CustomMessageReader>::CustomMessage,
-								> = Message::UpdateAddHTLC(msg);
+								let msg = Message::UpdateAddHTLC(msg);
 								self.enqueue_message(&mut *peer, msg);
 							}
 							if let Some(msg) = update_fee {
-								let msg: Message<
-									<CMH::Target as CustomMessageReader>::CustomMessage,
-								> = Message::UpdateFee(msg);
+								let msg = Message::UpdateFee(msg);
 								self.enqueue_message(&mut *peer, msg);
 							}
 							if commitment_signed.len() > 1 {
@@ -3151,15 +3114,11 @@ where
 									batch_size: commitment_signed.len() as u16,
 									message_type: Some(msgs::CommitmentSigned::TYPE),
 								};
-								let msg: Message<
-									<CMH::Target as CustomMessageReader>::CustomMessage,
-								> = Message::StartBatch(msg);
+								let msg = Message::StartBatch(msg);
 								self.enqueue_message(&mut *peer, msg);
 							}
 							for msg in commitment_signed {
-								let msg: Message<
-									<CMH::Target as CustomMessageReader>::CustomMessage,
-								> = Message::CommitmentSigned(msg);
+								let msg = Message::CommitmentSigned(msg);
 								self.enqueue_message(&mut *peer, msg);
 							}
 						},
@@ -3167,16 +3126,14 @@ where
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendRevokeAndACK event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::RevokeAndACK(msg);
+							let msg = Message::RevokeAndACK(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendClosingSigned { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendClosingSigned event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::ClosingSigned(msg);
+							let msg = Message::ClosingSigned(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						#[cfg(simple_close)]
@@ -3184,8 +3141,7 @@ where
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendClosingComplete event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::ClosingComplete(msg);
+							let msg = Message::ClosingComplete(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						#[cfg(simple_close)]
@@ -3193,8 +3149,7 @@ where
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendClosingSig event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::ClosingSig(msg);
+							let msg = Message::ClosingSig(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendShutdown { ref node_id, msg } => {
@@ -3207,16 +3162,14 @@ where
 								),
 								"Handling Shutdown event in peer_handler",
 							);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::Shutdown(msg);
+							let msg = Message::Shutdown(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendChannelReestablish { ref node_id, msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendChannelReestablish event in peer_handler for node {} for channel {}",
 									node_id,
 									&msg.channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::ChannelReestablish(msg);
+							let msg = Message::ChannelReestablish(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendChannelAnnouncement {
@@ -3227,12 +3180,9 @@ where
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendChannelAnnouncement event in peer_handler for node {} for short channel id {}",
 									node_id,
 									msg.contents.short_channel_id);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::ChannelAnnouncement(msg);
+							let msg = Message::ChannelAnnouncement(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
-							let update_msg: Message<
-								<CMH::Target as CustomMessageReader>::CustomMessage,
-							> = Message::ChannelUpdate(update_msg);
+							let update_msg = Message::ChannelUpdate(update_msg);
 							self.enqueue_message(
 								&mut *get_peer_for_forwarding!(node_id)?,
 								update_msg,
@@ -3329,8 +3279,7 @@ where
 								"Handling SendChannelUpdate event in peer_handler for channel {}",
 								msg.contents.short_channel_id
 							);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::ChannelUpdate(msg);
+							let msg = Message::ChannelUpdate(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::HandleError { node_id, action } => {
@@ -3379,9 +3328,7 @@ where
 									log_trace!(logger, "Handling SendErrorMessage HandleError event in peer_handler with message {}",
 
 											msg.data);
-									let msg: Message<
-										<CMH::Target as CustomMessageReader>::CustomMessage,
-									> = Message::Error(msg);
+									let msg = Message::Error(msg);
 									self.enqueue_message(
 										&mut *get_peer_for_forwarding!(&node_id)?,
 										msg,
@@ -3391,9 +3338,7 @@ where
 									log_given_level!(logger, *log_level, "Handling SendWarningMessage HandleError event in peer_handler with message {}",
 
 											msg.data);
-									let msg: Message<
-										<CMH::Target as CustomMessageReader>::CustomMessage,
-									> = Message::Warning(msg);
+									let msg = Message::Warning(msg);
 									self.enqueue_message(
 										&mut *get_peer_for_forwarding!(&node_id)?,
 										msg,
@@ -3406,16 +3351,14 @@ where
 
 								msg.first_blocknum,
 								msg.number_of_blocks);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::QueryChannelRange(msg);
+							let msg = Message::QueryChannelRange(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendShortIdsQuery { ref node_id, msg } => {
 							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendShortIdsQuery event in peer_handler with num_scids={}",
 
 								msg.short_channel_ids.len());
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::QueryShortChannelIds(msg);
+							let msg = Message::QueryShortChannelIds(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendReplyChannelRange { ref node_id, msg } => {
@@ -3425,8 +3368,7 @@ where
 								msg.first_blocknum,
 								msg.number_of_blocks,
 								msg.sync_complete);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::ReplyChannelRange(msg);
+							let msg = Message::ReplyChannelRange(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendGossipTimestampFilter { ref node_id, msg } => {
@@ -3434,8 +3376,7 @@ where
 
 								msg.first_timestamp,
 								msg.timestamp_range);
-							let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-								Message::GossipTimestampFilter(msg);
+							let msg = Message::GossipTimestampFilter(msg);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 					}
@@ -3471,8 +3412,7 @@ where
 					} else {
 						continue;
 					};
-					let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-						Message::Custom(msg);
+					let msg = Message::Custom(msg);
 					self.enqueue_message(&mut peer, msg);
 				}
 
@@ -3701,8 +3641,7 @@ where
 
 					peer.awaiting_pong_timer_tick_intervals = 1;
 					let ping = msgs::Ping { ponglen: 0, byteslen: 64 };
-					let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-						Message::Ping(ping);
+					let msg = Message::Ping(ping);
 					self.enqueue_message(&mut *peer, msg);
 					break;
 				}
@@ -4770,7 +4709,7 @@ mod tests {
 					channel_id: ChannelId([0; 32]),
 					data: "no disconnect plz".to_string(),
 				};
-				let msg: Message<()> = Message::Warning(warning);
+				let msg = Message::Warning(warning);
 				peer_a.enqueue_message(&mut peer_b, msg);
 			}
 			peer_a.process_events();
