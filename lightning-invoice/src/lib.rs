@@ -1609,6 +1609,29 @@ impl Bolt11Invoice {
 		self.fallbacks().iter().filter_map(filter_fn).collect()
 	}
 
+	/// Returns the first fallback address as an [`Address`].
+	///
+	/// See [`Self::fallback_addresses`] to fetch all addresses of known type.
+	pub fn first_fallback_address(&self) -> Option<Address> {
+		let filter_fn = |fallback: &&Fallback| {
+			let address = match fallback {
+				Fallback::SegWitProgram { version, program } => {
+					match WitnessProgram::new(*version, &program) {
+						Ok(witness_program) => {
+							Address::from_witness_program(witness_program, self.network())
+						},
+						Err(_) => return None,
+					}
+				},
+				Fallback::PubKeyHash(pkh) => Address::p2pkh(*pkh, self.network()),
+				Fallback::ScriptHash(sh) => Address::p2sh_from_hash(*sh, self.network()),
+			};
+
+			Some(address)
+		};
+		self.fallbacks().iter().filter_map(filter_fn).next()
+	}
+
 	/// Returns a list of all routes included in the invoice
 	pub fn private_routes(&self) -> Vec<&PrivateRoute> {
 		self.signed_invoice.private_routes()
