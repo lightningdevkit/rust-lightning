@@ -1478,7 +1478,6 @@ impl BackgroundProcessor {
 		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 		PM: 'static + Deref + Send,
-		LM: 'static + Deref + Send,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: for<'b> WriteableScore<'b>,
 		D: 'static + Deref,
@@ -1488,7 +1487,7 @@ impl BackgroundProcessor {
 	>(
 		kv_store: K, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		onion_messenger: OM, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
-		liquidity_manager: Option<LM>, sweeper: Option<OS>, logger: L, scorer: Option<S>,
+		sweeper: Option<OS>, logger: L, scorer: Option<S>,
 	) -> Self
 	where
 		UL::Target: 'static + UtxoLookup,
@@ -1501,7 +1500,6 @@ impl BackgroundProcessor {
 		CM::Target: AChannelManager,
 		OM::Target: AOnionMessenger,
 		PM::Target: APeerManager,
-		LM::Target: ALiquidityManagerSync,
 		D::Target: ChangeDestinationSourceSync,
 		O::Target: 'static + OutputSpender,
 		K::Target: 'static + KVStoreSync,
@@ -1581,24 +1579,13 @@ impl BackgroundProcessor {
 					log_trace!(logger, "Terminating background processor.");
 					break;
 				}
-				let sleeper = match (Some(&onion_messenger), liquidity_manager.as_ref()) {
-					(Some(om), Some(lm)) => Sleeper::from_four_futures(
-						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-						&chain_monitor.get_update_future(),
-						&om.get_om().get_update_future(),
-						&lm.get_lm().get_pending_msgs_or_needs_persist_future(),
-					),
-					(Some(om), None) => Sleeper::from_three_futures(
+				let sleeper = match Some(&onion_messenger) {
+					Some(om) => Sleeper::from_three_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 						&chain_monitor.get_update_future(),
 						&om.get_om().get_update_future(),
 					),
-					(None, Some(lm)) => Sleeper::from_three_futures(
-						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-						&chain_monitor.get_update_future(),
-						&lm.get_lm().get_pending_msgs_or_needs_persist_future(),
-					),
-					(None, None) => Sleeper::from_two_futures(
+					None => Sleeper::from_two_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 						&chain_monitor.get_update_future(),
 					),
@@ -1628,13 +1615,6 @@ impl BackgroundProcessor {
 						channel_manager.get_cm().encode(),
 					))?;
 					log_trace!(logger, "Done persisting ChannelManager.");
-				}
-
-				if let Some(liquidity_manager) = liquidity_manager.as_ref() {
-					log_trace!(logger, "Persisting LiquidityManager...");
-					let _ = liquidity_manager.get_lm().persist().map_err(|e| {
-						log_error!(logger, "Persisting LiquidityManager failed: {}", e);
-					});
 				}
 
 				// Note that we want to run a graph prune once not long after startup before
