@@ -58,9 +58,9 @@ use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
-	FundedChannel, FundingTxSigned, InboundV1Channel, OutboundV1Channel, PendingV2Channel,
-	ReconnectionMsg, ShutdownResult, SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch,
-	WithChannelContext,
+	FundedChannel, FundingTxConstructed, FundingTxSigned, InboundV1Channel, OutboundV1Channel,
+	PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed, StfuResponse,
+	UpdateFulfillCommitFetch, WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::SpliceContribution;
@@ -6481,55 +6481,79 @@ where
 			let mut peer_state = peer_state_mutex_opt.unwrap().lock().unwrap();
 
 			match peer_state.channel_by_id.get_mut(channel_id) {
-				Some(channel) => match channel.as_funded_mut() {
-					Some(chan) => {
-						let txid = transaction.compute_txid();
-						let witnesses: Vec<_> = transaction
-							.input
-							.into_iter()
-							.map(|input| input.witness)
-							.filter(|witness| !witness.is_empty())
-							.collect();
-						let best_block_height = self.best_block.read().unwrap().height;
-						match chan.funding_transaction_signed(
-							txid,
-							witnesses,
-							best_block_height,
-							&self.logger,
-						) {
-							Ok(FundingTxSigned {
-								tx_signatures: Some(tx_signatures),
-								funding_tx,
-								splice_negotiated,
-								splice_locked,
-							}) => {
-								if let Some(funding_tx) = funding_tx {
-									self.broadcast_interactive_funding(
-										chan,
-										&funding_tx,
-										&self.logger,
+				Some(channel) => {
+					let txid = transaction.compute_txid();
+					let witnesses: Vec<_> = transaction
+						.input
+						.into_iter()
+						.map(|input| input.witness)
+						.filter(|witness| !witness.is_empty())
+						.collect();
+					let best_block_height = self.best_block.read().unwrap().height;
+					let logger = WithChannelContext::from(&self.logger, channel.context(), None);
+					match channel.funding_transaction_signed(
+						txid,
+						witnesses,
+						best_block_height,
+						&logger,
+					) {
+						Ok(FundingTxSigned {
+							commit_sig,
+							tx_signatures,
+							funding_tx,
+							splice_negotiated,
+							splice_locked,
+						}) => {
+							if let Some(funding_tx) = funding_tx {
+								self.broadcast_interactive_funding(
+									channel.as_funded_mut().expect(
+										"Channel with signed funding transaction must be funded",
+									),
+									&funding_tx,
+									&self.logger,
+								);
+							}
+							if let Some(splice_negotiated) = splice_negotiated {
+								self.pending_events.lock().unwrap().push_back((
+									events::Event::SplicePending {
+										channel_id: *channel_id,
+										counterparty_node_id: *counterparty_node_id,
+										user_channel_id: channel.context().get_user_id(),
+										new_funding_txo: splice_negotiated.funding_txo,
+										channel_type: splice_negotiated.channel_type,
+										new_funding_redeem_script: splice_negotiated
+											.funding_redeem_script,
+									},
+									None,
+								));
+							}
+							if channel.context().is_connected() {
+								if let Some(commit_sig) = commit_sig {
+									peer_state.pending_msg_events.push(
+										MessageSendEvent::UpdateHTLCs {
+											node_id: *counterparty_node_id,
+											channel_id: *channel_id,
+											updates: CommitmentUpdate {
+												commitment_signed: vec![commit_sig],
+												update_add_htlcs: vec![],
+												update_fulfill_htlcs: vec![],
+												update_fail_htlcs: vec![],
+												update_fail_malformed_htlcs: vec![],
+												update_fee: None,
+											},
+										},
+									);
+								} else {
+									debug_assert!(false);
+								}
+								if let Some(tx_signatures) = tx_signatures {
+									peer_state.pending_msg_events.push(
+										MessageSendEvent::SendTxSignatures {
+											node_id: *counterparty_node_id,
+											msg: tx_signatures,
+										},
 									);
 								}
-								if let Some(splice_negotiated) = splice_negotiated {
-									self.pending_events.lock().unwrap().push_back((
-										events::Event::SplicePending {
-											channel_id: *channel_id,
-											counterparty_node_id: *counterparty_node_id,
-											user_channel_id: chan.context.get_user_id(),
-											new_funding_txo: splice_negotiated.funding_txo,
-											channel_type: splice_negotiated.channel_type,
-											new_funding_redeem_script: splice_negotiated
-												.funding_redeem_script,
-										},
-										None,
-									));
-								}
-								peer_state.pending_msg_events.push(
-									MessageSendEvent::SendTxSignatures {
-										node_id: *counterparty_node_id,
-										msg: tx_signatures,
-									},
-								);
 								if let Some(splice_locked) = splice_locked {
 									peer_state.pending_msg_events.push(
 										MessageSendEvent::SendSpliceLocked {
@@ -6538,34 +6562,14 @@ where
 										},
 									);
 								}
-								return NotifyOption::DoPersist;
-							},
-							Err(err) => {
-								result = Err(err);
-								return NotifyOption::SkipPersistNoEvents;
-							},
-							Ok(FundingTxSigned {
-								tx_signatures: None,
-								funding_tx,
-								splice_negotiated,
-								splice_locked,
-							}) => {
-								debug_assert!(funding_tx.is_none());
-								debug_assert!(splice_negotiated.is_none());
-								debug_assert!(splice_locked.is_none());
-								return NotifyOption::SkipPersistNoEvents;
-							},
-						}
-					},
-					None => {
-						result = Err(APIError::APIMisuseError {
-							err: format!(
-								"Channel with id {} not expecting funding signatures",
-								channel_id
-							),
-						});
-						return NotifyOption::SkipPersistNoEvents;
-					},
+							}
+							return NotifyOption::DoPersist;
+						},
+						Err(err) => {
+							result = Err(APIError::APIMisuseError { err });
+							return NotifyOption::SkipPersistNoEvents;
+						},
+					}
 				},
 				None => {
 					result = Err(APIError::ChannelUnavailable {
@@ -9727,79 +9731,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		}
 
-		if let Some(signing_session) = (!channel.is_awaiting_monitor_update())
-			.then(|| ())
-			.and_then(|_| channel.context.interactive_tx_signing_session.as_mut())
-			.filter(|signing_session| signing_session.has_received_commitment_signed())
-			.filter(|signing_session| signing_session.holder_tx_signatures().is_none())
-		{
-			if signing_session.has_local_contribution() {
-				let mut pending_events = self.pending_events.lock().unwrap();
-				let unsigned_transaction = signing_session.unsigned_tx().tx().clone();
-				let event_action = (
-					Event::FundingTransactionReadyForSigning {
-						unsigned_transaction,
-						counterparty_node_id,
-						channel_id: channel.context.channel_id(),
-						user_channel_id: channel.context.get_user_id(),
-					},
-					None,
-				);
-
-				if !pending_events.contains(&event_action) {
-					pending_events.push_back(event_action);
-				}
-			} else {
-				let txid = signing_session.unsigned_tx().compute_txid();
-				let best_block_height = self.best_block.read().unwrap().height;
-				match channel.funding_transaction_signed(txid, vec![], best_block_height, &self.logger) {
-					Ok(FundingTxSigned {
-						tx_signatures: Some(tx_signatures),
-						funding_tx,
-						splice_negotiated,
-						splice_locked,
-					}) => {
-						if let Some(funding_tx) = funding_tx {
-							self.broadcast_interactive_funding(channel, &funding_tx, &self.logger);
-						}
-
-						if let Some(splice_negotiated) = splice_negotiated {
-							self.pending_events.lock().unwrap().push_back((
-								events::Event::SplicePending {
-									channel_id: channel.context.channel_id(),
-									counterparty_node_id,
-									user_channel_id: channel.context.get_user_id(),
-									new_funding_txo: splice_negotiated.funding_txo,
-									channel_type: splice_negotiated.channel_type,
-									new_funding_redeem_script: splice_negotiated.funding_redeem_script,
-								},
-								None,
-							));
-						}
-
-						if channel.context.is_connected() {
-							pending_msg_events.push(MessageSendEvent::SendTxSignatures {
-								node_id: counterparty_node_id,
-								msg: tx_signatures,
-							});
-							if let Some(splice_locked) = splice_locked {
-								pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
-									node_id: counterparty_node_id,
-									msg: splice_locked,
-								});
-							}
-						}
-					},
-					Ok(FundingTxSigned { tx_signatures: None, .. }) => {
-						debug_assert!(false, "If our tx_signatures is empty, then we should send it first!");
-					},
-					Err(err) => {
-						log_warn!(logger, "Failed signing interactive funding transaction: {err:?}");
-					},
-				}
-			}
-		}
-
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
 			emit_channel_pending_event!(pending_events, channel);
@@ -10734,9 +10665,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let chan = chan_entry.get_mut();
-				match chan.tx_complete(msg, &self.logger) {
-					Ok((interactive_tx_msg_send, commitment_signed)) => {
-						let persist = if interactive_tx_msg_send.is_some() || commitment_signed.is_some() {
+				let best_block_height = self.best_block.read().unwrap().height;
+				match chan.tx_complete(msg, best_block_height, &self.logger) {
+					Ok((interactive_tx_msg_send, funding_tx_constructed)) => {
+						let persist = if interactive_tx_msg_send.is_some() {
 							NotifyOption::SkipPersistHandleEvents
 						} else {
 							NotifyOption::SkipPersistNoEvents
@@ -10745,19 +10677,38 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							let msg_send_event = interactive_tx_msg_send.into_msg_send_event(counterparty_node_id);
 							peer_state.pending_msg_events.push(msg_send_event);
 						};
-						if let Some(commitment_signed) = commitment_signed {
-							peer_state.pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
-								node_id: counterparty_node_id,
-								channel_id: msg.channel_id,
-								updates: CommitmentUpdate {
-									commitment_signed: vec![commitment_signed],
-									update_add_htlcs: vec![],
-									update_fulfill_htlcs: vec![],
-									update_fail_htlcs: vec![],
-									update_fail_malformed_htlcs: vec![],
-									update_fee: None,
+						if let Some(funding_tx_constructed) = funding_tx_constructed {
+							match funding_tx_constructed {
+								FundingTxConstructed::EmitSigningEvent(unsigned_transaction) => {
+									let mut pending_events = self.pending_events.lock().unwrap();
+									let event_action = (
+										Event::FundingTransactionReadyForSigning {
+											unsigned_transaction,
+											counterparty_node_id,
+											channel_id: chan.context().channel_id(),
+											user_channel_id: chan.context().get_user_id(),
+										},
+										None,
+									);
+									if !pending_events.contains(&event_action) {
+										pending_events.push_back(event_action);
+									}
 								},
-							});
+								FundingTxConstructed::FundingSigned(commit_sig) => {
+									peer_state.pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
+										node_id: counterparty_node_id,
+										channel_id: msg.channel_id,
+										updates: CommitmentUpdate {
+											commitment_signed: vec![commit_sig],
+											update_add_htlcs: vec![],
+											update_fulfill_htlcs: vec![],
+											update_fail_htlcs: vec![],
+											update_fail_malformed_htlcs: vec![],
+											update_fee: None,
+										},
+									});
+								},
+							}
 						}
 						Ok(persist)
 					},
@@ -10803,6 +10754,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Some(chan) => {
 						let best_block_height = self.best_block.read().unwrap().height;
 						let FundingTxSigned {
+							commit_sig,
 							tx_signatures,
 							funding_tx,
 							splice_negotiated,
@@ -10813,6 +10765,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							chan.tx_signatures(msg, best_block_height, &self.logger),
 							chan_entry
 						);
+						debug_assert!(commit_sig.is_none());
 						if let Some(tx_signatures) = tx_signatures {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
