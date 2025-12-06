@@ -19,7 +19,7 @@ use bitcoin::{BlockHash, Txid};
 use core::future::Future;
 use core::mem;
 use core::ops::Deref;
-use core::pin::Pin;
+use core::pin::{pin, Pin};
 use core::str::FromStr;
 use core::task;
 
@@ -34,7 +34,7 @@ use crate::chain::transaction::OutPoint;
 use crate::ln::types::ChannelId;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::sync::Mutex;
-use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
+use crate::util::async_poll::{dummy_waker, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
 use crate::util::native_async::FutureSpawner;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
@@ -216,34 +216,34 @@ where
 {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> AsyncResult<'static, Vec<u8>, io::Error> {
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + 'static + MaybeSend {
 		let res = self.0.read(primary_namespace, secondary_namespace, key);
 
-		Box::pin(async move { res })
+		async move { res }
 	}
 
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> AsyncResult<'static, (), io::Error> {
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
 		let res = self.0.write(primary_namespace, secondary_namespace, key, buf);
 
-		Box::pin(async move { res })
+		async move { res }
 	}
 
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
-	) -> AsyncResult<'static, (), io::Error> {
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
 		let res = self.0.remove(primary_namespace, secondary_namespace, key, lazy);
 
-		Box::pin(async move { res })
+		async move { res }
 	}
 
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> AsyncResult<'static, Vec<String>, io::Error> {
+	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend {
 		let res = self.0.list(primary_namespace, secondary_namespace);
 
-		Box::pin(async move { res })
+		async move { res }
 	}
 }
 
@@ -283,16 +283,18 @@ pub trait KVStore {
 	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> AsyncResult<'static, Vec<u8>, io::Error>;
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + 'static + MaybeSend;
 	/// Persists the given data under the given `key`.
 	///
-	/// The order of multiple writes to the same key needs to be retained while persisting
-	/// asynchronously. In other words, if two writes to the same key occur, the state (as seen by
-	/// [`Self::read`]) must either see the first write then the second, or only ever the second,
-	/// no matter when the futures complete (and must always contain the second write once the
-	/// second future completes). The state should never contain the first write after the second
-	/// write's future completes, nor should it contain the second write, then contain the first
-	/// write at any point thereafter (even if the second write's future hasn't yet completed).
+	/// Note that this is *not* an `async fn`. Rather, the order of multiple writes to the same key
+	/// (as defined by the order of the synchronous function calls) needs to be retained while
+	/// persisting asynchronously. In other words, if two writes to the same key occur, the state
+	/// (as seen by [`Self::read`]) must either see the first write then the second, or only ever
+	/// the second, no matter when the futures complete (and must always contain the second write
+	/// once the second future completes). The state should never contain the first write after the
+	/// second write's future completes, nor should it contain the second write, then contain the
+	/// first write at any point thereafter (even if the second write's future hasn't yet
+	/// completed).
 	///
 	/// One way to ensure this requirement is met is by assigning a version number to each write
 	/// before returning the future, and then during asynchronous execution, ensuring that the
@@ -303,13 +305,17 @@ pub trait KVStore {
 	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present in the store.
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> AsyncResult<'static, (), io::Error>;
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
 	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
 	/// remove the given `key` at some point in time after the method returns, e.g., as part of an
 	/// eventual batch deletion of multiple keys. As a consequence, subsequent calls to
 	/// [`KVStoreSync::list`] might include the removed key until the changes are actually persisted.
+	///
+	/// Note that similar to [`Self::write`] this is *not* an `async fn`, but rather a sync fn
+	/// which defines the order of writes to a given key, but which may complete its operation
+	/// asynchronously.
 	///
 	/// Note that while setting the `lazy` flag reduces the I/O burden of multiple subsequent
 	/// `remove` calls, it also influences the atomicity guarantees as lazy `remove`s could
@@ -321,12 +327,13 @@ pub trait KVStore {
 	/// to the same key which occur before a removal completes must cancel/overwrite the pending
 	/// removal.
 	///
+	///
 	/// Returns successfully if no data will be stored for the given `primary_namespace`,
 	/// `secondary_namespace`, and `key`, independently of whether it was present before its
 	/// invokation or not.
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
-	) -> AsyncResult<'static, (), io::Error>;
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend;
 	/// Returns a list of keys that are stored under the given `secondary_namespace` in
 	/// `primary_namespace`.
 	///
@@ -334,7 +341,7 @@ pub trait KVStore {
 	/// returned keys. Returns an empty list if `primary_namespace` or `secondary_namespace` is unknown.
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> AsyncResult<'static, Vec<String>, io::Error>;
+	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend;
 }
 
 /// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
@@ -490,8 +497,7 @@ impl FutureSpawner for PanicingSpawner {
 fn poll_sync_future<F: Future>(future: F) -> F::Output {
 	let mut waker = dummy_waker();
 	let mut ctx = task::Context::from_waker(&mut waker);
-	// TODO A future MSRV bump to 1.68 should allow for the pin macro
-	match Pin::new(&mut Box::pin(future)).poll(&mut ctx) {
+	match pin!(future).poll(&mut ctx) {
 		task::Poll::Ready(result) => result,
 		task::Poll::Pending => {
 			// In a sync context, we can't wait for the future to complete.
@@ -1006,6 +1012,9 @@ where
 	}
 }
 
+trait MaybeSendableFuture: Future<Output = Result<(), io::Error>> + MaybeSend {}
+impl<F: Future<Output = Result<(), io::Error>> + MaybeSend> MaybeSendableFuture for F {}
+
 impl<K: Deref, S: FutureSpawner, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
 	MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
 where
@@ -1179,9 +1188,9 @@ where
 		Ok(())
 	}
 
-	fn persist_new_channel<ChannelSigner: EcdsaChannelSigner>(
-		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
-	) -> impl Future<Output = Result<(), io::Error>> {
+	fn persist_new_channel<'a, ChannelSigner: EcdsaChannelSigner>(
+		&'a self, monitor_name: MonitorName, monitor: &'a ChannelMonitor<ChannelSigner>,
+	) -> Pin<Box<dyn MaybeSendableFuture<Output = Result<(), io::Error>> + 'static>> {
 		// Determine the proper key for this monitor
 		let monitor_key = monitor_name.to_string();
 		// Serialize and write the new monitor
@@ -1200,7 +1209,10 @@ where
 		// completion of the write. This ensures monitor persistence ordering is preserved.
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		self.kv_store.write(primary, secondary, monitor_key.as_str(), monitor_bytes)
+		// There's no real reason why this needs to be boxed, but dropping it rams into the "hidden
+		// type for impl... captures lifetime that does not appear in bounds" issue. This can
+		// trivially be dropped once we upgrade to edition 2024/MSRV 1.85.
+		Box::pin(self.kv_store.write(primary, secondary, monitor_key.as_str(), monitor_bytes))
 	}
 
 	fn update_persisted_channel<'a, ChannelSigner: EcdsaChannelSigner + 'a>(
@@ -1226,12 +1238,10 @@ where
 				// write method, allowing it to do its queueing immediately, and then return a
 				// future for the completion of the write. This ensures monitor persistence
 				// ordering is preserved.
-				res_a = Some(self.kv_store.write(
-					primary,
-					&monitor_key,
-					update_name.as_str(),
-					update.encode(),
-				));
+				let encoded = update.encode();
+				res_a = Some(async move {
+					self.kv_store.write(primary, &monitor_key, update_name.as_str(), encoded).await
+				});
 			} else {
 				// We could write this update, but it meets criteria of our design that calls for a full monitor write.
 				// Note that this is NOT an async function, but rather calls the *sync* KVStore
