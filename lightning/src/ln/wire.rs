@@ -425,19 +425,6 @@ where
 	}
 }
 
-/// Writes a message to the data buffer encoded as a 2-byte big-endian type and a variable-length
-/// payload.
-///
-/// # Errors
-///
-/// Returns an I/O error if the write could not be completed.
-pub(crate) fn write<M: Type + Writeable, W: Writer>(
-	message: &M, buffer: &mut W,
-) -> Result<(), io::Error> {
-	message.type_id().write(buffer)?;
-	message.write(buffer)
-}
-
 mod encode {
 	/// Defines a constant type identifier for reading messages from the wire.
 	pub trait Encode {
@@ -734,34 +721,6 @@ mod tests {
 		match message {
 			Message::Unknown(::core::u16::MAX) => (),
 			_ => panic!("Expected message type {}; found: {}", ::core::u16::MAX, message.type_id()),
-		}
-	}
-
-	#[test]
-	fn write_message_with_type() {
-		let message = msgs::Pong { byteslen: 2u16 };
-		let mut buffer = Vec::new();
-		assert!(write(&message, &mut buffer).is_ok());
-
-		let type_length = ::core::mem::size_of::<u16>();
-		let (type_bytes, payload_bytes) = buffer.split_at(type_length);
-		assert_eq!(u16::from_be_bytes(type_bytes.try_into().unwrap()), msgs::Pong::TYPE);
-		assert_eq!(payload_bytes, &ENCODED_PONG[type_length..]);
-	}
-
-	#[test]
-	fn read_message_encoded_with_write() {
-		let message = msgs::Pong { byteslen: 2u16 };
-		let mut buffer = Vec::new();
-		assert!(write(&message, &mut buffer).is_ok());
-
-		let decoded_message = read(&mut &buffer[..], &IgnoringMessageHandler {}).unwrap();
-		match decoded_message {
-			Message::Pong(msgs::Pong { byteslen: 2u16 }) => (),
-			Message::Pong(msgs::Pong { byteslen }) => {
-				panic!("Expected byteslen {}; found: {}", message.byteslen, byteslen);
-			},
-			_ => panic!("Expected pong message; found message type: {}", decoded_message.type_id()),
 		}
 	}
 

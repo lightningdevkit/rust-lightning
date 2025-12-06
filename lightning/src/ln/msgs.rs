@@ -1857,6 +1857,7 @@ pub enum MessageSendEvent {
 		msg: ClosingSigned,
 	},
 	/// Used to indicate that a `closing_complete` message should be sent to the peer with the given `node_id`.
+	#[cfg(simple_close)]
 	SendClosingComplete {
 		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
@@ -1864,6 +1865,7 @@ pub enum MessageSendEvent {
 		msg: ClosingComplete,
 	},
 	/// Used to indicate that a `closing_sig` message should be sent to the peer with the given `node_id`.
+	#[cfg(simple_close)]
 	SendClosingSig {
 		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
