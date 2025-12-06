@@ -2272,8 +2272,11 @@ where
 /// # let channel_manager = channel_manager.get_cm();
 /// # let payment_id = PaymentId([42; 32]);
 /// # let payment_hash = PaymentHash((*invoice.payment_hash()).to_byte_array());
+/// # let custom_tlvs = vec![
+/// #     (343493u64, b"hello".to_vec()),
+/// # ];
 /// match channel_manager.pay_for_bolt11_invoice(
-///     invoice, payment_id, None, route_params_config, retry
+///     invoice, payment_id, None, custom_tlvs, route_params_config, retry
 /// ) {
 ///     Ok(()) => println!("Sending payment with hash {}", payment_hash),
 ///     Err(e) => println!("Failed sending payment with hash {}: {:?}", payment_hash, e),
@@ -2371,9 +2374,12 @@ where
 /// #     channel_manager: T, offer: &Offer, amount_msats: Option<u64>,
 /// # ) {
 /// # let channel_manager = channel_manager.get_cm();
-/// let payment_id = PaymentId([42; 32]);
+/// # let payment_id = PaymentId([42; 32]);
+/// # let custom_tlvs = vec![
+/// #     (343493u64, b"hello".to_vec()),
+/// # ];
 /// match channel_manager.pay_for_offer(
-///     offer, amount_msats, payment_id, Default::default(),
+///     offer, amount_msats, payment_id, custom_tlvs, Default::default(),
 /// ) {
 ///     Ok(()) => println!("Requesting invoice for offer"),
 ///     Err(e) => println!("Unable to request invoice for offer: {:?}", e),
@@ -2428,10 +2434,13 @@ where
 /// #     route_params_config: RouteParametersConfig
 /// # ) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
-/// let payment_id = PaymentId([42; 32]);
+/// # let payment_id = PaymentId([42; 32]);
+/// # let custom_tlvs = vec![
+/// #     (343493u64, b"hello".to_vec()),
+/// # ];
 /// let refund = channel_manager
 ///     .create_refund_builder(
-///         amount_msats, absolute_expiry, payment_id, retry, route_params_config
+///         amount_msats, absolute_expiry, payment_id, custom_tlvs, retry, route_params_config
 ///     )?
 /// # ;
 /// # // Needed for compiling for c_bindings
@@ -5551,7 +5560,8 @@ where
 	/// To use default settings, call the function with [`RouteParametersConfig::default`].
 	pub fn pay_for_bolt11_invoice(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
-		route_params_config: RouteParametersConfig, retry_strategy: Retry,
+		custom_tlvs: Vec<(u64, Vec<u8>)>, route_params_config: RouteParametersConfig,
+		retry_strategy: Retry,
 	) -> Result<(), Bolt11PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -5559,6 +5569,7 @@ where
 			invoice,
 			payment_id,
 			amount_msats,
+			custom_tlvs,
 			route_params_config,
 			retry_strategy,
 			&self.router,
@@ -12878,7 +12889,8 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn create_refund_builder(
 		&$self, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
-		retry_strategy: Retry, route_params_config: RouteParametersConfig
+		custom_tlvs: Vec<(u64, Vec<u8>)>, retry_strategy: Retry,
+		route_params_config: RouteParametersConfig
 	) -> Result<$builder, Bolt12SemanticError> {
 		let entropy = &*$self.entropy_source;
 
@@ -12892,7 +12904,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
 		$self.pending_outbound_payments
 			.add_new_awaiting_invoice(
-				payment_id, expiration, retry_strategy, route_params_config, None,
+				payment_id, custom_tlvs, expiration, retry_strategy, route_params_config, None,
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
@@ -12919,7 +12931,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn create_refund_builder_using_router<ME: Deref>(
 		&$self, router: ME, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
-		retry_strategy: Retry, route_params_config: RouteParametersConfig
+		custom_tlvs: Vec<(u64, Vec<u8>)>, retry_strategy: Retry, route_params_config: RouteParametersConfig
 	) -> Result<$builder, Bolt12SemanticError>
 	where
 		ME::Target: MessageRouter,
@@ -12936,7 +12948,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
 		$self.pending_outbound_payments
 			.add_new_awaiting_invoice(
-				payment_id, expiration, retry_strategy, route_params_config, None,
+				payment_id, custom_tlvs, expiration, retry_strategy, route_params_config, None,
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
@@ -13052,12 +13064,13 @@ where
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn pay_for_offer(
 		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
-		optional_params: OptionalOfferPaymentParams,
+		custom_tlvs: Vec<(u64, Vec<u8>)>, optional_params: OptionalOfferPaymentParams,
 	) -> Result<(), Bolt12SemanticError> {
 		let create_pending_payment_fn = |retryable_invoice_request: RetryableInvoiceRequest| {
 			self.pending_outbound_payments
 				.add_new_awaiting_invoice(
 					payment_id,
+					custom_tlvs,
 					StaleExpiration::TimerTicks(1),
 					optional_params.retry_strategy,
 					optional_params.route_params_config,
@@ -13081,12 +13094,13 @@ where
 	/// identical to [`Self::pay_for_offer`].
 	pub fn pay_for_offer_from_hrn(
 		&self, offer: &OfferFromHrn, amount_msats: u64, payment_id: PaymentId,
-		optional_params: OptionalOfferPaymentParams,
+		custom_tlvs: Vec<(u64, Vec<u8>)>, optional_params: OptionalOfferPaymentParams,
 	) -> Result<(), Bolt12SemanticError> {
 		let create_pending_payment_fn = |retryable_invoice_request: RetryableInvoiceRequest| {
 			self.pending_outbound_payments
 				.add_new_awaiting_invoice(
 					payment_id,
+					custom_tlvs,
 					StaleExpiration::TimerTicks(1),
 					optional_params.retry_strategy,
 					optional_params.route_params_config,
@@ -13123,12 +13137,14 @@ where
 	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
 	pub fn pay_for_offer_with_quantity(
 		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
-		optional_params: OptionalOfferPaymentParams, quantity: u64,
+		custom_tlvs: Vec<(u64, Vec<u8>)>, optional_params: OptionalOfferPaymentParams,
+		quantity: u64,
 	) -> Result<(), Bolt12SemanticError> {
 		let create_pending_payment_fn = |retryable_invoice_request: RetryableInvoiceRequest| {
 			self.pending_outbound_payments
 				.add_new_awaiting_invoice(
 					payment_id,
+					custom_tlvs,
 					StaleExpiration::TimerTicks(1),
 					optional_params.retry_strategy,
 					optional_params.route_params_config,
@@ -15782,7 +15798,7 @@ where
 						self.pay_for_offer_intern(&offer, None, Some(amt_msats), payer_note, payment_id, Some(name),
 							|retryable_invoice_request| {
 								self.pending_outbound_payments
-									.received_offer(payment_id, Some(retryable_invoice_request))
+									.received_offer(payment_id, vec![], Some(retryable_invoice_request))
 									.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
 						});
 					if offer_pay_res.is_err() {

@@ -519,7 +519,13 @@ fn bolt12_invoice_too_large_blinded_paths() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, Some(5000), payment_id, OptionalOfferPaymentParams::default())
+		.pay_for_offer(
+			&offer,
+			Some(5000),
+			payment_id,
+			vec![],
+			OptionalOfferPaymentParams::default(),
+		)
 		.unwrap();
 	let invreq_om = nodes[0]
 		.onion_messenger

@@ -614,6 +614,7 @@ where
 mod test {
 	use super::*;
 	use crate::chain::channelmonitor::HTLC_FAIL_BACK_BUFFER;
+	use crate::events::Event;
 	use crate::ln::channelmanager::{
 		Bolt11InvoiceParameters, PaymentId, PhantomRouteHints, RecipientOnionFields, Retry,
 		MIN_FINAL_CLTV_EXPIRY_DELTA,
@@ -663,7 +664,7 @@ mod test {
 	}
 
 	#[test]
-	fn create_and_pay_for_bolt11_invoice() {
+	fn create_and_pay_for_bolt11_invoice_with_custom_tlvs() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -694,6 +695,11 @@ mod test {
 			Duration::from_secs(non_default_invoice_expiry_secs.into())
 		);
 
+		let (payment_hash, payment_secret) =
+			(PaymentHash(invoice.payment_hash().to_byte_array()), *invoice.payment_secret());
+
+		let preimage = nodes[1].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
+
 		// Invoice SCIDs should always use inbound SCID aliases over the real channel ID, if one is
 		// available.
 		let chan = &nodes[1].node.list_usable_channels()[0];
@@ -708,9 +714,18 @@ mod test {
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_maximum_msat, chan.inbound_htlc_maximum_msat);
 
 		let retry = Retry::Attempts(0);
+		let custom_tlvs = vec![(65537, vec![42; 42])];
+
 		nodes[0]
 			.node
-			.pay_for_bolt11_invoice(&invoice, PaymentId([42; 32]), None, Default::default(), retry)
+			.pay_for_bolt11_invoice(
+				&invoice,
+				PaymentId([42; 32]),
+				None,
+				custom_tlvs.clone(),
+				Default::default(),
+				retry,
+			)
 			.unwrap();
 		check_added_monitors(&nodes[0], 1);
 
@@ -718,10 +733,30 @@ mod test {
 		assert_eq!(events.len(), 1);
 		let payment_event = SendEvent::from_event(events.remove(0));
 		nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
-		nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &payment_event.commitment_msg);
-		check_added_monitors(&nodes[1], 1);
-		let events = nodes[1].node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 2);
+		check_added_monitors!(&nodes[1], 0);
+		do_commitment_signed_dance(
+			&nodes[1],
+			&nodes[0],
+			&payment_event.commitment_msg,
+			false,
+			false,
+		);
+		expect_and_process_pending_htlcs(&nodes[1], false);
+
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+
+		match events[0] {
+			Event::PaymentClaimable { ref onion_fields, .. } => {
+				assert_eq!(onion_fields.clone().unwrap().custom_tlvs().clone(), custom_tlvs);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], preimage)
+				.with_custom_tlvs(custom_tlvs),
+		);
 	}
 
 	fn do_create_invoice_min_final_cltv_delta(with_custom_delta: bool) {
