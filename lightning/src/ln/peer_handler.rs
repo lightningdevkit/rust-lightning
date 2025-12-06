@@ -1578,9 +1578,14 @@ where
 			}
 			if peer.should_buffer_gossip_broadcast() {
 				if let Some(msg) = peer.gossip_broadcast_buffer.pop_front() {
+					let should_pad = peer.their_node_id.is_some_and(|(peer_id, _)| {
+						let our_features = self.init_features(peer_id);
+						our_features.supports_message_padding()
+					});
+
 					peer.msgs_sent_since_pong += 1;
 					peer.pending_outbound_buffer
-						.push_back(peer.channel_encryptor.encrypt_buffer(msg));
+						.push_back(peer.channel_encryptor.encrypt_buffer(msg, should_pad));
 				}
 			}
 			if peer.should_buffer_gossip_backfill() {
@@ -1739,8 +1744,18 @@ where
 		} else {
 			debug_assert!(false, "node_id should be set by the time we send a message");
 		}
+
+		let message_padding_supported = their_node_id.is_some_and(|peer_id| {
+			let our_features = self.init_features(peer_id);
+			our_features.supports_message_padding()
+		});
+
+		// Opt out of message padding for custom messages as we're not certain the application
+		// layer protocol can handle TLV exteensions.
+		let should_pad = !is_custom_msg(message.type_id()) && message_padding_supported;
 		peer.msgs_sent_since_pong += 1;
-		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message));
+		peer.pending_outbound_buffer
+			.push_back(peer.channel_encryptor.encrypt_message(message, should_pad));
 	}
 
 	fn do_read_event(
@@ -3697,6 +3712,10 @@ fn is_gossip_msg(type_id: u16) -> bool {
 	}
 }
 
+fn is_custom_msg(type_id: u16) -> bool {
+	type_id >= 32768
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -4261,7 +4280,7 @@ mod tests {
 		peers[0].read_event(&mut fd_dup, &act_three).unwrap();
 
 		let not_init_msg = msgs::Ping { ponglen: 4, byteslen: 0 };
-		let msg_bytes = dup_encryptor.encrypt_message(&not_init_msg);
+		let msg_bytes = dup_encryptor.encrypt_message(&not_init_msg, false);
 		assert!(peers[0].read_event(&mut fd_dup, &msg_bytes).is_err());
 	}
 
