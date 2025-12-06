@@ -3224,12 +3224,13 @@ pub fn expect_probe_successful_events(
 }
 
 pub struct PaymentFailedConditions<'a> {
-	pub(crate) expected_htlc_error_data: Option<(LocalHTLCFailureReason, &'a [u8])>,
-	pub(crate) expected_blamed_scid: Option<u64>,
-	pub(crate) expected_blamed_chan_closed: Option<bool>,
-	pub(crate) expected_mpp_parts_remain: bool,
-	pub(crate) retry_expected: bool,
-	pub(crate) from_mon_update: bool,
+	pub expected_htlc_error_data: Option<(LocalHTLCFailureReason, &'a [u8])>,
+	pub expected_blamed_scid: Option<u64>,
+	pub expected_blamed_chan_closed: Option<bool>,
+	pub expected_mpp_parts_remain: bool,
+	pub retry_expected: bool,
+	pub from_mon_update: bool,
+	pub reason: Option<PaymentFailureReason>,
 }
 
 impl<'a> PaymentFailedConditions<'a> {
@@ -3241,6 +3242,7 @@ impl<'a> PaymentFailedConditions<'a> {
 			expected_mpp_parts_remain: false,
 			retry_expected: false,
 			from_mon_update: false,
+			reason: None,
 		}
 	}
 	pub fn mpp_parts_remain(mut self) -> Self {
@@ -3321,14 +3323,21 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 				*payment_failed_permanently, expected_payment_failed_permanently,
 				"unexpected payment_failed_permanently value"
 			);
-			{
-				assert!(error_code.is_some(), "expected error_code.is_some() = true");
-				assert!(error_data.is_some(), "expected error_data.is_some() = true");
-				let reason: LocalHTLCFailureReason = error_code.unwrap().into();
-				if let Some((code, data)) = conditions.expected_htlc_error_data {
-					assert_eq!(reason, code, "unexpected error code");
-					assert_eq!(&error_data.as_ref().unwrap()[..], data, "unexpected error data");
-				}
+			match failure {
+				PathFailure::OnPath { .. } => {
+					assert!(error_code.is_some(), "expected error_code.is_some() = true");
+					assert!(error_data.is_some(), "expected error_data.is_some() = true");
+					let reason: LocalHTLCFailureReason = error_code.unwrap().into();
+					if let Some((code, data)) = conditions.expected_htlc_error_data {
+						assert_eq!(reason, code, "unexpected error code");
+						assert_eq!(&error_data.as_ref().unwrap()[..], data);
+					}
+				},
+				PathFailure::InitialSend { .. } => {
+					assert!(error_code.is_none());
+					assert!(error_data.is_none());
+					assert!(conditions.expected_htlc_error_data.is_none());
+				},
 			}
 
 			if let Some(chan_closed) = conditions.expected_blamed_chan_closed {
@@ -3362,7 +3371,9 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 				assert_eq!(*payment_id, expected_payment_id);
 				assert_eq!(
 					reason.unwrap(),
-					if expected_payment_failed_permanently {
+					if let Some(expected_reason) = conditions.reason {
+						expected_reason
+					} else if expected_payment_failed_permanently {
 						PaymentFailureReason::RecipientRejected
 					} else {
 						PaymentFailureReason::RetriesExhausted
@@ -3414,7 +3425,7 @@ pub fn send_along_route_with_secret<'a, 'b, 'c>(
 	payment_id
 }
 
-fn fail_payment_along_path<'a, 'b, 'c>(expected_path: &[&Node<'a, 'b, 'c>]) {
+pub fn fail_payment_along_path<'a, 'b, 'c>(expected_path: &[&Node<'a, 'b, 'c>]) {
 	let origin_node_id = expected_path[0].node.get_our_node_id();
 
 	// iterate from the receiving node to the origin node and handle update fail htlc.

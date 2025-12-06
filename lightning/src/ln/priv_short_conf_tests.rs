@@ -12,7 +12,8 @@
 //! LSP).
 
 use crate::chain::ChannelMonitorUpdateStatus;
-use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
+use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentFailureReason};
+use crate::ln::channel::CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY;
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::msgs;
 use crate::ln::msgs::{
@@ -1078,66 +1079,233 @@ fn test_public_0conf_channel() {
 #[test]
 fn test_0conf_channel_reorg() {
 	// If we accept a 0conf channel, which is then confirmed, but then changes SCID in a reorg, we
-	// have to make sure we handle this correctly (or, currently, just force-close the channel).
+	// have to ensure we still accept relays to the previous SCID, at least for some time, as well
+	// as send a fresh channel announcement.
 
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
 	chan_config.manually_accept_inbound_channels = true;
 
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[None, None, Some(chan_config.clone())]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
 	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	create_chan_between_nodes(&nodes[0], &nodes[1]);
+
+	// Make sure all nodes are at the same starting height
+	connect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
 
 	// This is the default but we force it on anyway
 	chan_config.channel_handshake_config.announce_for_forwarding = true;
-	let (tx, ..) = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
+	let (tx, ..) = open_zero_conf_channel(&nodes[1], &nodes[2], Some(chan_config));
 
 	// We can use the channel immediately, but we can't announce it until we get 6+ confirmations
-	send_payment(&nodes[0], &[&nodes[1]], 100_000);
+	send_payment(&nodes[1], &[&nodes[2]], 100_000);
 
-	mine_transaction(&nodes[0], &tx);
 	mine_transaction(&nodes[1], &tx);
+	mine_transaction(&nodes[2], &tx);
 
 	// Send a payment using the channel's real SCID, which will be public in a few blocks once we
 	// can generate a channel_announcement.
-	let real_scid = nodes[0].node.list_usable_channels()[0].short_channel_id.unwrap();
-	assert_eq!(nodes[1].node.list_usable_channels()[0].short_channel_id.unwrap(), real_scid);
+	let bs_chans = nodes[1].node.list_usable_channels();
+	let bs_chan = bs_chans.iter().find(|chan| chan.counterparty.node_id == node_c_id).unwrap();
+	let original_scid = bs_chan.short_channel_id.unwrap();
+	assert_eq!(nodes[2].node.list_usable_channels()[0].short_channel_id.unwrap(), original_scid);
 
 	let (mut route, payment_hash, payment_preimage, payment_secret) =
-		get_route_and_payment_hash!(nodes[0], nodes[1], 10_000);
-	assert_eq!(route.paths[0].hops[0].short_channel_id, real_scid);
+		get_route_and_payment_hash!(nodes[1], nodes[2], 10_000);
+	assert_eq!(route.paths[0].hops[0].short_channel_id, original_scid);
 	send_along_route_with_secret(
-		&nodes[0],
-		route,
-		&[&[&nodes[1]]],
+		&nodes[1],
+		route.clone(),
+		&[&[&nodes[2]]],
 		10_000,
 		payment_hash,
 		payment_secret,
 	);
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	claim_payment(&nodes[1], &[&nodes[2]], payment_preimage);
 
-	disconnect_blocks(&nodes[0], 1);
+	// Check that we can forward a payment over the channel's SCID as well (i.e. as if node C
+	// generated an invoice with a route hint through the 0-conf channel).
+	let mut forwarded_route = route.clone();
+	let (ab_route, ..) = get_route_and_payment_hash!(nodes[0], nodes[1], 10_000);
+	forwarded_route.paths[0].hops.insert(0, ab_route.paths[0].hops[0].clone());
+	forwarded_route.paths[0].hops[0].fee_msat = 1000;
+	forwarded_route.paths[0].hops[0].cltv_expiry_delta = MIN_CLTV_EXPIRY_DELTA.into();
+	send_along_route_with_secret(
+		&nodes[0],
+		forwarded_route.clone(),
+		&[&[&nodes[1], &nodes[2]]],
+		10_000,
+		payment_hash,
+		payment_secret,
+	);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	// Now disconnect blocks, checking that the SCID was wiped but that it still works both for a
+	// forwarded HTLC and a directly-sent one.
 	disconnect_blocks(&nodes[1], 1);
+	disconnect_blocks(&nodes[2], 1);
 
-	// At this point the channel no longer has an SCID again. In the future we should likely
-	// support simply un-setting the SCID and waiting until the channel gets re-confirmed, but for
-	// now we force-close the channel here.
-	let reason = ClosureReason::ProcessingError {
-		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
-			.to_owned(),
-	};
-	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
-	check_closed_broadcast!(nodes[0], true);
+	let bs_chans = nodes[1].node.list_usable_channels();
+	let bs_chan = bs_chans.iter().find(|chan| chan.counterparty.node_id == node_c_id).unwrap();
+	assert!(bs_chan.short_channel_id.is_none());
+	assert!(nodes[2].node.list_usable_channels()[0].short_channel_id.is_none());
+
+	send_along_route_with_secret(
+		&nodes[1],
+		route.clone(),
+		&[&[&nodes[2]]],
+		10_000,
+		payment_hash,
+		payment_secret,
+	);
+	claim_payment(&nodes[1], &[&nodes[2]], payment_preimage);
+
+	send_along_route_with_secret(
+		&nodes[0],
+		forwarded_route.clone(),
+		&[&[&nodes[1], &nodes[2]]],
+		10_000,
+		payment_hash,
+		payment_secret,
+	);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	// Finally, connect an extra block then re-mine the funding tx, giving the channel a new SCID.
+	connect_blocks(&nodes[1], 1);
+	connect_blocks(&nodes[2], 1);
+
+	mine_transaction(&nodes[1], &tx);
+	mine_transaction(&nodes[2], &tx);
+
+	let bs_chans = nodes[1].node.list_usable_channels();
+	let bs_chan = bs_chans.iter().find(|chan| chan.counterparty.node_id == node_c_id).unwrap();
+	let new_scid = bs_chan.short_channel_id.unwrap();
+	assert_ne!(original_scid, new_scid);
+	assert_eq!(nodes[2].node.list_usable_channels()[0].short_channel_id.unwrap(), new_scid);
+
+	// At this point, the channel should happily forward or send payments with either the old SCID
+	// or the new SCID...
+	send_along_route_with_secret(
+		&nodes[1],
+		route.clone(),
+		&[&[&nodes[2]]],
+		10_000,
+		payment_hash,
+		payment_secret,
+	);
+	claim_payment(&nodes[1], &[&nodes[2]], payment_preimage);
+
+	send_along_route_with_secret(
+		&nodes[0],
+		forwarded_route.clone(),
+		&[&[&nodes[1], &nodes[2]]],
+		10_000,
+		payment_hash,
+		payment_secret,
+	);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	let mut new_scid_route = route.clone();
+	new_scid_route.paths[0].hops[0].short_channel_id = new_scid;
+	send_along_route_with_secret(
+		&nodes[1],
+		new_scid_route.clone(),
+		&[&[&nodes[2]]],
+		10_000,
+		payment_hash,
+		payment_secret,
+	);
+	claim_payment(&nodes[1], &[&nodes[2]], payment_preimage);
+
+	let mut new_scid_forwarded_route = forwarded_route.clone();
+	new_scid_forwarded_route.paths[0].hops[1].short_channel_id = new_scid;
+	send_along_route_with_secret(
+		&nodes[0],
+		new_scid_forwarded_route.clone(),
+		&[&[&nodes[1], &nodes[2]]],
+		10_000,
+		payment_hash,
+		payment_secret,
+	);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	// However after CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY blocks, the old SCID should be removed
+	// and will no longer work for sent or forwarded payments (but the new one still will).
+	connect_blocks(&nodes[1], 5);
+	let bs_announcement_sigs =
+		get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, node_c_id);
+
+	connect_blocks(&nodes[2], 5);
+	let cs_announcement_sigs =
+		get_event_msg!(nodes[2], MessageSendEvent::SendAnnouncementSignatures, node_b_id);
+
+	nodes[2].node.handle_announcement_signatures(node_b_id, &bs_announcement_sigs);
+	let cs_broadcast = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(cs_broadcast.len(), 1);
+	if let MessageSendEvent::BroadcastChannelAnnouncement { .. } = cs_broadcast[0] {
+	} else {
+		panic!("Expected broadcast");
+	}
+
+	nodes[1].node.handle_announcement_signatures(node_c_id, &cs_announcement_sigs);
+	let bs_broadcast = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(bs_broadcast.len(), 1);
+	if let MessageSendEvent::BroadcastChannelAnnouncement { .. } = bs_broadcast[0] {
+	} else {
+		panic!("Expected broadcast");
+	}
+
+	connect_blocks(&nodes[0], CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY);
+	connect_blocks(&nodes[1], CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY - 5);
+	connect_blocks(&nodes[2], CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY - 5);
+
+	send_along_route_with_secret(
+		&nodes[1],
+		new_scid_route,
+		&[&[&nodes[2]]],
+		10_000,
+		payment_hash,
+		payment_secret,
+	);
+	claim_payment(&nodes[1], &[&nodes[2]], payment_preimage);
+
+	send_along_route_with_secret(
+		&nodes[0],
+		new_scid_forwarded_route,
+		&[&[&nodes[1], &nodes[2]]],
+		10_000,
+		payment_hash,
+		payment_secret,
+	);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId([0; 32]);
+	nodes[1].node.send_payment_with_route(route, payment_hash, onion.clone(), id).unwrap();
+	let mut conditions = PaymentFailedConditions::new();
+	conditions.reason = Some(PaymentFailureReason::RouteNotFound);
+	expect_payment_failed_conditions(&nodes[1], payment_hash, false, conditions);
+
+	nodes[0].node.send_payment_with_route(forwarded_route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	let reason = ClosureReason::ProcessingError {
-		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs."
-			.to_owned(),
-	};
-	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
-	check_closed_broadcast!(nodes[1], true);
-	check_added_monitors(&nodes[1], 1);
+	let mut ev = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(ev.len(), 1);
+	let ev = ev.pop().unwrap();
+	let path = &[&nodes[1]];
+	let failure = HTLCHandlingFailureType::InvalidForward { requested_forward_scid: original_scid };
+	let args =
+		PassAlongPathArgs::new(&nodes[0], path, 10_000, payment_hash, ev).expect_failure(failure);
+	do_pass_along_path(args);
+	fail_payment_along_path(&[&nodes[0], &nodes[1]]);
+	expect_payment_failed!(nodes[0], payment_hash, false);
 }
 
 #[test]

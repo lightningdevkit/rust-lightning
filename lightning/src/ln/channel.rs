@@ -11433,9 +11433,13 @@ where
 		}
 
 		// Check if the funding transaction was unconfirmed
+		let original_scid = self.funding.short_channel_id;
+		let was_confirmed = self.funding.funding_tx_confirmed_in.is_some();
 		let funding_tx_confirmations = self.funding.get_funding_tx_confirmations(height);
 		if funding_tx_confirmations == 0 {
 			self.funding.funding_tx_confirmation_height = 0;
+			self.funding.short_channel_id = None;
+			self.funding.funding_tx_confirmed_in = None;
 		}
 
 		if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
@@ -11450,18 +11454,33 @@ where
 			self.context.channel_state.is_our_channel_ready() {
 
 			// If we've sent channel_ready (or have both sent and received channel_ready), and
-			// the funding transaction has become unconfirmed,
-			// close the channel and hope we can get the latest state on chain (because presumably
-			// the funding transaction is at least still in the mempool of most nodes).
+			// the funding transaction has become unconfirmed, we'll probably get a new SCID when
+			// it re-confirms.
 			//
-			// Note that ideally we wouldn't force-close if we see *any* reorg on a 1-conf or
-			// 0-conf channel, but not doing so may lead to the
-			// `ChannelManager::short_to_chan_info` map  being inconsistent, so we currently have
-			// to.
-			if funding_tx_confirmations == 0 && self.funding.funding_tx_confirmed_in.is_some() {
-				let err_reason = format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.",
-					self.context.minimum_depth.unwrap(), funding_tx_confirmations);
-				return Err(ClosureReason::ProcessingError { err: err_reason });
+			// Worse, if the funding has un-confirmed we could have accepted some HTLC(s) over it
+			// and are now at risk of double-spend. While its possible, even likely, that this is
+			// just a trivial reorg and we should wait to see the new block connected in the next
+			// call, its also possible we've been double-spent. To avoid further loss of funds, we
+			// need some kind of method to freeze the channel and avoid accepting further HTLCs,
+			// but absent such a method, we just force-close.
+			//
+			// The one exception we make is for 0-conf channels, which we decided to trust anyway,
+			// in which case we simply track the previous SCID as a `historical_scids` the same as
+			// after a channel is spliced.
+			if funding_tx_confirmations == 0 && was_confirmed {
+				if let Some(scid) = original_scid {
+					self.context.historical_scids.push(scid);
+				} else {
+					debug_assert!(false);
+				}
+				if self.context.minimum_depth(&self.funding).expect("set for a ready channel") > 0 {
+					// Reset the original short_channel_id so that we'll generate a closure
+					// `channel_update` broadcast event.
+					self.funding.short_channel_id = original_scid;
+					let err_reason = format!("Funding transaction was un-confirmed, originally locked at {} confs.",
+						self.context.minimum_depth.unwrap());
+					return Err(ClosureReason::ProcessingError { err: err_reason });
+				}
 			}
 		} else if !self.funding.is_outbound() && self.funding.funding_tx_confirmed_in.is_none() &&
 				height >= self.context.channel_creation_height + FUNDING_CONF_DEADLINE_BLOCKS {
