@@ -559,27 +559,6 @@ impl Refund {
 }
 
 macro_rules! respond_with_explicit_signing_pubkey_methods { ($self: ident, $builder: ty) => {
-	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields and using the
-	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
-	///
-	/// See [`Refund::respond_with_no_std`] for further details where the aforementioned creation
-	/// time is used for the `created_at` parameter.
-	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
-	/// [`Duration`]: core::time::Duration
-	#[cfg(feature = "std")]
-	pub fn respond_with(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
-		signing_pubkey: PublicKey,
-	) -> Result<$builder, Bolt12SemanticError> {
-		let created_at = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
-			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
-
-		$self.respond_with_no_std(payment_paths, payment_hash, signing_pubkey, created_at)
-	}
-
 	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
@@ -602,7 +581,7 @@ macro_rules! respond_with_explicit_signing_pubkey_methods { ($self: ident, $buil
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
-	pub fn respond_with_no_std(
+	pub fn respond_with(
 		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey, created_at: Duration
 	) -> Result<$builder, Bolt12SemanticError> {
@@ -623,32 +602,7 @@ macro_rules! respond_with_derived_signing_pubkey_methods { ($self: ident, $build
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	#[cfg(feature = "std")]
 	pub fn respond_using_derived_keys<ES: Deref>(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
-		expanded_key: &ExpandedKey, entropy_source: ES
-	) -> Result<$builder, Bolt12SemanticError>
-	where
-		ES::Target: EntropySource,
-	{
-		let created_at = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
-			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
-
-		$self.respond_using_derived_keys_no_std(
-			payment_paths, payment_hash, created_at, expanded_key, entropy_source
-		)
-	}
-
-	/// Creates an [`InvoiceBuilder`] for the refund using the given required fields and that uses
-	/// derived signing keys to sign the [`Bolt12Invoice`].
-	///
-	/// See [`Refund::respond_with_no_std`] for further details.
-	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
-	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn respond_using_derived_keys_no_std<ES: Deref>(
 		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		created_at: core::time::Duration, expanded_key: &ExpandedKey, entropy_source: ES
 	) -> Result<$builder, Bolt12SemanticError>
@@ -789,6 +743,11 @@ impl RefundContents {
 			issuer: self.issuer.as_ref(),
 			quantity_max: None,
 			issuer_id: None,
+			recurrence_compulsory: None,
+			recurrence_optional: None,
+			recurrence_base: None,
+			recurrence_paywindow: None,
+			recurrence_limit: None,
 		};
 
 		let features = {
@@ -808,6 +767,9 @@ impl RefundContents {
 			payer_note: self.payer_note.as_ref(),
 			paths: self.paths.as_ref(),
 			offer_from_hrn: None,
+			recurrence_counter: None,
+			recurrence_start: None,
+			recurrence_cancel: None,
 		};
 
 		let experimental_offer = ExperimentalOfferTlvStreamRef {
@@ -918,6 +880,11 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 				issuer,
 				quantity_max,
 				issuer_id,
+				recurrence_compulsory,
+				recurrence_optional,
+				recurrence_base,
+				recurrence_paywindow,
+				recurrence_limit,
 			},
 			InvoiceRequestTlvStream {
 				chain,
@@ -928,6 +895,9 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 				payer_note,
 				paths,
 				offer_from_hrn,
+				recurrence_counter,
+				recurrence_start,
+				recurrence_cancel,
 			},
 			ExperimentalOfferTlvStream {
 				#[cfg(test)]
@@ -979,9 +949,23 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			return Err(Bolt12SemanticError::UnexpectedIssuerSigningPubkey);
 		}
 
+		if recurrence_compulsory.is_some()
+			|| recurrence_optional.is_some()
+			|| recurrence_base.is_some()
+			|| recurrence_paywindow.is_some()
+			|| recurrence_limit.is_some()
+		{
+			return Err(Bolt12SemanticError::UnexpectedRecurrence);
+		}
+
 		if offer_from_hrn.is_some() {
 			// Only offers can be resolved using Human Readable Names
 			return Err(Bolt12SemanticError::UnexpectedHumanReadableName);
+		}
+
+		if recurrence_counter.is_some() || recurrence_start.is_some() || recurrence_cancel.is_some()
+		{
+			return Err(Bolt12SemanticError::UnexpectedRecurrence);
 		}
 
 		let amount_msats = match amount {
@@ -1108,6 +1092,11 @@ mod tests {
 					issuer: None,
 					quantity_max: None,
 					issuer_id: None,
+					recurrence_compulsory: None,
+					recurrence_optional: None,
+					recurrence_base: None,
+					recurrence_paywindow: None,
+					recurrence_limit: None,
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
@@ -1118,6 +1107,9 @@ mod tests {
 					payer_note: None,
 					paths: None,
 					offer_from_hrn: None,
+					recurrence_counter: None,
+					recurrence_start: None,
+					recurrence_cancel: None,
 				},
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
 				ExperimentalInvoiceRequestTlvStreamRef { experimental_bar: None },
@@ -1163,7 +1155,7 @@ mod tests {
 
 		// Fails verification with altered fields
 		let invoice = refund
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.experimental_baz(42)
 			.build()
@@ -1186,7 +1178,7 @@ mod tests {
 
 		let invoice = Refund::try_from(encoded_refund)
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.build()
 			.unwrap()
@@ -1204,7 +1196,7 @@ mod tests {
 
 		let invoice = Refund::try_from(encoded_refund)
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.build()
 			.unwrap()
@@ -1248,7 +1240,7 @@ mod tests {
 		assert_ne!(refund.payer_signing_pubkey(), node_id);
 
 		let invoice = refund
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.experimental_baz(42)
 			.build()
@@ -1269,7 +1261,7 @@ mod tests {
 
 		let invoice = Refund::try_from(encoded_refund)
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.build()
 			.unwrap()
@@ -1289,7 +1281,7 @@ mod tests {
 
 		let invoice = Refund::try_from(encoded_refund)
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
 			.build()
 			.unwrap()
@@ -1474,7 +1466,7 @@ mod tests {
 			.features_unchecked(InvoiceRequestFeatures::unknown())
 			.build()
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.respond_with(payment_paths(), payment_hash(), recipient_pubkey(), now())
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnknownRequiredFeatures),

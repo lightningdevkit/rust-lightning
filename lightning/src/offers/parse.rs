@@ -224,6 +224,10 @@ pub enum Bolt12SemanticError {
 	///
 	/// [`Refund`]: super::refund::Refund
 	UnexpectedHumanReadableName,
+	/// Recurrence was not expected but present.
+	UnexpectedRecurrence,
+	/// Recurrence was present but contains invalid values.
+	InvalidRecurrence,
 }
 
 impl From<CheckedHrpstringError> for Bolt12ParseError {

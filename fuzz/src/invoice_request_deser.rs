@@ -8,8 +8,11 @@
 // licenses.
 
 use crate::utils::test_logger;
+use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::Network;
 use bitcoin::secp256k1::{self, Keypair, Parity, PublicKey, Secp256k1, SecretKey};
 use core::convert::TryFrom;
+use core::time::Duration;
 use lightning::blinded_path::payment::{
 	BlindedPaymentPath, Bolt12OfferContext, ForwardTlvs, PaymentConstraints, PaymentContext,
 	PaymentForwardNode, PaymentRelay, ReceiveTlvs,
@@ -81,6 +84,9 @@ fn privkey(byte: u8) -> SecretKey {
 fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	invoice_request: &InvoiceRequest, secp_ctx: &Secp256k1<T>,
 ) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
+	let network = Network::Bitcoin;
+	let genesis_block = genesis_block(network);
+
 	let expanded_key = ExpandedKey::new([42; 32]);
 	let entropy_source = Randomness {};
 	let receive_auth_key = ReceiveAuthKey([41; 32]);
@@ -98,6 +104,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 					.payer_note()
 					.map(|s| UntrustedString(s.to_string())),
 				human_readable_name: None,
+				recurrence_counter: None,
 			}
 		};
 
@@ -144,7 +151,8 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	.unwrap();
 
 	let payment_hash = PaymentHash([42; 32]);
-	invoice_request.respond_with(vec![payment_path], payment_hash)?.build()
+	let now = Duration::from_secs(genesis_block.header.time as u64);
+	invoice_request.respond_with(vec![payment_path], payment_hash, now)?.build()
 }
 
 pub fn invoice_request_deser_test<Out: test_logger::Output>(data: &[u8], out: Out) {
