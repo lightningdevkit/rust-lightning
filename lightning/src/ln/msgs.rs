@@ -2486,6 +2486,11 @@ mod fuzzy_internal_msgs {
 		pub data: Vec<u8>,
 		pub attribution_data: Option<AttributionData>,
 	}
+
+	impl_writeable_tlv_based!(OnionErrorPacket, {
+		(0, data, required),
+		(1, attribution_data, required),
+	});
 }
 #[cfg(fuzzing)]
 pub use self::fuzzy_internal_msgs::*;
