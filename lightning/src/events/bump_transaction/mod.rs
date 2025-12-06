@@ -14,6 +14,7 @@
 pub mod sync;
 
 use alloc::collections::BTreeMap;
+use core::future::Future;
 use core::ops::Deref;
 
 use crate::chain::chaininterface::{
@@ -36,7 +37,7 @@ use crate::sign::{
 	ChannelDerivationParameters, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT,
 };
 use crate::sync::Mutex;
-use crate::util::async_poll::{AsyncResult, MaybeSend, MaybeSync};
+use crate::util::async_poll::{MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
 
 use bitcoin::amount::Amount;
@@ -394,13 +395,15 @@ pub trait CoinSelectionSource {
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
-	) -> AsyncResult<'a, CoinSelection, ()>;
+	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a;
 	/// Signs and provides the full witness for all inputs within the transaction known to the
 	/// trait (i.e., any provided via [`CoinSelectionSource::select_confirmed_utxos`]).
 	///
 	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
 	/// unsigned transaction and then sign it with your wallet.
-	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction, ()>;
+	fn sign_psbt<'a>(
+		&'a self, psbt: Psbt,
+	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a;
 }
 
 /// An alternative to [`CoinSelectionSource`] that can be implemented and used along [`Wallet`] to
@@ -412,17 +415,23 @@ pub trait CoinSelectionSource {
 // Note that updates to documentation on this trait should be copied to the synchronous version.
 pub trait WalletSource {
 	/// Returns all UTXOs, with at least 1 confirmation each, that are available to spend.
-	fn list_confirmed_utxos<'a>(&'a self) -> AsyncResult<'a, Vec<Utxo>, ()>;
+	fn list_confirmed_utxos<'a>(
+		&'a self,
+	) -> impl Future<Output = Result<Vec<Utxo>, ()>> + MaybeSend + 'a;
 	/// Returns a script to use for change above dust resulting from a successful coin selection
 	/// attempt.
-	fn get_change_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()>;
+	fn get_change_script<'a>(
+		&'a self,
+	) -> impl Future<Output = Result<ScriptBuf, ()>> + MaybeSend + 'a;
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
 	///
 	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
 	/// unsigned transaction and then sign it with your wallet.
-	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction, ()>;
+	fn sign_psbt<'a>(
+		&'a self, psbt: Psbt,
+	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a;
 }
 
 /// A wrapper over [`WalletSource`] that implements [`CoinSelectionSource`] by preferring UTXOs
@@ -617,8 +626,8 @@ where
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
-	) -> AsyncResult<'a, CoinSelection, ()> {
-		Box::pin(async move {
+	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a {
+		async move {
 			let utxos = self.source.list_confirmed_utxos().await?;
 			// TODO: Use fee estimation utils when we upgrade to bitcoin v0.30.0.
 			let total_output_size: u64 = must_pay_to
@@ -665,10 +674,12 @@ where
 				}
 			}
 			Err(())
-		})
+		}
 	}
 
-	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction, ()> {
+	fn sign_psbt<'a>(
+		&'a self, psbt: Psbt,
+	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a {
 		self.source.sign_psbt(psbt)
 	}
 }

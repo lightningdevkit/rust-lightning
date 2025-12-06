@@ -1,14 +1,12 @@
 //! Adapters that make one or more [`BlockSource`]s simpler to poll for new chain tip transitions.
 
-use crate::{
-	AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError,
-	BlockSourceResult,
-};
+use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult};
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::Network;
 use lightning::chain::BestBlock;
 
+use std::future::Future;
 use std::ops::Deref;
 
 /// The `Poll` trait defines behavior for polling block sources for a chain tip and retrieving
@@ -22,17 +20,17 @@ pub trait Poll {
 	/// Returns a chain tip in terms of its relationship to the provided chain tip.
 	fn poll_chain_tip<'a>(
 		&'a self, best_known_chain_tip: ValidatedBlockHeader,
-	) -> AsyncBlockSourceResult<'a, ChainTip>;
+	) -> impl Future<Output = BlockSourceResult<ChainTip>> + Send + 'a;
 
 	/// Returns the header that preceded the given header in the chain.
 	fn look_up_previous_header<'a>(
 		&'a self, header: &'a ValidatedBlockHeader,
-	) -> AsyncBlockSourceResult<'a, ValidatedBlockHeader>;
+	) -> impl Future<Output = BlockSourceResult<ValidatedBlockHeader>> + Send + 'a;
 
 	/// Returns the block associated with the given header.
 	fn fetch_block<'a>(
 		&'a self, header: &'a ValidatedBlockHeader,
-	) -> AsyncBlockSourceResult<'a, ValidatedBlock>;
+	) -> impl Future<Output = BlockSourceResult<ValidatedBlock>> + Send + 'a;
 }
 
 /// A chain tip relative to another chain tip in terms of block hash and chainwork.
@@ -217,8 +215,8 @@ impl<B: Deref<Target = T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll
 {
 	fn poll_chain_tip<'a>(
 		&'a self, best_known_chain_tip: ValidatedBlockHeader,
-	) -> AsyncBlockSourceResult<'a, ChainTip> {
-		Box::pin(async move {
+	) -> impl Future<Output = BlockSourceResult<ChainTip>> + Send + 'a {
+		async move {
 			let (block_hash, height) = self.block_source.get_best_block().await?;
 			if block_hash == best_known_chain_tip.header.block_hash() {
 				return Ok(ChainTip::Common);
@@ -231,13 +229,13 @@ impl<B: Deref<Target = T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll
 			} else {
 				Ok(ChainTip::Worse(chain_tip))
 			}
-		})
+		}
 	}
 
 	fn look_up_previous_header<'a>(
 		&'a self, header: &'a ValidatedBlockHeader,
-	) -> AsyncBlockSourceResult<'a, ValidatedBlockHeader> {
-		Box::pin(async move {
+	) -> impl Future<Output = BlockSourceResult<ValidatedBlockHeader>> + Send + 'a {
+		async move {
 			if header.height == 0 {
 				return Err(BlockSourceError::persistent("genesis block reached"));
 			}
@@ -252,15 +250,13 @@ impl<B: Deref<Target = T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll
 			header.check_builds_on(&previous_header, self.network)?;
 
 			Ok(previous_header)
-		})
+		}
 	}
 
 	fn fetch_block<'a>(
 		&'a self, header: &'a ValidatedBlockHeader,
-	) -> AsyncBlockSourceResult<'a, ValidatedBlock> {
-		Box::pin(async move {
-			self.block_source.get_block(&header.block_hash).await?.validate(header.block_hash)
-		})
+	) -> impl Future<Output = BlockSourceResult<ValidatedBlock>> + Send + 'a {
+		async move { self.block_source.get_block(&header.block_hash).await?.validate(header.block_hash) }
 	}
 }
 
