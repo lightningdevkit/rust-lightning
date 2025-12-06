@@ -174,14 +174,40 @@ macro_rules! log_spendable {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! log_given_level {
-	($logger: expr, $lvl:expr, $($arg:tt)+) => (
-		$logger.log($crate::util::logger::Record::new($lvl, None, None, format_args!($($arg)+), module_path!(), file!(), line!(), None))
+	($logger: expr, $lvl:expr, $($arg:tt)+) => {{
+		let mut spans = Vec::new();
+		$crate::util::logger::TLS_LOGGER.with(|cell| {
+			spans = cell.borrow().iter().map(|span| span.name).collect()
+		});
+		$logger.log($crate::util::logger::Record::new($lvl, spans, None, None, format_args!($($arg)+), module_path!(), file!(), line!(), None));
+	}};
+}
+
+/// Create a new Record and log it. You probably don't want to use this macro directly,
+/// but it needs to be exported so `log_trace` etc can use it in external crates.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! log_given_level_ctx {
+	($lvl:expr, $($arg:tt)+) => (
+		$crate::util::logger::TLS_LOGGER.with(|cell| {
+			let borrowed = cell.borrow();
+			let spans = borrowed.iter().map(|span| span.name).collect();
+            if let Some(span) = borrowed.last() {
+				span.logger.log($crate::util::logger::Record::new($lvl, spans, None, None, format_args!($($arg)+), module_path!(), file!(), line!(), None))
+			}
+		})
 	);
 }
 
 /// Log at the `ERROR` level.
 #[macro_export]
 macro_rules! log_error {
+	($fmt: literal) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Error, $fmt);
+    };
+	($fmt: literal, $($arg:tt)*) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Error, $fmt, $($arg)*);
+    };
 	($logger: expr, $($arg:tt)*) => (
 		$crate::log_given_level!($logger, $crate::util::logger::Level::Error, $($arg)*);
 	)
@@ -190,6 +216,12 @@ macro_rules! log_error {
 /// Log at the `WARN` level.
 #[macro_export]
 macro_rules! log_warn {
+	($fmt: literal) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Warn, $fmt);
+    };
+	($fmt: literal, $($arg:tt)*) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Warn, $fmt, $($arg)*);
+    };
 	($logger: expr, $($arg:tt)*) => (
 		$crate::log_given_level!($logger, $crate::util::logger::Level::Warn, $($arg)*);
 	)
@@ -198,6 +230,12 @@ macro_rules! log_warn {
 /// Log at the `INFO` level.
 #[macro_export]
 macro_rules! log_info {
+	($fmt: literal) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Info, $fmt);
+    };
+	($fmt: literal, $($arg:tt)*) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Info, $fmt, $($arg)*);
+    };
 	($logger: expr, $($arg:tt)*) => (
 		$crate::log_given_level!($logger, $crate::util::logger::Level::Info, $($arg)*);
 	)
@@ -206,6 +244,12 @@ macro_rules! log_info {
 /// Log at the `DEBUG` level.
 #[macro_export]
 macro_rules! log_debug {
+	($fmt: literal) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Debug, $fmt);
+    };
+	($fmt: literal, $($arg:tt)*) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Debug, $fmt, $($arg)*);
+    };
 	($logger: expr, $($arg:tt)*) => (
 		$crate::log_given_level!($logger, $crate::util::logger::Level::Debug, $($arg)*);
 	)
@@ -214,6 +258,12 @@ macro_rules! log_debug {
 /// Log at the `TRACE` level.
 #[macro_export]
 macro_rules! log_trace {
+	($fmt: literal) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Trace, $fmt);
+    };
+	($fmt: literal, $($arg:tt)*) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Trace, $fmt, $($arg)*);
+    };
 	($logger: expr, $($arg:tt)*) => (
 		$crate::log_given_level!($logger, $crate::util::logger::Level::Trace, $($arg)*)
 	)
@@ -222,6 +272,12 @@ macro_rules! log_trace {
 /// Log at the `GOSSIP` level.
 #[macro_export]
 macro_rules! log_gossip {
+	($fmt: literal) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Gossip, $fmt);
+    };
+	($fmt: literal, $($arg:tt)*) => {
+		$crate::log_given_level_ctx!($crate::util::logger::Level::Gossip, $fmt, $($arg)*);
+    };
 	($logger: expr, $($arg:tt)*) => (
 		$crate::log_given_level!($logger, $crate::util::logger::Level::Gossip, $($arg)*);
 	)
