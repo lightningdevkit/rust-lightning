@@ -17,7 +17,9 @@ use crate::events::bump_transaction::sync::WalletSourceSync;
 use crate::events::{ClosureReason, Event, FundingInfo, HTLCHandlingFailureType};
 use crate::ln::chan_utils;
 use crate::ln::channel::CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY;
-use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, BREAKDOWN_TIMEOUT};
+use crate::ln::channelmanager::{
+	provided_init_features, PaymentId, RecipientOnionFields, BREAKDOWN_TIMEOUT,
+};
 use crate::ln::functional_test_utils::*;
 use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -29,6 +31,69 @@ use crate::util::test_channel_signer::SignerOp;
 
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{Amount, OutPoint as BitcoinOutPoint, ScriptBuf, Transaction, TxOut};
+
+#[test]
+fn test_splicing_not_supported_api_error() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut features = provided_init_features(&test_default_channel_config());
+	features.clear_splicing();
+	*node_cfgs[0].override_init_features.borrow_mut() = Some(features);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let bs_contribution = SpliceContribution::SpliceIn {
+		value: Amount::ZERO,
+		inputs: Vec::new(),
+		change_script: None,
+	};
+
+	let res = nodes[1].node.splice_channel(
+		&channel_id,
+		&node_id_0,
+		bs_contribution.clone(),
+		0,    // funding_feerate_per_kw,
+		None, // locktime
+	);
+	match res {
+		Err(APIError::ChannelUnavailable { err }) => {
+			assert!(err.contains("Peer does not support splicing"))
+		},
+		_ => panic!("Wrong error {:?}", res.err().unwrap()),
+	}
+
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	let mut features = nodes[0].node.init_features();
+	features.set_splicing_optional();
+	features.clear_quiescence();
+	*nodes[0].override_init_features.borrow_mut() = Some(features);
+
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
+
+	let res = nodes[1].node.splice_channel(
+		&channel_id,
+		&node_id_0,
+		bs_contribution,
+		0,    // funding_feerate_per_kw,
+		None, // locktime
+	);
+	match res {
+		Err(APIError::ChannelUnavailable { err }) => {
+			assert!(err.contains("Peer does not support quiescence, a splicing prerequisite"))
+		},
+		_ => panic!("Wrong error {:?}", res.err().unwrap()),
+	}
+}
 
 #[test]
 fn test_v1_splice_in_negative_insufficient_inputs() {
