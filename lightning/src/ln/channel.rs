@@ -4392,7 +4392,7 @@ impl<SP: Deref> Channel<SP> where
 		Ok((closing_transaction, total_fee_satoshis))
 	}
 
-	fn funding_outpoint(&self) -> OutPoint {
+	pub fn funding_outpoint(&self) -> OutPoint {
 		self.context.channel_transaction_parameters.funding_outpoint.unwrap()
 	}
 

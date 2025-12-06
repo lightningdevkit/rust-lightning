@@ -17,7 +17,7 @@
 #![deny(rustdoc::private_intra_doc_links)]
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 pub mod http;

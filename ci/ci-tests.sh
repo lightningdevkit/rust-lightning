@@ -1,4 +1,5 @@
 #!/bin/bash
+#shellcheck disable=SC2002,SC2207
 set -eox pipefail
 
 RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
@@ -7,6 +8,12 @@ RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
 # which we do here.
 # Further crates which appear only as dev-dependencies are pinned further down.
 function PIN_RELEASE_DEPS {
+	# Starting with version 2.0.107, the `syn` crate has an MSRV of rustc 1.68
+	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
+
+	# Starting with version 1.0.42, the `quote` crate has an MSRV of rustc 1.68
+	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
+
 	# Starting with version 1.39.0, the `tokio` crate has an MSRV of rustc 1.70.0
 	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio --precise "1.38.1" --verbose
 
@@ -27,28 +34,21 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # proptest 1.3.0 requires rustc 1.64.0
 [ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p proptest --precise "1.2.0" --verbose
 
+# parking_lot 0.12.4 requires rustc 1.64.0
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p parking_lot --precise "0.12.3" --verbose
+
+# parking_lot_core 0.9.11 requires rustc 1.64.0
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p parking_lot_core --precise "0.9.10" --verbose
+
+# lock_api 0.4.13 requires rustc 1.64.0
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p lock_api --precise "0.4.12" --verbose
+
 export RUST_BACKTRACE=1
 
 echo -e "\n\nChecking the workspace, except lightning-transaction-sync."
 cargo check --verbose --color always
 
-# When the workspace members change, make sure to update the list here as well
-# as in `Cargo.toml`.
-WORKSPACE_MEMBERS=(
-	lightning
-	lightning-types
-	lightning-block-sync
-	lightning-invoice
-	lightning-net-tokio
-	lightning-persister
-	lightning-background-processor
-	lightning-rapid-gossip-sync
-	lightning-custom-message
-	lightning-macros
-	lightning-dns-resolver
-	lightning-liquidity
-	possiblyrandom
-)
+WORKSPACE_MEMBERS=( $(cat Cargo.toml | tr '\n' '\r' | sed 's/\r    //g' | tr '\r' '\n' | grep '^members =' | sed 's/members.*=.*\[//' | tr -d '"' | tr ',' ' ') )
 
 echo -e "\n\nChecking, testing, and building docs for all workspace members individually..."
 for DIR in "${WORKSPACE_MEMBERS[@]}"; do
@@ -59,8 +59,11 @@ done
 
 echo -e "\n\nTesting upgrade from prior versions of LDK"
 pushd lightning-tests
+[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
 cargo test
+[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
 
 echo -e "\n\nChecking and testing Block Sync Clients with features"
