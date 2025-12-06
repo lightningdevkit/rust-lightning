@@ -185,7 +185,20 @@ fn route_bolt12_payment<'a, 'b, 'c>(
 fn claim_bolt12_payment<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], expected_payment_context: PaymentContext, invoice: &Bolt12Invoice
 ) {
-	let recipient = &path[path.len() - 1];
+	claim_bolt12_payment_with_extra_fees(
+		node,
+		path,
+		expected_payment_context,
+		invoice,
+		None,
+	)
+}
+
+fn claim_bolt12_payment_with_extra_fees<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], expected_payment_context: PaymentContext, invoice: &Bolt12Invoice,
+	expected_extra_fees_msat: Option<u64>,
+) {
+	let recipient = path.last().expect("Empty path?");
 	let payment_purpose = match get_event!(recipient, Event::PaymentClaimable) {
 		Event::PaymentClaimable { purpose, .. } => purpose,
 		_ => panic!("No Event::PaymentClaimable"),
@@ -194,20 +207,29 @@ fn claim_bolt12_payment<'a, 'b, 'c>(
 		Some(preimage) => preimage,
 		None => panic!("No preimage in Event::PaymentClaimable"),
 	};
-	match payment_purpose {
-		PaymentPurpose::Bolt12OfferPayment { payment_context, .. } => {
-			assert_eq!(PaymentContext::Bolt12Offer(payment_context), expected_payment_context);
-		},
-		PaymentPurpose::Bolt12RefundPayment { payment_context, .. } => {
-			assert_eq!(PaymentContext::Bolt12Refund(payment_context), expected_payment_context);
-		},
+	let context = match payment_purpose {
+		PaymentPurpose::Bolt12OfferPayment { payment_context, .. } =>
+			PaymentContext::Bolt12Offer(payment_context),
+		PaymentPurpose::Bolt12RefundPayment { payment_context, .. } =>
+			PaymentContext::Bolt12Refund(payment_context),
 		_ => panic!("Unexpected payment purpose: {:?}", payment_purpose),
-	}
-	if let Some(inv) = claim_payment(node, path, payment_preimage) {
-		assert_eq!(inv, PaidBolt12Invoice::Bolt12Invoice(invoice.to_owned()));
-	} else {
-		panic!("Expected PaidInvoice::Bolt12Invoice");
 	};
+
+	assert_eq!(context, expected_payment_context);
+
+	let expected_paths = [path];
+	let mut args = ClaimAlongRouteArgs::new(
+		node,
+		&expected_paths,
+		payment_preimage,
+	);
+
+	if let Some(extra) = expected_extra_fees_msat {
+		args = args.with_expected_extra_total_fees_msat(extra);
+	}
+
+	let (inv, _) = claim_payment_along_route(args);
+	assert_eq!(inv, Some(PaidBolt12Invoice::Bolt12Invoice(invoice.clone())));
 }
 
 fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> Nonce {
@@ -1410,7 +1432,20 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	// When the payer is the introduction node of a blinded path, LDK doesn't
+	// subtract the forward fee for the `payer -> next_hop` channel (see
+	// `BlindedPaymentPath::advance_path_by_one`). This keeps fee logic simple,
+	// at the cost of a small, intentional overpayment.
+	//
+	// In the old two-hop case (payer as introduction node → payee), this never
+	// surfaced because the payer simply wasn’t charged the forward fee.
+	//
+	// With dummy hops in LDK v0.3, even a real two-node path can appear as a
+	// longer blinded route, so the overpayment shows up in tests.
+	//
+	// Until the fee-handling trade-off is revisited, we pass an expected extra
+	// fee here so tests can compensate for it.
+	claim_bolt12_payment_with_extra_fees(bob, &[alice], payment_context, &invoice, Some(1000));
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -2425,9 +2460,9 @@ fn rejects_keysend_to_non_static_invoice_path() {
 		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
 	let mut updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	nodes[0].node.handle_update_fail_malformed_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_malformed_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
-	expect_payment_failed_conditions(&nodes[0], payment_hash, true, PaymentFailedConditions::new());
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new());
 }
 
 #[test]
