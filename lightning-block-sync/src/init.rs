@@ -1,8 +1,9 @@
 //! Utilities to assist in the initial sync required to initialize or reload Rust-Lightning objects
 //! from disk.
 
-use crate::poll::{ChainPoller, Validate, ValidatedBlockHeader};
-use crate::{BlockSource, BlockSourceResult, ChainNotifier, HeaderCache};
+use crate::async_poll::{MultiResultFuturePoller, ResultFuture};
+use crate::poll::{ChainPoller, Poll, Validate, ValidatedBlockHeader};
+use crate::{BlockData, BlockSource, BlockSourceResult, ChainNotifier, HeaderCache};
 
 use bitcoin::block::Header;
 use bitcoin::network::Network;
@@ -146,7 +147,6 @@ where
 	// Find differences and disconnect blocks for each listener individually.
 	let mut chain_poller = ChainPoller::new(block_source, network);
 	let mut chain_listeners_at_height = Vec::new();
-	let mut most_common_ancestor = None;
 	let mut most_connected_blocks = Vec::new();
 	let mut header_cache = HeaderCache::new();
 	for (old_best_block, chain_listener) in chain_listeners.drain(..) {
@@ -167,19 +167,53 @@ where
 		// Keep track of the most common ancestor and all blocks connected across all listeners.
 		chain_listeners_at_height.push((common_ancestor.height, chain_listener));
 		if connected_blocks.len() > most_connected_blocks.len() {
-			most_common_ancestor = Some(common_ancestor);
 			most_connected_blocks = connected_blocks;
 		}
 	}
 
-	// Connect new blocks for all listeners at once to avoid re-fetching blocks.
-	if let Some(common_ancestor) = most_common_ancestor {
-		let chain_listener = &ChainListenerSet(chain_listeners_at_height);
-		let mut chain_notifier = ChainNotifier { header_cache: &mut header_cache, chain_listener };
-		chain_notifier
-			.connect_blocks(common_ancestor, most_connected_blocks, &mut chain_poller)
-			.await
-			.map_err(|(e, _)| e)?;
+	while !most_connected_blocks.is_empty() {
+		#[cfg(not(test))]
+		const MAX_BLOCKS_AT_ONCE: usize = 6 * 6; // Six hours of blocks, 144MiB encoded
+		#[cfg(test)]
+		const MAX_BLOCKS_AT_ONCE: usize = 2;
+
+		let mut fetch_block_futures =
+			Vec::with_capacity(core::cmp::min(MAX_BLOCKS_AT_ONCE, most_connected_blocks.len()));
+		for header in most_connected_blocks.iter().rev().take(MAX_BLOCKS_AT_ONCE) {
+			let fetch_future = chain_poller.fetch_block(header);
+			fetch_block_futures
+				.push(ResultFuture::Pending(Box::pin(async move { (header, fetch_future.await) })));
+		}
+		let results = MultiResultFuturePoller::new(fetch_block_futures).await.into_iter();
+
+		let mut fetched_blocks = [const { None }; MAX_BLOCKS_AT_ONCE];
+		for ((header, block_res), result) in results.into_iter().zip(fetched_blocks.iter_mut()) {
+			*result = Some((header.height, block_res?));
+		}
+		debug_assert!(fetched_blocks.iter().take(most_connected_blocks.len()).all(|r| r.is_some()));
+		debug_assert!(fetched_blocks
+			.is_sorted_by_key(|r| r.as_ref().map(|(height, _)| *height).unwrap_or(u32::MAX)));
+
+		for (listener_height, listener) in chain_listeners_at_height.iter() {
+			// Connect blocks for this listener.
+			for result in fetched_blocks.iter() {
+				if let Some((height, block_data)) = result {
+					if *height > *listener_height {
+						match &**block_data {
+							BlockData::FullBlock(block) => {
+								listener.block_connected(&block, *height);
+							},
+							BlockData::HeaderOnly(header_data) => {
+								listener.filtered_block_connected(&header_data, &[], *height);
+							},
+						}
+					}
+				}
+			}
+		}
+
+		most_connected_blocks
+			.truncate(most_connected_blocks.len().saturating_sub(MAX_BLOCKS_AT_ONCE));
 	}
 
 	Ok((header_cache, best_header))
@@ -197,33 +231,6 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L
 
 	fn blocks_disconnected(&self, fork_point: BestBlock) {
 		self.0.blocks_disconnected(fork_point)
-	}
-}
-
-/// A set of dynamically sized chain listeners, each paired with a starting block height.
-struct ChainListenerSet<'a, L: chain::Listen + ?Sized>(Vec<(u32, &'a L)>);
-
-impl<'a, L: chain::Listen + ?Sized> chain::Listen for ChainListenerSet<'a, L> {
-	fn block_connected(&self, block: &bitcoin::Block, height: u32) {
-		for (starting_height, chain_listener) in self.0.iter() {
-			if height > *starting_height {
-				chain_listener.block_connected(block, height);
-			}
-		}
-	}
-
-	fn filtered_block_connected(
-		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
-	) {
-		for (starting_height, chain_listener) in self.0.iter() {
-			if height > *starting_height {
-				chain_listener.filtered_block_connected(header, txdata, height);
-			}
-		}
-	}
-
-	fn blocks_disconnected(&self, _fork_point: BestBlock) {
-		unreachable!()
 	}
 }
 
