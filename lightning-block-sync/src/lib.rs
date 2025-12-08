@@ -206,7 +206,6 @@ impl HeaderCache {
 		self.headers.get(block_hash)
 	}
 
-
 	/// Called when a block has been connected to the best chain to ensure it is available to be
 	/// disconnected later if needed.
 	pub(crate) fn block_connected(
@@ -216,6 +215,19 @@ impl HeaderCache {
 
 		// Remove headers older than a week.
 		let cutoff_height = block_header.height.saturating_sub(HEADER_CACHE_LIMIT);
+		self.headers.retain(|_, header| header.height >= cutoff_height);
+	}
+
+	/// Inserts the given block header during a find_difference operation, implying it might not be
+	/// the best header.
+	pub(crate) fn insert_during_diff(
+		&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader,
+	) {
+		self.headers.insert(block_hash, block_header);
+
+		// Remove headers older than our newest header minus a week.
+		let best_height = self.headers.iter().map(|(_, header)| header.height).max().unwrap_or(0);
+		let cutoff_height = best_height.saturating_sub(HEADER_CACHE_LIMIT);
 		self.headers.retain(|_, header| header.height >= cutoff_height);
 	}
 
@@ -350,8 +362,11 @@ impl<'a, L: chain::Listen + ?Sized> ChainNotifier<'a, L> {
 	///
 	/// First resolves `prev_best_block` to a `ValidatedBlockHeader` using the `previous_blocks`
 	/// field as fallback if needed, then finds the common ancestor.
+	///
+	/// Updates the header cache as it goes, tracking headers needed to find the diff to reuse for
+	/// other objects that might need similar headers.
 	async fn find_difference_from_best_block<P: Poll>(
-		&self, current_header: ValidatedBlockHeader, prev_best_block: BestBlock,
+		&mut self, current_header: ValidatedBlockHeader, prev_best_block: BestBlock,
 		chain_poller: &mut P,
 	) -> BlockSourceResult<ChainDifference> {
 		// Try to resolve the header for the previous best block. First try the block_hash,
@@ -376,6 +391,7 @@ impl<'a, L: chain::Listen + ?Sized> ChainNotifier<'a, L> {
 			)?;
 			if let Ok(header) = chain_poller.get_header(block_hash, Some(height)).await {
 				found_header = Some(header);
+				self.header_cache.insert_during_diff(*block_hash, header);
 				break;
 			}
 		}
