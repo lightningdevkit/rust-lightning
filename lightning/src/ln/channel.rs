@@ -72,7 +72,7 @@ use crate::ln::types::ChannelId;
 use crate::ln::LN_MAX_MSG_LEN;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::gossip::NodeId;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ecdsa::{BaseEcdsaChannelSigner, EcdsaChannelSigner};
 use crate::sign::tx_builder::{HTLCAmountDirection, NextCommitmentStats, SpecTxBuilder, TxBuilder};
 use crate::sign::{ChannelSigner, EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
@@ -966,6 +966,17 @@ where
 	pub peer_id: Option<PublicKey>,
 	pub channel_id: Option<ChannelId>,
 	pub payment_hash: Option<PaymentHash>,
+}
+
+impl<'a, L: Deref> Clone for WithChannelContext<'a, L> where L::Target: Logger {
+	fn clone(&self) -> Self {
+		Self {
+			logger: self.logger,
+			peer_id: self.peer_id,
+			channel_id: self.channel_id,
+			payment_hash: self.payment_hash,
+		}
+	}
 }
 
 impl<'a, L: Deref> Logger for WithChannelContext<'a, L>
@@ -11633,7 +11644,7 @@ where
 				return None;
 			}
 		};
-		let our_node_sig = match node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement)) {
+		let our_node_sig = match node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(announcement.clone())) {
 			Err(_) => {
 				log_error!(logger, "Failed to generate node signature for channel_announcement. Channel will not be announced!");
 				return None;
@@ -11682,7 +11693,7 @@ where
 				.map_err(|_| ChannelError::Ignore("Signer failed to retrieve own public key".to_owned()))?);
 			let were_node_one = announcement.node_id_1 == our_node_key;
 
-			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement))
+			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(announcement.clone()))
 				.map_err(|_| ChannelError::Ignore("Failed to generate node signature for channel_announcement".to_owned()))?;
 			match &self.context.holder_signer {
 				ChannelSignerType::Ecdsa(ecdsa) => {

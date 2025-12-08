@@ -105,7 +105,7 @@ impl NodeId {
 	}
 
 	/// Get the public key as an array from this NodeId
-	pub fn as_array(&self) -> &[u8; PUBLIC_KEY_SIZE] {
+	pub fn as_array(&self) -> &[u8; 33] {
 		&self.0
 	}
 
@@ -1056,7 +1056,7 @@ impl PartialEq for ChannelInfo {
 impl ChannelInfo {
 	/// Returns a [`DirectedChannelInfo`] for the channel directed to the given `target` from a
 	/// returned `source`, or `None` if `target` is not one of the channel's counterparties.
-	pub fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo<'_>, &NodeId)> {
+	pub(crate) fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo<'_>, &NodeId)> {
 		if self.one_to_two.is_none() || self.two_to_one.is_none() {
 			return None;
 		}
@@ -1075,7 +1075,7 @@ impl ChannelInfo {
 
 	/// Returns a [`DirectedChannelInfo`] for the channel directed from the given `source` to a
 	/// returned `target`, or `None` if `source` is not one of the channel's counterparties.
-	pub fn as_directed_from(&self, source: &NodeId) -> Option<(DirectedChannelInfo<'_>, &NodeId)> {
+	pub(crate) fn as_directed_from(&self, source: &NodeId) -> Option<(DirectedChannelInfo<'_>, &NodeId)> {
 		if self.one_to_two.is_none() || self.two_to_one.is_none() {
 			return None;
 		}
@@ -1388,7 +1388,9 @@ pub enum NodeAnnouncementInfo {
 
 impl NodeAnnouncementInfo {
 	/// Protocol features the node announced support for
-	pub fn features(&self) -> &NodeFeatures {
+	pub fn features(&self) -> NodeFeatures { self.features_ref().clone() }
+
+	pub(crate) fn features_ref(&self) -> &NodeFeatures {
 		match self {
 			NodeAnnouncementInfo::Relayed(relayed) => &relayed.contents.features,
 			NodeAnnouncementInfo::Local(local) => &local.features,
@@ -1416,29 +1418,29 @@ impl NodeAnnouncementInfo {
 	/// Moniker assigned to the node.
 	///
 	/// May be invalid or malicious (eg control chars), should not be exposed to the user.
-	pub fn alias(&self) -> &NodeAlias {
+	pub fn alias(&self) -> NodeAlias {
 		match self {
 			NodeAnnouncementInfo::Relayed(relayed) => &relayed.contents.alias,
 			NodeAnnouncementInfo::Local(local) => &local.alias,
-		}
+		}.clone()
 	}
 
 	/// Internet-level addresses via which one can connect to the node
-	pub fn addresses(&self) -> &[SocketAddress] {
+	pub fn addresses(&self) -> Vec<SocketAddress> {
 		match self {
 			NodeAnnouncementInfo::Relayed(relayed) => &relayed.contents.addresses,
 			NodeAnnouncementInfo::Local(local) => &local.addresses,
-		}
+		}.to_vec()
 	}
 
 	/// An initial announcement of the node
 	///
 	/// Not stored if contains excess data to prevent DoS.
-	pub fn announcement_message(&self) -> Option<&NodeAnnouncement> {
+	pub fn announcement_message(&self) -> Option<NodeAnnouncement> {
 		match self {
 			NodeAnnouncementInfo::Relayed(announcement) => Some(announcement),
 			NodeAnnouncementInfo::Local(_) => None,
-		}
+		}.cloned()
 	}
 }
 

@@ -132,7 +132,7 @@ fn announce_node_address<'a, 'b, 'c>(
 		excess_data: Vec::new(),
 	};
 	let signature = node.keys_manager.sign_gossip_message(
-		UnsignedGossipMessage::NodeAnnouncement(&announcement)
+		UnsignedGossipMessage::NodeAnnouncement(announcement.clone())
 	).unwrap();
 
 	let msg = NodeAnnouncement {
@@ -1321,9 +1321,9 @@ fn pays_bolt12_invoice_asynchronously() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
 
-	assert!(bob.node.send_payment_for_bolt12_invoice(&invoice, context.as_ref()).is_ok());
+	assert!(bob.node.send_payment_for_bolt12_invoice(&invoice, context.clone()).is_ok());
 	assert_eq!(
-		bob.node.send_payment_for_bolt12_invoice(&invoice, context.as_ref()),
+		bob.node.send_payment_for_bolt12_invoice(&invoice, context.clone()),
 		Err(Bolt12PaymentError::DuplicateInvoice),
 	);
 
@@ -1334,7 +1334,7 @@ fn pays_bolt12_invoice_asynchronously() {
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 
 	assert_eq!(
-		bob.node.send_payment_for_bolt12_invoice(&invoice, context.as_ref()),
+		bob.node.send_payment_for_bolt12_invoice(&invoice, context.clone()),
 		Err(Bolt12PaymentError::DuplicateInvoice),
 	);
 
@@ -1343,7 +1343,7 @@ fn pays_bolt12_invoice_asynchronously() {
 	}
 
 	assert_eq!(
-		bob.node.send_payment_for_bolt12_invoice(&invoice, context.as_ref()),
+		bob.node.send_payment_for_bolt12_invoice(&invoice, context),
 		Err(Bolt12PaymentError::UnexpectedInvoice),
 	);
 }

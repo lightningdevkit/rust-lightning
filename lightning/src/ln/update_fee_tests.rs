@@ -15,7 +15,7 @@ use crate::ln::msgs::{
 	self, BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent,
 };
 use crate::ln::outbound_payment::RecipientOnionFields;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ecdsa::BaseEcdsaChannelSigner;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;

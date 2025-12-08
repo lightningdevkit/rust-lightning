@@ -162,6 +162,9 @@ pub const MAX_LENGTH: usize = 7089;
 
 /// The [`bech32::Bech32`] checksum algorithm, with extended max length suitable
 /// for BOLT11 invoices.
+///
+/// This is not exported to bindings users as it generally shouldn't be used directly publicly
+/// anyway.
 pub enum Bolt11Bech32 {}
 
 impl Checksum for Bolt11Bech32 {
@@ -1220,12 +1223,16 @@ impl RawBolt11Invoice {
 
 	/// Convert to HRP prefix and Fe32 encoded data part.
 	/// Can be used to transmit unsigned invoices for remote signing.
+	///
+	/// This is not exported to bindings users as we don't currently support Fe32s
 	pub fn to_raw(&self) -> (String, Vec<Fe32>) {
 		(self.hrp.to_string(), self.data.fe_iter().collect())
 	}
 
 	/// Convert from HRP prefix and Fe32 encoded data part.
 	/// Can be used to receive unsigned invoices for remote signing.
+	///
+	/// This is not exported to bindings users as we don't currently support Fe32s
 	pub fn from_raw(hrp: &str, data: &[Fe32]) -> Result<Self, Bolt11ParseError> {
 		let raw_hrp: RawHrp = RawHrp::from_str(hrp)?;
 		let data_part = RawDataPart::from_base32(data)?;
@@ -1600,6 +1607,29 @@ impl Bolt11Invoice {
 			Some(address)
 		};
 		self.fallbacks().iter().filter_map(filter_fn).collect()
+	}
+
+	/// Returns the first fallback address as an [`Address`].
+	///
+	/// See [`Self::fallback_addresses`] to fetch all addresses of known type.
+	pub fn first_fallback_address(&self) -> Option<Address> {
+		let filter_fn = |fallback: &&Fallback| {
+			let address = match fallback {
+				Fallback::SegWitProgram { version, program } => {
+					match WitnessProgram::new(*version, &program) {
+						Ok(witness_program) => {
+							Address::from_witness_program(witness_program, self.network())
+						},
+						Err(_) => return None,
+					}
+				},
+				Fallback::PubKeyHash(pkh) => Address::p2pkh(*pkh, self.network()),
+				Fallback::ScriptHash(sh) => Address::p2sh_from_hash(*sh, self.network()),
+			};
+
+			Some(address)
+		};
+		self.fallbacks().iter().filter_map(filter_fn).next()
 	}
 
 	/// Returns a list of all routes included in the invoice

@@ -85,6 +85,8 @@ impl ShutdownScript {
 	///
 	/// This function may return an error if `data` is not [BOLT-2] compliant.
 	///
+	/// This is not exported to bindings users as the `PushBytes` isn't currently mapped.
+	///
 	/// [BOLT-2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#closing-negotiation-closing_complete-and-closing_sig
 	pub fn new_op_return<T: AsRef<PushBytes>>(data: T) -> Result<Self, InvalidShutdownScript> {
 		Self::try_from(ScriptBuf::new_op_return(data))

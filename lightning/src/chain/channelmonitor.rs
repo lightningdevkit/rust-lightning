@@ -1078,10 +1078,7 @@ pub struct ChannelMonitor<Signer: EcdsaChannelSigner> {
 	pub(crate) inner: Mutex<ChannelMonitorImpl<Signer>>,
 }
 
-impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer>
-where
-	Signer: Clone,
-{
+impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer> {
 	fn clone(&self) -> Self {
 		let inner = self.inner.lock().unwrap().clone();
 		ChannelMonitor::from_impl(inner)
@@ -1833,6 +1830,17 @@ where
 	peer_id: Option<PublicKey>,
 	channel_id: Option<ChannelId>,
 	payment_hash: Option<PaymentHash>,
+}
+
+impl<'a, L: Deref> Clone for WithChannelMonitor<'a, L> where L::Target: Logger {
+	fn clone(&self) -> Self {
+		Self {
+			logger: self.logger,
+			peer_id: self.peer_id,
+			channel_id: self.channel_id,
+			payment_hash: self.payment_hash,
+		}
+	}
 }
 
 impl<'a, L: Deref> Logger for WithChannelMonitor<'a, L>
@@ -6434,8 +6442,8 @@ where
 
 const MAX_ALLOC_SIZE: usize = 64 * 1024;
 
-impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
-	for (BlockHash, ChannelMonitor<SP::EcdsaSigner>)
+impl<'a, 'b, ES: EntropySource, Signer: EcdsaChannelSigner, SP: SignerProvider<EcdsaSigner = Signer>> ReadableArgs<(&'a ES, &'b SP)>
+	for (BlockHash, ChannelMonitor<Signer>)
 {
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
 		match <Option<Self>>::read(reader, args) {
@@ -6446,8 +6454,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 	}
 }
 
-impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
-	for Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>
+impl<'a, 'b, ES: EntropySource, Signer: EcdsaChannelSigner, SP: SignerProvider<EcdsaSigner = Signer>> ReadableArgs<(&'a ES, &'b SP)>
+	for Option<(BlockHash, ChannelMonitor<Signer>)>
 {
 	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {

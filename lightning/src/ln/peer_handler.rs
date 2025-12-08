@@ -3650,7 +3650,7 @@ where
 		};
 		let node_announce_sig = match self
 			.node_signer
-			.sign_gossip_message(msgs::UnsignedGossipMessage::NodeAnnouncement(&announcement))
+			.sign_gossip_message(msgs::UnsignedGossipMessage::NodeAnnouncement(announcement.clone()))
 		{
 			Ok(sig) => sig,
 			Err(_) => {

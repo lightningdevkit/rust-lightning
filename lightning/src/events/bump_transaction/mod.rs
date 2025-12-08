@@ -31,7 +31,7 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ecdsa::BaseEcdsaChannelSigner;
 use crate::sign::{
 	ChannelDerivationParameters, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT,
 };
@@ -305,6 +305,8 @@ impl Utxo {
 	}
 
 	/// Returns a `Utxo` with the `satisfaction_weight` estimate for a P2WPKH nested in P2SH output.
+	///
+	/// This is not exported to bindings users as WPubkeyHash is not yet exported
 	pub fn new_nested_p2wpkh(outpoint: OutPoint, value: Amount, pubkey_hash: &WPubkeyHash) -> Self {
 		let script_sig_size = 1 /* script_sig length */ +
 			1 /* OP_0 */ +
@@ -324,6 +326,8 @@ impl Utxo {
 	}
 
 	/// Returns a `Utxo` with the `satisfaction_weight` estimate for a SegWit v0 P2WPKH output.
+	///
+	/// This is not exported to bindings users as WPubkeyHash is not yet exported
 	pub fn new_v0_p2wpkh(outpoint: OutPoint, value: Amount, pubkey_hash: &WPubkeyHash) -> Self {
 		Self {
 			outpoint,

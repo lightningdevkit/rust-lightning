@@ -48,7 +48,7 @@ use dnssec_prover::rr::Name;
 use crate::chain::ClaimId;
 #[cfg(taproot)]
 use crate::ln::msgs::PartialSignatureWithNonce;
-use crate::ln::msgs::{DecodeError, SerialId};
+use crate::ln::msgs::DecodeError;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
 use crate::util::byte_utils::{be48_to_array, slice_to_be48};
@@ -1089,7 +1089,7 @@ impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
 impl_for_vec!(crate::ln::channelmanager::PaymentClaimDetails);
 impl_for_vec!(crate::ln::msgs::SocketAddress);
 impl_for_vec!((A, B), A, B);
-impl_for_vec!(SerialId);
+impl_for_vec!(u64);
 impl_for_vec!(TxInMetadata);
 impl_for_vec!(TxOutMetadata);
 impl_for_vec!(crate::ln::our_peer_storage::PeerStorageMonitorHolder);

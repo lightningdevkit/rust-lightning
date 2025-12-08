@@ -22,7 +22,7 @@ use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::ln::{functional_test_utils::*, msgs};
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ecdsa::BaseEcdsaChannelSigner;
 use crate::sign::SignerProvider;
 use crate::util::logger::Logger;
 use crate::util::test_channel_signer::SignerOp;

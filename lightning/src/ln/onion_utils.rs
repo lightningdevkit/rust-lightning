@@ -7,6 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+//! Utilities for handling and manipulating onions
+
 use super::msgs::OnionErrorPacket;
 use crate::blinded_path::BlindedHop;
 use crate::crypto::chacha20::ChaCha20;
@@ -985,7 +987,7 @@ pub use self::fuzzy_onion_utils::*;
 #[cfg(not(fuzzing))]
 pub(crate) use self::fuzzy_onion_utils::*;
 
-pub fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
+pub(crate) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
 	encrypted_packet: OnionErrorPacket,
 ) -> DecodedOnionFailure
@@ -1467,7 +1469,7 @@ where
 }
 
 /// Decodes the attribution data that we got back from upstream on a payment we sent.
-pub fn decode_fulfill_attribution_data<T: secp256k1::Signing, L: Deref>(
+pub(crate) fn decode_fulfill_attribution_data<T: secp256k1::Signing, L: Deref>(
 	secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, outer_session_priv: &SecretKey,
 	mut attribution_data: AttributionData,
 ) -> Vec<u32>
@@ -2708,16 +2710,16 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 	}
 }
 
-pub const HOLD_TIME_LEN: usize = 4;
-pub const MAX_HOPS: usize = 20;
-pub const HMAC_LEN: usize = 4;
+pub(crate) const HOLD_TIME_LEN: usize = 4;
+pub(crate) const MAX_HOPS: usize = 20;
+pub(crate) const HMAC_LEN: usize = 4;
 
 // Define the number of HMACs in the attributable data block. For the first node, there are 20 HMACs, and then for every
 // subsequent node, the number of HMACs decreases by 1. 20 + 19 + 18 + ... + 1 = 20 * 21 / 2 = 210.
-pub const HMAC_COUNT: usize = MAX_HOPS * (MAX_HOPS + 1) / 2;
+pub(crate) const HMAC_COUNT: usize = MAX_HOPS * (MAX_HOPS + 1) / 2;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct AttributionData {
+pub(crate) struct AttributionData {
 	pub hold_times: [u8; MAX_HOPS * HOLD_TIME_LEN],
 	pub hmacs: [u8; HMAC_LEN * HMAC_COUNT],
 }

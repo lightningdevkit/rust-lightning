@@ -53,12 +53,13 @@ struct FilesystemStoreInner {
 /// A [`KVStore`] and [`KVStoreSync`] implementation that writes to and reads from the file system.
 ///
 /// [`KVStore`]: lightning::util::persist::KVStore
+#[derive(Clone)]
 pub struct FilesystemStore {
 	inner: Arc<FilesystemStoreInner>,
 
 	// Version counter to ensure that writes are applied in the correct order. It is assumed that read and list
 	// operations aren't sensitive to the order of execution.
-	next_version: AtomicU64,
+	next_version: Arc<AtomicU64>,
 }
 
 impl FilesystemStore {
@@ -68,7 +69,7 @@ impl FilesystemStore {
 		let tmp_file_counter = AtomicUsize::new(0);
 		Self {
 			inner: Arc::new(FilesystemStoreInner { data_dir, tmp_file_counter, locks }),
-			next_version: AtomicU64::new(1),
+			next_version: Arc::new(AtomicU64::new(1)),
 		}
 	}
 

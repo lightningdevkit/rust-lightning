@@ -118,7 +118,7 @@ where
 	pub fn new(
 		chain_hash: ChainHash, best_block: BestBlock, our_network_pubkey: PublicKey,
 		current_timestamp: u32, inbound_payment_key: inbound_payment::ExpandedKey,
-		receive_auth_key: ReceiveAuthKey, secp_ctx: Secp256k1<secp256k1::All>, message_router: MR,
+		receive_auth_key: ReceiveAuthKey, message_router: MR,
 		logger: L,
 	) -> Self {
 		Self {
@@ -131,7 +131,7 @@ where
 
 			receive_auth_key,
 
-			secp_ctx,
+			secp_ctx: Secp256k1::new(),
 			message_router,
 
 			pending_offers_messages: Mutex::new(Vec::new()),

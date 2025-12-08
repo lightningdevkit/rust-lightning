@@ -142,7 +142,7 @@ pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 ///
 /// For an asynchronous version of this trait, see [`KVStore`].
 // Note that updates to documentation on this trait should be copied to the asynchronous version.
-pub trait KVStoreSync {
+pub trait KVStoreSync : Clone {
 	/// Returns the data stored for the given `primary_namespace`, `secondary_namespace`, and
 	/// `key`.
 	///
@@ -339,7 +339,7 @@ pub trait KVStore {
 
 /// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
 /// data migration.
-pub trait MigratableKVStore: KVStoreSync {
+pub trait MigratableKVStore: KVStoreSync + Clone {
 	/// Returns *all* known keys as a list of `primary_namespace`, `secondary_namespace`, `key` tuples.
 	///
 	/// This is useful for migrating data from [`KVStoreSync`] implementation to [`KVStoreSync`]

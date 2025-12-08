@@ -28,7 +28,7 @@ pub(crate) const fn fee_for_weight(feerate_sat_per_1000_weight: u32, weight: u64
 }
 
 /// An interface to send a transaction to the Bitcoin network.
-pub trait BroadcasterInterface {
+pub trait BroadcasterInterface : Clone {
 	/// Sends a list of transactions out to (hopefully) be mined.
 	/// This only needs to handle the actual broadcasting of transactions, LDK will automatically
 	/// rebroadcast transactions that haven't made it into a block.

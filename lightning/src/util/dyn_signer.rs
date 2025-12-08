@@ -11,7 +11,7 @@ use crate::ln::chan_utils::{
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ecdsa::{BaseEcdsaChannelSigner, EcdsaChannelSigner};
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::sign::InMemorySigner;
@@ -33,11 +33,11 @@ use types::payment::PaymentPreimage;
 
 #[cfg(not(taproot))]
 /// A super-trait for all the traits that a dyn signer backing implements
-pub trait DynSignerTrait: EcdsaChannelSigner + Send + Sync {}
+pub trait DynSignerTrait: BaseEcdsaChannelSigner + Send + Sync {}
 
 #[cfg(taproot)]
 /// A super-trait for all the traits that a dyn signer backing implements
-pub trait DynSignerTrait: EcdsaChannelSigner + TaprootChannelSigner + Send + Sync {}
+pub trait DynSignerTrait: BaseEcdsaChannelSigner + TaprootChannelSigner + Send + Sync {}
 
 /// Helper to allow DynSigner to clone itself
 pub trait InnerSign: DynSignerTrait {
@@ -127,7 +127,9 @@ impl Clone for DynSigner {
 	}
 }
 
-delegate!(DynSigner, EcdsaChannelSigner, inner,
+impl EcdsaChannelSigner for DynSigner {}
+
+delegate!(DynSigner, BaseEcdsaChannelSigner, inner,
 	fn sign_holder_commitment(, channel_parameters: &ChannelTransactionParameters,
 		commitment_tx: &HolderCommitmentTransaction,
 		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>,

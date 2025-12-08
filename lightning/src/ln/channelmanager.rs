@@ -187,7 +187,7 @@ use core::{cmp, mem};
 // Re-export this for use in the public API.
 #[cfg(any(test, feature = "_externalize_tests"))]
 pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
-pub use crate::ln::outbound_payment::{
+pub(crate) use crate::ln::outbound_payment::{
 	Bolt11PaymentError, Bolt12PaymentError, ProbeSendFailure, RecipientOnionFields, Retry,
 	RetryableSendFailure,
 };
@@ -570,24 +570,25 @@ pub trait Verification {
 	/// [`Nonce`].
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256>;
+	) -> [u8; 32];
 
 	/// Authenticates the data using an HMAC and a [`Nonce`] taken from an [`OffersContext`].
 	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()>;
 }
 
 impl Verification for UnauthenticatedReceiveTlvs {
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_payment_tlvs(self, nonce, expanded_key)
+	) -> [u8; 32] {
+		signer::hmac_for_payment_tlvs(self, nonce, expanded_key).to_byte_array()
 	}
 
 	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
+		let hmac = bitcoin::hashes::hmac::Hmac::from_byte_array(hmac);
 		signer::verify_payment_tlvs(self, hmac, nonce, expanded_key)
 	}
 }
@@ -1743,8 +1744,6 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 			Arc<L>,
 			Arc<KeysManager>,
 			Arc<RwLock<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>,
-			ProbabilisticScoringFeeParameters,
-			ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>,
 		>,
 	>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
@@ -1775,8 +1774,6 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>
 		&'g L,
 		&'c KeysManager,
 		&'h RwLock<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
-		ProbabilisticScoringFeeParameters,
-		ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>,
 	>,
 	&'i DefaultMessageRouter<&'f NetworkGraph<&'g L>, &'g L, &'c KeysManager>,
 	&'g L,
@@ -1961,7 +1958,7 @@ where
 /// #     fee_estimator: &dyn lightning::chain::chaininterface::FeeEstimator,
 /// #     chain_monitor: &dyn lightning::chain::Watch<lightning::sign::InMemorySigner>,
 /// #     tx_broadcaster: &dyn lightning::chain::chaininterface::BroadcasterInterface,
-/// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S, SP, SL>,
+/// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S>,
 /// #     message_router: &lightning::onion_message::messenger::DefaultMessageRouter<&NetworkGraph<&'a L>, &'a L, &ES>,
 /// #     logger: &L,
 /// #     entropy_source: &ES,
@@ -2280,7 +2277,8 @@ where
 /// # use bitcoin::hashes::Hash;
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::types::payment::PaymentHash;
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::Retry;
 /// # use lightning::routing::router::RouteParametersConfig;
 /// # use lightning_invoice::Bolt11Invoice;
 /// #
@@ -2438,7 +2436,8 @@ where
 /// ```
 /// # use core::time::Duration;
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::Retry;
 /// # use lightning::offers::parse::Bolt12SemanticError;
 /// # use lightning::routing::router::RouteParametersConfig;
 /// #
@@ -2695,9 +2694,9 @@ pub struct ChannelManager<
 	router: R,
 
 	#[cfg(test)]
-	pub(super) flow: OffersMessageFlow<MR, L>,
+	pub(super) flow: OffersMessageFlow<MR, Box<L::Target>>,
 	#[cfg(not(test))]
-	flow: OffersMessageFlow<MR, L>,
+	flow: OffersMessageFlow<MR, Box<L::Target>>,
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -2719,7 +2718,7 @@ pub struct ChannelManager<
 	/// See `PendingOutboundPayment` documentation for more info.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	pending_outbound_payments: OutboundPayments<L>,
+	pending_outbound_payments: OutboundPayments<Box<L::Target>>,
 
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
 	///
@@ -3949,10 +3948,7 @@ where
 		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
 		entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
 		params: ChainParameters, current_timestamp: u32,
-	) -> Self
-	where
-		L: Clone,
-	{
+	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
@@ -3962,7 +3958,7 @@ where
 		let flow = OffersMessageFlow::new(
 			ChainHash::using_genesis_block(params.network), params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
-			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
+			node_signer.get_receive_auth_key(), message_router, Box::new((*logger).clone()),
 		);
 
 		ChannelManager {
@@ -3977,7 +3973,7 @@ where
 			best_block: RwLock::new(params.best_block),
 
 			outbound_scid_aliases: Mutex::new(new_hash_set()),
-			pending_outbound_payments: OutboundPayments::new(new_hash_map(), logger.clone()),
+			pending_outbound_payments: OutboundPayments::new(new_hash_map(), Box::new((*logger).clone())),
 			forward_htlcs: Mutex::new(new_hash_map()),
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
@@ -5180,7 +5176,7 @@ where
 		// If we returned an error and the `node_signer` cannot provide a signature for whatever
 		// reason`, we wouldn't be able to receive inbound payments through the corresponding
 		// channel.
-		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(&unsigned)).unwrap();
+		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(unsigned.clone())).unwrap();
 
 		Ok(msgs::ChannelUpdate {
 			signature: sig,
@@ -5570,9 +5566,9 @@ where
 	///
 	/// [timer tick]: Self::timer_tick_occurred
 	pub fn send_payment_for_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
+		&self, invoice: &Bolt12Invoice, context: Option<OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
-		match self.verify_bolt12_invoice(invoice, context) {
+		match self.verify_bolt12_invoice(invoice, context.as_ref()) {
 			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
 			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
 		}
@@ -6600,7 +6596,7 @@ where
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	#[rustfmt::skip]
 	pub fn update_partial_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config_update: &ChannelConfigUpdate,
+		&self, counterparty_node_id: &PublicKey, channel_ids: Vec<ChannelId>, config_update: &ChannelConfigUpdate,
 	) -> Result<(), APIError> {
 		if config_update.cltv_expiry_delta.map(|delta| delta < MIN_CLTV_EXPIRY_DELTA).unwrap_or(false) {
 			return Err(APIError::APIMisuseError {
@@ -6615,14 +6611,14 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
-		for channel_id in channel_ids {
+		for channel_id in channel_ids.iter() {
 			if !peer_state.has_channel(channel_id) {
 				return Err(APIError::ChannelUnavailable {
 					err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id, counterparty_node_id),
 				});
 			};
 		}
-		for channel_id in channel_ids {
+		for channel_id in channel_ids.iter() {
 			if let Some(channel) = peer_state.channel_by_id.get_mut(channel_id) {
 				let mut config = channel.context().config();
 				config.apply(config_update);
@@ -6679,7 +6675,7 @@ where
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn update_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config: &ChannelConfig,
+		&self, counterparty_node_id: &PublicKey, channel_ids: Vec<ChannelId>, config: &ChannelConfig,
 	) -> Result<(), APIError> {
 		self.update_partial_channel_config(counterparty_node_id, channel_ids, &(*config).into())
 	}
@@ -17152,7 +17148,7 @@ where
 			pending_outbound_payments = Some(outbounds);
 		}
 		let pending_outbounds =
-			OutboundPayments::new(pending_outbound_payments.unwrap(), args.logger.clone());
+			OutboundPayments::new(pending_outbound_payments.unwrap(), Box::new((*args.logger).clone()));
 
 		for (peer_pubkey, peer_storage) in peer_storage_dir {
 			if let Some(peer_state) = per_peer_state.get_mut(&peer_pubkey) {
@@ -17997,9 +17993,8 @@ where
 			highest_seen_timestamp,
 			expanded_inbound_key,
 			args.node_signer.get_receive_auth_key(),
-			secp_ctx.clone(),
 			args.message_router,
-			args.logger.clone(),
+			Box::new((*args.logger).clone()),
 		)
 		.with_async_payments_offers_cache(async_receive_offer_cache);
 
@@ -19037,7 +19032,7 @@ mod tests {
 
 		check_unkown_peer_error(nodes[0].node.forward_intercepted_htlc(intercept_id, &channel_id, unkown_public_key, 1_000_000), unkown_public_key);
 
-		check_unkown_peer_error(nodes[0].node.update_channel_config(&unkown_public_key, &[channel_id], &ChannelConfig::default()), unkown_public_key);
+		check_unkown_peer_error(nodes[0].node.update_channel_config(&unkown_public_key, vec![channel_id], &ChannelConfig::default()), unkown_public_key);
 	}
 
 	#[test]
@@ -19067,7 +19062,7 @@ mod tests {
 
 		check_channel_unavailable_error(nodes[0].node.forward_intercepted_htlc(InterceptId([0; 32]), &channel_id, counterparty_node_id, 1_000_000), channel_id, counterparty_node_id);
 
-		check_channel_unavailable_error(nodes[0].node.update_channel_config(&counterparty_node_id, &[channel_id], &ChannelConfig::default()), channel_id, counterparty_node_id);
+		check_channel_unavailable_error(nodes[0].node.update_channel_config(&counterparty_node_id, vec![channel_id], &ChannelConfig::default()), channel_id, counterparty_node_id);
 	}
 
 	#[test]
@@ -19282,12 +19277,12 @@ mod tests {
 		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
 		let channel = &nodes[0].node.list_channels()[0];
 
-		nodes[0].node.update_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &user_config.channel_config).unwrap();
+		nodes[0].node.update_channel_config(&channel.counterparty.node_id, vec![channel.channel_id], &user_config.channel_config).unwrap();
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 0);
 
 		user_config.channel_config.forwarding_fee_base_msat += 10;
-		nodes[0].node.update_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &user_config.channel_config).unwrap();
+		nodes[0].node.update_channel_config(&channel.counterparty.node_id, vec![channel.channel_id], &user_config.channel_config).unwrap();
 		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_base_msat, user_config.channel_config.forwarding_fee_base_msat);
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -19296,12 +19291,12 @@ mod tests {
 			_ => panic!("expected BroadcastChannelUpdate event"),
 		}
 
-		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &ChannelConfigUpdate::default()).unwrap();
+		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, vec![channel.channel_id], &ChannelConfigUpdate::default()).unwrap();
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 0);
 
 		let new_cltv_expiry_delta = user_config.channel_config.cltv_expiry_delta + 6;
-		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &ChannelConfigUpdate {
+		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, vec![channel.channel_id], &ChannelConfigUpdate {
 			cltv_expiry_delta: Some(new_cltv_expiry_delta),
 			..Default::default()
 		}).unwrap();
@@ -19314,7 +19309,7 @@ mod tests {
 		}
 
 		let new_fee = user_config.channel_config.forwarding_fee_proportional_millionths + 100;
-		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &ChannelConfigUpdate {
+		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, vec![channel.channel_id], &ChannelConfigUpdate {
 			forwarding_fee_proportional_millionths: Some(new_fee),
 			accept_underpaying_htlcs: Some(true),
 			..Default::default()
@@ -19336,7 +19331,7 @@ mod tests {
 		let new_fee = current_fee + 100;
 		assert!(
 			matches!(
-				nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id, bad_channel_id], &ChannelConfigUpdate {
+				nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, vec![channel.channel_id, bad_channel_id], &ChannelConfigUpdate {
 					forwarding_fee_proportional_millionths: Some(new_fee),
 					..Default::default()
 				}),

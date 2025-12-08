@@ -103,7 +103,7 @@ impl BlindedPaymentPath {
 		// be in relation to a specific channel.
 		let htlc_maximum_msat = u64::max_value();
 		Self::new(
-			&[],
+			Vec::new(),
 			payee_node_id,
 			payee_tlvs,
 			htlc_maximum_msat,
@@ -120,7 +120,7 @@ impl BlindedPaymentPath {
 	/// * any unknown features are required in the provided [`ForwardTlvs`]
 	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
+		intermediate_nodes: Vec<PaymentForwardNode>, payee_node_id: PublicKey,
 		payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
 		entropy_source: ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, ()>
@@ -135,7 +135,7 @@ impl BlindedPaymentPath {
 			SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 
 		let blinded_payinfo = compute_payinfo(
-			intermediate_nodes,
+			&intermediate_nodes,
 			&payee_tlvs.tlvs,
 			htlc_maximum_msat,
 			min_final_cltv_expiry_delta,
@@ -146,7 +146,7 @@ impl BlindedPaymentPath {
 				blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 				blinded_hops: blinded_hops(
 					secp_ctx,
-					intermediate_nodes,
+					&intermediate_nodes,
 					payee_node_id,
 					payee_tlvs,
 					&blinding_secret,
@@ -185,13 +185,12 @@ impl BlindedPaymentPath {
 	/// introduction node.
 	///
 	/// Will only modify `self` when returning `Ok`.
-	pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+	pub fn advance_path_by_one<NS: Deref, NL: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>,
 	) -> Result<(), ()>
 	where
 		NS::Target: NodeSigner,
 		NL::Target: NodeIdLookUp,
-		T: secp256k1::Signing + secp256k1::Verification,
 	{
 		match self.decrypt_intro_payload::<NS>(node_signer) {
 			Ok((
@@ -332,7 +331,7 @@ pub struct ReceiveTlvs {
 	/// The TLVs for which the HMAC in `authentication` is derived.
 	pub(crate) tlvs: UnauthenticatedReceiveTlvs,
 	/// An HMAC of `tlvs` along with a nonce used to construct it.
-	pub(crate) authentication: (Hmac<Sha256>, Nonce),
+	pub(crate) authentication: ([u8; 32], Nonce),
 }
 
 impl ReceiveTlvs {

@@ -164,7 +164,7 @@ impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct TestCustomMessage {}
 
 const CUSTOM_MESSAGE_TYPE: u64 = 4242;

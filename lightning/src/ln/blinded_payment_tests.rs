@@ -92,7 +92,7 @@ pub fn blinded_payment_path(
 
 	let mut secp_ctx = Secp256k1::new();
 	BlindedPaymentPath::new(
-		&intermediate_nodes[..], *node_ids.last().unwrap(), payee_tlvs,
+		intermediate_nodes, *node_ids.last().unwrap(), payee_tlvs,
 		intro_node_max_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_maximum_msat),
 		TEST_FINAL_CLTV as u16, keys_manager, &secp_ctx
 	).unwrap()
@@ -177,7 +177,7 @@ fn do_one_hop_blinded_path(success: bool) {
 
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
-		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		vec![], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
@@ -229,7 +229,7 @@ fn mpp_to_one_hop_blinded_path() {
 	let expanded_key = chanmon_cfgs[3].keys_manager.get_expanded_key();
 	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 	let blinded_path = BlindedPaymentPath::new(
-		&[], nodes[3].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		vec![], nodes[3].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[3].keys_manager, &secp_ctx
 	).unwrap();
 
@@ -1340,7 +1340,7 @@ fn custom_tlvs_to_blinded_path() {
 	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
-		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		vec![], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
@@ -1395,7 +1395,7 @@ fn fails_receive_tlvs_authentication() {
 
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
-		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		vec![], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
@@ -1426,7 +1426,7 @@ fn fails_receive_tlvs_authentication() {
 
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
-		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		vec![], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
