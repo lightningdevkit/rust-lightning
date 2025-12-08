@@ -51,7 +51,6 @@ use crate::sign::{self, ReceiveAuthKey};
 use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-use crate::util::async_poll::MaybeSend;
 use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
@@ -59,6 +58,7 @@ use crate::util::dyn_signer::{
 use crate::util::logger::{Logger, Record};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
+use crate::util::native_async::MaybeSend;
 use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};

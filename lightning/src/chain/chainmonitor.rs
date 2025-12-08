@@ -51,10 +51,9 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, PeerStorageKey, SignerProvider};
 use crate::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use crate::types::features::{InitFeatures, NodeFeatures};
-use crate::util::async_poll::{MaybeSend, MaybeSync};
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
-use crate::util::native_async::FutureSpawner;
+use crate::util::native_async::{FutureSpawner, MaybeSend, MaybeSync};
 use crate::util::persist::{KVStore, MonitorName, MonitorUpdatingPersisterAsync};
 #[cfg(peer_storage)]
 use crate::util::ser::{VecWriter, Writeable};

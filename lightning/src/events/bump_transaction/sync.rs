@@ -18,8 +18,9 @@ use crate::chain::chaininterface::BroadcasterInterface;
 use crate::chain::ClaimId;
 use crate::prelude::*;
 use crate::sign::SignerProvider;
-use crate::util::async_poll::{dummy_waker, MaybeSend, MaybeSync};
+use crate::util::async_poll::dummy_waker;
 use crate::util::logger::Logger;
+use crate::util::native_async::{MaybeSend, MaybeSync};
 
 use bitcoin::{Psbt, ScriptBuf, Transaction, TxOut};
 
