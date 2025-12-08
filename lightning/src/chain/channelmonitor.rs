@@ -990,11 +990,12 @@ impl Balance {
 	/// [`Balance::MaybePreimageClaimableHTLC`].
 	///
 	/// On-chain fees required to claim the balance are not included in this amount.
-	#[rustfmt::skip]
 	pub fn claimable_amount_satoshis(&self) -> u64 {
 		match self {
 			Balance::ClaimableOnChannelClose {
-				balance_candidates, confirmed_balance_candidate_index, ..
+				balance_candidates,
+				confirmed_balance_candidate_index,
+				..
 			} => {
 				if *confirmed_balance_candidate_index != 0 {
 					balance_candidates[*confirmed_balance_candidate_index].amount_satoshis
@@ -1002,12 +1003,16 @@ impl Balance {
 					balance_candidates.last().map(|balance| balance.amount_satoshis).unwrap_or(0)
 				}
 			},
-			Balance::ClaimableAwaitingConfirmations { amount_satoshis, .. }|
-			Balance::ContentiousClaimable { amount_satoshis, .. }|
-			Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. }
-				=> *amount_satoshis,
-			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. }
-				=> if *outbound_payment { 0 } else { *amount_satoshis },
+			Balance::ClaimableAwaitingConfirmations { amount_satoshis, .. }
+			| Balance::ContentiousClaimable { amount_satoshis, .. }
+			| Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. } => *amount_satoshis,
+			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. } => {
+				if *outbound_payment {
+					0
+				} else {
+					*amount_satoshis
+				}
+			},
 			Balance::MaybePreimageClaimableHTLC { .. } => 0,
 		}
 	}
@@ -1022,25 +1027,35 @@ impl Balance {
 	///
 	/// For pending payments, splice behavior, or behavior after a channel has been closed, this
 	/// behaves the same as [`Self::claimable_amount_satoshis`].
-	#[rustfmt::skip]
 	pub fn offchain_amount_satoshis(&self) -> u64 {
 		match self {
 			Balance::ClaimableOnChannelClose {
-				balance_candidates, confirmed_balance_candidate_index, ..
+				balance_candidates,
+				confirmed_balance_candidate_index,
+				..
 			} => {
 				if *confirmed_balance_candidate_index != 0 {
 					let candidate = &balance_candidates[*confirmed_balance_candidate_index];
 					candidate.amount_offchain_satoshis.unwrap_or(candidate.amount_satoshis)
 				} else {
-					balance_candidates.last().map(|balance| balance.amount_offchain_satoshis.unwrap_or(balance.amount_satoshis)).unwrap_or(0)
+					balance_candidates
+						.last()
+						.map(|balance| {
+							balance.amount_offchain_satoshis.unwrap_or(balance.amount_satoshis)
+						})
+						.unwrap_or(0)
 				}
 			},
-			Balance::ClaimableAwaitingConfirmations { amount_satoshis, .. }|
-			Balance::ContentiousClaimable { amount_satoshis, .. }|
-			Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. }
-				=> *amount_satoshis,
-			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. }
-				=> if *outbound_payment { 0 } else { *amount_satoshis },
+			Balance::ClaimableAwaitingConfirmations { amount_satoshis, .. }
+			| Balance::ContentiousClaimable { amount_satoshis, .. }
+			| Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. } => *amount_satoshis,
+			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. } => {
+				if *outbound_payment {
+					0
+				} else {
+					*amount_satoshis
+				}
+			},
 			Balance::MaybePreimageClaimableHTLC { .. } => 0,
 		}
 	}
