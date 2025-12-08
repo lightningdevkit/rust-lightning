@@ -179,29 +179,6 @@ jobs:
           cd bench
           RUSTFLAGS="--cfg=ldk_bench --cfg=require_route_graph_test" cargo bench
 
-  check_commits:
-    runs-on: ubuntu-latest
-    env:
-      TOOLCHAIN: stable
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-          rustup override set ${{ env.TOOLCHAIN }}
-      - name: Fetch full tree and rebase on upstream
-        run: |
-          git remote add upstream https://github.com/lightningdevkit/rust-lightning
-          git fetch upstream
-          export GIT_COMMITTER_EMAIL="rl-ci@example.com"
-          export GIT_COMMITTER_NAME="RL CI"
-          git rebase upstream/main
-      - name: For each commit, run cargo check (including in fuzz)
-        run: ci/check-each-commit.sh upstream/main
-
   check_release:
     runs-on: ubuntu-latest
     env:
@@ -230,6 +207,24 @@ jobs:
         env:
           RUSTFLAGS: '--cfg=taproot'
           RUSTDOCFLAGS: '--cfg=taproot'
+
+  check_docs:
+    runs-on: self-hosted
+    env:
+      # While docs.rs builds using a nightly compiler (and we use some nightly features),
+      # nightly ends up randomly breaking builds occasionally, so we instead use beta
+      # and set RUSTC_BOOTSTRAP in check-docsrs.sh
+      TOOLCHAIN: beta
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+      - name: Simulate docs.rs build
+        run: ci/check-docsrs.sh
 
   fuzz:
     runs-on: ubuntu-latest
@@ -291,20 +286,3 @@ jobs:
           rustup component add rustfmt
       - name: Run rustfmt checks
         run: ci/rustfmt.sh
-
-  incremental-mutants:
-    runs-on: ubuntu-latest
-    if: github.ref_name != 'main' # `main` has no diff with itself
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Relative diff
-        run: |
-          git branch -av
-          git diff origin/main.. | tee git.diff
-      - uses: Swatinem/rust-cache@v2
-      - name: Mutants
-        run: |
-          cargo install cargo-mutants
-          cargo mutants --no-shuffle -j 2 -vV --in-diff git.diff

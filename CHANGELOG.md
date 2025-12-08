@@ -1,4 +1,60 @@
-# 0.1.5 - Jul XXX, 2025 - "Async Path Reduction"
+# 0.1.8 - Dec 2, 2025 - "Async Update Completion"
+
+## Bug Fixes
+ * In cases where an MPP payment is claimed while one channel is waiting on a
+   counterparty's `revoke_and_ack` message and the `revoke_and_ack` message is
+   received prior to the asynchronous completion of the MPP-claim
+   `ChannelMonitorUpdate`, the channel will no longer hang (#4236).
+ * Deserializing invalid `Duration`s can no longer panic (#4172).
+
+
+# 0.1.7 - Oct 21, 2025 - "Unstable Release CI"
+
+## Bug Fixes
+ * Builds with the `docsrs` cfg flag (set automatically for builds on docs.rs
+   but otherwise not used) were fixed.
+
+
+# 0.1.6 - Oct 10, 2025 - "Async Preimage Claims"
+
+## Performance Improvements
+ * `NetworkGraph::remove_stale_channels_and_tracking` has been sped up by more
+   than 20x in cases where many entries need to be removed (such as after
+   initial gossip sync, #4080).
+
+## Bug Fixes
+ * Delivery of on-chain resolutions of HTLCs to `ChannelManager` has been made
+   more robust to prevent loss in some exceedingly rare crash cases. This may
+   marginally increase payment resolution event replays on startup (#3984).
+ * Corrected forwarding of new gossip to peers which we are sending an initial
+   gossip sync to (#4107).
+ * A rare race condition may have resulted in outbound BOLT12 payments
+   spuriously failing while processing the `Bolt12Invoice` message (#4078).
+ * If a channel is updated multiple times after a payment is claimed while using
+   async persistence of the `ChannelMonitorUpdate`s, and the node then restarts
+   with a stale copy of its `ChannelManager`, the `PaymentClaimed` may have been
+   lost (#3988).
+ * If an async-persisted `ChannelMonitorUpdate` for one part of an MPP claim
+   does not complete before multiple `ChannelMonitorUpdate`s for another channel
+   in the same MPP claim complete, and the node restarts twice, the preimage may
+   be lost and the MPP payment part may not be claimed (#3928).
+
+## Security
+0.1.6 fixes a denial of service vulnerability and a funds-theft vulnerability.
+ * When a channel has been force-closed, we have already claimed some of its
+   HTLCs on-chain, and we later learn a new preimage allowing us to claim
+   further HTLCs on-chain, we could in some cases generate invalid claim
+   transactions leading to loss of funds (#4154).
+ * When a `ChannelMonitor` is created for a channel which is never funded with
+   a real transaction, `ChannelMonitor::get_claimable_balances` would never be
+   empty. As a result, `ChannelMonitor::check_and_update_full_resolution_status`
+   would never indicate the monitor is prunable, and thus
+   `ChainMonitor::archive_fully_resolved_channel_monitors` would never remove
+   it. This allows a peer which opens channels without funding them to bloat our
+   memory and disk space, eventually leading to denial-of-service (#4081).
+
+
+# 0.1.5 - Jul 16, 2025 - "Async Path Reduction"
 
 ## Performance Improvements
  * `NetworkGraph`'s expensive internal consistency checks have now been

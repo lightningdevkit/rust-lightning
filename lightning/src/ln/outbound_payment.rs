@@ -17,7 +17,9 @@ use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
 use crate::events::{self, PaymentFailureReason};
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{EventCompletionAction, HTLCSource, PaymentId};
+use crate::ln::channelmanager::{
+	EventCompletionAction, HTLCSource, PaymentCompleteUpdate, PaymentId,
+};
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
@@ -182,9 +184,13 @@ impl PendingOutboundPayment {
 			params.insert_previously_failed_blinded_path(blinded_tail);
 		}
 	}
-	fn is_awaiting_invoice(&self) -> bool {
+	// Used for payments to BOLT 12 offers where we are either waiting for an invoice or have an
+	// invoice but have not locked in HTLCs for the payment yet.
+	fn is_pre_htlc_lock_in(&self) -> bool {
 		match self {
-			PendingOutboundPayment::AwaitingInvoice { .. } => true,
+			PendingOutboundPayment::AwaitingInvoice { .. }
+			| PendingOutboundPayment::InvoiceReceived { .. }
+			| PendingOutboundPayment::StaticInvoiceReceived { .. } => true,
 			_ => false,
 		}
 	}
@@ -1128,7 +1134,7 @@ impl OutboundPayments {
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		outbounds.retain(|pmt_id, pmt| {
 			let mut retain = true;
-			if !pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 && !pmt.is_awaiting_invoice() {
+			if !pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 && !pmt.is_pre_htlc_lock_in() {
 				pmt.mark_abandoned(PaymentFailureReason::RetriesExhausted);
 				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = pmt {
 					pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
@@ -1147,7 +1153,7 @@ impl OutboundPayments {
 		let outbounds = self.pending_outbound_payments.lock().unwrap();
 		outbounds.iter().any(|(_, pmt)|
 			!pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 && !pmt.is_fulfilled() &&
-			!pmt.is_awaiting_invoice())
+			!pmt.is_pre_htlc_lock_in())
 	}
 
 	fn find_initial_route<R: Deref, NS: Deref, IH, L: Deref>(
@@ -1927,7 +1933,7 @@ impl OutboundPayments {
 
 	pub(super) fn claim_htlc<L: Deref>(
 		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, session_priv: SecretKey,
-		path: Path, from_onchain: bool, ev_completion_action: EventCompletionAction,
+		path: Path, from_onchain: bool, ev_completion_action: &mut Option<EventCompletionAction>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &L,
 	) where L::Target: Logger {
@@ -1945,7 +1951,7 @@ impl OutboundPayments {
 					payment_preimage,
 					payment_hash,
 					fee_paid_msat,
-				}, Some(ev_completion_action.clone())));
+				}, ev_completion_action.take()));
 				payment.get_mut().mark_fulfilled();
 			}
 
@@ -1954,15 +1960,13 @@ impl OutboundPayments {
 				// This could potentially lead to removing a pending payment too early,
 				// with a reorg of one block causing us to re-add the fulfilled payment on
 				// restart.
-				// TODO: We should have a second monitor event that informs us of payments
-				// irrevocably fulfilled.
 				if payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
 					let payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array()));
 					pending_events.push_back((events::Event::PaymentPathSuccessful {
 						payment_id,
 						payment_hash,
 						path,
-					}, Some(ev_completion_action)));
+					}, ev_completion_action.take()));
 				}
 			}
 		} else {
@@ -2087,7 +2091,8 @@ impl OutboundPayments {
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
 		path: &Path, session_priv: &SecretKey, payment_id: &PaymentId,
 		probing_cookie_secret: [u8; 32], secp_ctx: &Secp256k1<secp256k1::All>,
-		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, logger: &L,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		logger: &L, completion_action: &mut Option<PaymentCompleteUpdate>,
 	) -> bool where L::Target: Logger {
 		#[cfg(test)]
 		let DecodedOnionFailure {
@@ -2210,8 +2215,15 @@ impl OutboundPayments {
 			}
 		};
 		let mut pending_events = pending_events.lock().unwrap();
-		pending_events.push_back((path_failure, None));
-		if let Some(ev) = full_failure_ev { pending_events.push_back((ev, None)); }
+		let completion_action = completion_action
+			.take()
+			.map(|act| EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(act));
+		if let Some(ev) = full_failure_ev {
+			pending_events.push_back((path_failure, None));
+			pending_events.push_back((ev, completion_action));
+		} else {
+			pending_events.push_back((path_failure, completion_action));
+		}
 		pending_retry_ev
 	}
 
