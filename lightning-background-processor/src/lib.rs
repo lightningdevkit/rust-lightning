@@ -55,9 +55,9 @@ use lightning::routing::utxo::UtxoLookup;
 #[cfg(not(c_bindings))]
 use lightning::sign::EntropySource;
 use lightning::sign::{ChangeDestinationSource, ChangeDestinationSourceSync, OutputSpender};
-#[cfg(not(c_bindings))]
-use lightning::util::async_poll::MaybeSend;
 use lightning::util::logger::Logger;
+#[cfg(not(c_bindings))]
+use lightning::util::native_async::MaybeSend;
 use lightning::util::persist::{
 	KVStore, KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
 	CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
