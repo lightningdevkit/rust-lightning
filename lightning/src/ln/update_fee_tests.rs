@@ -489,7 +489,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 		let local_chan_signer = local_chan.as_funded().unwrap().get_signer();
 
 		let nondust_htlcs: Vec<HTLCOutputInCommitment> = vec![];
-		let commitment_tx = CommitmentTransaction::new(
+		let commitment_tx = CommitmentTransaction::new_without_broadcaster_value(
 			INITIAL_COMMITMENT_NUMBER - 1,
 			&remote_point,
 			push_sats,
@@ -590,7 +590,7 @@ pub fn test_update_fee_that_saturates_subs() {
 			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_id);
 		let local_chan_signer = local_chan.as_funded().unwrap().get_signer();
 		let nondust_htlcs: Vec<HTLCOutputInCommitment> = vec![];
-		let commitment_tx = CommitmentTransaction::new(
+		let commitment_tx = CommitmentTransaction::new_without_broadcaster_value(
 			INITIAL_COMMITMENT_NUMBER,
 			&remote_point,
 			8500,
