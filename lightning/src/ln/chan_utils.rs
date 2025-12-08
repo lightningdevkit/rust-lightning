@@ -1748,7 +1748,6 @@ impl CommitmentTransaction {
 		)
 	}
 
-	#[rustfmt::skip]
 	fn build(
 		commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64,
 		to_broadcaster_value_offchain_msat: Option<u64>, to_countersignatory_value_sat: u64,
@@ -1758,15 +1757,32 @@ impl CommitmentTransaction {
 	) -> CommitmentTransaction {
 		let to_broadcaster_value_sat = Amount::from_sat(to_broadcaster_value_sat);
 		let to_countersignatory_value_sat = Amount::from_sat(to_countersignatory_value_sat);
-		let keys = TxCreationKeys::from_channel_static_keys(per_commitment_point, channel_parameters.broadcaster_pubkeys(), channel_parameters.countersignatory_pubkeys(), secp_ctx);
+		let keys = TxCreationKeys::from_channel_static_keys(
+			per_commitment_point,
+			channel_parameters.broadcaster_pubkeys(),
+			channel_parameters.countersignatory_pubkeys(),
+			secp_ctx,
+		);
 
 		// Build and sort the outputs of the transaction.
 		// Also sort the HTLC output data in `nondust_htlcs` in the same order, and populate the
 		// transaction output indices therein.
-		let outputs = Self::build_outputs_and_htlcs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, &mut nondust_htlcs, channel_parameters);
+		let outputs = Self::build_outputs_and_htlcs(
+			&keys,
+			to_broadcaster_value_sat,
+			to_countersignatory_value_sat,
+			&mut nondust_htlcs,
+			channel_parameters,
+		);
 
-		let (obscured_commitment_transaction_number, txins) = Self::build_inputs(commitment_number, channel_parameters);
-		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs, channel_parameters);
+		let (obscured_commitment_transaction_number, txins) =
+			Self::build_inputs(commitment_number, channel_parameters);
+		let transaction = Self::make_transaction(
+			obscured_commitment_transaction_number,
+			txins,
+			outputs,
+			channel_parameters,
+		);
 		let txid = transaction.compute_txid();
 		CommitmentTransaction {
 			commitment_number,
@@ -1778,10 +1794,7 @@ impl CommitmentTransaction {
 			nondust_htlcs,
 			channel_type_features: channel_parameters.channel_type_features().clone(),
 			keys,
-			built: BuiltCommitmentTransaction {
-				transaction,
-				txid
-			},
+			built: BuiltCommitmentTransaction { transaction, txid },
 		}
 	}
 
