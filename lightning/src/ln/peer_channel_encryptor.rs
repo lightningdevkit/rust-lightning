@@ -12,7 +12,9 @@ use crate::prelude::*;
 use crate::ln::msgs;
 use crate::ln::msgs::LightningError;
 use crate::ln::wire;
+use crate::ln::wire::Type;
 use crate::sign::{NodeSigner, Recipient};
+use crate::util::ser::Writeable;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
@@ -565,12 +567,14 @@ impl PeerChannelEncryptor {
 	/// Encrypts the given message, returning the encrypted version.
 	/// panics if the length of `message`, once encoded, is greater than 65535 or if the Noise
 	/// handshake has not finished.
-	pub fn encrypt_message<M: wire::Type>(&mut self, message: &M) -> Vec<u8> {
+	pub fn encrypt_message<T: wire::Type>(&mut self, message: wire::Message<T>) -> Vec<u8> {
 		// Allocate a buffer with 2KB, fitting most common messages. Reserve the first 16+2 bytes
 		// for the 2-byte message type prefix and its MAC.
 		let mut res = VecWriter(Vec::with_capacity(MSG_BUF_ALLOC_SIZE));
 		res.0.resize(16 + 2, 0);
-		wire::write(message, &mut res).expect("In-memory messages must never fail to serialize");
+
+		message.type_id().write(&mut res).expect("In-memory messages must never fail to serialize");
+		message.write(&mut res).expect("In-memory messages must never fail to serialize");
 
 		self.encrypt_message_with_header_0s(&mut res.0);
 		res.0
