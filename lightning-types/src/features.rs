@@ -83,6 +83,8 @@
 //!   (see [BOLT PR #1160](https://github.com/lightning/bolts/pull/1160) for more information).
 //! - `HtlcHold` - requires/supports holding HTLCs and forwarding on receipt of an onion message
 //!   (see [BOLT-2](https://github.com/lightning/bolts/pull/989/files) for more information).
+//! - `MessagePaddingPrototype` - requires/supports padding of network messages for improved privacy
+//!   (see [BOLT-1](https://github.com/lightning/bolts/pull/1304) for more information).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -174,7 +176,7 @@ mod sealed {
 			// Byte 18
 			,
 			// Byte 19
-			HtlcHold | SplicePrototype,
+			HtlcHold | SplicePrototype | MessagePaddingPrototype,
 		]
 	);
 	define_context!(
@@ -731,6 +733,17 @@ mod sealed {
 		clear_splicing,
 		supports_splicing,
 		requires_splicing
+	);
+	define_feature!(
+		157, // BOLTs PR uses 68/69
+		MessagePaddingPrototype,
+		[InitContext],
+		"Feature flags for network message padding.",
+		set_message_padding_optional,
+		set_message_padding_required,
+		clear_message_padding,
+		supports_message_padding,
+		requires_message_padding
 	);
 	define_feature!(
 		259,

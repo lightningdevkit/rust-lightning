@@ -973,6 +973,14 @@ pub struct UserConfig {
 	///
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 	pub reject_inbound_splices: bool,
+	/// If this set to `true`, then we will negotiate support for padding network messages with our
+	/// counterparty. If both parties agree, network messages will be padded to a fixed length to
+	/// improve privacy in the face of an adversary monitoring network traffic.
+	///
+	/// Nodes which are heavily bandwidth-restricted might want to set this to `false`.
+	///
+	/// Default value: `true`
+	pub enable_message_padding: bool,
 }
 
 impl Default for UserConfig {
@@ -990,6 +998,7 @@ impl Default for UserConfig {
 			enable_htlc_hold: false,
 			hold_outbound_htlcs_at_next_hop: false,
 			reject_inbound_splices: true,
+			enable_message_padding: true,
 		}
 	}
 }
@@ -1013,6 +1022,7 @@ impl Readable for UserConfig {
 			hold_outbound_htlcs_at_next_hop: Readable::read(reader)?,
 			enable_htlc_hold: Readable::read(reader)?,
 			reject_inbound_splices: Readable::read(reader)?,
+			enable_message_padding: Readable::read(reader)?,
 		})
 	}
 }
