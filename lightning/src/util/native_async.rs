@@ -9,8 +9,9 @@
 
 #[cfg(all(test, feature = "std"))]
 use crate::sync::{Arc, Mutex};
-use crate::util::async_poll::{MaybeSend, MaybeSync};
 
+#[cfg(test)]
+use alloc::boxed::Box;
 #[cfg(all(test, not(feature = "std")))]
 use alloc::rc::Rc;
 
@@ -52,6 +53,34 @@ pub trait FutureSpawner: MaybeSend + MaybeSync + 'static {
 trait MaybeSendableFuture: Future<Output = ()> + MaybeSend + 'static {}
 #[cfg(test)]
 impl<F: Future<Output = ()> + MaybeSend + 'static> MaybeSendableFuture for F {}
+
+/// Marker trait to optionally implement `Sync` under std.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
+#[cfg(feature = "std")]
+pub use core::marker::Sync as MaybeSync;
+
+#[cfg(not(feature = "std"))]
+/// Marker trait to optionally implement `Sync` under std.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
+pub trait MaybeSync {}
+#[cfg(not(feature = "std"))]
+impl<T> MaybeSync for T where T: ?Sized {}
+
+/// Marker trait to optionally implement `Send` under std.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
+#[cfg(feature = "std")]
+pub use core::marker::Send as MaybeSend;
+
+#[cfg(not(feature = "std"))]
+/// Marker trait to optionally implement `Send` under std.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
+pub trait MaybeSend {}
+#[cfg(not(feature = "std"))]
+impl<T> MaybeSend for T where T: ?Sized {}
 
 /// A simple [`FutureSpawner`] which holds [`Future`]s until they are manually polled via
 /// [`Self::poll_futures`].

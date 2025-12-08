@@ -58,7 +58,7 @@ use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::PaymentPreimage;
-use crate::util::async_poll::MaybeSend;
+use crate::util::native_async::MaybeSend;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::transaction_utils;
 

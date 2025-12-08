@@ -37,10 +37,10 @@ use crate::ln::types::ChannelId;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::sync::Mutex;
 use crate::util::async_poll::{
-	dummy_waker, MaybeSend, MaybeSync, MultiResultFuturePoller, ResultFuture, TwoFutureJoiner,
+	dummy_waker, MultiResultFuturePoller, ResultFuture, TwoFutureJoiner,
 };
 use crate::util::logger::Logger;
-use crate::util::native_async::FutureSpawner;
+use crate::util::native_async::{FutureSpawner, MaybeSend, MaybeSync};
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 use crate::util::wakers::Notifier;
 

@@ -53,8 +53,6 @@ use lightning::routing::utxo::UtxoLookup;
 use lightning::sign::{
 	ChangeDestinationSource, ChangeDestinationSourceSync, EntropySource, OutputSpender,
 };
-#[cfg(not(c_bindings))]
-use lightning::util::async_poll::MaybeSend;
 use lightning::util::logger::Logger;
 use lightning::util::persist::{
 	KVStore, KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
@@ -63,6 +61,8 @@ use lightning::util::persist::{
 	NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
 	SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
+#[cfg(not(c_bindings))]
+use lightning::util::native_async::MaybeSend;
 use lightning::util::sweep::{OutputSweeper, OutputSweeperSync};
 #[cfg(feature = "std")]
 use lightning::util::wakers::Sleeper;
