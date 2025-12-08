@@ -1011,6 +1011,39 @@ impl Balance {
 			Balance::MaybePreimageClaimableHTLC { .. } => 0,
 		}
 	}
+
+	/// The "offchain balance", in satoshis.
+	///
+	/// When the channel has yet to close, this returns the balance we are owed, ignoring fees,
+	/// reserve values, anchors, and dust limits. This more closely corresponds with the sum of our
+	/// inbound and outbound payments and may be more useful as the balance displayed in an
+	/// end-user wallet. Still, it is somewhat misleading from an on-chain-funds-available
+	/// perspective.
+	///
+	/// For pending payments, splice behavior, or behavior after a channel has been closed, this
+	/// behaves the same as [`Self::claimable_amount_satoshis`].
+	#[rustfmt::skip]
+	pub fn offchain_amount_satoshis(&self) -> u64 {
+		match self {
+			Balance::ClaimableOnChannelClose {
+				balance_candidates, confirmed_balance_candidate_index, ..
+			} => {
+				if *confirmed_balance_candidate_index != 0 {
+					let candidate = &balance_candidates[*confirmed_balance_candidate_index];
+					candidate.amount_offchain_satoshis.unwrap_or(candidate.amount_satoshis)
+				} else {
+					balance_candidates.last().map(|balance| balance.amount_offchain_satoshis.unwrap_or(balance.amount_satoshis)).unwrap_or(0)
+				}
+			},
+			Balance::ClaimableAwaitingConfirmations { amount_satoshis, .. }|
+			Balance::ContentiousClaimable { amount_satoshis, .. }|
+			Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. }
+				=> *amount_satoshis,
+			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. }
+				=> if *outbound_payment { 0 } else { *amount_satoshis },
+			Balance::MaybePreimageClaimableHTLC { .. } => 0,
+		}
+	}
 }
 
 /// An HTLC which has been irrevocably resolved on-chain, and has reached ANTI_REORG_DELAY.
