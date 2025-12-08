@@ -198,6 +198,10 @@ pub(crate) trait Cache {
 	/// Retrieves the block header keyed by the given block hash.
 	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader>;
 
+	/// Inserts the given block header during a find_difference operation, implying it might not be
+	/// the best header.
+	fn insert_during_diff(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader);
+
 	/// Called when a block has been connected to the best chain to ensure it is available to be
 	/// disconnected later if needed.
 	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader);
@@ -229,6 +233,15 @@ impl Cache for HeaderCache {
 		self.0.get(block_hash)
 	}
 
+	fn insert_during_diff(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader) {
+		self.0.insert(block_hash, block_header);
+
+		// Remove headers older than our newest header minus a week.
+		let best_height = self.0.iter().map(|(_, header)| header.height).max().unwrap_or(0);
+		let cutoff_height = best_height.saturating_sub(HEADER_CACHE_LIMIT);
+		self.0.retain(|_, header| header.height >= cutoff_height);
+	}
+
 	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader) {
 		self.0.insert(block_hash, block_header);
 
@@ -245,6 +258,10 @@ impl Cache for HeaderCache {
 impl Cache for &mut HeaderCache {
 	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader> {
 		self.0.get(block_hash)
+	}
+
+	fn insert_during_diff(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader) {
+		(*self).insert_during_diff(block_hash, block_header);
 	}
 
 	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader) {
@@ -383,7 +400,7 @@ where
 	/// First resolves `prev_best_block` to a `ValidatedBlockHeader` using the `previous_blocks`
 	/// field as fallback if needed, then finds the common ancestor.
 	async fn find_difference_from_best_block<P: Poll>(
-		&self, current_header: ValidatedBlockHeader, prev_best_block: BestBlock,
+		&mut self, current_header: ValidatedBlockHeader, prev_best_block: BestBlock,
 		chain_poller: &mut P,
 	) -> BlockSourceResult<ChainDifference> {
 		// Try to resolve the header for the previous best block. First try the block_hash,
@@ -408,6 +425,7 @@ where
 			)?;
 			if let Ok(header) = chain_poller.get_header(block_hash, Some(height)).await {
 				found_header = Some(header);
+				self.header_cache.insert_during_diff(*block_hash, header);
 				break;
 			}
 		}
