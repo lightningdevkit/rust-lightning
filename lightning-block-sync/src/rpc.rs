@@ -3,7 +3,7 @@
 
 use crate::gossip::UtxoSource;
 use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
-use crate::{AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource};
+use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::OutPoint;
@@ -16,6 +16,7 @@ use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::error::Error;
 use std::fmt;
+use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// An error returned by the RPC server.
@@ -135,47 +136,51 @@ impl RpcClient {
 impl BlockSource for RpcClient {
 	fn get_header<'a>(
 		&'a self, header_hash: &'a BlockHash, _height: Option<u32>,
-	) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
-		Box::pin(async move {
+	) -> impl Future<Output = BlockSourceResult<BlockHeaderData>> + Send + 'a {
+		async move {
 			let header_hash = serde_json::json!(header_hash.to_string());
 			Ok(self.call_method("getblockheader", &[header_hash]).await?)
-		})
+		}
 	}
 
 	fn get_block<'a>(
 		&'a self, header_hash: &'a BlockHash,
-	) -> AsyncBlockSourceResult<'a, BlockData> {
-		Box::pin(async move {
+	) -> impl Future<Output = BlockSourceResult<BlockData>> + Send + 'a {
+		async move {
 			let header_hash = serde_json::json!(header_hash.to_string());
 			let verbosity = serde_json::json!(0);
 			Ok(BlockData::FullBlock(self.call_method("getblock", &[header_hash, verbosity]).await?))
-		})
+		}
 	}
 
-	fn get_best_block<'a>(&'a self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
-		Box::pin(async move { Ok(self.call_method("getblockchaininfo", &[]).await?) })
+	fn get_best_block<'a>(
+		&'a self,
+	) -> impl Future<Output = BlockSourceResult<(BlockHash, Option<u32>)>> + Send + 'a {
+		async move { Ok(self.call_method("getblockchaininfo", &[]).await?) }
 	}
 }
 
 impl UtxoSource for RpcClient {
 	fn get_block_hash_by_height<'a>(
 		&'a self, block_height: u32,
-	) -> AsyncBlockSourceResult<'a, BlockHash> {
-		Box::pin(async move {
+	) -> impl Future<Output = BlockSourceResult<BlockHash>> + Send + 'a {
+		async move {
 			let height_param = serde_json::json!(block_height);
 			Ok(self.call_method("getblockhash", &[height_param]).await?)
-		})
+		}
 	}
 
-	fn is_output_unspent<'a>(&'a self, outpoint: OutPoint) -> AsyncBlockSourceResult<'a, bool> {
-		Box::pin(async move {
+	fn is_output_unspent<'a>(
+		&'a self, outpoint: OutPoint,
+	) -> impl Future<Output = BlockSourceResult<bool>> + Send + 'a {
+		async move {
 			let txid_param = serde_json::json!(outpoint.txid.to_string());
 			let vout_param = serde_json::json!(outpoint.vout);
 			let include_mempool = serde_json::json!(false);
 			let utxo_opt: serde_json::Value =
 				self.call_method("gettxout", &[txid_param, vout_param, include_mempool]).await?;
 			Ok(!utxo_opt.is_null())
-		})
+		}
 	}
 }
 

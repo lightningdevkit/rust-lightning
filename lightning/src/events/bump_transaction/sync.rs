@@ -11,13 +11,14 @@
 
 use core::future::Future;
 use core::ops::Deref;
+use core::pin::pin;
 use core::task;
 
 use crate::chain::chaininterface::BroadcasterInterface;
 use crate::chain::ClaimId;
 use crate::prelude::*;
 use crate::sign::SignerProvider;
-use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
+use crate::util::async_poll::{dummy_waker, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
 
 use bitcoin::{Psbt, ScriptBuf, Transaction, TxOut};
@@ -71,19 +72,25 @@ impl<T: Deref> WalletSource for WalletSourceSyncWrapper<T>
 where
 	T::Target: WalletSourceSync,
 {
-	fn list_confirmed_utxos<'a>(&'a self) -> AsyncResult<'a, Vec<Utxo>, ()> {
+	fn list_confirmed_utxos<'a>(
+		&'a self,
+	) -> impl Future<Output = Result<Vec<Utxo>, ()>> + MaybeSend + 'a {
 		let utxos = self.0.list_confirmed_utxos();
-		Box::pin(async move { utxos })
+		async move { utxos }
 	}
 
-	fn get_change_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()> {
+	fn get_change_script<'a>(
+		&'a self,
+	) -> impl Future<Output = Result<ScriptBuf, ()>> + MaybeSend + 'a {
 		let script = self.0.get_change_script();
-		Box::pin(async move { script })
+		async move { script }
 	}
 
-	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction, ()> {
+	fn sign_psbt<'a>(
+		&'a self, psbt: Psbt,
+	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a {
 		let signed_psbt = self.0.sign_psbt(psbt);
-		Box::pin(async move { signed_psbt })
+		async move { signed_psbt }
 	}
 }
 
@@ -122,7 +129,7 @@ where
 		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
 	) -> Result<CoinSelection, ()> {
-		let mut fut = self.wallet.select_confirmed_utxos(
+		let fut = self.wallet.select_confirmed_utxos(
 			claim_id,
 			must_spend,
 			must_pay_to,
@@ -131,7 +138,7 @@ where
 		);
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
-		match fut.as_mut().poll(&mut ctx) {
+		match pin!(fut).poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
 				unreachable!(
@@ -142,10 +149,10 @@ where
 	}
 
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
-		let mut fut = self.wallet.sign_psbt(psbt);
+		let fut = self.wallet.sign_psbt(psbt);
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
-		match fut.as_mut().poll(&mut ctx) {
+		match pin!(fut).poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
 				unreachable!("Wallet::sign_psbt should not be pending in a sync context");
@@ -233,7 +240,7 @@ where
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
-	) -> AsyncResult<'a, CoinSelection, ()> {
+	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a {
 		let coins = self.0.select_confirmed_utxos(
 			claim_id,
 			must_spend,
@@ -241,12 +248,14 @@ where
 			target_feerate_sat_per_1000_weight,
 			max_tx_weight,
 		);
-		Box::pin(async move { coins })
+		async move { coins }
 	}
 
-	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction, ()> {
+	fn sign_psbt<'a>(
+		&'a self, psbt: Psbt,
+	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a {
 		let psbt = self.0.sign_psbt(psbt);
-		Box::pin(async move { psbt })
+		async move { psbt }
 	}
 }
 
@@ -289,7 +298,7 @@ where
 
 	/// Handles all variants of [`BumpTransactionEvent`].
 	pub fn handle_event(&self, event: &BumpTransactionEvent) {
-		let mut fut = Box::pin(self.bump_transaction_event_handler.handle_event(event));
+		let mut fut = pin!(self.bump_transaction_event_handler.handle_event(event));
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
 		match fut.as_mut().poll(&mut ctx) {

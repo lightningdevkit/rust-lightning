@@ -43,7 +43,7 @@ use std::hash::Hash;
 use std::net::SocketAddr;
 use std::net::TcpStream as StdTcpStream;
 use std::ops::Deref;
-use std::pin::Pin;
+use std::pin::{pin, Pin};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{self, Poll};
@@ -205,18 +205,17 @@ impl Connection {
 				}
 				us_lock.read_paused
 			};
-			// TODO: Drop the Box'ing of the futures once Rust has pin-on-stack support.
 			let select_result = if read_paused {
 				TwoSelector {
-					a: Box::pin(write_avail_receiver.recv()),
-					b: Box::pin(read_wake_receiver.recv()),
+					a: pin!(write_avail_receiver.recv()),
+					b: pin!(read_wake_receiver.recv()),
 				}
 				.await
 			} else {
 				ThreeSelector {
-					a: Box::pin(write_avail_receiver.recv()),
-					b: Box::pin(read_wake_receiver.recv()),
-					c: Box::pin(reader.readable()),
+					a: pin!(write_avail_receiver.recv()),
+					b: pin!(read_wake_receiver.recv()),
+					c: pin!(reader.readable()),
 				}
 				.await
 			};

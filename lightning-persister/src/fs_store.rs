@@ -14,8 +14,6 @@ use std::sync::{Arc, Mutex, RwLock};
 #[cfg(feature = "tokio")]
 use core::future::Future;
 #[cfg(feature = "tokio")]
-use core::pin::Pin;
-#[cfg(feature = "tokio")]
 use lightning::util::persist::KVStore;
 
 #[cfg(target_os = "windows")]
@@ -464,93 +462,85 @@ impl FilesystemStoreInner {
 impl KVStore for FilesystemStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, lightning::io::Error>> + 'static + Send>> {
+	) -> impl Future<Output = Result<Vec<u8>, lightning::io::Error>> + 'static + Send {
 		let this = Arc::clone(&self.inner);
-		let path = match this.get_checked_dest_file_path(
+		let path = this.get_checked_dest_file_path(
 			primary_namespace,
 			secondary_namespace,
 			Some(key),
 			"read",
-		) {
-			Ok(path) => path,
-			Err(e) => return Box::pin(async move { Err(e) }),
-		};
+		);
 
-		Box::pin(async move {
+		async move {
+			let path = match path {
+				Ok(path) => path,
+				Err(e) => return Err(e),
+			};
 			tokio::task::spawn_blocking(move || this.read(path)).await.unwrap_or_else(|e| {
 				Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
 			})
-		})
+		}
 	}
 
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + 'static + Send>> {
+	) -> impl Future<Output = Result<(), lightning::io::Error>> + 'static + Send {
 		let this = Arc::clone(&self.inner);
-		let path = match this.get_checked_dest_file_path(
-			primary_namespace,
-			secondary_namespace,
-			Some(key),
-			"write",
-		) {
-			Ok(path) => path,
-			Err(e) => return Box::pin(async move { Err(e) }),
-		};
+		let path = this
+			.get_checked_dest_file_path(primary_namespace, secondary_namespace, Some(key), "write")
+			.map(|path| (self.get_new_version_and_lock_ref(path.clone()), path));
 
-		let (inner_lock_ref, version) = self.get_new_version_and_lock_ref(path.clone());
-		Box::pin(async move {
+		async move {
+			let ((inner_lock_ref, version), path) = match path {
+				Ok(res) => res,
+				Err(e) => return Err(e),
+			};
 			tokio::task::spawn_blocking(move || {
 				this.write_version(inner_lock_ref, path, buf, version)
 			})
 			.await
 			.unwrap_or_else(|e| Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e)))
-		})
+		}
 	}
 
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
-	) -> Pin<Box<dyn Future<Output = Result<(), lightning::io::Error>> + 'static + Send>> {
+	) -> impl Future<Output = Result<(), lightning::io::Error>> + 'static + Send {
 		let this = Arc::clone(&self.inner);
-		let path = match this.get_checked_dest_file_path(
-			primary_namespace,
-			secondary_namespace,
-			Some(key),
-			"remove",
-		) {
-			Ok(path) => path,
-			Err(e) => return Box::pin(async move { Err(e) }),
-		};
+		let path = this
+			.get_checked_dest_file_path(primary_namespace, secondary_namespace, Some(key), "remove")
+			.map(|path| (self.get_new_version_and_lock_ref(path.clone()), path));
 
-		let (inner_lock_ref, version) = self.get_new_version_and_lock_ref(path.clone());
-		Box::pin(async move {
+		async move {
+			let ((inner_lock_ref, version), path) = match path {
+				Ok(res) => res,
+				Err(e) => return Err(e),
+			};
 			tokio::task::spawn_blocking(move || {
 				this.remove_version(inner_lock_ref, path, lazy, version)
 			})
 			.await
 			.unwrap_or_else(|e| Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e)))
-		})
+		}
 	}
 
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, lightning::io::Error>> + 'static + Send>> {
+	) -> impl Future<Output = Result<Vec<String>, lightning::io::Error>> + 'static + Send {
 		let this = Arc::clone(&self.inner);
 
-		let path = match this.get_checked_dest_file_path(
-			primary_namespace,
-			secondary_namespace,
-			None,
-			"list",
-		) {
-			Ok(path) => path,
-			Err(e) => return Box::pin(async move { Err(e) }),
-		};
+		let path =
+			this.get_checked_dest_file_path(primary_namespace, secondary_namespace, None, "list");
 
-		Box::pin(async move {
+		async move {
+			let path = match path {
+				Ok(path) => path,
+				Err(e) => return Err(e),
+			};
 			tokio::task::spawn_blocking(move || this.list(path)).await.unwrap_or_else(|e| {
 				Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
 			})
-		})
+		}
 	}
 }
 
@@ -757,24 +747,24 @@ mod tests {
 		let fs_store = Arc::new(FilesystemStore::new(temp_path));
 		assert_eq!(fs_store.state_size(), 0);
 
-		let async_fs_store: Arc<dyn KVStore> = fs_store.clone();
+		let async_fs_store = Arc::clone(&fs_store);
 
 		let data1 = vec![42u8; 32];
 		let data2 = vec![43u8; 32];
 
-		let primary_namespace = "testspace";
-		let secondary_namespace = "testsubspace";
+		let primary = "testspace";
+		let secondary = "testsubspace";
 		let key = "testkey";
 
 		// Test writing the same key twice with different data. Execute the asynchronous part out of order to ensure
 		// that eventual consistency works.
-		let fut1 = async_fs_store.write(primary_namespace, secondary_namespace, key, data1);
+		let fut1 = KVStore::write(&*async_fs_store, primary, secondary, key, data1);
 		assert_eq!(fs_store.state_size(), 1);
 
-		let fut2 = async_fs_store.remove(primary_namespace, secondary_namespace, key, false);
+		let fut2 = KVStore::remove(&*async_fs_store, primary, secondary, key, false);
 		assert_eq!(fs_store.state_size(), 1);
 
-		let fut3 = async_fs_store.write(primary_namespace, secondary_namespace, key, data2.clone());
+		let fut3 = KVStore::write(&*async_fs_store, primary, secondary, key, data2.clone());
 		assert_eq!(fs_store.state_size(), 1);
 
 		fut3.await.unwrap();
@@ -787,21 +777,18 @@ mod tests {
 		assert_eq!(fs_store.state_size(), 0);
 
 		// Test list.
-		let listed_keys =
-			async_fs_store.list(primary_namespace, secondary_namespace).await.unwrap();
+		let listed_keys = KVStore::list(&*async_fs_store, primary, secondary).await.unwrap();
 		assert_eq!(listed_keys.len(), 1);
 		assert_eq!(listed_keys[0], key);
 
 		// Test read. We expect to read data2, as the write call was initiated later.
-		let read_data =
-			async_fs_store.read(primary_namespace, secondary_namespace, key).await.unwrap();
+		let read_data = KVStore::read(&*async_fs_store, primary, secondary, key).await.unwrap();
 		assert_eq!(data2, &*read_data);
 
 		// Test remove.
-		async_fs_store.remove(primary_namespace, secondary_namespace, key, false).await.unwrap();
+		KVStore::remove(&*async_fs_store, primary, secondary, key, false).await.unwrap();
 
-		let listed_keys =
-			async_fs_store.list(primary_namespace, secondary_namespace).await.unwrap();
+		let listed_keys = KVStore::list(&*async_fs_store, primary, secondary).await.unwrap();
 		assert_eq!(listed_keys.len(), 0);
 	}
 

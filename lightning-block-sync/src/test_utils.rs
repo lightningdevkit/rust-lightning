@@ -1,7 +1,6 @@
 use crate::poll::{Validate, ValidatedBlockHeader};
 use crate::{
-	AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError,
-	UnboundedCache,
+	BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult, UnboundedCache,
 };
 
 use bitcoin::block::{Block, Header, Version};
@@ -17,6 +16,7 @@ use lightning::chain::BestBlock;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::future::Future;
 
 #[derive(Default)]
 pub struct Blockchain {
@@ -141,8 +141,8 @@ impl Blockchain {
 impl BlockSource for Blockchain {
 	fn get_header<'a>(
 		&'a self, header_hash: &'a BlockHash, _height_hint: Option<u32>,
-	) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
-		Box::pin(async move {
+	) -> impl Future<Output = BlockSourceResult<BlockHeaderData>> + Send + 'a {
+		async move {
 			if self.without_headers {
 				return Err(BlockSourceError::persistent("header not found"));
 			}
@@ -158,13 +158,13 @@ impl BlockSource for Blockchain {
 				}
 			}
 			Err(BlockSourceError::transient("header not found"))
-		})
+		}
 	}
 
 	fn get_block<'a>(
 		&'a self, header_hash: &'a BlockHash,
-	) -> AsyncBlockSourceResult<'a, BlockData> {
-		Box::pin(async move {
+	) -> impl Future<Output = BlockSourceResult<BlockData>> + Send + 'a {
+		async move {
 			for (height, block) in self.blocks.iter().enumerate() {
 				if block.header.block_hash() == *header_hash {
 					if let Some(without_blocks) = &self.without_blocks {
@@ -181,11 +181,13 @@ impl BlockSource for Blockchain {
 				}
 			}
 			Err(BlockSourceError::transient("block not found"))
-		})
+		}
 	}
 
-	fn get_best_block<'a>(&'a self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
-		Box::pin(async move {
+	fn get_best_block<'a>(
+		&'a self,
+	) -> impl Future<Output = BlockSourceResult<(BlockHash, Option<u32>)>> + Send + 'a {
+		async move {
 			match self.blocks.last() {
 				None => Err(BlockSourceError::transient("empty chain")),
 				Some(block) => {
@@ -193,7 +195,7 @@ impl BlockSource for Blockchain {
 					Ok((block.block_hash(), Some(height)))
 				},
 			}
-		})
+		}
 	}
 }
 

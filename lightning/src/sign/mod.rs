@@ -58,7 +58,7 @@ use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::PaymentPreimage;
-use crate::util::async_poll::AsyncResult;
+use crate::util::async_poll::MaybeSend;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::transaction_utils;
 
@@ -68,7 +68,9 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
+
 use core::convert::TryInto;
+use core::future::Future;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(taproot)]
@@ -1084,7 +1086,9 @@ pub trait ChangeDestinationSource {
 	///
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds controlled to the same user.
-	fn get_change_destination_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()>;
+	fn get_change_destination_script<'a>(
+		&'a self,
+	) -> impl Future<Output = Result<ScriptBuf, ()>> + MaybeSend + 'a;
 }
 
 /// A synchronous helper trait that describes an on-chain wallet capable of returning a (change) destination script.
@@ -1119,9 +1123,11 @@ impl<T: Deref> ChangeDestinationSource for ChangeDestinationSourceSyncWrapper<T>
 where
 	T::Target: ChangeDestinationSourceSync,
 {
-	fn get_change_destination_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()> {
+	fn get_change_destination_script<'a>(
+		&'a self,
+	) -> impl Future<Output = Result<ScriptBuf, ()>> + MaybeSend + 'a {
 		let script = self.0.get_change_destination_script();
-		Box::pin(async move { script })
+		async move { script }
 	}
 }
 

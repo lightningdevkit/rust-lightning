@@ -9,7 +9,6 @@
 
 //! Some utilities to make working with the standard library's [`Future`]s easier
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::marker::Unpin;
@@ -91,17 +90,6 @@ const DUMMY_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
 pub(crate) fn dummy_waker() -> Waker {
 	unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) }
 }
-
-#[cfg(feature = "std")]
-/// A type alias for a future that returns a result of type `T` or error `E`.
-///
-/// This is not exported to bindings users as async is only supported in Rust.
-pub type AsyncResult<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + 'a + Send>>;
-#[cfg(not(feature = "std"))]
-/// A type alias for a future that returns a result of type `T` or error `E`.
-///
-/// This is not exported to bindings users as async is only supported in Rust.
-pub type AsyncResult<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + 'a>>;
 
 /// Marker trait to optionally implement `Sync` under std.
 ///

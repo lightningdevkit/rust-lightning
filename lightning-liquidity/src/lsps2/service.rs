@@ -9,7 +9,6 @@
 
 //! Contains the main bLIP-52 / LSPS2 server-side object, [`LSPS2ServiceHandler`].
 
-use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use lightning::util::persist::KVStore;
@@ -17,6 +16,7 @@ use lightning::util::persist::KVStore;
 use core::cmp::Ordering as CmpOrdering;
 use core::future::Future as StdFuture;
 use core::ops::Deref;
+use core::pin::pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task;
 
@@ -2176,7 +2176,7 @@ where
 		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId, intercept_scid: u64,
 		cltv_expiry_delta: u32, client_trusts_lsp: bool, user_channel_id: u128,
 	) -> Result<(), APIError> {
-		let mut fut = Box::pin(self.inner.invoice_parameters_generated(
+		let mut fut = pin!(self.inner.invoice_parameters_generated(
 			counterparty_node_id,
 			request_id,
 			intercept_scid,
@@ -2205,7 +2205,7 @@ where
 		&self, intercept_scid: u64, intercept_id: InterceptId, expected_outbound_amount_msat: u64,
 		payment_hash: PaymentHash,
 	) -> Result<(), APIError> {
-		let mut fut = Box::pin(self.inner.htlc_intercepted(
+		let mut fut = pin!(self.inner.htlc_intercepted(
 			intercept_scid,
 			intercept_id,
 			expected_outbound_amount_msat,
@@ -2231,7 +2231,7 @@ where
 	pub fn htlc_handling_failed(
 		&self, failure_type: HTLCHandlingFailureType,
 	) -> Result<(), APIError> {
-		let mut fut = Box::pin(self.inner.htlc_handling_failed(failure_type));
+		let mut fut = pin!(self.inner.htlc_handling_failed(failure_type));
 
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
@@ -2252,7 +2252,7 @@ where
 	pub fn payment_forwarded(
 		&self, next_channel_id: ChannelId, skimmed_fee_msat: u64,
 	) -> Result<(), APIError> {
-		let mut fut = Box::pin(self.inner.payment_forwarded(next_channel_id, skimmed_fee_msat));
+		let mut fut = pin!(self.inner.payment_forwarded(next_channel_id, skimmed_fee_msat));
 
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
@@ -2293,7 +2293,7 @@ where
 		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
 	) -> Result<(), APIError> {
 		let mut fut =
-			Box::pin(self.inner.channel_open_abandoned(counterparty_node_id, user_channel_id));
+			pin!(self.inner.channel_open_abandoned(counterparty_node_id, user_channel_id));
 
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
@@ -2312,8 +2312,7 @@ where
 	pub fn channel_open_failed(
 		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
 	) -> Result<(), APIError> {
-		let mut fut =
-			Box::pin(self.inner.channel_open_failed(counterparty_node_id, user_channel_id));
+		let mut fut = pin!(self.inner.channel_open_failed(counterparty_node_id, user_channel_id));
 
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
@@ -2335,7 +2334,7 @@ where
 		&self, user_channel_id: u128, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 	) -> Result<(), APIError> {
 		let mut fut =
-			Box::pin(self.inner.channel_ready(user_channel_id, channel_id, counterparty_node_id));
+			pin!(self.inner.channel_ready(user_channel_id, channel_id, counterparty_node_id));
 
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);

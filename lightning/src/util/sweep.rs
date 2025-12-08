@@ -35,10 +35,11 @@ use bitcoin::{BlockHash, ScriptBuf, Transaction, Txid};
 
 use core::future::Future;
 use core::ops::Deref;
+use core::pin::{pin, Pin};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task;
 
-use super::async_poll::{dummy_waker, AsyncResult};
+use super::async_poll::dummy_waker;
 
 /// The number of blocks we wait before we prune the tracked spendable outputs.
 pub const PRUNE_DELAY_BLOCKS: u32 = ARCHIVAL_DELAY_BLOCKS + ANTI_REORG_DELAY;
@@ -609,15 +610,32 @@ where
 		sweeper_state.dirty = true;
 	}
 
-	fn persist_state<'a>(&self, sweeper_state: &SweeperState) -> AsyncResult<'a, (), io::Error> {
+	#[cfg(feature = "std")]
+	fn persist_state<'a>(
+		&'a self, sweeper_state: &SweeperState,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send + 'static>> {
 		let encoded = sweeper_state.encode();
 
-		self.kv_store.write(
+		Box::pin(self.kv_store.write(
 			OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
 			OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
 			OUTPUT_SWEEPER_PERSISTENCE_KEY,
 			encoded,
-		)
+		))
+	}
+
+	#[cfg(not(feature = "std"))]
+	fn persist_state<'a>(
+		&'a self, sweeper_state: &SweeperState,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static>> {
+		let encoded = sweeper_state.encode();
+
+		Box::pin(self.kv_store.write(
+			OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
+			OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+			OUTPUT_SWEEPER_PERSISTENCE_KEY,
+			encoded,
+		))
 	}
 
 	/// Updates the sweeper state by executing the given callback. Persists the state afterwards if it is marked dirty,
@@ -970,7 +988,7 @@ where
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
 		exclude_static_outputs: bool, delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
-		let mut fut = Box::pin(self.sweeper.track_spendable_outputs(
+		let mut fut = pin!(self.sweeper.track_spendable_outputs(
 			output_descriptors,
 			channel_id,
 			exclude_static_outputs,
@@ -1005,7 +1023,7 @@ where
 	///
 	/// Wraps [`OutputSweeper::regenerate_and_broadcast_spend_if_necessary`].
 	pub fn regenerate_and_broadcast_spend_if_necessary(&self) -> Result<(), ()> {
-		let mut fut = Box::pin(self.sweeper.regenerate_and_broadcast_spend_if_necessary());
+		let mut fut = pin!(self.sweeper.regenerate_and_broadcast_spend_if_necessary());
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
 		match fut.as_mut().poll(&mut ctx) {
