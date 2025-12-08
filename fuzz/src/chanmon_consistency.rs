@@ -74,11 +74,11 @@ use lightning::sign::{
 	SignerProvider,
 };
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::util::async_poll::{MaybeSend, MaybeSync};
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
+use lightning::util::native_async::{MaybeSend, MaybeSync};
 use lightning::util::ser::{LengthReadable, ReadableArgs, Writeable, Writer};
 use lightning::util::test_channel_signer::{EnforcementState, SignerOp, TestChannelSigner};
 use lightning::util::test_utils::TestWalletSource;
