@@ -25,8 +25,9 @@ use crate::blinded_path::payment::{
 use crate::chain::transaction;
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
+use crate::ln::msgs;
+use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::ln::types::ChannelId;
-use crate::ln::{msgs, LocalHTLCFailureReason};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::static_invoice::StaticInvoice;
