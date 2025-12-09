@@ -1015,10 +1015,10 @@ impl Balance {
 	/// The "offchain balance", in satoshis.
 	///
 	/// When the channel has yet to close, this returns the balance we are owed, ignoring fees,
-	/// reserve values, anchors, and dust limits. This more closely corresponds with the sum of our
-	/// inbound and outbound payments and may be more useful as the balance displayed in an
-	/// end-user wallet. Still, it is somewhat misleading from an on-chain-funds-available
-	/// perspective.
+	/// reserve values, anchors, and dust limits. This is the sum of our inbound and outbound
+	/// payments, initial channel contribution, and splices and may be more useful as the balance
+	/// displayed in an end-user wallet. Still, it is somewhat misleading from an
+	/// on-chain-funds-available perspective.
 	///
 	/// For pending payments, splice behavior, or behavior after a channel has been closed, this
 	/// behaves the same as [`Self::claimable_amount_satoshis`].
