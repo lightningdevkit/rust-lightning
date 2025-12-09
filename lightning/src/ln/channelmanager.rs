@@ -41,6 +41,8 @@ use crate::chain;
 use crate::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
 };
+#[cfg(feature = "safe_channels")]
+use crate::chain::channelmonitor::UpdateChannelState;
 use crate::chain::channelmonitor::{
 	Balance, ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 	WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER,
@@ -207,8 +209,7 @@ use crate::ln::script::ShutdownScript;
 // our payment, which we can use to decode errors or inform the user that the payment was sent.
 
 /// Information about where a received HTLC('s onion) has indicated the HTLC should go.
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub enum PendingHTLCRouting {
 	/// An HTLC which should be forwarded on to another node.
 	Forward {
@@ -386,8 +387,7 @@ impl PendingHTLCRouting {
 
 /// Information about an incoming HTLC, including the [`PendingHTLCRouting`] describing where it
 /// should go next.
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub struct PendingHTLCInfo {
 	/// Further routing details based on whether the HTLC is being forwarded or received.
 	pub routing: PendingHTLCRouting,
@@ -429,15 +429,14 @@ pub struct PendingHTLCInfo {
 	pub skimmed_fee_msat: Option<u64>,
 }
 
-#[derive(Clone, Debug)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum HTLCFailureMsg {
 	Relay(msgs::UpdateFailHTLC),
 	Malformed(msgs::UpdateFailMalformedHTLC),
 }
 
 /// Stores whether we can't forward an HTLC or relevant forwarding info
-#[cfg_attr(test, derive(Debug))]
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum PendingHTLCStatus {
 	Forward(PendingHTLCInfo),
 	Fail(HTLCFailureMsg),
@@ -1009,13 +1008,18 @@ impl MsgHandleErrInternal {
 /// be sent in the order they appear in the return value, however sometimes the order needs to be
 /// variable at runtime (eg FundedChannel::channel_reestablish needs to re-send messages in the order
 /// they were originally sent). In those cases, this enum is also returned.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) enum RAACommitmentOrder {
 	/// Send the CommitmentUpdate messages first
 	CommitmentFirst,
 	/// Send the RevokeAndACK message first
 	RevokeAndACKFirst,
 }
+
+impl_writeable_tlv_based_enum!(RAACommitmentOrder,
+	(0, CommitmentFirst) => {},
+	(1, RevokeAndACKFirst) => {},
+);
 
 /// Similar to scenarios used by [`RAACommitmentOrder`], this determines whether a `channel_ready`
 /// message should be sent first (i.e., prior to a `commitment_update`) or after the initial
@@ -9119,6 +9123,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				payment_info,
 			}],
 			channel_id: Some(prev_hop.channel_id),
+			#[cfg(feature = "safe_channels")]
+			channel_state: None,
 		};
 
 		// We don't have any idea if this is a duplicate claim without interrogating the
@@ -9488,6 +9494,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		for action in actions.into_iter() {
 			match action {
 				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim } => {
+					let logger = WithContext::from(&self.logger, None, None, Some(payment_hash));
+					log_trace!(logger, "Handling PaymentClaimed monitor update completion action");
+
 					if let Some((counterparty_node_id, chan_id, claim_ptr)) = pending_mpp_claim {
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						per_peer_state.get(&counterparty_node_id).map(|peer_state_mutex| {
@@ -9563,6 +9572,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						// `payment_id` should suffice to ensure we never spuriously drop a second
 						// event for a duplicate payment.
 						if !pending_events.contains(&event_action) {
+							log_trace!(logger, "Queuing PaymentClaimed event with event completion action {:?}", event_action.1);
 							pending_events.push_back(event_action);
 						}
 					}
@@ -10446,6 +10456,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				fail_chan!("Already had channel with the new channel_id");
 			},
 			hash_map::Entry::Vacant(e) => {
+				#[cfg(feature = "safe_channels")]
+				{
+					monitor.update_channel_state(UpdateChannelState::Funded((&mut chan).into()));
+				}
 				let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 				if let Ok(persist_state) = monitor_res {
 					// There's no problem signing a counterparty's funding transaction if our monitor
@@ -10610,6 +10624,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				match chan
 					.funding_signed(&msg, best_block, &self.signer_provider, &self.logger)
 					.and_then(|(funded_chan, monitor)| {
+						#[cfg(feature = "safe_channels")]
+						{
+							monitor.update_channel_state(UpdateChannelState::Funded(funded_chan.into()));
+						}
 						self.chain_monitor
 							.watch_channel(funded_chan.context.channel_id(), monitor)
 							.map_err(|()| {
@@ -11328,6 +11346,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 				if let Some(chan) = chan.as_funded_mut() {
 					if let Some(monitor) = monitor_opt {
+						#[cfg(feature = "safe_channels")]
+						{
+							monitor.update_channel_state(UpdateChannelState::Funded(chan.into()));
+						}
 						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
 							handle_initial_monitor!(self, persist_state, peer_state_lock, peer_state,
@@ -13752,6 +13774,8 @@ where
 						updates: vec![ChannelMonitorUpdateStep::ReleasePaymentComplete {
 							htlc: htlc_id,
 						}],
+						#[cfg(feature = "safe_channels")]
+						channel_state: None,
 					};
 
 					let during_startup =
@@ -17143,17 +17167,20 @@ where
 
 				let logger = WithChannelMonitor::from(&args.logger, monitor, None);
 				let channel_id = monitor.channel_id();
-				log_info!(
-					logger,
-					"Queueing monitor update to ensure missing channel is force closed",
-				);
 				let monitor_update = ChannelMonitorUpdate {
 					update_id: monitor.get_latest_update_id().saturating_add(1),
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
 						should_broadcast: true,
 					}],
 					channel_id: Some(monitor.channel_id()),
+					#[cfg(feature = "safe_channels")]
+					channel_state: Some(UpdateChannelState::Closed),
 				};
+				log_info!(
+					logger,
+					"Queueing monitor update {} to ensure missing channel is force closed",
+					monitor_update.update_id
+				);
 				let funding_txo = monitor.get_funding_txo();
 				let update = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
 					counterparty_node_id,
@@ -17786,6 +17813,8 @@ where
 												updates: vec![ChannelMonitorUpdateStep::ReleasePaymentComplete {
 													htlc: htlc_id,
 												}],
+												#[cfg(feature = "safe_channels")]
+												channel_state: None,
 											},
 										});
 									}
