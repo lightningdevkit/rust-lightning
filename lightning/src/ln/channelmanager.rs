@@ -13256,7 +13256,7 @@ where
 
 		let data = match sessions.get(&recurrence_id) {
 			None => return Err(Bolt12SemanticError::InvalidRecurrence),
-			Some(data) => data
+			Some(data) => data,
 		};
 
 		let create_pending_payment_fn = |retryable_invoice_request: RetryableInvoiceRequest| {
@@ -13294,15 +13294,20 @@ where
 			"Derived KeyPair does not match the payer signing public key"
 		);
 
-		let builder = offer.
-			request_invoice_with_explicit_signing_pubkey(keys.public_key(), expanded_key, nonce, secp_ctx, payment_id)?;
+		let builder = offer.request_invoice_with_explicit_signing_pubkey(
+			keys.public_key(),
+			expanded_key,
+			nonce,
+			secp_ctx,
+			payment_id,
+		)?;
 
 		let builder = builder.chain_hash(self.chain_hash)?;
 		let builder = builder.recurrence_counter(data.next_recurrence_counter);
 
 		let builder = match data.recurrence_start {
 			None => builder,
-			Some(start) => builder.recurrence_start(start)
+			Some(start) => builder.recurrence_start(start),
 		};
 
 		let builder = match quantity {
@@ -13318,16 +13323,20 @@ where
 			Some(payer_note) => builder.payer_note(payer_note),
 		};
 
-		let invoice_request = builder.build()?
-			.sign(|message: &UnsignedInvoiceRequest|
+		let invoice_request = builder
+			.build()?
+			.sign(|message: &UnsignedInvoiceRequest| {
 				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-			).expect("failed verifying signature");
+			})
+			.expect("failed verifying signature");
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		self.flow.enqueue_invoice_request(
-			invoice_request.clone(), payment_id, nonce,
-			self.get_peers_for_blinded_path()
+			invoice_request.clone(),
+			payment_id,
+			nonce,
+			self.get_peers_for_blinded_path(),
 		)?;
 
 		let retryable_invoice_request = RetryableInvoiceRequest {
@@ -13337,6 +13346,95 @@ where
 		};
 
 		create_pending_payment_fn(retryable_invoice_request)
+	}
+
+	/// Explicitly cancels an active BOLT12 recurrence session.
+	///
+	/// If payer wish to stop a recurrence, they must actively signal
+	/// cancellation to the payee so that no further recurrence-enabled
+	/// invoices are issued or accepted.
+	///
+	/// This method constructs and sends a final `InvoiceRequest` carrying a
+	/// recurrence cancellation signal, derived from the existing outbound
+	/// recurrence session identified by `recurrence_id`.
+	///
+	/// Cancellation is treated as an explicit protocol action rather than a
+	/// local state change. Once the cancellation request is enqueued, the
+	/// corresponding outbound recurrence session is removed, ensuring that no
+	/// further payments can be initiated for that recurrence.
+	///
+	/// Returns an error if the recurrence does not exist or the cancellation
+	/// request cannot be constructed or enqueued.
+	pub fn cancel_recurrence(
+		&self, recurrence_id: RecurrenceId,
+	) -> Result<(), Bolt12SemanticError> {
+		let mut sessions = self.active_outbound_recurrence_sessions.lock().unwrap();
+
+		let data = match sessions.get(&recurrence_id) {
+			None => return Err(Bolt12SemanticError::InvalidRecurrence),
+			Some(data) => data,
+		};
+
+		let entropy = &*self.entropy_source;
+		let nonce = Nonce::from_entropy_source(entropy);
+		let expanded_key = &self.inbound_payment_key;
+		let secp_ctx = &self.secp_ctx;
+
+		let offer = &data.offer;
+
+		let keys = {
+			let mut seed = expanded_key.hmac_for_offer();
+			seed.input(&recurrence_id.0);
+
+			let hmac = Hmac::from_engine(seed);
+			let privkey = SecretKey::from_slice(hmac.as_byte_array()).unwrap();
+			Keypair::from_secret_key(secp_ctx, &privkey)
+		};
+
+		debug_assert_eq!(
+			keys.public_key(),
+			data.payer_signing_pubkey,
+			"Derived KeyPair does not match the payer signing public key"
+		);
+
+		// Create a Dummy Payment ID, we don't accept a response back
+		let payment_id = PaymentId([1; 32]);
+
+		let builder = offer.request_invoice_with_explicit_signing_pubkey(
+			keys.public_key(),
+			expanded_key,
+			nonce,
+			secp_ctx,
+			payment_id,
+		)?;
+		let builder = builder.chain_hash(self.chain_hash)?;
+
+		// Spec commentary: Spec is not clear about when sending cancel invoice request
+		// do we need to set the appropriate recurrence_counter, and recurrence_start.
+		// We decide to be conservative here, by still setting them appropriately.
+		let builder = builder.recurrence_counter(data.next_recurrence_counter);
+
+		let builder = match data.recurrence_start {
+			None => builder,
+			Some(start) => builder.recurrence_start(start),
+		};
+
+		let builder = builder.recurrence_cancel();
+
+		let invoice_request = builder.build_and_sign()?;
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		self.flow.enqueue_invoice_request(
+			invoice_request.clone(),
+			payment_id,
+			nonce,
+			self.get_peers_for_blinded_path(),
+		)?;
+
+		// Ones we enqueue the invoice request, we remove the data from sessions
+		sessions.remove(&recurrence_id);
+
+		Ok(())
 	}
 
 	/// Pays for an [`Offer`] which was built by resolving a human readable name. It is otherwise
