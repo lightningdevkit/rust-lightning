@@ -50,7 +50,7 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch};
 use crate::events::{
 	self, ClosureReason, Event, EventHandler, EventsProvider, HTLCHandlingFailureType,
-	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
+	InboundChannelFunds, PaymentFailureReason, PaymentPurpose, ReplayEvent,
 };
 use crate::events::{FundingInfo, PaidBolt12Invoice};
 use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
@@ -93,9 +93,11 @@ use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};
 use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestVerifiedFromOffer};
+use crate::offers::invoice_request::{
+	InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer,
+};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferFromHrn};
+use crate::offers::offer::{Offer, OfferFromHrn, RecurrenceData, RecurrenceFields};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::Refund;
 use crate::offers::static_invoice::StaticInvoice;
@@ -2680,6 +2682,20 @@ pub struct ChannelManager<
 	#[cfg(not(test))]
 	flow: OffersMessageFlow<MR, L>,
 
+	/// Tracks all active recurrence sessions for this node.
+	///
+	/// Each entry is keyed by the payer’s `payer_signing_pubkey` from the
+	/// initial `invoice_request`. The associated `RecurrenceData` stores
+	/// everything the payee needs to validate incoming `invoice_request`s
+	/// and generate invoices for the appropriate recurrence period.
+	///
+	/// This is used by the payee to:
+	/// - verify the correctness of each incoming `invoice_request`
+	///   (period offset, counter, basetime, etc.)
+	/// - ensure continuity across periods
+	/// - maintain recurrence state until cancellation or completion.
+	active_recurrence_sessions: Mutex<HashMap<PublicKey, RecurrenceData>>,
+
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) best_block: RwLock<BestBlock>,
@@ -3979,6 +3995,8 @@ where
 			tx_broadcaster,
 			router,
 			flow,
+
+			active_recurrence_sessions: Mutex::new(new_hash_map()),
 
 			best_block: RwLock::new(params.best_block),
 
@@ -9535,6 +9553,32 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						payment_id,
 						durable_preimage_channel,
 					}) = payment {
+						// At this point, the payment has been successfully claimed. If it belongs
+						// to a recurring offer, we can safely advance the recurrence state.
+
+						match &purpose {
+							PaymentPurpose::Bolt12OfferPayment {
+								payment_context: Bolt12OfferContext {
+									invoice_request: InvoiceRequestFields {
+										payer_signing_pubkey,
+										recurrence_counter: Some(paid_counter),
+										..
+									},
+									..
+								},
+								..
+							} => {
+								let mut sessions = self.active_recurrence_sessions.lock().unwrap();
+
+								if let Some(data) = sessions.get_mut(payer_signing_pubkey) {
+									if data.next_payable_counter == *paid_counter {
+										data.next_payable_counter += 1;
+									}
+								}
+							},
+							_ => {}
+						}
+
 						let event = events::Event::PaymentClaimed {
 							payment_hash,
 							purpose,
@@ -12809,6 +12853,32 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		Ok(builder.into())
 	}
 
+	/// Creates an [`OfferBuilder`] for a recurring offer.
+	///
+	/// This behaves like [`Self::create_offer_builder`] but additionally embeds
+	/// the recurrence TLVs defined in `recurrence_fields`.
+	///
+	/// Use this when constructing subscription-style offers where each invoice
+	/// request must correspond to a specific recurrence period. The provided
+	/// [`RecurrenceFields`] specify:
+	/// - how often invoices may be requested,
+	/// - when the first period begins,
+	/// - optional paywindows, and
+	/// - optional period limits.
+	///
+	/// Refer to [`Self::create_offer_builder`] for notes on privacy,
+	/// requirements, and potential failure cases.
+	pub fn create_offer_builder_with_recurrence(
+		&$self,
+		recurrence_fields: RecurrenceFields
+	) -> Result<$builder, Bolt12SemanticError> {
+		let builder = $self.flow.create_offer_builder_with_recurrence(
+			&*$self.entropy_source, recurrence_fields, $self.get_peers_for_blinded_path()
+		)?;
+
+		Ok(builder.into())
+	}
+
 	/// Same as [`Self::create_offer_builder`], but allows specifying a custom [`MessageRouter`]
 	/// instead of using the [`MessageRouter`] provided to the [`ChannelManager`] at construction.
 	///
@@ -13226,6 +13296,13 @@ where
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
+		#[cfg(not(feature = "std"))]
+		let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
+		#[cfg(feature = "std")]
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
 		let builder = self.flow.create_invoice_builder_from_refund(
 			&self.router,
 			entropy,
@@ -13235,6 +13312,7 @@ where
 				self.create_inbound_payment(Some(amount_msats), relative_expiry, None)
 					.map_err(|()| Bolt12SemanticError::InvalidAmount)
 			},
+			created_at,
 		)?;
 
 		let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
@@ -15387,7 +15465,7 @@ where
 					None => return None,
 				};
 
-				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
+				let verified_invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
 					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
 					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot, invoice_request }) => {
 						self.pending_events.lock().unwrap().push_back((Event::StaticInvoiceRequested {
@@ -15398,6 +15476,90 @@ where
 					},
 					Err(_) => return None,
 				};
+				let invoice_request = verified_invoice_request.inner();
+
+				#[cfg(not(feature = "std"))]
+				let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
+				#[cfg(feature = "std")]
+				let created_at = std::time::SystemTime::now()
+					.duration_since(std::time::SystemTime::UNIX_EPOCH)
+					.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
+				// Recurrence checks
+				let recurrence_basetime = if let Some(recurrence_fields) = invoice_request.recurrence_fields() {
+					let payer_id = invoice_request.payer_signing_pubkey();
+					let mut sessions = self.active_recurrence_sessions.lock().unwrap();
+
+					// We first categorise the invoice request based on it's type.
+					let recurrence_counter = invoice_request.recurrence_counter();
+					let recurrence_cancel = invoice_request.recurrence_cancel();
+					let existing_session = sessions.get(&payer_id);
+
+					match (existing_session, recurrence_counter, recurrence_cancel) {
+						// This represents case where the payer, didn't support recurrence
+						// but we set recurrence optional so we allow payer to pay one-off
+						(None, None, None) => { None },
+						// It's the first invoice request in recurrence series
+						(None, Some(0), None) => {
+							let recurrence_basetime = recurrence_fields
+								.recurrence_base
+								.map(|base| base.basetime)
+								.unwrap_or(created_at.as_secs());
+
+							// Next we prepare recurrence_data to be stored in our recurrence session
+							let recurrence_data = RecurrenceData {
+								invoice_request_start: invoice_request.recurrence_start(),
+								next_payable_counter: 0,
+								recurrence_basetime,
+							};
+							// Now we store it in our active_recurrence_session
+							sessions.insert(payer_id, recurrence_data);
+
+							Some(recurrence_basetime)
+
+						},
+						// it's a successive invoice request in recurrence series
+						(Some(data), Some(counter), None) if counter > 0 => {
+							// We confirm all the data to ensure this is an expected successive invoice request
+							if data.invoice_request_start != invoice_request.recurrence_start()
+								|| data.next_payable_counter != counter
+							{
+								return None
+							}
+
+							// Next we ensure that the successive invoice_request is received between the period's paywindow
+							if let Some(window) = recurrence_fields.recurrence_paywindow {
+								let period_index = data.invoice_request_start.unwrap_or(0) + counter;
+
+								let period_start = data.recurrence_basetime
+									+ period_index as u64 * recurrence_fields.recurrence.period_length_secs().unwrap();
+
+								if created_at.as_secs() < period_start - window.seconds_before as u64
+									|| created_at.as_secs() >= period_start + window.seconds_after as u64
+								{
+									return None
+								}
+							}
+
+							Some(data.recurrence_basetime)
+						},
+						// it's a cancel recurrence invoice request
+						(Some(_data), Some(counter), Some(())) if counter > 0 => {
+							// Here we simply remove the data from our sessions
+							sessions.remove(&payer_id);
+
+							// And since cancellation invoice request are stub invoice request,
+							// we don't respond to this invoice request
+							return None
+						},
+						_ => {
+							debug_assert!(false, "Should be unreachable, as all the invalid cases are handled during parsing");
+							return None
+						}
+					}
+				} else {
+					None
+				};
 
 				let get_payment_info = |amount_msats, relative_expiry| {
 					self.create_inbound_payment(
@@ -15407,17 +15569,22 @@ where
 					).map_err(|_| Bolt12SemanticError::InvalidAmount)
 				};
 
-				let (result, context) = match invoice_request {
+				let (result, context) = match verified_invoice_request {
 					InvoiceRequestVerifiedFromOffer::DerivedKeys(request) => {
 						let result = self.flow.create_invoice_builder_from_invoice_request_with_keys(
 							&self.router,
 							&request,
 							self.list_usable_channels(),
 							get_payment_info,
+							created_at
 						);
 
 						match result {
-							Ok((builder, context)) => {
+							Ok((mut builder, context)) => {
+								recurrence_basetime.map(|basetime|
+									builder.set_invoice_recurrence_basetime(basetime)
+								);
+
 								let res = builder
 									.build_and_sign(&self.secp_ctx)
 									.map_err(InvoiceError::from);
@@ -15438,10 +15605,14 @@ where
 							&request,
 							self.list_usable_channels(),
 							get_payment_info,
+							created_at
 						);
 
 						match result {
-							Ok((builder, context)) => {
+							Ok((mut builder, context)) => {
+								recurrence_basetime.map(|basetime|
+									builder.set_invoice_recurrence_basetime(basetime)
+								);
 								let res = builder
 									.build()
 									.map_err(InvoiceError::from)
@@ -17293,6 +17464,7 @@ where
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
+		let mut active_recurrence_sessions = Some(new_hash_map());
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs, option),
@@ -17311,6 +17483,7 @@ where
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
+			(23, active_recurrence_sessions, option),
 		});
 		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
@@ -18204,6 +18377,8 @@ where
 			tx_broadcaster: args.tx_broadcaster,
 			router: args.router,
 			flow,
+
+			active_recurrence_sessions: Mutex::new(active_recurrence_sessions.unwrap()),
 
 			best_block: RwLock::new(best_block),
 

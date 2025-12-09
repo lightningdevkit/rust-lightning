@@ -43,7 +43,7 @@ use crate::offers::invoice_request::{
 	InvoiceRequest, InvoiceRequestBuilder, InvoiceRequestVerifiedFromOffer, VerifiedInvoiceRequest,
 };
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Amount, DerivedMetadata, Offer, OfferBuilder};
+use crate::offers::offer::{Amount, DerivedMetadata, Offer, OfferBuilder, RecurrenceFields};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder};
@@ -539,7 +539,7 @@ where
 	}
 
 	fn create_offer_builder_intern<ES: Deref, PF, I>(
-		&self, entropy_source: ES, make_paths: PF,
+		&self, entropy_source: ES, recurrence_fields: Option<RecurrenceFields>, make_paths: PF,
 	) -> Result<(OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
@@ -561,6 +561,10 @@ where
 		let mut builder =
 			OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
 				.chain_hash(self.chain_hash);
+
+		if let Some(recurrence) = recurrence_fields {
+			builder = builder.recurrence(recurrence);
+		}
 
 		for path in make_paths(node_id, context, secp_ctx)? {
 			builder = builder.path(path)
@@ -601,11 +605,45 @@ where
 	where
 		ES::Target: EntropySource,
 	{
-		self.create_offer_builder_intern(&*entropy_source, |_, context, _| {
+		self.create_offer_builder_intern(&*entropy_source, None, |_, context, _| {
 			self.create_blinded_paths(peers, context)
 				.map(|paths| paths.into_iter().take(1))
 				.map_err(|_| Bolt12SemanticError::MissingPaths)
 		})
+		.map(|(builder, _)| builder)
+	}
+
+	/// Creates an [`OfferBuilder`] for a recurring offer.
+	///
+	/// This behaves like [`Self::create_offer_builder`] but additionally embeds
+	/// the recurrence TLVs defined in `recurrence_fields`.
+	///
+	/// Use this when constructing subscription-style offers where each invoice
+	/// request must correspond to a specific recurrence period. The provided
+	/// [`RecurrenceFields`] specify:
+	/// - how often invoices may be requested,
+	/// - when the first period begins,
+	/// - optional paywindows, and
+	/// - optional period limits.
+	///
+	/// Refer to [`Self::create_offer_builder`] for notes on privacy,
+	/// requirements, and potential failure cases.
+	pub fn create_offer_builder_with_recurrence<ES: Deref>(
+		&self, entropy_source: ES, recurrence_fields: RecurrenceFields,
+		peers: Vec<MessageForwardNode>,
+	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
+	where
+		ES::Target: EntropySource,
+	{
+		self.create_offer_builder_intern(
+			&*entropy_source,
+			Some(recurrence_fields),
+			|_, context, _| {
+				self.create_blinded_paths(peers, context)
+					.map(|paths| paths.into_iter().take(1))
+					.map_err(|_| Bolt12SemanticError::MissingPaths)
+			},
+		)
 		.map(|(builder, _)| builder)
 	}
 
@@ -626,7 +664,7 @@ where
 		ES::Target: EntropySource,
 	{
 		let receive_key = self.get_receive_auth_key();
-		self.create_offer_builder_intern(&*entropy_source, |node_id, context, secp_ctx| {
+		self.create_offer_builder_intern(&*entropy_source, None, |node_id, context, secp_ctx| {
 			router
 				.create_blinded_paths(node_id, receive_key, context, peers, secp_ctx)
 				.map(|paths| paths.into_iter().take(1))
@@ -651,7 +689,7 @@ where
 	where
 		ES::Target: EntropySource,
 	{
-		self.create_offer_builder_intern(&*entropy_source, |_, _, _| {
+		self.create_offer_builder_intern(&*entropy_source, None, |_, _, _| {
 			Ok(message_paths_to_always_online_node)
 		})
 	}
@@ -894,7 +932,7 @@ where
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	pub fn create_invoice_builder_from_refund<'a, ES: Deref, R: Deref, F>(
 		&'a self, router: &R, entropy_source: ES, refund: &'a Refund,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		usable_channels: Vec<ChannelDetails>, get_payment_info: F, created_at: Duration,
 	) -> Result<InvoiceBuilder<'a, DerivedSigningPubkey>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
@@ -925,18 +963,7 @@ where
 			)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		#[cfg(feature = "std")]
 		let builder = refund.respond_using_derived_keys(
-			payment_paths,
-			payment_hash,
-			expanded_key,
-			entropy,
-		)?;
-
-		#[cfg(not(feature = "std"))]
-		let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
-		#[cfg(not(feature = "std"))]
-		let builder = refund.respond_using_derived_keys_no_std(
 			payment_paths,
 			payment_hash,
 			created_at,
@@ -963,7 +990,7 @@ where
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
 	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, R: Deref, F>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		usable_channels: Vec<ChannelDetails>, get_payment_info: F, created_at: Duration,
 	) -> Result<(InvoiceBuilder<'a, DerivedSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		R::Target: Router,
@@ -992,15 +1019,9 @@ where
 			)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		#[cfg(feature = "std")]
-		let builder = invoice_request.respond_using_derived_keys(payment_paths, payment_hash);
-		#[cfg(not(feature = "std"))]
-		let builder = invoice_request.respond_using_derived_keys_no_std(
-			payment_paths,
-			payment_hash,
-			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
-		);
-		let builder = builder.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
+		let builder = invoice_request
+			.respond_using_derived_keys(payment_paths, payment_hash, created_at)
+			.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
 
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
@@ -1023,7 +1044,7 @@ where
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
 	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, R: Deref, F>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<ExplicitSigningPubkey>,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		usable_channels: Vec<ChannelDetails>, get_payment_info: F, created_at: Duration,
 	) -> Result<(InvoiceBuilder<'a, ExplicitSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		R::Target: Router,
@@ -1052,16 +1073,9 @@ where
 			)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		#[cfg(feature = "std")]
-		let builder = invoice_request.respond_with(payment_paths, payment_hash);
-		#[cfg(not(feature = "std"))]
-		let builder = invoice_request.respond_with_no_std(
-			payment_paths,
-			payment_hash,
-			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
-		);
-
-		let builder = builder.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
+		let builder = invoice_request
+			.respond_with(payment_paths, payment_hash, created_at)
+			.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
 
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 

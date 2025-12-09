@@ -474,6 +474,7 @@ impl InvoiceContents {
 			node_id: Some(&self.signing_pubkey),
 			amount: None,
 			payment_hash: None,
+			invoice_recurrence_basetime: None,
 		};
 
 		let experimental_invoice = ExperimentalInvoiceTlvStreamRef {
@@ -673,6 +674,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 				message_paths,
 				payment_hash,
 				amount,
+				invoice_recurrence_basetime,
 			},
 			experimental_offer_tlv_stream,
 			ExperimentalInvoiceTlvStream {
@@ -708,6 +710,11 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		}
 		if offer_tlv_stream.chains.as_ref().map_or(0, |chains| chains.len()) > 1 {
 			return Err(Bolt12SemanticError::UnexpectedChain);
+		}
+
+		// Static invoices MUST NOT set recurrence.
+		if invoice_recurrence_basetime.is_some() {
+			return Err(Bolt12SemanticError::UnexpectedRecurrence);
 		}
 
 		Ok(InvoiceContents {
@@ -908,6 +915,11 @@ mod tests {
 					issuer: None,
 					quantity_max: None,
 					issuer_id: Some(&signing_pubkey),
+					recurrence_compulsory: None,
+					recurrence_optional: None,
+					recurrence_base: None,
+					recurrence_paywindow: None,
+					recurrence_limit: None,
 				},
 				InvoiceTlvStreamRef {
 					paths: Some(Iterable(
@@ -922,6 +934,7 @@ mod tests {
 					features: None,
 					node_id: Some(&signing_pubkey),
 					message_paths: Some(&paths),
+					invoice_recurrence_basetime: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },

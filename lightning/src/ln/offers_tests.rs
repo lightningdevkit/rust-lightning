@@ -683,6 +683,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			recurrence_counter: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
@@ -841,6 +842,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			recurrence_counter: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
@@ -962,6 +964,7 @@ fn pays_for_offer_without_blinded_paths() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			recurrence_counter: None,
 		},
 	});
 
@@ -1229,6 +1232,7 @@ fn creates_and_pays_for_offer_with_retry() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			recurrence_counter: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
@@ -1294,6 +1298,7 @@ fn pays_bolt12_invoice_asynchronously() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			recurrence_counter: None,
 		},
 	});
 
@@ -1391,6 +1396,7 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			recurrence_counter: None,
 		},
 	});
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
@@ -2331,7 +2337,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 
 	let invoice = match verified_invoice_request {
 		InvoiceRequestVerifiedFromOffer::DerivedKeys(request) => {
-			request.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at).unwrap()
+			request.respond_using_derived_keys(payment_paths, payment_hash, created_at).unwrap()
 				.features_unchecked(Bolt12InvoiceFeatures::unknown())
 				.build_and_sign(&secp_ctx).unwrap()
 		},
