@@ -52,14 +52,6 @@ pub(crate) mod interactivetxs;
 // without the node parameter being mut. This is incorrect, and thus newer rustcs will complain
 // about an unnecessary mut. Thus, we silence the unused_mut warning in two test modules below.
 
-#[cfg(fuzzing)]
-pub use onion_utils::decode_fulfill_attribution_data;
-#[cfg(fuzzing)]
-pub use onion_utils::process_onion_failure;
-
-#[cfg(fuzzing)]
-pub use onion_utils::AttributionData;
-
 #[cfg(test)]
 #[allow(unused_mut)]
 mod async_payments_tests;
