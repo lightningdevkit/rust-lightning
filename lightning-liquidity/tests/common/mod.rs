@@ -3,12 +3,8 @@
 use lightning_liquidity::utils::time::TimeProvider;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManagerSync, LiquidityServiceConfig};
 
-use lightning::chain::{BestBlock, Filter};
-use lightning::ln::channelmanager::ChainParameters;
 use lightning::ln::functional_test_utils::{Node, TestChannelManager};
 use lightning::util::test_utils::{TestBroadcaster, TestKeysInterface, TestStore};
-
-use bitcoin::Network;
 
 use core::ops::Deref;
 
@@ -26,11 +22,6 @@ fn build_service_and_client_nodes<'a, 'b, 'c>(
 ) -> (LiquidityNode<'a, 'b, 'c>, LiquidityNode<'a, 'b, 'c>, Option<Node<'a, 'b, 'c>>) {
 	assert!(nodes.len() >= 2, "Need at least two nodes (service and client)");
 
-	let chain_params = ChainParameters {
-		network: Network::Testnet,
-		best_block: BestBlock::from_network(Network::Testnet),
-	};
-
 	let mut nodes_iter = nodes.into_iter();
 	let service_inner = nodes_iter.next().expect("missing service node");
 	let client_inner = nodes_iter.next().expect("missing client node");
@@ -40,8 +31,6 @@ fn build_service_and_client_nodes<'a, 'b, 'c>(
 		service_inner.keys_manager,
 		service_inner.keys_manager,
 		service_inner.node,
-		None::<Arc<dyn Filter + Send + Sync>>,
-		Some(chain_params.clone()),
 		service_kv_store,
 		service_inner.tx_broadcaster,
 		Some(service_config),
@@ -54,8 +43,6 @@ fn build_service_and_client_nodes<'a, 'b, 'c>(
 		client_inner.keys_manager,
 		client_inner.keys_manager,
 		client_inner.node,
-		None::<Arc<dyn Filter + Send + Sync>>,
-		Some(chain_params),
 		client_kv_store,
 		client_inner.tx_broadcaster,
 		None,
@@ -137,7 +124,6 @@ pub(crate) struct LiquidityNode<'a, 'b, 'c> {
 		&'c TestKeysInterface,
 		&'c TestKeysInterface,
 		&'a TestChannelManager<'b, 'c>,
-		Arc<dyn Filter + Send + Sync>,
 		Arc<TestStore>,
 		Arc<dyn TimeProvider + Send + Sync>,
 		&'c TestBroadcaster,
@@ -151,7 +137,6 @@ impl<'a, 'b, 'c> LiquidityNode<'a, 'b, 'c> {
 			&'c TestKeysInterface,
 			&'c TestKeysInterface,
 			&'a TestChannelManager<'b, 'c>,
-			Arc<dyn Filter + Send + Sync>,
 			Arc<TestStore>,
 			Arc<dyn TimeProvider + Send + Sync>,
 			&'c TestBroadcaster,

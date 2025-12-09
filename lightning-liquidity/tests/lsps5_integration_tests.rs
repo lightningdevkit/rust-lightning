@@ -7,9 +7,8 @@ use common::{
 	get_lsps_message, LSPSNodes, LiquidityNode,
 };
 
-use lightning::chain::{BestBlock, Filter};
 use lightning::events::ClosureReason;
-use lightning::ln::channelmanager::{ChainParameters, InterceptId};
+use lightning::ln::channelmanager::InterceptId;
 use lightning::ln::functional_test_utils::{
 	check_closed_event, close_channel, create_chan_between_nodes, create_chanmon_cfgs,
 	create_network, create_node_cfgs, create_node_chanmgrs, Node,
@@ -42,8 +41,6 @@ use lightning_liquidity::LiquidityManagerSync;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use lightning_types::payment::PaymentHash;
-
-use bitcoin::Network;
 
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -1601,18 +1598,10 @@ fn lsps5_service_handler_persistence_across_restarts() {
 		let node_chanmgrs_restart = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes_restart = create_network(2, &node_cfgs, &node_chanmgrs_restart);
 
-		// Create a new LiquidityManager with the same configuration and KV store to simulate restart
-		let chain_params = ChainParameters {
-			network: Network::Testnet,
-			best_block: BestBlock::from_network(Network::Testnet),
-		};
-
 		let restarted_service_lm = LiquidityManagerSync::new_with_custom_time_provider(
 			nodes_restart[0].keys_manager,
 			nodes_restart[0].keys_manager,
 			nodes_restart[0].node,
-			None::<Arc<dyn Filter + Send + Sync>>,
-			Some(chain_params),
 			service_kv_store,
 			nodes_restart[0].tx_broadcaster,
 			Some(service_config),
