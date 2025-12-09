@@ -8410,6 +8410,40 @@ where
 				should_persist = NotifyOption::DoPersist;
 			}
 
+			let now = duration_since_epoch.as_secs();
+
+			// Periodically scan active outbound recurrence sessions and trigger payments
+			// whose scheduled execution time has arrived.
+			//
+			// If a session's `next_trigger_time` has passed, we attempt the payment for the
+			// current recurrence cycle using `pay_for_recurrence`. A fresh `PaymentId` is
+			// generated so the attempt can be tracked independently.
+			//
+			// After triggering the payment we temporarily push the `next_trigger_time`
+			// forward by 30 seconds. This acts as a simple retry interval, allowing us to
+			// reattempt the same recurrence cycle if the payment fails or does not complete.
+			// The actual recurrence schedule will be updated once the cycle successfully
+			// completes.
+			{
+				let mut sessions = self.active_outbound_recurrence_sessions.lock().unwrap();
+
+				for (recurrence_id, data) in sessions.iter_mut() {
+					let payment_id = PaymentId(self.entropy_source.get_secure_random_bytes());
+
+					if data.next_trigger_time <= Some(now) {
+						let _ = self.pay_for_recurrence(
+							*recurrence_id,
+							None,
+							payment_id,
+							OptionalOfferPaymentParams::default(),
+						);
+
+						// Retry again in 30 seconds if the current cycle has not completed.
+						data.next_trigger_time = Some(now.saturating_add(30));
+					}
+				}
+			}
+
 			should_persist
 		});
 	}
@@ -13229,6 +13263,114 @@ where
 			recurrence_start,
 			create_pending_payment_fn,
 		)
+	}
+
+	/// Continues an active BOLT12 recurrence by sending the next invoice request.
+	///
+	/// Unlike [`pay_for_offer_with_recurrence`], which initiates a one-off payment
+	/// (or the primary request of a recurrence), this method operates on an existing
+	/// outbound recurrence session identified by `recurrence_id`.
+	///
+	/// The payer reuses the stored recurrence context to:
+	/// - derive a stable payer signing key,
+	/// - populate the next expected recurrence counter,
+	/// - and construct a correctly-linked `InvoiceRequest` for the next period.
+	///
+	/// This API enforces recurrence continuity by requiring an existing
+	/// recurrence session and rejecting attempts to pay unknown or expired
+	/// recurrences.
+	///
+	/// Returns an error if the recurrence does not exist, the payment ID is
+	/// duplicated, or the invoice request cannot be constructed or enqueued.
+	pub fn pay_for_recurrence(
+		&self, recurrence_id: RecurrenceId, amount_msats: Option<u64>, payment_id: PaymentId,
+		optional_params: OptionalOfferPaymentParams,
+	) -> Result<(), Bolt12SemanticError> {
+		let sessions = self.active_outbound_recurrence_sessions.lock().unwrap();
+
+		let data = match sessions.get(&recurrence_id) {
+			None => return Err(Bolt12SemanticError::InvalidRecurrence),
+			Some(data) => data
+		};
+
+		let create_pending_payment_fn = |retryable_invoice_request: RetryableInvoiceRequest| {
+			self.pending_outbound_payments
+				.add_new_awaiting_invoice(
+					payment_id,
+					StaleExpiration::TimerTicks(1),
+					optional_params.retry_strategy,
+					optional_params.route_params_config,
+					Some(retryable_invoice_request),
+				)
+				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
+		};
+
+		let entropy = &*self.entropy_source;
+		let nonce = Nonce::from_entropy_source(entropy);
+		let expanded_key = &self.inbound_payment_key;
+		let secp_ctx = &self.secp_ctx;
+
+		let offer = &data.offer;
+		let quantity = if offer.expects_quantity() { Some(1) } else { None };
+
+		let keys = {
+			let mut seed = expanded_key.hmac_for_offer();
+			seed.input(&recurrence_id.0);
+
+			let hmac = Hmac::from_engine(seed);
+			let privkey = SecretKey::from_slice(hmac.as_byte_array()).unwrap();
+			Keypair::from_secret_key(secp_ctx, &privkey)
+		};
+
+		debug_assert_eq!(
+			keys.public_key(),
+			data.payer_signing_pubkey,
+			"Derived KeyPair does not match the payer signing public key"
+		);
+
+		let builder = offer.
+			request_invoice_with_explicit_signing_pubkey(keys.public_key(), expanded_key, nonce, secp_ctx, payment_id)?;
+
+		let builder = builder.chain_hash(self.chain_hash)?;
+		let builder = builder.recurrence_counter(data.next_recurrence_counter);
+
+		let builder = match data.recurrence_start {
+			None => builder,
+			Some(start) => builder.recurrence_start(start)
+		};
+
+		let builder = match quantity {
+			None => builder,
+			Some(quantity) => builder.quantity(quantity)?,
+		};
+		let builder = match amount_msats {
+			None => builder,
+			Some(amount_msats) => builder.amount_msats(amount_msats)?,
+		};
+		let builder = match optional_params.payer_note {
+			None => builder,
+			Some(payer_note) => builder.payer_note(payer_note),
+		};
+
+		let invoice_request = builder.build()?
+			.sign(|message: &UnsignedInvoiceRequest|
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			).expect("failed verifying signature");
+
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		self.flow.enqueue_invoice_request(
+			invoice_request.clone(), payment_id, nonce,
+			self.get_peers_for_blinded_path()
+		)?;
+
+		let retryable_invoice_request = RetryableInvoiceRequest {
+			invoice_request: invoice_request.clone(),
+			nonce,
+			needs_retry: true,
+		};
+
+		create_pending_payment_fn(retryable_invoice_request)
 	}
 
 	/// Pays for an [`Offer`] which was built by resolving a human readable name. It is otherwise
