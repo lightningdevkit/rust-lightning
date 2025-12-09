@@ -772,6 +772,9 @@ where
 /// [`DefaultMessageRouter`] for deciding when to add additional dummy hops to the generated blinded
 /// paths.
 ///
+/// This may be useful in cases where you want a long-lived blinded path and anticipate channel(s)
+/// may close, but connections to specific peers will remain stable.
+///
 /// This message router can only route to a directly connected [`Destination`].
 ///
 /// # Privacy
