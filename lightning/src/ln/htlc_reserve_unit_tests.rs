@@ -2346,7 +2346,7 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 				get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_id);
 			let chan_signer = channel.as_funded().unwrap().get_signer();
 
-			let commitment_tx = CommitmentTransaction::new_without_broadcaster_value(
+			let commitment_tx = CommitmentTransaction::new_without_broadcaster_offchain_value(
 				commitment_number,
 				&remote_point,
 				node_1_balance_sat,

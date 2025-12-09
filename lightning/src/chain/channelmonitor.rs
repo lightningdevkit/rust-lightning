@@ -4579,7 +4579,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		nondust_htlcs: Vec<HTLCOutputInCommitment>,
 	) -> CommitmentTransaction {
 		let channel_parameters = &channel_parameters.as_counterparty_broadcastable();
-		CommitmentTransaction::new_without_broadcaster_value(
+		CommitmentTransaction::new_without_broadcaster_offchain_value(
 			commitment_number,
 			their_per_commitment_point,
 			to_broadcaster_value,

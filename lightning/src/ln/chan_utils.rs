@@ -1375,7 +1375,7 @@ impl HolderCommitmentTransaction {
 		for _ in 0..nondust_htlcs.len() {
 			counterparty_htlc_sigs.push(dummy_sig);
 		}
-		let inner = CommitmentTransaction::new_without_broadcaster_value(
+		let inner = CommitmentTransaction::new_without_broadcaster_offchain_value(
 			0, &dummy_key, 0, 0, 0, nondust_htlcs, &channel_parameters.as_counterparty_broadcastable(), &secp_ctx
 		);
 		HolderCommitmentTransaction {
@@ -1728,7 +1728,7 @@ impl CommitmentTransaction {
 		)
 	}
 
-	pub(crate) fn new_without_broadcaster_value(
+	pub(crate) fn new_without_broadcaster_offchain_value(
 		commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64,
 		to_countersignatory_value_sat: u64, feerate_per_kw: u32,
 		nondust_htlcs: Vec<HTLCOutputInCommitment>,
@@ -2385,7 +2385,7 @@ mod tests {
 
 		#[rustfmt::skip]
 		fn build(&self, to_broadcaster_sats: u64, to_countersignatory_sats: u64, nondust_htlcs: Vec<HTLCOutputInCommitment>) -> CommitmentTransaction {
-			CommitmentTransaction::new_without_broadcaster_value(
+			CommitmentTransaction::new_without_broadcaster_offchain_value(
 				self.commitment_number, &self.per_commitment_point, to_broadcaster_sats, to_countersignatory_sats, self.feerate_per_kw,
 				nondust_htlcs, &self.channel_parameters.as_holder_broadcastable(), &self.secp_ctx
 			)
