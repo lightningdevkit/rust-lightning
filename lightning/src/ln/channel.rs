@@ -30,6 +30,8 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::chain::chaininterface::{
 	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
 };
+#[cfg(feature = "safe_channels")]
+use crate::chain::channelmonitor::UpdateChannelState;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
 	LATENCY_GRACE_PERIOD_BLOCKS,
@@ -123,7 +125,7 @@ pub struct AvailableBalances {
 	pub next_outbound_htlc_minimum_msat: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FeeUpdateState {
 	// Inbound states mirroring InboundHTLCState
 	RemoteAnnounced,
@@ -138,16 +140,33 @@ enum FeeUpdateState {
 	Outbound,
 }
 
-#[derive(Debug)]
+impl_writeable_tlv_based_enum!(FeeUpdateState,
+	(0, RemoteAnnounced) => {},
+	(1, AwaitingRemoteRevokeToAnnounce) => {},
+	(2, Outbound) => {},
+);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum InboundHTLCRemovalReason {
 	FailRelay(msgs::OnionErrorPacket),
 	FailMalformed { sha256_of_onion: [u8; 32], failure_code: u16 },
 	Fulfill { preimage: PaymentPreimage, attribution_data: Option<AttributionData> },
 }
 
+impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,
+	(1, FailMalformed) => {
+		(0, sha256_of_onion, required),
+		(1, failure_code, required),
+	},
+	(2, Fulfill) => {
+		(0, preimage, required),
+		(1, attribution_data, required),
+	},
+	{0, FailRelay} => (),
+);
+
 /// Represents the resolution status of an inbound HTLC.
-#[cfg_attr(test, derive(Debug))]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum InboundHTLCResolution {
 	/// Resolved implies the action we must take with the inbound HTLC has already been determined,
 	/// i.e., we already know whether it must be failed back or forwarded.
@@ -170,7 +189,7 @@ impl_writeable_tlv_based_enum!(InboundHTLCResolution,
 	},
 );
 
-#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum InboundHTLCState {
 	/// Offered by remote, to be included in next local commitment tx. I.e., the remote sent an
 	/// update_add_htlc message for this HTLC.
@@ -224,6 +243,14 @@ enum InboundHTLCState {
 	/// ChannelMonitor::provide_latest_local_commitment_tx will not include this HTLC.
 	LocalRemoved(InboundHTLCRemovalReason),
 }
+
+impl_writeable_tlv_based_enum!(InboundHTLCState,
+	(3, Committed) => {},	// Strangely this one needs to come first?!?
+	{0, RemoteAnnounced} => (),
+	{1, AwaitingRemoteRevokeToAnnounce} => (),
+	{2, AwaitingAnnouncedRemoteRevoke} => (),
+	{4, LocalRemoved} => (),
+);
 
 impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
 	fn from(state: &InboundHTLCState) -> Option<InboundHTLCStateDetails> {
@@ -301,7 +328,7 @@ impl InboundHTLCState {
 	}
 }
 
-#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct InboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -310,8 +337,15 @@ struct InboundHTLCOutput {
 	state: InboundHTLCState,
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(Clone, PartialEq))]
+impl_writeable_tlv_based!(InboundHTLCOutput, {
+	(0, htlc_id, required),
+	(1, amount_msat, required),
+	(2, cltv_expiry, required),
+	(3, payment_hash, required),
+	(4, state, required),
+});
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum OutboundHTLCState {
 	/// Added by us and included in a commitment_signed (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -343,6 +377,14 @@ enum OutboundHTLCState {
 	/// revoke_and_ack to drop completely.
 	AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome),
 }
+
+impl_writeable_tlv_based_enum!(OutboundHTLCState,
+	(3, Committed) => {},	// Strangely this one needs to come first?!?
+	{0, LocalAnnounced} => (),
+	{1, RemoteRemoved} => (),
+	{2, AwaitingRemoteRevokeToRemove} => (),
+	{4, AwaitingRemovedRemoteRevoke} => (),
+);
 
 impl From<&OutboundHTLCState> for OutboundHTLCStateDetails {
 	fn from(state: &OutboundHTLCState) -> OutboundHTLCStateDetails {
@@ -410,8 +452,7 @@ impl OutboundHTLCState {
 	}
 }
 
-#[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum OutboundHTLCOutcome {
 	/// We started always filling in the preimages here in 0.0.105, and the requirement
 	/// that the preimages always be filled in was added in 0.2.
@@ -422,6 +463,14 @@ enum OutboundHTLCOutcome {
 	Failure(HTLCFailReason),
 }
 
+impl_writeable_tlv_based_enum!(OutboundHTLCOutcome,
+	(0, Success) => {
+		(0, preimage, required),
+		(1, attribution_data, required),
+	},
+	{1, Failure} => (),
+);
+
 impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
 	fn into(self) -> Option<&'a HTLCFailReason> {
 		match self {
@@ -431,8 +480,7 @@ impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
 	}
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(Clone, PartialEq))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct OutboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -446,9 +494,21 @@ struct OutboundHTLCOutput {
 	hold_htlc: Option<()>,
 }
 
+impl_writeable_tlv_based!(OutboundHTLCOutput, {
+	(0, htlc_id, required),
+	(1, amount_msat, required),
+	(2, cltv_expiry, required),
+	(3, payment_hash, required),
+	(4, state, required),
+	(5, source, required),
+	(6, blinding_point, required),
+	(7, skimmed_fee_msat, required),
+	(8, send_timestamp, required),
+	(9, hold_htlc, required),
+});
+
 /// See AwaitingRemoteRevoke ChannelState for more info
-#[derive(Debug)]
-#[cfg_attr(test, derive(Clone, PartialEq))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum HTLCUpdateAwaitingACK {
 	AddHTLC {
 		// TODO: Time out if we're getting close to cltv_expiry
@@ -478,6 +538,33 @@ enum HTLCUpdateAwaitingACK {
 		sha256_of_onion: [u8; 32],
 	},
 }
+
+impl_writeable_tlv_based_enum!(HTLCUpdateAwaitingACK,
+	(0, AddHTLC) => {
+		(0, amount_msat, required),
+		(1, cltv_expiry, required),
+		(2, payment_hash, required),
+		(3, source, required),
+		(4, onion_routing_packet, required),
+		(5, skimmed_fee_msat, required),
+		(6, blinding_point, required),
+		(7, hold_htlc, required),
+	},
+	(1, ClaimHTLC) => {
+		(0, payment_preimage, required),
+		(1, attribution_data, required),
+		(2, htlc_id, required),
+	},
+	(2, FailHTLC) => {
+		(0, htlc_id, required),
+		(1, err_packet, required),
+	},
+	(3, FailMalformedHTLC) => {
+		(0, htlc_id, required),
+		(1, failure_code, required),
+		(2, sha256_of_onion, required),
+	}
+);
 
 macro_rules! define_state_flags {
 	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr, $get: ident, $set: ident, $clear: ident)),*], $extra_flags: expr) => {
@@ -716,6 +803,19 @@ enum ChannelState {
 	/// We've successfully negotiated a `closing_signed` dance. At this point, the `ChannelManager`
 	/// is about to drop us, but we store this anyway.
 	ShutdownComplete,
+}
+
+impl Writeable for ChannelState {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_u32().write(w)
+	}
+}
+
+impl Readable for ChannelState {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let state_u32 = u32::read(r)?;
+		ChannelState::from_u32(state_u32).map_err(|_| DecodeError::InvalidValue)
+	}
 }
 
 macro_rules! impl_state_flag {
@@ -1031,7 +1131,7 @@ macro_rules! secp_check {
 /// spamming the network with updates if the connection is flapping. Instead, we "stage" updates to
 /// our channel_update message and track the current state here.
 /// See implementation at [`super::channelmanager::ChannelManager::timer_tick_occurred`].
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum ChannelUpdateStatus {
 	/// We've announced the channel as enabled and are connected to our peer.
 	Enabled,
@@ -1044,8 +1144,7 @@ pub(super) enum ChannelUpdateStatus {
 }
 
 /// We track when we sent an `AnnouncementSignatures` to our peer in a few states, described here.
-#[cfg_attr(test, derive(Debug))]
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Debug, Eq)]
 pub enum AnnouncementSigsState {
 	/// We have not sent our peer an `AnnouncementSignatures` yet, or our peer disconnected since
 	/// we sent the last `AnnouncementSignatures`.
@@ -1225,7 +1324,7 @@ pub(crate) struct DisconnectResult {
 /// Tracks the transaction number, along with current and next commitment points.
 /// This consolidates the logic to advance our commitment number and request new
 /// commitment points from our signer.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct HolderCommitmentPoint {
 	next_transaction_number: u64,
 	current_point: Option<PublicKey>,
@@ -1239,6 +1338,15 @@ struct HolderCommitmentPoint {
 	previous_revoked_point: Option<PublicKey>,
 	last_revoked_point: Option<PublicKey>,
 }
+
+impl_writeable_tlv_based!(HolderCommitmentPoint, {
+	(0, next_transaction_number, required),
+	(1, current_point, required),
+	(2, next_point, required),
+	(3, pending_next_point, required),
+	(4, previous_revoked_point, required),
+	(5, last_revoked_point, required),
+});
 
 impl HolderCommitmentPoint {
 	#[rustfmt::skip]
@@ -1433,7 +1541,7 @@ pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 14 * 24 * 6 * 4;
 #[cfg(test)]
 pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
 }
@@ -2384,6 +2492,53 @@ pub(super) struct FundingScope {
 	minimum_depth_override: Option<u32>,
 }
 
+impl Eq for FundingScope {}
+
+impl PartialEq for FundingScope {
+	fn eq(&self, other: &Self) -> bool {
+		self.value_to_self_msat == other.value_to_self_msat
+			&& self.counterparty_selected_channel_reserve_satoshis
+				== other.counterparty_selected_channel_reserve_satoshis
+			&& self.holder_selected_channel_reserve_satoshis
+				== other.holder_selected_channel_reserve_satoshis
+			&& self.channel_transaction_parameters == other.channel_transaction_parameters
+			&& self.funding_transaction == other.funding_transaction
+			&& self.funding_tx_confirmed_in == other.funding_tx_confirmed_in
+			&& self.funding_tx_confirmation_height == other.funding_tx_confirmation_height
+			&& self.short_channel_id == other.short_channel_id
+			&& self.minimum_depth_override == other.minimum_depth_override
+	}
+}
+
+impl Clone for FundingScope {
+	fn clone(&self) -> Self {
+		FundingScope {
+			value_to_self_msat: self.value_to_self_msat,
+			counterparty_selected_channel_reserve_satoshis: self
+				.counterparty_selected_channel_reserve_satoshis,
+			holder_selected_channel_reserve_satoshis: self.holder_selected_channel_reserve_satoshis,
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new(
+				*self.holder_max_commitment_tx_output.lock().unwrap(),
+			),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new(
+				*self.counterparty_max_commitment_tx_output.lock().unwrap(),
+			),
+			#[cfg(any(test, fuzzing))]
+			next_local_fee: Mutex::new(*self.next_local_fee.lock().unwrap()),
+			#[cfg(any(test, fuzzing))]
+			next_remote_fee: Mutex::new(*self.next_remote_fee.lock().unwrap()),
+			channel_transaction_parameters: self.channel_transaction_parameters.clone(),
+			funding_transaction: self.funding_transaction.clone(),
+			funding_tx_confirmed_in: self.funding_tx_confirmed_in,
+			funding_tx_confirmation_height: self.funding_tx_confirmation_height,
+			short_channel_id: self.short_channel_id,
+			minimum_depth_override: self.minimum_depth_override,
+		}
+	}
+}
+
 impl Writeable for FundingScope {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
@@ -2453,6 +2608,7 @@ impl FundingScope {
 		self.channel_transaction_parameters.channel_value_satoshis
 	}
 
+	#[cfg(not(feature = "safe_channels"))]
 	pub(crate) fn get_value_to_self_msat(&self) -> u64 {
 		self.value_to_self_msat
 	}
@@ -2670,7 +2826,7 @@ impl FundingScope {
 /// Information about pending attempts at funding a channel. This includes funding currently under
 /// negotiation and any negotiated attempts waiting enough on-chain confirmations. More than one
 /// such attempt indicates use of RBF to increase the chances of confirmation.
-#[derive(Debug)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 struct PendingFunding {
 	funding_negotiation: Option<FundingNegotiation>,
 
@@ -2692,7 +2848,7 @@ impl_writeable_tlv_based!(PendingFunding, {
 	(7, received_funding_txid, option),
 });
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum FundingNegotiation {
 	AwaitingAck {
 		context: FundingNegotiationContext,
@@ -2772,7 +2928,7 @@ impl PendingFunding {
 	}
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SpliceInstructions {
 	adjusted_funding_contribution: SignedAmount,
 	our_funding_inputs: Vec<FundingTxInput>,
@@ -2800,7 +2956,7 @@ impl_writeable_tlv_based!(SpliceInstructions, {
 	(11, locktime, required),
 });
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum QuiescentAction {
 	Splice(SpliceInstructions),
 	#[cfg(any(test, fuzzing))]
@@ -6109,6 +6265,8 @@ where
 						should_broadcast: broadcast,
 					}],
 					channel_id: Some(self.channel_id()),
+					#[cfg(feature = "safe_channels")]
+					channel_state: Some(UpdateChannelState::Closed),
 				};
 				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), update))
 			} else {
@@ -6617,7 +6775,7 @@ fn check_v2_funding_inputs_sufficient(
 }
 
 /// Context for negotiating channels (dual-funded V2 open, splicing)
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FundingNegotiationContext {
 	/// Whether we initiated the funding negotiation.
 	pub is_initiator: bool,
@@ -6775,6 +6933,313 @@ where
 	/// in the case of splicing).
 	quiescent_action: Option<QuiescentAction>,
 }
+
+#[cfg(feature = "safe_channels")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FundedChannelState {
+	funding: FundingScope,
+	config: LegacyChannelConfig,
+	user_id: u128,
+	channel_id: ChannelId,
+	temporary_channel_id: Option<ChannelId>,
+	channel_state: ChannelState,
+	announcement_sigs_state_sent: bool,
+	pub(crate) latest_monitor_update_id: u64,
+	shutdown_scriptpubkey: Option<ShutdownScript>,
+	destination_script: ScriptBuf,
+	counterparty_next_commitment_transaction_number: u64,
+	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
+	pending_outbound_htlcs: Vec<OutboundHTLCOutput>,
+	holding_cell_htlc_updates: Vec<HTLCUpdateAwaitingACK>,
+	resend_order: RAACommitmentOrder,
+	monitor_pending_channel_ready: bool,
+	monitor_pending_revoke_and_ack: bool,
+	monitor_pending_commitment_signed: bool,
+	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
+	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+	monitor_pending_finalized_fulfills: Vec<(HTLCSource, Option<AttributionData>)>,
+	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
+	pending_update_fee: Option<(u32, FeeUpdateState)>,
+	holding_cell_update_fee: Option<u32>,
+	next_holder_htlc_id: u64,
+	next_counterparty_htlc_id: u64,
+	feerate_per_kw: u32,
+	update_time_counter: u32,
+	target_closing_feerate_sats_per_kw: Option<u32>,
+	channel_creation_height: u32,
+	counterparty_dust_limit_satoshis: u64,
+	holder_dust_limit_satoshis: u64,
+	counterparty_max_htlc_value_in_flight_msat: u64,
+	holder_max_htlc_value_in_flight_msat: u64,
+	counterparty_htlc_minimum_msat: u64,
+	holder_htlc_minimum_msat: u64,
+	counterparty_max_accepted_htlcs: u16,
+	holder_max_accepted_htlcs: u16,
+	minimum_depth: Option<u32>,
+	counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
+	is_manual_broadcast: bool,
+	is_batch_funding: Option<()>,
+	counterparty_next_commitment_point: Option<PublicKey>,
+	counterparty_current_commitment_point: Option<PublicKey>,
+	counterparty_node_id: PublicKey,
+	counterparty_shutdown_scriptpubkey: Option<ScriptBuf>,
+	commitment_secrets: CounterpartyCommitmentSecrets,
+	channel_update_status_enabled: bool,
+	announcement_sigs: Option<(Signature, Signature)>,
+	latest_inbound_scid_alias: Option<u64>,
+	outbound_scid_alias: u64,
+	historical_scids: Vec<u64>,
+	channel_pending_event_emitted: bool,
+	funding_tx_broadcast_safe_event_emitted: bool,
+	initial_channel_ready_event_emitted: bool,
+	local_initiated_shutdown: Option<()>,
+	channel_keys_id: [u8; 32],
+	blocked_monitor_updates: Vec<Vec<u8>>,
+	interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
+	holder_commitment_point: HolderCommitmentPoint,
+	pending_splice: Option<PendingFunding>,
+	quiescent_action: Option<QuiescentAction>,
+}
+
+#[cfg(feature = "safe_channels")]
+impl FundedChannelState {
+	pub fn get_cur_holder_commitment_transaction_number(&self) -> u64 {
+		self.holder_commitment_point.current_transaction_number()
+	}
+
+	pub fn get_cur_counterparty_commitment_transaction_number(&self) -> u64 {
+		self.counterparty_next_commitment_transaction_number + 1
+			- if self.channel_state.is_awaiting_remote_revoke() { 1 } else { 0 }
+	}
+
+	pub fn get_revoked_counterparty_commitment_transaction_number(&self) -> u64 {
+		let ret = self.counterparty_next_commitment_transaction_number + 2;
+		debug_assert_eq!(self.commitment_secrets.get_min_seen_secret(), ret);
+		ret
+	}
+}
+
+#[cfg(feature = "safe_channels")]
+impl<SP: Deref> From<&mut FundedChannel<SP>> for FundedChannelState
+where
+	SP::Target: SignerProvider,
+{
+	fn from(channel: &mut FundedChannel<SP>) -> Self {
+		// Replicate pre-serialization channel state change from original write method.
+		let mut channel_state = channel.context.channel_state;
+		match channel_state {
+			ChannelState::AwaitingChannelReady(_) => {},
+			ChannelState::ChannelReady(_) => {
+				if channel.quiescent_action.is_some() {
+					// If we're trying to get quiescent to do something, try again when we
+					// reconnect to the peer.
+					channel_state.set_awaiting_quiescence();
+				}
+				channel_state.clear_local_stfu_sent();
+				channel_state.clear_remote_stfu_sent();
+				if channel.should_reset_pending_splice_state(false)
+					|| !channel.has_pending_splice_awaiting_signatures()
+				{
+					// We shouldn't be quiescent anymore upon reconnecting if:
+					// - We were in quiescence but a splice/RBF was never negotiated or
+					// - We were in quiescence but the splice negotiation failed due to
+					// disconnecting
+					channel_state.clear_quiescent();
+				}
+			},
+			ChannelState::FundingNegotiated(_)
+				if channel.context.interactive_tx_signing_session.is_some() => {},
+			_ => debug_assert!(false, "Pre-funded/shutdown channels should not be written"),
+		}
+		channel_state.set_peer_disconnected();
+
+		// Replicate pre-serialization pending splice state change from original write method. Serialize the result
+		// already now because PendingFunding is difficult to clone.
+		//
+		// We don't have to worry about resetting the pending `FundingNegotiation` because we can only read
+		// `FundingNegotiation::AwaitingSignatures` variants anyway.
+		let pending_splice = channel
+			.pending_splice
+			.as_ref()
+			.filter(|_| !channel.should_reset_pending_splice_state(false))
+			.cloned();
+
+		// Prevent recursive serialization compiler errors by storing the serialized updates.
+		let serialized_blocked_monitor_updates =
+			channel.context.blocked_monitor_updates.iter().map(|update| update.encode()).collect();
+
+		// We only care about writing out the current state as if we had just disconnected, at
+		// which point we always set anything but AnnouncementSigsReceived to NotSent.
+		let announcement_sigs_state_sent = match channel.context.announcement_sigs_state {
+			AnnouncementSigsState::NotSent => false,
+			AnnouncementSigsState::MessageSent => false,
+			AnnouncementSigsState::Committed => false,
+			AnnouncementSigsState::PeerReceived => true,
+		};
+
+		// We only care about writing out the current state as it was announced, ie only either Enabled or Disabled. In
+		// the case of DisabledStaged, we most recently announced the channel as enabled.
+		let channel_update_status_enabled = match channel.context.channel_update_status {
+			ChannelUpdateStatus::Enabled => true,
+			ChannelUpdateStatus::DisabledStaged(_) => true,
+			ChannelUpdateStatus::EnabledStaged(_) => false,
+			ChannelUpdateStatus::Disabled => false,
+		};
+
+		// Mirror existing [`LegacyChannelConfig`] behavior by resetting this flag.
+		let mut config = channel.context.config;
+		config.options.accept_underpaying_htlcs = false;
+
+		FundedChannelState {
+			funding: channel.funding.clone(),
+			user_id: channel.context.user_id,
+			channel_id: channel.context.channel_id,
+			channel_state,
+			latest_monitor_update_id: channel.context.latest_monitor_update_id,
+			shutdown_scriptpubkey: channel.context.shutdown_scriptpubkey.clone(),
+			destination_script: channel.context.destination_script.clone(),
+			counterparty_next_commitment_transaction_number: channel
+				.context
+				.counterparty_next_commitment_transaction_number,
+			interactive_tx_signing_session: channel.context.interactive_tx_signing_session.clone(),
+			pending_inbound_htlcs: channel.context.pending_inbound_htlcs.clone(),
+			config,
+			temporary_channel_id: channel.context.temporary_channel_id,
+			announcement_sigs_state_sent,
+			pending_outbound_htlcs: channel.context.pending_outbound_htlcs.clone(),
+			holding_cell_htlc_updates: channel.context.holding_cell_htlc_updates.clone(),
+			resend_order: channel.context.resend_order.clone(),
+			monitor_pending_channel_ready: channel.context.monitor_pending_channel_ready,
+			monitor_pending_revoke_and_ack: channel.context.monitor_pending_revoke_and_ack,
+			monitor_pending_commitment_signed: channel.context.monitor_pending_commitment_signed,
+			monitor_pending_forwards: channel.context.monitor_pending_forwards.clone(),
+			monitor_pending_failures: channel.context.monitor_pending_failures.clone(),
+			monitor_pending_finalized_fulfills: channel
+				.context
+				.monitor_pending_finalized_fulfills
+				.clone(),
+			monitor_pending_update_adds: channel.context.monitor_pending_update_adds.clone(),
+			pending_update_fee: channel.context.pending_update_fee,
+			holding_cell_update_fee: channel.context.holding_cell_update_fee,
+			next_holder_htlc_id: channel.context.next_holder_htlc_id,
+			next_counterparty_htlc_id: channel.context.next_counterparty_htlc_id,
+			feerate_per_kw: channel.context.feerate_per_kw,
+			update_time_counter: channel.context.update_time_counter,
+			target_closing_feerate_sats_per_kw: channel.context.target_closing_feerate_sats_per_kw,
+			channel_creation_height: channel.context.channel_creation_height,
+			counterparty_dust_limit_satoshis: channel.context.counterparty_dust_limit_satoshis,
+			holder_dust_limit_satoshis: channel.context.holder_dust_limit_satoshis,
+			counterparty_max_htlc_value_in_flight_msat: channel
+				.context
+				.counterparty_max_htlc_value_in_flight_msat,
+			holder_max_htlc_value_in_flight_msat: channel
+				.context
+				.holder_max_htlc_value_in_flight_msat,
+			counterparty_htlc_minimum_msat: channel.context.counterparty_htlc_minimum_msat,
+			holder_htlc_minimum_msat: channel.context.holder_htlc_minimum_msat,
+			counterparty_max_accepted_htlcs: channel.context.counterparty_max_accepted_htlcs,
+			holder_max_accepted_htlcs: channel.context.holder_max_accepted_htlcs,
+			minimum_depth: channel.context.minimum_depth,
+			counterparty_forwarding_info: channel.context.counterparty_forwarding_info.clone(),
+			is_manual_broadcast: channel.context.is_manual_broadcast,
+			is_batch_funding: channel.context.is_batch_funding,
+			counterparty_next_commitment_point: channel.context.counterparty_next_commitment_point,
+			counterparty_current_commitment_point: channel
+				.context
+				.counterparty_current_commitment_point,
+			counterparty_node_id: channel.context.counterparty_node_id,
+			counterparty_shutdown_scriptpubkey: channel
+				.context
+				.counterparty_shutdown_scriptpubkey
+				.clone(),
+			commitment_secrets: channel.context.commitment_secrets.clone(),
+			channel_update_status_enabled,
+			announcement_sigs: channel.context.announcement_sigs,
+			latest_inbound_scid_alias: channel.context.latest_inbound_scid_alias,
+			outbound_scid_alias: channel.context.outbound_scid_alias,
+			historical_scids: channel.context.historical_scids.clone(),
+			channel_pending_event_emitted: channel.context.channel_pending_event_emitted,
+			funding_tx_broadcast_safe_event_emitted: channel
+				.context
+				.funding_tx_broadcast_safe_event_emitted,
+			initial_channel_ready_event_emitted: channel
+				.context
+				.initial_channel_ready_event_emitted,
+			local_initiated_shutdown: channel.context.local_initiated_shutdown,
+			channel_keys_id: channel.context.channel_keys_id,
+			blocked_monitor_updates: serialized_blocked_monitor_updates,
+			holder_commitment_point: channel.holder_commitment_point,
+			pending_splice,
+			quiescent_action: channel.quiescent_action.clone(),
+		}
+	}
+}
+
+#[cfg(feature = "safe_channels")]
+impl_writeable_tlv_based!(FundedChannelState, {
+	(0, funding, required),
+	(1, config, required),
+	(2, user_id, required),
+	(3, channel_id, required),
+	(4, temporary_channel_id, required),
+	(5, channel_state, required),
+	(6, announcement_sigs_state_sent, required),
+	(7, latest_monitor_update_id, required),
+	(8, shutdown_scriptpubkey, required),
+	(9, destination_script, required),
+	(10, counterparty_next_commitment_transaction_number, required),
+	(11, pending_inbound_htlcs, required_vec),
+	(12, pending_outbound_htlcs, required_vec),
+	(13, holding_cell_htlc_updates, required_vec),
+	(14, resend_order, required),
+	(15, monitor_pending_channel_ready, required),
+	(16, monitor_pending_revoke_and_ack, required),
+	(17, monitor_pending_commitment_signed, required),
+	(18, monitor_pending_forwards, required),
+	(19, monitor_pending_failures, required_vec),
+	(20, monitor_pending_finalized_fulfills, required),
+	(21, monitor_pending_update_adds, required),
+	(22, pending_update_fee, required),
+	(23, holding_cell_update_fee, required),
+	(24, next_holder_htlc_id, required),
+	(25, next_counterparty_htlc_id, required),
+	(26, feerate_per_kw, required),
+	(27, update_time_counter, required),
+	(28, target_closing_feerate_sats_per_kw, required),
+	(29, channel_creation_height, required),
+	(30, counterparty_dust_limit_satoshis, required),
+	(31, holder_dust_limit_satoshis, required),
+	(32, counterparty_max_htlc_value_in_flight_msat, required),
+	(33, holder_max_htlc_value_in_flight_msat, required),
+	(34, counterparty_htlc_minimum_msat, required),
+	(35, holder_htlc_minimum_msat, required),
+	(36, counterparty_max_accepted_htlcs, required),
+	(37, holder_max_accepted_htlcs, required),
+	(38, minimum_depth, required),
+	(39, counterparty_forwarding_info, required),
+	(40, is_manual_broadcast, required),
+	(41, is_batch_funding, required),
+	(42, counterparty_next_commitment_point, required),
+	(43, counterparty_current_commitment_point, required),
+	(44, counterparty_node_id, required),
+	(45, counterparty_shutdown_scriptpubkey, required),
+	(46, commitment_secrets, required),
+	(47, channel_update_status_enabled, required),
+	(48, announcement_sigs, required),
+	(49, latest_inbound_scid_alias, required),
+	(50, outbound_scid_alias, required),
+	(51, historical_scids, required),
+	(52, channel_pending_event_emitted, required),
+	(53, funding_tx_broadcast_safe_event_emitted, required),
+	(54, initial_channel_ready_event_emitted, required),
+	(55, local_initiated_shutdown, required),
+	(56, channel_keys_id, required),
+	(57, blocked_monitor_updates, required_vec),
+	(58, interactive_tx_signing_session, required),
+	(59, holder_commitment_point, required),
+	(60, pending_splice, required),
+	(61, quiescent_action, upgradable_option),
+});
 
 #[cfg(any(test, fuzzing))]
 #[derive(Clone, Copy, Default, Debug)]
@@ -6949,6 +7414,161 @@ where
 	SP::Target: SignerProvider,
 	<SP::Target as SignerProvider>::EcdsaSigner: EcdsaChannelSigner,
 {
+	#[cfg(feature = "safe_channels")]
+	pub(crate) fn new_from_state<ES: Deref>(
+		channel: FundedChannelState, entropy_source: &ES, signer_provider: &SP,
+		_our_supported_features: &ChannelTypeFeatures,
+	) -> Result<Self, DecodeError>
+	where
+		ES::Target: EntropySource,
+	{
+		let holder_signer = signer_provider.derive_channel_signer(channel.channel_keys_id);
+
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
+
+		if let Some(funding_negotiation) = channel
+			.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+		{
+			if !matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. }) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let announcement_sigs_state = if channel.announcement_sigs_state_sent {
+			AnnouncementSigsState::PeerReceived
+		} else {
+			AnnouncementSigsState::NotSent
+		};
+
+		let blocked_monitor_updates = channel
+			.blocked_monitor_updates
+			.iter()
+			.map(|update| {
+				let mut reader = &update[..];
+				PendingChannelMonitorUpdate::read(&mut reader)
+			})
+			.collect::<Result<Vec<_>, _>>()
+			.map_err(|_| DecodeError::InvalidValue)?;
+
+		let channel_update_status = if channel.channel_update_status_enabled {
+			ChannelUpdateStatus::Enabled
+		} else {
+			ChannelUpdateStatus::Disabled
+		};
+
+		Ok(FundedChannel {
+			funding: channel.funding,
+			context: ChannelContext {
+				user_id: channel.user_id,
+				config: channel.config,
+				prev_config: None,
+				inbound_handshake_limits_override: None,
+				channel_id: channel.channel_id,
+				temporary_channel_id: channel.temporary_channel_id,
+				channel_state: channel.channel_state,
+				announcement_sigs_state,
+				secp_ctx,
+				latest_monitor_update_id: channel.latest_monitor_update_id,
+				holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+				shutdown_scriptpubkey: channel.shutdown_scriptpubkey,
+				destination_script: channel.destination_script,
+				counterparty_next_commitment_transaction_number: channel
+					.counterparty_next_commitment_transaction_number,
+				holder_max_accepted_htlcs: channel.holder_max_accepted_htlcs,
+				pending_inbound_htlcs: channel.pending_inbound_htlcs,
+				pending_outbound_htlcs: channel.pending_outbound_htlcs,
+				holding_cell_htlc_updates: channel.holding_cell_htlc_updates,
+				resend_order: channel.resend_order,
+
+				monitor_pending_channel_ready: channel.monitor_pending_channel_ready,
+				monitor_pending_revoke_and_ack: channel.monitor_pending_revoke_and_ack,
+				monitor_pending_commitment_signed: channel.monitor_pending_commitment_signed,
+				monitor_pending_forwards: channel.monitor_pending_forwards,
+				monitor_pending_failures: channel.monitor_pending_failures,
+				monitor_pending_finalized_fulfills: channel.monitor_pending_finalized_fulfills,
+				monitor_pending_update_adds: channel.monitor_pending_update_adds,
+
+				signer_pending_revoke_and_ack: false,
+				signer_pending_commitment_update: false,
+				signer_pending_funding: false,
+				signer_pending_closing: false,
+				signer_pending_channel_ready: false,
+				signer_pending_stale_state_verification: None,
+
+				pending_update_fee: channel.pending_update_fee,
+				holding_cell_update_fee: channel.holding_cell_update_fee,
+				next_holder_htlc_id: channel.next_holder_htlc_id,
+				next_counterparty_htlc_id: channel.next_counterparty_htlc_id,
+				update_time_counter: channel.update_time_counter,
+				feerate_per_kw: channel.feerate_per_kw,
+
+				last_sent_closing_fee: None,
+				last_received_closing_sig: None,
+				pending_counterparty_closing_signed: None,
+				expecting_peer_commitment_signed: false,
+				closing_fee_limits: None,
+				target_closing_feerate_sats_per_kw: channel.target_closing_feerate_sats_per_kw,
+
+				channel_creation_height: channel.channel_creation_height,
+
+				counterparty_dust_limit_satoshis: channel.counterparty_dust_limit_satoshis,
+				holder_dust_limit_satoshis: channel.holder_dust_limit_satoshis,
+				counterparty_max_htlc_value_in_flight_msat: channel
+					.counterparty_max_htlc_value_in_flight_msat,
+				holder_max_htlc_value_in_flight_msat: channel.holder_max_htlc_value_in_flight_msat,
+				counterparty_htlc_minimum_msat: channel.counterparty_htlc_minimum_msat,
+				holder_htlc_minimum_msat: channel.holder_htlc_minimum_msat,
+				counterparty_max_accepted_htlcs: channel.counterparty_max_accepted_htlcs,
+				minimum_depth: channel.minimum_depth,
+
+				counterparty_forwarding_info: channel.counterparty_forwarding_info,
+
+				is_batch_funding: channel.is_batch_funding,
+
+				counterparty_next_commitment_point: channel.counterparty_next_commitment_point,
+				counterparty_current_commitment_point: channel
+					.counterparty_current_commitment_point,
+				counterparty_node_id: channel.counterparty_node_id,
+
+				counterparty_shutdown_scriptpubkey: channel.counterparty_shutdown_scriptpubkey,
+
+				commitment_secrets: channel.commitment_secrets,
+
+				channel_update_status,
+				closing_signed_in_flight: false,
+
+				announcement_sigs: channel.announcement_sigs,
+
+				workaround_lnd_bug_4006: None,
+				sent_message_awaiting_response: None,
+
+				latest_inbound_scid_alias: channel.latest_inbound_scid_alias,
+				outbound_scid_alias: channel.outbound_scid_alias,
+				historical_scids: channel.historical_scids,
+
+				funding_tx_broadcast_safe_event_emitted: channel
+					.funding_tx_broadcast_safe_event_emitted,
+				channel_pending_event_emitted: channel.channel_pending_event_emitted,
+				initial_channel_ready_event_emitted: channel.initial_channel_ready_event_emitted,
+
+				channel_keys_id: channel.channel_keys_id,
+
+				local_initiated_shutdown: channel.local_initiated_shutdown,
+
+				blocked_monitor_updates,
+				is_manual_broadcast: channel.is_manual_broadcast,
+
+				interactive_tx_signing_session: channel.interactive_tx_signing_session,
+			},
+			holder_commitment_point: channel.holder_commitment_point,
+			pending_splice: channel.pending_splice,
+			quiescent_action: channel.quiescent_action,
+		})
+	}
+
 	pub fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -7358,6 +7978,8 @@ where
 				payment_info,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			channel_state: Some(UpdateChannelState::Funded(self.into())),
 		};
 
 		if !self.context.channel_state.can_generate_new_commitment() {
@@ -7471,6 +8093,11 @@ where
 					// to be strictly increasing by one, so decrement it here.
 					self.context.latest_monitor_update_id = monitor_update.update_id;
 					monitor_update.updates.append(&mut additional_update.updates);
+					#[cfg(feature = "safe_channels")]
+					{
+						monitor_update.channel_state =
+							Some(UpdateChannelState::Funded(self.into()));
+					}
 				} else {
 					let blocked_upd = self.context.blocked_monitor_updates.get(0);
 					let new_mon_id = blocked_upd
@@ -7980,7 +8607,8 @@ where
 		);
 
 		self.context.latest_monitor_update_id += 1;
-		let monitor_update = ChannelMonitorUpdate {
+		#[allow(unused_mut)]
+		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
 			updates: vec![ChannelMonitorUpdateStep::RenegotiatedFunding {
 				channel_parameters: pending_splice_funding.channel_transaction_parameters.clone(),
@@ -7988,6 +8616,8 @@ where
 				counterparty_commitment_tx,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			channel_state: None,
 		};
 
 		self.context
@@ -7997,6 +8627,10 @@ where
 			.received_commitment_signed();
 		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 
+		#[cfg(feature = "safe_channels")]
+		{
+			monitor_update.channel_state = Some(UpdateChannelState::Funded(self.into()));
+		}
 		Ok(self.push_ret_blockable_mon_update(monitor_update))
 	}
 
@@ -8256,6 +8890,8 @@ where
 			update_id: self.context.latest_monitor_update_id,
 			updates: vec![update],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			channel_state: None,
 		};
 
 		self.context.expecting_peer_commitment_signed = false;
@@ -8280,6 +8916,10 @@ where
 			}
 			log_debug!(logger, "Received valid commitment_signed from peer, updated HTLC state but awaiting a monitor update resolution to reply.",
 				);
+			#[cfg(feature = "safe_channels")]
+			{
+				monitor_update.channel_state = Some(UpdateChannelState::Funded(self.into()));
+			}
 			return Ok(self.push_ret_blockable_mon_update(monitor_update));
 		}
 
@@ -8308,6 +8948,10 @@ where
 			Vec::new(),
 			Vec::new(),
 		);
+		#[cfg(feature = "safe_channels")]
+		{
+			monitor_update.channel_state = Some(UpdateChannelState::Funded(self.into()));
+		}
 		return Ok(self.push_ret_blockable_mon_update(monitor_update));
 	}
 
@@ -8360,6 +9004,8 @@ where
 				update_id: self.context.latest_monitor_update_id + 1, // We don't increment this yet!
 				updates: Vec::new(),
 				channel_id: Some(self.context.channel_id()),
+				#[cfg(feature = "safe_channels")]
+				channel_state: None,
 			};
 
 			let mut htlc_updates = Vec::new();
@@ -8455,6 +9101,12 @@ where
 								unreachable!()
 							};
 						update_fulfill_count += 1;
+
+						#[cfg(feature = "safe_channels")]
+						{
+							additional_monitor_update.channel_state =
+								Some(UpdateChannelState::Funded(self.into()));
+						}
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 						None
 					},
@@ -8513,6 +9165,11 @@ where
 				update_add_count, update_fulfill_count, update_fail_count);
 
 			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
+
+			#[cfg(feature = "safe_channels")]
+			{
+				monitor_update.channel_state = Some(UpdateChannelState::Funded(self.into()));
+			}
 			(self.push_ret_blockable_mon_update(monitor_update), htlcs_to_fail)
 		} else {
 			(None, Vec::new())
@@ -8629,6 +9286,8 @@ where
 				secret: msg.per_commitment_secret,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			channel_state: None,
 		};
 
 		// Update state now that we've passed all the can-fail calls...
@@ -8853,6 +9512,10 @@ where
 		};
 		macro_rules! return_with_htlcs_to_fail {
 			($htlcs_to_fail: expr) => {
+				#[cfg(feature = "safe_channels")]
+				{
+					monitor_update.channel_state = Some(UpdateChannelState::Funded(self.into()));
+				}
 				if !release_monitor {
 					self.context
 						.blocked_monitor_updates
@@ -8931,8 +9594,8 @@ where
 					);
 					return_with_htlcs_to_fail!(htlcs_to_fail);
 				} else {
-					log_debug!(logger, "Received a valid revoke_and_ack with no reply necessary. {} monitor update.",
-						release_state_str);
+					log_debug!(logger, "Received a valid revoke_and_ack with no reply necessary. {} monitor update {}.",
+						release_state_str, monitor_update.update_id);
 
 					self.monitor_updating_paused(
 						false,
@@ -10506,6 +11169,8 @@ where
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
 				channel_id: Some(self.context.channel_id()),
+				#[cfg(feature = "safe_channels")]
+				channel_state: Some(UpdateChannelState::Funded(self.into())),
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)
@@ -10897,10 +11562,12 @@ where
 			.try_for_each(|funding| self.context.can_accept_incoming_htlc(funding, dust_exposure_limiting_feerate, &logger))
 	}
 
+	#[cfg(not(feature = "safe_channels"))]
 	pub fn get_cur_holder_commitment_transaction_number(&self) -> u64 {
 		self.holder_commitment_point.current_transaction_number()
 	}
 
+	#[cfg(not(feature = "safe_channels"))]
 	pub fn get_cur_counterparty_commitment_transaction_number(&self) -> u64 {
 		self.context.counterparty_next_commitment_transaction_number + 1
 			- if self.context.channel_state.is_awaiting_remote_revoke() { 1 } else { 0 }
@@ -10960,10 +11627,13 @@ where
 		if self.context.blocked_monitor_updates.is_empty() {
 			return None;
 		}
-		Some((
-			self.context.blocked_monitor_updates.remove(0).update,
-			!self.context.blocked_monitor_updates.is_empty(),
-		))
+		#[allow(unused_mut)]
+		let mut update = self.context.blocked_monitor_updates.remove(0).update;
+		#[cfg(feature = "safe_channels")]
+		{
+			update.channel_state = Some(UpdateChannelState::Funded(self.into()));
+		}
+		Some((update, !self.context.blocked_monitor_updates.is_empty()))
 	}
 
 	/// Pushes a new monitor update into our monitor update queue, returning it if it should be
@@ -11011,6 +11681,7 @@ where
 	/// transaction. If the channel is inbound, this implies simply that the channel has not
 	/// advanced state.
 	#[rustfmt::skip]
+	#[cfg(not(feature = "safe_channels"))]
 	pub fn is_awaiting_initial_mon_persist(&self) -> bool {
 		if !self.is_awaiting_monitor_update() { return false; }
 		if matches!(
@@ -11263,6 +11934,8 @@ where
 				funding_txid: funding_txo.txid,
 			}],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			channel_state: Some(UpdateChannelState::Funded(self.into())),
 		};
 		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 		let monitor_update = self.push_ret_blockable_mon_update(monitor_update);
@@ -12854,12 +13527,14 @@ where
 		}
 
 		self.context.latest_monitor_update_id += 1;
+		self.context.channel_state.set_awaiting_remote_revoke();
 		let monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
 			updates: vec![update],
 			channel_id: Some(self.context.channel_id()),
+			#[cfg(feature = "safe_channels")]
+			channel_state: Some(UpdateChannelState::Funded(self.into())),
 		};
-		self.context.channel_state.set_awaiting_remote_revoke();
 		monitor_update
 	}
 
@@ -13104,6 +13779,8 @@ where
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
 				channel_id: Some(self.context.channel_id()),
+				#[cfg(feature = "safe_channels")]
+				channel_state: Some(UpdateChannelState::Funded(self.into())),
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)
@@ -14462,6 +15139,7 @@ impl Readable for AnnouncementSigsState {
 	}
 }
 
+#[cfg(not(feature = "safe_channels"))]
 impl<SP: Deref> Writeable for FundedChannel<SP>
 where
 	SP::Target: SignerProvider,
@@ -14939,6 +15617,7 @@ where
 	}
 }
 
+#[cfg(not(feature = "safe_channels"))]
 impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures)>
 	for FundedChannel<SP>
 where
@@ -15828,6 +16507,8 @@ mod tests {
 	use crate::chain::transaction::OutPoint;
 	use crate::chain::BestBlock;
 	use crate::ln::chan_utils::{self, commit_tx_fee_sat, ChannelTransactionParameters};
+	#[cfg(feature = "safe_channels")]
+	use crate::ln::channel::FundedChannelState;
 	use crate::ln::channel::{
 		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate, HTLCInitiator,
 		HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState, InboundV1Channel,
@@ -15855,6 +16536,8 @@ mod tests {
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::util::config::UserConfig;
 	use crate::util::errors::APIError;
+	#[cfg(feature = "safe_channels")]
+	use crate::util::ser::Readable;
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::{
 		self, OnGetShutdownScriptpubkey, TestFeeEstimator, TestKeysInterface, TestLogger,
@@ -16639,14 +17322,34 @@ mod tests {
 		chan.context.holding_cell_htlc_updates = holding_cell_htlc_updates.clone();
 
 		// Encode and decode the channel and ensure that the HTLCs within are the same.
-		let encoded_chan = chan.encode();
-		let mut s = crate::io::Cursor::new(&encoded_chan);
-		let mut reader =
-			crate::util::ser::FixedLengthReader::new(&mut s, encoded_chan.len() as u64);
 		let features = channelmanager::provided_channel_type_features(&config);
-		let decoded_chan =
-			FundedChannel::read(&mut reader, (&&keys_provider, &&keys_provider, &features))
-				.unwrap();
+		let decoded_chan;
+		#[cfg(not(feature = "safe_channels"))]
+		{
+			let encoded_chan = chan.encode();
+			let mut s = crate::io::Cursor::new(&encoded_chan);
+			let mut reader =
+				crate::util::ser::FixedLengthReader::new(&mut s, encoded_chan.len() as u64);
+			decoded_chan =
+				FundedChannel::read(&mut reader, (&&keys_provider, &&keys_provider, &features))
+					.unwrap();
+		}
+		#[cfg(feature = "safe_channels")]
+		{
+			let channel_state: FundedChannelState = (&mut chan).into();
+			let encoded_chan = channel_state.encode();
+			let mut s = crate::io::Cursor::new(&encoded_chan);
+			let mut reader =
+				crate::util::ser::FixedLengthReader::new(&mut s, encoded_chan.len() as u64);
+			let decoded_state = FundedChannelState::read(&mut reader).unwrap();
+			decoded_chan = FundedChannel::new_from_state(
+				decoded_state,
+				&&keys_provider,
+				&&keys_provider,
+				&features,
+			)
+			.unwrap();
+		}
 		assert_eq!(decoded_chan.context.pending_outbound_htlcs, pending_outbound_htlcs);
 		assert_eq!(decoded_chan.context.holding_cell_htlc_updates, holding_cell_htlc_updates);
 	}

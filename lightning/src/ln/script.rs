@@ -21,8 +21,7 @@ use crate::prelude::*;
 /// A script pubkey for shutting down a channel as defined by [BOLT #2].
 ///
 /// [BOLT #2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
-#[cfg_attr(test, derive(Debug))]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ShutdownScript(ShutdownScriptImpl);
 
 /// An error occurring when converting from [`ScriptBuf`] to [`ShutdownScript`].

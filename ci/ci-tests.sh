@@ -48,6 +48,55 @@ cargo test -p lightning --verbose --color always --features dnssec
 cargo check -p lightning --verbose --color always --features dnssec
 cargo doc -p lightning --document-private-items --features dnssec
 
+echo -e "\n\nChecking and testing lightning with safe_channels"
+RUSTFLAGS="${RUSTFLAGS//-D warnings/}" cargo test -p lightning --verbose --color always --features safe_channels -- \
+    --skip channel_holding_cell_serialize \
+    --skip test_blocked_chan_preimage_release \
+    --skip test_durable_preimages_on_closed_channel \
+    --skip test_inbound_reload_without_init_mon \
+    --skip test_inverted_mon_completion_order \
+    --skip test_outbound_reload_without_init_mon \
+    --skip test_partial_claim_mon_update_compl_actions \
+    --skip test_reload_mon_update_completion_actions \
+    --skip test_malformed_forward_htlcs_ser \
+    --skip test_multi_post_event_actions \
+    --skip test_anchors_aggregated_revoked_htlc_tx \
+    --skip test_anchors_monitor_fixes_counterparty_payment_script_on_reload \
+    --skip test_claim_event_never_handled \
+    --skip test_event_replay_causing_monitor_replay \
+    --skip test_lost_timeout_monitor_events \
+    --skip no_double_pay_with_stale_channelmanager \
+    --skip test_onion_failure_stale_channel_update \
+    --skip automatic_retries \
+    --skip no_missing_sent_on_midpoint_reload \
+    --skip no_missing_sent_on_reload \
+    --skip retry_with_no_persist \
+    --skip test_completed_payment_not_retryable_on_reload \
+    --skip test_dup_htlc_onchain_doesnt_fail_on_reload \
+    --skip test_fulfill_restart_failure \
+    --skip test_payment_metadata_consistency \
+    --skip test_priv_forwarding_rejection \
+    --skip test_quiescence_termination_on_disconnect \
+    --skip forwarded_payment_no_manager_persistence \
+    --skip intercepted_payment_no_manager_persistence \
+    --skip removed_payment_no_manager_persistence \
+    --skip test_data_loss_protect \
+    --skip test_htlc_localremoved_persistence \
+    --skip test_manager_serialize_deserialize_events \
+    --skip test_manager_serialize_deserialize_inconsistent_monitor \
+    --skip test_no_txn_manager_serialize_deserialize \
+    --skip test_partial_claim_before_restart \
+    --skip test_reload_partial_funding_batch \
+    --skip test_simple_manager_serialize_deserialize \
+    --skip test_unconf_chan \
+    --skip test_unconf_chan_via_funding_unconfirmed \
+    --skip test_unconf_chan_via_listen \
+    --skip test_propose_splice_while_disconnected \
+    --skip test_splice_reestablish \
+    --skip test_splice_state_reset_on_disconnect
+RUSTFLAGS="${RUSTFLAGS//-D warnings/}" cargo check -p lightning --verbose --color always --features safe_channels
+RUSTFLAGS="${RUSTFLAGS//-D warnings/}" cargo doc -p lightning --document-private-items --features safe_channels
+
 echo -e "\n\nChecking and testing Block Sync Clients with features"
 
 cargo test -p lightning-block-sync --verbose --color always --features rest-client
