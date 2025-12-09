@@ -1,4 +1,4 @@
-// This file is Copyright its original authors, visible in version controlXXX
+// This file is Copyright its original authors, visible in version control
 // history.
 //
 // This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
