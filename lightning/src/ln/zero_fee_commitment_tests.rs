@@ -158,7 +158,7 @@ fn test_htlc_claim_chunking() {
 
 	for (preimage, payment_hash) in node_1_preimages {
 		nodes[1].node.claim_funds(preimage);
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		expect_payment_claimed!(nodes[1], payment_hash, NONDUST_HTLC_AMT_MSAT);
 	}
 	nodes[0].node.get_and_clear_pending_msg_events();
@@ -188,12 +188,12 @@ fn test_htlc_claim_chunking() {
 	assert_eq!(htlc_claims[1].output.len(), 24);
 
 	check_closed_broadcast!(nodes[0], true);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], CHAN_CAPACITY);
 	assert!(nodes[0].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[1], true);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], CHAN_CAPACITY);
 	assert!(nodes[1].node.list_channels().is_empty());

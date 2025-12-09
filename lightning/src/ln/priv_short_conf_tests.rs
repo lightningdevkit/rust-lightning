@@ -83,7 +83,7 @@ fn test_priv_forwarding_rejection() {
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash, onion, id).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let payment_event =
 		SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
@@ -166,7 +166,7 @@ fn test_priv_forwarding_rejection() {
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	pass_along_route(
 		&nodes[0],
 		&[&[&nodes[1], &nodes[2]]],
@@ -350,7 +350,7 @@ fn test_routed_scid_alias() {
 	let onion = RecipientOnionFields::secret_only(payment_secret);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 100_000, payment_hash, payment_secret);
 
@@ -514,7 +514,7 @@ fn test_inbound_scid_privacy() {
 		node_b_id,
 		&get_event_msg!(nodes[1], MessageSendEvent::SendFundingCreated, node_c_id),
 	);
-	check_added_monitors!(nodes[2], 1);
+	check_added_monitors(&nodes[2], 1);
 
 	let cs_funding_signed =
 		get_event_msg!(nodes[2], MessageSendEvent::SendFundingSigned, node_b_id);
@@ -522,7 +522,7 @@ fn test_inbound_scid_privacy() {
 
 	nodes[1].node.handle_funding_signed(node_c_id, &cs_funding_signed);
 	expect_channel_pending_event(&nodes[1], &node_c_id);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let conf_height =
 		core::cmp::max(nodes[1].best_block_info().1 + 1, nodes[2].best_block_info().1 + 1);
@@ -580,7 +580,7 @@ fn test_inbound_scid_privacy() {
 	let onion = RecipientOnionFields::secret_only(payment_secret);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 100_000, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
@@ -601,7 +601,7 @@ fn test_inbound_scid_privacy() {
 	let onion = RecipientOnionFields::secret_only(payment_secret_2);
 	let id = PaymentId(payment_hash_2.0);
 	nodes[0].node.send_payment_with_route(route_2, payment_hash_2, onion, id).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let payment_event = SendEvent::from_node(&nodes[0]);
 	assert_eq!(node_b_id, payment_event.node_id);
@@ -698,7 +698,7 @@ fn test_scid_alias_returned() {
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, onion, id).unwrap();
 
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let as_updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_updates.update_add_htlcs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &as_updates.commitment_signed, false, true);
@@ -710,7 +710,7 @@ fn test_scid_alias_returned() {
 		channel_id: chan.0.channel_id,
 	}];
 	expect_htlc_failure_conditions(events, &expected_failures);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let bs_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &bs_updates.update_fail_htlcs[0]);
@@ -735,7 +735,7 @@ fn test_scid_alias_returned() {
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let as_updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_updates.update_add_htlcs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &as_updates.commitment_signed, false, true);
@@ -845,7 +845,7 @@ fn test_0conf_channel_with_async_monitor() {
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.handle_funding_created(node_a_id, &funding_created);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 	let channel_id = ChannelId::v1_from_funding_outpoint(funding_output);
@@ -860,7 +860,7 @@ fn test_0conf_channel_with_async_monitor() {
 		MessageSendEvent::SendFundingSigned { node_id, msg } => {
 			assert_eq!(*node_id, node_a_id);
 			nodes[0].node.handle_funding_signed(node_b_id, &msg);
-			check_added_monitors!(nodes[0], 1);
+			check_added_monitors(&nodes[0], 1);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -938,26 +938,26 @@ fn test_0conf_channel_with_async_monitor() {
 	let onion = RecipientOnionFields::secret_only(payment_secret);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let as_send = SendEvent::from_node(&nodes[0]);
 	nodes[1].node.handle_update_add_htlc(node_a_id, &as_send.msgs[0]);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_send.commitment_msg);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let (bs_raa, bs_commitment_signed) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_raa);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_commitment_signed);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.handle_revoke_and_ack(
 		node_a_id,
 		&get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id),
 	);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
@@ -971,10 +971,10 @@ fn test_0conf_channel_with_async_monitor() {
 		.chain_monitor
 		.channel_monitor_updated(bs_raa.channel_id, latest_update)
 		.unwrap();
-	check_added_monitors!(nodes[1], 0);
+	check_added_monitors(&nodes[1], 0);
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	expect_and_process_pending_htlcs(&nodes[1], false);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let bs_send = SendEvent::from_node(&nodes[1]);
 	nodes[2].node.handle_update_add_htlc(node_b_id, &bs_send.msgs[0]);
@@ -1011,7 +1011,7 @@ fn test_0conf_close_no_early_chan_update() {
 	send_payment(&nodes[0], &[&nodes[1]], 100_000);
 
 	nodes[0].node.force_close_all_channels_broadcasting_latest_txn(message.clone());
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
 	let _ = get_err_msg(&nodes[0], &node_b_id);

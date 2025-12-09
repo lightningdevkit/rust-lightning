@@ -175,7 +175,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 
 	// Claim Funds on Node2
 	nodes[2].node.claim_funds(payment_preimage_0);
-	check_added_monitors!(nodes[2], 1);
+	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_0, 100_000);
 
 	// Fulfil HTLCs on node1 and node0
@@ -187,7 +187,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, updates.update_fulfill_htlcs.remove(0));
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	let mut updates_2 = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
@@ -361,7 +361,7 @@ fn expect_channel_shutdown_state_with_force_closure() {
 		.force_close_broadcasting_latest_txn(&chan_1.2, &node_a_id, message.clone())
 		.unwrap();
 	check_closed_broadcast!(nodes[1], true);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::NotShuttingDown);
 	assert!(nodes[1].node.list_channels().is_empty());
@@ -371,7 +371,7 @@ fn expect_channel_shutdown_state_with_force_closure() {
 	check_spends!(node_txn[0], chan_1.3);
 	mine_transaction(&nodes[0], &node_txn[0]);
 	check_closed_broadcast!(nodes[0], true);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
@@ -452,7 +452,7 @@ fn updates_shutdown_wait() {
 	unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
 
 	nodes[2].node.claim_funds(payment_preimage_0);
-	check_added_monitors!(nodes[2], 1);
+	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_0, 100_000);
 
 	let mut updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
@@ -463,7 +463,7 @@ fn updates_shutdown_wait() {
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, updates.update_fulfill_htlcs.remove(0));
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	let mut updates_2 = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
@@ -549,7 +549,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 		.node
 		.send_payment(our_payment_hash, onion, id, route_params, Retry::Attempts(0))
 		.unwrap();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
 	assert_eq!(updates.update_add_htlcs.len(), 1);
 	assert!(updates.update_fulfill_htlcs.is_empty());
@@ -564,7 +564,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &updates.commitment_signed);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
 	assert!(commitment_signed_dance_through_cp_raa(&nodes[1], &nodes[0], false, false).is_none());
 	expect_and_process_pending_htlcs(&nodes[1], false);
@@ -718,7 +718,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	nodes[2].node.claim_funds(payment_preimage);
-	check_added_monitors!(nodes[2], 1);
+	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 100_000);
 
 	let mut updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
@@ -729,7 +729,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, updates.update_fulfill_htlcs.remove(0));
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	let mut updates_2 = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
 
@@ -834,7 +834,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// checks it, but in this case nodes[1] didn't ever get a chance to receive a
 		// closing_signed so we do it ourselves
 		check_closed_broadcast!(nodes[1], false);
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		let reason = ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &node_b_id)) };
 		check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 	}
@@ -920,7 +920,7 @@ fn test_upfront_shutdown_script() {
 	nodes[0].node.close_channel(&chan.2, &node_b_id).unwrap();
 	let node_1_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
 	nodes[1].node.handle_shutdown(node_a_id, &node_1_shutdown);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -935,7 +935,7 @@ fn test_upfront_shutdown_script() {
 	*nodes[0].override_init_features.borrow_mut() = None;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 0, 1000000, 1000000);
 	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	let node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 	nodes[0].node.handle_shutdown(node_b_id, &node_0_shutdown);
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -951,7 +951,7 @@ fn test_upfront_shutdown_script() {
 	//// channel smoothly
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000);
 	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	let node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 	nodes[0].node.handle_shutdown(node_b_id, &node_0_shutdown);
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1088,7 +1088,7 @@ fn test_segwit_v0_shutdown_script() {
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	// Use a segwit v0 script supported even without option_shutdown_anysegwit
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
@@ -1127,7 +1127,7 @@ fn test_anysegwit_shutdown_script() {
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	// Use a non-v0 segwit script supported by option_shutdown_anysegwit
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
@@ -1188,7 +1188,7 @@ fn test_unsupported_anysegwit_shutdown_script() {
 		Ok(_) => panic!("Expected error"),
 	}
 	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	// Use a non-v0 segwit script unsupported without option_shutdown_anysegwit
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
@@ -1217,7 +1217,7 @@ fn test_invalid_shutdown_script() {
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 	nodes[1].node.close_channel(&chan.2, &node_a_id).unwrap();
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	// Use a segwit v0 script with an unsupported witness program
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
@@ -1253,7 +1253,7 @@ fn test_user_shutdown_script() {
 		.node
 		.close_channel_with_feerate_and_script(&chan.2, &node_a_id, None, Some(shutdown_script))
 		.unwrap();
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 
@@ -1390,7 +1390,7 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 					&& txn[0].output[0].script_pubkey.is_p2wsh())
 		);
 		check_closed_broadcast!(nodes[1], true);
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		let reason = ClosureReason::ProcessingError {
 			err: "closing_signed negotiation failed to finish within two timer ticks".to_string(),
 		};
@@ -1819,7 +1819,7 @@ fn test_force_closure_on_low_stale_fee() {
 
 	// Finally, connect one more block and check the force-close happened.
 	connect_blocks(&nodes[1], 1);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	check_closed_broadcast(&nodes[1], 1, true);
 	let reason = ClosureReason::PeerFeerateTooLow {
 		peer_feerate_sat_per_kw: 253,

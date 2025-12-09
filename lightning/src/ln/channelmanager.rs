@@ -18673,7 +18673,7 @@ mod tests {
 			RecipientOnionFields::secret_only(payment_secret), payment_id, &mpp_route).unwrap();
 		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[0], &our_payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
@@ -18683,19 +18683,19 @@ mod tests {
 			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(),
 			PaymentId(payment_preimage.0), route.route_params.clone().unwrap(), Retry::Attempts(0)
 		).unwrap();
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		let ev = events.drain(..).next().unwrap();
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-		check_added_monitors!(nodes[1], 0);
+		check_added_monitors(&nodes[1], 0);
 		do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 		expect_and_process_pending_htlcs(&nodes[1], true);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		let fail = HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
@@ -18709,7 +18709,7 @@ mod tests {
 		// Send the second half of the original MPP payment.
 		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[1], &our_payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), true, None);
@@ -18720,34 +18720,34 @@ mod tests {
 		// lightning messages manually.
 		nodes[1].node.claim_funds(payment_preimage);
 		expect_payment_claimed!(nodes[1], our_payment_hash, 200_000);
-		check_added_monitors!(nodes[1], 2);
+		check_added_monitors(&nodes[1], 2);
 
 		let mut bs_1st_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_1st_updates.update_fulfill_htlcs.remove(0));
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_1st_updates.commitment_signed);
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		let mut bs_2nd_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_first_cs);
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_2nd_updates.update_fulfill_htlcs.remove(0));
 		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_2nd_updates.commitment_signed);
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
 		let as_second_updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_second_updates.commitment_signed);
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_third_raa);
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 
 		// Note that successful MPP payments will generate a single PaymentSent event upon the first
 		// path's success and a PaymentPathSuccessful event for each path's success.
@@ -18801,13 +18801,13 @@ mod tests {
 			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(),
 			PaymentId(payment_preimage.0), route_params.clone(), Retry::Attempts(0)
 		).unwrap();
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		let ev = events.drain(..).next().unwrap();
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-		check_added_monitors!(nodes[1], 0);
+	check_added_monitors(&nodes[1], 0);
 		do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 		// We have to forward pending HTLCs twice - once tries to forward the payment forward (and
 		// fails), the second will process the resulting failure and fail the HTLC backward
@@ -18815,7 +18815,7 @@ mod tests {
 		let events = nodes[1].node.get_and_clear_pending_events();
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
@@ -18839,7 +18839,7 @@ mod tests {
 			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(),
 			PaymentId(payment_preimage.0), route.route_params.clone().unwrap(), Retry::Attempts(0)
 		).unwrap();
-		check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		let event = events.pop().unwrap();
@@ -18850,19 +18850,19 @@ mod tests {
 		let payment_secret = PaymentSecret([43; 32]);
 		nodes[0].node.send_payment_with_route(route.clone(), payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		let ev = events.drain(..).next().unwrap();
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-		check_added_monitors!(nodes[1], 0);
+		check_added_monitors(&nodes[1], 0);
 		do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 		expect_and_process_pending_htlcs(&nodes[1], true);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
@@ -18882,7 +18882,7 @@ mod tests {
 			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_1,
 			route.route_params.clone().unwrap(), Retry::Attempts(0)
 		).unwrap();
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		let event = events.pop().unwrap();
@@ -18899,19 +18899,19 @@ mod tests {
 			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_2, route_params,
 			Retry::Attempts(0)
 		).unwrap();
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		let ev = events.drain(..).next().unwrap();
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-		check_added_monitors!(nodes[1], 0);
+		check_added_monitors(&nodes[1], 0);
 		do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 		expect_and_process_pending_htlcs(&nodes[1], true);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		let fail = HTLCHandlingFailureType::Receive { payment_hash };
 		expect_htlc_failure_conditions(events, &[fail]);
-		check_added_monitors!(nodes[1], 1);
+		check_added_monitors(&nodes[1], 1);
 		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
 		assert!(updates.update_fulfill_htlcs.is_empty());
@@ -18957,7 +18957,7 @@ mod tests {
 			RecipientOnionFields::spontaneous_empty(), PaymentId(mismatch_payment_hash.0), &route).unwrap();
 		nodes[0].node.test_send_payment_internal(&route, mismatch_payment_hash,
 			RecipientOnionFields::spontaneous_empty(), Some(test_preimage), PaymentId(mismatch_payment_hash.0), None, session_privs).unwrap();
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 
 		let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 		assert_eq!(updates.update_add_htlcs.len(), 1);
@@ -19025,7 +19025,7 @@ mod tests {
 
 		let message = "Channel force-closed".to_owned();
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 		check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 100000);
 
@@ -19089,7 +19089,7 @@ mod tests {
 			.node
 			.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone())
 			.unwrap();
-		check_added_monitors!(nodes[0], 1);
+		check_added_monitors(&nodes[0], 1);
 		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 		check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 1_000_000);
 
@@ -19291,13 +19291,13 @@ mod tests {
 				let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
 				nodes[1].node.handle_funding_created(nodes[0].node.get_our_node_id(), &funding_created_msg);
-				check_added_monitors!(nodes[1], 1);
+				check_added_monitors(&nodes[1], 1);
 				expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 				let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 
 				nodes[0].node.handle_funding_signed(nodes[1].node.get_our_node_id(), &funding_signed);
-				check_added_monitors!(nodes[0], 1);
+				check_added_monitors(&nodes[0], 1);
 				expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
 			}
 			open_channel_msg.common_fields.temporary_channel_id = ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
