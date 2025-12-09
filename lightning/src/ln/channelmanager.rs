@@ -9465,58 +9465,41 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						WithContext::from(&self.logger, peer_id, chan_id, Some(payment_hash));
 					log_trace!(logger, "Handling PaymentClaimed monitor update completion action");
 
-					if let Some((counterparty_node_id, chan_id, claim_ptr)) = pending_mpp_claim {
+					if let Some((cp_node_id, chan_id, claim_ptr)) = pending_mpp_claim {
 						let per_peer_state = self.per_peer_state.read().unwrap();
-						per_peer_state.get(&counterparty_node_id).map(|peer_state_mutex| {
+						per_peer_state.get(&cp_node_id).map(|peer_state_mutex| {
 							let mut peer_state = peer_state_mutex.lock().unwrap();
 							let blockers_entry =
 								peer_state.actions_blocking_raa_monitor_updates.entry(chan_id);
 							if let btree_map::Entry::Occupied(mut blockers) = blockers_entry {
 								blockers.get_mut().retain(|blocker| {
-									if let &RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
-										pending_claim,
-									} = &blocker
-									{
-										if *pending_claim == claim_ptr {
-											let mut pending_claim_state_lock =
-												pending_claim.0.lock().unwrap();
-											let pending_claim_state =
-												&mut *pending_claim_state_lock;
-											pending_claim_state.channels_without_preimage.retain(
-												|(cp, cid)| {
-													let this_claim = *cp == counterparty_node_id
-														&& *cid == chan_id;
-													if this_claim {
-														pending_claim_state
-															.channels_with_preimage
-															.push((*cp, *cid));
-														false
-													} else {
-														true
-													}
-												},
-											);
-											if pending_claim_state
-												.channels_without_preimage
-												.is_empty()
-											{
-												for (cp, cid) in pending_claim_state
-													.channels_with_preimage
-													.iter()
-												{
-													let freed_chan = (*cp, *cid, blocker.clone());
-													freed_channels.push(freed_chan);
-												}
-											}
-											!pending_claim_state
-												.channels_without_preimage
-												.is_empty()
+									let pending_claim = match &blocker {
+										RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
+											pending_claim,
+										} => pending_claim,
+										_ => return true,
+									};
+									if *pending_claim != claim_ptr {
+										return true;
+									}
+									let mut claim_state_lock = pending_claim.0.lock().unwrap();
+									let claim_state = &mut *claim_state_lock;
+									claim_state.channels_without_preimage.retain(|(cp, cid)| {
+										let this_claim = *cp == cp_node_id && *cid == chan_id;
+										if this_claim {
+											claim_state.channels_with_preimage.push((*cp, *cid));
+											false
 										} else {
 											true
 										}
-									} else {
-										true
+									});
+									if claim_state.channels_without_preimage.is_empty() {
+										for (cp, cid) in claim_state.channels_with_preimage.iter() {
+											let freed_chan = (*cp, *cid, blocker.clone());
+											freed_channels.push(freed_chan);
+										}
 									}
+									!claim_state.channels_without_preimage.is_empty()
 								});
 								if blockers.get().is_empty() {
 									blockers.remove();
