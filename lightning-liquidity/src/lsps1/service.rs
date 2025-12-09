@@ -30,7 +30,6 @@ use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
 
-use lightning::chain::Filter;
 use lightning::ln::channelmanager::AChannelManager;
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::sign::EntropySource;
@@ -114,40 +113,35 @@ impl PeerState {
 }
 
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
-pub struct LSPS1ServiceHandler<ES: Deref, CM: Deref + Clone, C: Deref, K: Deref + Clone>
+pub struct LSPS1ServiceHandler<ES: Deref, CM: Deref + Clone, K: Deref + Clone>
 where
 	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
 	K::Target: KVStore,
 {
 	entropy_source: ES,
 	_channel_manager: CM,
-	_chain_source: Option<C>,
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue<K>>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 	config: LSPS1ServiceConfig,
 }
 
-impl<ES: Deref, CM: Deref + Clone, C: Deref, K: Deref + Clone> LSPS1ServiceHandler<ES, CM, C, K>
+impl<ES: Deref, CM: Deref + Clone, K: Deref + Clone> LSPS1ServiceHandler<ES, CM, K>
 where
 	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
 	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	/// Constructs a `LSPS1ServiceHandler`.
 	pub(crate) fn new(
 		entropy_source: ES, pending_messages: Arc<MessageQueue>,
-		pending_events: Arc<EventQueue<K>>, channel_manager: CM, chain_source: Option<C>,
-		config: LSPS1ServiceConfig,
+		pending_events: Arc<EventQueue<K>>, channel_manager: CM, config: LSPS1ServiceConfig,
 	) -> Self {
 		Self {
 			entropy_source,
 			_channel_manager: channel_manager,
-			_chain_source: chain_source,
 			pending_messages,
 			pending_events,
 			per_peer_state: RwLock::new(new_hash_map()),
@@ -403,12 +397,11 @@ where
 	}
 }
 
-impl<ES: Deref, CM: Deref + Clone, C: Deref, K: Deref + Clone> LSPSProtocolMessageHandler
-	for LSPS1ServiceHandler<ES, CM, C, K>
+impl<ES: Deref, CM: Deref + Clone, K: Deref + Clone> LSPSProtocolMessageHandler
+	for LSPS1ServiceHandler<ES, CM, K>
 where
 	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
 	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS1Message;
