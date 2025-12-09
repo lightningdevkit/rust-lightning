@@ -114,7 +114,7 @@ use crate::offers::merkle::{
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
 	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OfferId, OfferTlvStream,
-	OfferTlvStreamRef, Quantity, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
+	OfferTlvStreamRef, Quantity, RecurrenceFields, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerTlvStream, PayerTlvStreamRef, PAYER_METADATA_TYPE};
@@ -964,6 +964,31 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	pub fn amount_msats(&$self) -> u64 {
 		$contents.amount_msats()
 	}
+
+	/// Returns underlying offer's recurrence fields
+	pub fn recurrence_fields(&$self) -> Option<RecurrenceFields> {
+		$contents.recurrence_fields()
+	}
+
+	/// Returns the recurrence counter (if present) on this invoice request.
+	pub fn recurrence_counter(&$self) -> Option<u32> {
+		$contents.recurrence_counter()
+	}
+
+	/// Returns the recurrence_start (if present) for this invoice request.
+	pub fn recurrence_start(&$self) -> Option<u32> {
+		$contents.recurrence_start()
+	}
+
+	/// Returns Some(()) if this invoice request signals recurrence cancellation.
+	pub fn recurrence_cancel(&$self) -> Option<()> {
+		$contents.recurrence_cancel()
+	}
+
+	/// Returns the invoice_recurrence_basetime (if present).
+	pub fn invoice_recurrence_basetime(&$self) -> Option<u64> {
+		$contents.invoice_recurrence_basetime()
+	}
 } }
 
 macro_rules! invoice_accessors_signing_pubkey {
@@ -1302,6 +1327,48 @@ impl InvoiceContents {
 
 	fn signing_pubkey(&self) -> PublicKey {
 		self.fields().signing_pubkey
+	}
+
+	/// Returns underlying offer's RecurrenceFields
+	fn recurrence_fields(&self) -> Option<RecurrenceFields> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				invoice_request.inner.offer.recurrence_fields()
+			},
+			InvoiceContents::ForRefund { .. } => None,
+		}
+	}
+
+	fn recurrence_counter(&self) -> Option<u32> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				invoice_request.recurrence_counter()
+			},
+			InvoiceContents::ForRefund { .. } => None,
+		}
+	}
+
+	fn recurrence_start(&self) -> Option<u32> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.recurrence_start(),
+			InvoiceContents::ForRefund { .. } => None,
+		}
+	}
+
+	fn recurrence_cancel(&self) -> Option<()> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				invoice_request.recurrence_cancel()
+			},
+			InvoiceContents::ForRefund { .. } => None,
+		}
+	}
+
+	fn invoice_recurrence_basetime(&self) -> Option<u64> {
+		match self {
+			InvoiceContents::ForOffer { fields, .. } => fields.invoice_recurrence_basetime,
+			InvoiceContents::ForRefund { .. } => None,
+		}
 	}
 
 	fn fields(&self) -> &InvoiceFields {

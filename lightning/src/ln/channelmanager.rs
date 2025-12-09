@@ -15878,7 +15878,6 @@ where
 					Ok(payment_id) => payment_id,
 					Err(()) => return None,
 				};
-
 				let logger = WithContext::from(
 					&self.logger, None, None, Some(invoice.payment_hash()),
 				);
@@ -15896,7 +15895,117 @@ where
 					return None;
 				}
 
-				let res = self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id);
+				let res = {
+					// Extract recurrence metadata from the invoice once.
+					let recurrence_fields = invoice.recurrence_fields();
+					let recurrence_counter = invoice.recurrence_counter();
+					let invoice_recurrence_basetime = invoice.invoice_recurrence_basetime();
+
+					match (recurrence_fields, recurrence_counter, invoice_recurrence_basetime) {
+						// ------------------------------------------------------------------
+						// Non-recurrent invoice
+						//
+						// No recurrence metadata is present, so this invoice does not
+						// participate in any recurrence protocol. We can directly send
+						// the payment without touching any recurrence session state.
+						// ------------------------------------------------------------------
+						(None, None, None) => {
+							self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id)
+						}
+						// ------------------------------------------------------------------
+						// Recurrent invoice
+						//
+						// At this point the invoice is *structurally* a recurrence invoice.
+						// We must validate it against existing outbound recurrence session
+						// state before sending the payment.
+						// ------------------------------------------------------------------
+						(Some(fields), Some(counter), Some(invoice_basetime)) => {
+							let mut sessions = self.active_outbound_recurrence_sessions.lock().unwrap();
+							let entry = sessions
+								.values_mut()
+								.find(|session| session.payer_signing_pubkey == invoice.payer_signing_pubkey());
+
+							let data = match entry {
+								Some(data) => data,
+								// A recurrence invoice must always correspond to an
+								// existing outbound recurrence session.
+								None => return None,
+							};
+
+							// ------------------------------------------------------------------
+							// Sanity checks
+							//
+							// 1. The recurrence start specified by the invoice must match the
+							//    recurrence start recorded in the outbound session.
+							// 2. The invoice's recurrence counter must match the next expected
+							//    counter to ensure idempotency and prevent duplicate payments
+							//    for the same recurrence period.
+							// ------------------------------------------------------------------
+							if data.recurrence_start != invoice.recurrence_start() {
+								return None
+							}
+
+							if data.next_recurrence_counter != counter {
+								return None
+							}
+
+							// ------------------------------------------------------------------
+							// Recurrence basetime validation
+							//
+							// Rules:
+							//  1. Only the *primary* invoice (counter == 0) may initialize
+							//     the recurrence basetime, and only if the Offer did not
+							//     define one.
+							//  2. Once a basetime is established, all invoices must match it
+							//     exactly.
+							// ------------------------------------------------------------------
+							match (counter, data.invoice_recurrence_basetime) {
+								// Primary invoice, no basetime yet → initialize from invoice.
+								(0, None) => {
+									data.invoice_recurrence_basetime = Some(invoice_basetime);
+									let initial_offset = data.recurrence_start.unwrap_or(0);
+									data.next_trigger_time = Some(fields.recurrence.start_time(invoice_basetime, initial_offset))
+								},
+								// Basetime already exists and matches → valid.
+								(_, Some(data_basetime)) if data_basetime == invoice_basetime => {},
+								// Any other combination violates the recurrence protocol.
+								_ => return None
+							}
+
+							// ------------------------------------------------------------------
+							// Send the payment
+							//
+							// Note:
+							// We intentionally hold the outbound recurrence session lock while
+							// sending the payment. This prevents race conditions where a nearly
+							// expired recurrence session could be removed between releasing the
+							// lock and completing payment processing.
+							// ------------------------------------------------------------------
+							let res =
+								self.send_payment_for_verified_bolt12_invoice(
+									&invoice,
+									payment_id,
+								);
+
+							// ------------------------------------------------------------------
+							// On successful payment, advance the recurrence state by
+							// incrementing the counter and computing the next trigger time.
+							// ------------------------------------------------------------------
+							if res.is_ok() {
+								data.next_recurrence_counter += 1;
+								let next_offset = data.recurrence_start.unwrap_or(0) + data.next_recurrence_counter;
+								data.next_trigger_time = Some(fields.recurrence.start_time(invoice_basetime, next_offset));
+							}
+							res
+						}
+
+						// ------------------------------------------------------------------
+						// Any other combination of recurrence metadata is invalid.
+						// ------------------------------------------------------------------
+						_ => return None,
+					}
+				};
+
 				handle_pay_invoice_res!(res, invoice, logger);
 			},
 			OffersMessage::StaticInvoice(invoice) => {
