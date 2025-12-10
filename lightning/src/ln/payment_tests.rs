@@ -5103,6 +5103,7 @@ fn peel_payment_onion_custom_tlvs() {
 		onion_routing_packet,
 		blinding_point: None,
 		hold_htlc: None,
+		accountable: None,
 	};
 	let peeled_onion = crate::ln::onion_payment::peel_payment_onion(
 		&update_add,

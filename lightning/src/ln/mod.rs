@@ -53,6 +53,8 @@ pub(crate) mod interactivetxs;
 // about an unnecessary mut. Thus, we silence the unused_mut warning in two test modules below.
 
 #[cfg(test)]
+mod accountable_tests;
+#[cfg(test)]
 #[allow(unused_mut)]
 mod async_payments_tests;
 #[cfg(test)]
