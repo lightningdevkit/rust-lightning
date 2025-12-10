@@ -3968,6 +3968,7 @@ where
 		}
 	}
 
+	/// Handles an error by closing the channel if required and generating peer messages.
 	fn handle_error<A>(
 		&self, internal: Result<A, MsgHandleErrInternal>, counterparty_node_id: PublicKey,
 	) -> Result<A, LightningError> {
@@ -3976,64 +3977,61 @@ where
 		debug_assert_ne!(self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
 
-		match internal {
-			Ok(msg) => Ok(msg),
-			Err(MsgHandleErrInternal { err, shutdown_finish, tx_abort, .. }) => {
-				let mut msg_event = None;
+		internal.map_err(|err_internal| {
+			let mut msg_event = None;
 
-				if let Some((shutdown_res, update_option)) = shutdown_finish {
-					let counterparty_node_id = shutdown_res.counterparty_node_id;
-					let channel_id = shutdown_res.channel_id;
-					let logger = WithContext::from(
-						&self.logger,
-						Some(counterparty_node_id),
-						Some(channel_id),
-						None,
-					);
-					log_error!(logger, "Closing channel: {}", err.err);
+			if let Some((shutdown_res, update_option)) = err_internal.shutdown_finish {
+				let counterparty_node_id = shutdown_res.counterparty_node_id;
+				let channel_id = shutdown_res.channel_id;
+				let logger = WithContext::from(
+					&self.logger,
+					Some(counterparty_node_id),
+					Some(channel_id),
+					None,
+				);
+				log_error!(logger, "Closing channel: {}", err_internal.err.err);
 
-					self.finish_close_channel(shutdown_res);
-					if let Some((update, node_id_1, node_id_2)) = update_option {
-						let mut pending_broadcast_messages =
-							self.pending_broadcast_messages.lock().unwrap();
-						pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
-							msg: update,
-							node_id_1,
-							node_id_2,
-						});
-					}
-				} else {
-					log_error!(self.logger, "Got non-closing error: {}", err.err);
-				}
-
-				if let msgs::ErrorAction::IgnoreError = err.action {
-					if let Some(tx_abort) = tx_abort {
-						msg_event = Some(MessageSendEvent::SendTxAbort {
-							node_id: counterparty_node_id,
-							msg: tx_abort,
-						});
-					}
-				} else {
-					msg_event = Some(MessageSendEvent::HandleError {
-						node_id: counterparty_node_id,
-						action: err.action.clone(),
+				self.finish_close_channel(shutdown_res);
+				if let Some((update, node_id_1, node_id_2)) = update_option {
+					let mut pending_broadcast_messages =
+						self.pending_broadcast_messages.lock().unwrap();
+					pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
+						msg: update,
+						node_id_1,
+						node_id_2,
 					});
 				}
+			} else {
+				log_error!(self.logger, "Got non-closing error: {}", err_internal.err.err);
+			}
 
-				if let Some(msg_event) = msg_event {
-					let per_peer_state = self.per_peer_state.read().unwrap();
-					if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-						let mut peer_state = peer_state_mutex.lock().unwrap();
-						if peer_state.is_connected {
-							peer_state.pending_msg_events.push(msg_event);
-						}
+			if let msgs::ErrorAction::IgnoreError = err_internal.err.action {
+				if let Some(tx_abort) = err_internal.tx_abort {
+					msg_event = Some(MessageSendEvent::SendTxAbort {
+						node_id: counterparty_node_id,
+						msg: tx_abort,
+					});
+				}
+			} else {
+				msg_event = Some(MessageSendEvent::HandleError {
+					node_id: counterparty_node_id,
+					action: err_internal.err.action.clone(),
+				});
+			}
+
+			if let Some(msg_event) = msg_event {
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+					let mut peer_state = peer_state_mutex.lock().unwrap();
+					if peer_state.is_connected {
+						peer_state.pending_msg_events.push(msg_event);
 					}
 				}
+			}
 
-				// Return error in case higher-API need one
-				Err(err)
-			},
-		}
+			// Return error in case higher-API need one
+			err_internal.err
+		})
 	}
 
 	/// Gets the current [`UserConfig`] which controls some global behavior and includes the
