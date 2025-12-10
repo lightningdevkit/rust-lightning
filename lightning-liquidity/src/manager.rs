@@ -300,7 +300,7 @@ pub struct LiquidityManager<
 	lsps0_client_handler: LSPS0ClientHandler<ES, K>,
 	lsps0_service_handler: Option<LSPS0ServiceHandler>,
 	#[cfg(lsps1_service)]
-	lsps1_service_handler: Option<LSPS1ServiceHandler<ES, CM, K>>,
+	lsps1_service_handler: Option<LSPS1ServiceHandler<ES, CM, K, TP>>,
 	lsps1_client_handler: Option<LSPS1ClientHandler<ES, K>>,
 	lsps2_service_handler: Option<LSPS2ServiceHandler<CM, K, T>>,
 	lsps2_client_handler: Option<LSPS2ClientHandler<ES, K>>,
@@ -454,7 +454,7 @@ where
 					kv_store.clone(),
 					node_signer,
 					lsps5_service_config.clone(),
-					time_provider,
+					time_provider.clone(),
 				))
 			} else {
 				None
@@ -477,7 +477,7 @@ where
 		#[cfg(lsps1_service)]
 		let lsps1_service_handler = service_config.as_ref().and_then(|config| {
 			if let Some(number) =
-				<LSPS1ServiceHandler<ES, CM, K> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
+				<LSPS1ServiceHandler<ES, CM, K, TP> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
 			{
 				supported_protocols.push(number);
 			}
@@ -487,6 +487,7 @@ where
 					Arc::clone(&pending_messages),
 					Arc::clone(&pending_events),
 					channel_manager.clone(),
+					time_provider,
 					config.clone(),
 				)
 			})
@@ -544,7 +545,7 @@ where
 
 	/// Returns a reference to the LSPS1 server-side handler.
 	#[cfg(lsps1_service)]
-	pub fn lsps1_service_handler(&self) -> Option<&LSPS1ServiceHandler<ES, CM, K>> {
+	pub fn lsps1_service_handler(&self) -> Option<&LSPS1ServiceHandler<ES, CM, K, TP>> {
 		self.lsps1_service_handler.as_ref()
 	}
 
@@ -1074,7 +1075,7 @@ where
 	#[cfg(lsps1_service)]
 	pub fn lsps1_service_handler(
 		&self,
-	) -> Option<&LSPS1ServiceHandler<ES, CM, KVStoreSyncWrapper<KS>>> {
+	) -> Option<&LSPS1ServiceHandler<ES, CM, KVStoreSyncWrapper<KS>, TP>> {
 		self.inner.lsps1_service_handler()
 	}
 
