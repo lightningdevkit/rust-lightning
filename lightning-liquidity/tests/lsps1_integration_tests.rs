@@ -10,7 +10,6 @@ use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps1::client::LSPS1ClientConfig;
 use lightning_liquidity::lsps1::event::LSPS1ClientEvent;
 use lightning_liquidity::lsps1::event::LSPS1ServiceEvent;
-use lightning_liquidity::lsps1::msgs::LSPS1OrderState;
 use lightning_liquidity::lsps1::msgs::{
 	LSPS1OnchainPaymentInfo, LSPS1Options, LSPS1OrderParams, LSPS1PaymentInfo,
 };
@@ -212,31 +211,6 @@ fn lsps1_happy_path() {
 	service_node
 		.liquidity_manager
 		.handle_custom_message(check_order_status, client_node_id)
-		.unwrap();
-
-	let _check_payment_confirmation_event = service_node.liquidity_manager.next_event().unwrap();
-
-	if let LiquidityEvent::LSPS1Service(LSPS1ServiceEvent::CheckPaymentConfirmation {
-		request_id,
-		counterparty_node_id,
-		order_id,
-	}) = _check_payment_confirmation_event
-	{
-		assert_eq!(request_id, check_order_status_id);
-		assert_eq!(counterparty_node_id, client_node_id);
-		assert_eq!(order_id, expected_order_id.clone());
-	} else {
-		panic!("Unexpected event");
-	}
-
-	let _ = service_handler
-		.update_order_status(
-			check_order_status_id.clone(),
-			client_node_id,
-			expected_order_id.clone(),
-			LSPS1OrderState::Created,
-			None,
-		)
 		.unwrap();
 
 	let order_status_response = get_lsps_message!(service_node, client_node_id);
