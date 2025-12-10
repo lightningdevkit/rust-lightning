@@ -3201,69 +3201,6 @@ pub struct PhantomRouteHints {
 	pub real_node_pubkey: PublicKey,
 }
 
-#[rustfmt::skip]
-macro_rules! handle_error {
-	($self: ident, $internal: expr, $counterparty_node_id: expr) => { {
-		// In testing, ensure there are no deadlocks where the lock is already held upon
-		// entering the macro.
-		debug_assert_ne!($self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
-		debug_assert_ne!($self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
-
-		match $internal {
-			Ok(msg) => Ok(msg),
-			Err(MsgHandleErrInternal { err, shutdown_finish, tx_abort, .. }) => {
-				let mut msg_event = None;
-
-				if let Some((shutdown_res, update_option)) = shutdown_finish {
-					let counterparty_node_id = shutdown_res.counterparty_node_id;
-					let channel_id = shutdown_res.channel_id;
-					let logger = WithContext::from(
-						&$self.logger, Some(counterparty_node_id), Some(channel_id), None
-					);
-					log_error!(logger, "Closing channel: {}", err.err);
-
-					$self.finish_close_channel(shutdown_res);
-					if let Some((update, node_id_1, node_id_2)) = update_option {
-						let mut pending_broadcast_messages = $self.pending_broadcast_messages.lock().unwrap();
-						pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
-							msg: update, node_id_1, node_id_2
-						});
-					}
-				} else {
-					log_error!($self.logger, "Got non-closing error: {}", err.err);
-				}
-
-				if let msgs::ErrorAction::IgnoreError = err.action {
-					if let Some(tx_abort) = tx_abort {
-						msg_event = Some(MessageSendEvent::SendTxAbort {
-							node_id: $counterparty_node_id,
-							msg: tx_abort,
-						});
-					}
-				} else {
-					msg_event = Some(MessageSendEvent::HandleError {
-						node_id: $counterparty_node_id,
-						action: err.action.clone()
-					});
-				}
-
-				if let Some(msg_event) = msg_event {
-					let per_peer_state = $self.per_peer_state.read().unwrap();
-					if let Some(peer_state_mutex) = per_peer_state.get(&$counterparty_node_id) {
-						let mut peer_state = peer_state_mutex.lock().unwrap();
-						if peer_state.is_connected {
-							peer_state.pending_msg_events.push(msg_event);
-						}
-					}
-				}
-
-				// Return error in case higher-API need one
-				Err(err)
-			},
-		}
-	} };
-}
-
 macro_rules! send_channel_ready {
 	($self: ident, $pending_msg_events: expr, $channel: expr, $channel_ready_msg: expr) => {{
 		if $channel.context.is_connected() {
@@ -3752,7 +3689,7 @@ where
 
 /// When a channel is removed, two things need to happen:
 /// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
-/// (b) [`handle_error`] needs to be called without holding any locks (except
+/// (b) [`ChannelManager::handle_error`] needs to be called without holding any locks (except
 ///     [`ChannelManager::total_consistency_lock`]), which then calls
 ///     [`ChannelManager::finish_close_channel`].
 ///
@@ -4028,6 +3965,74 @@ where
 
 			#[cfg(feature = "_test_utils")]
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
+		}
+	}
+
+	fn handle_error<A>(
+		&self, internal: Result<A, MsgHandleErrInternal>, counterparty_node_id: PublicKey,
+	) -> Result<A, LightningError> {
+		// In testing, ensure there are no deadlocks where the lock is already held upon
+		// entering the macro.
+		debug_assert_ne!(self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
+		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
+
+		match internal {
+			Ok(msg) => Ok(msg),
+			Err(MsgHandleErrInternal { err, shutdown_finish, tx_abort, .. }) => {
+				let mut msg_event = None;
+
+				if let Some((shutdown_res, update_option)) = shutdown_finish {
+					let counterparty_node_id = shutdown_res.counterparty_node_id;
+					let channel_id = shutdown_res.channel_id;
+					let logger = WithContext::from(
+						&self.logger,
+						Some(counterparty_node_id),
+						Some(channel_id),
+						None,
+					);
+					log_error!(logger, "Closing channel: {}", err.err);
+
+					self.finish_close_channel(shutdown_res);
+					if let Some((update, node_id_1, node_id_2)) = update_option {
+						let mut pending_broadcast_messages =
+							self.pending_broadcast_messages.lock().unwrap();
+						pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
+							msg: update,
+							node_id_1,
+							node_id_2,
+						});
+					}
+				} else {
+					log_error!(self.logger, "Got non-closing error: {}", err.err);
+				}
+
+				if let msgs::ErrorAction::IgnoreError = err.action {
+					if let Some(tx_abort) = tx_abort {
+						msg_event = Some(MessageSendEvent::SendTxAbort {
+							node_id: counterparty_node_id,
+							msg: tx_abort,
+						});
+					}
+				} else {
+					msg_event = Some(MessageSendEvent::HandleError {
+						node_id: counterparty_node_id,
+						action: err.action.clone(),
+					});
+				}
+
+				if let Some(msg_event) = msg_event {
+					let per_peer_state = self.per_peer_state.read().unwrap();
+					if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+						let mut peer_state = peer_state_mutex.lock().unwrap();
+						if peer_state.is_connected {
+							peer_state.pending_msg_events.push(msg_event);
+						}
+					}
+				}
+
+				// Return error in case higher-API need one
+				Err(err)
+			},
 		}
 	}
 
@@ -4398,7 +4403,7 @@ where
 			self.fail_htlc_backwards_internal(&source, &hash, &reason, receiver, None);
 		}
 
-		let _ = handle_error!(self, shutdown_result, *counterparty_node_id);
+		let _ = self.handle_error(shutdown_result, *counterparty_node_id);
 
 		Ok(())
 	}
@@ -4509,7 +4514,7 @@ where
 	/// When a channel is removed, two things need to happen:
 	/// (a) [`convert_channel_err`] must be called in the same `per_peer_state` lock as the
 	///     channel-closing action,
-	/// (b) [`handle_error`] needs to be called without holding any locks (except
+	/// (b) [`ChannelManager::handle_error`] needs to be called without holding any locks (except
 	///     [`ChannelManager::total_consistency_lock`]), which then calls this.
 	#[rustfmt::skip]
 	fn finish_close_channel(&self, mut shutdown_res: ShutdownResult) {
@@ -4610,7 +4615,7 @@ where
 			}
 		}
 		for (err, counterparty_node_id) in shutdown_results.drain(..) {
-			let _ = handle_error!(self, err, counterparty_node_id);
+			let _ = self.handle_error(err, counterparty_node_id);
 		}
 	}
 
@@ -4643,7 +4648,7 @@ where
 				// error message.
 				e.dont_send_error_message();
 			}
-			let _ = handle_error!(self, Err::<(), _>(e), *peer_node_id);
+			let _ = self.handle_error(Err::<(), _>(e), *peer_node_id);
 			Ok(())
 		} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
 			log_error!(logger, "Force-closing inbound channel request");
@@ -5380,7 +5385,7 @@ where
 			}
 			return Ok(());
 		};
-		match handle_error!(self, err, path.hops.first().unwrap().pubkey) {
+		match self.handle_error(err, path.hops.first().unwrap().pubkey) {
 			Ok(_) => unreachable!(),
 			Err(e) => Err(APIError::ChannelUnavailable { err: e.err }),
 		}
@@ -6073,7 +6078,7 @@ where
 
 			mem::drop(peer_state_lock);
 			mem::drop(per_peer_state);
-			let _: Result<(), _> = handle_error!(self, Err(err), counterparty);
+			let _: Result<(), _> = self.handle_error(Err(err), counterparty);
 			Err($api_err)
 		} } }
 
@@ -6420,7 +6425,7 @@ where
 			}
 			mem::drop(funding_batch_states);
 			for (err, counterparty_node_id) in shutdown_results {
-				let _ = handle_error!(self, err, counterparty_node_id);
+				let _ = self.handle_error(err, counterparty_node_id);
 			}
 		}
 		result
@@ -8367,7 +8372,7 @@ where
 			}
 
 			for (err, counterparty_node_id) in handle_errors {
-				let _ = handle_error!(self, err, counterparty_node_id);
+				let _ = self.handle_error(err, counterparty_node_id);
 			}
 
 			#[cfg(feature = "std")]
@@ -8877,7 +8882,7 @@ where
 		// Now we can handle any errors which were generated.
 		for (counterparty_node_id, err) in errs.drain(..) {
 			let res: Result<(), _> = Err(err);
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 		}
 	}
 
@@ -10053,10 +10058,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				mem::drop(peer_state_lock);
 				mem::drop(per_peer_state);
 				// TODO(dunxen): Find/make less icky way to do this.
-				match handle_error!(
-					self,
+				match self.handle_error(
 					Result::<(), MsgHandleErrInternal>::Err(err),
-					*counterparty_node_id
+					*counterparty_node_id,
 				) {
 					Ok(_) => {
 						unreachable!("`handle_error` only returns Err as we've passed in an Err")
@@ -11129,7 +11133,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if let Some((broadcast_tx, err)) = tx_err {
 			log_info!(logger, "Broadcasting {}", log_tx!(broadcast_tx));
 			self.tx_broadcaster.broadcast_transactions(&[&broadcast_tx]);
-			let _ = handle_error!(self, err, *counterparty_node_id);
+			let _ = self.handle_error(err, *counterparty_node_id);
 		}
 		Ok(())
 	}
@@ -12240,7 +12244,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 
 		for (err, counterparty_node_id) in failed_channels {
-			let _ = handle_error!(self, err, counterparty_node_id);
+			let _ = self.handle_error(err, counterparty_node_id);
 		}
 
 		has_pending_monitor_events
@@ -12450,7 +12454,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 		drop(per_peer_state);
 		for (err, counterparty_node_id) in shutdown_results {
-			let _ = handle_error!(self, err, counterparty_node_id);
+			let _ = self.handle_error(err, counterparty_node_id);
 		}
 	}
 
@@ -12510,7 +12514,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 
 		for (counterparty_node_id, err) in handle_errors {
-			let _ = handle_error!(self, err, counterparty_node_id);
+			let _ = self.handle_error(err, counterparty_node_id);
 		}
 
 		has_update
@@ -13956,7 +13960,7 @@ where
 			};
 
 			for (err, counterparty_node_id) in failed_channels.drain(..) {
-				let _ = handle_error!(self, err, counterparty_node_id);
+				let _ = self.handle_error(err, counterparty_node_id);
 			}
 
 			persist
@@ -14665,7 +14669,7 @@ where
 		}
 
 		for (failure, counterparty_node_id) in failed_channels {
-			let _ = handle_error!(self, failure, counterparty_node_id);
+			let _ = self.handle_error(failure, counterparty_node_id);
 		}
 
 		for (source, payment_hash, reason, destination) in timed_out_htlcs.drain(..) {
@@ -14781,7 +14785,7 @@ where
 				},
 				_ => NotifyOption::SkipPersistHandleEvents,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -14789,7 +14793,7 @@ where
 	#[rustfmt::skip]
 	fn handle_open_channel_v2(&self, counterparty_node_id: PublicKey, msg: &msgs::OpenChannelV2) {
 		if !self.init_features().supports_dual_fund() {
-			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+			let _: Result<(), _> = self.handle_error(Err(MsgHandleErrInternal::send_err_msg_no_close(
 				"Dual-funded channels not supported".to_owned(),
 				msg.common_fields.temporary_channel_id.clone())), counterparty_node_id);
 			return;
@@ -14806,7 +14810,7 @@ where
 				},
 				_ => NotifyOption::SkipPersistHandleEvents,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -14817,7 +14821,7 @@ where
 		// change to the contents.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_accept_channel(&counterparty_node_id, msg);
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			NotifyOption::SkipPersistHandleEvents
 		});
 	}
@@ -14829,26 +14833,26 @@ where
 			"Dual-funded channels not supported".to_owned(),
 			msg.common_fields.temporary_channel_id.clone(),
 		));
-		let _: Result<(), _> = handle_error!(self, err, counterparty_node_id);
+		let _: Result<(), _> = self.handle_error(err, counterparty_node_id);
 	}
 
 	fn handle_funding_created(&self, counterparty_node_id: PublicKey, msg: &msgs::FundingCreated) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_funding_created(&counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_funding_signed(&self, counterparty_node_id: PublicKey, msg: &msgs::FundingSigned) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_funding_signed(&counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_peer_storage(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorage) {
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify(self, || NotifyOption::SkipPersistNoEvents);
 		let res = self.internal_peer_storage(counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_peer_storage_retrieval(
@@ -14857,7 +14861,7 @@ where
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify(self, || NotifyOption::SkipPersistNoEvents);
 		let res = self.internal_peer_storage_retrieval(counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_channel_ready(&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelReady) {
@@ -14871,7 +14875,7 @@ where
 				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
 				_ => NotifyOption::SkipPersistHandleEvents,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -14890,7 +14894,7 @@ where
 					}
 				},
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -14903,7 +14907,7 @@ where
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
 				Ok(()) => NotifyOption::SkipPersistHandleEvents,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -14916,7 +14920,7 @@ where
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
 				Ok(()) => NotifyOption::SkipPersistHandleEvents,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -14930,7 +14934,7 @@ where
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
 				Ok(()) => NotifyOption::DoPersist,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -14938,27 +14942,27 @@ where
 	fn handle_shutdown(&self, counterparty_node_id: PublicKey, msg: &msgs::Shutdown) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_shutdown(&counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_closing_signed(&self, counterparty_node_id: PublicKey, msg: &msgs::ClosingSigned) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_closing_signed(&counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	#[cfg(simple_close)]
 	fn handle_closing_complete(&self, counterparty_node_id: PublicKey, msg: msgs::ClosingComplete) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_closing_complete(counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	#[cfg(simple_close)]
 	fn handle_closing_sig(&self, counterparty_node_id: PublicKey, msg: msgs::ClosingSig) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_closing_sig(counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_update_add_htlc(&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateAddHTLC) {
@@ -14972,7 +14976,7 @@ where
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
 				Ok(()) => NotifyOption::SkipPersistNoEvents,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -14982,7 +14986,7 @@ where
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_update_fulfill_htlc(&counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_update_fail_htlc(&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateFailHTLC) {
@@ -14996,7 +15000,7 @@ where
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
 				Ok(()) => NotifyOption::SkipPersistNoEvents,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -15014,7 +15018,7 @@ where
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
 				Ok(()) => NotifyOption::SkipPersistNoEvents,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -15024,7 +15028,7 @@ where
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_commitment_signed(&counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_commitment_signed_batch(
@@ -15033,13 +15037,13 @@ where
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_commitment_signed_batch(&counterparty_node_id, channel_id, batch);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_revoke_and_ack(&self, counterparty_node_id: PublicKey, msg: &msgs::RevokeAndACK) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_revoke_and_ack(&counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_update_fee(&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateFee) {
@@ -15053,7 +15057,7 @@ where
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
 				Ok(()) => NotifyOption::SkipPersistNoEvents,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -15063,13 +15067,13 @@ where
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_announcement_signatures(&counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_channel_update(&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelUpdate) {
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_channel_update(&counterparty_node_id, msg);
-			if let Ok(persist) = handle_error!(self, res, counterparty_node_id) {
+			if let Ok(persist) = self.handle_error(res, counterparty_node_id) {
 				persist
 			} else {
 				NotifyOption::DoPersist
@@ -15082,7 +15086,7 @@ where
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_channel_reestablish(&counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	#[rustfmt::skip]
@@ -15209,7 +15213,7 @@ where
 				Err(_) => NotifyOption::DoPersist,
 				Ok(persist) => *persist,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -15221,7 +15225,7 @@ where
 				Err(_) => NotifyOption::DoPersist,
 				Ok(persist) => *persist,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -15233,7 +15237,7 @@ where
 				Err(_) => NotifyOption::DoPersist,
 				Ok(persist) => *persist,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -15245,7 +15249,7 @@ where
 				Err(_) => NotifyOption::DoPersist,
 				Ok(persist) => *persist,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -15257,7 +15261,7 @@ where
 				Err(_) => NotifyOption::DoPersist,
 				Ok(persist) => *persist,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
@@ -15265,7 +15269,7 @@ where
 	fn handle_tx_signatures(&self, counterparty_node_id: PublicKey, msg: &msgs::TxSignatures) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_tx_signatures(&counterparty_node_id, msg);
-		let _ = handle_error!(self, res, counterparty_node_id);
+		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
 	fn handle_tx_init_rbf(&self, counterparty_node_id: PublicKey, msg: &msgs::TxInitRbf) {
@@ -15273,7 +15277,7 @@ where
 			"Dual-funded channels not supported".to_owned(),
 			msg.channel_id.clone(),
 		));
-		let _: Result<(), _> = handle_error!(self, err, counterparty_node_id);
+		let _: Result<(), _> = self.handle_error(err, counterparty_node_id);
 	}
 
 	fn handle_tx_ack_rbf(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAckRbf) {
@@ -15281,7 +15285,7 @@ where
 			"Dual-funded channels not supported".to_owned(),
 			msg.channel_id.clone(),
 		));
-		let _: Result<(), _> = handle_error!(self, err, counterparty_node_id);
+		let _: Result<(), _> = self.handle_error(err, counterparty_node_id);
 	}
 
 	fn handle_tx_abort(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAbort) {
@@ -15295,7 +15299,7 @@ where
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
 				Ok(persist) => *persist,
 			};
-			let _ = handle_error!(self, res, counterparty_node_id);
+			let _ = self.handle_error(res, counterparty_node_id);
 			persist
 		});
 	}
