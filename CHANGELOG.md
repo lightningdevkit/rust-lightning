@@ -7,7 +7,11 @@
    signaling in a future version as testing completes, breaking compatibility.
    Support for accepting splices is gated on
    `UserConfig::reject_inbound_splices`. Outbound splices can be initiated with
-   `ChannelManager::splice_channel`.
+   `ChannelManager::splice_channel`. Initiating a splice requires that the
+   channel counterparty supports splicing. Existing channels can be spliced, as
+   long as a reconnection with the counterparty occurred after they enabled
+   splicing. All channel types can be spliced, namely legacy, anchor, and
+   zero-fee-commitment channels.
  * Various APIs have been updated to offer a native Rust async API. All
    newly-async traits and structs have a `*Sync` variant which offers the
    same API but with sync methods:

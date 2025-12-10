@@ -4707,6 +4707,13 @@ where
 	/// the channel. This will spend the channel's funding transaction output, effectively replacing
 	/// it with a new one.
 	///
+	/// # Required Feature Flags
+	///
+	/// Initiating a splice requires that the channel counterparty supports splicing. Existing
+	/// channels can be spliced, as long as a reconnection with the counterparty occurred after they
+	/// enabled splicing. All channel types can be spliced, namely legacy, anchor, and
+	/// zero-fee-commitment channels.
+	///
 	/// # Arguments
 	///
 	/// Provide a `contribution` to determine if value is spliced in or out. The splice initiator is
