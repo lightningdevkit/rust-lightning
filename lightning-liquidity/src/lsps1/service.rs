@@ -47,7 +47,7 @@ pub struct LSPS1ServiceConfig {
 	/// A token to be send with each channel request.
 	pub token: Option<String>,
 	/// The options supported by the LSP.
-	pub supported_options: Option<LSPS1Options>,
+	pub supported_options: LSPS1Options,
 }
 
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
@@ -117,15 +117,7 @@ where
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
 		let response = LSPS1Response::GetInfo(LSPS1GetInfoResponse {
-			options: self
-				.config
-				.supported_options
-				.clone()
-				.ok_or(LightningError {
-					err: format!("Configuration for LSP server not set."),
-					action: ErrorAction::IgnoreAndLog(Level::Info),
-				})
-				.unwrap(),
+			options: self.config.supported_options.clone(),
 		});
 
 		let msg = LSPS1Message::Response(request_id, response).into();
@@ -140,14 +132,11 @@ where
 		let mut message_queue_notifier = self.pending_messages.notifier();
 		let event_queue_notifier = self.pending_events.notifier();
 
-		if !is_valid(&params.order, &self.config.supported_options.as_ref().unwrap()) {
+		if !is_valid(&params.order, &self.config.supported_options) {
 			let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 				code: LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 				message: format!("Order does not match options supported by LSP server"),
-				data: Some(format!(
-					"Supported options are {:?}",
-					&self.config.supported_options.as_ref().unwrap()
-				)),
+				data: Some(format!("Supported options are {:?}", &self.config.supported_options)),
 			});
 			let msg = LSPS1Message::Response(request_id, response).into();
 			message_queue_notifier.enqueue(counterparty_node_id, msg);
