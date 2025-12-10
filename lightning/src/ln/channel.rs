@@ -6518,7 +6518,7 @@ fn check_splice_contribution_sufficient(
 			))
 	} else {
 		check_v2_funding_inputs_sufficient(
-			contribution.input_value(),
+			contribution.value_added(),
 			contribution.inputs(),
 			contribution.outputs(),
 			is_initiator,
