@@ -7,7 +7,6 @@ use common::{get_lsps_message, LSPSNodes};
 
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning_liquidity::events::LiquidityEvent;
-use lightning_liquidity::lsps0::ser::LSPSDateTime;
 use lightning_liquidity::lsps1::client::LSPS1ClientConfig;
 use lightning_liquidity::lsps1::event::LSPS1ClientEvent;
 use lightning_liquidity::lsps1::event::LSPS1ServiceEvent;
@@ -24,7 +23,6 @@ use lightning::ln::functional_test_utils::{
 };
 use lightning::util::test_utils::TestStore;
 
-use std::str::FromStr;
 use std::sync::Arc;
 
 use lightning::ln::functional_test_utils::{create_network, Node};
@@ -177,10 +175,8 @@ fn lsps1_happy_path() {
 	let onchain: LSPS1OnchainPaymentInfo =
 		serde_json::from_str(json_str).expect("Failed to parse JSON");
 	let payment_info = LSPS1PaymentInfo { bolt11: None, bolt12: None, onchain: Some(onchain) };
-	let _now = LSPSDateTime::from_str("2024-01-01T00:00:00Z").expect("Failed to parse date");
-
-	let _ = service_handler
-		.send_payment_details(_create_order_id.clone(), &client_node_id, payment_info.clone(), _now)
+	service_handler
+		.send_payment_details(_create_order_id.clone(), &client_node_id, payment_info.clone())
 		.unwrap();
 
 	let create_order_response = get_lsps_message!(service_node, client_node_id);
