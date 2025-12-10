@@ -43,17 +43,27 @@ impl PeerState {
 		channel_order
 	}
 
+	pub(super) fn get_order<'a>(
+		&'a self, order_id: &LSPS1OrderId,
+	) -> Result<&'a ChannelOrder, PeerStateError> {
+		let order = self
+			.outbound_channels_by_order_id
+			.get(order_id)
+			.ok_or(PeerStateError::UnknownOrderId)?;
+		Ok(order)
+	}
+
 	pub(super) fn update_order<'a>(
 		&'a mut self, order_id: &LSPS1OrderId, order_state: LSPS1OrderState,
 		channel_details: Option<LSPS1ChannelInfo>,
-	) -> Result<&'a ChannelOrder, PeerStateError> {
+	) -> Result<(), PeerStateError> {
 		let order = self
 			.outbound_channels_by_order_id
 			.get_mut(order_id)
 			.ok_or(PeerStateError::UnknownOrderId)?;
 		order.order_state = order_state;
 		order.channel_details = channel_details;
-		Ok(order)
+		Ok(())
 	}
 
 	pub(super) fn register_request(
