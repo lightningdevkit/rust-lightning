@@ -301,6 +301,12 @@ where
 					err: format!("Failed to update order: {:?}", e),
 				})?;
 
+				peer_state_lock.remove_request(&request_id).map_err(|e| {
+					debug_assert!(false, "Failed to send response due to: {}", e);
+					let err = format!("Failed to send response due to: {}", e);
+					APIError::APIMisuseError { err }
+				})?;
+
 				let response = LSPS1Response::GetOrder(LSPS1CreateOrderResponse {
 					order_id,
 					order: order.order_params.clone(),
