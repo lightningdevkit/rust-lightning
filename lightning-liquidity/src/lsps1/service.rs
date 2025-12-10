@@ -30,6 +30,7 @@ use crate::lsps0::ser::{
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
+use crate::utils::time::TimeProvider;
 
 use lightning::ln::channelmanager::AChannelManager;
 use lightning::ln::msgs::{ErrorAction, LightningError};
@@ -50,26 +51,35 @@ pub struct LSPS1ServiceConfig {
 }
 
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
-pub struct LSPS1ServiceHandler<ES: EntropySource, CM: Deref + Clone, K: KVStore + Clone>
-where
+pub struct LSPS1ServiceHandler<
+	ES: EntropySource,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	TP: Deref + Clone,
+> where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	entropy_source: ES,
 	_channel_manager: CM,
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue<K>>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
+	time_provider: TP,
 	config: LSPS1ServiceConfig,
 }
 
-impl<ES: EntropySource, CM: Deref + Clone, K: KVStore + Clone> LSPS1ServiceHandler<ES, CM, K>
+impl<ES: EntropySource, CM: Deref + Clone, K: KVStore + Clone, TP: Deref + Clone>
+	LSPS1ServiceHandler<ES, CM, K, TP>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	/// Constructs a `LSPS1ServiceHandler`.
 	pub(crate) fn new(
 		entropy_source: ES, pending_messages: Arc<MessageQueue>,
-		pending_events: Arc<EventQueue<K>>, channel_manager: CM, config: LSPS1ServiceConfig,
+		pending_events: Arc<EventQueue<K>>, channel_manager: CM, time_provider: TP,
+		config: LSPS1ServiceConfig,
 	) -> Self {
 		Self {
 			entropy_source,
@@ -77,6 +87,7 @@ where
 			pending_messages,
 			pending_events,
 			per_peer_state: RwLock::new(new_hash_map()),
+			time_provider,
 			config,
 		}
 	}
@@ -181,7 +192,7 @@ where
 	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
 	pub fn send_payment_details(
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
-		payment_details: LSPS1PaymentInfo, created_at: LSPSDateTime,
+		payment_details: LSPS1PaymentInfo,
 	) -> Result<(), APIError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 
@@ -198,6 +209,9 @@ where
 				match request {
 					LSPS1Request::CreateOrder(params) => {
 						let order_id = self.generate_order_id();
+						let created_at = LSPSDateTime::new_from_duration_since_epoch(
+							self.time_provider.duration_since_epoch(),
+						);
 						let order = peer_state_lock.new_order(
 							order_id.clone(),
 							params.order,
@@ -321,10 +335,11 @@ where
 	}
 }
 
-impl<ES: EntropySource, CM: Deref + Clone, K: KVStore + Clone> LSPSProtocolMessageHandler
-	for LSPS1ServiceHandler<ES, CM, K>
+impl<ES: EntropySource, CM: Deref + Clone, K: KVStore + Clone, TP: Deref + Clone>
+	LSPSProtocolMessageHandler for LSPS1ServiceHandler<ES, CM, K, TP>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	type ProtocolMessage = LSPS1Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(1);
