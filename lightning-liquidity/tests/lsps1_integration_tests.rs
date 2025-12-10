@@ -30,8 +30,7 @@ use lightning::ln::functional_test_utils::{create_network, Node};
 fn build_lsps1_configs(
 	supported_options: LSPS1Options,
 ) -> (LiquidityServiceConfig, LiquidityClientConfig) {
-	let lsps1_service_config =
-		LSPS1ServiceConfig { token: None, supported_options: Some(supported_options) };
+	let lsps1_service_config = LSPS1ServiceConfig { token: None, supported_options };
 	let service_config = LiquidityServiceConfig {
 		lsps1_service_config: Some(lsps1_service_config),
 		lsps2_service_config: None,

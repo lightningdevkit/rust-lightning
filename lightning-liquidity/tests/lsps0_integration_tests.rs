@@ -9,6 +9,8 @@ use lightning_liquidity::lsps0::event::LSPS0ClientEvent;
 #[cfg(lsps1_service)]
 use lightning_liquidity::lsps1::client::LSPS1ClientConfig;
 #[cfg(lsps1_service)]
+use lightning_liquidity::lsps1::msgs::LSPS1Options;
+#[cfg(lsps1_service)]
 use lightning_liquidity::lsps1::service::LSPS1ServiceConfig;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
@@ -34,7 +36,21 @@ fn list_protocols_integration_test() {
 	let promise_secret = [42; 32];
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
 	#[cfg(lsps1_service)]
-	let lsps1_service_config = LSPS1ServiceConfig { supported_options: None, token: None };
+	let lsps1_service_config = {
+		let supported_options = LSPS1Options {
+			min_required_channel_confirmations: 0,
+			min_funding_confirms_within_blocks: 6,
+			supports_zero_channel_reserve: true,
+			max_channel_expiry_blocks: 144,
+			min_initial_client_balance_sat: 10_000_000,
+			max_initial_client_balance_sat: 100_000_000,
+			min_initial_lsp_balance_sat: 100_000,
+			max_initial_lsp_balance_sat: 100_000_000,
+			min_channel_balance_sat: 100_000,
+			max_channel_balance_sat: 100_000_000,
+		};
+		LSPS1ServiceConfig { supported_options, token: None }
+	};
 	let lsps5_service_config = LSPS5ServiceConfig::default();
 	let service_config = LiquidityServiceConfig {
 		#[cfg(lsps1_service)]
