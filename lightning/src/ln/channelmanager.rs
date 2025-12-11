@@ -3201,24 +3201,6 @@ pub struct PhantomRouteHints {
 	pub real_node_pubkey: PublicKey,
 }
 
-macro_rules! send_channel_ready {
-	($self: ident, $pending_msg_events: expr, $channel: expr, $channel_ready_msg: expr) => {{
-		if $channel.context.is_connected() {
-			$pending_msg_events.push(MessageSendEvent::SendChannelReady {
-				node_id: $channel.context.get_counterparty_node_id(),
-				msg: $channel_ready_msg,
-			});
-		}
-		// Note that we may send a `channel_ready` multiple times for a channel if we reconnect, so
-		// we allow collisions, but we shouldn't ever be updating the channel ID pointed to.
-		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
-		let outbound_alias_insert = short_to_chan_info.insert($channel.context.outbound_scid_alias(), ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()));
-		assert!(outbound_alias_insert.is_none() || outbound_alias_insert.unwrap() == ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()),
-			"SCIDs should never collide - ensure you weren't behind the chain tip by a full month when creating channels");
-		insert_short_channel_id!(short_to_chan_info, $channel);
-	}}
-}
-
 macro_rules! insert_short_channel_id {
 	($short_to_chan_info: ident, $channel: expr) => {{
 		if let Some(real_scid) = $channel.funding.get_short_channel_id() {
@@ -4089,6 +4071,29 @@ where
 			),
 			None => self.convert_unfunded_channel_err_internal(err, channel),
 		}
+	}
+
+	fn send_channel_ready(
+		&self, pending_msg_events: &mut Vec<MessageSendEvent>, channel: &FundedChannel<SP>,
+		channel_ready_msg: msgs::ChannelReady,
+	) {
+		let counterparty_node_id = channel.context.get_counterparty_node_id();
+		if channel.context.is_connected() {
+			pending_msg_events.push(MessageSendEvent::SendChannelReady {
+				node_id: counterparty_node_id,
+				msg: channel_ready_msg,
+			});
+		}
+		// Note that we may send a `channel_ready` multiple times for a channel if we reconnect, so
+		// we allow collisions, but we shouldn't ever be updating the channel ID pointed to.
+		let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+		let outbound_alias_insert = short_to_chan_info.insert(
+			channel.context.outbound_scid_alias(),
+			(counterparty_node_id, channel.context.channel_id()),
+		);
+		assert!(outbound_alias_insert.is_none() || outbound_alias_insert.unwrap() == (counterparty_node_id, channel.context.channel_id()),
+				"SCIDs should never collide - ensure you weren't behind the chain tip by a full month when creating channels");
+		insert_short_channel_id!(short_to_chan_info, channel);
 	}
 
 	/// Gets the current [`UserConfig`] which controls some global behavior and includes the
@@ -9832,7 +9837,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if channel.context.is_connected() {
 			if let ChannelReadyOrder::ChannelReadyFirst = channel_ready_order {
 				if let Some(msg) = &channel_ready {
-					send_channel_ready!(self, pending_msg_events, channel, msg.clone());
+					self.send_channel_ready(pending_msg_events, channel, msg.clone());
 				}
 
 				if let Some(msg) = &announcement_sigs {
@@ -9887,7 +9892,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 			if let ChannelReadyOrder::SignaturesFirst = channel_ready_order {
 				if let Some(msg) = channel_ready {
-					send_channel_ready!(self, pending_msg_events, channel, msg);
+					self.send_channel_ready(pending_msg_events, channel, msg);
 				}
 
 				if let Some(msg) = announcement_sigs {
@@ -9898,7 +9903,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 			}
 		} else if let Some(msg) = channel_ready {
-			send_channel_ready!(self, pending_msg_events, channel, msg);
+			self.send_channel_ready(pending_msg_events, channel, msg);
 		}
 
 		if let Some(tx) = funding_broadcastable {
@@ -12598,7 +12603,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 				if let Some(funded_chan) = chan.as_funded() {
 					if let Some(msg) = msgs.channel_ready {
-						send_channel_ready!(self, pending_msg_events, funded_chan, msg);
+						self.send_channel_ready(pending_msg_events, funded_chan, msg);
 					}
 					if let Some(broadcast_tx) = msgs.signed_closing_tx {
 						log_info!(logger, "Broadcasting closing tx {}", log_tx!(broadcast_tx));
@@ -14740,7 +14745,7 @@ where
 								let logger = WithChannelContext::from(&self.logger, &funded_channel.context, None);
 								match funding_confirmed_opt {
 									Some(FundingConfirmedMessage::Establishment(channel_ready)) => {
-										send_channel_ready!(self, pending_msg_events, funded_channel, channel_ready);
+										self.send_channel_ready(pending_msg_events, funded_channel, channel_ready);
 										if funded_channel.context.is_usable() && peer_state.is_connected {
 											log_trace!(logger, "Sending channel_ready with private initial channel_update for our counterparty");
 											if let Ok((msg, _, _)) = self.get_channel_update_for_unicast(funded_channel) {
