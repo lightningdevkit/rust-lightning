@@ -41,6 +41,11 @@ pub const LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_SECONDARY_NAMESPACE: &str = 
 /// [`LiquidityManager`]: crate::LiquidityManager
 pub const LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_KEY: &str = "event_queue";
 
+/// The secondary namespace under which the [`LSPS1ServiceHandler`] data will be persisted.
+///
+/// [`LSPS1ServiceHandler`]: crate::lsps1::service::LSPS1ServiceHandler
+pub const LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE: &str = "lsps1_service";
+
 /// The secondary namespace under which the [`LSPS2ServiceHandler`] data will be persisted.
 ///
 /// [`LSPS2ServiceHandler`]: crate::lsps2::service::LSPS2ServiceHandler

@@ -30,7 +30,7 @@ use crate::persist::{
 use crate::lsps1::client::{LSPS1ClientConfig, LSPS1ClientHandler};
 use crate::lsps1::msgs::LSPS1Message;
 #[cfg(lsps1_service)]
-use crate::lsps1::service::{LSPS1ServiceConfig, LSPS1ServiceHandler};
+use crate::lsps1::service::{LSPS1ServiceConfig, LSPS1ServiceHandler, LSPS1ServiceHandlerSync};
 
 use crate::lsps2::client::{LSPS2ClientConfig, LSPS2ClientHandler};
 use crate::lsps2::msgs::LSPS2Message;
@@ -487,6 +487,7 @@ where
 					Arc::clone(&pending_messages),
 					Arc::clone(&pending_events),
 					channel_manager.clone(),
+					kv_store.clone(),
 					time_provider,
 					config.clone(),
 				)
@@ -647,6 +648,10 @@ where
 		// TODO: We should eventually persist in parallel.
 		let mut did_persist = false;
 		did_persist |= self.pending_events.persist().await?;
+
+		if let Some(lsps1_service_handler) = self.lsps1_service_handler.as_ref() {
+			did_persist |= lsps1_service_handler.persist().await?;
+		}
 
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
 			did_persist |= lsps2_service_handler.persist().await?;
@@ -912,6 +917,11 @@ where
 		// If the peer was misbehaving, drop it from the ignored list to cleanup the kept state.
 		self.ignored_peers.write().unwrap().remove(&counterparty_node_id);
 
+		#[cfg(lsps1_service)]
+		if let Some(lsps1_service_handler) = self.lsps1_service_handler.as_ref() {
+			lsps1_service_handler.peer_disconnected(counterparty_node_id);
+		}
+
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
 			lsps2_service_handler.peer_disconnected(counterparty_node_id);
 		}
@@ -1073,10 +1083,10 @@ where
 	///
 	/// Wraps [`LiquidityManager::lsps1_service_handler`].
 	#[cfg(lsps1_service)]
-	pub fn lsps1_service_handler(
-		&self,
-	) -> Option<&LSPS1ServiceHandler<ES, CM, KVStoreSyncWrapper<KS>, TP>> {
-		self.inner.lsps1_service_handler()
+	pub fn lsps1_service_handler<'a>(
+		&'a self,
+	) -> Option<LSPS1ServiceHandlerSync<'a, ES, CM, KVStoreSyncWrapper<KS>, TP>> {
+		self.inner.lsps1_service_handler.as_ref().map(|r| LSPS1ServiceHandlerSync::from_inner(r))
 	}
 
 	/// Returns a reference to the LSPS2 client-side handler.
