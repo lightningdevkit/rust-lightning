@@ -3848,6 +3848,25 @@ macro_rules! process_events_body {
 	}
 }
 
+/// Creates an [`Event::HTLCIntercepted`] from a [`PendingAddHTLCInfo`]. We generate this event in a
+/// few places so this DRYs the code.
+fn create_htlc_intercepted_event(
+	intercept_id: InterceptId, pending_add: &PendingAddHTLCInfo,
+) -> Result<Event, ()> {
+	let inbound_amount_msat = pending_add.forward_info.incoming_amt_msat.ok_or(())?;
+	let requested_next_hop_scid = match pending_add.forward_info.routing {
+		PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
+		_ => return Err(()),
+	};
+	Ok(Event::HTLCIntercepted {
+		requested_next_hop_scid,
+		payment_hash: pending_add.forward_info.payment_hash,
+		inbound_amount_msat,
+		expected_outbound_amount_msat: pending_add.forward_info.outgoing_amt_msat,
+		intercept_id,
+	})
+}
+
 impl<
 		M: Deref,
 		T: Deref,
@@ -11532,22 +11551,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 						match pending_intercepts.entry(intercept_id) {
 							hash_map::Entry::Vacant(entry) => {
-								new_intercept_events.push_back((
-									events::Event::HTLCIntercepted {
-										requested_next_hop_scid: scid,
-										payment_hash,
-										inbound_amount_msat: pending_add
-											.forward_info
-											.incoming_amt_msat
-											.unwrap(),
-										expected_outbound_amount_msat: pending_add
-											.forward_info
-											.outgoing_amt_msat,
-										intercept_id,
-									},
-									None,
-								));
-								entry.insert(pending_add);
+								if let Ok(intercept_ev) =
+									create_htlc_intercepted_event(intercept_id, &pending_add)
+								{
+									new_intercept_events.push_back((intercept_ev, None));
+									entry.insert(pending_add);
+								} else {
+									debug_assert!(false);
+									fail_intercepted_htlc(pending_add);
+								}
 							},
 							hash_map::Entry::Occupied(_) => {
 								log_info!(
@@ -16855,6 +16867,38 @@ where
 	}
 }
 
+// If the HTLC corresponding to `prev_hop_data` is present in `decode_update_add_htlcs`, remove it
+// from the map as it is already being stored and processed elsewhere.
+fn dedup_decode_update_add_htlcs<L: Deref>(
+	decode_update_add_htlcs: &mut HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
+	prev_hop_data: &HTLCPreviousHopData, removal_reason: &'static str, logger: &L,
+) where
+	L::Target: Logger,
+{
+	decode_update_add_htlcs.retain(|src_outb_alias, update_add_htlcs| {
+		update_add_htlcs.retain(|update_add| {
+			let matches = *src_outb_alias == prev_hop_data.prev_outbound_scid_alias
+				&& update_add.htlc_id == prev_hop_data.htlc_id;
+			if matches {
+				let logger = WithContext::from(
+					logger,
+					prev_hop_data.counterparty_node_id,
+					Some(update_add.channel_id),
+					Some(update_add.payment_hash),
+				);
+				log_info!(
+					logger,
+					"Removing pending to-decode HTLC with id {}: {}",
+					update_add.htlc_id,
+					removal_reason
+				);
+			}
+			!matches
+		});
+		!update_add_htlcs.is_empty()
+	});
+}
+
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
 impl<
@@ -17205,7 +17249,11 @@ where
 
 		const MAX_ALLOC_SIZE: usize = 1024 * 64;
 		let forward_htlcs_count: u64 = Readable::read(reader)?;
-		let mut forward_htlcs = hash_map_with_capacity(cmp::min(forward_htlcs_count as usize, 128));
+		// This map is read but may no longer be used because we'll attempt to rebuild the set of HTLC
+		// forwards from the `Channel{Monitor}`s instead, as a step towards removing the requirement of
+		// regularly persisting the `ChannelManager`.
+		let mut forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>> =
+			hash_map_with_capacity(cmp::min(forward_htlcs_count as usize, 128));
 		for _ in 0..forward_htlcs_count {
 			let short_channel_id = Readable::read(reader)?;
 			let pending_forwards_count: u64 = Readable::read(reader)?;
@@ -17216,7 +17264,7 @@ where
 			for _ in 0..pending_forwards_count {
 				pending_forwards.push(Readable::read(reader)?);
 			}
-			forward_htlcs.insert(short_channel_id, pending_forwards);
+			forward_htlcs_legacy.insert(short_channel_id, pending_forwards);
 		}
 
 		let claimable_htlcs_count: u64 = Readable::read(reader)?;
@@ -17304,12 +17352,18 @@ where
 			};
 		}
 
+		// Some maps are read but may no longer be used because we attempt to rebuild the pending HTLC
+		// set from the `Channel{Monitor}`s instead, as a step towards removing the requirement of
+		// regularly persisting the `ChannelManager`.
+		let mut pending_intercepted_htlcs_legacy: Option<HashMap<InterceptId, PendingAddHTLCInfo>> =
+			None;
+		let mut decode_update_add_htlcs_legacy: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> =
+			None;
+
 		// pending_outbound_payments_no_retry is for compatibility with 0.0.101 clients.
 		let mut pending_outbound_payments_no_retry: Option<HashMap<PaymentId, HashSet<[u8; 32]>>> =
 			None;
 		let mut pending_outbound_payments = None;
-		let mut pending_intercepted_htlcs: Option<HashMap<InterceptId, PendingAddHTLCInfo>> =
-			Some(new_hash_map());
 		let mut received_network_pubkey: Option<PublicKey> = None;
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
@@ -17327,13 +17381,12 @@ where
 		let mut in_flight_monitor_updates: Option<
 			HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>,
 		> = None;
-		let mut decode_update_add_htlcs: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> = None;
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
-			(2, pending_intercepted_htlcs, option),
+			(2, pending_intercepted_htlcs_legacy, option),
 			(3, pending_outbound_payments, option),
 			(4, pending_claiming_payments, option),
 			(5, received_network_pubkey, option),
@@ -17344,13 +17397,17 @@ where
 			(10, legacy_in_flight_monitor_updates, option),
 			(11, probing_cookie_secret, option),
 			(13, claimable_htlc_onion_fields, optional_vec),
-			(14, decode_update_add_htlcs, option),
+			(14, decode_update_add_htlcs_legacy, option),
 			(15, inbound_payment_id_secret, option),
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
 		});
-		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
+		let mut decode_update_add_htlcs_legacy =
+			decode_update_add_htlcs_legacy.unwrap_or_else(|| new_hash_map());
+		let mut pending_intercepted_htlcs_legacy =
+			pending_intercepted_htlcs_legacy.unwrap_or_else(|| new_hash_map());
+		let mut decode_update_add_htlcs = new_hash_map();
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.entropy_source.get_secure_random_bytes());
@@ -17662,6 +17719,21 @@ where
 					let mut peer_state_lock = peer_state_mtx.lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
 					is_channel_closed = !peer_state.channel_by_id.contains_key(channel_id);
+					if let Some(chan) = peer_state.channel_by_id.get(channel_id) {
+						if let Some(funded_chan) = chan.as_funded() {
+							let inbound_committed_update_adds =
+								funded_chan.get_inbound_committed_update_adds();
+							if !inbound_committed_update_adds.is_empty() {
+								// Reconstruct `ChannelManager::decode_update_add_htlcs` from the serialized
+								// `Channel`, as part of removing the requirement to regularly persist the
+								// `ChannelManager`.
+								decode_update_add_htlcs.insert(
+									funded_chan.context.outbound_scid_alias(),
+									inbound_committed_update_adds,
+								);
+							}
+						}
+					}
 				}
 
 				if is_channel_closed {
@@ -17720,24 +17792,22 @@ where
 								};
 								// The ChannelMonitor is now responsible for this HTLC's
 								// failure/success and will let us know what its outcome is. If we
-								// still have an entry for this HTLC in `forward_htlcs` or
-								// `pending_intercepted_htlcs`, we were apparently not persisted after
-								// the monitor was when forwarding the payment.
-								decode_update_add_htlcs.retain(
-									|src_outb_alias, update_add_htlcs| {
-										update_add_htlcs.retain(|update_add_htlc| {
-											let matches = *src_outb_alias
-												== prev_hop_data.prev_outbound_scid_alias
-												&& update_add_htlc.htlc_id == prev_hop_data.htlc_id;
-											if matches {
-												log_info!(logger, "Removing pending to-decode HTLC as it was forwarded to the closed channel");
-											}
-											!matches
-										});
-										!update_add_htlcs.is_empty()
-									},
+								// still have an entry for this HTLC in `forward_htlcs`,
+								// `pending_intercepted_htlcs`, or `decode_update_add_htlcs`, we were apparently not
+								// persisted after the monitor was when forwarding the payment.
+								dedup_decode_update_add_htlcs(
+									&mut decode_update_add_htlcs,
+									&prev_hop_data,
+									"HTLC was forwarded to the closed channel",
+									&args.logger,
 								);
-								forward_htlcs.retain(|_, forwards| {
+								dedup_decode_update_add_htlcs(
+									&mut decode_update_add_htlcs_legacy,
+									&prev_hop_data,
+									"HTLC was forwarded to the closed channel",
+									&args.logger,
+								);
+								forward_htlcs_legacy.retain(|_, forwards| {
 									forwards.retain(|forward| {
 										if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
 											if pending_forward_matches_htlc(&htlc_info) {
@@ -17749,7 +17819,7 @@ where
 									});
 									!forwards.is_empty()
 								});
-								pending_intercepted_htlcs.as_mut().unwrap().retain(|intercepted_id, htlc_info| {
+								pending_intercepted_htlcs_legacy.retain(|intercepted_id, htlc_info| {
 									if pending_forward_matches_htlc(&htlc_info) {
 										log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
 											&htlc.payment_hash, &monitor.channel_id());
@@ -18221,6 +18291,101 @@ where
 			}
 		}
 
+		// De-duplicate HTLCs that are present in both `failed_htlcs` and `decode_update_add_htlcs`.
+		// Omitting this de-duplication could lead to redundant HTLC processing and/or bugs.
+		for (src, _, _, _, _, _) in failed_htlcs.iter() {
+			if let HTLCSource::PreviousHopData(prev_hop_data) = src {
+				dedup_decode_update_add_htlcs(
+					&mut decode_update_add_htlcs,
+					prev_hop_data,
+					"HTLC was failed backwards during manager read",
+					&args.logger,
+				);
+			}
+		}
+
+		// See above comment on `failed_htlcs`.
+		for htlcs in claimable_payments.values().map(|pmt| &pmt.htlcs) {
+			for prev_hop_data in htlcs.iter().map(|h| &h.prev_hop) {
+				dedup_decode_update_add_htlcs(
+					&mut decode_update_add_htlcs,
+					prev_hop_data,
+					"HTLC was already decoded and marked as a claimable payment",
+					&args.logger,
+				);
+			}
+		}
+
+		// Remove HTLCs from `forward_htlcs` if they are also present in `decode_update_add_htlcs`.
+		//
+		// In the future, the full set of pending HTLCs will be pulled from `Channel{Monitor}` data and
+		// placed in `ChannelManager::decode_update_add_htlcs` on read, to be handled on the next call
+		// to `process_pending_htlc_forwards`. This is part of a larger effort to remove the requirement
+		// of regularly persisting the `ChannelManager`. The new pipeline is supported for HTLC forwards
+		// received on LDK 0.3+ but not <= 0.2, so prune non-legacy HTLCs from `forward_htlcs`.
+		forward_htlcs_legacy.retain(|scid, pending_fwds| {
+			for fwd in pending_fwds {
+				let (prev_scid, prev_htlc_id) = match fwd {
+					HTLCForwardInfo::AddHTLC(htlc) => {
+						(htlc.prev_outbound_scid_alias, htlc.prev_htlc_id)
+					},
+					HTLCForwardInfo::FailHTLC { htlc_id, .. }
+					| HTLCForwardInfo::FailMalformedHTLC { htlc_id, .. } => (*scid, *htlc_id),
+				};
+				if let Some(pending_update_adds) = decode_update_add_htlcs.get_mut(&prev_scid) {
+					if pending_update_adds
+						.iter()
+						.any(|update_add| update_add.htlc_id == prev_htlc_id)
+					{
+						return false;
+					}
+				}
+			}
+			true
+		});
+		// Remove intercepted HTLC forwards if they are also present in `decode_update_add_htlcs`. See
+		// the above comment.
+		pending_intercepted_htlcs_legacy.retain(|id, fwd| {
+			let prev_scid = fwd.prev_outbound_scid_alias;
+			if let Some(pending_update_adds) = decode_update_add_htlcs.get_mut(&prev_scid) {
+				if pending_update_adds
+					.iter()
+					.any(|update_add| update_add.htlc_id == fwd.prev_htlc_id)
+				{
+					pending_events_read.retain(
+						|(ev, _)| !matches!(ev, Event::HTLCIntercepted { intercept_id, .. } if intercept_id == id),
+					);
+					return false;
+				}
+			}
+			if !pending_events_read.iter().any(
+				|(ev, _)| matches!(ev, Event::HTLCIntercepted { intercept_id, .. } if intercept_id == id),
+			) {
+				match create_htlc_intercepted_event(*id, &fwd) {
+					Ok(ev) => pending_events_read.push_back((ev, None)),
+					Err(()) => debug_assert!(false),
+				}
+			}
+			true
+		});
+		// Add legacy update_adds that were received on LDK <= 0.2 that are not present in the
+		// `decode_update_add_htlcs` map that was rebuilt from `Channel{Monitor}` data, see above
+		// comment.
+		for (scid, legacy_update_adds) in decode_update_add_htlcs_legacy.drain() {
+			match decode_update_add_htlcs.entry(scid) {
+				hash_map::Entry::Occupied(mut update_adds) => {
+					for legacy_update_add in legacy_update_adds {
+						if !update_adds.get().contains(&legacy_update_add) {
+							update_adds.get_mut().push(legacy_update_add);
+						}
+					}
+				},
+				hash_map::Entry::Vacant(entry) => {
+					entry.insert(legacy_update_adds);
+				},
+			}
+		}
+
 		let best_block = BestBlock::new(best_block_hash, best_block_height);
 		let flow = OffersMessageFlow::new(
 			chain_hash,
@@ -18247,9 +18412,9 @@ where
 
 			inbound_payment_key: expanded_inbound_key,
 			pending_outbound_payments: pending_outbounds,
-			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
+			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs_legacy),
 
-			forward_htlcs: Mutex::new(forward_htlcs),
+			forward_htlcs: Mutex::new(forward_htlcs_legacy),
 			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs),
 			claimable_payments: Mutex::new(ClaimablePayments {
 				claimable_payments,

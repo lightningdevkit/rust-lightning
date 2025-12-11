@@ -10,6 +10,16 @@
 //! Tests which test upgrading from previous versions of LDK or downgrading to previous versions of
 //! LDK.
 
+use lightning_0_2::commitment_signed_dance as commitment_signed_dance_0_2;
+use lightning_0_2::events::Event as Event_0_2;
+use lightning_0_2::get_monitor as get_monitor_0_2;
+use lightning_0_2::ln::channelmanager::PaymentId as PaymentId_0_2;
+use lightning_0_2::ln::channelmanager::RecipientOnionFields as RecipientOnionFields_0_2;
+use lightning_0_2::ln::functional_test_utils as lightning_0_2_utils;
+use lightning_0_2::ln::msgs::ChannelMessageHandler as _;
+use lightning_0_2::routing::router as router_0_2;
+use lightning_0_2::util::ser::Writeable as _;
+
 use lightning_0_1::commitment_signed_dance as commitment_signed_dance_0_1;
 use lightning_0_1::events::ClosureReason as ClosureReason_0_1;
 use lightning_0_1::expect_pending_htlcs_forwardable_ignore as expect_pending_htlcs_forwardable_ignore_0_1;
@@ -497,4 +507,195 @@ fn do_test_0_1_htlc_forward_after_splice(fail_htlc: bool) {
 fn test_0_1_htlc_forward_after_splice() {
 	do_test_0_1_htlc_forward_after_splice(true);
 	do_test_0_1_htlc_forward_after_splice(false);
+}
+
+#[derive(PartialEq, Eq)]
+enum MidHtlcForwardCase {
+	// Restart the upgraded node after locking an HTLC forward into the inbound edge, but before
+	// decoding the onion.
+	PreOnionDecode,
+	// Restart the upgraded node after locking an HTLC forward into the inbound edge + decoding the
+	// onion.
+	PostOnionDecode,
+	// Restart the upgraded node after the HTLC has been decoded and placed in the pending intercepted
+	// HTLCs map.
+	Intercept,
+}
+
+#[test]
+fn upgrade_pre_htlc_forward_onion_decode() {
+	do_upgrade_mid_htlc_forward(MidHtlcForwardCase::PreOnionDecode);
+}
+
+#[test]
+fn upgrade_mid_htlc_forward() {
+	do_upgrade_mid_htlc_forward(MidHtlcForwardCase::PostOnionDecode);
+}
+
+#[test]
+fn upgrade_mid_htlc_intercept_forward() {
+	do_upgrade_mid_htlc_forward(MidHtlcForwardCase::Intercept);
+}
+
+fn do_upgrade_mid_htlc_forward(test: MidHtlcForwardCase) {
+	// In 0.3, we started reconstructing the `ChannelManager`'s HTLC forwards maps from the HTLCs
+	// contained in `Channel`s, as part of removing the requirement to regularly persist the
+	// `ChannelManager`. However, HTLC forwards can only be reconstructed this way if they were
+	// received on 0.3 or higher. Test that HTLC forwards that were serialized on <=0.2 will still
+	// succeed when read on 0.3+.
+	let (node_a_ser, node_b_ser, node_c_ser, mon_a_1_ser, mon_b_1_ser, mon_b_2_ser, mon_c_1_ser);
+	let (node_a_id, node_b_id, node_c_id);
+	let (payment_secret_bytes, payment_hash_bytes, payment_preimage_bytes);
+	let chan_id_bytes_b_c;
+
+	{
+		let chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(3);
+		let node_cfgs = lightning_0_2_utils::create_node_cfgs(3, &chanmon_cfgs);
+
+		let mut intercept_cfg = lightning_0_2_utils::test_default_channel_config();
+		intercept_cfg.accept_intercept_htlcs = true;
+		let cfgs = &[None, Some(intercept_cfg), None];
+		let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(3, &node_cfgs, cfgs);
+		let nodes = lightning_0_2_utils::create_network(3, &node_cfgs, &node_chanmgrs);
+
+		node_a_id = nodes[0].node.get_our_node_id();
+		node_b_id = nodes[1].node.get_our_node_id();
+		node_c_id = nodes[2].node.get_our_node_id();
+		let chan_id_a = lightning_0_2_utils::create_announced_chan_between_nodes_with_value(
+			&nodes, 0, 1, 10_000_000, 0,
+		)
+		.2;
+
+		let chan_id_b = lightning_0_2_utils::create_announced_chan_between_nodes_with_value(
+			&nodes, 1, 2, 50_000, 0,
+		)
+		.2;
+		chan_id_bytes_b_c = chan_id_b.0;
+
+		// Ensure all nodes are at the same initial height.
+		let node_max_height = nodes.iter().map(|node| node.best_block_info().1).max().unwrap();
+		for node in &nodes {
+			let blocks_to_mine = node_max_height - node.best_block_info().1;
+			if blocks_to_mine > 0 {
+				lightning_0_2_utils::connect_blocks(node, blocks_to_mine);
+			}
+		}
+
+		// Initiate an HTLC to be sent over node_a -> node_b -> node_c
+		let (preimage, hash, secret) =
+			lightning_0_2_utils::get_payment_preimage_hash(&nodes[2], Some(1_000_000), None);
+		payment_preimage_bytes = preimage.0;
+		payment_hash_bytes = hash.0;
+		payment_secret_bytes = secret.0;
+
+		let pay_params = router_0_2::PaymentParameters::from_node_id(
+			node_c_id,
+			lightning_0_2_utils::TEST_FINAL_CLTV,
+		)
+		.with_bolt11_features(nodes[2].node.bolt11_invoice_features())
+		.unwrap();
+
+		let route_params =
+			router_0_2::RouteParameters::from_payment_params_and_value(pay_params, 1_000_000);
+		let mut route = lightning_0_2_utils::get_route(&nodes[0], &route_params).unwrap();
+
+		if test == MidHtlcForwardCase::Intercept {
+			route.paths[0].hops[1].short_channel_id = nodes[1].node.get_intercept_scid();
+		}
+
+		let onion = RecipientOnionFields_0_2::secret_only(secret);
+		let id = PaymentId_0_2(hash.0);
+		nodes[0].node.send_payment_with_route(route, hash, onion, id).unwrap();
+
+		lightning_0_2_utils::check_added_monitors(&nodes[0], 1);
+		let send_event = lightning_0_2_utils::SendEvent::from_node(&nodes[0]);
+
+		// Lock in the HTLC on the inbound edge of node_b without initiating the outbound edge.
+		nodes[1].node.handle_update_add_htlc(node_a_id, &send_event.msgs[0]);
+		commitment_signed_dance_0_2!(nodes[1], nodes[0], send_event.commitment_msg, false);
+		if test != MidHtlcForwardCase::PreOnionDecode {
+			nodes[1].node.test_process_pending_update_add_htlcs();
+		}
+		let events = nodes[1].node.get_and_clear_pending_events();
+		if test == MidHtlcForwardCase::Intercept {
+			assert_eq!(events.len(), 1);
+			assert!(matches!(events[0], Event_0_2::HTLCIntercepted { .. }));
+		} else {
+			assert!(events.is_empty());
+		}
+
+		node_a_ser = nodes[0].node.encode();
+		node_b_ser = nodes[1].node.encode();
+		node_c_ser = nodes[2].node.encode();
+		mon_a_1_ser = get_monitor_0_2!(nodes[0], chan_id_a).encode();
+		mon_b_1_ser = get_monitor_0_2!(nodes[1], chan_id_a).encode();
+		mon_b_2_ser = get_monitor_0_2!(nodes[1], chan_id_b).encode();
+		mon_c_1_ser = get_monitor_0_2!(nodes[2], chan_id_b).encode();
+	}
+
+	// Create a dummy node to reload over with the 0.2 state
+	let mut chanmon_cfgs = create_chanmon_cfgs(3);
+
+	// Our TestChannelSigner will fail as we're jumping ahead, so disable its state-based checks
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+	chanmon_cfgs[2].keys_manager.disable_all_state_policy_checks = true;
+
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let (persister_a, persister_b, persister_c, chain_mon_a, chain_mon_b, chain_mon_c);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let (node_a, node_b, node_c);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let config = test_default_channel_config();
+	let a_mons = &[&mon_a_1_ser[..]];
+	reload_node!(nodes[0], config.clone(), &node_a_ser, a_mons, persister_a, chain_mon_a, node_a);
+	let b_mons = &[&mon_b_1_ser[..], &mon_b_2_ser[..]];
+	reload_node!(nodes[1], config.clone(), &node_b_ser, b_mons, persister_b, chain_mon_b, node_b);
+	let c_mons = &[&mon_c_1_ser[..]];
+	reload_node!(nodes[2], config, &node_c_ser, c_mons, persister_c, chain_mon_c, node_c);
+
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
+	let mut reconnect_b_c_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
+	reconnect_b_c_args.send_channel_ready = (true, true);
+	reconnect_b_c_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_b_c_args);
+
+	// Now release the HTLC from node_b to node_c, to be claimed back to node_a
+	nodes[1].node.process_pending_htlc_forwards();
+
+	if test == MidHtlcForwardCase::Intercept {
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		let (intercept_id, expected_outbound_amt_msat) = match events[0] {
+			Event::HTLCIntercepted { intercept_id, expected_outbound_amount_msat, .. } => {
+				(intercept_id, expected_outbound_amount_msat)
+			},
+			_ => panic!(),
+		};
+		nodes[1]
+			.node
+			.forward_intercepted_htlc(
+				intercept_id,
+				&ChannelId(chan_id_bytes_b_c),
+				nodes[2].node.get_our_node_id(),
+				expected_outbound_amt_msat,
+			)
+			.unwrap();
+		nodes[1].node.process_pending_htlc_forwards();
+	}
+
+	let pay_secret = PaymentSecret(payment_secret_bytes);
+	let pay_hash = PaymentHash(payment_hash_bytes);
+	let pay_preimage = PaymentPreimage(payment_preimage_bytes);
+
+	check_added_monitors(&nodes[1], 1);
+	let forward_event = SendEvent::from_node(&nodes[1]);
+	nodes[2].node.handle_update_add_htlc(node_b_id, &forward_event.msgs[0]);
+	let commitment = &forward_event.commitment_msg;
+	do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, false);
+
+	expect_and_process_pending_htlcs(&nodes[2], false);
+	expect_payment_claimable!(nodes[2], pay_hash, pay_secret, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], pay_preimage);
 }

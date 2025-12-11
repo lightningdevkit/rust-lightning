@@ -16,3 +16,4 @@ lightning-dns-resolver/target
 ext-functional-test-demo/target
 no-std-check/target
 msrv-no-dev-deps-check/target
+lightning-tests/target
