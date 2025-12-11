@@ -784,8 +784,8 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 			if compact_padding {
 				debug_assert_eq!(res.serialized_length(), max_intermediate_len);
 			} else {
-				// We don't currently ever push extra stuff to intermediate hops, so simply assert that
-				// the fully-padded hops are always `MESSAGE_PADDING_ROUND_OFF` long.
+				// We don't currently ever push extra fields to intermediate hops, so they should
+				// never go over `MESSAGE_PADDING_ROUND_OFF`.
 				debug_assert_eq!(res.serialized_length(), MESSAGE_PADDING_ROUND_OFF);
 			}
 			res
