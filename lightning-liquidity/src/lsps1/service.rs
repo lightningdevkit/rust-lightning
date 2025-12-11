@@ -9,9 +9,14 @@
 
 //! Contains the main bLIP-51 / LSPS1 server object, [`LSPS1ServiceHandler`].
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
+use core::future::Future as StdFuture;
 use core::ops::Deref;
+use core::pin::pin;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::task;
 
 use super::event::LSPS1ServiceEvent;
 use super::msgs::{
@@ -28,9 +33,14 @@ use crate::events::EventQueue;
 use crate::lsps0::ser::{
 	LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
 };
+use crate::persist::{
+	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+};
+use crate::prelude::hash_map::Entry;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
+use crate::utils::async_poll::dummy_waker;
 use crate::utils::time::TimeProvider;
 
 use lightning::ln::channelmanager::AChannelManager;
@@ -39,6 +49,7 @@ use lightning::sign::EntropySource;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
 use lightning::util::persist::KVStore;
+use lightning::util::ser::Writeable;
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -63,9 +74,11 @@ pub struct LSPS1ServiceHandler<
 {
 	entropy_source: ES,
 	_channel_manager: CM,
+	kv_store: K,
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue<K>>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
+	persistence_in_flight: AtomicUsize,
 	time_provider: TP,
 	config: LSPS1ServiceConfig,
 }
@@ -79,15 +92,17 @@ where
 	/// Constructs a `LSPS1ServiceHandler`.
 	pub(crate) fn new(
 		entropy_source: ES, pending_messages: Arc<MessageQueue>,
-		pending_events: Arc<EventQueue<K>>, channel_manager: CM, time_provider: TP,
+		pending_events: Arc<EventQueue<K>>, channel_manager: CM, kv_store: K, time_provider: TP,
 		config: LSPS1ServiceConfig,
 	) -> Self {
 		Self {
 			entropy_source,
 			_channel_manager: channel_manager,
+			kv_store,
 			pending_messages,
 			pending_events,
 			per_peer_state: RwLock::new(new_hash_map()),
+			persistence_in_flight: AtomicUsize::new(0),
 			time_provider,
 			config,
 		}
@@ -106,9 +121,150 @@ where
 	/// Pending requests that are still awaiting our response are deliberately NOT counted.
 	pub(crate) fn has_active_requests(&self, counterparty_node_id: &PublicKey) -> bool {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-		outer_state_lock.get(counterparty_node_id).map_or(false, |inner| {
+		outer_state_lock.get(counterparty_node_id).is_some_and(|inner| {
 			let peer_state = inner.lock().unwrap();
 			peer_state.has_active_requests()
+		})
+	}
+
+	pub(crate) fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
+		let outer_state_lock = self.per_peer_state.write().unwrap();
+		if let Some(inner_state_lock) = outer_state_lock.get(&counterparty_node_id) {
+			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+			// We clean up the peer state, but leave removing the peer entry to the prune logic in
+			// `persist` which removes it from the store.
+			peer_state_lock.prune_pending_requests();
+			peer_state_lock.prune_expired_request_state();
+		}
+	}
+
+	pub(crate) async fn persist(&self) -> Result<bool, lightning::io::Error> {
+		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
+		// introduce some batching to upper-bound the number of requests inflight at any given
+		// time.
+		let mut did_persist = false;
+
+		if self.persistence_in_flight.fetch_add(1, Ordering::AcqRel) > 0 {
+			// If we're not the first event processor to get here, just return early, the increment
+			// we just did will be treated as "go around again" at the end.
+			return Ok(did_persist);
+		}
+
+		loop {
+			let mut need_remove = Vec::new();
+			let mut need_persist = Vec::new();
+
+			{
+				// First build a list of peers to persist and prune with the read lock. This allows
+				// us to avoid the write lock unless we actually need to remove a node.
+				let outer_state_lock = self.per_peer_state.read().unwrap();
+				for (counterparty_node_id, inner_state_lock) in outer_state_lock.iter() {
+					let mut peer_state_lock = inner_state_lock.lock().unwrap();
+					peer_state_lock.prune_expired_request_state();
+					let is_prunable = peer_state_lock.is_prunable();
+					if is_prunable {
+						need_remove.push(*counterparty_node_id);
+					} else if peer_state_lock.needs_persist() {
+						need_persist.push(*counterparty_node_id);
+					}
+				}
+			}
+
+			for counterparty_node_id in need_persist.into_iter() {
+				debug_assert!(!need_remove.contains(&counterparty_node_id));
+				self.persist_peer_state(counterparty_node_id).await?;
+				did_persist = true;
+			}
+
+			for counterparty_node_id in need_remove {
+				let mut future_opt = None;
+				{
+					// We need to take the `per_peer_state` write lock to remove an entry, but also
+					// have to hold it until after the `remove` call returns (but not through
+					// future completion) to ensure that writes for the peer's state are
+					// well-ordered with other `persist_peer_state` calls even across the removal
+					// itself.
+					let mut per_peer_state = self.per_peer_state.write().unwrap();
+					if let Entry::Occupied(mut entry) = per_peer_state.entry(counterparty_node_id) {
+						let state = entry.get_mut().get_mut().unwrap();
+						if state.is_prunable() {
+							entry.remove();
+							let key = counterparty_node_id.to_string();
+							future_opt = Some(self.kv_store.remove(
+								LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+								LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+								&key,
+								true,
+							));
+						} else {
+							// If the peer got new state, force a re-persist of the current state.
+							state.set_needs_persist(true);
+						}
+					} else {
+						// This should never happen, we can only have one `persist` call
+						// in-progress at once and map entries are only removed by it.
+						debug_assert!(false);
+					}
+				}
+				if let Some(future) = future_opt {
+					future.await?;
+					did_persist = true;
+				} else {
+					self.persist_peer_state(counterparty_node_id).await?;
+				}
+			}
+
+			if self.persistence_in_flight.fetch_sub(1, Ordering::AcqRel) != 1 {
+				// If another thread incremented the state while we were running we should go
+				// around again, but only once.
+				self.persistence_in_flight.store(1, Ordering::Release);
+				continue;
+			}
+			break;
+		}
+
+		Ok(did_persist)
+	}
+
+	async fn persist_peer_state(
+		&self, counterparty_node_id: PublicKey,
+	) -> Result<(), lightning::io::Error> {
+		let fut = {
+			let outer_state_lock = self.per_peer_state.read().unwrap();
+			match outer_state_lock.get(&counterparty_node_id) {
+				None => {
+					// We dropped the peer state by now.
+					return Ok(());
+				},
+				Some(entry) => {
+					let mut peer_state_lock = entry.lock().unwrap();
+					if !peer_state_lock.needs_persist() {
+						// We already have persisted otherwise by now.
+						return Ok(());
+					} else {
+						peer_state_lock.set_needs_persist(false);
+						let key = counterparty_node_id.to_string();
+						let encoded = peer_state_lock.encode();
+						// Begin the write with the entry lock held. This avoids racing with
+						// potentially-in-flight `persist` calls writing state for the same peer.
+						self.kv_store.write(
+							LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+							LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+							&key,
+							encoded,
+						)
+					}
+				},
+			}
+		};
+
+		fut.await.map_err(|e| {
+			self.per_peer_state
+				.read()
+				.unwrap()
+				.get(&counterparty_node_id)
+				.map(|p| p.lock().unwrap().set_needs_persist(true));
+			e
 		})
 	}
 
@@ -180,14 +336,14 @@ where
 	/// Should be called in response to receiving a [`LSPS1ServiceEvent::RequestForPaymentDetails`] event.
 	///
 	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
-	pub fn send_payment_details(
-		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+	pub async fn send_payment_details(
+		&self, request_id: LSPSRequestId, counterparty_node_id: PublicKey,
 		payment_details: LSPS1PaymentInfo,
 	) -> Result<(), APIError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
+		let mut should_persist = false;
 
-		let outer_state_lock = self.per_peer_state.read().unwrap();
-		match outer_state_lock.get(counterparty_node_id) {
+		match self.per_peer_state.read().unwrap().get(&counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 				let request = peer_state_lock.remove_request(&request_id).map_err(|e| {
@@ -208,6 +364,7 @@ where
 							created_at,
 							payment_details,
 						);
+						should_persist |= peer_state_lock.needs_persist();
 
 						let response = LSPS1Response::CreateOrder(LSPS1CreateOrderResponse {
 							order: order.order_params,
@@ -219,8 +376,7 @@ where
 							channel: order.channel_details,
 						});
 						let msg = LSPS1Message::Response(request_id, response).into();
-						message_queue_notifier.enqueue(counterparty_node_id, msg);
-						Ok(())
+						message_queue_notifier.enqueue(&counterparty_node_id, msg);
 					},
 					t => {
 						debug_assert!(
@@ -236,10 +392,25 @@ where
 					},
 				}
 			},
-			None => Err(APIError::APIMisuseError {
-				err: format!("No state for the counterparty exists: {}", counterparty_node_id),
-			}),
+			None => {
+				return Err(APIError::APIMisuseError {
+					err: format!("No state for the counterparty exists: {}", counterparty_node_id),
+				});
+			},
 		}
+
+		if should_persist {
+			self.persist_peer_state(counterparty_node_id).await.map_err(|e| {
+				APIError::APIMisuseError {
+					err: format!(
+						"Failed to persist peer state for {}: {}",
+						counterparty_node_id, e
+					),
+				}
+			})?;
+		}
+
+		Ok(())
 	}
 
 	fn handle_get_order_request(
@@ -300,13 +471,12 @@ where
 	///
 	/// The LSP continously polls for checking payment confirmation on-chain or Lightning
 	/// and then responds to client request.
-	pub fn update_order_status(
+	pub async fn update_order_status(
 		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
 		order_state: LSPS1OrderState, channel_details: Option<LSPS1ChannelInfo>,
 	) -> Result<(), APIError> {
-		let outer_state_lock = self.per_peer_state.read().unwrap();
-
-		match outer_state_lock.get(&counterparty_node_id) {
+		let mut should_persist = false;
+		match self.per_peer_state.read().unwrap().get(&counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 				peer_state_lock.update_order(&order_id, order_state, channel_details).map_err(
@@ -314,13 +484,27 @@ where
 						err: format!("Failed to update order: {:?}", e),
 					},
 				)?;
-
-				Ok(())
+				should_persist |= peer_state_lock.needs_persist();
 			},
-			None => Err(APIError::APIMisuseError {
-				err: format!("No existing state with counterparty {}", counterparty_node_id),
-			}),
+			None => {
+				return Err(APIError::APIMisuseError {
+					err: format!("No existing state with counterparty {}", counterparty_node_id),
+				});
+			},
 		}
+
+		if should_persist {
+			self.persist_peer_state(counterparty_node_id).await.map_err(|e| {
+				APIError::APIMisuseError {
+					err: format!(
+						"Failed to persist peer state for {}: {}",
+						counterparty_node_id, e
+					),
+				}
+			})?;
+		}
+
+		Ok(())
 	}
 
 	fn generate_order_id(&self) -> LSPS1OrderId {
@@ -359,6 +543,88 @@ where
 					"Service handler received LSPS1 response message. This should never happen."
 				);
 				Err(LightningError { err: format!("Service handler received LSPS1 response message from node {:?}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
+			},
+		}
+	}
+}
+
+/// A synchroneous wrapper around [`LSPS1ServiceHandler`] to be used in contexts where async is not
+/// available.
+pub struct LSPS1ServiceHandlerSync<
+	'a,
+	ES: EntropySource,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	TP: Deref + Clone,
+> where
+	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
+{
+	inner: &'a LSPS1ServiceHandler<ES, CM, K, TP>,
+}
+
+impl<'a, ES: EntropySource, CM: Deref + Clone, K: KVStore + Clone, TP: Deref + Clone>
+	LSPS1ServiceHandlerSync<'a, ES, CM, K, TP>
+where
+	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
+{
+	pub(crate) fn from_inner(inner: &'a LSPS1ServiceHandler<ES, CM, K, TP>) -> Self {
+		Self { inner }
+	}
+
+	/// Returns a reference to the used config.
+	///
+	/// Wraps [`LSPS1ServiceHandler::config`].
+	pub fn config(&self) -> &LSPS1ServiceConfig {
+		&self.inner.config
+	}
+
+	/// Used by LSP to send response containing details regarding the channel fees and payment information.
+	///
+	/// Wraps [`LSPS1ServiceHandler::send_payment_details`].
+	pub fn send_payment_details(
+		&self, request_id: LSPSRequestId, counterparty_node_id: PublicKey,
+		payment_details: LSPS1PaymentInfo,
+	) -> Result<(), APIError> {
+		let mut fut = pin!(self.inner.send_payment_details(
+			request_id,
+			counterparty_node_id,
+			payment_details
+		));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Used by LSP to give details to client regarding the status of channel opening.
+	///
+	/// Wraps [`LSPS1ServiceHandler::update_order_status`].
+	pub fn update_order_status(
+		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
+		order_state: LSPS1OrderState, channel_details: Option<LSPS1ChannelInfo>,
+	) -> Result<(), APIError> {
+		let mut fut = pin!(self.inner.update_order_status(
+			counterparty_node_id,
+			order_id,
+			order_state,
+			channel_details
+		));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
 			},
 		}
 	}
