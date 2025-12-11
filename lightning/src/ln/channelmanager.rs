@@ -3597,96 +3597,6 @@ fn convert_channel_err_internal<
 	}
 }
 
-fn convert_funded_channel_err_internal<SP: Deref, CM: AChannelManager<SP = SP>>(
-	cm: &CM, closed_channel_monitor_update_ids: &mut BTreeMap<ChannelId, u64>,
-	in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
-	coop_close_shutdown_res: Option<ShutdownResult>, err: ChannelError,
-	chan: &mut FundedChannel<SP>,
-) -> (bool, MsgHandleErrInternal)
-where
-	SP::Target: SignerProvider,
-	CM::Watch: Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-{
-	let chan_id = chan.context.channel_id();
-	convert_channel_err_internal(err, chan_id, |reason, msg| {
-		let cm = cm.get_cm();
-		let logger = WithChannelContext::from(&cm.logger, &chan.context, None);
-
-		let mut shutdown_res =
-			if let Some(res) = coop_close_shutdown_res { res } else { chan.force_shutdown(reason) };
-		let chan_update = cm.get_channel_update_for_broadcast(chan).ok();
-
-		log_error!(logger, "Closed channel due to close-required error: {}", msg);
-
-		if let Some((_, funding_txo, _, update)) = shutdown_res.monitor_update.take() {
-			handle_new_monitor_update_locked_actions_handled_by_caller!(
-				cm,
-				funding_txo,
-				update,
-				in_flight_monitor_updates,
-				chan.context
-			);
-		}
-		// If there's a possibility that we need to generate further monitor updates for this
-		// channel, we need to store the last update_id of it. However, we don't want to insert
-		// into the map (which prevents the `PeerState` from being cleaned up) for channels that
-		// never even got confirmations (which would open us up to DoS attacks).
-		let update_id = chan.context.get_latest_monitor_update_id();
-		let funding_confirmed = chan.funding.get_funding_tx_confirmation_height().is_some();
-		let chan_zero_conf = chan.context.minimum_depth(&chan.funding) == Some(0);
-		if funding_confirmed || chan_zero_conf || update_id > 1 {
-			closed_channel_monitor_update_ids.insert(chan_id, update_id);
-		}
-		let mut short_to_chan_info = cm.short_to_chan_info.write().unwrap();
-		if let Some(short_id) = chan.funding.get_short_channel_id() {
-			short_to_chan_info.remove(&short_id);
-		} else {
-			// If the channel was never confirmed on-chain prior to its closure, remove the
-			// outbound SCID alias we used for it from the collision-prevention set. While we
-			// generally want to avoid ever re-using an outbound SCID alias across all channels, we
-			// also don't want a counterparty to be able to trivially cause a memory leak by simply
-			// opening a million channels with us which are closed before we ever reach the funding
-			// stage.
-			let outbound_alias = chan.context.outbound_scid_alias();
-			let alias_removed = cm.outbound_scid_aliases.lock().unwrap().remove(&outbound_alias);
-			debug_assert!(alias_removed);
-		}
-		short_to_chan_info.remove(&chan.context.outbound_scid_alias());
-		for scid in chan.context.historical_scids() {
-			short_to_chan_info.remove(scid);
-		}
-
-		(shutdown_res, chan_update)
-	})
-}
-
-fn convert_unfunded_channel_err_internal<SP: Deref, CM: AChannelManager>(
-	cm: &CM, err: ChannelError, chan: &mut Channel<SP>,
-) -> (bool, MsgHandleErrInternal)
-where
-	SP::Target: SignerProvider,
-{
-	let chan_id = chan.context().channel_id();
-	convert_channel_err_internal(err, chan_id, |reason, msg| {
-		let cm = cm.get_cm();
-		let logger = WithChannelContext::from(&cm.logger, chan.context(), None);
-
-		let shutdown_res = chan.force_shutdown(reason);
-		log_error!(logger, "Closed channel due to close-required error: {}", msg);
-		cm.short_to_chan_info.write().unwrap().remove(&chan.context().outbound_scid_alias());
-		// If the channel was never confirmed on-chain prior to its closure, remove the
-		// outbound SCID alias we used for it from the collision-prevention set. While we
-		// generally want to avoid ever re-using an outbound SCID alias across all channels, we
-		// also don't want a counterparty to be able to trivially cause a memory leak by simply
-		// opening a million channels with us which are closed before we ever reach the funding
-		// stage.
-		let outbound_alias = chan.context().outbound_scid_alias();
-		let alias_removed = cm.outbound_scid_aliases.lock().unwrap().remove(&outbound_alias);
-		debug_assert!(alias_removed);
-		(shutdown_res, None)
-	})
-}
-
 /// When a channel is removed, two things need to happen:
 /// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
 /// (b) [`ChannelManager::handle_error`] needs to be called without holding any locks (except
@@ -3706,7 +3616,7 @@ macro_rules! convert_channel_err {
 		let closed_update_ids = &mut $peer_state.closed_channel_monitor_update_ids;
 		let in_flight_updates = &mut $peer_state.in_flight_monitor_updates;
 		let (close, mut err) =
-			convert_funded_channel_err_internal($self, closed_update_ids, in_flight_updates, Some($shutdown_result), reason, $funded_channel);
+			$self.convert_funded_channel_err_internal(closed_update_ids, in_flight_updates, Some($shutdown_result), reason, $funded_channel);
 		err.dont_send_error_message();
 		debug_assert!(close);
 		err
@@ -3714,20 +3624,20 @@ macro_rules! convert_channel_err {
 	($self: ident, $peer_state: expr, $err: expr, $funded_channel: expr, FUNDED_CHANNEL) => { {
 		let closed_update_ids = &mut $peer_state.closed_channel_monitor_update_ids;
 		let in_flight_updates = &mut $peer_state.in_flight_monitor_updates;
-		convert_funded_channel_err_internal($self, closed_update_ids, in_flight_updates, None, $err, $funded_channel)
+		$self.convert_funded_channel_err_internal(closed_update_ids, in_flight_updates, None, $err, $funded_channel)
 	} };
 	($self: ident, $peer_state: expr, $err: expr, $channel: expr, UNFUNDED_CHANNEL) => { {
-		convert_unfunded_channel_err_internal($self, $err, $channel)
+		$self.convert_unfunded_channel_err_internal($err, $channel)
 	} };
 	($self: ident, $peer_state: expr, $err: expr, $channel: expr) => {
 		match $channel.as_funded_mut() {
 			Some(funded_channel) => {
 				let closed_update_ids = &mut $peer_state.closed_channel_monitor_update_ids;
 				let in_flight_updates = &mut $peer_state.in_flight_monitor_updates;
-				convert_funded_channel_err_internal($self, closed_update_ids, in_flight_updates, None, $err, funded_channel)
+				$self.convert_funded_channel_err_internal(closed_update_ids, in_flight_updates, None, $err, funded_channel)
 			},
 			None => {
-				convert_unfunded_channel_err_internal($self, $err, $channel)
+				$self.convert_unfunded_channel_err_internal($err, $channel)
 			},
 		}
 	};
@@ -4031,6 +3941,94 @@ where
 
 			// Return error in case higher-API need one
 			err_internal.err
+		})
+	}
+
+	fn convert_funded_channel_err_internal(
+		&self, closed_channel_monitor_update_ids: &mut BTreeMap<ChannelId, u64>,
+		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
+		coop_close_shutdown_res: Option<ShutdownResult>, err: ChannelError,
+		chan: &mut FundedChannel<SP>,
+	) -> (bool, MsgHandleErrInternal) {
+		let chan_id = chan.context.channel_id();
+		convert_channel_err_internal(err, chan_id, |reason, msg| {
+			let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+
+			let mut shutdown_res = if let Some(res) = coop_close_shutdown_res {
+				res
+			} else {
+				chan.force_shutdown(reason)
+			};
+			let chan_update = self.get_channel_update_for_broadcast(chan).ok();
+
+			log_error!(logger, "Closed channel due to close-required error: {}", msg);
+
+			if let Some((_, funding_txo, _, update)) = shutdown_res.monitor_update.take() {
+				handle_new_monitor_update_locked_actions_handled_by_caller!(
+					self,
+					funding_txo,
+					update,
+					in_flight_monitor_updates,
+					chan.context
+				);
+			}
+			// If there's a possibility that we need to generate further monitor updates for this
+			// channel, we need to store the last update_id of it. However, we don't want to insert
+			// into the map (which prevents the `PeerState` from being cleaned up) for channels that
+			// never even got confirmations (which would open us up to DoS attacks).
+			let update_id = chan.context.get_latest_monitor_update_id();
+			let funding_confirmed = chan.funding.get_funding_tx_confirmation_height().is_some();
+			let chan_zero_conf = chan.context.minimum_depth(&chan.funding) == Some(0);
+			if funding_confirmed || chan_zero_conf || update_id > 1 {
+				closed_channel_monitor_update_ids.insert(chan_id, update_id);
+			}
+			let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+			if let Some(short_id) = chan.funding.get_short_channel_id() {
+				short_to_chan_info.remove(&short_id);
+			} else {
+				// If the channel was never confirmed on-chain prior to its closure, remove the
+				// outbound SCID alias we used for it from the collision-prevention set. While we
+				// generally want to avoid ever re-using an outbound SCID alias across all channels, we
+				// also don't want a counterparty to be able to trivially cause a memory leak by simply
+				// opening a million channels with us which are closed before we ever reach the funding
+				// stage.
+				let outbound_alias = chan.context.outbound_scid_alias();
+				let alias_removed =
+					self.outbound_scid_aliases.lock().unwrap().remove(&outbound_alias);
+				debug_assert!(alias_removed);
+			}
+			short_to_chan_info.remove(&chan.context.outbound_scid_alias());
+			for scid in chan.context.historical_scids() {
+				short_to_chan_info.remove(scid);
+			}
+
+			(shutdown_res, chan_update)
+		})
+	}
+
+	fn convert_unfunded_channel_err_internal(
+		&self, err: ChannelError, chan: &mut Channel<SP>,
+	) -> (bool, MsgHandleErrInternal)
+	where
+		SP::Target: SignerProvider,
+	{
+		let chan_id = chan.context().channel_id();
+		convert_channel_err_internal(err, chan_id, |reason, msg| {
+			let logger = WithChannelContext::from(&self.logger, chan.context(), None);
+
+			let shutdown_res = chan.force_shutdown(reason);
+			log_error!(logger, "Closed channel due to close-required error: {}", msg);
+			self.short_to_chan_info.write().unwrap().remove(&chan.context().outbound_scid_alias());
+			// If the channel was never confirmed on-chain prior to its closure, remove the
+			// outbound SCID alias we used for it from the collision-prevention set. While we
+			// generally want to avoid ever re-using an outbound SCID alias across all channels, we
+			// also don't want a counterparty to be able to trivially cause a memory leak by simply
+			// opening a million channels with us which are closed before we ever reach the funding
+			// stage.
+			let outbound_alias = chan.context().outbound_scid_alias();
+			let alias_removed = self.outbound_scid_aliases.lock().unwrap().remove(&outbound_alias);
+			debug_assert!(alias_removed);
+			(shutdown_res, None)
 		})
 	}
 
