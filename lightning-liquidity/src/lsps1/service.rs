@@ -19,6 +19,7 @@ use super::msgs::{
 	LSPS1GetOrderRequest, LSPS1Message, LSPS1Options, LSPS1OrderId, LSPS1OrderParams,
 	LSPS1OrderState, LSPS1PaymentInfo, LSPS1Request, LSPS1Response,
 	LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
+	LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE,
 };
 use super::peer_state::PeerState;
 use crate::message_queue::MessageQueue;
@@ -245,70 +246,27 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		params: LSPS1GetOrderRequest,
 	) -> Result<(), LightningError> {
-		let event_queue_notifier = self.pending_events.notifier();
+		let mut message_queue_notifier = self.pending_messages.notifier();
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
-				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+				let peer_state_lock = inner_state_lock.lock().unwrap();
 
-				let request = LSPS1Request::GetOrder(params.clone());
-				peer_state_lock.register_request(request_id.clone(), request).map_err(|e| {
+				let order = peer_state_lock.get_order(&params.order_id).map_err(|e| {
+					let response = LSPS1Response::GetOrderError(LSPSResponseError {
+						code: LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE,
+						message: format!("Order with the requested order_id has not been found."),
+						data: None,
+					});
+					let msg = LSPS1Message::Response(request_id.clone(), response).into();
+					message_queue_notifier.enqueue(counterparty_node_id, msg);
 					let err = format!("Failed to handle request due to: {}", e);
 					let action = ErrorAction::IgnoreAndLog(Level::Error);
 					LightningError { err, action }
 				})?;
 
-				event_queue_notifier.enqueue(LSPS1ServiceEvent::CheckPaymentConfirmation {
-					request_id,
-					counterparty_node_id: *counterparty_node_id,
-					order_id: params.order_id,
-				});
-			},
-			None => {
-				return Err(LightningError {
-					err: format!("Received error response for a create order request from an unknown counterparty ({:?})", counterparty_node_id),
-					action: ErrorAction::IgnoreAndLog(Level::Info),
-				});
-			},
-		}
-
-		Ok(())
-	}
-
-	/// Used by LSP to give details to client regarding the status of channel opening.
-	/// Called to respond to client's `GetOrder` request.
-	///
-	/// The LSP continously polls for checking payment confirmation on-chain or Lightning
-	/// and then responds to client request.
-	///
-	/// Should be called in response to receiving a [`LSPS1ServiceEvent::CheckPaymentConfirmation`] event.
-	///
-	/// [`LSPS1ServiceEvent::CheckPaymentConfirmation`]: crate::lsps1::event::LSPS1ServiceEvent::CheckPaymentConfirmation
-	pub fn update_order_status(
-		&self, request_id: LSPSRequestId, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
-		order_state: LSPS1OrderState, channel_details: Option<LSPS1ChannelInfo>,
-	) -> Result<(), APIError> {
-		let mut message_queue_notifier = self.pending_messages.notifier();
-
-		let outer_state_lock = self.per_peer_state.read().unwrap();
-
-		match outer_state_lock.get(&counterparty_node_id) {
-			Some(inner_state_lock) => {
-				let mut peer_state_lock = inner_state_lock.lock().unwrap();
-				let order = peer_state_lock
-					.update_order(&order_id, order_state, channel_details)
-					.map_err(|e| APIError::APIMisuseError {
-					err: format!("Failed to update order: {:?}", e),
-				})?;
-
-				peer_state_lock.remove_request(&request_id).map_err(|e| {
-					debug_assert!(false, "Failed to send response due to: {}", e);
-					let err = format!("Failed to send response due to: {}", e);
-					APIError::APIMisuseError { err }
-				})?;
-
 				let response = LSPS1Response::GetOrder(LSPS1CreateOrderResponse {
-					order_id,
+					order_id: params.order_id,
 					order: order.order_params.clone(),
 					order_state: order.order_state.clone(),
 					created_at: order.created_at.clone(),
@@ -317,6 +275,46 @@ where
 				});
 				let msg = LSPS1Message::Response(request_id, response).into();
 				message_queue_notifier.enqueue(&counterparty_node_id, msg);
+				Ok(())
+			},
+			None => {
+				let response = LSPS1Response::GetOrderError(LSPSResponseError {
+					code: LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE,
+					message: format!("Order with the requested order_id has not been found."),
+					data: None,
+				});
+				let msg = LSPS1Message::Response(request_id, response).into();
+				message_queue_notifier.enqueue(counterparty_node_id, msg);
+				Err(LightningError {
+					err: format!(
+						"Received get_order request from an unknown counterparty ({:?})",
+						counterparty_node_id
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Info),
+				})
+			},
+		}
+	}
+
+	/// Used by LSP to give details to client regarding the status of channel opening.
+	///
+	/// The LSP continously polls for checking payment confirmation on-chain or Lightning
+	/// and then responds to client request.
+	pub fn update_order_status(
+		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
+		order_state: LSPS1OrderState, channel_details: Option<LSPS1ChannelInfo>,
+	) -> Result<(), APIError> {
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+
+		match outer_state_lock.get(&counterparty_node_id) {
+			Some(inner_state_lock) => {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+				peer_state_lock.update_order(&order_id, order_state, channel_details).map_err(
+					|e| APIError::APIMisuseError {
+						err: format!("Failed to update order: {:?}", e),
+					},
+				)?;
+
 				Ok(())
 			},
 			None => Err(APIError::APIMisuseError {
