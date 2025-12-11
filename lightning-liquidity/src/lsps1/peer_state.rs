@@ -17,6 +17,9 @@ use super::msgs::{
 use crate::lsps0::ser::{LSPSDateTime, LSPSRequestId};
 use crate::prelude::HashMap;
 
+use lightning::impl_writeable_tlv_based;
+use lightning::util::hash_tables::new_hash_map;
+
 use core::fmt;
 
 #[derive(Default)]
@@ -87,6 +90,11 @@ impl PeerState {
 	}
 }
 
+impl_writeable_tlv_based!(PeerState, {
+	(0, outbound_channels_by_order_id, required),
+	(_unused, pending_requests, (static_value, new_hash_map())),
+});
+
 #[derive(Debug, Copy, Clone)]
 pub(super) enum PeerStateError {
 	UnknownRequestId,
@@ -112,3 +120,11 @@ pub(super) struct ChannelOrder {
 	pub(super) payment_details: LSPS1PaymentInfo,
 	pub(super) channel_details: Option<LSPS1ChannelInfo>,
 }
+
+impl_writeable_tlv_based!(ChannelOrder, {
+	(0, order_params, required),
+	(2, order_state, required),
+	(4, created_at, required),
+	(6, payment_details, required),
+	(8, channel_details, option),
+});
