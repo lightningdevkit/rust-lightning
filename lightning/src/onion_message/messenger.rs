@@ -598,12 +598,12 @@ where
 		let is_recipient_announced =
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
 
-		let (size_constrained, dummy_hopd_path_len) = match &context {
+		let (size_constrained, path_len_incl_dummys) = match &context {
 			MessageContext::Offers(OffersContext::InvoiceRequest { .. })
 			| MessageContext::Offers(OffersContext::OutboundPaymentInRefund { .. }) => {
-				// When embedding blinded paths within BOLT 12 objects which are generally embedded
-				// in QR codes, we sadly need to be conservative about size, especially if the QR
-				// code ultimately also includes an on-chain address.
+				// When including blinded paths within BOLT 12 objects that appear in QR codes, we
+				// sadly need to be conservative about size, especially if the QR code ultimately
+				// also includes an on-chain address.
 				(true, QR_CODED_DUMMY_HOPS_PATH_LENGTH)
 			},
 			MessageContext::Offers(OffersContext::StaticInvoiceRequested { .. }) => {
@@ -651,7 +651,7 @@ where
 
 		let build_path = |intermediate_hops: &[MessageForwardNode]| {
 			// Calculate the dummy hops given the total hop count target (including the recipient).
-			let dummy_hops_count = dummy_hopd_path_len.saturating_sub(intermediate_hops.len() + 1);
+			let dummy_hops_count = path_len_incl_dummys.saturating_sub(intermediate_hops.len() + 1);
 
 			BlindedMessagePath::new_with_dummy_hops(
 				intermediate_hops,
