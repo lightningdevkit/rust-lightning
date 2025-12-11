@@ -563,8 +563,8 @@ where
 // We add dummy hops until the path reaches this length (including the recipient).
 pub(crate) const DUMMY_HOPS_PATH_LENGTH: usize = 4;
 
-// Target total length (in hops) for blinded paths which are included in objects which may appear
-// in a QR code.
+// Target total length (in hops) for blinded paths included in objects which may appear in a QR
+// code.
 //
 // We add dummy hops until the path reaches this length (including the recipient).
 pub(crate) const QR_CODED_DUMMY_HOPS_PATH_LENGTH: usize = 2;
