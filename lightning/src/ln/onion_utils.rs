@@ -1199,7 +1199,7 @@ mod fuzzy_onion_utils {
 
 	pub fn decode_next_payment_hop<NS: Deref>(
 		recipient: Recipient, hop_pubkey: &PublicKey, hop_data: &[u8], hmac_bytes: [u8; 32],
-		payment_hash: PaymentHash, blinding_point: Option<PublicKey>, node_signer: NS,
+		payment_hash: Option<PaymentHash>, blinding_point: Option<PublicKey>, node_signer: NS,
 	) -> Result<Hop, OnionDecodeErr>
 	where
 		NS::Target: NodeSigner,
@@ -1217,7 +1217,7 @@ mod fuzzy_onion_utils {
 			shared_secret.secret_bytes(),
 			hop_data,
 			hmac_bytes,
-			Some(payment_hash),
+			payment_hash,
 			(blinding_point, &(*node_signer)),
 		);
 		match decoded_hop {
@@ -1286,7 +1286,7 @@ mod fuzzy_onion_utils {
 						trampoline_shared_secret,
 						&hop_data.trampoline_packet.hop_data,
 						hop_data.trampoline_packet.hmac,
-						Some(payment_hash),
+						payment_hash,
 						(blinding_point, node_signer),
 					);
 					match decoded_trampoline_hop {
