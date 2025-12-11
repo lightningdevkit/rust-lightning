@@ -3611,9 +3611,6 @@ fn convert_channel_err_internal<
 /// true).
 #[rustfmt::skip]
 macro_rules! convert_channel_err {
-	($self: ident, $peer_state: expr, $err: expr, $channel: expr, UNFUNDED_CHANNEL) => { {
-		$self.convert_unfunded_channel_err_internal($err, $channel)
-	} };
 	($self: ident, $peer_state: expr, $err: expr, $channel: expr) => {
 		match $channel.as_funded_mut() {
 			Some(funded_channel) => {
@@ -10506,7 +10503,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let err = ChannelError::close($err.to_owned());
 			chan.unset_funding_info();
 			let mut chan = Channel::from(chan);
-			return Err(convert_channel_err!(self, peer_state, err, &mut chan, UNFUNDED_CHANNEL).1);
+			return Err(self.convert_unfunded_channel_err_internal(err, &mut chan).1);
 		} } }
 
 		match peer_state.channel_by_id.entry(funded_channel_id) {
@@ -12506,7 +12503,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						debug_assert!(false);
 						let reason = shutdown.closure_reason.clone();
 						let err = ChannelError::Close((reason.to_string(), reason));
-						convert_channel_err!(self, peer_state, err, chan, UNFUNDED_CHANNEL)
+						self.convert_unfunded_channel_err_internal(err, chan)
 					};
 					debug_assert!(remove);
 					shutdown_results.push((Err(err), *cp_id));
