@@ -22,10 +22,12 @@ use crate::sync::{Mutex, RwLock};
 use core::cmp;
 use core::hash::Hash;
 use core::ops::Deref;
+use core::str::FromStr;
 
 use alloc::collections::BTreeMap;
 
 use bitcoin::absolute::LockTime as AbsoluteLockTime;
+use bitcoin::address::Address;
 use bitcoin::amount::{Amount, SignedAmount};
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::ChainHash;
@@ -45,6 +47,8 @@ use bitcoin::FeeRate;
 use bitcoin::{consensus, Sequence, TxIn, Weight, Witness};
 
 use dnssec_prover::rr::Name;
+
+use lightning_invoice::Bolt11Invoice;
 
 use crate::chain::ClaimId;
 #[cfg(taproot)]
@@ -1496,6 +1500,53 @@ impl Readable for OutPoint {
 		let txid = Readable::read(r)?;
 		let vout = Readable::read(r)?;
 		Ok(OutPoint { txid, vout })
+	}
+}
+
+impl Writeable for Address {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_string().write(w)?;
+		Ok(())
+	}
+}
+
+impl Readable for Address {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let addr_string: String = Readable::read(r)?;
+		let addr = Address::from_str(&addr_string)
+			.map_err(|_| DecodeError::InvalidValue)?
+			.assume_checked();
+		Ok(addr)
+	}
+}
+
+impl Writeable for FeeRate {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_sat_per_kwu().write(w)?;
+		Ok(())
+	}
+}
+
+impl Readable for FeeRate {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let sat_per_kwu: u64 = Readable::read(r)?;
+		Ok(FeeRate::from_sat_per_kwu(sat_per_kwu))
+	}
+}
+
+impl Writeable for Bolt11Invoice {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_string().write(w)?;
+		Ok(())
+	}
+}
+
+impl Readable for Bolt11Invoice {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let invoice_string: String = Readable::read(r)?;
+		let invoice =
+			Bolt11Invoice::from_str(&invoice_string).map_err(|_| DecodeError::InvalidValue)?;
+		Ok(invoice)
 	}
 }
 
