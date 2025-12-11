@@ -174,7 +174,7 @@ fn lsps1_happy_path() {
 		serde_json::from_str(json_str).expect("Failed to parse JSON");
 	let payment_info = LSPS1PaymentInfo { bolt11: None, bolt12: None, onchain: Some(onchain) };
 	service_handler
-		.send_payment_details(_create_order_id.clone(), &client_node_id, payment_info.clone())
+		.send_payment_details(_create_order_id.clone(), client_node_id, payment_info.clone())
 		.unwrap();
 
 	let create_order_response = get_lsps_message!(service_node, client_node_id);

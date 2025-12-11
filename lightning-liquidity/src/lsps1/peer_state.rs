@@ -26,6 +26,7 @@ use core::fmt;
 pub(super) struct PeerState {
 	outbound_channels_by_order_id: HashMap<LSPS1OrderId, ChannelOrder>,
 	pending_requests: HashMap<LSPSRequestId, LSPS1Request>,
+	needs_persist: bool,
 }
 
 impl PeerState {
@@ -43,6 +44,7 @@ impl PeerState {
 			channel_details,
 		};
 		self.outbound_channels_by_order_id.insert(order_id, channel_order.clone());
+		self.needs_persist |= true;
 		channel_order
 	}
 
@@ -66,6 +68,7 @@ impl PeerState {
 			.ok_or(PeerStateError::UnknownOrderId)?;
 		order.order_state = order_state;
 		order.channel_details = channel_details;
+		self.needs_persist |= true;
 		Ok(())
 	}
 
@@ -88,11 +91,39 @@ impl PeerState {
 	pub(super) fn has_active_requests(&self) -> bool {
 		!self.outbound_channels_by_order_id.is_empty()
 	}
+
+	pub(super) fn needs_persist(&self) -> bool {
+		self.needs_persist
+	}
+
+	pub(super) fn set_needs_persist(&mut self, needs_persist: bool) {
+		self.needs_persist = needs_persist;
+	}
+
+	pub(super) fn is_prunable(&self) -> bool {
+		// Return whether the entire state is empty.
+		self.pending_requests.is_empty() && self.outbound_channels_by_order_id.is_empty()
+	}
+
+	pub(super) fn prune_pending_requests(&mut self) {
+		self.pending_requests.clear()
+	}
+
+	pub(super) fn prune_expired_request_state(&mut self) {
+		self.outbound_channels_by_order_id.retain(|_order_id, entry| {
+			if entry.is_prunable() {
+				self.needs_persist |= true;
+				return false;
+			}
+			true
+		});
+	}
 }
 
 impl_writeable_tlv_based!(PeerState, {
 	(0, outbound_channels_by_order_id, required),
 	(_unused, pending_requests, (static_value, new_hash_map())),
+	(_unused, needs_persist, (static_value, false)),
 });
 
 #[derive(Debug, Copy, Clone)]
@@ -119,6 +150,30 @@ pub(super) struct ChannelOrder {
 	pub(super) created_at: LSPSDateTime,
 	pub(super) payment_details: LSPS1PaymentInfo,
 	pub(super) channel_details: Option<LSPS1ChannelInfo>,
+}
+
+impl ChannelOrder {
+	fn is_prunable(&self) -> bool {
+		let all_payment_details_expired;
+		#[cfg(feature = "time")]
+		{
+			let details = &self.payment_details;
+			all_payment_details_expired =
+				details.bolt11.as_ref().map_or(true, |d| d.expires_at.is_past())
+					&& details.bolt12.as_ref().map_or(true, |d| d.expires_at.is_past())
+					&& details.onchain.as_ref().map_or(true, |d| d.expires_at.is_past());
+		}
+		#[cfg(not(feature = "time"))]
+		{
+			// TODO: We need to find a way to check expiry times in no-std builds.
+			all_payment_details_expired = false;
+		}
+
+		let created_or_failed =
+			matches!(self.order_state, LSPS1OrderState::Created | LSPS1OrderState::Failed);
+
+		all_payment_details_expired && created_or_failed
+	}
 }
 
 impl_writeable_tlv_based!(ChannelOrder, {
