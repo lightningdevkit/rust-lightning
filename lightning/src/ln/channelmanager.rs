@@ -3611,16 +3611,6 @@ fn convert_channel_err_internal<
 /// true).
 #[rustfmt::skip]
 macro_rules! convert_channel_err {
-	($self: ident, $peer_state: expr, $shutdown_result: expr, $funded_channel: expr, COOP_CLOSED) => { {
-		let reason = ChannelError::Close(("Coop Closed".to_owned(), $shutdown_result.closure_reason.clone()));
-		let closed_update_ids = &mut $peer_state.closed_channel_monitor_update_ids;
-		let in_flight_updates = &mut $peer_state.in_flight_monitor_updates;
-		let (close, mut err) =
-			$self.convert_funded_channel_err_internal(closed_update_ids, in_flight_updates, Some($shutdown_result), reason, $funded_channel);
-		err.dont_send_error_message();
-		debug_assert!(close);
-		err
-	} };
 	($self: ident, $peer_state: expr, $err: expr, $funded_channel: expr, FUNDED_CHANNEL) => { {
 		let closed_update_ids = &mut $peer_state.closed_channel_monitor_update_ids;
 		let in_flight_updates = &mut $peer_state.in_flight_monitor_updates;
@@ -4030,6 +4020,32 @@ where
 			debug_assert!(alias_removed);
 			(shutdown_res, None)
 		})
+	}
+
+	/// When a cooperatively closed channel is removed, two things need to happen:
+	/// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
+	/// (b) [`ChannelManager::handle_error`] needs to be called without holding any locks (except
+	///     [`ChannelManager::total_consistency_lock`]), which then calls
+	///     [`ChannelManager::finish_close_channel`].
+	///
+	/// Returns a mapped error.
+	fn convert_channel_err_coop(
+		&self, closed_update_ids: &mut BTreeMap<ChannelId, u64>,
+		in_flight_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
+		shutdown_result: ShutdownResult, funded_channel: &mut FundedChannel<SP>,
+	) -> MsgHandleErrInternal {
+		let reason =
+			ChannelError::Close(("Coop Closed".to_owned(), shutdown_result.closure_reason.clone()));
+		let (close, mut err) = self.convert_funded_channel_err_internal(
+			closed_update_ids,
+			in_flight_updates,
+			Some(shutdown_result),
+			reason,
+			funded_channel,
+		);
+		err.dont_send_error_message();
+		debug_assert!(close);
+		err
 	}
 
 	/// Gets the current [`UserConfig`] which controls some global behavior and includes the
@@ -11146,7 +11162,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// also implies there are no pending HTLCs left on the channel, so we can
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
-							let err = convert_channel_err!(self, peer_state, close_res, chan, COOP_CLOSED);
+							let err = self.convert_channel_err_coop(&mut peer_state.closed_channel_monitor_update_ids, &mut peer_state.in_flight_monitor_updates, close_res, chan);
 							chan_entry.remove();
 							Some((tx, Err(err)))
 						} else {
@@ -12467,7 +12483,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					log_trace!(logger, "Removing channel now that the signer is unblocked");
 					let (remove, err) = if let Some(funded) = chan.as_funded_mut() {
 						let err =
-							convert_channel_err!(self, peer_state, shutdown, funded, COOP_CLOSED);
+							self.convert_channel_err_coop(&mut peer_state.closed_channel_monitor_update_ids, &mut peer_state.in_flight_monitor_updates, shutdown, funded);
 						(true, err)
 					} else {
 						debug_assert!(false);
@@ -12522,7 +12538,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									if let Some((tx, shutdown_res)) = tx_shutdown_result_opt {
 										// We're done with this channel. We got a closing_signed and sent back
 										// a closing_signed with a closing transaction to broadcast.
-										let err = convert_channel_err!(self, peer_state, shutdown_res, funded_chan, COOP_CLOSED);
+										let err = self.convert_channel_err_coop(&mut peer_state.closed_channel_monitor_update_ids, &mut peer_state.in_flight_monitor_updates, shutdown_res, funded_chan);
 										handle_errors.push((*cp_id, Err(err)));
 
 										log_info!(logger, "Broadcasting {}", log_tx!(tx));
@@ -12532,7 +12548,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								},
 								Err(e) => {
 									has_update = true;
-									let (close_channel, res) = convert_channel_err!(self, peer_state, e, funded_chan, FUNDED_CHANNEL);
+									let (close_channel, res) = convert_channel_err!(
+										self, peer_state, e, funded_chan, FUNDED_CHANNEL);
 									handle_errors.push((funded_chan.context.get_counterparty_node_id(), Err(res)));
 									!close_channel
 								}
