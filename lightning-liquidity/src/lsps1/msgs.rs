@@ -19,8 +19,9 @@ use crate::lsps0::ser::{
 };
 
 use bitcoin::{Address, FeeRate, OutPoint};
-
 use lightning::offers::offer::Offer;
+use lightning::util::ser::{Readable, Writeable};
+use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
 use lightning_invoice::Bolt11Invoice;
 
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,23 @@ pub(crate) const LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE: i32 = 101;
 /// The identifier of an order.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Hash)]
 pub struct LSPS1OrderId(pub String);
+
+impl Writeable for LSPS1OrderId {
+	fn write<W: lightning::util::ser::Writer>(
+		&self, writer: &mut W,
+	) -> Result<(), lightning::io::Error> {
+		self.0.write(writer)
+	}
+}
+
+impl Readable for LSPS1OrderId {
+	fn read<R: bitcoin::io::Read>(
+		reader: &mut R,
+	) -> Result<Self, lightning::ln::msgs::DecodeError> {
+		let inner = Readable::read(reader)?;
+		Ok(Self(inner))
+	}
+}
 
 /// A request made to an LSP to retrieve the supported options.
 ///
@@ -128,6 +146,16 @@ pub struct LSPS1OrderParams {
 	pub announce_channel: bool,
 }
 
+impl_writeable_tlv_based!(LSPS1OrderParams, {
+	(0, lsp_balance_sat, required),
+	(2, client_balance_sat, required),
+	(4, required_channel_confirmations, required),
+	(6, funding_confirms_within_blocks, required),
+	(8, channel_expiry_blocks, required),
+	(10, token, option),
+	(12, announce_channel, required),
+});
+
 /// A response to a [`LSPS1CreateOrderRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS1CreateOrderResponse {
@@ -158,6 +186,12 @@ pub enum LSPS1OrderState {
 	Failed,
 }
 
+impl_writeable_tlv_based_enum!(LSPS1OrderState,
+	(0, Created) => {},
+	(2, Completed) => {},
+	(4, Failed) => {}
+);
+
 /// Details regarding how to pay for an order.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS1PaymentInfo {
@@ -168,6 +202,12 @@ pub struct LSPS1PaymentInfo {
 	/// An onchain payment.
 	pub onchain: Option<LSPS1OnchainPaymentInfo>,
 }
+
+impl_writeable_tlv_based!(LSPS1PaymentInfo, {
+	(0, bolt11, option),
+	(2, bolt12, option),
+	(4, onchain, option),
+});
 
 /// A Lightning payment using BOLT 11.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -186,6 +226,14 @@ pub struct LSPS1Bolt11PaymentInfo {
 	pub invoice: Bolt11Invoice,
 }
 
+impl_writeable_tlv_based!(LSPS1Bolt11PaymentInfo, {
+	(0, state, required),
+	(2, expires_at, required),
+	(4, fee_total_sat, required),
+	(6, order_total_sat, required),
+	(8, invoice, required),
+});
+
 /// A Lightning payment using BOLT 12.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS1Bolt12PaymentInfo {
@@ -203,6 +251,14 @@ pub struct LSPS1Bolt12PaymentInfo {
 	#[serde(with = "string_offer")]
 	pub offer: Offer,
 }
+
+impl_writeable_tlv_based!(LSPS1Bolt12PaymentInfo, {
+	(0, state, required),
+	(2, expires_at, required),
+	(4, fee_total_sat, required),
+	(6, order_total_sat, required),
+	(8, offer, required),
+});
 
 /// An onchain payment.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -235,6 +291,17 @@ pub struct LSPS1OnchainPaymentInfo {
 	pub refund_onchain_address: Option<Address>,
 }
 
+impl_writeable_tlv_based!(LSPS1OnchainPaymentInfo, {
+	(0, state, required),
+	(2, expires_at, required),
+	(4, fee_total_sat, required),
+	(6, order_total_sat, required),
+	(8, address, required),
+	(10, min_onchain_payment_confirmations, option),
+	(12, min_fee_for_0conf, required),
+	(14, refund_onchain_address, option),
+});
+
 /// The state of a payment.
 ///
 /// *Note*: Previously, the spec also knew a `CANCELLED` state for BOLT11 payments, which has since
@@ -250,6 +317,12 @@ pub enum LSPS1PaymentState {
 	#[serde(alias = "CANCELLED")]
 	Refunded,
 }
+
+impl_writeable_tlv_based_enum!(LSPS1PaymentState,
+	(0, ExpectPayment) => {},
+	(2, Paid) => {},
+	(4, Refunded) => {}
+);
 
 /// Details regarding a detected on-chain payment.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -273,6 +346,12 @@ pub struct LSPS1ChannelInfo {
 	/// The earliest datetime when the channel may be closed by the LSP.
 	pub expires_at: LSPSDateTime,
 }
+
+impl_writeable_tlv_based!(LSPS1ChannelInfo, {
+	(0, funded_at, required),
+	(2, funding_outpoint, required),
+	(4, expires_at, required),
+});
 
 /// A request made to an LSP to retrieve information about an previously made order.
 ///
