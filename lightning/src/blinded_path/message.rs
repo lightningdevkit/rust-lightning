@@ -55,8 +55,8 @@ impl Readable for BlindedMessagePath {
 impl BlindedMessagePath {
 	/// Create a one-hop blinded path for a message.
 	///
-	/// `compact_padding` selects between space-inefficient padding that better hides contents and
-	/// a space-constrained padding that does very little to hide the contents, especially for the
+	/// `compact_padding` selects between space-inefficient padding which better hides contents and
+	/// a space-constrained padding which does very little to hide the contents, especially for the
 	/// last hop. It should only be set when the blinded path needs to be as compact as possible.
 	pub fn one_hop<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		recipient_node_id: PublicKey, local_node_receive_key: ReceiveAuthKey,
@@ -79,8 +79,8 @@ impl BlindedMessagePath {
 
 	/// Create a path for an onion message, to be forwarded along `node_pks`.
 	///
-	/// `compact_padding` selects between space-inefficient padding that better hides contents and
-	/// a space-constrained padding that does very little to hide the contents, especially for the
+	/// `compact_padding` selects between space-inefficient padding which better hides contents and
+	/// a space-constrained padding which does very little to hide the contents, especially for the
 	/// last hop. It should only be set when the blinded path needs to be as compact as possible.
 	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
@@ -104,9 +104,8 @@ impl BlindedMessagePath {
 
 	/// Same as [`BlindedMessagePath::new`], but allows specifying a number of dummy hops.
 	///
-	///
-	/// `compact_padding` selects between space-inefficient padding that better hides contents and
-	/// a space-constrained padding that does very little to hide the contents, especially for the
+	/// `compact_padding` selects between space-inefficient padding which better hides contents and
+	/// a space-constrained padding which does very little to hide the contents, especially for the
 	/// last hop. It should only be set when the blinded path needs to be as compact as possible.
 	///
 	/// Note: At most [`MAX_DUMMY_HOPS_COUNT`] dummy hops can be added to the blinded path.
