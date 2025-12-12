@@ -4706,31 +4706,52 @@ where
 				.lock()
 				.unwrap();
 			let peer_state = &mut *peer_state_lock;
-			let channel = peer_state
-				.channel_by_id
-				.get_mut(&shutdown_res.channel_id)
-				.expect("We should only be finishing the closure of a channel which existed");
-			let funded_chan = channel
-				.as_funded_mut()
-				.expect("We should only be finishing the closure of a funded channel here");
+			let channel = peer_state.channel_by_id.get_mut(&shutdown_res.channel_id);
 
-			let update_id = funded_chan.get_latest_unblocked_monitor_update_id();
 			let monitor_update_step =
 				ChannelMonitorUpdateStep::EventGenerated { event: closed_event.0.clone() };
-			let monitor_update = ChannelMonitorUpdate {
-				update_id,
-				updates: vec![monitor_update_step],
-				channel_id: Some(shutdown_res.channel_id),
-			};
-			handle_new_monitor_update!(
-				self,
-				funded_chan.funding.get_funding_txo().unwrap(),
-				monitor_update,
-				peer_state_lock,
-				peer_state,
-				per_peer_state,
-				funded_chan
-			);
+			if let Some(channel) = channel {
+				let funded_chan = channel
+					.as_funded_mut()
+					.expect("We should only be finishing the closure of a funded channel here");
+
+				let update_id = funded_chan.get_latest_unblocked_monitor_update_id();
+				let monitor_update = ChannelMonitorUpdate {
+					update_id,
+					updates: vec![monitor_update_step],
+					channel_id: Some(shutdown_res.channel_id),
+				};
+				handle_new_monitor_update!(
+					self,
+					funded_chan.funding.get_funding_txo().unwrap(),
+					monitor_update,
+					peer_state_lock,
+					peer_state,
+					per_peer_state,
+					funded_chan
+				);
+			} else {
+				let update_id = *peer_state
+					.closed_channel_monitor_update_ids
+					.get(&shutdown_res.channel_id)
+					.unwrap();
+				let monitor_update = ChannelMonitorUpdate {
+					update_id,
+					updates: vec![monitor_update_step],
+					channel_id: Some(shutdown_res.channel_id),
+				};
+				handle_post_close_monitor_update!(
+					self,
+					shutdown_res.channel_funding_txo
+						.expect("We must have had a funding txo if we are applying a post-close monitor update"),
+					monitor_update,
+					peer_state_lock,
+					peer_state,
+					per_peer_state,
+					shutdown_res.counterparty_node_id,
+					shutdown_res.channel_id
+				);
+			}
 
 			let mut pending_events = self.pending_events.lock().unwrap();
 			pending_events.push_back(closed_event);
