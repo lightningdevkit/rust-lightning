@@ -1259,6 +1259,64 @@ fn do_manager_persisted_pre_outbound_edge_forward(intercept_htlc: bool) {
 }
 
 #[test]
+fn test_manager_persisted_post_outbound_edge_forward() {
+	// Test that we will not double-forward an HTLC after restart if it has already been forwarded to
+	// the outbound edge, which was previously broken.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes_1_deserialized;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
+
+	// Lock in the HTLC from node_a <> node_b.
+	let amt_msat = 5000;
+	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
+	nodes[0].node.send_payment_with_route(route, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
+
+	// Add the HTLC to the outbound edge, node_b <> node_c.
+	nodes[1].node.process_pending_htlc_forwards();
+	check_added_monitors(&nodes[1], 1);
+
+	// Disconnect peers and reload the forwarding node_b.
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(nodes[1].node.get_our_node_id());
+
+	let node_b_encoded = nodes[1].node.encode();
+	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
+	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
+	reload_node!(nodes[1], node_b_encoded, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
+
+	reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[0]));
+	let mut args_b_c = ReconnectArgs::new(&nodes[1], &nodes[2]);
+	args_b_c.send_channel_ready = (true, true);
+	args_b_c.send_announcement_sigs = (true, true);
+	args_b_c.pending_htlc_adds = (0, 1);
+	// While reconnecting, we re-send node_b's outbound update_add and commit the HTLC to the b<>c
+	// channel.
+	reconnect_nodes(args_b_c);
+
+	// Ensure node_b won't double-forward the outbound HTLC (this was previously broken).
+	nodes[1].node.process_pending_htlc_forwards();
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Claim the HTLC backwards to node_a.
+	expect_and_process_pending_htlcs(&nodes[2], false);
+	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, amt_msat, None, nodes[2].node.get_our_node_id());
+	let path: &[&[_]] = &[&[&nodes[1], &nodes[2]]];
+	do_claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], path, payment_preimage));
+	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+}
+
+#[test]
 fn test_reload_partial_funding_batch() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
