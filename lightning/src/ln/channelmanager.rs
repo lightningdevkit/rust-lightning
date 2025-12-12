@@ -3584,7 +3584,7 @@ macro_rules! break_channel_entry {
 		match $res {
 			Ok(res) => res,
 			Err(e) => {
-				let (drop, res) = $self.convert_channel_err(
+				let (drop, res) = $self.locked_handle_force_close(
 					&mut $peer_state.closed_channel_monitor_update_ids,
 					&mut $peer_state.in_flight_monitor_updates,
 					e,
@@ -3604,7 +3604,7 @@ macro_rules! try_channel_entry {
 		match $res {
 			Ok(res) => res,
 			Err(e) => {
-				let (drop, res) = $self.convert_channel_err(
+				let (drop, res) = $self.locked_handle_force_close(
 					&mut $peer_state.closed_channel_monitor_update_ids,
 					&mut $peer_state.in_flight_monitor_updates,
 					e,
@@ -4225,7 +4225,7 @@ where
 						let reason = ClosureReason::LocallyCoopClosedUnfundedChannel;
 						let err = ChannelError::Close((reason.to_string(), reason));
 						let mut chan = chan_entry.remove();
-						let (_, mut e) = self.convert_channel_err(
+						let (_, mut e) = self.locked_handle_force_close(
 							&mut peer_state.closed_channel_monitor_update_ids,
 							&mut peer_state.in_flight_monitor_updates,
 							err,
@@ -4367,8 +4367,11 @@ where
 	}
 
 	/// When a channel is removed, two things need to happen:
-	/// (a) [`ChannelManager::convert_channel_err`] must be called in the same `per_peer_state` lock as the
-	///     channel-closing action,
+	/// (a) Handle the initial within-lock closure for the channel via one of the following methods:
+	///     [`ChannelManager::locked_handle_unfunded_close`],
+	/// 	[`ChannelManager::locked_handle_funded_coop_close`],
+	/// 	[`ChannelManager::locked_handle_funded_force_close`] or
+	/// 	[`ChannelManager::locked_handle_force_close`].
 	/// (b) [`ChannelManager::handle_error`] needs to be called without holding any locks (except
 	///     [`ChannelManager::total_consistency_lock`]), which then calls this.
 	fn finish_close_channel(&self, mut shutdown_res: ShutdownResult) {
@@ -4437,7 +4440,7 @@ where
 					if let Some(mut chan) = peer_state.channel_by_id.remove(&channel_id) {
 						let reason = ClosureReason::FundingBatchClosure;
 						let err = ChannelError::Close((reason.to_string(), reason));
-						let (_, e) = self.convert_channel_err(
+						let (_, e) = self.locked_handle_force_close(
 							&mut peer_state.closed_channel_monitor_update_ids,
 							&mut peer_state.in_flight_monitor_updates,
 							err,
@@ -4534,7 +4537,7 @@ where
 		if let Some(mut chan) = peer_state.channel_by_id.remove(channel_id) {
 			log_error!(logger, "Force-closing channel");
 			let err = ChannelError::Close((message, reason));
-			let (_, mut e) = self.convert_channel_err(
+			let (_, mut e) = self.locked_handle_force_close(
 				&mut peer_state.closed_channel_monitor_update_ids,
 				&mut peer_state.in_flight_monitor_updates,
 				err,
@@ -4683,7 +4686,12 @@ where
 		})
 	}
 
-	fn convert_funded_channel_err_internal(
+	/// Handle the initial within-lock closure for a funded channel that is either force-closed or cooperatively
+	/// closed (as indicated by `coop_close_shutdown_res`).
+	///
+	/// Returns `(boolean indicating if we should remove the Channel object from memory, a mapped
+	/// error)`.
+	fn locked_handle_funded_close_internal(
 		&self, closed_channel_monitor_update_ids: &mut BTreeMap<ChannelId, u64>,
 		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
 		coop_close_shutdown_res: Option<ShutdownResult>, err: ChannelError,
@@ -4745,7 +4753,13 @@ where
 		})
 	}
 
-	fn convert_unfunded_channel_err_internal(
+	/// Handle the initial within-lock closure for an unfunded channel.
+	///
+	/// Returns `(boolean indicating if we should remove the Channel object from memory, a mapped
+	/// error)`.
+	///
+	/// The same closure semantics as described in [`ChannelManager::locked_handle_force_close`] apply.
+	fn locked_handle_unfunded_close(
 		&self, err: ChannelError, chan: &mut Channel<SP>,
 	) -> (bool, MsgHandleErrInternal)
 	where
@@ -4771,21 +4785,19 @@ where
 		})
 	}
 
-	/// When a cooperatively closed channel is removed, two things need to happen:
-	/// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
-	/// (b) [`ChannelManager::handle_error`] needs to be called without holding any locks (except
-	///     [`ChannelManager::total_consistency_lock`]), which then calls
-	///     [`ChannelManager::finish_close_channel`].
+	/// Handle the initial within-lock closure for a channel that is cooperatively closed.
 	///
 	/// Returns a mapped error.
-	fn convert_channel_err_coop(
+	///
+	/// The same closure semantics as described in [`ChannelManager::locked_handle_force_close`] apply.
+	fn locked_handle_funded_coop_close(
 		&self, closed_update_ids: &mut BTreeMap<ChannelId, u64>,
 		in_flight_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
 		shutdown_result: ShutdownResult, funded_channel: &mut FundedChannel<SP>,
 	) -> MsgHandleErrInternal {
 		let reason =
 			ChannelError::Close(("Coop Closed".to_owned(), shutdown_result.closure_reason.clone()));
-		let (close, mut err) = self.convert_funded_channel_err_internal(
+		let (close, mut err) = self.locked_handle_funded_close_internal(
 			closed_update_ids,
 			in_flight_updates,
 			Some(shutdown_result),
@@ -4797,20 +4809,18 @@ where
 		err
 	}
 
-	/// When a funded channel is removed, two things need to happen:
-	/// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
-	/// (b) [`ChannelManager::handle_error`] needs to be called without holding any locks (except
-	///     [`ChannelManager::total_consistency_lock`]), which then calls
-	///     [`ChannelManager::finish_close_channel`].
+	/// Handle the initial within-lock closure for a funded channel that is force-closed.
 	///
 	/// Returns `(boolean indicating if we should remove the Channel object from memory, a mapped
 	/// error)`.
-	fn convert_channel_err_funded(
+	///
+	/// The same closure semantics as described in [`ChannelManager::locked_handle_force_close`] apply.
+	fn locked_handle_funded_force_close(
 		&self, closed_update_ids: &mut BTreeMap<ChannelId, u64>,
 		in_flight_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
 		err: ChannelError, funded_channel: &mut FundedChannel<SP>,
 	) -> (bool, MsgHandleErrInternal) {
-		self.convert_funded_channel_err_internal(
+		self.locked_handle_funded_close_internal(
 			closed_update_ids,
 			in_flight_updates,
 			None,
@@ -4819,31 +4829,32 @@ where
 		)
 	}
 
-	/// When a channel that can be funded or unfunded is removed, two things need to happen:
-	/// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
-	/// (b) [`ChannelManager::handle_error`] needs to be called without holding any locks (except
-	///     [`ChannelManager::total_consistency_lock`]), which then calls
-	///     [`ChannelManager::finish_close_channel`].
-	///
-	/// Note that this step can be skipped if the channel was never opened (through the creation of a
-	/// [`ChannelMonitor`]/channel funding transaction) to begin with.
+	/// Handle the initial within-lock closure for a channel that is force-closed.
 	///
 	/// Returns `(boolean indicating if we should remove the Channel object from memory, a mapped
 	/// error)`.
-	fn convert_channel_err(
+	///
+	/// # Closure semantics
+	///
+	/// Two things need to happen:
+	/// (a) This method must be called in the same `per_peer_state` lock as the channel-closing action,
+	/// (b) [`ChannelManager::handle_error`] needs to be called without holding any locks (except
+	///     [`ChannelManager::total_consistency_lock`]), which then calls
+	///     [`ChannelManager::finish_close_channel`].
+	fn locked_handle_force_close(
 		&self, closed_update_ids: &mut BTreeMap<ChannelId, u64>,
 		in_flight_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
 		err: ChannelError, channel: &mut Channel<SP>,
 	) -> (bool, MsgHandleErrInternal) {
 		match channel.as_funded_mut() {
-			Some(funded_channel) => self.convert_funded_channel_err_internal(
+			Some(funded_channel) => self.locked_handle_funded_close_internal(
 				closed_update_ids,
 				in_flight_updates,
 				None,
 				err,
 				funded_channel,
 			),
-			None => self.convert_unfunded_channel_err_internal(err, channel),
+			None => self.locked_handle_unfunded_close(err, channel),
 		}
 	}
 
@@ -6566,7 +6577,7 @@ where
 							let reason = ClosureReason::ProcessingError { err: e.clone() };
 							let err = ChannelError::Close((e.clone(), reason));
 							let peer_state = &mut *peer_state_lock;
-							let (_, e) = self.convert_channel_err(
+							let (_, e) = self.locked_handle_force_close(
 								&mut peer_state.closed_channel_monitor_update_ids,
 								&mut peer_state.in_flight_monitor_updates,
 								err,
@@ -8333,7 +8344,7 @@ where
 								if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 
 								if let Err(e) = funded_chan.timer_check_closing_negotiation_progress() {
-									let (needs_close, err) = self.convert_channel_err_funded(&mut peer_state.closed_channel_monitor_update_ids, &mut peer_state.in_flight_monitor_updates, e, funded_chan);
+									let (needs_close, err) = self.locked_handle_funded_force_close(&mut peer_state.closed_channel_monitor_update_ids, &mut peer_state.in_flight_monitor_updates, e, funded_chan);
 									handle_errors.push((Err(err), counterparty_node_id));
 									if needs_close { return false; }
 								}
@@ -8410,7 +8421,7 @@ where
 									let reason = ClosureReason::FundingTimedOut;
 									let msg = "Force-closing pending channel due to timeout awaiting establishment handshake".to_owned();
 									let err = ChannelError::Close((msg, reason));
-									let (_, e) = self.convert_channel_err(
+									let (_, e) = self.locked_handle_force_close(
 										&mut peer_state.closed_channel_monitor_update_ids,
 										&mut peer_state.in_flight_monitor_updates,
 										err,
@@ -10614,7 +10625,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// concerning this channel as it is safe to do so.
 							debug_assert!(matches!(err, ChannelError::Close(_)));
 							let mut chan = Channel::from(inbound_chan);
-							return Err(self.convert_channel_err(
+							return Err(self.locked_handle_force_close(
 								&mut peer_state.closed_channel_monitor_update_ids,
 								&mut peer_state.in_flight_monitor_updates,
 								err,
@@ -10626,7 +10637,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				Some(Err(mut chan)) => {
 					let err_msg = format!("Got an unexpected funding_created message from peer with counterparty_node_id {}", counterparty_node_id);
 					let err = ChannelError::close(err_msg);
-					return Err(self.convert_channel_err(
+					return Err(self.locked_handle_force_close(
 						&mut peer_state.closed_channel_monitor_update_ids,
 						&mut peer_state.in_flight_monitor_updates,
 						err,
@@ -10647,7 +10658,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let err = ChannelError::close($err.to_owned());
 				chan.unset_funding_info();
 				let mut chan = Channel::from(chan);
-				return Err(self.convert_unfunded_channel_err_internal(err, &mut chan).1);
+				return Err(self.locked_handle_unfunded_close(err, &mut chan).1);
 			}};
 		}
 
@@ -11267,7 +11278,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let reason = ClosureReason::CounterpartyCoopClosedUnfundedChannel;
 						let err = ChannelError::Close((reason.to_string(), reason));
 						let mut chan = chan_entry.remove();
-						let (_, mut e) = self.convert_channel_err(
+						let (_, mut e) = self.locked_handle_force_close(
 							&mut peer_state.closed_channel_monitor_update_ids,
 							&mut peer_state.in_flight_monitor_updates,
 							err,
@@ -11332,7 +11343,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// also implies there are no pending HTLCs left on the channel, so we can
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
-							let err = self.convert_channel_err_coop(&mut peer_state.closed_channel_monitor_update_ids, &mut peer_state.in_flight_monitor_updates, close_res, chan);
+							let err = self.locked_handle_funded_coop_close(&mut peer_state.closed_channel_monitor_update_ids, &mut peer_state.in_flight_monitor_updates, close_res, chan);
 							chan_entry.remove();
 							Some((tx, Err(err)))
 						} else {
@@ -12421,7 +12432,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								};
 								let err = ChannelError::Close((reason.to_string(), reason));
 								let mut chan = chan_entry.remove();
-								let (_, e) = self.convert_channel_err(
+								let (_, e) = self.locked_handle_force_close(
 									&mut peer_state.closed_channel_monitor_update_ids,
 									&mut peer_state.in_flight_monitor_updates,
 									err,
@@ -12442,7 +12453,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								let reason = ClosureReason::CommitmentTxConfirmed;
 								let err = ChannelError::Close((reason.to_string(), reason));
 								let mut chan = chan_entry.remove();
-								let (_, e) = self.convert_channel_err(
+								let (_, e) = self.locked_handle_force_close(
 									&mut peer_state.closed_channel_monitor_update_ids,
 									&mut peer_state.in_flight_monitor_updates,
 									err,
@@ -12639,7 +12650,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					_ => match unblock_chan(chan, &mut peer_state.pending_msg_events) {
 						Ok(shutdown_result) => shutdown_result,
 						Err(err) => {
-							let (_, err) = self.convert_channel_err(
+							let (_, err) = self.locked_handle_force_close(
 								&mut peer_state.closed_channel_monitor_update_ids,
 								&mut peer_state.in_flight_monitor_updates,
 								err,
@@ -12655,7 +12666,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					let logger = WithChannelContext::from(&self.logger, context, None);
 					log_trace!(logger, "Removing channel now that the signer is unblocked");
 					let (remove, err) = if let Some(funded) = chan.as_funded_mut() {
-						let err = self.convert_channel_err_coop(
+						let err = self.locked_handle_funded_coop_close(
 							&mut peer_state.closed_channel_monitor_update_ids,
 							&mut peer_state.in_flight_monitor_updates,
 							shutdown,
@@ -12666,7 +12677,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						debug_assert!(false);
 						let reason = shutdown.closure_reason.clone();
 						let err = ChannelError::Close((reason.to_string(), reason));
-						self.convert_unfunded_channel_err_internal(err, chan)
+						self.locked_handle_unfunded_close(err, chan)
 					};
 					debug_assert!(remove);
 					shutdown_results.push((Err(err), *cp_id));
@@ -12725,7 +12736,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									if let Some((tx, shutdown_res)) = tx_shutdown_result_opt {
 										// We're done with this channel. We got a closing_signed and sent back
 										// a closing_signed with a closing transaction to broadcast.
-										let err = self.convert_channel_err_coop(
+										let err = self.locked_handle_funded_coop_close(
 											&mut peer_state.closed_channel_monitor_update_ids,
 											&mut peer_state.in_flight_monitor_updates,
 											shutdown_res,
@@ -12742,12 +12753,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								},
 								Err(e) => {
 									has_update = true;
-									let (close_channel, res) = self.convert_channel_err_funded(
-										&mut peer_state.closed_channel_monitor_update_ids,
-										&mut peer_state.in_flight_monitor_updates,
-										e,
-										funded_chan,
-									);
+									let (close_channel, res) = self
+										.locked_handle_funded_force_close(
+											&mut peer_state.closed_channel_monitor_update_ids,
+											&mut peer_state.in_flight_monitor_updates,
+											e,
+											funded_chan,
+										);
 									handle_errors.push((
 										funded_chan.context.get_counterparty_node_id(),
 										Err(res),
@@ -14117,7 +14129,7 @@ where
 						// Clean up for removal.
 						let reason = ClosureReason::DisconnectedPeer;
 						let err = ChannelError::Close((reason.to_string(), reason));
-						let (_, e) = self.convert_channel_err(
+						let (_, e) = self.locked_handle_force_close(
 							&mut peer_state.closed_channel_monitor_update_ids,
 							&mut peer_state.in_flight_monitor_updates,
 							err,
@@ -14874,7 +14886,7 @@ where
 								// It looks like our counterparty went on-chain or funding transaction was
 								// reorged out of the main chain. Close the channel.
 								let err = ChannelError::Close((reason.to_string(), reason));
-								let (_, e) = self.convert_channel_err_funded(
+								let (_, e) = self.locked_handle_funded_force_close(
 									&mut peer_state.closed_channel_monitor_update_ids, &mut peer_state.in_flight_monitor_updates,
 									err,
 									funded_channel
