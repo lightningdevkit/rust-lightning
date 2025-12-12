@@ -1,0 +1,5 @@
+Backwards compat
+================
+
+ * Outbound payments which are awaiting a response to a BOLT 12 invoice request
+   will not be able to complete after upgrading to 0.3 (#4213).
