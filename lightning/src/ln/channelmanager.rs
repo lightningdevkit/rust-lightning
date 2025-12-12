@@ -4514,8 +4514,7 @@ where
 		let peer_state_mutex =
 			per_peer_state.get(peer_node_id).ok_or_else(|| APIError::ChannelUnavailable {
 				err: format!(
-					"Can't find a peer matching the passed counterparty node_id {}",
-					peer_node_id
+					"Can't find a peer matching the passed counterparty node_id {peer_node_id}",
 				),
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -4563,8 +4562,7 @@ where
 		} else {
 			Err(APIError::ChannelUnavailable {
 				err: format!(
-					"Channel with id {} not found for the passed counterparty node_id {}",
-					channel_id, peer_node_id
+					"Channel with id {channel_id} not found for the passed counterparty node_id {peer_node_id}",
 				),
 			})
 		}
