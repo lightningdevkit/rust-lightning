@@ -110,6 +110,9 @@ use crate::prelude::*;
 /// Tag for the hash function used when signing an [`InvoiceRequest`]'s merkle root.
 pub const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice_request", "signature");
 
+/// Tag for the hash function used when signing a BIP-353 address in an [`InvoiceRequest`].
+pub const BIP353_SIGNATURE_TAG: &'static str = concat!("lightning", "invoice_request", "invreq_payer_bip_353_signature");
+
 pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Invreq ~~~~~";
 
 /// Builds an [`InvoiceRequest`] from an [`Offer`] for the "offer to be paid" flow.
@@ -188,6 +191,7 @@ macro_rules! invoice_request_builder_methods { (
 			payer: PayerContents(metadata), offer, chain: None, amount_msats: None,
 			features: InvoiceRequestFeatures::empty(), quantity: None, payer_note: None,
 			offer_from_hrn: None, invreq_contact_secret: None, invreq_payer_offer: None,
+			invreq_payer_bip_353_name: None, invreq_payer_bip_353_signature: None,
 			#[cfg(test)]
 			experimental_bar: None,
 		}
@@ -276,6 +280,20 @@ macro_rules! invoice_request_builder_methods { (
 	/// Successive calls to this method will override the previous setting.
 	pub fn payer_offer($($self_mut)* $self: $self_type, offer: &Offer) -> $return_type {
 		$self.invoice_request.invreq_payer_offer = Some(offer.bytes.clone());
+		$return_value
+	}
+
+	/// Sets the BIP-353 human-readable name for the payer.
+	///
+	/// This will include the serialized HumanReadableName in the invoice request.
+	/// When set along with an offer's signing key, a BIP-353 signature will be
+	/// created over the invoice request as specified in BLIP-42.
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn bip353_name($($self_mut)* $self: $self_type, name: &HumanReadableName) -> $return_type {
+		let mut bytes = Vec::new();
+		name.write(&mut bytes).unwrap();
+		$self.invoice_request.invreq_payer_bip_353_name = Some(bytes);
 		$return_value
 	}
 
@@ -549,6 +567,99 @@ impl UnsignedInvoiceRequest {
 	pub fn tagged_hash(&self) -> &TaggedHash {
 		&self.tagged_hash
 	}
+
+	/// Adds a BIP-353 signature to the invoice request if a BIP-353 name is present.
+	///
+	/// This method should be called after creating the unsigned invoice request and before
+	/// calling `sign()`. The signature is created by signing the invoice request TLV stream
+	/// (excluding the top-level signature and the BIP-353 signature itself) with the provided
+	/// keypair, which should be the signing key for the payer's own offer.
+	///
+	/// The signature proves ownership of the BIP-353 address by demonstrating possession of
+	/// the corresponding offer's signing key.
+	pub(super) fn add_bip353_signature<C: secp256k1::Signing>(
+		&mut self, offer_keypair: &Keypair, secp_ctx: &Secp256k1<C>
+	) -> Result<(), ()> {
+		// Only add signature if BIP-353 name is present
+		if self.contents.inner.invreq_payer_bip_353_name.is_none() {
+			return Ok(());
+		}
+
+		// Per BLIP-42 specification:
+		// The BIP-353 signature is computed over the invoice_request TLV stream ONLY.
+		// This means:
+		// - EXCLUDE payer TLVs (type 0-7)
+		// - EXCLUDE offer TLVs (type 1-79, 80-159)
+		// - INCLUDE invoice_request TLVs (type 80-159, 160-239)
+		// - INCLUDE experimental invoice_request TLVs (type 2000001729, 2000001731, 2000001733)
+		// - EXCLUDE the BIP-353 signature itself (type 2000001735)
+		// - EXCLUDE the main signature (type 240)
+		//
+		// The signature tag is: "lightning" || "invoice_request" || "invreq_payer_bip_353_signature"
+
+		// Build the TLV stream containing ONLY invoice_request fields (excluding signature)
+		let (
+			_payer_tlv_stream,
+			_offer_tlv_stream,
+			invoice_request_tlv_stream,
+			_experimental_offer_tlv_stream,
+			mut experimental_invoice_request_tlv_stream,
+		) = self.contents.as_tlv_stream();
+
+		// Clear the signature field to exclude it from the hash
+		experimental_invoice_request_tlv_stream.invreq_payer_bip_353_signature = None;
+
+		// Build the bytes to sign: only invoice_request TLVs + experimental invoice_request TLVs
+		let mut invreq_bytes_to_sign = Vec::new();
+		invoice_request_tlv_stream.write(&mut invreq_bytes_to_sign).unwrap();
+		experimental_invoice_request_tlv_stream.write(&mut invreq_bytes_to_sign).unwrap();
+
+		// Create the tagged hash for BIP-353 signature
+		let tlv_stream = TlvStream::new(&invreq_bytes_to_sign);
+		let tagged_hash = TaggedHash::from_tlv_stream(BIP353_SIGNATURE_TAG, tlv_stream);
+
+		// Sign the hash
+		let msg = tagged_hash.as_digest();
+		let signature = secp_ctx.sign_schnorr_no_aux_rand(msg, offer_keypair);
+
+		// Encode as [33 bytes pubkey][64 bytes signature]
+		let pubkey = offer_keypair.public_key();
+		let mut signature_bytes = Vec::with_capacity(97);
+		signature_bytes.extend_from_slice(&pubkey.serialize());
+		signature_bytes.extend_from_slice(&signature[..]);
+
+		// Update the contents with the signature
+		self.contents.inner.invreq_payer_bip_353_signature = Some(signature_bytes.clone());
+
+		// Rebuild the experimental bytes with the signature included.
+		// The experimental_bytes contains: [experimental offer TLVs] + [experimental invoice request TLVs]
+		// We need to preserve the experimental offer TLVs and update only the invoice request part.
+
+		// Extract experimental offer TLVs from current experimental_bytes
+		let mut new_experimental_bytes = Vec::new();
+		for record in TlvStream::new(&self.experimental_bytes).range(EXPERIMENTAL_OFFER_TYPES) {
+			record.write(&mut new_experimental_bytes).unwrap();
+		}
+
+		// Write experimental invoice request TLVs with the signature
+		let experimental_invoice_request_tlv_stream_with_sig = ExperimentalInvoiceRequestTlvStreamRef {
+			invreq_contact_secret: self.contents.inner.invreq_contact_secret.as_ref(),
+			invreq_payer_offer: self.contents.inner.invreq_payer_offer.as_ref(),
+			invreq_payer_bip_353_name: self.contents.inner.invreq_payer_bip_353_name.as_ref(),
+			invreq_payer_bip_353_signature: Some(&signature_bytes),
+			#[cfg(test)]
+			experimental_bar: self.contents.inner.experimental_bar,
+		};
+		experimental_invoice_request_tlv_stream_with_sig.write(&mut new_experimental_bytes).unwrap();
+
+		self.experimental_bytes = new_experimental_bytes;
+
+		// Recompute the main tagged hash now that we've added the BIP-353 signature
+		let tlv_stream = TlvStream::new(&self.bytes).chain(TlvStream::new(&self.experimental_bytes));
+		self.tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		Ok(())
+	}
 }
 
 macro_rules! unsigned_invoice_request_sign_method { (
@@ -716,6 +827,8 @@ pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
 	offer_from_hrn: Option<HumanReadableName>,
 	invreq_contact_secret: Option<[u8; 32]>,
 	invreq_payer_offer: Option<Vec<u8>>,
+	invreq_payer_bip_353_name: Option<Vec<u8>>,
+	invreq_payer_bip_353_signature: Option<Vec<u8>>,
 	#[cfg(test)]
 	experimental_bar: Option<u64>,
 }
@@ -1281,7 +1394,8 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 		let experimental_invoice_request = ExperimentalInvoiceRequestTlvStreamRef {
 			invreq_contact_secret: self.invreq_contact_secret.as_ref(),
 			invreq_payer_offer: self.invreq_payer_offer.as_ref(),
-			invreq_payer_bip_353_name: None,
+			invreq_payer_bip_353_name: self.invreq_payer_bip_353_name.as_ref(),
+			invreq_payer_bip_353_signature: self.invreq_payer_bip_353_signature.as_ref(),
 			#[cfg(test)]
 			experimental_bar: self.experimental_bar,
 		};
@@ -1374,6 +1488,7 @@ tlv_stream!(
 		(2_000_001_729, invreq_contact_secret: [u8; 32]),
 		(2_000_001_731, invreq_payer_offer: (Vec<u8>, WithoutLength)),
 		(2_000_001_733, invreq_payer_bip_353_name: (Vec<u8>, WithoutLength)),
+		(2_000_001_735, invreq_payer_bip_353_signature: (Vec<u8>, WithoutLength)),
 		// When adding experimental TLVs, update EXPERIMENTAL_TLV_ALLOCATION_SIZE accordingly in
 		// UnsignedInvoiceRequest::new to avoid unnecessary allocations.
 	}
@@ -1386,6 +1501,7 @@ tlv_stream!(
 		(2_000_001_729, invreq_contact_secret: [u8; 32]),
 		(2_000_001_731, invreq_payer_offer: (Vec<u8>, WithoutLength)),
 		(2_000_001_733, invreq_payer_bip_353_name: (Vec<u8>, WithoutLength)),
+		(2_000_001_735, invreq_payer_bip_353_signature: (Vec<u8>, WithoutLength)),
 		(2_999_999_999, experimental_bar: (u64, HighZeroBytesDroppedBigSize)),
 	}
 );
@@ -1523,6 +1639,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 				invreq_contact_secret,
 				invreq_payer_offer,
 				invreq_payer_bip_353_name: _,
+				invreq_payer_bip_353_signature: _,
 				#[cfg(test)]
 				experimental_bar,
 			},
@@ -1568,6 +1685,8 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 				offer_from_hrn,
 				invreq_contact_secret,
 				invreq_payer_offer,
+				invreq_payer_bip_353_name: None,
+				invreq_payer_bip_353_signature: None,
 				#[cfg(test)]
 				experimental_bar,
 			},
@@ -1773,6 +1892,7 @@ mod tests {
 					invreq_contact_secret: None,
 					invreq_payer_offer: None,
 					invreq_payer_bip_353_name: None,
+					invreq_payer_bip_353_signature: None,
 					experimental_bar: None,
 				},
 			),

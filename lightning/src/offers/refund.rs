@@ -819,6 +819,7 @@ impl RefundContents {
 			invreq_contact_secret: None,
 			invreq_payer_offer: None,
 			invreq_payer_bip_353_name: None,
+			invreq_payer_bip_353_signature: None,
 			#[cfg(test)]
 			experimental_bar: self.experimental_bar,
 		};
@@ -940,6 +941,7 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 				invreq_contact_secret: _,
 				invreq_payer_offer: _,
 				invreq_payer_bip_353_name: _,
+				invreq_payer_bip_353_signature: _,
 				#[cfg(test)]
 				experimental_bar,
 			},
@@ -1130,6 +1132,7 @@ mod tests {
 					invreq_contact_secret: None,
 					invreq_payer_offer: None,
 					invreq_payer_bip_353_name: None,
+					invreq_payer_bip_353_signature: None,
 					experimental_bar: None,
 				},
 			),
