@@ -37,7 +37,7 @@ use crate::persist::{
 	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use crate::prelude::hash_map::Entry;
-use crate::prelude::{new_hash_map, HashMap};
+use crate::prelude::HashMap;
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
 use crate::utils::async_poll::dummy_waker;
@@ -91,9 +91,9 @@ where
 {
 	/// Constructs a `LSPS1ServiceHandler`.
 	pub(crate) fn new(
-		entropy_source: ES, pending_messages: Arc<MessageQueue>,
-		pending_events: Arc<EventQueue<K>>, channel_manager: CM, kv_store: K, time_provider: TP,
-		config: LSPS1ServiceConfig,
+		per_peer_state: HashMap<PublicKey, Mutex<PeerState>>, entropy_source: ES,
+		pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue<K>>,
+		channel_manager: CM, kv_store: K, time_provider: TP, config: LSPS1ServiceConfig,
 	) -> Self {
 		Self {
 			entropy_source,
@@ -101,7 +101,7 @@ where
 			kv_store,
 			pending_messages,
 			pending_events,
-			per_peer_state: RwLock::new(new_hash_map()),
+			per_peer_state: RwLock::new(per_peer_state),
 			persistence_in_flight: AtomicUsize::new(0),
 			time_provider,
 			config,
