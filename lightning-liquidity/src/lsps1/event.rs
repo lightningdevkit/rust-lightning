@@ -15,6 +15,7 @@ use super::msgs::{LSPS1ChannelInfo, LSPS1Options, LSPS1OrderParams, LSPS1Payment
 use crate::lsps0::ser::{LSPSRequestId, LSPSResponseError};
 
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::Address;
 
 /// An event which an bLIP-51 / LSPS1 client should take some action in response to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,6 +165,11 @@ pub enum LSPS1ServiceEvent {
 		counterparty_node_id: PublicKey,
 		/// The order requested by the client.
 		order: LSPS1OrderParams,
+		/// The address we need to send onchain refunds to in case channel opening fails.
+		///
+		/// Please note that you can't offer onchain payments if this was not provided by the
+		/// client.
+		refund_onchain_address: Option<Address>,
 	},
 	/// If error is encountered, refund the amount if paid by the client.
 	///

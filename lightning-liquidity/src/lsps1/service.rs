@@ -22,7 +22,7 @@ use super::event::LSPS1ServiceEvent;
 use super::msgs::{
 	LSPS1ChannelInfo, LSPS1CreateOrderRequest, LSPS1CreateOrderResponse, LSPS1GetInfoResponse,
 	LSPS1GetOrderRequest, LSPS1Message, LSPS1Options, LSPS1OrderId, LSPS1OrderParams,
-	LSPS1OrderState, LSPS1PaymentInfo, LSPS1Request, LSPS1Response,
+	LSPS1OrderState, LSPS1PaymentInfo, LSPS1PaymentState, LSPS1Request, LSPS1Response,
 	LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 	LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE,
 };
@@ -326,6 +326,7 @@ where
 			request_id,
 			counterparty_node_id: *counterparty_node_id,
 			order: params.order,
+			refund_onchain_address: params.refund_onchain_address,
 		});
 
 		Ok(())
@@ -335,6 +336,9 @@ where
 	///
 	/// Should be called in response to receiving a [`LSPS1ServiceEvent::RequestForPaymentDetails`] event.
 	///
+	/// Note that the provided `payment_details` can't include the onchain payment variant if the
+	/// user didn't provide a `refund_onchain_address`.
+	///
 	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
 	pub async fn send_payment_details(
 		&self, request_id: LSPSRequestId, counterparty_node_id: PublicKey,
@@ -343,9 +347,54 @@ where
 		let mut message_queue_notifier = self.pending_messages.notifier();
 		let mut should_persist = false;
 
+		if payment_details.bolt11.is_none()
+			&& payment_details.bolt12.is_none()
+			&& payment_details.onchain.is_none()
+		{
+			let err = "At least one payment option must be provided".to_string();
+			return Err(APIError::APIMisuseError { err });
+		}
+
+		if payment_details
+			.bolt11
+			.as_ref()
+			.is_some_and(|b| b.state != LSPS1PaymentState::ExpectPayment)
+			|| payment_details
+				.bolt12
+				.as_ref()
+				.is_some_and(|b| b.state != LSPS1PaymentState::ExpectPayment)
+			|| payment_details
+				.onchain
+				.as_ref()
+				.is_some_and(|o| o.state != LSPS1PaymentState::ExpectPayment)
+		{
+			return Err(APIError::APIMisuseError {
+				err: "All payment methods must start in ExpectPayment state".to_string(),
+			});
+		}
+
 		match self.per_peer_state.read().unwrap().get(&counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+
+				// Validate payment_details against the pending request before removing it,
+				// so the LSP operator can retry on failure.
+				if payment_details.onchain.is_some() {
+					let request = peer_state_lock.get_request(&request_id).map_err(|e| {
+						let err = format!("Failed to send response due to: {}", e);
+						APIError::APIMisuseError { err }
+					})?;
+					let has_refund_addr = matches!(
+						request,
+						LSPS1Request::CreateOrder(p) if p.refund_onchain_address.is_some()
+					);
+					if !has_refund_addr {
+						// bLIP-51: 'LSP MUST disable on-chain payments if the client omits this field.'
+						let err = "Onchain payments must be disabled if no refund_onchain_address is set.".to_string();
+						return Err(APIError::APIMisuseError { err });
+					}
+				}
+
 				let request = peer_state_lock.remove_request(&request_id).map_err(|e| {
 					let err = format!("Failed to send response due to: {}", e);
 					APIError::APIMisuseError { err }
@@ -357,6 +406,7 @@ where
 						let created_at = LSPSDateTime::new_from_duration_since_epoch(
 							self.time_provider.duration_since_epoch(),
 						);
+
 						let order = peer_state_lock.new_order(
 							order_id.clone(),
 							params.order,

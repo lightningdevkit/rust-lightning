@@ -82,6 +82,12 @@ impl PeerState {
 		Ok(())
 	}
 
+	pub(super) fn get_request(
+		&self, request_id: &LSPSRequestId,
+	) -> Result<&LSPS1Request, PeerStateError> {
+		self.pending_requests.get(request_id).ok_or(PeerStateError::UnknownRequestId)
+	}
+
 	pub(super) fn remove_request(
 		&mut self, request_id: &LSPSRequestId,
 	) -> Result<LSPS1Request, PeerStateError> {
