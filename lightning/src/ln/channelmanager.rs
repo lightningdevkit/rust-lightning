@@ -4367,8 +4367,8 @@ where
 	}
 
 	/// When a channel is removed, two things need to happen:
-	/// (a) [`ChannelManager::convert_channel_err`] must be called in the same `per_peer_state` lock as the
-	///     channel-closing action,
+	/// (a) The close error must be converted to [`MsgHandleErrInternal`] in the same `per_peer_state` lock as the
+	///     channel-closing action.
 	/// (b) [`ChannelManager::handle_error`] needs to be called without holding any locks (except
 	///     [`ChannelManager::total_consistency_lock`]), which then calls this.
 	fn finish_close_channel(&self, mut shutdown_res: ShutdownResult) {
