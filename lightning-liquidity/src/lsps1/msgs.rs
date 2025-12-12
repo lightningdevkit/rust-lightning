@@ -35,6 +35,7 @@ pub(crate) const _LSPS1_CREATE_ORDER_REQUEST_INVALID_PARAMS_ERROR_CODE: i32 = -3
 pub(crate) const LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE: i32 = 100;
 #[cfg(lsps1_service)]
 pub(crate) const LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE: i32 = 101;
+pub(crate) const LSPS1_CREATE_ORDER_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE: i32 = 102;
 
 /// The identifier of an order.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Hash)]
