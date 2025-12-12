@@ -149,6 +149,14 @@ pub(super) fn create_fwd_pending_htlc_info(
 			(RoutingInfo::Direct { short_channel_id, new_packet_bytes, next_hop_hmac }, amt_to_forward, outgoing_cltv_value, intro_node_blinding_point,
 				next_blinding_override)
 		},
+		onion_utils::Hop::Dummy { .. } => {
+			debug_assert!(false, "Dummy hop should have been peeled earlier");
+			return Err(InboundHTLCErr {
+				msg: "Dummy Hop OnionHopData provided for us as an intermediary node",
+				reason: LocalHTLCFailureReason::InvalidOnionPayload,
+				err_data: Vec::new(),
+			})
+		},
 		onion_utils::Hop::Receive { .. } | onion_utils::Hop::BlindedReceive { .. } =>
 			return Err(InboundHTLCErr {
 				msg: "Final Node OnionHopData provided for us as an intermediary node",
@@ -364,6 +372,14 @@ pub(super) fn create_recv_pending_htlc_info(
 				msg: "Got blinded non final data with an HMAC of 0",
 			})
 		},
+		onion_utils::Hop::Dummy { .. } => {
+			debug_assert!(false, "Dummy hop should have been peeled earlier");
+			return Err(InboundHTLCErr {
+				reason: LocalHTLCFailureReason::InvalidOnionBlinding,
+				err_data: vec![0; 32],
+				msg: "Got blinded non final data with an HMAC of 0",
+			})
+		}
 		onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 			return Err(InboundHTLCErr {
 				reason: LocalHTLCFailureReason::InvalidOnionPayload,
@@ -490,16 +506,19 @@ where
 	Ok(match hop {
 		onion_utils::Hop::Forward { shared_secret, .. } |
 		onion_utils::Hop::BlindedForward { shared_secret, .. } => {
-			let NextPacketDetails {
-				next_packet_pubkey, outgoing_amt_msat: _, outgoing_connector: _, outgoing_cltv_value
-			} = match next_packet_details_opt {
-				Some(next_packet_details) => next_packet_details,
+			let (next_packet_pubkey, outgoing_cltv_value) = match next_packet_details_opt {
+				Some(NextPacketDetails {
+					next_packet_pubkey,
+					next_hop_forward_info: Some(NextHopForwardInfo { outgoing_cltv_value, .. }),
+				}) => (next_packet_pubkey, outgoing_cltv_value),
 				// Forward should always include the next hop details
-				None => return Err(InboundHTLCErr {
-					msg: "Failed to decode update add htlc onion",
-					reason: LocalHTLCFailureReason::InvalidOnionPayload,
-					err_data: Vec::new(),
-				}),
+				_ => {
+					return Err(InboundHTLCErr {
+						msg: "Failed to decode update add htlc onion",
+						reason: LocalHTLCFailureReason::InvalidOnionPayload,
+						err_data: Vec::new(),
+					});
+				}
 			};
 
 			if let Err(reason) = check_incoming_htlc_cltv(
@@ -536,6 +555,10 @@ pub(super) enum HopConnector {
 
 pub(super) struct NextPacketDetails {
 	pub(super) next_packet_pubkey: Result<PublicKey, secp256k1::Error>,
+	pub(super) next_hop_forward_info: Option<NextHopForwardInfo>,
+}
+
+pub(super) struct NextHopForwardInfo {
 	pub(super) outgoing_connector: HopConnector,
 	pub(super) outgoing_amt_msat: u64,
 	pub(super) outgoing_cltv_value: u32,
@@ -612,8 +635,12 @@ where
 			let next_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				msg.onion_routing_packet.public_key.unwrap(), &shared_secret.secret_bytes());
 			Some(NextPacketDetails {
-				next_packet_pubkey, outgoing_connector: HopConnector::ShortChannelId(short_channel_id),
-				outgoing_amt_msat: amt_to_forward, outgoing_cltv_value
+				next_packet_pubkey,
+				next_hop_forward_info: Some(NextHopForwardInfo {
+					outgoing_connector: HopConnector::ShortChannelId(short_channel_id),
+					outgoing_amt_msat: amt_to_forward,
+					outgoing_cltv_value,
+				}),
 			})
 		}
 		onion_utils::Hop::BlindedForward { next_hop_data: msgs::InboundOnionBlindedForwardPayload { short_channel_id, ref payment_relay, ref payment_constraints, ref features, .. }, shared_secret, .. } => {
@@ -629,8 +656,12 @@ where
 			let next_packet_pubkey = onion_utils::next_hop_pubkey(&secp_ctx,
 				msg.onion_routing_packet.public_key.unwrap(), &shared_secret.secret_bytes());
 			Some(NextPacketDetails {
-				next_packet_pubkey, outgoing_connector: HopConnector::ShortChannelId(short_channel_id), outgoing_amt_msat: amt_to_forward,
-				outgoing_cltv_value
+				next_packet_pubkey,
+				next_hop_forward_info: Some(NextHopForwardInfo {
+					outgoing_connector: HopConnector::ShortChannelId(short_channel_id),
+					outgoing_amt_msat: amt_to_forward,
+					outgoing_cltv_value,
+				}),
 			})
 		}
 		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload { amt_to_forward, outgoing_cltv_value, next_trampoline }, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
@@ -638,10 +669,18 @@ where
 				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());
 			Some(NextPacketDetails {
 				next_packet_pubkey: next_trampoline_packet_pubkey,
-				outgoing_connector: HopConnector::Trampoline(next_trampoline),
-				outgoing_amt_msat: amt_to_forward,
-				outgoing_cltv_value,
+				next_hop_forward_info: Some(NextHopForwardInfo {
+					outgoing_connector: HopConnector::Trampoline(next_trampoline),
+					outgoing_amt_msat: amt_to_forward,
+					outgoing_cltv_value,
+				}),
 			})
+		},
+		onion_utils::Hop::Dummy { shared_secret, .. } => {
+			let next_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
+				msg.onion_routing_packet.public_key.unwrap(), &shared_secret.secret_bytes());
+
+			Some(NextPacketDetails { next_packet_pubkey, next_hop_forward_info: None })
 		}
 		onion_utils::Hop::TrampolineBlindedForward { next_trampoline_hop_data: msgs::InboundTrampolineBlindedForwardPayload { next_trampoline, ref payment_relay, ref payment_constraints, ref features, .. }, outer_shared_secret, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
 			let (amt_to_forward, outgoing_cltv_value) = match check_blinded_forward(
@@ -657,9 +696,11 @@ where
 				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());
 			Some(NextPacketDetails {
 				next_packet_pubkey: next_trampoline_packet_pubkey,
-				outgoing_connector: HopConnector::Trampoline(next_trampoline),
-				outgoing_amt_msat: amt_to_forward,
-				outgoing_cltv_value,
+				next_hop_forward_info: Some(NextHopForwardInfo {
+					outgoing_connector: HopConnector::Trampoline(next_trampoline),
+					outgoing_amt_msat: amt_to_forward,
+					outgoing_cltv_value
+				}),
 			})
 		}
 		_ => None

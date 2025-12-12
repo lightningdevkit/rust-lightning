@@ -197,6 +197,72 @@ fn do_one_hop_blinded_path(success: bool) {
 }
 
 #[test]
+fn one_hop_blinded_path_with_dummy_hops() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_upd =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0).0.contents;
+
+	let amt_msat = 5000;
+	let (payment_preimage, payment_hash, payment_secret) =
+		get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
+	let payee_tlvs = ReceiveTlvs {
+		payment_secret,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+		},
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+	};
+	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
+	let dummy_hops = 2;
+
+	let mut secp_ctx = Secp256k1::new();
+	let blinded_path = BlindedPaymentPath::new_with_dummy_hops(
+		&[],
+		nodes[1].node.get_our_node_id(),
+		dummy_hops,
+		receive_auth_key,
+		payee_tlvs,
+		u64::MAX,
+		TEST_FINAL_CLTV as u16,
+		&chanmon_cfgs[1].keys_manager,
+		&secp_ctx,
+	)
+	.unwrap();
+
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::blinded(vec![blinded_path]),
+		amt_msat,
+	);
+	nodes[0]
+		.node
+		.send_payment(
+			payment_hash,
+			RecipientOnionFields::spontaneous_empty(),
+			PaymentId(payment_hash.0),
+			route_params,
+			Retry::Attempts(0),
+		)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+
+	let path = &[&nodes[1]];
+	let args = PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, ev)
+		.with_dummy_override(dummy_hops)
+		.with_payment_secret(payment_secret);
+
+	do_pass_along_path(args);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+}
+
+#[test]
 #[rustfmt::skip]
 fn mpp_to_one_hop_blinded_path() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
@@ -1675,8 +1741,9 @@ fn route_blinding_spec_test_vector() {
 		hop_data: carol_packet_bytes,
 		hmac: carol_hmac,
 	};
+	let carol_forward_info = carol_packet_details.next_hop_forward_info.unwrap();
 	let carol_update_add = update_add_msg(
-		carol_packet_details.outgoing_amt_msat, carol_packet_details.outgoing_cltv_value,
+		carol_forward_info.outgoing_amt_msat, carol_forward_info.outgoing_cltv_value,
 		Some(pubkey_from_hex("034e09f450a80c3d252b258aba0a61215bf60dda3b0dc78ffb0736ea1259dfd8a0")),
 		carol_onion
 	);
@@ -1709,8 +1776,9 @@ fn route_blinding_spec_test_vector() {
 		hop_data: dave_packet_bytes,
 		hmac: dave_hmac,
 	};
+	let dave_forward_info = dave_packet_details.next_hop_forward_info.unwrap();
 	let dave_update_add = update_add_msg(
-		dave_packet_details.outgoing_amt_msat, dave_packet_details.outgoing_cltv_value,
+		dave_forward_info.outgoing_amt_msat, dave_forward_info.outgoing_cltv_value,
 		Some(pubkey_from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f")),
 		dave_onion
 	);
@@ -1743,8 +1811,9 @@ fn route_blinding_spec_test_vector() {
 		hop_data: eve_packet_bytes,
 		hmac: eve_hmac,
 	};
+	let eve_forward_info = eve_packet_details.next_hop_forward_info.unwrap();
 	let eve_update_add = update_add_msg(
-		eve_packet_details.outgoing_amt_msat, eve_packet_details.outgoing_cltv_value,
+		eve_forward_info.outgoing_amt_msat, eve_forward_info.outgoing_cltv_value,
 		Some(pubkey_from_hex("03e09038ee76e50f444b19abf0a555e8697e035f62937168b80adf0931b31ce52a")),
 		eve_onion
 	);
@@ -1977,7 +2046,8 @@ fn test_trampoline_inbound_payment_decoding() {
 		hop_data: carol_packet_bytes,
 		hmac: carol_hmac,
 	};
-	let carol_update_add = update_add_msg(carol_packet_details.outgoing_amt_msat, carol_packet_details.outgoing_cltv_value, None, carol_onion);
+	let carol_forward_info = carol_packet_details.next_hop_forward_info.unwrap();
+	let carol_update_add = update_add_msg(carol_forward_info.outgoing_amt_msat, carol_forward_info.outgoing_cltv_value, None, carol_onion);
 
 	let carol_node_signer = TestEcdhSigner { node_secret: carol_secret };
 	let (carol_peeled_onion, _) = onion_payment::decode_incoming_update_add_htlc_onion(
