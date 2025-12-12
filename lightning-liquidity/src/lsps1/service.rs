@@ -291,7 +291,7 @@ where
 		if !is_valid(&params.order, &self.config.supported_options) {
 			let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 				code: LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
-				message: format!("Order does not match options supported by LSP server"),
+				message: "Order does not match options supported by LSP server".to_string(),
 				data: Some(format!("Supported options are {:?}", &self.config.supported_options)),
 			});
 			let msg = LSPS1Message::Response(request_id, response).into();
@@ -482,7 +482,8 @@ where
 				let order = peer_state_lock.get_order(&params.order_id).map_err(|e| {
 					let response = LSPS1Response::GetOrderError(LSPSResponseError {
 						code: LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE,
-						message: format!("Order with the requested order_id has not been found."),
+						message: "Order with the requested order_id has not been found."
+							.to_string(),
 						data: None,
 					});
 					let msg = LSPS1Message::Response(request_id.clone(), response).into();
@@ -507,7 +508,7 @@ where
 			None => {
 				let response = LSPS1Response::GetOrderError(LSPSResponseError {
 					code: LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE,
-					message: format!("Order with the requested order_id has not been found."),
+					message: "Order with the requested order_id has not been found.".to_string(),
 					data: None,
 				});
 				let msg = LSPS1Message::Response(request_id, response).into();
