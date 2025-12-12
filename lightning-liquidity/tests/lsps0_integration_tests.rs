@@ -49,7 +49,7 @@ fn list_protocols_integration_test() {
 			min_channel_balance_sat: 100_000,
 			max_channel_balance_sat: 100_000_000,
 		};
-		LSPS1ServiceConfig { supported_options, token: None }
+		LSPS1ServiceConfig { supported_options }
 	};
 	let lsps5_service_config = LSPS5ServiceConfig::default();
 	let service_config = LiquidityServiceConfig {

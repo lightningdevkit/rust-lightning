@@ -153,9 +153,13 @@ pub enum LSPS1ServiceEvent {
 	/// send order parameters including the details regarding the
 	/// payment and order id for this order for the client.
 	///
+	/// You should call [`LSPS1ServiceHandler::invalid_token_provided`] if the token provided as
+	/// part of the order parameters is invalid.
+	///
 	/// **Note: ** This event will *not* be persisted across restarts.
 	///
 	/// [`LSPS1ServiceHandler::send_payment_details`]: crate::lsps1::service::LSPS1ServiceHandler::send_payment_details
+	/// [`LSPS1ServiceHandler::invalid_token_provided`]: crate::lsps1::service::LSPS1ServiceHandler::invalid_token_provided
 	RequestForPaymentDetails {
 		/// An identifier that must be passed to [`LSPS1ServiceHandler::send_payment_details`].
 		///

@@ -9,7 +9,7 @@
 
 //! Contains the main bLIP-51 / LSPS1 server object, [`LSPS1ServiceHandler`].
 
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use core::future::Future as StdFuture;
@@ -24,6 +24,7 @@ use super::msgs::{
 	LSPS1GetOrderRequest, LSPS1Message, LSPS1Options, LSPS1OrderId, LSPS1OrderParams,
 	LSPS1OrderState, LSPS1PaymentInfo, LSPS1Request, LSPS1Response,
 	LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
+	LSPS1_CREATE_ORDER_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
 	LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE,
 };
 use super::peer_state::PeerState;
@@ -56,8 +57,6 @@ use bitcoin::secp256k1::PublicKey;
 /// Server-side configuration options for bLIP-51 / LSPS1 channel requests.
 #[derive(Clone, Debug)]
 pub struct LSPS1ServiceConfig {
-	/// A token to be send with each channel request.
-	pub token: Option<String>,
 	/// The options supported by the LSP.
 	pub supported_options: LSPS1Options,
 }
@@ -434,6 +433,42 @@ where
 		Ok(())
 	}
 
+	/// Used by LSP to inform a client that an order was rejected because the used token was invalid.
+	///
+	/// Should be called in response to receiving a [`LSPS1ServiceEvent::RequestForPaymentDetails`]
+	/// event if the provided token is invalid.
+	///
+	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
+	pub fn invalid_token_provided(
+		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
+	) -> Result<(), APIError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
+		match self.per_peer_state.read().unwrap().get(&counterparty_node_id) {
+			Some(inner_state_lock) => {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+				peer_state_lock.remove_request(&request_id).map_err(|e| {
+					debug_assert!(false, "Failed to send response due to: {}", e);
+					let err = format!("Failed to send response due to: {}", e);
+					APIError::APIMisuseError { err }
+				})?;
+
+				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
+					code: LSPS1_CREATE_ORDER_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
+					message: "An unrecognized or stale token was provided".to_string(),
+					data: None,
+				});
+
+				let msg = LSPS1Message::Response(request_id, response).into();
+				message_queue_notifier.enqueue(&counterparty_node_id, msg);
+				Ok(())
+			},
+			None => Err(APIError::APIMisuseError {
+				err: format!("No state for the counterparty exists: {}", counterparty_node_id),
+			}),
+		}
+	}
+
 	fn handle_get_order_request(
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		params: LSPS1GetOrderRequest,
@@ -623,6 +658,15 @@ where
 				unreachable!("Should not be pending in a sync context");
 			},
 		}
+	}
+
+	/// Used by LSP to inform a client that an order was rejected because the used token was invalid.
+	///
+	/// Wraps [`LSPS1ServiceHandler::invalid_token_provided`].
+	pub fn invalid_token_provided(
+		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
+	) -> Result<(), APIError> {
+		self.inner.invalid_token_provided(counterparty_node_id, request_id)
 	}
 
 	/// Used by LSP to give details to client regarding the status of channel opening.
