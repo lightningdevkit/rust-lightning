@@ -52,7 +52,6 @@ pub(crate) fn lsps5_test_setup_with_kv_stores<'a, 'b, 'c>(
 ) -> (LSPSNodes<'a, 'b, 'c>, LSPS5Validator) {
 	let lsps5_service_config = LSPS5ServiceConfig::default();
 	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: None,
 		lsps5_service_config: Some(lsps5_service_config),
@@ -236,7 +235,6 @@ pub(crate) fn lsps5_lsps2_test_setup<'a, 'b, 'c>(
 	let lsps5_service_config = LSPS5ServiceConfig::default();
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret: [42; 32] };
 	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: Some(lsps2_service_config),
 		lsps5_service_config: Some(lsps5_service_config),
@@ -1512,7 +1510,6 @@ fn lsps5_service_handler_persistence_across_restarts() {
 	let client_kv_store = Arc::new(TestStore::new(false));
 
 	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: None,
 		lsps5_service_config: Some(LSPS5ServiceConfig::default()),
