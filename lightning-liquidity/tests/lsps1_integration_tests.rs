@@ -504,3 +504,99 @@ fn lsps1_service_handler_persistence_across_restarts() {
 		}
 	}
 }
+
+#[test]
+fn lsps1_invalid_token_error() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let supported_options = LSPS1Options {
+		min_required_channel_confirmations: 0,
+		min_funding_confirms_within_blocks: 6,
+		supports_zero_channel_reserve: true,
+		max_channel_expiry_blocks: 144,
+		min_initial_client_balance_sat: 10_000_000,
+		max_initial_client_balance_sat: 100_000_000,
+		min_initial_lsp_balance_sat: 100_000,
+		max_initial_lsp_balance_sat: 100_000_000,
+		min_channel_balance_sat: 100_000,
+		max_channel_balance_sat: 100_000_000,
+	};
+
+	let LSPSNodes { service_node, client_node } =
+		setup_test_lsps1_nodes(nodes, supported_options.clone());
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+	let client_handler = client_node.liquidity_manager.lsps1_client_handler().unwrap();
+	let service_handler = service_node.liquidity_manager.lsps1_service_handler().unwrap();
+
+	// Create an order with an invalid token
+	let order_params = LSPS1OrderParams {
+		lsp_balance_sat: 100_000,
+		client_balance_sat: 10_000_000,
+		required_channel_confirmations: 0,
+		funding_confirms_within_blocks: 6,
+		channel_expiry_blocks: 144,
+		token: Some("invalid_token".to_string()),
+		announce_channel: true,
+	};
+
+	let refund_onchain_address =
+		Address::from_str("bc1p5uvtaxzkjwvey2tfy49k5vtqfpjmrgm09cvs88ezyy8h2zv7jhas9tu4yr")
+			.unwrap()
+			.assume_checked();
+	let create_order_id = client_handler.create_order(
+		&service_node_id,
+		order_params.clone(),
+		Some(refund_onchain_address),
+	);
+	let create_order = get_lsps_message!(client_node, service_node_id);
+
+	// Service receives the create_order request
+	service_node.liquidity_manager.handle_custom_message(create_order, client_node_id).unwrap();
+
+	// Service emits RequestForPaymentDetails event
+	let request_for_payment_event = service_node.liquidity_manager.next_event().unwrap();
+	let request_id =
+		if let LiquidityEvent::LSPS1Service(LSPS1ServiceEvent::RequestForPaymentDetails {
+			request_id,
+			counterparty_node_id,
+			order,
+		}) = request_for_payment_event
+		{
+			assert_eq!(counterparty_node_id, client_node_id);
+			assert_eq!(order, order_params);
+			request_id
+		} else {
+			panic!("Unexpected event: expected RequestForPaymentDetails");
+		};
+
+	// Service rejects the order due to invalid token
+	service_handler.invalid_token_provided(client_node_id, request_id).unwrap();
+
+	// Get the error response message
+	let error_response = get_lsps_message!(service_node, client_node_id);
+
+	// Client receives the error response
+	client_node
+		.liquidity_manager
+		.handle_custom_message(error_response, service_node_id)
+		.unwrap_err();
+
+	// Client receives OrderRequestFailed event with error code 102
+	let error_event = client_node.liquidity_manager.next_event().unwrap();
+	if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderRequestFailed {
+		request_id,
+		counterparty_node_id,
+		error,
+	}) = error_event
+	{
+		assert_eq!(request_id, create_order_id);
+		assert_eq!(counterparty_node_id, service_node_id);
+		assert_eq!(error.code, 102); // LSPS1_CREATE_ORDER_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE
+	} else {
+		panic!("Unexpected event: expected OrderRequestFailed");
+	}
+}
