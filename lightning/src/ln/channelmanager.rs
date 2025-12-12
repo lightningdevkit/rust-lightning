@@ -4731,10 +4731,14 @@ where
 					funded_chan
 				);
 			} else {
-				let update_id = *peer_state
-					.closed_channel_monitor_update_ids
-					.get(&shutdown_res.channel_id)
-					.unwrap();
+				let update_id = if let Some(latest_update_id) =
+					peer_state.closed_channel_monitor_update_ids.get_mut(&shutdown_res.channel_id)
+				{
+					*latest_update_id = latest_update_id.saturating_add(1);
+					*latest_update_id
+				} else {
+					panic!("We need the latest ChannelMonitorUpdate ID to build a new update");
+				};
 				let monitor_update = ChannelMonitorUpdate {
 					update_id,
 					updates: vec![monitor_update_step],

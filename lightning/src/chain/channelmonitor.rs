@@ -4253,6 +4253,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// provide a preimage at this point.
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } =>
 					debug_assert!(self.lockdown_from_offchain),
+				ChannelMonitorUpdateStep::EventGenerated { .. } => {},
 				_ => {
 					log_error!(logger, "Attempted to apply post-force-close ChannelMonitorUpdate of type {}", updates.updates[0].variant_name());
 					panic!("Attempted to apply post-force-close ChannelMonitorUpdate that wasn't providing a payment preimage");
