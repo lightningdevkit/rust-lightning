@@ -23,15 +23,13 @@ use crate::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
 use crate::lsps5::msgs::LSPS5Message;
 use crate::lsps5::service::{LSPS5ServiceConfig, LSPS5ServiceHandler};
 use crate::message_queue::MessageQueue;
-#[cfg(lsps1_service)]
-use crate::persist::read_lsps1_service_peer_states;
 use crate::persist::{
-	read_event_queue, read_lsps2_service_peer_states, read_lsps5_service_peer_states,
+	read_event_queue, read_lsps1_service_peer_states, read_lsps2_service_peer_states,
+	read_lsps5_service_peer_states,
 };
 
 use crate::lsps1::client::{LSPS1ClientConfig, LSPS1ClientHandler};
 use crate::lsps1::msgs::LSPS1Message;
-#[cfg(lsps1_service)]
 use crate::lsps1::service::{LSPS1ServiceConfig, LSPS1ServiceHandler, LSPS1ServiceHandlerSync};
 
 use crate::lsps2::client::{LSPS2ClientConfig, LSPS2ClientHandler};
@@ -73,7 +71,6 @@ const LSPS_FEATURE_BIT: usize = 729;
 #[derive(Clone)]
 pub struct LiquidityServiceConfig {
 	/// Optional server-side configuration for LSPS1 channel requests.
-	#[cfg(lsps1_service)]
 	pub lsps1_service_config: Option<LSPS1ServiceConfig>,
 	/// Optional server-side configuration for JIT channels
 	/// should you want to support them.
@@ -284,7 +281,6 @@ pub struct LiquidityManager<
 	ignored_peers: RwLock<HashSet<PublicKey>>,
 	lsps0_client_handler: LSPS0ClientHandler<ES, K>,
 	lsps0_service_handler: Option<LSPS0ServiceHandler>,
-	#[cfg(lsps1_service)]
 	lsps1_service_handler: Option<LSPS1ServiceHandler<ES, CM, K, TP>>,
 	lsps1_client_handler: Option<LSPS1ClientHandler<ES, K>>,
 	lsps2_service_handler: Option<LSPS2ServiceHandler<CM, K, T>>,
@@ -451,7 +447,6 @@ where
 			})
 		});
 
-		#[cfg(lsps1_service)]
 		let lsps1_service_handler = if let Some(service_config) = service_config.as_ref() {
 			if let Some(lsps1_service_config) = service_config.lsps1_service_config.as_ref() {
 				if let Some(number) =
@@ -499,7 +494,6 @@ where
 			lsps0_client_handler,
 			lsps0_service_handler,
 			lsps1_client_handler,
-			#[cfg(lsps1_service)]
 			lsps1_service_handler,
 			lsps2_client_handler,
 			lsps2_service_handler,
@@ -530,7 +524,6 @@ where
 	}
 
 	/// Returns a reference to the LSPS1 server-side handler.
-	#[cfg(lsps1_service)]
 	pub fn lsps1_service_handler(&self) -> Option<&LSPS1ServiceHandler<ES, CM, K, TP>> {
 		self.lsps1_service_handler.as_ref()
 	}
@@ -634,7 +627,6 @@ where
 		let mut did_persist = false;
 		did_persist |= self.pending_events.persist().await?;
 
-		#[cfg(lsps1_service)]
 		if let Some(lsps1_service_handler) = self.lsps1_service_handler.as_ref() {
 			did_persist |= lsps1_service_handler.persist().await?;
 		}
@@ -680,18 +672,15 @@ where
 					},
 				}
 			},
-			LSPSMessage::LSPS1(_msg @ LSPS1Message::Request(..)) => {
-				#[cfg(lsps1_service)]
+			LSPSMessage::LSPS1(msg @ LSPS1Message::Request(..)) => {
 				match &self.lsps1_service_handler {
 					Some(lsps1_service_handler) => {
-						lsps1_service_handler.handle_message(_msg, sender_node_id)?;
+						lsps1_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
 						return Err(LightningError { err: format!("Received LSPS1 request message without LSPS1 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 					},
 				}
-				#[cfg(not(lsps1_service))]
-				return Err(LightningError { err: format!("Received LSPS1 request message without LSPS1 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 			},
 			LSPSMessage::LSPS2(msg @ LSPS2Message::Response(..)) => {
 				match &self.lsps2_client_handler {
@@ -732,14 +721,10 @@ where
 									.lsps2_service_handler
 									.as_ref()
 									.is_some_and(|h| h.has_active_requests(sender_node_id));
-								#[cfg(lsps1_service)]
 								let lsps1_has_active_requests = self
 									.lsps1_service_handler
 									.as_ref()
 									.is_some_and(|h| h.has_active_requests(sender_node_id));
-								#[cfg(not(lsps1_service))]
-								let lsps1_has_active_requests = false;
-
 								lsps5_service_handler.enforce_prior_activity_or_reject(
 									sender_node_id,
 									lsps2_has_active_requests,
@@ -895,7 +880,6 @@ where
 		// If the peer was misbehaving, drop it from the ignored list to cleanup the kept state.
 		self.ignored_peers.write().unwrap().remove(&counterparty_node_id);
 
-		#[cfg(lsps1_service)]
 		if let Some(lsps1_service_handler) = self.lsps1_service_handler.as_ref() {
 			lsps1_service_handler.peer_disconnected(counterparty_node_id);
 		}
@@ -1051,7 +1035,6 @@ where
 	/// Returns a reference to the LSPS1 server-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps1_service_handler`].
-	#[cfg(lsps1_service)]
 	pub fn lsps1_service_handler<'a>(
 		&'a self,
 	) -> Option<LSPS1ServiceHandlerSync<'a, ES, CM, KVStoreSyncWrapper<KS>, TP>> {

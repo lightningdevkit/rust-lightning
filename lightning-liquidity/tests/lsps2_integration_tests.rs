@@ -60,7 +60,6 @@ fn build_lsps2_configs() -> ([u8; 32], LiquidityServiceConfig, LiquidityClientCo
 	let promise_secret = [42; 32];
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
 	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: Some(lsps2_service_config),
 		lsps5_service_config: None,
@@ -941,7 +940,6 @@ fn lsps2_service_handler_persistence_across_restarts() {
 
 	let promise_secret = [42; 32];
 	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: Some(LSPS2ServiceConfig { promise_secret }),
 		lsps5_service_config: None,
