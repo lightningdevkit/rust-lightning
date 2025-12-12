@@ -35,7 +35,7 @@ use lightning_liquidity::utils::time::TimeProvider;
 fn build_lsps1_configs(
 	supported_options: LSPS1Options,
 ) -> (LiquidityServiceConfig, LiquidityClientConfig) {
-	let lsps1_service_config = LSPS1ServiceConfig { token: None, supported_options };
+	let lsps1_service_config = LSPS1ServiceConfig { supported_options };
 	let service_config = LiquidityServiceConfig {
 		lsps1_service_config: Some(lsps1_service_config),
 		lsps2_service_config: None,
@@ -284,7 +284,6 @@ fn lsps1_service_handler_persistence_across_restarts() {
 	let service_config = LiquidityServiceConfig {
 		lsps1_service_config: Some(LSPS1ServiceConfig {
 			supported_options: supported_options.clone(),
-			token: None,
 		}),
 		lsps2_service_config: None,
 		lsps5_service_config: None,
