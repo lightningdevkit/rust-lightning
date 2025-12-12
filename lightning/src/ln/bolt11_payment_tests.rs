@@ -55,6 +55,7 @@ fn payment_metadata_end_to_end_for_invoice_with_amount() {
 		&invoice,
 		PaymentId(payment_hash.0),
 		Some(100),
+		vec![],
 		RouteParametersConfig::default(),
 		Retry::Attempts(0),
 	) {
@@ -68,6 +69,7 @@ fn payment_metadata_end_to_end_for_invoice_with_amount() {
 			&invoice,
 			PaymentId(payment_hash.0),
 			None,
+			vec![],
 			RouteParametersConfig::default(),
 			Retry::Attempts(0),
 		)
@@ -123,6 +125,7 @@ fn payment_metadata_end_to_end_for_invoice_with_no_amount() {
 		&invoice,
 		PaymentId(payment_hash.0),
 		None,
+		vec![],
 		RouteParametersConfig::default(),
 		Retry::Attempts(0),
 	) {
@@ -136,6 +139,7 @@ fn payment_metadata_end_to_end_for_invoice_with_no_amount() {
 			&invoice,
 			PaymentId(payment_hash.0),
 			Some(50_000),
+			vec![],
 			RouteParametersConfig::default(),
 			Retry::Attempts(0),
 		)

@@ -1213,6 +1213,7 @@ fn client_trusts_lsp_end_to_end_test() {
 			&invoice,
 			PaymentId(invoice.payment_hash().to_byte_array()),
 			None,
+			vec![],
 			Default::default(),
 			Retry::Attempts(3),
 		)
@@ -1686,6 +1687,7 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 			&invoice,
 			PaymentId(invoice.payment_hash().to_byte_array()),
 			None,
+			vec![],
 			Default::default(),
 			Retry::Attempts(3),
 		)
@@ -1877,6 +1879,7 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 			&invoice,
 			PaymentId(invoice.payment_hash().to_byte_array()),
 			None,
+			vec![],
 			Default::default(),
 			Retry::Attempts(3),
 		)
@@ -2214,6 +2217,7 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 			&invoice,
 			PaymentId(invoice.payment_hash().to_byte_array()),
 			None,
+			vec![],
 			Default::default(),
 			Retry::Attempts(3),
 		)
