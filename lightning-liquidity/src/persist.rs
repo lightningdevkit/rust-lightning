@@ -10,7 +10,6 @@
 //! Types and utils for persistence.
 
 use crate::events::{EventQueueDeserWrapper, LiquidityEvent};
-#[cfg(lsps1_service)]
 use crate::lsps1::peer_state::PeerState as LSPS1ServicePeerState;
 use crate::lsps2::service::PeerState as LSPS2ServicePeerState;
 use crate::lsps5::service::PeerState as LSPS5ServicePeerState;
@@ -92,7 +91,6 @@ where
 	Ok(Some(queue.0))
 }
 
-#[cfg(lsps1_service)]
 pub(crate) async fn read_lsps1_service_peer_states<K: Deref>(
 	kv_store: K,
 ) -> Result<HashMap<PublicKey, Mutex<LSPS1ServicePeerState>>, lightning::io::Error>
