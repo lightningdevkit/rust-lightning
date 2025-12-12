@@ -13,6 +13,6 @@ pub mod client;
 pub mod event;
 pub mod msgs;
 #[cfg(lsps1_service)]
-mod peer_state;
+pub(crate) mod peer_state;
 #[cfg(lsps1_service)]
 pub mod service;

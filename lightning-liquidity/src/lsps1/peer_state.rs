@@ -23,7 +23,7 @@ use lightning::util::hash_tables::new_hash_map;
 use core::fmt;
 
 #[derive(Default)]
-pub(super) struct PeerState {
+pub(crate) struct PeerState {
 	outbound_channels_by_order_id: HashMap<LSPS1OrderId, ChannelOrder>,
 	pending_requests: HashMap<LSPSRequestId, LSPS1Request>,
 	needs_persist: bool,
