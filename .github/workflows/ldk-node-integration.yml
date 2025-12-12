@@ -39,6 +39,19 @@ jobs:
             lightning-transaction-sync = { path = "../rust-lightning/lightning-transaction-sync" }
             lightning-liquidity = { path = "../rust-lightning/lightning-liquidity" }
             lightning-macros = { path = "../rust-lightning/lightning-macros" }
+
+            [patch."https://github.com/lightningdevkit/rust-lightning"]
+            lightning = { path = "../rust-lightning/lightning" }
+            lightning-types = { path = "../rust-lightning/lightning-types" }
+            lightning-invoice = { path = "../rust-lightning/lightning-invoice" }
+            lightning-net-tokio = { path = "../rust-lightning/lightning-net-tokio" }
+            lightning-persister = { path = "../rust-lightning/lightning-persister" }
+            lightning-background-processor = { path = "../rust-lightning/lightning-background-processor" }
+            lightning-rapid-gossip-sync = { path = "../rust-lightning/lightning-rapid-gossip-sync" }
+            lightning-block-sync = { path = "../rust-lightning/lightning-block-sync" }
+            lightning-transaction-sync = { path = "../rust-lightning/lightning-transaction-sync" }
+            lightning-liquidity = { path = "../rust-lightning/lightning-liquidity" }
+            lightning-macros = { path = "../rust-lightning/lightning-macros" }
           EOF
           cargo check
           cargo check --features uniffi
