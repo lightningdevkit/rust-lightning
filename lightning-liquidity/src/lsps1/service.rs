@@ -358,6 +358,23 @@ where
 						let created_at = LSPSDateTime::new_from_duration_since_epoch(
 							self.time_provider.duration_since_epoch(),
 						);
+
+						if payment_details.bolt11.is_none()
+							&& payment_details.bolt12.is_none()
+							&& payment_details.onchain.is_none()
+						{
+							let err = "At least one payment option must be provided".to_string();
+							return Err(APIError::APIMisuseError { err });
+						}
+
+						if params.refund_onchain_address.is_none()
+							&& payment_details.onchain.is_some()
+						{
+							// bLIP-51: 'LSP MUST disable on-chain payments if the client omits this field.'
+							let err = "Onchain payments must be disabled if no refund_onchain_address is set.".to_string();
+							return Err(APIError::APIMisuseError { err });
+						}
+
 						let order = peer_state_lock.new_order(
 							order_id.clone(),
 							params.order,

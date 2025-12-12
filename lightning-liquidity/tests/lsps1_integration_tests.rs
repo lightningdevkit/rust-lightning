@@ -145,8 +145,15 @@ fn lsps1_happy_path() {
 		announce_channel: true,
 	};
 
-	let _create_order_id =
-		client_handler.create_order(&service_node_id, order_params.clone(), None);
+	let refund_onchain_address =
+		Address::from_str("bc1p5uvtaxzkjwvey2tfy49k5vtqfpjmrgm09cvs88ezyy8h2zv7jhas9tu4yr")
+			.unwrap()
+			.assume_checked();
+	let _create_order_id = client_handler.create_order(
+		&service_node_id,
+		order_params.clone(),
+		Some(refund_onchain_address),
+	);
 	let create_order = get_lsps_message!(client_node, service_node_id);
 
 	service_node.liquidity_manager.handle_custom_message(create_order, client_node_id).unwrap();
