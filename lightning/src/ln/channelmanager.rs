@@ -18016,6 +18016,16 @@ where
 								info.prev_funding_outpoint == prev_hop_data.outpoint
 									&& info.prev_htlc_id == prev_hop_data.htlc_id
 							};
+							// We always add all inbound committed HTLCs to `decode_update_add_htlcs` in the above
+							// loop, but we need to prune from those added HTLCs if they were already forwarded to
+							// the outbound edge. Otherwise, we'll double-forward.
+							dedup_decode_update_add_htlcs(
+								&mut decode_update_add_htlcs,
+								&prev_hop_data,
+								"HTLC already forwarded to the outbound edge",
+								&args.logger,
+							);
+
 							if !is_channel_closed {
 								continue;
 							}
@@ -18024,12 +18034,6 @@ where
 							// still have an entry for this HTLC in `forward_htlcs`,
 							// `pending_intercepted_htlcs`, or `decode_update_add_htlcs`, we were apparently not
 							// persisted after the monitor was when forwarding the payment.
-							dedup_decode_update_add_htlcs(
-								&mut decode_update_add_htlcs,
-								&prev_hop_data,
-								"HTLC was forwarded to the closed channel",
-								&args.logger,
-							);
 							dedup_decode_update_add_htlcs(
 								&mut decode_update_add_htlcs_legacy,
 								&prev_hop_data,
