@@ -4778,7 +4778,7 @@ where
 	///     [`ChannelManager::finish_close_channel`].
 	///
 	/// Returns a mapped error.
-	fn convert_channel_err_coop(
+	fn get_coop_close_err(
 		&self, closed_update_ids: &mut BTreeMap<ChannelId, u64>,
 		in_flight_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
 		shutdown_result: ShutdownResult, funded_channel: &mut FundedChannel<SP>,
@@ -11332,7 +11332,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// also implies there are no pending HTLCs left on the channel, so we can
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
-							let err = self.convert_channel_err_coop(&mut peer_state.closed_channel_monitor_update_ids, &mut peer_state.in_flight_monitor_updates, close_res, chan);
+							let err = self.get_coop_close_err(&mut peer_state.closed_channel_monitor_update_ids, &mut peer_state.in_flight_monitor_updates, close_res, chan);
 							chan_entry.remove();
 							Some((tx, Err(err)))
 						} else {
@@ -12655,7 +12655,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					let logger = WithChannelContext::from(&self.logger, context, None);
 					log_trace!(logger, "Removing channel now that the signer is unblocked");
 					let (remove, err) = if let Some(funded) = chan.as_funded_mut() {
-						let err = self.convert_channel_err_coop(
+						let err = self.get_coop_close_err(
 							&mut peer_state.closed_channel_monitor_update_ids,
 							&mut peer_state.in_flight_monitor_updates,
 							shutdown,
@@ -12725,7 +12725,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									if let Some((tx, shutdown_res)) = tx_shutdown_result_opt {
 										// We're done with this channel. We got a closing_signed and sent back
 										// a closing_signed with a closing transaction to broadcast.
-										let err = self.convert_channel_err_coop(
+										let err = self.get_coop_close_err(
 											&mut peer_state.closed_channel_monitor_update_ids,
 											&mut peer_state.in_flight_monitor_updates,
 											shutdown_res,
