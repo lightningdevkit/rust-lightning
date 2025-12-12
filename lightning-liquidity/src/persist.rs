@@ -10,7 +10,6 @@
 //! Types and utils for persistence.
 
 use crate::events::{EventQueueDeserWrapper, LiquidityEvent};
-#[cfg(lsps1_service)]
 use crate::lsps1::peer_state::PeerState as LSPS1ServicePeerState;
 use crate::lsps2::service::PeerState as LSPS2ServicePeerState;
 use crate::lsps5::service::PeerState as LSPS5ServicePeerState;
@@ -44,7 +43,6 @@ pub const LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_KEY: &str = "event_queue";
 /// The secondary namespace under which the [`LSPS1ServiceHandler`] data will be persisted.
 ///
 /// [`LSPS1ServiceHandler`]: crate::lsps1::service::LSPS1ServiceHandler
-#[cfg(lsps1_service)]
 pub const LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE: &str = "lsps1_service";
 
 /// The secondary namespace under which the [`LSPS2ServiceHandler`] data will be persisted.
@@ -88,7 +86,6 @@ pub(crate) async fn read_event_queue<K: KVStore>(
 	Ok(Some(queue.0))
 }
 
-#[cfg(lsps1_service)]
 pub(crate) async fn read_lsps1_service_peer_states<K: KVStore>(
 	kv_store: K,
 ) -> Result<HashMap<PublicKey, Mutex<LSPS1ServicePeerState>>, lightning::io::Error> {

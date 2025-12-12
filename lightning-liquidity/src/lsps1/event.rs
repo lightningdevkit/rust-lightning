@@ -143,7 +143,6 @@ pub enum LSPS1ClientEvent {
 }
 
 /// An event which an LSPS1 server should take some action in response to.
-#[cfg(lsps1_service)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1ServiceEvent {
 	/// A client has selected the parameters to use from the supported options of the LSP
