@@ -1,4 +1,4 @@
-#![cfg(all(test, feature = "time", lsps1_service))]
+#![cfg(all(test, feature = "time"))]
 
 mod common;
 
