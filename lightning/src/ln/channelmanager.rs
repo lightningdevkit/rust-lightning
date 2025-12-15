@@ -4731,20 +4731,16 @@ where
 					funded_chan
 				);
 			} else {
-				let update_id = if let Some(latest_update_id) =
+				if let Some(latest_update_id) =
 					peer_state.closed_channel_monitor_update_ids.get_mut(&shutdown_res.channel_id)
 				{
 					*latest_update_id = latest_update_id.saturating_add(1);
-					*latest_update_id
-				} else {
-					panic!("We need the latest ChannelMonitorUpdate ID to build a new update");
-				};
-				let monitor_update = ChannelMonitorUpdate {
-					update_id,
-					updates: vec![monitor_update_step],
-					channel_id: Some(shutdown_res.channel_id),
-				};
-				handle_post_close_monitor_update!(
+					let monitor_update = ChannelMonitorUpdate {
+						update_id: *latest_update_id,
+						updates: vec![monitor_update_step],
+						channel_id: Some(shutdown_res.channel_id),
+					};
+					handle_post_close_monitor_update!(
 					self,
 					shutdown_res.channel_funding_txo
 						.expect("We must have had a funding txo if we are applying a post-close monitor update"),
@@ -4755,6 +4751,9 @@ where
 					shutdown_res.counterparty_node_id,
 					shutdown_res.channel_id
 				);
+				} else {
+					log_trace!(logger, "No channel or monitor to persist closed channel event");
+				};
 			}
 
 			let mut pending_events = self.pending_events.lock().unwrap();
