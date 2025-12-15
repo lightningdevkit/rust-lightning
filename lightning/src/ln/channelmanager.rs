@@ -4225,13 +4225,7 @@ where
 						let reason = ClosureReason::LocallyCoopClosedUnfundedChannel;
 						let err = ChannelError::Close((reason.to_string(), reason));
 						let mut chan = chan_entry.remove();
-						let (_, mut e) = self.locked_handle_force_close(
-							&mut peer_state.closed_channel_monitor_update_ids,
-							&mut peer_state.in_flight_monitor_updates,
-							err,
-							&mut chan,
-						);
-
+						let (_, mut e) = self.locked_handle_unfunded_close(err, &mut chan);
 						e.dont_send_error_message();
 						shutdown_result = Err(e);
 					}
@@ -8421,9 +8415,7 @@ where
 									let reason = ClosureReason::FundingTimedOut;
 									let msg = "Force-closing pending channel due to timeout awaiting establishment handshake".to_owned();
 									let err = ChannelError::Close((msg, reason));
-									let (_, e) = self.locked_handle_force_close(
-										&mut peer_state.closed_channel_monitor_update_ids,
-										&mut peer_state.in_flight_monitor_updates,
+									let (_, e) = self.locked_handle_unfunded_close(
 										err,
 										chan,
 									);
@@ -11278,12 +11270,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let reason = ClosureReason::CounterpartyCoopClosedUnfundedChannel;
 						let err = ChannelError::Close((reason.to_string(), reason));
 						let mut chan = chan_entry.remove();
-						let (_, mut e) = self.locked_handle_force_close(
-							&mut peer_state.closed_channel_monitor_update_ids,
-							&mut peer_state.in_flight_monitor_updates,
-							err,
-							&mut chan,
-						);
+						let (_, mut e) = self.locked_handle_unfunded_close(err, &mut chan);
 						e.dont_send_error_message();
 						return Err(e);
 					},
