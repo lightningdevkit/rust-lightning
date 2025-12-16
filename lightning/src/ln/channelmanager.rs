@@ -8410,6 +8410,155 @@ where
 				should_persist = NotifyOption::DoPersist;
 			}
 
+			#[cfg(not(feature = "std"))]
+			let current_time = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
+			#[cfg(feature = "std")]
+			let current_time = std::time::SystemTime::now()
+				.duration_since(std::time::SystemTime::UNIX_EPOCH)
+				.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
+			// -----------------------------------------------------------------------------
+			// Outbound Recurrence session cleanup
+			//
+			// We prune active outbound recurrence sessions that are no longer payable.
+			// A session becomes invalid if:
+			// 1. Its recurrence limit has been reached, OR
+			// 2. The payer has missed the allowed payment window for the current period.
+			//
+			// Sessions that have not yet received their first invoice are kept alive.
+			// -----------------------------------------------------------------------------
+			{
+				let mut sessions = self.active_outbound_recurrence_sessions.lock().unwrap();
+
+				// `retain` keeps entries for which the closure returns `true`
+				sessions.retain(|_, data| {
+					match (data.invoice_recurrence_basetime, data.next_trigger_time) {
+						// -----------------------------------------------------------------
+						// Case A: Waiting for the first invoice
+						//
+						// No invoice basetime and no trigger time implies that the recurrence
+						// session has been created but no invoice has been received yet.
+						// We cannot invalidate the session at this stage.
+						// -----------------------------------------------------------------
+						(None, None) => true,
+
+						// -----------------------------------------------------------------
+						// Case B: Active recurrence with known basetime and trigger
+						// -----------------------------------------------------------------
+						(Some(recurrence_basetime), Some(trigger_time)) => {
+							// Active recurrence sessions must always correspond to offers
+							// that actually define recurrence fields. If this invariant is
+							// violated, the session is considered invalid.
+							let fields = match data.offer.recurrence_fields() {
+								Some(fields) => fields,
+								None => {
+									debug_assert!(
+										false,
+										"Active recurrence session without recurrence fields, shouldn't be possible."
+									);
+									return false;
+								},
+							};
+
+							// -------------------------------------------------------------
+							// 1. Recurrence limit check
+							//
+							// If the next recurrence counter has reached the offer-defined
+							// recurrence limit, the recurrence sequence is complete and
+							// the session must be removed.
+							// -------------------------------------------------------------
+							if let Some(limit) = fields.recurrence_limit {
+								if data.next_recurrence_counter >= limit.0 {
+									return false;
+								}
+							}
+
+							// -------------------------------------------------------------
+							// 2. Paywindow expiry check
+							//
+							// Each recurrence period defines a payable window starting from
+							// the period's start time. If the next trigger occurs after the
+							// end of this window, the period went unpaid and the recurrence
+							// session becomes void.
+							//
+							// If no explicit paywindow is defined, the full recurrence
+							// period length is treated as the payable window.
+							// -------------------------------------------------------------
+							let paywindow_secs = fields
+								.recurrence_paywindow
+								.map(|window| window.seconds_after as u64)
+								.unwrap_or(fields.recurrence.period_length_secs());
+
+							let window_end = fields
+								.recurrence
+								.start_time(recurrence_basetime, data.next_recurrence_counter)
+								+ paywindow_secs;
+
+							// Keep the session only if the trigger is still within
+							// the payable window.
+							trigger_time <= window_end
+						},
+
+						// -----------------------------------------------------------------
+						// Any other combination of basetime/trigger is invalid by design
+						// -----------------------------------------------------------------
+						_ => {
+							debug_assert!(
+								false,
+								"Invalid recurrence session state: inconsistent basetime/trigger"
+							);
+							false
+						},
+					}
+				});
+			}
+
+			{
+				let mut inbound_sessions = self.active_inbound_recurrence_sessions.lock().unwrap();
+
+				// -----------------------------------------------------------------------------
+				// Inbound Recurrence session cleanup
+				//
+				// We prune active inbound recurrence sessions that can no longer accept
+				// valid recurrence-enabled `invoice_request`s.
+				//
+				// A session becomes invalid if:
+				// 1. Its recurrence limit has been reached, OR
+				// 2. The valid time window for receiving the next `invoice_request`
+				//    has elapsed without a valid request being received.
+				// -----------------------------------------------------------------------------
+				inbound_sessions.retain(|_, data| {
+					// -------------------------------------------------------------
+					// 1. Recurrence limit check
+					//
+					// If the next expected recurrence counter has reached the
+					// offer-defined recurrence limit, the recurrence sequence is
+					// complete and the session must be removed.
+					// -------------------------------------------------------------
+					if let Some(limit) = data.recurrence_fields.recurrence_limit {
+						if data.next_payable_counter >= limit.0 {
+							return false;
+						}
+					}
+
+					// -------------------------------------------------------------
+					// 2. Invoice request window expiry check
+					//
+					// Each recurrence period defines a valid time window during which
+					// the next recurrence-enabled `invoice_request` may be received.
+					//
+					// If the current time has passed the end of this window without
+					// receiving a valid request, the period is considered missed and
+					// the recurrence session becomes void.
+					// -------------------------------------------------------------
+					if current_time.as_secs() >= data.next_invoice_request_window.1 {
+						return false;
+					}
+
+					true
+				});
+			}
+
 			should_persist
 		});
 	}
