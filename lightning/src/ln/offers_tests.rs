@@ -2647,6 +2647,8 @@ fn creates_and_pays_for_phantom_offer() {
 				quantity: None,
 				payer_note_truncated: None,
 				human_readable_name: None,
+				contact_secret: None,
+				payer_offer: None,
 			},
 		});
 
