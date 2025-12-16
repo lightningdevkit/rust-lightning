@@ -2498,8 +2498,9 @@ fn replacement_onion(
 					total_msat: original_amt_msat,
 				}),
 				sender_intended_htlc_amt_msat: original_amt_msat,
-				cltv_expiry_height:
-					original_trampoline_cltv + starting_htlc_offset + excess_final_cltv,
+				cltv_expiry_height: original_trampoline_cltv
+					+ starting_htlc_offset
+					+ excess_final_cltv,
 			}];
 		}
 
@@ -2579,8 +2580,7 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 	let alice_bob_chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let bob_carol_chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
-	let starting_htlc_offset =
-		(TOTAL_NODE_COUNT as u32) * CHAN_CONFIRM_DEPTH + 1;
+	let starting_htlc_offset = (TOTAL_NODE_COUNT as u32) * CHAN_CONFIRM_DEPTH + 1;
 	for i in 0..TOTAL_NODE_COUNT {
 		connect_blocks(&nodes[i], starting_htlc_offset - nodes[i].best_block_info().1);
 	}
@@ -2697,8 +2697,9 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 	);
 
 	let amt_bytes = test_case.outer_onion_amt(original_amt_msat).to_be_bytes();
-	let cltv_bytes =
-		test_case.outer_onion_cltv(original_trampoline_cltv + starting_htlc_offset + excess_final_cltv).to_be_bytes();
+	let cltv_bytes = test_case
+		.outer_onion_cltv(original_trampoline_cltv + starting_htlc_offset + excess_final_cltv)
+		.to_be_bytes();
 	let payment_failure = test_case.payment_failed_conditions(&amt_bytes, &cltv_bytes).map(|p| {
 		if blinded {
 			PaymentFailedConditions::new()

@@ -774,7 +774,11 @@ impl Route {
 						debug_assert!(false, "{}", err);
 						log_error!(logger, "{}", err);
 					}
-					let last_trampoline_cltv = tail.trampoline_hops.last().map(|h| h.cltv_expiry_delta).unwrap_or(u32::MAX);
+					let last_trampoline_cltv = tail
+						.trampoline_hops
+						.last()
+						.map(|h| h.cltv_expiry_delta)
+						.unwrap_or(u32::MAX);
 					if tail.excess_final_cltv_expiry_delta > last_trampoline_cltv {
 						let err = format!(
 							"Last trampoline CLTV of {last_trampoline_cltv} is less than the excess blinded path cltv of {}",

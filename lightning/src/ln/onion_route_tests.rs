@@ -1974,14 +1974,13 @@ fn test_trampoline_onion_payload_assembly_values() {
 		SecretKey::from_slice(&<Vec<u8>>::from_hex(SECRET_HEX).unwrap()).unwrap().secret_bytes(),
 	);
 	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret, amt_msat);
-	let (trampoline_payloads, outer_total_msat) =
-		onion_utils::build_trampoline_onion_payloads(
-			&path.blinded_tail.as_ref().unwrap(),
-			&recipient_onion_fields,
-			cur_height,
-			&None,
-		)
-		.unwrap();
+	let (trampoline_payloads, outer_total_msat) = onion_utils::build_trampoline_onion_payloads(
+		&path.blinded_tail.as_ref().unwrap(),
+		&recipient_onion_fields,
+		cur_height,
+		&None,
+	)
+	.unwrap();
 	assert_eq!(trampoline_payloads.len(), 3);
 	assert_eq!(outer_total_msat, 150_153_000);
 

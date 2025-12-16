@@ -2652,13 +2652,12 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 		if !blinded_tail.trampoline_hops.is_empty() {
 			let trampoline_payloads;
 			let outer_total_msat;
-			(trampoline_payloads, outer_total_msat) =
-				build_trampoline_onion_payloads(
-					&blinded_tail,
-					recipient_onion,
-					cur_block_height,
-					keysend_preimage,
-				)?;
+			(trampoline_payloads, outer_total_msat) = build_trampoline_onion_payloads(
+				&blinded_tail,
+				recipient_onion,
+				cur_block_height,
+				keysend_preimage,
+			)?;
 			trampoline_outer_onion.total_mpp_amount_msat = outer_total_msat;
 
 			let trampoline_session_priv = trampoline_session_priv_override
