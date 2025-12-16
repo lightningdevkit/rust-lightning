@@ -1,0 +1,3 @@
+## Backwards Compatibility
+
+* Downgrade is not possible while the node has in-flight trampoline forwards.
