@@ -15,6 +15,8 @@
 
 use bitcoin::secp256k1::PublicKey;
 
+#[cfg(feature = "std")]
+use core::cell::RefCell;
 use core::cmp;
 use core::fmt;
 use core::fmt::Display;
@@ -23,7 +25,7 @@ use core::ops::Deref;
 
 use crate::ln::types::ChannelId;
 #[cfg(c_bindings)]
-use crate::prelude::*; // Needed for String
+use crate::prelude::*;
 use crate::types::payment::PaymentHash;
 
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["GOSSIP", "TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
@@ -93,6 +95,16 @@ impl Level {
 	}
 }
 
+/// A type representing log spans. When `std` is enabled, this holds the actual spans.
+/// When `std` is disabled, this is a zero-sized type to avoid allocations.
+#[cfg(feature = "std")]
+pub type Spans = Vec<&'static str>;
+
+/// A type representing log spans. When `std` is enabled, this holds the actual spans.
+/// When `std` is disabled, this is a zero-sized type to avoid allocations.
+#[cfg(not(feature = "std"))]
+pub type Spans = ();
+
 macro_rules! impl_record {
 	($($args: lifetime)?, $($nonstruct_args: lifetime)?) => {
 /// A Record, unit of logging output with Metadata to enable filtering
@@ -130,6 +142,9 @@ pub struct Record<$($args)?> {
 	/// Note that this is only filled in for logs pertaining to a specific payment, and will be
 	/// `None` for logs which are not directly related to a payment.
 	pub payment_hash: Option<PaymentHash>,
+	/// The names of the surrounding spans, if any.
+	#[cfg(feature = "std")]
+	pub spans: Vec<&'static str>,
 }
 
 impl<$($args)?> Record<$($args)?> {
@@ -138,10 +153,14 @@ impl<$($args)?> Record<$($args)?> {
 	/// This is not exported to bindings users as fmt can't be used in C
 	#[inline]
 	pub fn new<$($nonstruct_args)?>(
-		level: Level, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
+		level: Level,
+		spans: Spans,
+		peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
 		args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32,
 		payment_hash: Option<PaymentHash>
 	) -> Record<$($args)?> {
+		#[cfg(not(feature = "std"))]
+		let _ = spans; // Suppress unused warning when std is disabled
 		Record {
 			level,
 			peer_id,
@@ -154,6 +173,8 @@ impl<$($args)?> Record<$($args)?> {
 			file,
 			line,
 			payment_hash,
+			#[cfg(feature = "std")]
+			spans,
 		}
 	}
 }
@@ -189,7 +210,20 @@ impl<$($args)?> Display for Record<$($args)?> {
 
 		#[cfg(test)]
 		{
-			write!(f, " {}", self.args)?;
+			write!(f, " ")?;
+			#[cfg(feature = "std")]
+			if !self.spans.is_empty() {
+				write!(f, "[")?;
+				for (i, span) in self.spans.iter().enumerate() {
+					if i > 0 {
+						write!(f, "->")?;
+					}
+					write!(f, "{}", span)?;
+				}
+				write!(f, "] ")?;
+			}
+
+			write!(f, "{}", self.args)?;
 
 			let mut open_bracket_written = false;
 			if let Some(peer_id) = self.peer_id {
@@ -224,6 +258,22 @@ impl<$($args)?> Display for Record<$($args)?> {
 impl_record!('a, );
 #[cfg(c_bindings)]
 impl_record!(, 'a);
+
+/// Returns the current thread-local spans.
+/// This function is compiled inside the lightning crate, so its cfg correctly reflects
+/// lightning's std feature, not the calling crate's.
+#[doc(hidden)]
+#[inline]
+#[cfg(feature = "std")]
+pub fn get_tls_spans() -> Spans {
+	TLS_LOGGER.with(|cell| cell.borrow().iter().map(|span| *span).collect())
+}
+
+/// Returns a zero-sized value when std is disabled.
+#[doc(hidden)]
+#[inline]
+#[cfg(not(feature = "std"))]
+pub fn get_tls_spans() -> Spans {}
 
 // Writes only up to a certain number of unicode characters to the underlying formatter. This handles multi-byte Unicode
 // characters safely.
@@ -384,14 +434,73 @@ impl<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone> fmt::Display fo
 	}
 }
 
+#[cfg(feature = "std")]
+thread_local! {
+	/// The thread-local stack of loggers.
+	pub static TLS_LOGGER: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A scope which pushes a logger on a thread-local stack for the duration of the scope.
+pub struct LoggerScope<'a> {
+	_marker: core::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> LoggerScope<'a> {
+	/// Pushes a logger onto the thread-local logger stack.
+	pub fn new(span: &'static str) -> Self {
+		#[cfg(feature = "std")]
+		TLS_LOGGER.with(|cell| {
+			let mut stack = cell.borrow_mut();
+			stack.push(span);
+		});
+		#[cfg(not(feature = "std"))]
+		let _ = span;
+
+		LoggerScope { _marker: core::marker::PhantomData }
+	}
+}
+
+impl<'a> Drop for LoggerScope<'a> {
+	fn drop(&mut self) {
+		#[cfg(feature = "std")]
+		// Use try_with to avoid panicking if TLS is being destroyed
+		let _ = TLS_LOGGER.try_with(|cell| {
+			let mut stack = cell.borrow_mut();
+			stack.pop();
+		});
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::sync::Arc;
 	use crate::types::payment::PaymentHash;
-	use crate::util::logger::{Level, Logger, WithContext};
+	use crate::util::logger::{Level, Logger, LoggerScope, WithContext};
 	use crate::util::test_utils::TestLogger;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use lightning_macros::log_scope;
+
+	#[test]
+	fn logger_scope() {
+		let logger = TestLogger::new();
+		let _scope = LoggerScope::new("test_logger_scope");
+		log_info!(logger, "Info");
+	}
+
+	#[test]
+	#[log_scope(name = "test_logger_scope_proc_macro")]
+	fn logger_scope_proc_macro() {
+		let logger = TestLogger::new();
+		log_info!(logger, "Info");
+	}
+
+	#[test]
+	#[log_scope]
+	fn logger_scope_proc_macro_no_name() {
+		let logger = TestLogger::new();
+		log_info!(logger, "Info");
+	}
 
 	#[test]
 	fn test_level_show() {
