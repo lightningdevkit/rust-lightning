@@ -174,9 +174,17 @@ macro_rules! log_spendable {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! log_given_level {
-	($logger: expr, $lvl:expr, $($arg:tt)+) => (
-		$logger.log($crate::util::logger::Record::new($lvl, None, None, format_args!($($arg)+), module_path!(), file!(), line!(), None))
-	);
+	($logger: expr, $lvl:expr, $($arg:tt)+) => {{
+		#[cfg(feature = "std")]
+		let spans = $crate::util::logger::TLS_LOGGER.with(|cell| {
+			cell.borrow().iter().map(|span| *span).collect()
+		});
+		$logger.log($crate::util::logger::Record::new($lvl,
+			#[cfg(feature = "std")]
+			spans,
+			None, None, format_args!($($arg)+), module_path!(), file!(), line!(), None
+		));
+	}};
 }
 
 /// Log at the `ERROR` level.

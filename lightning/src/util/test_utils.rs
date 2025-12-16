@@ -55,12 +55,15 @@ use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
 };
+use crate::util::logger::LoggerScope;
 use crate::util::logger::{Logger, Record};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
 use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
+#[cfg(feature = "std")]
+use std::cell::RefCell;
 
 use bitcoin::amount::Amount;
 use bitcoin::block::Block;
@@ -1757,6 +1760,26 @@ impl Logger for TestLogger {
 			println!("{}", s);
 		}
 	}
+}
+
+#[cfg(feature = "std")]
+thread_local! {
+	pub(crate) static THREAD_LOG_SCOPE: RefCell<Option<LoggerScope<'static>>> = const { RefCell::new(None) };
+}
+
+/// Sets up a logging scope for the current thread with the given span name. This is useful to split up a long (test) function
+/// into multiple scopes for easier log analysis.
+#[macro_export]
+macro_rules! test_scope {
+	($span:expr) => {
+		#[cfg(feature = "std")]
+		$crate::util::test_utils::THREAD_LOG_SCOPE.with(|cell| {
+			// Drop old scope if it exists.
+			let _ = cell.borrow_mut().take();
+			// Create new scope.
+			*cell.borrow_mut() = Some(crate::util::logger::LoggerScope::new($span));
+		});
+	};
 }
 
 pub struct TestNodeSigner {
