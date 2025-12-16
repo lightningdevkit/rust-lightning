@@ -852,6 +852,9 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, (required_vec, encoding: ($fieldty: ty, $encoding: ident))) => {
 		$crate::_init_tlv_based_struct_field!($field, required)
 	};
+	($field: ident, (option, encoding: ($fieldty: ty, $encoding: ident))) => {
+		$crate::_init_tlv_based_struct_field!($field, option)
+	};
 	($field: ident, optional_vec) => {
 		$field.unwrap()
 	};
@@ -1923,5 +1926,32 @@ mod tests {
 		let decoded: MyCustomStruct =
 			LengthReadable::read_from_fixed_length_buffer(&mut &encoded[..]).unwrap();
 		assert_eq!(decoded, instance);
+	}
+
+	#[test]
+	fn test_option_with_encoding() {
+		// Ensure that serializing an option with a specified encoding will survive a ser round
+		// trip for Some and None options.
+		#[derive(PartialEq, Eq, Debug)]
+		struct MyCustomStruct {
+			tlv_field: Option<u64>,
+		}
+
+		impl_writeable_msg!(MyCustomStruct, {}, {
+			(1, tlv_field, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
+		});
+
+		for tlv_field in [None, Some(0u64), Some(255u64)] {
+			let instance = MyCustomStruct { tlv_field };
+			let encoded = instance.encode();
+			let decoded: MyCustomStruct =
+				LengthReadable::read_from_fixed_length_buffer(&mut &encoded[..]).unwrap();
+			assert_eq!(
+				decoded,
+				MyCustomStruct { tlv_field },
+				"option custom encoding failed for: {:?}",
+				tlv_field
+			);
+		}
 	}
 }
