@@ -1393,7 +1393,7 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// edge completes, we will surface an [`Event::PaymentForwarded`] as well as unblock the
 	/// outbound edge.
 	EmitEventAndFreeOtherChannel {
-		event: events::Event,
+		event: Option<events::Event>,
 		downstream_counterparty_and_funding_outpoint: Option<EventUnblockedChannel>,
 	},
 	/// Indicates we should immediately resume the operation of another channel, unless there is
@@ -1428,7 +1428,10 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		(5, downstream_channel_id, required),
 	},
 	(2, EmitEventAndFreeOtherChannel) => {
-		(0, event, upgradable_required),
+		// LDK prior to 0.3 required this field. It will not be present for trampoline payments
+		// with multiple incoming HTLCS, so nodes cannot downgrade while trampoline payments
+		// are in the process of being resolved.
+		(0, event, upgradable_option),
 		// LDK prior to 0.0.116 did not have this field as the monitor update application order was
 		// required by clients. If we downgrade to something prior to 0.0.116 this may result in
 		// monitor updates which aren't properly blocked or resumed, however that's fine - we don't
@@ -9755,7 +9758,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							);
 							(
 								Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
-									event: events::Event::PaymentForwarded {
+									event: Some(events::Event::PaymentForwarded {
 										prev_htlcs: vec![events::HTLCLocator {
 											channel_id: prev_channel_id,
 											user_channel_id: prev_user_channel_id,
@@ -9770,7 +9773,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										skimmed_fee_msat,
 										claim_from_onchain_tx: from_onchain,
 										outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
-									},
+									}),
 									downstream_counterparty_and_funding_outpoint: chan_to_release,
 								}),
 								None,
@@ -10000,7 +10003,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					event,
 					downstream_counterparty_and_funding_outpoint,
 				} => {
-					self.pending_events.lock().unwrap().push_back((event, None));
+					if let Some(event) = event {
+						self.pending_events.lock().unwrap().push_back((event, None));
+					}
 					if let Some(unblocked) = downstream_counterparty_and_funding_outpoint {
 						self.handle_monitor_update_release(
 							unblocked.counterparty_node_id,
