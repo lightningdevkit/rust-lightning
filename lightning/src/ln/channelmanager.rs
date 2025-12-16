@@ -17106,28 +17106,32 @@ fn dedup_decode_update_add_htlcs<L: Deref>(
 ) where
 	L::Target: Logger,
 {
-	decode_update_add_htlcs.retain(|src_outb_alias, update_add_htlcs| {
-		update_add_htlcs.retain(|update_add| {
-			let matches = *src_outb_alias == prev_hop_data.prev_outbound_scid_alias
-				&& update_add.htlc_id == prev_hop_data.htlc_id;
-			if matches {
-				let logger = WithContext::from(
-					logger,
-					prev_hop_data.counterparty_node_id,
-					Some(update_add.channel_id),
-					Some(update_add.payment_hash),
-				);
-				log_info!(
-					logger,
-					"Removing pending to-decode HTLC with id {}: {}",
-					update_add.htlc_id,
-					removal_reason
-				);
+	match decode_update_add_htlcs.entry(prev_hop_data.prev_outbound_scid_alias) {
+		hash_map::Entry::Occupied(mut update_add_htlcs) => {
+			update_add_htlcs.get_mut().retain(|update_add| {
+				let matches = update_add.htlc_id == prev_hop_data.htlc_id;
+				if matches {
+					let logger = WithContext::from(
+						logger,
+						prev_hop_data.counterparty_node_id,
+						Some(update_add.channel_id),
+						Some(update_add.payment_hash),
+					);
+					log_info!(
+						logger,
+						"Removing pending to-decode HTLC with id {}: {}",
+						update_add.htlc_id,
+						removal_reason
+					);
+				}
+				!matches
+			});
+			if update_add_htlcs.get().is_empty() {
+				update_add_htlcs.remove();
 			}
-			!matches
-		});
-		!update_add_htlcs.is_empty()
-	});
+		},
+		_ => {},
+	}
 }
 
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
