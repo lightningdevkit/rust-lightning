@@ -192,6 +192,12 @@ welcomed.
 
 * `LDK_TEST_DETERMINISTIC_HASHES` - When set to `1`, uses deterministic hash map iteration order in tests. This ensures consistent test output across runs, useful for comparing logs before and after changes.
 
+* `LDK_TEST_REBUILD_MGR_FROM_MONITORS` - If set to `1`, on test node reload the `ChannelManager`'s
+  HTLC set will be reconstructed from `Channel{Monitor}` persisted data. If `0`, test nodes will be
+  reloaded from persisted `ChannelManager` data using legacy code paths. This ensures consistent
+  test output across runs, useful for comparing logs before and after changes, since otherwise the
+  selection of which codepaths to be used on reload will be chosen randomly.
+
 C/C++ Bindings
 --------------
 
