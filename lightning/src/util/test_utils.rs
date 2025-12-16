@@ -55,6 +55,7 @@ use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
 };
+use crate::util::logger::LoggerScope;
 use crate::util::logger::{Logger, Record};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
@@ -62,6 +63,8 @@ use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 use crate::util::wakers::Notifier;
+#[cfg(feature = "std")]
+use std::cell::RefCell;
 
 use bitcoin::amount::Amount;
 use bitcoin::block::Block;
@@ -1672,6 +1675,8 @@ pub struct TestLogger {
 	pub(crate) id: String,
 	pub lines: Mutex<HashMap<(&'static str, String), usize>>,
 	pub context: Mutex<HashMap<(&'static str, Option<PublicKey>, Option<ChannelId>), usize>>,
+	/// Stores the fully formatted log output including span prefixes.
+	pub formatted_lines: Mutex<Vec<String>>,
 }
 
 impl TestLogger {
@@ -1681,7 +1686,8 @@ impl TestLogger {
 	pub fn with_id(id: String) -> TestLogger {
 		let lines = Mutex::new(new_hash_map());
 		let context = Mutex::new(new_hash_map());
-		TestLogger { id, lines, context }
+		let formatted_lines = Mutex::new(Vec::new());
+		TestLogger { id, lines, context, formatted_lines }
 	}
 	pub fn assert_log(&self, module: &str, line: String, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
@@ -1725,6 +1731,18 @@ impl TestLogger {
 		let l = context_entries.get(&(module, peer_id, channel_id)).unwrap();
 		assert_eq!(*l, count)
 	}
+
+	/// Asserts that the formatted log output contains the given substring `count` times.
+	/// This checks the fully formatted output including span prefixes.
+	pub fn assert_log_formatted_contains(&self, substring: &str, count: usize) {
+		let formatted = self.formatted_lines.lock().unwrap();
+		let actual: usize = formatted.iter().filter(|line| line.contains(substring)).count();
+		assert_eq!(
+			actual, count,
+			"Expected {} lines containing {:?}, found {}",
+			count, substring, actual
+		);
+	}
 }
 
 impl Logger for TestLogger {
@@ -1755,9 +1773,30 @@ impl Logger for TestLogger {
 				.unwrap()
 				.entry((record.module_path, record.peer_id, record.channel_id))
 				.or_insert(0) += 1;
+			self.formatted_lines.lock().unwrap().push(s.clone());
 			println!("{}", s);
 		}
 	}
+}
+
+#[cfg(feature = "std")]
+thread_local! {
+	pub(crate) static THREAD_LOG_SCOPE: RefCell<Option<LoggerScope<'static>>> = const { RefCell::new(None) };
+}
+
+/// Sets up a logging scope for the current thread with the given span name. This is useful to split up a long (test) function
+/// into multiple scopes for easier log analysis.
+#[macro_export]
+macro_rules! test_scope {
+	($span:expr) => {
+		#[cfg(feature = "std")]
+		$crate::util::test_utils::THREAD_LOG_SCOPE.with(|cell| {
+			// Drop old scope if it exists.
+			let _ = cell.borrow_mut().take();
+			// Create new scope.
+			*cell.borrow_mut() = Some($crate::util::logger::LoggerScope::new($span));
+		});
+	};
 }
 
 pub struct TestNodeSigner {
