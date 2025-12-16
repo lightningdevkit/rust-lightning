@@ -9756,12 +9756,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							(
 								Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
 									event: events::Event::PaymentForwarded {
-										prev_channel_id: Some(prev_channel_id),
-										next_channel_id: Some(next_channel_id),
-										prev_user_channel_id,
-										next_user_channel_id,
-										prev_node_id,
-										next_node_id: Some(next_channel_counterparty_node_id),
+										prev_htlcs: vec![events::HTLCLocator {
+											channel_id: prev_channel_id,
+											user_channel_id: prev_user_channel_id,
+											node_id: prev_node_id,
+										}],
+										next_htlcs: vec![events::HTLCLocator {
+											channel_id: next_channel_id,
+											user_channel_id: next_user_channel_id,
+											node_id: Some(next_channel_counterparty_node_id),
+										}],
 										total_fee_earned_msat,
 										skimmed_fee_msat,
 										claim_from_onchain_tx: from_onchain,

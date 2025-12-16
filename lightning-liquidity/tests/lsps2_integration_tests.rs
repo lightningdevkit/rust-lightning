@@ -1331,14 +1331,14 @@ fn client_trusts_lsp_end_to_end_test() {
 
 	let total_fee_msat = match service_events[0].clone() {
 		Event::PaymentForwarded {
-			prev_node_id,
-			next_node_id,
+			ref prev_htlcs,
+			ref next_htlcs,
 			skimmed_fee_msat,
 			total_fee_earned_msat,
 			..
 		} => {
-			assert_eq!(prev_node_id, Some(payer_node_id));
-			assert_eq!(next_node_id, Some(client_node_id));
+			assert_eq!(prev_htlcs[0].node_id, Some(payer_node_id));
+			assert_eq!(next_htlcs[0].node_id, Some(client_node_id));
 			service_handler.payment_forwarded(channel_id, skimmed_fee_msat.unwrap_or(0)).unwrap();
 			Some(total_fee_earned_msat.unwrap() - skimmed_fee_msat.unwrap())
 		},

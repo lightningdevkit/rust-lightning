@@ -1490,37 +1490,37 @@ pub fn test_htlc_on_chain_success() {
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV); // Confirm blocks until the HTLC expires
 	let forwarded_events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(forwarded_events.len(), 3);
-	let chan_id = Some(chan_1.2);
+	let chan_id = chan_1.2;
 	match forwarded_events[0] {
 		Event::PaymentForwarded {
+			ref prev_htlcs,
+			ref next_htlcs,
 			total_fee_earned_msat,
-			prev_channel_id,
 			claim_from_onchain_tx,
-			next_channel_id,
 			outbound_amount_forwarded_msat,
 			..
 		} => {
 			assert_eq!(total_fee_earned_msat, Some(1000));
-			assert_eq!(prev_channel_id, chan_id);
+			assert_eq!(prev_htlcs[0].channel_id, chan_id);
 			assert_eq!(claim_from_onchain_tx, true);
-			assert_eq!(next_channel_id, Some(chan_2.2));
+			assert_eq!(next_htlcs[0].channel_id, chan_2.2);
 			assert_eq!(outbound_amount_forwarded_msat, Some(3000000));
 		},
 		_ => panic!(),
 	}
 	match forwarded_events[1] {
 		Event::PaymentForwarded {
+			ref prev_htlcs,
+			ref next_htlcs,
 			total_fee_earned_msat,
-			prev_channel_id,
 			claim_from_onchain_tx,
-			next_channel_id,
 			outbound_amount_forwarded_msat,
 			..
 		} => {
 			assert_eq!(total_fee_earned_msat, Some(1000));
-			assert_eq!(prev_channel_id, chan_id);
+			assert_eq!(prev_htlcs[0].channel_id, chan_id);
 			assert_eq!(claim_from_onchain_tx, true);
-			assert_eq!(next_channel_id, Some(chan_2.2));
+			assert_eq!(next_htlcs[0].channel_id, chan_2.2);
 			assert_eq!(outbound_amount_forwarded_msat, Some(3000000));
 		},
 		_ => panic!(),
@@ -4031,17 +4031,17 @@ pub fn test_onchain_to_onchain_claim() {
 	assert_eq!(events.len(), 2);
 	match events[0] {
 		Event::PaymentForwarded {
+			ref prev_htlcs,
+			ref next_htlcs,
 			total_fee_earned_msat,
-			prev_channel_id,
 			claim_from_onchain_tx,
-			next_channel_id,
 			outbound_amount_forwarded_msat,
 			..
 		} => {
 			assert_eq!(total_fee_earned_msat, Some(1000));
-			assert_eq!(prev_channel_id, Some(chan_1.2));
+			assert_eq!(prev_htlcs[0].channel_id, chan_1.2);
 			assert_eq!(claim_from_onchain_tx, true);
-			assert_eq!(next_channel_id, Some(chan_2.2));
+			assert_eq!(next_htlcs[0].channel_id, chan_2.2);
 			assert_eq!(outbound_amount_forwarded_msat, Some(3000000));
 		},
 		_ => panic!("Unexpected event"),
