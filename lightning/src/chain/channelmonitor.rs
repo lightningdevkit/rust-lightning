@@ -2018,8 +2018,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	#[cfg(test)]
-	fn provide_secret(&self, idx: u64, secret: [u8; 32]) -> Result<(), &'static str> {
-		self.inner.lock().unwrap().provide_secret(idx, secret)
+	fn provide_secret<L: Deref>(
+		&self, idx: u64, secret: [u8; 32], logger: &L,
+	) -> Result<(), &'static str>
+	where
+		L::Target: Logger,
+	{
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &inner, None);
+		inner.provide_secret(idx, secret, &logger)
 	}
 
 	/// A variant of `Self::provide_latest_counterparty_commitment_tx` used to provide
@@ -2029,11 +2036,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// This is used to provide the counterparty commitment transaction directly to the monitor
 	/// before the initial persistence of a new channel.
-	pub(crate) fn provide_initial_counterparty_commitment_tx(
-		&self, commitment_tx: CommitmentTransaction,
-	) {
+	pub(crate) fn provide_initial_counterparty_commitment_tx<L: Deref>(
+		&self, commitment_tx: CommitmentTransaction, logger: &L,
+	)
+	where
+		L::Target: Logger,
+	{
 		let mut inner = self.inner.lock().unwrap();
-		inner.provide_initial_counterparty_commitment_tx(commitment_tx);
+		let logger = WithChannelMonitor::from_impl(logger, &inner, None);
+		inner.provide_initial_counterparty_commitment_tx(commitment_tx, &logger);
 	}
 
 	/// Informs this monitor of the latest counterparty (ie non-broadcastable) commitment transaction.
@@ -2041,28 +2052,41 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// possibly future revocation/preimage information) to claim outputs where possible.
 	/// We cache also the mapping hash:commitment number to lighten pruning of old preimages by watchtowers.
 	#[cfg(test)]
-	fn provide_latest_counterparty_commitment_tx(
+	fn provide_latest_counterparty_commitment_tx<L: Deref>(
 		&self, txid: Txid, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
-		commitment_number: u64, their_per_commitment_point: PublicKey,
-	) {
+		commitment_number: u64, their_per_commitment_point: PublicKey, logger: &L,
+	)
+	where
+		L::Target: Logger,
+	{
 		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &inner, None);
 		inner.provide_latest_counterparty_commitment_tx(
 			txid,
 			htlc_outputs,
 			commitment_number,
 			their_per_commitment_point,
+			&logger,
 		)
 	}
 
 	#[cfg(test)]
-	#[rustfmt::skip]
-	fn provide_latest_holder_commitment_tx(
+	fn provide_latest_holder_commitment_tx<L: Deref>(
 		&self, holder_commitment_tx: HolderCommitmentTransaction,
 		htlc_outputs: &[(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)],
-	) {
-		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(
-			holder_commitment_tx, htlc_outputs, &Vec::new(), Vec::new(),
-		).unwrap()
+		logger: &L,
+	)
+	where
+		L::Target: Logger,
+	{
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &inner, None);
+		inner.provide_latest_holder_commitment_tx(
+			holder_commitment_tx, htlc_outputs,
+			&Vec::new(),
+			Vec::new(),
+			&logger,
+		).unwrap();
 	}
 
 	/// This is used to provide payment preimage(s) out-of-band during startup without updating the
@@ -2370,8 +2394,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		inner.queue_latest_holder_commitment_txn_for_broadcast(
 			broadcaster,
 			&fee_estimator,
-			&logger,
 			false,
+			&logger,
 		);
 	}
 
@@ -3465,7 +3489,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 		ConfirmationTarget::OutputSpendingFee
 	}
+}
 
+#[lightning_macros::add_logging(WithChannelMonitor<L>)]
+impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by holder commitment transactions HTCLs nor by counterparty ones. Unless we haven't already seen
 	/// counterparty commitment transaction's secret, they are de facto pruned (we can use revocation key).
@@ -3826,13 +3853,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	///
 	/// Note that this is often called multiple times for the same payment and must be idempotent.
 	#[rustfmt::skip]
-	fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(
+	fn provide_payment_preimage<B: Deref, F: Deref>(
 		&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage,
 		payment_info: &Option<PaymentClaimDetails>, broadcaster: &B,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>)
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
+	)
 	where B::Target: BroadcasterInterface,
 		    F::Target: FeeEstimator,
-		    L::Target: Logger,
 	{
 		self.payment_preimages.entry(payment_hash.clone())
 			.and_modify(|(_, payment_infos)| {
@@ -4005,14 +4032,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// See also [`ChannelMonitor::broadcast_latest_holder_commitment_txn`].
 	///
 	/// [`ChannelMonitor::broadcast_latest_holder_commitment_txn`]: crate::chain::channelmonitor::ChannelMonitor::broadcast_latest_holder_commitment_txn
-	pub(crate) fn queue_latest_holder_commitment_txn_for_broadcast<B: Deref, F: Deref, L: Deref>(
-		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>,
+	fn queue_latest_holder_commitment_txn_for_broadcast<B: Deref, F: Deref>(
+		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		require_funding_seen: bool,
 	)
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
-		L::Target: Logger,
 	{
 		let reason = ClosureReason::HolderForceClosed {
 			broadcasted_latest_txn: Some(true),
@@ -4033,15 +4059,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		);
 	}
 
-	fn renegotiated_funding<L: Deref>(
-		&mut self, logger: &WithChannelMonitor<L>,
+	fn renegotiated_funding(
+		&mut self,
 		channel_parameters: &ChannelTransactionParameters,
 		alternative_holder_commitment_tx: &HolderCommitmentTransaction,
 		alternative_counterparty_commitment_tx: &CommitmentTransaction,
-	) -> Result<(), ()>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<(), ()> {
 		let alternative_counterparty_commitment_txid =
 			alternative_counterparty_commitment_tx.trust().txid();
 
@@ -4209,12 +4232,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	#[rustfmt::skip]
-	fn update_monitor<B: Deref, F: Deref, L: Deref>(
-		&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &WithChannelMonitor<L>
+	fn update_monitor<B: Deref, F: Deref>(
+		&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F,
 	) -> Result<(), ()>
 	where B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
-		L::Target: Logger,
 	{
 		if self.latest_update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID && updates.update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID {
 			log_info!(logger, "Applying pre-0.1 post-force-closed update to monitor {} with {} change(s).",
@@ -4305,7 +4327,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage, payment_info } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
-					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()), &payment_preimage, payment_info, broadcaster, &bounded_fee_estimator, logger)
+					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()), &payment_preimage, payment_info, broadcaster, &bounded_fee_estimator)
 				},
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
 					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
@@ -4322,7 +4344,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					log_trace!(logger, "Updating ChannelMonitor with alternative holder and counterparty commitment transactions for funding txid {}",
 						channel_parameters.funding_outpoint.unwrap().txid);
 					if let Err(_) = self.renegotiated_funding(
-						logger, channel_parameters, holder_commitment_tx, counterparty_commitment_tx,
+						channel_parameters, holder_commitment_tx, counterparty_commitment_tx,
 					) {
 						ret = Err(());
 					}
@@ -4348,7 +4370,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
 							continue;
 						}
-						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger, true);
+						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, true);
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
 						log_error!(logger, "    in channel monitor!");
@@ -4410,7 +4432,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			Err(())
 		} else { ret }
 	}
+}
 
+impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Returns true if the channel has been closed (i.e. no further updates are allowed) and no
 	/// commitment state updates ever happened.
 	fn is_closed_without_updates(&self) -> bool {
@@ -5621,7 +5645,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		if should_broadcast_commitment {
 			let (mut claimables, mut outputs) =
-				self.generate_claimable_outpoints_and_watch_outputs(None, false);
+				self.generate_claimable_outpoints_and_watch_outputs(None, false, logger);
 			claimable_outpoints.append(&mut claimables);
 			watch_outputs.append(&mut outputs);
 		}
@@ -5663,7 +5687,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(payment_hash) = should_broadcast {
 				let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 				let (mut new_outpoints, mut new_outputs) =
-					self.generate_claimable_outpoints_and_watch_outputs(Some(reason), false);
+					self.generate_claimable_outpoints_and_watch_outputs(Some(reason), false, logger);
 				if !self.is_manual_broadcast || self.funding_seen_onchain {
 					claimable_outpoints.append(&mut new_outpoints);
 					watch_outputs.append(&mut new_outputs);
@@ -5762,7 +5786,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// longer allowing monitor updates, so promote the `FundingScope` now.
 					debug_assert!(self.no_further_updates_allowed());
 					debug_assert_ne!(self.funding.funding_txid(), entry.txid);
-					if let Err(_) = self.promote_funding(entry.txid) {
+					if let Err(_) = self.promote_funding(entry.txid, logger) {
 						debug_assert!(false);
 						log_error!(logger, "Missing scope for alternative funding confirmation with txid {}", entry.txid);
 					}
@@ -5908,7 +5932,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// Only attempt to broadcast the new commitment after the `block_disconnected` call above so that
 		// it doesn't get removed from the set of pending claims.
 		if should_broadcast_commitment {
-			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, &bounded_fee_estimator, logger, true);
+			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, &bounded_fee_estimator, true, logger);
 		}
 
 		self.best_block = fork_point;
@@ -5969,7 +5993,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// Only attempt to broadcast the new commitment after the `transaction_unconfirmed` call above so
 		//  that it doesn't get removed from the set of pending claims.
 		if should_broadcast_commitment {
-			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, fee_estimator, logger, true);
+			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, fee_estimator, true, logger);
 		}
 	}
 
@@ -7125,11 +7149,12 @@ mod tests {
 		let nondust_htlcs = dummy_commitment_tx.nondust_htlcs();
 
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			&nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect::<Vec<_>>());
+			&nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect::<Vec<_>>(),
+			&logger);
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"1").to_byte_array()),
-			preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key);
+			preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key, &logger);
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"2").to_byte_array()),
-			preimages_slice_to_htlc_outputs!(preimages[15..20]), 281474976710654, dummy_key);
+			preimages_slice_to_htlc_outputs!(preimages[15..20]), 281474976710654, dummy_key, &logger);
 		for &(ref preimage, ref hash) in preimages.iter() {
 			let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
 			monitor.provide_payment_preimage_unsafe_legacy(
@@ -7140,23 +7165,23 @@ mod tests {
 		// Now provide a secret, pruning preimages 10-15
 		let mut secret = [0; 32];
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-		monitor.provide_secret(281474976710655, secret.clone()).unwrap();
+		monitor.provide_secret(281474976710655, secret.clone(), &logger).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 15);
 		test_preimages_exist!(&preimages[0..10], monitor);
 		test_preimages_exist!(&preimages[15..20], monitor);
 
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"3").to_byte_array()),
-			preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key);
+			preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key, &logger);
 
 		// Now provide a further secret, pruning preimages 15-17
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-		monitor.provide_secret(281474976710654, secret.clone()).unwrap();
+		monitor.provide_secret(281474976710654, secret.clone(), &logger).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 13);
 		test_preimages_exist!(&preimages[0..10], monitor);
 		test_preimages_exist!(&preimages[17..20], monitor);
 
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"4").to_byte_array()),
-			preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key);
+			preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key, &logger);
 
 		// Now update holder commitment tx info, pruning only element 18 as we still care about the
 		// previous commitment tx's preimages too
@@ -7165,9 +7190,10 @@ mod tests {
 		// These HTLCs now have their output indices assigned
 		let nondust_htlcs = dummy_commitment_tx.nondust_htlcs();
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			&nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect::<Vec<_>>());
+			&nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect::<Vec<_>>(),
+			&logger);
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-		monitor.provide_secret(281474976710653, secret.clone()).unwrap();
+		monitor.provide_secret(281474976710653, secret.clone(), &logger).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 12);
 		test_preimages_exist!(&preimages[0..10], monitor);
 		test_preimages_exist!(&preimages[18..20], monitor);
@@ -7178,9 +7204,10 @@ mod tests {
 		// These HTLCs now have their output indices assigned
 		let nondust_htlcs = dummy_commitment_tx.nondust_htlcs();
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			&nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect::<Vec<_>>());
+			&nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect::<Vec<_>>(),
+			&logger);
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
+		monitor.provide_secret(281474976710652, secret.clone(), &logger).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 5);
 		test_preimages_exist!(&preimages[0..5], monitor);
 	}

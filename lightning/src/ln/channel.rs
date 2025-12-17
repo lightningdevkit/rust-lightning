@@ -3264,7 +3264,7 @@ where
 			context.is_manual_broadcast,
 		);
 		channel_monitor.provide_initial_counterparty_commitment_tx(
-			counterparty_initial_commitment_tx.clone(),
+			counterparty_initial_commitment_tx.clone(), logger,
 		);
 
 		self.context_mut().counterparty_next_commitment_transaction_number -= 1;
