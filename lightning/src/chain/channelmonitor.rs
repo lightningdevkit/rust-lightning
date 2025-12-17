@@ -3621,6 +3621,136 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&self.funding.channel_parameters.channel_type_features
 	}
 
+	fn initial_counterparty_commitment_tx(&mut self) -> Option<CommitmentTransaction> {
+		self.initial_counterparty_commitment_tx.clone().or_else(|| {
+			// This provides forward compatibility; an old monitor will not contain the full
+			// transaction; only enough information to rebuild it
+			self.initial_counterparty_commitment_info.map(
+				|(
+					their_per_commitment_point,
+					feerate_per_kw,
+					to_broadcaster_value,
+					to_countersignatory_value,
+				)| {
+					let nondust_htlcs = vec![];
+					// Since we're expected to only reach here during the initial persistence of a
+					// monitor (i.e., via [`Persist::persist_new_channel`]), we expect to only have
+					// one `FundingScope` present.
+					debug_assert!(self.pending_funding.is_empty());
+					let channel_parameters = &self.funding.channel_parameters;
+
+					let commitment_tx = self.build_counterparty_commitment_tx(
+						channel_parameters,
+						INITIAL_COMMITMENT_NUMBER,
+						&their_per_commitment_point,
+						to_broadcaster_value,
+						to_countersignatory_value,
+						feerate_per_kw,
+						nondust_htlcs,
+					);
+					// Take the opportunity to populate this recently introduced field
+					self.initial_counterparty_commitment_tx = Some(commitment_tx.clone());
+					commitment_tx
+				},
+			)
+		})
+	}
+
+	#[rustfmt::skip]
+	fn build_counterparty_commitment_tx(
+		&self, channel_parameters: &ChannelTransactionParameters, commitment_number: u64,
+		their_per_commitment_point: &PublicKey, to_broadcaster_value: u64,
+		to_countersignatory_value: u64, feerate_per_kw: u32,
+		nondust_htlcs: Vec<HTLCOutputInCommitment>
+	) -> CommitmentTransaction {
+		let channel_parameters = &channel_parameters.as_counterparty_broadcastable();
+		CommitmentTransaction::new(commitment_number, their_per_commitment_point,
+			to_broadcaster_value, to_countersignatory_value, feerate_per_kw, nondust_htlcs, channel_parameters, &self.onchain_tx_handler.secp_ctx)
+	}
+
+	#[rustfmt::skip]
+	fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
+		update.updates.iter().filter_map(|update| {
+			// Soon we will drop the first branch here in favor of the second.
+			// In preparation, we just add the second branch without deleting the first.
+			// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitment` variant.
+			match update {
+				&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid,
+					ref htlc_outputs, commitment_number, their_per_commitment_point,
+					feerate_per_kw: Some(feerate_per_kw),
+					to_broadcaster_value_sat: Some(to_broadcaster_value),
+					to_countersignatory_value_sat: Some(to_countersignatory_value) } => {
+
+					let nondust_htlcs = htlc_outputs.iter().filter_map(|(htlc, _)| {
+						htlc.transaction_output_index.map(|_| htlc).cloned()
+					}).collect::<Vec<_>>();
+
+					// This monitor update variant is only applicable while there's a single
+					// `FundingScope` active, otherwise we expect to see
+					// `LatestCounterpartyCommitment` instead.
+					debug_assert!(self.pending_funding.is_empty());
+					let channel_parameters = &self.funding.channel_parameters;
+					let commitment_tx = self.build_counterparty_commitment_tx(
+						channel_parameters,
+						commitment_number,
+						&their_per_commitment_point,
+						to_broadcaster_value,
+						to_countersignatory_value,
+						feerate_per_kw,
+						nondust_htlcs,
+					);
+
+					debug_assert_eq!(commitment_tx.trust().txid(), commitment_txid);
+
+					Some(vec![commitment_tx])
+				},
+				&ChannelMonitorUpdateStep::LatestCounterpartyCommitment { ref commitment_txs, .. } => {
+					Some(commitment_txs.clone())
+				},
+				&ChannelMonitorUpdateStep::RenegotiatedFunding { ref counterparty_commitment_tx, .. } => {
+					Some(vec![counterparty_commitment_tx.clone()])
+				},
+				_ => None,
+			}
+		}).flatten().collect()
+	}
+
+	#[rustfmt::skip]
+	fn sign_to_local_justice_tx(
+		&self, mut justice_tx: Transaction, input_idx: usize, value: u64, commitment_number: u64
+	) -> Result<Transaction, ()> {
+		let secret = self.get_secret(commitment_number).ok_or(())?;
+		let per_commitment_key = SecretKey::from_slice(&secret).map_err(|_| ())?;
+		let their_per_commitment_point = PublicKey::from_secret_key(
+			&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+
+		let revocation_pubkey = RevocationKey::from_basepoint(&self.onchain_tx_handler.secp_ctx,
+			&self.holder_revocation_basepoint, &their_per_commitment_point);
+		let delayed_key = DelayedPaymentKey::from_basepoint(&self.onchain_tx_handler.secp_ctx,
+			&self.counterparty_commitment_params.counterparty_delayed_payment_base_key, &their_per_commitment_point);
+		let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
+			self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
+
+		let commitment_txid = &justice_tx.input[input_idx].previous_output.txid;
+		// Since there may be multiple counterparty commitment transactions for the same commitment
+		// number due to splicing, we have to locate the matching `FundingScope::channel_parameters`
+		// to provide the signer. Since this is intended to be called during
+		// `Persist::update_persisted_channel`, the monitor should have already had the update
+		// applied.
+		let channel_parameters = core::iter::once(&self.funding)
+			.chain(&self.pending_funding)
+			.find(|funding| funding.counterparty_claimable_outpoints.contains_key(commitment_txid))
+			.map(|funding| &funding.channel_parameters)
+			.ok_or(())?;
+		let sig = self.onchain_tx_handler.signer.sign_justice_revoked_output(
+			&channel_parameters, &justice_tx, input_idx, value, &per_commitment_key,
+			&self.onchain_tx_handler.secp_ctx,
+		)?;
+		justice_tx.input[input_idx].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(sig));
+		justice_tx.input[input_idx].witness.push(&[1u8]);
+		justice_tx.input[input_idx].witness.push(revokeable_redeemscript.as_bytes());
+		Ok(justice_tx)
+	}
 
 	#[rustfmt::skip]
 	fn get_spendable_outputs(&self, funding_spent: &FundingScope, tx: &Transaction) -> Vec<SpendableOutputDescriptor> {
@@ -4612,136 +4742,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 }
 
 impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
-	fn initial_counterparty_commitment_tx(&mut self) -> Option<CommitmentTransaction> {
-		self.initial_counterparty_commitment_tx.clone().or_else(|| {
-			// This provides forward compatibility; an old monitor will not contain the full
-			// transaction; only enough information to rebuild it
-			self.initial_counterparty_commitment_info.map(
-				|(
-					their_per_commitment_point,
-					feerate_per_kw,
-					to_broadcaster_value,
-					to_countersignatory_value,
-				)| {
-					let nondust_htlcs = vec![];
-					// Since we're expected to only reach here during the initial persistence of a
-					// monitor (i.e., via [`Persist::persist_new_channel`]), we expect to only have
-					// one `FundingScope` present.
-					debug_assert!(self.pending_funding.is_empty());
-					let channel_parameters = &self.funding.channel_parameters;
-
-					let commitment_tx = self.build_counterparty_commitment_tx(
-						channel_parameters,
-						INITIAL_COMMITMENT_NUMBER,
-						&their_per_commitment_point,
-						to_broadcaster_value,
-						to_countersignatory_value,
-						feerate_per_kw,
-						nondust_htlcs,
-					);
-					// Take the opportunity to populate this recently introduced field
-					self.initial_counterparty_commitment_tx = Some(commitment_tx.clone());
-					commitment_tx
-				},
-			)
-		})
-	}
-
-	#[rustfmt::skip]
-	fn build_counterparty_commitment_tx(
-		&self, channel_parameters: &ChannelTransactionParameters, commitment_number: u64,
-		their_per_commitment_point: &PublicKey, to_broadcaster_value: u64,
-		to_countersignatory_value: u64, feerate_per_kw: u32,
-		nondust_htlcs: Vec<HTLCOutputInCommitment>
-	) -> CommitmentTransaction {
-		let channel_parameters = &channel_parameters.as_counterparty_broadcastable();
-		CommitmentTransaction::new(commitment_number, their_per_commitment_point,
-			to_broadcaster_value, to_countersignatory_value, feerate_per_kw, nondust_htlcs, channel_parameters, &self.onchain_tx_handler.secp_ctx)
-	}
-
-	#[rustfmt::skip]
-	fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
-		update.updates.iter().filter_map(|update| {
-			// Soon we will drop the first branch here in favor of the second.
-			// In preparation, we just add the second branch without deleting the first.
-			// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitment` variant.
-			match update {
-				&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid,
-					ref htlc_outputs, commitment_number, their_per_commitment_point,
-					feerate_per_kw: Some(feerate_per_kw),
-					to_broadcaster_value_sat: Some(to_broadcaster_value),
-					to_countersignatory_value_sat: Some(to_countersignatory_value) } => {
-
-					let nondust_htlcs = htlc_outputs.iter().filter_map(|(htlc, _)| {
-						htlc.transaction_output_index.map(|_| htlc).cloned()
-					}).collect::<Vec<_>>();
-
-					// This monitor update variant is only applicable while there's a single
-					// `FundingScope` active, otherwise we expect to see
-					// `LatestCounterpartyCommitment` instead.
-					debug_assert!(self.pending_funding.is_empty());
-					let channel_parameters = &self.funding.channel_parameters;
-					let commitment_tx = self.build_counterparty_commitment_tx(
-						channel_parameters,
-						commitment_number,
-						&their_per_commitment_point,
-						to_broadcaster_value,
-						to_countersignatory_value,
-						feerate_per_kw,
-						nondust_htlcs,
-					);
-
-					debug_assert_eq!(commitment_tx.trust().txid(), commitment_txid);
-
-					Some(vec![commitment_tx])
-				},
-				&ChannelMonitorUpdateStep::LatestCounterpartyCommitment { ref commitment_txs, .. } => {
-					Some(commitment_txs.clone())
-				},
-				&ChannelMonitorUpdateStep::RenegotiatedFunding { ref counterparty_commitment_tx, .. } => {
-					Some(vec![counterparty_commitment_tx.clone()])
-				},
-				_ => None,
-			}
-		}).flatten().collect()
-	}
-
-	#[rustfmt::skip]
-	fn sign_to_local_justice_tx(
-		&self, mut justice_tx: Transaction, input_idx: usize, value: u64, commitment_number: u64
-	) -> Result<Transaction, ()> {
-		let secret = self.get_secret(commitment_number).ok_or(())?;
-		let per_commitment_key = SecretKey::from_slice(&secret).map_err(|_| ())?;
-		let their_per_commitment_point = PublicKey::from_secret_key(
-			&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
-
-		let revocation_pubkey = RevocationKey::from_basepoint(&self.onchain_tx_handler.secp_ctx,
-			&self.holder_revocation_basepoint, &their_per_commitment_point);
-		let delayed_key = DelayedPaymentKey::from_basepoint(&self.onchain_tx_handler.secp_ctx,
-			&self.counterparty_commitment_params.counterparty_delayed_payment_base_key, &their_per_commitment_point);
-		let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
-			self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
-
-		let commitment_txid = &justice_tx.input[input_idx].previous_output.txid;
-		// Since there may be multiple counterparty commitment transactions for the same commitment
-		// number due to splicing, we have to locate the matching `FundingScope::channel_parameters`
-		// to provide the signer. Since this is intended to be called during
-		// `Persist::update_persisted_channel`, the monitor should have already had the update
-		// applied.
-		let channel_parameters = core::iter::once(&self.funding)
-			.chain(&self.pending_funding)
-			.find(|funding| funding.counterparty_claimable_outpoints.contains_key(commitment_txid))
-			.map(|funding| &funding.channel_parameters)
-			.ok_or(())?;
-		let sig = self.onchain_tx_handler.signer.sign_justice_revoked_output(
-			&channel_parameters, &justice_tx, input_idx, value, &per_commitment_key,
-			&self.onchain_tx_handler.secp_ctx,
-		)?;
-		justice_tx.input[input_idx].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(sig));
-		justice_tx.input[input_idx].witness.push(&[1u8]);
-		justice_tx.input[input_idx].witness.push(revokeable_redeemscript.as_bytes());
-		Ok(justice_tx)
-	}
 
 	/// Attempts to claim a counterparty commitment transaction's outputs using the revocation key and
 	/// data in counterparty_claimable_outpoints. Will directly claim any HTLC outputs which expire at a
