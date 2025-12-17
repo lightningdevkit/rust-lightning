@@ -21,9 +21,13 @@
 extern crate alloc;
 
 use alloc::string::ToString;
+use alloc::vec::Vec;
+
 use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
 use proc_macro2::TokenStream as TokenStream2;
+
 use quote::quote;
+
 use syn::spanned::Spanned;
 use syn::{parse, ImplItemFn, Token};
 use syn::{parse_macro_input, Item};
@@ -399,4 +403,233 @@ pub fn xtest_inventory(_input: TokenStream) -> TokenStream {
 	};
 
 	TokenStream::from(expanded)
+}
+
+fn add_logs_to_stmt_list(s: &mut Vec<syn::Stmt>, methods_with_param: &[syn::Ident]) {
+	for stmt in s.iter_mut() {
+		match stmt {
+			syn::Stmt::Expr(ref mut expr, _) => add_logs_to_self_exprs(expr, methods_with_param),
+			syn::Stmt::Local(syn::Local { init: Some(l), .. }) => {
+				add_logs_to_self_exprs(&mut *l.expr, methods_with_param);
+				if let Some((_, e)) = &mut l.diverge {
+					add_logs_to_self_exprs(&mut *e, methods_with_param);
+				}
+			},
+			syn::Stmt::Local(syn::Local { init: None, .. }) => {},
+			syn::Stmt::Macro(_) => {},
+			syn::Stmt::Item(syn::Item::Fn(f)) => {
+				add_logs_to_stmt_list(&mut f.block.stmts, methods_with_param);
+			},
+			syn::Stmt::Item(_) => {},
+		}
+	}
+}
+
+fn add_logs_to_self_exprs(e: &mut syn::Expr, methods_with_param: &[syn::Ident]) {
+	match e {
+		syn::Expr::Array(e) => {
+			for elem in e.elems.iter_mut() {
+				add_logs_to_self_exprs(elem, methods_with_param);
+			}
+		},
+		syn::Expr::Assign(e) => {
+			add_logs_to_self_exprs(&mut *e.left, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.right, methods_with_param);
+		},
+		syn::Expr::Async(e) => {
+			add_logs_to_stmt_list(&mut e.block.stmts, methods_with_param);
+		},
+		syn::Expr::Await(e) => {
+			add_logs_to_self_exprs(&mut *e.base, methods_with_param);
+		},
+		syn::Expr::Binary(e) => {
+			add_logs_to_self_exprs(&mut *e.left, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.right, methods_with_param);
+		},
+		syn::Expr::Block(e) => {
+			add_logs_to_stmt_list(&mut e.block.stmts, methods_with_param);
+		},
+		syn::Expr::Break(e) => {
+			if let Some(e) = e.expr.as_mut() {
+				add_logs_to_self_exprs(&mut *e, methods_with_param);
+			}
+		},
+		syn::Expr::Call(e) => {
+			for a in e.args.iter_mut() {
+				add_logs_to_self_exprs(a, methods_with_param);
+			}
+		},
+		syn::Expr::Cast(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, methods_with_param);
+		},
+		syn::Expr::Closure(e) => {
+			add_logs_to_self_exprs(&mut *e.body, methods_with_param);
+		},
+		syn::Expr::Const(_) => {},
+		syn::Expr::Continue(e) => {
+			
+		},
+		syn::Expr::Field(e) => {
+			
+		},
+		syn::Expr::ForLoop(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, methods_with_param);
+			add_logs_to_stmt_list(&mut e.body.stmts, methods_with_param);
+		},
+		syn::Expr::Group(e) => {
+			
+		},
+		syn::Expr::If(e) => {
+			add_logs_to_self_exprs(&mut *e.cond, methods_with_param);
+			add_logs_to_stmt_list(&mut e.then_branch.stmts, methods_with_param);
+			if let Some((_, branch)) = e.else_branch.as_mut() {
+				add_logs_to_self_exprs(&mut *branch, methods_with_param);
+			}
+		},
+		syn::Expr::Index(e) => {
+			
+		},
+		syn::Expr::Infer(e) => {
+			
+		},
+		syn::Expr::Let(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, methods_with_param);
+		},
+		syn::Expr::Lit(e) => {
+			
+		},
+		syn::Expr::Loop(e) => {
+			add_logs_to_stmt_list(&mut e.body.stmts, methods_with_param);
+		},
+		syn::Expr::Macro(e) => {
+			
+		},
+		syn::Expr::Match(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, methods_with_param);
+			for arm in e.arms.iter_mut() {
+				if let Some((_, e)) = arm.guard.as_mut() {
+					add_logs_to_self_exprs(&mut *e, methods_with_param);
+				}
+				add_logs_to_self_exprs(&mut *arm.body, methods_with_param);
+			}
+		},
+		syn::Expr::MethodCall(e) => {
+			match &*e.receiver {
+				syn::Expr::Path(maybe_self_path) => {
+					let is_self_call =
+						maybe_self_path.qself.is_none()
+						&& maybe_self_path.path.segments.len() == 1
+						&& maybe_self_path.path.segments[0].ident.to_string() == "self";
+					if is_self_call && methods_with_param.iter().any(|m| *m == e.method) {
+						e.args.push(parse(quote!(logger).into()).unwrap());
+					}
+				},
+				_ => add_logs_to_self_exprs(&mut *e.receiver, methods_with_param),
+			}
+			for a in e.args.iter_mut() {
+				add_logs_to_self_exprs(a, methods_with_param);
+			}
+		},
+		syn::Expr::Paren(e) => {
+			
+		},
+		syn::Expr::Path(e) => {
+			
+		},
+		syn::Expr::Range(e) => {
+			
+		},
+		syn::Expr::RawAddr(e) => {
+			
+		},
+		syn::Expr::Reference(e) => {
+			
+		},
+		syn::Expr::Repeat(e) => {
+			
+		},
+		syn::Expr::Return(e) => {
+			if let Some(e) = e.expr.as_mut() {
+				add_logs_to_self_exprs(&mut *e, methods_with_param);
+			}
+		},
+		syn::Expr::Struct(e) => {
+			
+		},
+		syn::Expr::Try(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, methods_with_param);
+		},
+		syn::Expr::TryBlock(e) => {
+			add_logs_to_stmt_list(&mut e.block.stmts, methods_with_param);
+		},
+		syn::Expr::Tuple(e) => {
+			
+		},
+		syn::Expr::Unary(e) => {
+			
+		},
+		syn::Expr::Unsafe(e) => {
+			
+		},
+		syn::Expr::Verbatim(e) => {
+			
+		},
+		syn::Expr::While(e) => {
+			
+		},
+		syn::Expr::Yield(e) => {
+			
+		},
+		_ => {},
+	}
+}
+
+/// XXX
+#[proc_macro_attribute]
+pub fn add_logging(attrs: TokenStream, expr: TokenStream) -> TokenStream {
+	let mut im = if let Ok(parsed) = parse::<syn::Item>(expr) {
+		if let syn::Item::Impl(im) = parsed {
+			im
+		} else {
+			return (quote! {
+				compile_error!("add_logging_internal can only be used on impl items")
+			})
+			.into();
+		}
+	} else {
+		return (quote! {
+			compile_error!("add_logging_internal can only be used on impl items")
+		})
+		.into();
+	};
+	let attrs: TokenStream2 = attrs.into();
+
+	let mut methods_added = Vec::new();
+	for item in im.items.iter_mut() {
+		if let syn::ImplItem::Fn(f) = item {
+			if let syn::Visibility::Public(_) = f.vis {
+			} else {
+				if f.sig.generics.lt_token.is_none() {
+					f.sig.generics.lt_token = Some(Default::default());
+					f.sig.generics.gt_token = Some(Default::default());
+				}
+				f.sig.generics.params.push(parse(quote!(L: Deref).into()).unwrap());
+				if f.sig.generics.where_clause.is_none() {
+					f.sig.generics.where_clause = Some(parse(quote!(where).into()).unwrap());
+				}
+				let log_bound = parse(quote!(L::Target: Logger).into()).unwrap();
+				f.sig.generics.where_clause.as_mut().unwrap().predicates.push(log_bound);
+				f.sig.inputs.push(parse(quote!(logger: &#attrs).into()).unwrap());
+				methods_added.push(f.sig.ident.clone());
+			}
+		}
+	}
+
+	for item in im.items.iter_mut() {
+		if let syn::ImplItem::Fn(f) = item {
+			add_logs_to_stmt_list(&mut f.block.stmts, &methods_added[..]);
+		}
+	}
+
+	quote! { #im }.into()
 }
