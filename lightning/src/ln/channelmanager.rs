@@ -90,6 +90,7 @@ use crate::ln::outbound_payment::{
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
+use crate::offers::contacts::ContactSecrets;
 use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};
 use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
@@ -698,6 +699,34 @@ pub struct OptionalOfferPaymentParams {
 	/// will ultimately fail once all pending paths have failed (generating an
 	/// [`Event::PaymentFailed`]).
 	pub retry_strategy: Retry,
+	/// Contact secrets to include in the invoice request for BLIP-42 contact management.
+	/// If provided, these secrets will be used to establish a contact relationship with the recipient.
+	pub contact_secrets: Option<ContactSecrets>,
+	/// A custom payer offer to include in the invoice request for BLIP-42 contact management.
+	///
+	/// If provided, this offer will be included in the invoice request, allowing the recipient to
+	/// contact you back. If `None`, **no payer offer will be included** in the invoice request.
+	///
+	/// You can create custom offers using [`OffersMessageFlow::create_compact_offer_builder`]:
+	/// - Pass `None` for no blinded path (smallest size, ~70 bytes)
+	/// - Pass `Some(intro_node_id)` for a single blinded path (~200 bytes)
+	///
+	/// # Example
+	/// ```rust,ignore
+	/// // Include a compact offer with a single blinded path
+	/// let payer_offer = flow.create_compact_offer_builder(
+	///     &entropy_source,
+	///     Some(trusted_peer_pubkey)
+	/// )?.build()?;
+	///
+	/// let params = OptionalOfferPaymentParams {
+	///     payer_offer: Some(payer_offer),
+	///     ..Default::default()
+	/// };
+	/// ```
+	///
+	/// [`OffersMessageFlow::create_compact_offer_builder`]: crate::offers::flow::OffersMessageFlow::create_compact_offer_builder
+	pub payer_offer: Option<Offer>,
 }
 
 impl Default for OptionalOfferPaymentParams {
@@ -709,6 +738,8 @@ impl Default for OptionalOfferPaymentParams {
 			retry_strategy: Retry::Timeout(core::time::Duration::from_secs(2)),
 			#[cfg(not(feature = "std"))]
 			retry_strategy: Retry::Attempts(3),
+			contact_secrets: None,
+			payer_offer: None,
 		}
 	}
 }
@@ -13083,6 +13114,33 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 
 		Ok(builder.into())
 	}
+
+	/// Creates a compact [`OfferBuilder`] suitable for BLIP-42's `payer_offer` field.
+	///
+	/// This creates an offer with minimal size by either:
+	/// - Having no blinded paths when `intro_node_id` is `None` (for public nodes)
+	/// - Having a single one-hop blinded path when `intro_node_id` is `Some` (for private nodes)
+	///
+	/// The compact format is ideal for encoding in invoice request fields where space is limited.
+	///
+	/// # Privacy
+	///
+	/// Uses a derived signing pubkey in the offer for recipient privacy.
+	///
+	/// # Errors
+	///
+	/// Errors if a blinded path cannot be created when `intro_node_id` is provided.
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	pub fn create_compact_offer_builder(
+		&$self, intro_node_id: Option<PublicKey>,
+	) -> Result<$builder, Bolt12SemanticError> {
+		let builder = $self.flow.create_compact_offer_builder(
+			&*$self.entropy_source, intro_node_id
+		)?;
+
+		Ok(builder.into())
+	}
 } }
 
 macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
@@ -13324,6 +13382,8 @@ where
 			payment_id,
 			None,
 			create_pending_payment_fn,
+			optional_params.contact_secrets,
+			optional_params.payer_offer,
 		)
 	}
 
@@ -13353,6 +13413,8 @@ where
 			payment_id,
 			Some(offer.hrn),
 			create_pending_payment_fn,
+			optional_params.contact_secrets,
+			optional_params.payer_offer,
 		)
 	}
 
@@ -13395,6 +13457,8 @@ where
 			payment_id,
 			None,
 			create_pending_payment_fn,
+			optional_params.contact_secrets,
+			optional_params.payer_offer,
 		)
 	}
 
@@ -13403,6 +13467,7 @@ where
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
 		payer_note: Option<String>, payment_id: PaymentId,
 		human_readable_name: Option<HumanReadableName>, create_pending_payment: CPP,
+		contacts: Option<ContactSecrets>, payer_offer: Option<Offer>,
 	) -> Result<(), Bolt12SemanticError> {
 		let entropy = &*self.entropy_source;
 		let nonce = Nonce::from_entropy_source(entropy);
@@ -13426,6 +13491,20 @@ where
 		let builder = match human_readable_name {
 			None => builder,
 			Some(hrn) => builder.sourced_from_human_readable_name(hrn),
+		};
+
+		let builder = if let Some(secrets) = contacts.as_ref() {
+			builder.contact_secrets(secrets.clone())
+		} else {
+			builder
+		};
+
+		// Add payer offer only if provided by the user.
+		// If the user explicitly wants to include an offer, they should provide it via payer_offer parameter.
+		let builder = if let Some(offer) = payer_offer {
+			builder.payer_offer(&offer)
+		} else {
+			builder
 		};
 
 		let invoice_request = builder.build_and_sign()?;
@@ -16076,7 +16155,7 @@ where
 								self.pending_outbound_payments
 									.received_offer(payment_id, Some(retryable_invoice_request))
 									.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
-						});
+						}, None, None);
 					if offer_pay_res.is_err() {
 						// The offer we tried to pay is the canonical current offer for the name we
 						// wanted to pay. If we can't pay it, there's no way to recover so fail the
