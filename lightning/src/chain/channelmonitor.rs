@@ -3489,6 +3489,183 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 		ConfirmationTarget::OutputSpendingFee
 	}
+
+	/// Returns true if the channel has been closed (i.e. no further updates are allowed) and no
+	/// commitment state updates ever happened.
+	fn is_closed_without_updates(&self) -> bool {
+		let mut commitment_not_advanced =
+			self.current_counterparty_commitment_number == INITIAL_COMMITMENT_NUMBER;
+		commitment_not_advanced &=
+			self.current_holder_commitment_number == INITIAL_COMMITMENT_NUMBER;
+		(self.holder_tx_signed || self.lockdown_from_offchain) && commitment_not_advanced
+	}
+
+	fn no_further_updates_allowed(&self) -> bool {
+		self.funding_spend_seen || self.lockdown_from_offchain || self.holder_tx_signed
+	}
+
+	fn get_latest_update_id(&self) -> u64 {
+		self.latest_update_id
+	}
+
+	/// Returns the outpoint we are currently monitoring the chain for spends. This will change for
+	/// every splice that has reached its intended confirmation depth.
+	#[rustfmt::skip]
+	fn get_funding_txo(&self) -> OutPoint {
+		self.funding.channel_parameters.funding_outpoint
+			.expect("Funding outpoint must be set for active monitor")
+	}
+
+	/// Returns the P2WSH script we are currently monitoring the chain for spends. This will change
+	/// for every splice that has reached its intended confirmation depth.
+	fn get_funding_script(&self) -> ScriptBuf {
+		self.funding.channel_parameters.make_funding_redeemscript().to_p2wsh()
+	}
+
+	pub fn channel_id(&self) -> ChannelId {
+		self.channel_id
+	}
+
+	fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<(u32, ScriptBuf)>> {
+		// If we've detected a counterparty commitment tx on chain, we must include it in the set
+		// of outputs to watch for spends of, otherwise we're likely to lose user funds. Because
+		// its trivial to do, double-check that here.
+		for txid in self.counterparty_commitment_txn_on_chain.keys() {
+			self.outputs_to_watch.get(txid).expect("Counterparty commitment txn which have been broadcast should have outputs registered");
+		}
+		&self.outputs_to_watch
+	}
+
+	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<MonitorEvent> {
+		let mut ret = Vec::new();
+		mem::swap(&mut ret, &mut self.pending_monitor_events);
+		ret
+	}
+
+	/// Gets the set of events that are repeated regularly (e.g. those which RBF bump
+	/// transactions). We're okay if we lose these on restart as they'll be regenerated for us at
+	/// some regular interval via [`ChannelMonitor::rebroadcast_pending_claims`].
+	#[rustfmt::skip]
+	pub(super) fn get_repeated_events(&mut self) -> Vec<Event> {
+		let pending_claim_events = self.onchain_tx_handler.get_and_clear_pending_claim_events();
+		let mut ret = Vec::with_capacity(pending_claim_events.len());
+		for (claim_id, claim_event) in pending_claim_events {
+			match claim_event {
+				ClaimEvent::BumpCommitment {
+					package_target_feerate_sat_per_1000_weight, commitment_tx,
+					commitment_tx_fee_satoshis, pending_nondust_htlcs, anchor_output_idx,
+					channel_parameters,
+				} => {
+					let channel_id = self.channel_id;
+					let counterparty_node_id = self.counterparty_node_id;
+					let commitment_txid = commitment_tx.compute_txid();
+					ret.push(Event::BumpTransaction(BumpTransactionEvent::ChannelClose {
+						channel_id,
+						counterparty_node_id,
+						claim_id,
+						package_target_feerate_sat_per_1000_weight,
+						anchor_descriptor: AnchorDescriptor {
+							channel_derivation_parameters: ChannelDerivationParameters {
+								keys_id: self.channel_keys_id,
+								value_satoshis: channel_parameters.channel_value_satoshis,
+								transaction_parameters: channel_parameters,
+							},
+							outpoint: BitcoinOutPoint {
+								txid: commitment_txid,
+								vout: anchor_output_idx,
+							},
+							value: commitment_tx.output[anchor_output_idx as usize].value,
+						},
+						pending_htlcs: pending_nondust_htlcs,
+						commitment_tx,
+						commitment_tx_fee_satoshis,
+					}));
+				},
+				ClaimEvent::BumpHTLC {
+					target_feerate_sat_per_1000_weight, htlcs, tx_lock_time,
+				} => {
+					let channel_id = self.channel_id;
+					let counterparty_node_id = self.counterparty_node_id;
+					ret.push(Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
+						channel_id,
+						counterparty_node_id,
+						claim_id,
+						target_feerate_sat_per_1000_weight,
+						htlc_descriptors: htlcs,
+						tx_lock_time,
+					}));
+				}
+			}
+		}
+		ret
+	}
+
+	/// Can only fail if idx is < get_min_seen_secret
+	fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
+		self.commitment_secrets.get_secret(idx)
+	}
+
+	fn get_min_seen_secret(&self) -> u64 {
+		self.commitment_secrets.get_min_seen_secret()
+	}
+
+	fn get_cur_counterparty_commitment_number(&self) -> u64 {
+		self.current_counterparty_commitment_number
+	}
+
+	fn get_cur_holder_commitment_number(&self) -> u64 {
+		self.current_holder_commitment_number
+	}
+
+	fn channel_type_features(&self) -> &ChannelTypeFeatures {
+		&self.funding.channel_parameters.channel_type_features
+	}
+
+
+	#[rustfmt::skip]
+	fn get_spendable_outputs(&self, funding_spent: &FundingScope, tx: &Transaction) -> Vec<SpendableOutputDescriptor> {
+		let mut spendable_outputs = Vec::new();
+		for (i, outp) in tx.output.iter().enumerate() {
+			if outp.script_pubkey == self.destination_script {
+				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
+					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
+					output: outp.clone(),
+					channel_keys_id: Some(self.channel_keys_id),
+				});
+			}
+			if let Some(ref broadcasted_holder_revokable_script) = self.broadcasted_holder_revokable_script {
+				if broadcasted_holder_revokable_script.0 == outp.script_pubkey {
+					spendable_outputs.push(SpendableOutputDescriptor::DelayedPaymentOutput(DelayedPaymentOutputDescriptor {
+						outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
+						per_commitment_point: broadcasted_holder_revokable_script.1,
+						to_self_delay: self.on_holder_tx_csv,
+						output: outp.clone(),
+						revocation_pubkey: broadcasted_holder_revokable_script.2,
+						channel_keys_id: self.channel_keys_id,
+						channel_value_satoshis: funding_spent.channel_parameters.channel_value_satoshis,
+						channel_transaction_parameters: Some(funding_spent.channel_parameters.clone()),
+					}));
+				}
+			}
+			if self.counterparty_payment_script == outp.script_pubkey {
+				spendable_outputs.push(SpendableOutputDescriptor::StaticPaymentOutput(StaticPaymentOutputDescriptor {
+					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
+					output: outp.clone(),
+					channel_keys_id: self.channel_keys_id,
+					channel_value_satoshis: funding_spent.channel_parameters.channel_value_satoshis,
+					channel_transaction_parameters: Some(funding_spent.channel_parameters.clone()),
+				}));
+			}
+			if self.shutdown_script.as_ref() == Some(&outp.script_pubkey) {
+				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
+					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
+					output: outp.clone(),
+					channel_keys_id: Some(self.channel_keys_id),
+				});
+			}
+		}
+		spendable_outputs
+	}
 }
 
 #[lightning_macros::add_logging(WithChannelMonitor<L>)]
@@ -4435,116 +4612,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 }
 
 impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
-	/// Returns true if the channel has been closed (i.e. no further updates are allowed) and no
-	/// commitment state updates ever happened.
-	fn is_closed_without_updates(&self) -> bool {
-		let mut commitment_not_advanced =
-			self.current_counterparty_commitment_number == INITIAL_COMMITMENT_NUMBER;
-		commitment_not_advanced &=
-			self.current_holder_commitment_number == INITIAL_COMMITMENT_NUMBER;
-		(self.holder_tx_signed || self.lockdown_from_offchain) && commitment_not_advanced
-	}
-
-	fn no_further_updates_allowed(&self) -> bool {
-		self.funding_spend_seen || self.lockdown_from_offchain || self.holder_tx_signed
-	}
-
-	fn get_latest_update_id(&self) -> u64 {
-		self.latest_update_id
-	}
-
-	/// Returns the outpoint we are currently monitoring the chain for spends. This will change for
-	/// every splice that has reached its intended confirmation depth.
-	#[rustfmt::skip]
-	fn get_funding_txo(&self) -> OutPoint {
-		self.funding.channel_parameters.funding_outpoint
-			.expect("Funding outpoint must be set for active monitor")
-	}
-
-	/// Returns the P2WSH script we are currently monitoring the chain for spends. This will change
-	/// for every splice that has reached its intended confirmation depth.
-	fn get_funding_script(&self) -> ScriptBuf {
-		self.funding.channel_parameters.make_funding_redeemscript().to_p2wsh()
-	}
-
-	pub fn channel_id(&self) -> ChannelId {
-		self.channel_id
-	}
-
-	fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<(u32, ScriptBuf)>> {
-		// If we've detected a counterparty commitment tx on chain, we must include it in the set
-		// of outputs to watch for spends of, otherwise we're likely to lose user funds. Because
-		// its trivial to do, double-check that here.
-		for txid in self.counterparty_commitment_txn_on_chain.keys() {
-			self.outputs_to_watch.get(txid).expect("Counterparty commitment txn which have been broadcast should have outputs registered");
-		}
-		&self.outputs_to_watch
-	}
-
-	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<MonitorEvent> {
-		let mut ret = Vec::new();
-		mem::swap(&mut ret, &mut self.pending_monitor_events);
-		ret
-	}
-
-	/// Gets the set of events that are repeated regularly (e.g. those which RBF bump
-	/// transactions). We're okay if we lose these on restart as they'll be regenerated for us at
-	/// some regular interval via [`ChannelMonitor::rebroadcast_pending_claims`].
-	#[rustfmt::skip]
-	pub(super) fn get_repeated_events(&mut self) -> Vec<Event> {
-		let pending_claim_events = self.onchain_tx_handler.get_and_clear_pending_claim_events();
-		let mut ret = Vec::with_capacity(pending_claim_events.len());
-		for (claim_id, claim_event) in pending_claim_events {
-			match claim_event {
-				ClaimEvent::BumpCommitment {
-					package_target_feerate_sat_per_1000_weight, commitment_tx,
-					commitment_tx_fee_satoshis, pending_nondust_htlcs, anchor_output_idx,
-					channel_parameters,
-				} => {
-					let channel_id = self.channel_id;
-					let counterparty_node_id = self.counterparty_node_id;
-					let commitment_txid = commitment_tx.compute_txid();
-					ret.push(Event::BumpTransaction(BumpTransactionEvent::ChannelClose {
-						channel_id,
-						counterparty_node_id,
-						claim_id,
-						package_target_feerate_sat_per_1000_weight,
-						anchor_descriptor: AnchorDescriptor {
-							channel_derivation_parameters: ChannelDerivationParameters {
-								keys_id: self.channel_keys_id,
-								value_satoshis: channel_parameters.channel_value_satoshis,
-								transaction_parameters: channel_parameters,
-							},
-							outpoint: BitcoinOutPoint {
-								txid: commitment_txid,
-								vout: anchor_output_idx,
-							},
-							value: commitment_tx.output[anchor_output_idx as usize].value,
-						},
-						pending_htlcs: pending_nondust_htlcs,
-						commitment_tx,
-						commitment_tx_fee_satoshis,
-					}));
-				},
-				ClaimEvent::BumpHTLC {
-					target_feerate_sat_per_1000_weight, htlcs, tx_lock_time,
-				} => {
-					let channel_id = self.channel_id;
-					let counterparty_node_id = self.counterparty_node_id;
-					ret.push(Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
-						channel_id,
-						counterparty_node_id,
-						claim_id,
-						target_feerate_sat_per_1000_weight,
-						htlc_descriptors: htlcs,
-						tx_lock_time,
-					}));
-				}
-			}
-		}
-		ret
-	}
-
 	fn initial_counterparty_commitment_tx(&mut self) -> Option<CommitmentTransaction> {
 		self.initial_counterparty_commitment_tx.clone().or_else(|| {
 			// This provides forward compatibility; an old monitor will not contain the full
@@ -4674,23 +4741,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		justice_tx.input[input_idx].witness.push(&[1u8]);
 		justice_tx.input[input_idx].witness.push(revokeable_redeemscript.as_bytes());
 		Ok(justice_tx)
-	}
-
-	/// Can only fail if idx is < get_min_seen_secret
-	fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
-		self.commitment_secrets.get_secret(idx)
-	}
-
-	fn get_min_seen_secret(&self) -> u64 {
-		self.commitment_secrets.get_min_seen_secret()
-	}
-
-	fn get_cur_counterparty_commitment_number(&self) -> u64 {
-		self.current_counterparty_commitment_number
-	}
-
-	fn get_cur_holder_commitment_number(&self) -> u64 {
-		self.current_holder_commitment_number
 	}
 
 	/// Attempts to claim a counterparty commitment transaction's outputs using the revocation key and
@@ -6330,51 +6380,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	#[rustfmt::skip]
-	fn get_spendable_outputs(&self, funding_spent: &FundingScope, tx: &Transaction) -> Vec<SpendableOutputDescriptor> {
-		let mut spendable_outputs = Vec::new();
-		for (i, outp) in tx.output.iter().enumerate() {
-			if outp.script_pubkey == self.destination_script {
-				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
-					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
-					output: outp.clone(),
-					channel_keys_id: Some(self.channel_keys_id),
-				});
-			}
-			if let Some(ref broadcasted_holder_revokable_script) = self.broadcasted_holder_revokable_script {
-				if broadcasted_holder_revokable_script.0 == outp.script_pubkey {
-					spendable_outputs.push(SpendableOutputDescriptor::DelayedPaymentOutput(DelayedPaymentOutputDescriptor {
-						outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
-						per_commitment_point: broadcasted_holder_revokable_script.1,
-						to_self_delay: self.on_holder_tx_csv,
-						output: outp.clone(),
-						revocation_pubkey: broadcasted_holder_revokable_script.2,
-						channel_keys_id: self.channel_keys_id,
-						channel_value_satoshis: funding_spent.channel_parameters.channel_value_satoshis,
-						channel_transaction_parameters: Some(funding_spent.channel_parameters.clone()),
-					}));
-				}
-			}
-			if self.counterparty_payment_script == outp.script_pubkey {
-				spendable_outputs.push(SpendableOutputDescriptor::StaticPaymentOutput(StaticPaymentOutputDescriptor {
-					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
-					output: outp.clone(),
-					channel_keys_id: self.channel_keys_id,
-					channel_value_satoshis: funding_spent.channel_parameters.channel_value_satoshis,
-					channel_transaction_parameters: Some(funding_spent.channel_parameters.clone()),
-				}));
-			}
-			if self.shutdown_script.as_ref() == Some(&outp.script_pubkey) {
-				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
-					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
-					output: outp.clone(),
-					channel_keys_id: Some(self.channel_keys_id),
-				});
-			}
-		}
-		spendable_outputs
-	}
-
 	/// Checks if the confirmed transaction is paying funds back to some address we can assume to
 	/// own.
 	#[rustfmt::skip]
@@ -6393,10 +6398,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			log_info!(logger, "Received spendable output {}, spendable at height {}", log_spendable!(spendable_output), entry.confirmation_threshold());
 			self.onchain_events_awaiting_threshold_conf.push(entry);
 		}
-	}
-
-	fn channel_type_features(&self) -> &ChannelTypeFeatures {
-		&self.funding.channel_parameters.channel_type_features
 	}
 }
 
