@@ -11,8 +11,9 @@
 
 use alloc::vec::Vec;
 
-use bitcoin::{Amount, ScriptBuf, SignedAmount, TxOut};
-use bitcoin::{Script, Sequence, Transaction, Weight};
+use bitcoin::{
+	Amount, FeeRate, Script, ScriptBuf, Sequence, SignedAmount, Transaction, TxOut, Weight,
+};
 
 use crate::events::bump_transaction::Utxo;
 use crate::ln::chan_utils::EMPTY_SCRIPT_SIG_WEIGHT;
@@ -26,10 +27,6 @@ pub struct SpliceContribution {
 	/// [`inputs`]: Self::inputs
 	value_added: Amount,
 
-	/// The inputs included in the splice's funding transaction to meet the contributed amount
-	/// plus fees. Any excess amount will be sent to a change output.
-	inputs: Vec<FundingTxInput>,
-
 	/// The outputs to include in the splice's funding transaction. The total value of all
 	/// outputs plus fees will be the amount that is removed.
 	outputs: Vec<TxOut>,
@@ -39,33 +36,106 @@ pub struct SpliceContribution {
 	///
 	/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
 	change_script: Option<ScriptBuf>,
+
+	feerate: FeeRate,
 }
 
+impl_writeable_tlv_based!(SpliceContribution, {
+	(1, value_added, required),
+	(3, outputs, required),
+	(5, change_script, option),
+	(7, feerate, required),
+});
+
 impl SpliceContribution {
-	/// Creates a contribution for when funds are only added to a channel.
-	pub fn splice_in(
-		value_added: Amount, inputs: Vec<FundingTxInput>, change_script: Option<ScriptBuf>,
-	) -> Self {
-		Self { value_added, inputs, outputs: vec![], change_script }
-	}
-
-	/// Creates a contribution for when funds are only removed from a channel.
-	pub fn splice_out(outputs: Vec<TxOut>) -> Self {
-		Self { value_added: Amount::ZERO, inputs: vec![], outputs, change_script: None }
-	}
-
-	/// Creates a contribution for when funds are both added to and removed from a channel.
 	///
-	/// Note that `value_added` represents the value added by `inputs` but should not account for
-	/// value removed by `outputs`. The net value contributed can be obtained by calling
-	/// [`SpliceContribution::net_value`].
-	pub fn splice_in_and_out(
-		value_added: Amount, inputs: Vec<FundingTxInput>, outputs: Vec<TxOut>,
-		change_script: Option<ScriptBuf>,
-	) -> Self {
-		Self { value_added, inputs, outputs, change_script }
+	pub fn using_feerate(feerate: FeeRate) -> Self {
+		Self {
+			value_added: Amount::ZERO,
+			outputs: vec![],
+			change_script: None,
+			feerate,
+		}
 	}
 
+	///
+	pub fn adding_value(mut self, value: Amount) -> Self {
+		self.value_added += value;
+		self
+	}
+
+	///
+	pub fn removing_value(mut self, outputs: Vec<TxOut>) -> Self {
+		self.outputs.extend(outputs);
+		self
+	}
+
+	///
+	pub fn with_change_script(mut self, change_script: ScriptBuf) -> Self {
+		self.change_script = Some(change_script);
+		self
+	}
+
+	/// The net value contributed to a channel by the splice. If negative, more value will be
+	/// spliced out than spliced in.
+	pub fn net_value(&self) -> SignedAmount {
+		let value_added = self.value_added.to_signed().unwrap_or(SignedAmount::MAX);
+		let value_removed = self
+			.outputs
+			.iter()
+			.map(|txout| txout.value)
+			.sum::<Amount>()
+			.to_signed()
+			.unwrap_or(SignedAmount::MAX);
+
+		value_added - value_removed
+	}
+
+	///
+	pub fn into_outputs(self) -> Vec<TxOut> {
+		self.outputs
+	}
+
+	pub(crate) fn into_funding_contribution(self) -> FundingContribution {
+		let SpliceContribution { value_added, outputs, change_script, feerate } = self;
+		FundingContribution {
+			value_added,
+			inputs: vec![],
+			outputs,
+			change_script,
+			feerate,
+			is_initiator: true,
+			is_splice: true,
+		}
+	}
+}
+
+/// The components of a splice's funding transaction that are contributed by one party.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FundingContribution {
+	/// The amount from [`inputs`] to contribute to the splice.
+	///
+	/// [`inputs`]: Self::inputs
+	value_added: Amount,
+
+	/// The inputs included in the splice's funding transaction to meet the contributed amount
+	/// plus fees. Any excess amount will be sent to a change output.
+	inputs: Vec<FundingTxInput>,
+
+	/// The outputs to include in the splice's funding transaction. The total value of all
+	/// outputs plus fees will be the amount that is removed.
+	outputs: Vec<TxOut>,
+
+	change_script: Option<ScriptBuf>,
+
+	feerate: FeeRate,
+
+	is_initiator: bool,
+
+	is_splice: bool,
+}
+
+impl FundingContribution {
 	/// The net value contributed to a channel by the splice. If negative, more value will be
 	/// spliced out than spliced in.
 	pub fn net_value(&self) -> SignedAmount {
@@ -94,14 +164,14 @@ impl SpliceContribution {
 	}
 
 	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>, Option<ScriptBuf>) {
-		let SpliceContribution { value_added: _, inputs, outputs, change_script } = self;
+		let FundingContribution { inputs, outputs, change_script, .. } = self;
 		(inputs, outputs, change_script)
 	}
 }
 
 /// An input to contribute to a channel's funding transaction either when using the v2 channel
 /// establishment protocol or when splicing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FundingTxInput {
 	/// The unspent [`TxOut`] that the input spends.
 	///

@@ -58,12 +58,12 @@ use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
-	FundedChannel, FundingTxSigned, InboundV1Channel, OutboundV1Channel, PendingV2Channel,
+	FundedChannel, FundingNegotiationContext, FundingTxSigned, InboundV1Channel, OutboundV1Channel, PendingV2Channel,
 	ReconnectionMsg, ShutdownResult, SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch,
 	WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::funding::SpliceContribution;
+use crate::ln::funding::{FundingContribution, SpliceContribution};
 use crate::ln::inbound_payment;
 use crate::ln::interactivetxs::InteractiveTxMessageSend;
 use crate::ln::msgs;
@@ -4743,12 +4743,12 @@ where
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: Option<u32>,
+		contribution: SpliceContribution,
 	) -> Result<(), APIError> {
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let result = self.internal_splice_channel(
-				channel_id, counterparty_node_id, contribution, funding_feerate_per_kw, locktime
+				channel_id, counterparty_node_id, contribution,
 			);
 			res = result;
 			match res {
@@ -4761,7 +4761,7 @@ where
 
 	fn internal_splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: Option<u32>,
+		contribution: SpliceContribution,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -4780,15 +4780,10 @@ where
 		// Look for the channel
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				let locktime = locktime.unwrap_or_else(|| self.current_best_block().height);
+				//let locktime = locktime.unwrap_or_else(|| self.current_best_block().height);
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					let msg_opt = chan.splice_channel(
-						contribution,
-						funding_feerate_per_kw,
-						locktime,
-						&&logger,
-					)?;
+					let msg_opt = chan.splice_channel(contribution, &&logger)?;
 					if let Some(msg) = msg_opt {
 						peer_state.pending_msg_events.push(MessageSendEvent::SendStfu {
 							node_id: *counterparty_node_id,
@@ -6414,6 +6409,68 @@ where
 				let _ = handle_error!(self, err, counterparty_node_id);
 			}
 		}
+		result
+	}
+
+	///
+	pub fn funding_contributed(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		context: FundingNegotiationContext,
+	) -> Result<(), APIError> {
+		let mut result = Ok(());
+		PersistenceNotifierGuard::optionally_notify(self, || {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+			if peer_state_mutex_opt.is_none() {
+				result = Err(APIError::ChannelUnavailable {
+					err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}")
+				});
+				return NotifyOption::SkipPersistNoEvents;
+			}
+
+			let mut peer_state = peer_state_mutex_opt.unwrap().lock().unwrap();
+
+			match peer_state.channel_by_id.get_mut(channel_id) {
+				Some(channel) => match channel.as_funded_mut() {
+					Some(chan) => {
+						match chan.funding_contributed(context, &self.logger) {
+							Ok(msg) => {
+								peer_state.pending_msg_events.push(
+									MessageSendEvent::SendSpliceInit {
+										node_id: *counterparty_node_id,
+										msg,
+									},
+								);
+								return NotifyOption::DoPersist;
+							},
+							Err(err) => {
+								result = Err(err);
+								return NotifyOption::SkipPersistNoEvents;
+							},
+						}
+					},
+					None => {
+						result = Err(APIError::APIMisuseError {
+							err: format!(
+								"Channel with id {} not expecting funding contribution",
+								channel_id
+							),
+						});
+						return NotifyOption::SkipPersistNoEvents;
+					},
+				},
+				None => {
+					result = Err(APIError::ChannelUnavailable {
+						err: format!(
+							"Channel with id {} not found for the passed counterparty node_id {}",
+							channel_id, counterparty_node_id
+						),
+					});
+					return NotifyOption::SkipPersistNoEvents;
+				},
+			}
+		});
+
 		result
 	}
 
@@ -11697,6 +11754,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								node_id: *counterparty_node_id,
 								msg,
 							});
+							Ok(true)
+						},
+						Some(StfuResponse::FundingNeeded(contribution)) => {
+							let mut pending_events = self.pending_events.lock().unwrap();
+							pending_events.push_back((
+								events::Event::FundingNeeded {
+									channel_id: chan.context.channel_id(),
+									user_channel_id: chan.context.get_user_id(),
+									counterparty_node_id: chan.context.get_counterparty_node_id(),
+									contribution,
+								},
+								None,
+							));
 							Ok(true)
 						},
 					}

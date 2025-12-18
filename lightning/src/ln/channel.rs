@@ -55,7 +55,7 @@ use crate::ln::channelmanager::{
 	RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT,
 	MIN_CLTV_EXPIRY_DELTA,
 };
-use crate::ln::funding::{FundingTxInput, SpliceContribution};
+use crate::ln::funding::{FundingContribution, FundingTxInput, SpliceContribution};
 use crate::ln::interactivetxs::{
 	calculate_change_output_value, get_output_weight, AbortReason, HandleTxCompleteValue,
 	InteractiveTxConstructor, InteractiveTxConstructorArgs, InteractiveTxMessageSend,
@@ -2802,7 +2802,8 @@ impl_writeable_tlv_based!(SpliceInstructions, {
 
 #[derive(Debug)]
 pub(crate) enum QuiescentAction {
-	Splice(SpliceInstructions),
+	LegacySplice(SpliceInstructions),
+	Splice(SpliceContribution),
 	#[cfg(any(test, fuzzing))]
 	DoNothing,
 }
@@ -2810,16 +2811,19 @@ pub(crate) enum QuiescentAction {
 pub(crate) enum StfuResponse {
 	Stfu(msgs::Stfu),
 	SpliceInit(msgs::SpliceInit),
+	FundingNeeded(FundingContribution),
 }
 
 #[cfg(any(test, fuzzing))]
 impl_writeable_tlv_based_enum_upgradable!(QuiescentAction,
 	(0, DoNothing) => {},
-	{1, Splice} => (),
+	{1, LegacySplice} => (),
+	{2, Splice} => (),
 );
 #[cfg(not(any(test, fuzzing)))]
 impl_writeable_tlv_based_enum_upgradable!(QuiescentAction,,
-	{1, Splice} => (),
+	{1, LegacySplice} => (),
+	{2, Splice} => (),
 );
 
 /// Wrapper around a [`Transaction`] useful for caching the result of [`Transaction::compute_txid`].
@@ -6495,7 +6499,7 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 }
 
 fn check_splice_contribution_sufficient(
-	contribution: &SpliceContribution, is_initiator: bool, funding_feerate: FeeRate,
+	contribution: &FundingContribution, is_initiator: bool, funding_feerate: FeeRate,
 ) -> Result<SignedAmount, String> {
 	if contribution.inputs().is_empty() {
 		let estimated_fee = Amount::from_sat(estimate_v2_funding_transaction_fee(
@@ -6621,30 +6625,30 @@ fn check_v2_funding_inputs_sufficient(
 
 /// Context for negotiating channels (dual-funded V2 open, splicing)
 #[derive(Debug)]
-pub(super) struct FundingNegotiationContext {
+pub struct FundingNegotiationContext {
 	/// Whether we initiated the funding negotiation.
-	pub is_initiator: bool,
+	pub(super) is_initiator: bool,
 	/// The amount in satoshis we will be contributing to the channel.
-	pub our_funding_contribution: SignedAmount,
+	pub(super) our_funding_contribution: SignedAmount,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
-	pub funding_tx_locktime: LockTime,
+	pub(super) funding_tx_locktime: LockTime,
 	/// The feerate set by the initiator to be used for the funding transaction.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
-	pub funding_feerate_sat_per_1000_weight: u32,
+	pub(super) funding_feerate_sat_per_1000_weight: u32,
 	/// The input spending the previous funding output, if this is a splice.
 	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
-	pub shared_funding_input: Option<SharedOwnedInput>,
+	pub(super) shared_funding_input: Option<SharedOwnedInput>,
 	/// The funding inputs we will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-	pub our_funding_inputs: Vec<FundingTxInput>,
+	pub(super) our_funding_inputs: Vec<FundingTxInput>,
 	/// The funding outputs we will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-	pub our_funding_outputs: Vec<TxOut>,
+	pub(super) our_funding_outputs: Vec<TxOut>,
 	/// The change output script. This will be used if needed or -- if not set -- generated using
 	/// `SignerProvider::get_destination_script`.
 	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
-	pub change_script: Option<ScriptBuf>,
+	pub(super) change_script: Option<ScriptBuf>,
 }
 
 impl FundingNegotiationContext {
@@ -6970,7 +6974,7 @@ where
 				self.reset_pending_splice_state()
 			} else {
 				match self.quiescent_action.take() {
-					Some(QuiescentAction::Splice(instructions)) => {
+					Some(QuiescentAction::LegacySplice(instructions)) => {
 						self.context.channel_state.clear_awaiting_quiescence();
 						let (inputs, outputs) = instructions.into_contributed_inputs_and_outputs();
 						Some(SpliceFundingFailed {
@@ -6978,6 +6982,15 @@ where
 							channel_type: None,
 							contributed_inputs: inputs,
 							contributed_outputs: outputs,
+						})
+					},
+					Some(QuiescentAction::Splice(contribution)) => {
+						self.context.channel_state.clear_awaiting_quiescence();
+						Some(SpliceFundingFailed {
+							funding_txo: None,
+							channel_type: None,
+							contributed_inputs: vec![],
+							contributed_outputs: contribution.into_outputs(),
 						})
 					},
 					#[cfg(any(test, fuzzing))]
@@ -11274,7 +11287,7 @@ where
 			self.get_announcement_sigs(node_signer, chain_hash, user_config, block_height, logger);
 
 		if let Some(quiescent_action) = self.quiescent_action.as_ref() {
-			if matches!(quiescent_action, QuiescentAction::Splice(_)) {
+			if matches!(quiescent_action, QuiescentAction::Splice(_) | QuiescentAction::LegacySplice(_)) {
 				self.context.channel_state.set_awaiting_quiescence();
 			}
 		}
@@ -11924,8 +11937,7 @@ where
 	/// - `change_script`: an option change output script. If `None` and needed, one will be
 	///   generated by `SignerProvider::get_destination_script`.
 	pub fn splice_channel<L: Deref>(
-		&mut self, contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: u32,
-		logger: &L,
+		&mut self, contribution: SpliceContribution, logger: &L,
 	) -> Result<Option<msgs::Stfu>, APIError>
 	where
 		L::Target: Logger,
@@ -11939,8 +11951,15 @@ where
 			});
 		}
 
-		// Check if a splice has been initiated already.
-		// Note: only a single outstanding splice is supported (per spec)
+		if self.context.channel_state.is_quiescent() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot be spliced as it is already quiescent",
+					self.context.channel_id(),
+				),
+			});
+		}
+
 		if self.pending_splice.is_some() || self.quiescent_action.is_some() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
@@ -11969,71 +11988,71 @@ where
 			});
 		}
 
-		// Fees for splice-out are paid from the channel balance whereas fees for splice-in
-		// are paid by the funding inputs. Therefore, in the case of splice-out, we add the
-		// fees on top of the user-specified contribution. We leave the user-specified
-		// contribution as-is for splice-ins.
-		let adjusted_funding_contribution = check_splice_contribution_sufficient(
-			&contribution,
-			true,
-			FeeRate::from_sat_per_kwu(u64::from(funding_feerate_per_kw)),
-		)
-		.map_err(|e| APIError::APIMisuseError {
-			err: format!(
-				"Channel {} cannot be {}; {}",
-				self.context.channel_id(),
-				if our_funding_contribution.is_positive() { "spliced in" } else { "spliced out" },
-				e
-			),
-		})?;
+		//// Fees for splice-out are paid from the channel balance whereas fees for splice-in
+		//// are paid by the funding inputs. Therefore, in the case of splice-out, we add the
+		//// fees on top of the user-specified contribution. We leave the user-specified
+		//// contribution as-is for splice-ins.
+		//let adjusted_funding_contribution = check_splice_contribution_sufficient(
+		//	&contribution,
+		//	true,
+		//	FeeRate::from_sat_per_kwu(u64::from(funding_feerate_per_kw)),
+		//)
+		//.map_err(|e| APIError::APIMisuseError {
+		//	err: format!(
+		//		"Channel {} cannot be {}; {}",
+		//		self.context.channel_id(),
+		//		if our_funding_contribution.is_positive() { "spliced in" } else { "spliced out" },
+		//		e
+		//	),
+		//})?;
 
 		// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
 		// (Cannot test for miminum required post-splice channel value)
 		let their_funding_contribution = SignedAmount::ZERO;
 		self.validate_splice_contributions(
-			adjusted_funding_contribution,
+			//adjusted_funding_contribution,
+			our_funding_contribution,
 			their_funding_contribution,
 		)
 		.map_err(|err| APIError::APIMisuseError { err })?;
 
-		for FundingTxInput { utxo, prevtx, .. } in contribution.inputs().iter() {
-			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
-				channel_id: ChannelId([0; 32]),
-				serial_id: 0,
-				prevtx: None,
-				prevtx_out: 0,
-				sequence: 0,
-				// Mutually exclusive with prevtx, which is accounted for below.
-				shared_input_txid: None,
-			};
-			let message_len = MESSAGE_TEMPLATE.serialized_length() + prevtx.serialized_length();
-			if message_len > LN_MAX_MSG_LEN {
-				return Err(APIError::APIMisuseError {
-					err: format!(
-						"Funding input references a prevtx that is too large for tx_add_input: {}",
-						utxo.outpoint,
-					),
-				});
-			}
-		}
+		//for FundingTxInput { utxo, prevtx, .. } in contribution.inputs().iter() {
+		//	const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
+		//		channel_id: ChannelId([0; 32]),
+		//		serial_id: 0,
+		//		prevtx: None,
+		//		prevtx_out: 0,
+		//		sequence: 0,
+		//		// Mutually exclusive with prevtx, which is accounted for below.
+		//		shared_input_txid: None,
+		//	};
+		//	let message_len = MESSAGE_TEMPLATE.serialized_length() + prevtx.serialized_length();
+		//	if message_len > LN_MAX_MSG_LEN {
+		//		return Err(APIError::APIMisuseError {
+		//			err: format!(
+		//				"Funding input references a prevtx that is too large for tx_add_input: {}",
+		//				utxo.outpoint,
+		//			),
+		//		});
+		//	}
+		//}
 
-		let (our_funding_inputs, our_funding_outputs, change_script) = contribution.into_tx_parts();
-
-		let action = QuiescentAction::Splice(SpliceInstructions {
-			adjusted_funding_contribution,
-			our_funding_inputs,
-			our_funding_outputs,
-			change_script,
-			funding_feerate_per_kw,
-			locktime,
-		});
-		self.propose_quiescence(logger, action)
+		self.propose_quiescence(logger, QuiescentAction::Splice(contribution))
 			.map_err(|e| APIError::APIMisuseError { err: e.to_owned() })
 	}
 
-	fn send_splice_init(&mut self, instructions: SpliceInstructions) -> msgs::SpliceInit {
-		debug_assert!(self.pending_splice.is_none());
+	pub fn funding_contributed<L: Deref>(
+		&mut self, context: FundingNegotiationContext, logger: &L,
+	) -> Result<msgs::SpliceInit, APIError>
+	where
+		L::Target: Logger,
+	{
+		// TODO: Add any checks or move them to FundingNegotiationContext construction. Probably
+		// emit a `SpliceFailed` event instead of returning an error
+		Ok(self.send_splice_init_internal(context))
+	}
 
+	fn send_splice_init(&mut self, instructions: SpliceInstructions) -> msgs::SpliceInit {
 		let SpliceInstructions {
 			adjusted_funding_contribution,
 			our_funding_inputs,
@@ -12055,6 +12074,11 @@ where
 			change_script,
 		};
 
+		self.send_splice_init_internal(context)
+	}
+
+	fn send_splice_init_internal(&mut self, context: FundingNegotiationContext) -> msgs::SpliceInit {
+		debug_assert!(self.pending_splice.is_none());
 		// Rotate the funding pubkey using the prev_funding_txid as a tweak
 		let prev_funding_txid = self.funding.get_funding_txid();
 		let funding_pubkey = match (prev_funding_txid, &self.context.holder_signer) {
@@ -12069,6 +12093,10 @@ where
 			_ => todo!(),
 		};
 
+		let funding_feerate_per_kw = context.funding_feerate_sat_per_1000_weight;
+		let funding_contribution_satoshis = context.our_funding_contribution.to_sat();
+		let locktime = context.funding_tx_locktime.to_consensus_u32();
+
 		let funding_negotiation =
 			FundingNegotiation::AwaitingAck { context, new_holder_funding_key: funding_pubkey };
 		self.pending_splice = Some(PendingFunding {
@@ -12080,7 +12108,7 @@ where
 
 		msgs::SpliceInit {
 			channel_id: self.context.channel_id,
-			funding_contribution_satoshis: adjusted_funding_contribution.to_sat(),
+			funding_contribution_satoshis,
 			funding_feerate_per_kw,
 			locktime,
 			funding_pubkey,
@@ -13302,9 +13330,9 @@ where
 						"Internal Error: Didn't have anything to do after reaching quiescence".to_owned()
 					));
 				},
-				Some(QuiescentAction::Splice(instructions)) => {
+				Some(QuiescentAction::LegacySplice(instructions)) => {
 					if self.pending_splice.is_some() {
-						self.quiescent_action = Some(QuiescentAction::Splice(instructions));
+						self.quiescent_action = Some(QuiescentAction::LegacySplice(instructions));
 
 						return Err(ChannelError::WarnAndDisconnect(
 							format!(
@@ -13316,6 +13344,21 @@ where
 
 					let splice_init = self.send_splice_init(instructions);
 					return Ok(Some(StfuResponse::SpliceInit(splice_init)));
+				},
+				Some(QuiescentAction::Splice(contribution)) => {
+					if self.pending_splice.is_some() {
+						self.quiescent_action = Some(QuiescentAction::Splice(contribution));
+
+						return Err(ChannelError::WarnAndDisconnect(
+							format!(
+								"Channel {} cannot be spliced as it already has a splice pending",
+								self.context.channel_id(),
+							),
+						));
+					}
+
+					let contribution = contribution.into_funding_contribution();
+					return Ok(Some(StfuResponse::FundingNeeded(contribution)));
 				},
 				#[cfg(any(test, fuzzing))]
 				Some(QuiescentAction::DoNothing) => {
