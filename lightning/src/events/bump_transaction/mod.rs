@@ -271,6 +271,12 @@ pub struct Input {
 	pub satisfaction_weight: u64,
 }
 
+impl_writeable_tlv_based!(Input, {
+	(1, outpoint, required),
+	(3, previous_utxo, required),
+	(5, satisfaction_weight, required),
+});
+
 /// An unspent transaction output that is available to spend resulting from a successful
 /// [`CoinSelection`] attempt.
 #[derive(Clone, Debug, Hash, PartialOrd, Ord, PartialEq, Eq)]
