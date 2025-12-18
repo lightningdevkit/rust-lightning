@@ -50,7 +50,7 @@ use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::transaction::Version;
 use bitcoin::{
-	OutPoint, Psbt, PubkeyHash, ScriptBuf, Sequence, Transaction, TxIn, TxOut, WPubkeyHash, Witness,
+	FeeRate, OutPoint, Psbt, PubkeyHash, ScriptBuf, Sequence, Transaction, TxIn, TxOut, WPubkeyHash, Witness,
 };
 
 /// A descriptor used to sign for a commitment transaction's anchor output.
@@ -269,6 +269,12 @@ pub struct Input {
 	/// script.
 	pub satisfaction_weight: u64,
 }
+
+impl_writeable_tlv_based!(Input, {
+	(1, outpoint, required),
+	(3, previous_utxo, required),
+	(5, satisfaction_weight, required),
+});
 
 /// An unspent transaction output that is available to spend resulting from a successful
 /// [`CoinSelection`] attempt.

@@ -15,12 +15,13 @@ use core::task;
 
 use crate::chain::chaininterface::BroadcasterInterface;
 use crate::chain::ClaimId;
+use crate::ln::funding::FundingTxInput;
 use crate::prelude::*;
 use crate::sign::SignerProvider;
 use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
 
-use bitcoin::{Psbt, ScriptBuf, Transaction, TxOut};
+use bitcoin::{FeeRate, Psbt, ScriptBuf, Transaction, TxOut};
 
 use super::BumpTransactionEvent;
 use super::{

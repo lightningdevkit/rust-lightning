@@ -11,24 +11,31 @@
 
 use alloc::vec::Vec;
 
-use bitcoin::{Amount, ScriptBuf, SignedAmount, TxOut};
-use bitcoin::{Script, Sequence, Transaction, Weight};
+use bitcoin::{
+	Amount, FeeRate, OutPoint, Script, ScriptBuf, Sequence, SignedAmount, Transaction, TxOut, Weight,
+	WScriptHash,
+};
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::PublicKey;
 
-use crate::events::bump_transaction::Utxo;
-use crate::ln::chan_utils::EMPTY_SCRIPT_SIG_WEIGHT;
+use crate::chain::ClaimId;
+use crate::events::bump_transaction::{CoinSelection, CoinSelectionSource, Input, Utxo};
+use crate::events::bump_transaction::sync::CoinSelectionSourceSync;
+use crate::ln::chan_utils::{make_funding_redeemscript, BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT, FUNDING_TRANSACTION_WITNESS_WEIGHT};
+use crate::ln::interactivetxs::{
+	get_output_weight, TX_COMMON_FIELDS_WEIGHT,
+};
+use crate::ln::msgs;
+use crate::ln::types::ChannelId;
+use crate::ln::LN_MAX_MSG_LEN;
 use crate::sign::{P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
+use crate::util::async_poll::AsyncResult;
 
 /// The components of a splice's funding transaction that are contributed by one party.
 #[derive(Debug, Clone)]
 pub struct SpliceContribution {
-	/// The amount from [`inputs`] to contribute to the splice.
-	///
-	/// [`inputs`]: Self::inputs
+	/// The amount of value to contribute from inputs to the splice's funding transaction.
 	value_added: Amount,
-
-	/// The inputs included in the splice's funding transaction to meet the contributed amount
-	/// plus fees. Any excess amount will be sent to a change output.
-	inputs: Vec<FundingTxInput>,
 
 	/// The outputs to include in the splice's funding transaction. The total value of all
 	/// outputs plus fees will be the amount that is removed.
@@ -41,17 +48,23 @@ pub struct SpliceContribution {
 	change_script: Option<ScriptBuf>,
 }
 
+impl_writeable_tlv_based!(SpliceContribution, {
+	(1, value_added, required),
+	(3, outputs, optional_vec),
+	(5, change_script, option),
+});
+
 impl SpliceContribution {
 	/// Creates a contribution for when funds are only added to a channel.
 	pub fn splice_in(
-		value_added: Amount, inputs: Vec<FundingTxInput>, change_script: Option<ScriptBuf>,
+		value_added: Amount, change_script: Option<ScriptBuf>,
 	) -> Self {
-		Self { value_added, inputs, outputs: vec![], change_script }
+		Self { value_added, outputs: vec![], change_script }
 	}
 
 	/// Creates a contribution for when funds are only removed from a channel.
 	pub fn splice_out(outputs: Vec<TxOut>) -> Self {
-		Self { value_added: Amount::ZERO, inputs: vec![], outputs, change_script: None }
+		Self { value_added: Amount::ZERO, outputs, change_script: None }
 	}
 
 	/// Creates a contribution for when funds are both added to and removed from a channel.
@@ -60,10 +73,9 @@ impl SpliceContribution {
 	/// value removed by `outputs`. The net value contributed can be obtained by calling
 	/// [`SpliceContribution::net_value`].
 	pub fn splice_in_and_out(
-		value_added: Amount, inputs: Vec<FundingTxInput>, outputs: Vec<TxOut>,
-		change_script: Option<ScriptBuf>,
+		value_added: Amount, outputs: Vec<TxOut>, change_script: Option<ScriptBuf>,
 	) -> Self {
-		Self { value_added, inputs, outputs, change_script }
+		Self { value_added, outputs, change_script }
 	}
 
 	/// The net value contributed to a channel by the splice. If negative, more value will be
@@ -81,21 +93,286 @@ impl SpliceContribution {
 		value_added - value_removed
 	}
 
-	pub(super) fn value_added(&self) -> Amount {
-		self.value_added
+	pub(super) fn into_outputs(self) -> Vec<TxOut> {
+		self.outputs
+	}
+}
+
+///
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FundingTemplate {
+	/// The amount from [`inputs`] to contribute to the splice.
+	///
+	/// [`inputs`]: Self::inputs
+	value_added: Amount,
+
+	/// The outputs to include in the splice's funding transaction. The total value of all
+	/// outputs plus fees will be the amount that is removed.
+	outputs: Vec<TxOut>,
+
+	change_script: Option<ScriptBuf>,
+
+	shared_input: Option<Input>,
+
+	is_initiator: bool,
+}
+
+impl_writeable_tlv_based!(FundingTemplate, {
+	(1, value_added, required),
+	(3, outputs, optional_vec),
+	(5, change_script, option),
+	(7, shared_input, option),
+	(9, is_initiator, required),
+});
+
+impl FundingTemplate {
+	///
+	pub(super) fn for_splice(
+		contribution: SpliceContribution, shared_input: Input,
+	) -> Self {
+		let SpliceContribution { value_added, outputs, change_script } = contribution;
+		Self {
+			value_added,
+			outputs,
+			change_script,
+			shared_input: Some(shared_input),
+			is_initiator: true,
+		}
 	}
 
-	pub(super) fn inputs(&self) -> &[FundingTxInput] {
-		&self.inputs[..]
+	/// FIXME: Can these be combined or is a macro needed to DRY them up?
+
+	///
+	pub fn build<'a, W: CoinSelectionSource>(self, wallet: W, feerate: FeeRate) -> AsyncResult<'a, FundingContribution, ()> {
+		todo!()
 	}
 
-	pub(super) fn outputs(&self) -> &[TxOut] {
-		&self.outputs[..]
+	///
+	pub fn build_sync<W: CoinSelectionSourceSync>(self, wallet: W, feerate: FeeRate) -> Result<FundingContribution, ()> {
+		let FundingTemplate { value_added, outputs, change_script, shared_input, is_initiator } = self;
+
+		let value_removed = outputs.iter().map(|txout| txout.value).sum();
+		let is_splice = shared_input.is_some();
+
+		let inputs = if value_added == Amount::ZERO {
+			vec![]
+		} else {
+			// Used for creating a redeem script for the new funding txo, since the funding pubkeys
+			// are unknown at this point. Only needed when selecting which UTXOs to include in the
+			// funding tx that would be sufficient to pay for fees. Hence, the value doesn't matter.
+			let dummy_pubkey = PublicKey::from_slice(&[2; 33]).unwrap();
+
+			let shared_output = bitcoin::TxOut {
+				value: shared_input
+					.as_ref()
+					.map(|shared_input| shared_input.previous_utxo.value)
+					.unwrap_or(Amount::ZERO)
+					.checked_add(value_added)
+					.ok_or(())?
+					.checked_sub(value_removed)
+					.ok_or(())?,
+				script_pubkey: make_funding_redeemscript(&dummy_pubkey, &dummy_pubkey).to_p2wsh(),
+			};
+
+			let claim_id = ClaimId([0; 32]);
+			let must_spend = shared_input.map(|input| vec![input]).unwrap_or_default();
+			let must_pay_to = &[shared_output];
+			let selection = wallet.select_confirmed_utxos(claim_id, must_spend, must_pay_to, feerate.to_sat_per_kwu() as u32, u64::MAX)?;
+			selection.confirmed_utxos
+		};
+
+		// NOTE: Must NOT fail after UTXO selection
+
+		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, is_initiator, is_splice, feerate);
+
+		let contribution = FundingContribution {
+			value_added,
+			value_removed,
+			estimated_fee,
+			inputs,
+			outputs,
+			change_script,
+			feerate,
+			is_initiator,
+			is_splice,
+		};
+
+		Ok(contribution)
+	}
+}
+
+fn estimate_transaction_fee(
+	inputs: &[FundingTxInput], outputs: &[TxOut], is_initiator: bool, is_splice: bool,
+	feerate: FeeRate,
+) -> Amount {
+	let input_weight: u64 = inputs
+		.iter()
+		.map(|input| BASE_INPUT_WEIGHT.saturating_add(input.utxo.satisfaction_weight))
+		.fold(0, |total_weight, input_weight| total_weight.saturating_add(input_weight));
+
+	let output_weight: u64 = outputs
+		.iter()
+		.map(|txout| txout.weight().to_wu())
+		.fold(0, |total_weight, output_weight| total_weight.saturating_add(output_weight));
+
+	let mut weight = input_weight.saturating_add(output_weight);
+
+	// The initiator pays for all common fields and the shared output in the funding transaction.
+	if is_initiator {
+		weight = weight
+			.saturating_add(TX_COMMON_FIELDS_WEIGHT)
+			// The weight of the funding output, a P2WSH output
+			// NOTE: The witness script hash given here is irrelevant as it's a fixed size and we just want
+			// to calculate the contributed weight, so we use an all-zero hash.
+			.saturating_add(get_output_weight(&ScriptBuf::new_p2wsh(
+				&WScriptHash::from_raw_hash(Hash::all_zeros())
+			)).to_wu());
+
+		// The splice initiator pays for the input spending the previous funding output.
+		if is_splice {
+			weight = weight
+				.saturating_add(BASE_INPUT_WEIGHT)
+				.saturating_add(EMPTY_SCRIPT_SIG_WEIGHT)
+				.saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT);
+			#[cfg(feature = "grind_signatures")]
+			{
+				// Guarantees a low R signature
+				weight -= 1;
+			}
+		}
+	}
+
+	Weight::from_wu(weight) * feerate
+}
+
+/// The components of a splice's funding transaction that are contributed by one party.
+#[derive(Debug, Clone)]
+pub struct FundingContribution {
+	value_added: Amount,
+
+	value_removed: Amount,
+
+	estimated_fee: Amount,
+
+	/// The inputs included in the splice's funding transaction to meet the contributed amount
+	/// plus fees. Any excess amount will be sent to a change output.
+	inputs: Vec<FundingTxInput>,
+
+	/// The outputs to include in the splice's funding transaction. The total value of all
+	/// outputs plus fees will be the amount that is removed.
+	outputs: Vec<TxOut>,
+
+	change_script: Option<ScriptBuf>,
+
+	feerate: FeeRate,
+
+	is_initiator: bool,
+
+	is_splice: bool,
+}
+
+impl FundingContribution {
+	/// The net value contributed to a channel by the splice. If negative, more value will be
+	/// spliced out than spliced in.
+	pub fn net_value(&self) -> SignedAmount {
+		let value_added = self.value_added.to_signed().unwrap_or(SignedAmount::MAX);
+		let value_removed = self.value_removed.to_signed().unwrap_or(SignedAmount::MAX);
+
+		value_added - value_removed
+	}
+
+	pub(super) fn feerate(&self) -> FeeRate {
+		self.feerate
+	}
+
+	pub(super) fn is_initiator(&self) -> bool {
+		self.is_initiator
 	}
 
 	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>, Option<ScriptBuf>) {
-		let SpliceContribution { value_added: _, inputs, outputs, change_script } = self;
+		let FundingContribution { inputs, outputs, change_script, .. } = self;
 		(inputs, outputs, change_script)
+	}
+
+	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<OutPoint>, Vec<TxOut>) {
+		(
+			self.inputs.into_iter().map(|input| input.utxo.outpoint).collect(),
+			self.outputs,
+		)
+	}
+
+	pub(super) fn validate(&self) -> Result<SignedAmount, String> {
+		debug_assert!(self.is_splice);
+
+		for FundingTxInput { utxo, prevtx, .. } in self.inputs.iter() {
+			use crate::util::ser::Writeable;
+			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
+				channel_id: ChannelId([0; 32]),
+				serial_id: 0,
+				prevtx: None,
+				prevtx_out: 0,
+				sequence: 0,
+				// Mutually exclusive with prevtx, which is accounted for below.
+				shared_input_txid: None,
+			};
+			let message_len = MESSAGE_TEMPLATE.serialized_length() + prevtx.serialized_length();
+			if message_len > LN_MAX_MSG_LEN {
+				return Err(format!("Funding input references a prevtx that is too large for tx_add_input: {}", utxo.outpoint));
+			}
+		}
+
+		// Fees for splice-out are paid from the channel balance whereas fees for splice-in
+		// are paid by the funding inputs. Therefore, in the case of splice-out, we add the
+		// fees on top of the user-specified contribution. We leave the user-specified
+		// contribution as-is for splice-ins.
+		if !self.inputs.is_empty() {
+			let mut total_input_value = Amount::ZERO;
+			for FundingTxInput { utxo, .. } in self.inputs.iter() {
+				total_input_value = total_input_value
+					.checked_add(utxo.output.value)
+					.ok_or("Sum of input values is greater than the total bitcoin supply")?;
+			}
+
+			// If the inputs are enough to cover intended contribution amount, with fees even when
+			// there is a change output, we are fine.
+			// If the inputs are less, but enough to cover intended contribution amount, with
+			// (lower) fees with no change, we are also fine (change will not be generated).
+			// So it's enough to check considering the lower, no-change fees.
+			//
+			// Note: dust limit is not relevant in this check.
+			//
+			// TODO(splicing): refine check including the fact wether a change will be added or not.
+			// Can be done once dual funding preparation is included.
+
+			let contributed_input_value = self.value_added;
+			let estimated_fee = self.estimated_fee;
+			let minimal_input_amount_needed = contributed_input_value
+				.checked_add(estimated_fee)
+				.ok_or(format!("{contributed_input_value} contribution plus {estimated_fee} fee estimate exceeds the total bitcoin supply"))?;
+			if total_input_value < minimal_input_amount_needed {
+				return Err(format!(
+						"Total input amount {total_input_value} is lower than needed for splice-in contribution {contributed_input_value}, considering fees of {estimated_fee}. Need more inputs.",
+				));
+			}
+		}
+
+		let unpaid_fees = self
+			.inputs
+			.is_empty()
+			.then_some(self.estimated_fee)
+			.unwrap_or(Amount::ZERO)
+			.to_signed()
+			.expect("fees should never exceed Amount::MAX_MONEY");
+		let contribution_amount = self.net_value();
+		let adjusted_contribution = contribution_amount
+			.checked_sub(unpaid_fees)
+			.ok_or(format!(
+				"{} splice-out amount plus {} fee estimate exceeds the total bitcoin supply",
+				contribution_amount.unsigned_abs(),
+				self.estimated_fee,
+			))?;
+
+		Ok(adjusted_contribution)
 	}
 }
 
@@ -253,5 +530,254 @@ impl FundingTxInput {
 	/// Converts the [`FundingTxInput`] into a [`TxOut`].
 	pub fn into_output(self) -> TxOut {
 		self.utxo.output
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use bitcoin::{Amount, FeeRate, ScriptBuf, WPubkeyHash};
+	use bitcoin::transaction::{Transaction, TxOut, Version};
+	use super::{FundingContribution, FundingTxInput, estimate_transaction_fee};
+
+	#[test]
+	#[rustfmt::skip]
+	fn test_estimate_transaction_fee() {
+		let one_input = [funding_input_sats(1_000)];
+		let two_inputs = [funding_input_sats(1_000), funding_input_sats(1_000)];
+
+		// 2 inputs, initiator, 2000 sat/kw feerate
+		assert_eq!(
+			estimate_transaction_fee(&two_inputs, &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1512 } else { 1516 }),
+		);
+
+		// higher feerate
+		assert_eq!(
+			estimate_transaction_fee(&two_inputs, &[], true, false, FeeRate::from_sat_per_kwu(3000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 2268 } else { 2274 }),
+		);
+
+		// only 1 input
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 970 } else { 972 }),
+		);
+
+		// 0 inputs
+		assert_eq!(
+			estimate_transaction_fee(&[], &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(428),
+		);
+
+		// not initiator
+		assert_eq!(
+			estimate_transaction_fee(&[], &[], false, false, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(0),
+		);
+
+		// splice initiator
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &[], true, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1736 } else { 1740 }),
+		);
+
+		// splice acceptor
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &[], false, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 542 } else { 544 }),
+		);
+	}
+
+	#[rustfmt::skip]
+	fn funding_input_sats(input_value_sats: u64) -> FundingTxInput {
+		let prevout = TxOut {
+			value: Amount::from_sat(input_value_sats),
+			script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+		};
+		let prevtx = Transaction {
+			input: vec![], output: vec![prevout],
+			version: Version::TWO, lock_time: bitcoin::absolute::LockTime::ZERO,
+		};
+
+		FundingTxInput::new_p2wpkh(prevtx, 0).unwrap()
+	}
+
+	fn funding_output_sats(output_value_sats: u64) -> TxOut {
+		TxOut {
+			value: Amount::from_sat(output_value_sats),
+			script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+		}
+	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn test_check_v2_funding_inputs_sufficient() {
+		use crate::ln::channel::check_v2_funding_inputs_sufficient;
+
+		// positive case, inputs well over intended contribution
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2278 } else { 2284 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					Amount::from_sat(220_000),
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					&[],
+					true,
+					true,
+					2000,
+				).unwrap(),
+				Amount::from_sat(expected_fee),
+			);
+		}
+
+		// Net splice-in
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2526 } else { 2532 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					Amount::from_sat(220_000),
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					&[
+						funding_output_sats(200_000),
+					],
+					true,
+					true,
+					2000,
+				).unwrap(),
+				Amount::from_sat(expected_fee),
+			);
+		}
+
+		// Net splice-out
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2526 } else { 2532 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					Amount::from_sat(220_000),
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					&[
+						funding_output_sats(400_000),
+					],
+					true,
+					true,
+					2000,
+				).unwrap(),
+				Amount::from_sat(expected_fee),
+			);
+		}
+
+		// Net splice-out, inputs insufficient to cover fees
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 113670 } else { 113940 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					Amount::from_sat(220_000),
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					&[
+						funding_output_sats(400_000),
+					],
+					true,
+					true,
+					90000,
+				),
+				Err(format!(
+					"Total input amount 0.00300000 BTC is lower than needed for splice-in contribution 0.00220000 BTC, considering fees of {}. Need more inputs.",
+					Amount::from_sat(expected_fee),
+				)),
+			);
+		}
+
+		// negative case, inputs clearly insufficient
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 1736 } else { 1740 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					Amount::from_sat(220_000),
+					&[
+						funding_input_sats(100_000),
+					],
+					&[],
+					true,
+					true,
+					2000,
+				),
+				Err(format!(
+					"Total input amount 0.00100000 BTC is lower than needed for splice-in contribution 0.00220000 BTC, considering fees of {}. Need more inputs.",
+					Amount::from_sat(expected_fee),
+				)),
+			);
+		}
+
+		// barely covers
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2278 } else { 2284 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					Amount::from_sat(300_000 - expected_fee - 20),
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					&[],
+					true,
+					true,
+					2000,
+				).unwrap(),
+				Amount::from_sat(expected_fee),
+			);
+		}
+
+		// higher fee rate, does not cover
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2506 } else { 2513 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					Amount::from_sat(298032),
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					&[],
+					true,
+					true,
+					2200,
+				),
+				Err(format!(
+					"Total input amount 0.00300000 BTC is lower than needed for splice-in contribution 0.00298032 BTC, considering fees of {}. Need more inputs.",
+					Amount::from_sat(expected_fee),
+				)),
+			);
+		}
+
+		// barely covers, less fees (no extra weight, not initiator)
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 1084 } else { 1088 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					Amount::from_sat(300_000 - expected_fee - 20),
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					&[],
+					false,
+					false,
+					2000,
+				).unwrap(),
+				Amount::from_sat(expected_fee),
+			);
+		}
 	}
 }
