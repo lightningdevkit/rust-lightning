@@ -25,6 +25,7 @@ use crate::blinded_path::payment::{
 use crate::chain::transaction;
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
+use crate::ln::funding::FundingTemplate;
 use crate::ln::msgs;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::ln::types::ChannelId;
@@ -1817,6 +1818,36 @@ pub enum Event {
 		/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
 		invoice_request: InvoiceRequest,
 	},
+	/// Indicates that funding is needed for a channel splice or a dual-funded channel open.
+	///
+	/// The client should build a [`FundingContribution`] from the provided [`FundingTemplate`] and
+	/// pass it to [`ChannelManager::funding_contributed`].
+	///
+	/// [`FundingContribution`]: crate::ln::funding::FundingContribution
+	/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
+	FundingNeeded {
+		/// The `channel_id` of the channel which you'll need to pass back into
+		/// [`ChannelManager::funding_contributed`].
+		///
+		/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
+		channel_id: ChannelId,
+		/// The counterparty's `node_id`, which you'll need to pass back into
+		/// [`ChannelManager::funding_contributed`].
+		///
+		/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
+		counterparty_node_id: PublicKey,
+		/// The `user_channel_id` value passed in for outbound channels, or for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be randomized for inbound channels.
+		///
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+		/// A template for constructing a [`FundingContribution`], which contains information when
+		/// the funding was initiated.
+		///
+		/// [`FundingContribution`]: crate::ln::funding::FundingContribution
+		funding_template: FundingTemplate,
+	},
 	/// Indicates that a channel funding transaction constructed interactively is ready to be
 	/// signed. This event will only be triggered if at least one input was contributed.
 	///
@@ -2346,6 +2377,20 @@ impl Writeable for Event {
 					(9, abandoned_funding_txo, option),
 					(11, *contributed_inputs, optional_vec),
 					(13, *contributed_outputs, optional_vec),
+				});
+			},
+			&Event::FundingNeeded {
+				ref channel_id,
+				ref user_channel_id,
+				ref counterparty_node_id,
+				ref funding_template,
+			} => {
+				54u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, channel_id, required),
+					(3, user_channel_id, required),
+					(5, counterparty_node_id, required),
+					(7, funding_template, required),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -2975,6 +3020,24 @@ impl MaybeReadable for Event {
 						channel_type,
 						contributed_inputs: contributed_inputs.unwrap_or_default(),
 						contributed_outputs: contributed_outputs.unwrap_or_default(),
+					}))
+				};
+				f()
+			},
+			54u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, channel_id, required),
+						(3, user_channel_id, required),
+						(5, counterparty_node_id, required),
+						(7, funding_template, required),
+					});
+
+					Ok(Some(Event::FundingNeeded {
+						channel_id: channel_id.0.unwrap(),
+						user_channel_id: user_channel_id.0.unwrap(),
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						funding_template: funding_template.0.unwrap(),
 					}))
 				};
 				f()
