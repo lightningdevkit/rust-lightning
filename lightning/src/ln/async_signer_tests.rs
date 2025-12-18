@@ -11,8 +11,7 @@
 //! properly with a signer implementation that asynchronously derives signatures.
 
 use crate::events::bump_transaction::sync::WalletSourceSync;
-use crate::ln::funding::SpliceContribution;
-use crate::ln::splicing_tests::negotiate_splice_tx;
+use crate::ln::splicing_tests::{initiate_splice_out, negotiate_splice_tx};
 use crate::prelude::*;
 use crate::util::ser::Writeable;
 use bitcoin::secp256k1::Secp256k1;
@@ -1573,10 +1572,11 @@ fn test_async_splice_initial_commit_sig() {
 	);
 
 	// Negotiate a splice up until the signature exchange.
-	let contribution = SpliceContribution::splice_out(vec![TxOut {
+	let outputs = vec![TxOut {
 		value: Amount::from_sat(1_000),
 		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-	}]);
+	}];
+	let contribution = initiate_splice_out(initiator, acceptor, channel_id, outputs);
 	negotiate_splice_tx(initiator, acceptor, channel_id, contribution);
 
 	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());

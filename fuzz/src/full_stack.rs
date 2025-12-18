@@ -22,6 +22,7 @@ use bitcoin::opcodes;
 use bitcoin::script::{Builder, ScriptBuf};
 use bitcoin::transaction::Version;
 use bitcoin::transaction::{Transaction, TxIn, TxOut};
+use bitcoin::FeeRate;
 
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -29,8 +30,6 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash as _;
 use bitcoin::hex::FromHex;
 use bitcoin::WPubkeyHash;
-
-use lightning::ln::funding::{FundingTxInput, SpliceContribution};
 
 use lightning::blinded_path::message::{BlindedMessagePath, MessageContext, MessageForwardNode};
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
@@ -41,7 +40,7 @@ use lightning::chain::chaininterface::{
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
-use lightning::events::bump_transaction::sync::WalletSourceSync;
+use lightning::events::bump_transaction::sync::{WalletSourceSync, WalletSync};
 use lightning::events::Event;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager, InterceptId, PaymentId};
@@ -65,6 +64,7 @@ use lightning::sign::{
 	SignerProvider,
 };
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::util::async_poll::{MaybeSend, MaybeSync};
 use lightning::util::config::{ChannelConfig, UserConfig};
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
@@ -227,7 +227,7 @@ type ChannelMan<'a> = ChannelManager<
 			Arc<dyn chain::Filter>,
 			Arc<TestBroadcaster>,
 			Arc<FuzzEstimator>,
-			Arc<dyn Logger>,
+			Arc<dyn Logger + MaybeSend + MaybeSync>,
 			Arc<TestPersister>,
 			Arc<KeyProvider>,
 		>,
@@ -239,14 +239,20 @@ type ChannelMan<'a> = ChannelManager<
 	Arc<FuzzEstimator>,
 	&'a FuzzRouter,
 	&'a FuzzRouter,
-	Arc<dyn Logger>,
+	Arc<dyn Logger + MaybeSend + MaybeSync>,
 >;
 type PeerMan<'a> = PeerManager<
 	Peer<'a>,
 	Arc<ChannelMan<'a>>,
-	Arc<P2PGossipSync<Arc<NetworkGraph<Arc<dyn Logger>>>, Arc<dyn UtxoLookup>, Arc<dyn Logger>>>,
+	Arc<
+		P2PGossipSync<
+			Arc<NetworkGraph<Arc<dyn Logger + MaybeSend + MaybeSync>>>,
+			Arc<dyn UtxoLookup>,
+			Arc<dyn Logger + MaybeSend + MaybeSync>,
+		>,
+	>,
 	IgnoringMessageHandler,
-	Arc<dyn Logger>,
+	Arc<dyn Logger + MaybeSend + MaybeSync>,
 	IgnoringMessageHandler,
 	Arc<KeyProvider>,
 	IgnoringMessageHandler,
@@ -260,7 +266,7 @@ struct MoneyLossDetector<'a> {
 			Arc<dyn chain::Filter>,
 			Arc<TestBroadcaster>,
 			Arc<FuzzEstimator>,
-			Arc<dyn Logger>,
+			Arc<dyn Logger + MaybeSend + MaybeSync>,
 			Arc<TestPersister>,
 			Arc<KeyProvider>,
 		>,
@@ -285,7 +291,7 @@ impl<'a> MoneyLossDetector<'a> {
 				Arc<dyn chain::Filter>,
 				Arc<TestBroadcaster>,
 				Arc<FuzzEstimator>,
-				Arc<dyn Logger>,
+				Arc<dyn Logger + MaybeSend + MaybeSync>,
 				Arc<TestPersister>,
 				Arc<KeyProvider>,
 			>,
@@ -520,7 +526,7 @@ impl SignerProvider for KeyProvider {
 }
 
 #[inline]
-pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
+pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>) {
 	if data.len() < 32 {
 		return;
 	}
@@ -1024,20 +1030,26 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				if splice_in_sats == 0 {
 					continue;
 				}
-				// Create a funding input from the coinbase transaction
-				if let Ok(input) = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 0) {
-					let contribution = SpliceContribution::splice_in(
-						Amount::from_sat(splice_in_sats.min(900_000)), // Cap at available funds minus fees
-						vec![input],
-						Some(wallet.get_change_script().unwrap()),
-					);
-					let _ = channelmanager.splice_channel(
-						&chan.channel_id,
-						&chan.counterparty.node_id,
-						contribution,
-						253, // funding_feerate_per_kw
+				let chan_id = chan.channel_id;
+				let counterparty = chan.counterparty.node_id;
+				if let Ok(funding_template) = channelmanager.splice_channel(
+					&chan_id,
+					&counterparty,
+					FeeRate::from_sat_per_kwu(253),
+				) {
+					let wallet_sync = WalletSync::new(&wallet, Arc::clone(&logger));
+					if let Ok(contribution) = funding_template.splice_in_sync(
 						None,
-					);
+						Amount::from_sat(splice_in_sats.min(900_000)),
+						&wallet_sync,
+					) {
+						let _ = channelmanager.funding_contributed(
+							&chan_id,
+							&counterparty,
+							contribution,
+							None,
+						);
+					}
 				}
 			},
 			// Splice-out: remove funds from a channel
@@ -1060,17 +1072,29 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				// Cap splice-out at a reasonable portion of channel capacity
 				let max_splice_out = chan.channel_value_satoshis / 4;
 				let splice_out_sats = splice_out_sats.min(max_splice_out).max(546); // At least dust limit
-				let contribution = SpliceContribution::splice_out(vec![TxOut {
-					value: Amount::from_sat(splice_out_sats),
-					script_pubkey: wallet.get_change_script().unwrap(),
-				}]);
-				let _ = channelmanager.splice_channel(
-					&chan.channel_id,
-					&chan.counterparty.node_id,
-					contribution,
-					253, // funding_feerate_per_kw
-					None,
-				);
+				let chan_id = chan.channel_id;
+				let counterparty = chan.counterparty.node_id;
+				if let Ok(funding_template) = channelmanager.splice_channel(
+					&chan_id,
+					&counterparty,
+					FeeRate::from_sat_per_kwu(253),
+				) {
+					let outputs = vec![TxOut {
+						value: Amount::from_sat(splice_out_sats),
+						script_pubkey: wallet.get_change_script().unwrap(),
+					}];
+					let wallet_sync = WalletSync::new(&wallet, Arc::clone(&logger));
+					if let Ok(contribution) =
+						funding_template.splice_out_sync(outputs, &wallet_sync)
+					{
+						let _ = channelmanager.funding_contributed(
+							&chan_id,
+							&counterparty,
+							contribution,
+							None,
+						);
+					}
+				}
 			},
 			_ => return,
 		}
@@ -1137,14 +1161,15 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	}
 }
 
-pub fn full_stack_test<Out: test_logger::Output>(data: &[u8], out: Out) {
-	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
+pub fn full_stack_test<Out: test_logger::Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
+	let logger: Arc<dyn Logger + MaybeSend + MaybeSync> =
+		Arc::new(test_logger::TestLogger::new("".to_owned(), out));
 	do_test(data, &logger);
 }
 
 #[no_mangle]
 pub extern "C" fn full_stack_run(data: *const u8, datalen: usize) {
-	let logger: Arc<dyn Logger> =
+	let logger: Arc<dyn Logger + MaybeSend + MaybeSync> =
 		Arc::new(test_logger::TestLogger::new("".to_owned(), test_logger::DevNull {}));
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, &logger);
 }
@@ -1930,6 +1955,7 @@ pub fn write_fst_seeds(path: &str) {
 
 #[cfg(test)]
 mod tests {
+	use lightning::util::async_poll::{MaybeSend, MaybeSync};
 	use lightning::util::logger::{Logger, Record};
 	use std::collections::HashMap;
 	use std::sync::{Arc, Mutex};
@@ -1961,7 +1987,7 @@ mod tests {
 		let test = super::two_peer_forwarding_seed();
 
 		let logger = Arc::new(TrackingLogger { lines: Mutex::new(HashMap::new()) });
-		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger>));
+		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger + MaybeSend + MaybeSync>));
 
 		let log_entries = logger.lines.lock().unwrap();
 		// 1
@@ -1996,7 +2022,7 @@ mod tests {
 		let test = super::gossip_exchange_seed();
 
 		let logger = Arc::new(TrackingLogger { lines: Mutex::new(HashMap::new()) });
-		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger>));
+		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger + MaybeSend + MaybeSync>));
 
 		let log_entries = logger.lines.lock().unwrap();
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Sending message to all peers except Some(PublicKey(0000000000000000000000000000000000000000000000000000000000000002ff00000000000000000000000000000000000000000000000000000000000002)) or the announced channel's counterparties: ChannelAnnouncement { node_signature_1: 3026020200b202200303030303030303030303030303030303030303030303030303030303030303, node_signature_2: 3026020200b202200202020202020202020202020202020202020202020202020202020202020202, bitcoin_signature_1: 3026020200b202200303030303030303030303030303030303030303030303030303030303030303, bitcoin_signature_2: 3026020200b202200202020202020202020202020202020202020202020202020202020202020202, contents: UnsignedChannelAnnouncement { features: [], chain_hash: 6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000, short_channel_id: 42, node_id_1: NodeId(030303030303030303030303030303030303030303030303030303030303030303), node_id_2: NodeId(020202020202020202020202020202020202020202020202020202020202020202), bitcoin_key_1: NodeId(030303030303030303030303030303030303030303030303030303030303030303), bitcoin_key_2: NodeId(020202020202020202020202020202020202020202020202020202020202020202), excess_data: [] } }".to_string())), Some(&1));
@@ -2009,7 +2035,7 @@ mod tests {
 		let test = super::splice_seed();
 
 		let logger = Arc::new(TrackingLogger { lines: Mutex::new(HashMap::new()) });
-		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger>));
+		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger + MaybeSend + MaybeSync>));
 
 		let log_entries = logger.lines.lock().unwrap();
 
