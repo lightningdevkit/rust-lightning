@@ -404,10 +404,10 @@ fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(
 }
 
 pub fn provide_anchor_reserves<'a, 'b, 'c>(nodes: &[Node<'a, 'b, 'c>]) -> Transaction {
-	provide_anchor_utxo_reserves(nodes, 1, Amount::ONE_BTC)
+	provide_utxo_reserves(nodes, 1, Amount::ONE_BTC)
 }
 
-pub fn provide_anchor_utxo_reserves<'a, 'b, 'c>(
+pub fn provide_utxo_reserves<'a, 'b, 'c>(
 	nodes: &[Node<'a, 'b, 'c>], utxos: usize, amount: Amount,
 ) -> Transaction {
 	let mut output = Vec::with_capacity(nodes.len());
@@ -612,6 +612,10 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	}
 	pub fn get_block_header(&self, height: u32) -> Header {
 		self.blocks.lock().unwrap()[height as usize].0.header
+	}
+
+	pub fn provide_funding_utxos(&self, utxos: usize, amount: Amount) -> Transaction {
+		provide_utxo_reserves(core::slice::from_ref(self), utxos, amount)
 	}
 
 	/// Executes `enable_channel_signer_op` for every single signer operation for this channel.

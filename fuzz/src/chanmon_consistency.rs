@@ -26,6 +26,7 @@ use bitcoin::opcodes;
 use bitcoin::script::{Builder, ScriptBuf};
 use bitcoin::transaction::Version;
 use bitcoin::transaction::{Transaction, TxOut};
+use bitcoin::FeeRate;
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -43,6 +44,7 @@ use lightning::chain::{
 	chainmonitor, channelmonitor, BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch,
 };
 use lightning::events;
+use lightning::events::bump_transaction::sync::{WalletSourceSync, WalletSync};
 use lightning::ln::channel::{
 	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS,
 };
@@ -51,7 +53,7 @@ use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
 };
 use lightning::ln::functional_test_utils::*;
-use lightning::ln::funding::{FundingTxInput, SpliceContribution};
+use lightning::ln::funding::SpliceContribution;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, Init, MessageSendEvent,
@@ -70,12 +72,14 @@ use lightning::sign::{
 	SignerProvider,
 };
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::util::async_poll::{MaybeSend, MaybeSync};
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{LengthReadable, ReadableArgs, Writeable, Writer};
 use lightning::util::test_channel_signer::{EnforcementState, TestChannelSigner};
+use lightning::util::test_utils::TestWalletSource;
 
 use lightning_invoice::RawBolt11Invoice;
 
@@ -171,63 +175,6 @@ impl Writer for VecWriter {
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::lightning::io::Error> {
 		self.0.extend_from_slice(buf);
 		Ok(())
-	}
-}
-
-pub struct TestWallet {
-	secret_key: SecretKey,
-	utxos: Mutex<Vec<lightning::events::bump_transaction::Utxo>>,
-	secp: Secp256k1<bitcoin::secp256k1::All>,
-}
-
-impl TestWallet {
-	pub fn new(secret_key: SecretKey) -> Self {
-		Self { secret_key, utxos: Mutex::new(Vec::new()), secp: Secp256k1::new() }
-	}
-
-	fn get_change_script(&self) -> Result<ScriptBuf, ()> {
-		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
-		Ok(ScriptBuf::new_p2wpkh(&public_key.wpubkey_hash().unwrap()))
-	}
-
-	pub fn add_utxo(&self, outpoint: bitcoin::OutPoint, value: Amount) -> TxOut {
-		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
-		let utxo = lightning::events::bump_transaction::Utxo::new_v0_p2wpkh(
-			outpoint,
-			value,
-			&public_key.wpubkey_hash().unwrap(),
-		);
-		self.utxos.lock().unwrap().push(utxo.clone());
-		utxo.output
-	}
-
-	pub fn sign_tx(
-		&self, mut tx: Transaction,
-	) -> Result<Transaction, bitcoin::sighash::P2wpkhError> {
-		let utxos = self.utxos.lock().unwrap();
-		for i in 0..tx.input.len() {
-			if let Some(utxo) =
-				utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output)
-			{
-				let sighash = bitcoin::sighash::SighashCache::new(&tx).p2wpkh_signature_hash(
-					i,
-					&utxo.output.script_pubkey,
-					utxo.output.value,
-					bitcoin::EcdsaSighashType::All,
-				)?;
-				let signature = self.secp.sign_ecdsa(
-					&secp256k1::Message::from_digest(sighash.to_byte_array()),
-					&self.secret_key,
-				);
-				let bitcoin_sig = bitcoin::ecdsa::Signature {
-					signature,
-					sighash_type: bitcoin::EcdsaSighashType::All,
-				};
-				tx.input[i].witness =
-					bitcoin::Witness::p2wpkh(&bitcoin_sig, &self.secret_key.public_key(&self.secp));
-			}
-		}
-		Ok(tx)
 	}
 }
 
@@ -540,7 +487,7 @@ type ChanMan<'a> = ChannelManager<
 	Arc<FuzzEstimator>,
 	&'a FuzzRouter,
 	&'a FuzzRouter,
-	Arc<dyn Logger>,
+	Arc<dyn Logger + MaybeSend + MaybeSync>,
 >;
 
 #[inline]
@@ -657,7 +604,9 @@ fn send_hop_payment(
 }
 
 #[inline]
-pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
+pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
+	data: &[u8], underlying_out: Out, anchors: bool,
+) {
 	let out = SearchingOutput::new(underlying_out);
 	let broadcast = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 	let router = FuzzRouter {};
@@ -684,7 +633,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 	macro_rules! make_node {
 		($node_id: expr, $fee_estimator: expr) => {{
-			let logger: Arc<dyn Logger> =
+			let logger: Arc<dyn Logger + MaybeSend + MaybeSync> =
 				Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let node_secret = SecretKey::from_slice(&[
 				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -734,6 +683,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				),
 				monitor,
 				keys_manager,
+				logger,
 			)
 		}};
 	}
@@ -745,7 +695,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	                   keys,
 	                   fee_estimator| {
 		let keys_manager = Arc::clone(keys);
-		let logger: Arc<dyn Logger> =
+		let logger: Arc<dyn Logger + MaybeSend + MaybeSync> =
 			Arc::new(test_logger::TestLogger::new(node_id.to_string(), out.clone()));
 		let chain_monitor = Arc::new(TestChainMonitor::new(
 			broadcast.clone(),
@@ -1039,9 +989,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 		}};
 	}
 
-	let wallet_a = TestWallet::new(SecretKey::from_slice(&[1; 32]).unwrap());
-	let wallet_b = TestWallet::new(SecretKey::from_slice(&[2; 32]).unwrap());
-	let wallet_c = TestWallet::new(SecretKey::from_slice(&[3; 32]).unwrap());
+	let wallet_a = TestWalletSource::new(SecretKey::from_slice(&[1; 32]).unwrap());
+	let wallet_b = TestWalletSource::new(SecretKey::from_slice(&[2; 32]).unwrap());
+	let wallet_c = TestWalletSource::new(SecretKey::from_slice(&[3; 32]).unwrap());
 	let wallets = vec![wallet_a, wallet_b, wallet_c];
 	let coinbase_tx = bitcoin::Transaction {
 		version: bitcoin::transaction::Version::TWO,
@@ -1055,12 +1005,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			})
 			.collect(),
 	};
-	let coinbase_txid = coinbase_tx.compute_txid();
 	wallets.iter().enumerate().for_each(|(i, w)| {
-		w.add_utxo(
-			bitcoin::OutPoint { txid: coinbase_txid, vout: i as u32 },
-			Amount::from_sat(100_000),
-		);
+		w.add_utxo(coinbase_tx.clone(), i as u32);
 	});
 
 	let fee_est_a = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
@@ -1072,11 +1018,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 	// 3 nodes is enough to hit all the possible cases, notably unknown-source-unknown-dest
 	// forwarding.
-	let (node_a, mut monitor_a, keys_manager_a) = make_node!(0, fee_est_a);
-	let (node_b, mut monitor_b, keys_manager_b) = make_node!(1, fee_est_b);
-	let (node_c, mut monitor_c, keys_manager_c) = make_node!(2, fee_est_c);
+	let (node_a, mut monitor_a, keys_manager_a, logger_a) = make_node!(0, fee_est_a);
+	let (node_b, mut monitor_b, keys_manager_b, logger_b) = make_node!(1, fee_est_b);
+	let (node_c, mut monitor_c, keys_manager_c, logger_c) = make_node!(2, fee_est_c);
 
 	let mut nodes = [node_a, node_b, node_c];
+	let loggers = [logger_a, logger_b, logger_c];
+	let fee_estimators = [Arc::clone(&fee_est_a), Arc::clone(&fee_est_b), Arc::clone(&fee_est_c)];
 
 	let chan_1_id = make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 0);
 	let chan_2_id = make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 1);
@@ -1561,6 +1509,25 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						events::Event::ChannelReady { .. } => {},
 						events::Event::HTLCHandlingFailed { .. } => {},
 
+						events::Event::FundingNeeded {
+							channel_id,
+							counterparty_node_id,
+							funding_template,
+							..
+						} => {
+							let wallet =
+								WalletSync::new(&wallets[$node], Arc::clone(&loggers[$node]));
+							let contribution = funding_template.build_sync(&wallet).unwrap();
+							let locktime = None;
+							nodes[$node]
+								.funding_contributed(
+									&channel_id,
+									&counterparty_node_id,
+									contribution,
+									locktime,
+								)
+								.unwrap();
+						},
 						events::Event::FundingTransactionReadyForSigning {
 							channel_id,
 							counterparty_node_id,
@@ -1898,76 +1865,68 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 
 			0xa0 => {
-				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 0).unwrap();
-				let contribution =
-					SpliceContribution::splice_in(Amount::from_sat(10_000), vec![input], None);
-				let funding_feerate_sat_per_kw = fee_est_a.ret_val.load(atomic::Ordering::Acquire);
+				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000), None);
+				let feerate_sat_per_kw = fee_estimators[0].ret_val.load(atomic::Ordering::Acquire);
+				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
 				if let Err(e) = nodes[0].splice_channel(
 					&chan_a_id,
 					&nodes[1].get_our_node_id(),
 					contribution,
-					funding_feerate_sat_per_kw,
-					None,
+					feerate,
 				) {
 					assert!(
-						matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+						matches!(e, APIError::APIMisuseError { ref err } if err.contains("awaiting splice funding")),
 						"{:?}",
 						e
 					);
 				}
 			},
 			0xa1 => {
-				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 1).unwrap();
-				let contribution =
-					SpliceContribution::splice_in(Amount::from_sat(10_000), vec![input], None);
-				let funding_feerate_sat_per_kw = fee_est_b.ret_val.load(atomic::Ordering::Acquire);
+				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000), None);
+				let feerate_sat_per_kw = fee_estimators[1].ret_val.load(atomic::Ordering::Acquire);
+				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
 				if let Err(e) = nodes[1].splice_channel(
 					&chan_a_id,
 					&nodes[0].get_our_node_id(),
 					contribution,
-					funding_feerate_sat_per_kw,
-					None,
+					feerate,
 				) {
 					assert!(
-						matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+						matches!(e, APIError::APIMisuseError { ref err } if err.contains("awaiting splice funding")),
 						"{:?}",
 						e
 					);
 				}
 			},
 			0xa2 => {
-				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 0).unwrap();
-				let contribution =
-					SpliceContribution::splice_in(Amount::from_sat(10_000), vec![input], None);
-				let funding_feerate_sat_per_kw = fee_est_b.ret_val.load(atomic::Ordering::Acquire);
+				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000), None);
+				let feerate_sat_per_kw = fee_estimators[1].ret_val.load(atomic::Ordering::Acquire);
+				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
 				if let Err(e) = nodes[1].splice_channel(
 					&chan_b_id,
 					&nodes[2].get_our_node_id(),
 					contribution,
-					funding_feerate_sat_per_kw,
-					None,
+					feerate,
 				) {
 					assert!(
-						matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+						matches!(e, APIError::APIMisuseError { ref err } if err.contains("awaiting splice funding")),
 						"{:?}",
 						e
 					);
 				}
 			},
 			0xa3 => {
-				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 1).unwrap();
-				let contribution =
-					SpliceContribution::splice_in(Amount::from_sat(10_000), vec![input], None);
-				let funding_feerate_sat_per_kw = fee_est_c.ret_val.load(atomic::Ordering::Acquire);
+				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000), None);
+				let feerate_sat_per_kw = fee_estimators[2].ret_val.load(atomic::Ordering::Acquire);
+				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
 				if let Err(e) = nodes[2].splice_channel(
 					&chan_b_id,
 					&nodes[1].get_our_node_id(),
 					contribution,
-					funding_feerate_sat_per_kw,
-					None,
+					feerate,
 				) {
 					assert!(
-						matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+						matches!(e, APIError::APIMisuseError { ref err } if err.contains("awaiting splice funding")),
 						"{:?}",
 						e
 					);
@@ -1989,17 +1948,17 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
 						script_pubkey: coinbase_tx.output[0].script_pubkey.clone(),
 					}]);
-					let funding_feerate_sat_per_kw =
-						fee_est_a.ret_val.load(atomic::Ordering::Acquire);
+					let feerate_sat_per_kw =
+						fee_estimators[0].ret_val.load(atomic::Ordering::Acquire);
+					let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
 					if let Err(e) = nodes[0].splice_channel(
 						&chan_a_id,
 						&nodes[1].get_our_node_id(),
 						contribution,
-						funding_feerate_sat_per_kw,
-						None,
+						feerate,
 					) {
 						assert!(
-							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+							matches!(e, APIError::APIMisuseError { ref err } if err.contains("awaiting splice funding")),
 							"{:?}",
 							e
 						);
@@ -2018,17 +1977,17 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
 						script_pubkey: coinbase_tx.output[1].script_pubkey.clone(),
 					}]);
-					let funding_feerate_sat_per_kw =
-						fee_est_b.ret_val.load(atomic::Ordering::Acquire);
+					let feerate_sat_per_kw =
+						fee_estimators[1].ret_val.load(atomic::Ordering::Acquire);
+					let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
 					if let Err(e) = nodes[1].splice_channel(
 						&chan_a_id,
 						&nodes[0].get_our_node_id(),
 						contribution,
-						funding_feerate_sat_per_kw,
-						None,
+						feerate,
 					) {
 						assert!(
-							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+							matches!(e, APIError::APIMisuseError { ref err } if err.contains("awaiting splice funding")),
 							"{:?}",
 							e
 						);
@@ -2047,17 +2006,17 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
 						script_pubkey: coinbase_tx.output[1].script_pubkey.clone(),
 					}]);
-					let funding_feerate_sat_per_kw =
-						fee_est_b.ret_val.load(atomic::Ordering::Acquire);
+					let feerate_sat_per_kw =
+						fee_estimators[1].ret_val.load(atomic::Ordering::Acquire);
+					let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
 					if let Err(e) = nodes[1].splice_channel(
 						&chan_b_id,
 						&nodes[2].get_our_node_id(),
 						contribution,
-						funding_feerate_sat_per_kw,
-						None,
+						feerate,
 					) {
 						assert!(
-							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+							matches!(e, APIError::APIMisuseError { ref err } if err.contains("awaiting splice funding")),
 							"{:?}",
 							e
 						);
@@ -2076,17 +2035,17 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
 						script_pubkey: coinbase_tx.output[2].script_pubkey.clone(),
 					}]);
-					let funding_feerate_sat_per_kw =
-						fee_est_c.ret_val.load(atomic::Ordering::Acquire);
+					let feerate_sat_per_kw =
+						fee_estimators[2].ret_val.load(atomic::Ordering::Acquire);
+					let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
 					if let Err(e) = nodes[2].splice_channel(
 						&chan_b_id,
 						&nodes[1].get_our_node_id(),
 						contribution,
-						funding_feerate_sat_per_kw,
-						None,
+						feerate,
 					) {
 						assert!(
-							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice pending")),
+							matches!(e, APIError::APIMisuseError { ref err } if err.contains("awaiting splice funding")),
 							"{:?}",
 							e
 						);
@@ -2311,7 +2270,7 @@ impl<O: Output> SearchingOutput<O> {
 	}
 }
 
-pub fn chanmon_consistency_test<Out: Output>(data: &[u8], out: Out) {
+pub fn chanmon_consistency_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	do_test(data, out.clone(), false);
 	do_test(data, out, true);
 }
