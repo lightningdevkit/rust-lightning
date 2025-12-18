@@ -3477,6 +3477,8 @@ macro_rules! handle_post_close_monitor_update {
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
 		$per_peer_state_lock: expr, $counterparty_node_id: expr, $channel_id: expr
 	) => {{
+		let _scope = crate::util::logger::LoggerScope::new("handle_post_close_monitor_update");
+
 		let (update_completed, all_updates_complete) = handle_new_monitor_update_internal(
 			$self,
 			&mut $peer_state.in_flight_monitor_updates,
@@ -3514,6 +3516,10 @@ macro_rules! handle_new_monitor_update_locked_actions_handled_by_caller {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $in_flight_monitor_updates: expr, $chan_context: expr
 	) => {{
+		let _scope = crate::util::logger::LoggerScope::new(
+			"handle_new_monitor_update_locked_actions_handled_by_caller",
+		);
+
 		let (update_completed, _all_updates_complete) = handle_new_monitor_update_internal(
 			$self,
 			$in_flight_monitor_updates,
@@ -3532,6 +3538,8 @@ macro_rules! handle_new_monitor_update {
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
 		$per_peer_state_lock: expr, $chan: expr
 	) => {{
+		let _scope = crate::util::logger::LoggerScope::new("handle_new_monitor_update");
+
 		let (update_completed, all_updates_complete) = handle_new_monitor_update_internal(
 			$self,
 			&mut $peer_state.in_flight_monitor_updates,
