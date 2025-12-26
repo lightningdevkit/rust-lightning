@@ -627,7 +627,7 @@ mod test {
 	use crate::util::dyn_signer::{DynKeysInterface, DynPhantomKeysInterface};
 	use crate::util::test_utils;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::hashes::{sha256, Hash};
+	use bitcoin::hashes::Hash;
 	use bitcoin::network::Network;
 	use core::time::Duration;
 	use lightning_invoice::{
@@ -829,7 +829,7 @@ mod test {
 			invoice.description(),
 			Bolt11InvoiceDescriptionRef::Direct(&Description::new("test".to_string()).unwrap())
 		);
-		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&payment_hash.0[..]).unwrap());
+		assert_eq!(invoice.payment_hash(), payment_hash);
 	}
 
 	#[cfg(not(feature = "std"))]
@@ -1257,8 +1257,7 @@ mod test {
 			Duration::from_secs(genesis_timestamp),
 		)
 		.unwrap();
-		let (payment_hash, payment_secret) =
-			(PaymentHash(invoice.payment_hash().to_byte_array()), *invoice.payment_secret());
+		let (payment_hash, payment_secret) = (invoice.payment_hash(), *invoice.payment_secret());
 		let payment_preimage = if user_generated_pmt_hash {
 			user_payment_preimage
 		} else {
@@ -1290,7 +1289,7 @@ mod test {
 			invoice.amount_milli_satoshis().unwrap(),
 		);
 
-		let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());
+		let payment_hash = invoice.payment_hash();
 		let id = PaymentId(payment_hash.0);
 		let onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
 		nodes[0].node.send_payment(payment_hash, onion, id, params, Retry::Attempts(0)).unwrap();

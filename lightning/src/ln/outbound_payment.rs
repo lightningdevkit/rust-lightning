@@ -933,7 +933,7 @@ where
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		let payment_hash = PaymentHash((*invoice.payment_hash()).to_byte_array());
+		let payment_hash = invoice.payment_hash();
 
 		let amount = match (invoice.amount_milli_satoshis(), amount_msats) {
 			(Some(amt), None) | (None, Some(amt)) => amt,

@@ -2230,7 +2230,7 @@ where
 ///     match event {
 ///         Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
 ///             PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
-///                 assert_eq!(payment_hash.0, invoice.payment_hash().as_ref());
+///                 assert_eq!(payment_hash, invoice.payment_hash());
 ///                 println!("Claiming payment {}", payment_hash);
 ///                 channel_manager.claim_funds(payment_preimage);
 ///             },
@@ -2238,7 +2238,7 @@ where
 ///                 println!("Unknown payment hash: {}", payment_hash);
 ///             },
 ///             PaymentPurpose::SpontaneousPayment(payment_preimage) => {
-///                 assert_ne!(payment_hash.0, invoice.payment_hash().as_ref());
+///                 assert_ne!(payment_hash, invoice.payment_hash());
 ///                 println!("Claiming spontaneous payment {}", payment_hash);
 ///                 channel_manager.claim_funds(payment_preimage);
 ///             },
@@ -2246,7 +2246,7 @@ where
 /// #           _ => {},
 ///         },
 ///         Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
-///             assert_eq!(payment_hash.0, invoice.payment_hash().as_ref());
+///             assert_eq!(payment_hash, invoice.payment_hash());
 ///             println!("Claimed {} msats", amount_msat);
 ///         },
 ///         // ...
@@ -2271,7 +2271,7 @@ where
 /// # ) {
 /// # let channel_manager = channel_manager.get_cm();
 /// # let payment_id = PaymentId([42; 32]);
-/// # let payment_hash = PaymentHash((*invoice.payment_hash()).to_byte_array());
+/// # let payment_hash = invoice.payment_hash();
 /// match channel_manager.pay_for_bolt11_invoice(
 ///     invoice, payment_id, None, route_params_config, retry
 /// ) {

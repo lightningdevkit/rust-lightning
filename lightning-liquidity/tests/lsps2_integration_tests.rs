@@ -1211,7 +1211,7 @@ fn client_trusts_lsp_end_to_end_test() {
 		.node
 		.pay_for_bolt11_invoice(
 			&invoice,
-			PaymentId(invoice.payment_hash().to_byte_array()),
+			PaymentId(invoice.payment_hash().0),
 			None,
 			Default::default(),
 			Retry::Attempts(3),
@@ -1684,7 +1684,7 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 		.node
 		.pay_for_bolt11_invoice(
 			&invoice,
-			PaymentId(invoice.payment_hash().to_byte_array()),
+			PaymentId(invoice.payment_hash().0),
 			None,
 			Default::default(),
 			Retry::Attempts(3),
@@ -1714,7 +1714,7 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 					*requested_next_hop_scid,
 					*intercept_id,
 					*expected_outbound_amount_msat,
-					PaymentHash(invoice.payment_hash().to_byte_array()),
+					invoice.payment_hash(),
 				)
 				.unwrap();
 		},
@@ -1875,7 +1875,7 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 		.node
 		.pay_for_bolt11_invoice(
 			&invoice,
-			PaymentId(invoice.payment_hash().to_byte_array()),
+			PaymentId(invoice.payment_hash().0),
 			None,
 			Default::default(),
 			Retry::Attempts(3),
@@ -1905,7 +1905,7 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 					*requested_next_hop_scid,
 					*intercept_id,
 					*expected_outbound_amount_msat,
-					PaymentHash(invoice.payment_hash().to_byte_array()),
+					invoice.payment_hash(),
 				)
 				.unwrap();
 		},
@@ -1984,7 +1984,7 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 	match &client_events[0] {
 		Event::HTLCHandlingFailed { failure_type, .. } => match failure_type {
 			lightning::events::HTLCHandlingFailureType::Receive { payment_hash } => {
-				assert_eq!(*payment_hash, PaymentHash(invoice.payment_hash().to_byte_array()));
+				assert_eq!(*payment_hash, invoice.payment_hash());
 			},
 			_ => panic!("Unexpected failure_type: {:?}", failure_type),
 		},
@@ -2212,7 +2212,7 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 		.node
 		.pay_for_bolt11_invoice(
 			&invoice,
-			PaymentId(invoice.payment_hash().to_byte_array()),
+			PaymentId(invoice.payment_hash().0),
 			None,
 			Default::default(),
 			Retry::Attempts(3),
