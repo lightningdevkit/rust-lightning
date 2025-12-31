@@ -14,6 +14,7 @@ use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::{UtxoFuture, UtxoLookup, UtxoLookupError, UtxoResult};
 use lightning::util::logger::Logger;
 use lightning::util::native_async::FutureSpawner;
+use lightning::util::wakers::Notifier;
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -273,15 +274,15 @@ where
 	Blocks::Target: UtxoSource,
 	L::Target: Logger,
 {
-	fn get_utxo(&self, _chain_hash: &ChainHash, short_channel_id: u64) -> UtxoResult {
-		let res = UtxoFuture::new();
+	fn get_utxo(&self, _chain_hash: &ChainHash, scid: u64, notifier: Arc<Notifier>) -> UtxoResult {
+		let res = UtxoFuture::new(notifier);
 		let fut = res.clone();
 		let source = self.source.clone();
 		let gossiper = Arc::clone(&self.gossiper);
 		let block_cache = Arc::clone(&self.block_cache);
 		let pmw = Arc::clone(&self.peer_manager_wake);
 		self.spawn.spawn(async move {
-			let res = Self::retrieve_utxo(source, block_cache, short_channel_id).await;
+			let res = Self::retrieve_utxo(source, block_cache, scid).await;
 			fut.resolve(gossiper.network_graph(), &*gossiper, res);
 			(pmw)();
 		});

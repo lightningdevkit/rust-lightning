@@ -31,6 +31,7 @@ use lightning::types::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use lightning::util::config::UserConfig;
 use lightning::util::hash_tables::*;
 use lightning::util::ser::LengthReadable;
+use lightning::util::wakers::Notifier;
 
 use bitcoin::hashes::Hash;
 use bitcoin::network::Network;
@@ -93,7 +94,7 @@ struct FuzzChainSource<'a, 'b, Out: test_logger::Output> {
 	net_graph: &'a NetworkGraph<&'b test_logger::TestLogger<Out>>,
 }
 impl<Out: test_logger::Output> UtxoLookup for FuzzChainSource<'_, '_, Out> {
-	fn get_utxo(&self, _chain_hash: &ChainHash, _short_channel_id: u64) -> UtxoResult {
+	fn get_utxo(&self, _chain_hash: &ChainHash, _scid: u64, notifier: Arc<Notifier>) -> UtxoResult {
 		let input_slice = self.input.get_slice(2);
 		if input_slice.is_none() {
 			return UtxoResult::Sync(Err(UtxoLookupError::UnknownTx));
@@ -107,17 +108,17 @@ impl<Out: test_logger::Output> UtxoLookup for FuzzChainSource<'_, '_, Out> {
 			&[0, _] => UtxoResult::Sync(Err(UtxoLookupError::UnknownChain)),
 			&[1, _] => UtxoResult::Sync(Err(UtxoLookupError::UnknownTx)),
 			&[2, _] => {
-				let future = UtxoFuture::new();
+				let future = UtxoFuture::new(notifier);
 				future.resolve_without_forwarding(self.net_graph, Ok(txo_res));
 				UtxoResult::Async(future.clone())
 			},
 			&[3, _] => {
-				let future = UtxoFuture::new();
+				let future = UtxoFuture::new(notifier);
 				future.resolve_without_forwarding(self.net_graph, Err(UtxoLookupError::UnknownTx));
 				UtxoResult::Async(future.clone())
 			},
 			&[4, _] => {
-				UtxoResult::Async(UtxoFuture::new()) // the future will never resolve
+				UtxoResult::Async(UtxoFuture::new(notifier)) // the future will never resolve
 			},
 			&[..] => UtxoResult::Sync(Ok(txo_res)),
 		}

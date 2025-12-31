@@ -23,6 +23,7 @@ use crate::ln::chan_utils::make_funding_redeemscript_from_slices;
 use crate::ln::msgs::{self, ErrorAction, LightningError, MessageSendEvent};
 use crate::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
 use crate::util::logger::{Level, Logger};
+use crate::util::wakers::Notifier;
 
 use crate::prelude::*;
 
@@ -64,8 +65,14 @@ pub trait UtxoLookup {
 	/// Returns an error if `chain_hash` is for a different chain or if such a transaction output is
 	/// unknown.
 	///
+	/// An `async_completion_notifier` is provided which should be [`Notifier::notify`]ed upon
+	/// resolution of the [`UtxoFuture`] in case this method returns [`UtxoResult::Async`].
+	///
 	/// [`short_channel_id`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#definition-of-short_channel_id
-	fn get_utxo(&self, chain_hash: &ChainHash, short_channel_id: u64) -> UtxoResult;
+	fn get_utxo(
+		&self, chain_hash: &ChainHash, short_channel_id: u64,
+		async_completion_notifier: Arc<Notifier>,
+	) -> UtxoResult;
 }
 
 enum ChannelAnnouncement {
@@ -108,6 +115,7 @@ impl ChannelUpdate {
 }
 
 struct UtxoMessages {
+	notifier: Arc<Notifier>,
 	complete: Option<Result<TxOut, UtxoLookupError>>,
 	channel_announce: Option<ChannelAnnouncement>,
 	latest_node_announce_a: Option<NodeAnnouncement>,
@@ -128,23 +136,25 @@ pub struct UtxoFuture {
 /// once we have a concrete resolution of a request.
 pub(crate) struct UtxoResolver(Result<TxOut, UtxoLookupError>);
 impl UtxoLookup for UtxoResolver {
-	fn get_utxo(&self, _chain_hash: &ChainHash, _short_channel_id: u64) -> UtxoResult {
+	fn get_utxo(&self, _hash: &ChainHash, _scid: u64, _notifier: Arc<Notifier>) -> UtxoResult {
 		UtxoResult::Sync(self.0.clone())
 	}
 }
 
 impl UtxoFuture {
 	/// Builds a new future for later resolution.
-	#[rustfmt::skip]
-	pub fn new() -> Self {
-		Self { state: Arc::new(Mutex::new(UtxoMessages {
-			complete: None,
-			channel_announce: None,
-			latest_node_announce_a: None,
-			latest_node_announce_b: None,
-			latest_channel_update_a: None,
-			latest_channel_update_b: None,
-		}))}
+	pub fn new(notifier: Arc<Notifier>) -> Self {
+		Self {
+			state: Arc::new(Mutex::new(UtxoMessages {
+				notifier,
+				complete: None,
+				channel_announce: None,
+				latest_node_announce_a: None,
+				latest_node_announce_b: None,
+				latest_channel_update_a: None,
+				latest_channel_update_b: None,
+			})),
+		}
 	}
 
 	/// Resolves this future against the given `graph` and with the given `result`.
@@ -202,6 +212,7 @@ impl UtxoFuture {
 		let (announcement, node_a, node_b, update_a, update_b) = {
 			let mut pending_checks = graph.pending_checks.internal.lock().unwrap();
 			let mut async_messages = self.state.lock().unwrap();
+			async_messages.notifier.notify();
 
 			if async_messages.channel_announce.is_none() {
 				// We raced returning to `check_channel_announcement` which hasn't updated
@@ -321,14 +332,18 @@ impl PendingChecksContext {
 /// A set of messages which are pending UTXO lookups for processing.
 pub(super) struct PendingChecks {
 	internal: Mutex<PendingChecksContext>,
+	pub(super) completion_notifier: Arc<Notifier>,
 }
 
 impl PendingChecks {
-	#[rustfmt::skip]
 	pub(super) fn new() -> Self {
-		PendingChecks { internal: Mutex::new(PendingChecksContext {
-			channels: new_hash_map(), nodes: new_hash_map(),
-		}) }
+		PendingChecks {
+			internal: Mutex::new(PendingChecksContext {
+				channels: new_hash_map(),
+				nodes: new_hash_map(),
+			}),
+			completion_notifier: Arc::new(Notifier::new()),
+		}
 	}
 
 	/// Checks if there is a pending `channel_update` UTXO validation for the given channel,
@@ -519,7 +534,8 @@ impl PendingChecks {
 				Ok(None)
 			},
 			&Some(ref utxo_lookup) => {
-				match utxo_lookup.get_utxo(&msg.chain_hash, msg.short_channel_id) {
+				let notifier = Arc::clone(&self.completion_notifier);
+				match utxo_lookup.get_utxo(&msg.chain_hash, msg.short_channel_id, notifier) {
 					UtxoResult::Sync(res) => handle_result(res),
 					UtxoResult::Async(future) => {
 						let mut pending_checks = self.internal.lock().unwrap();
@@ -636,9 +652,11 @@ mod tests {
 		// `get_utxo` call can read it still resolve properly.
 		let (valid_announcement, chain_source, network_graph, good_script, ..) = get_test_objects();
 
-		let future = UtxoFuture::new();
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
 		future.resolve_without_forwarding(&network_graph,
 			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		assert!(notifier.notify_pending());
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap();
@@ -652,7 +670,8 @@ mod tests {
 		let (valid_announcement, chain_source, network_graph, good_script,
 			node_a_announce, node_b_announce, ..) = get_test_objects();
 
-		let future = UtxoFuture::new();
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
@@ -662,6 +681,7 @@ mod tests {
 
 		future.resolve_without_forwarding(&network_graph,
 			Ok(TxOut { value: Amount::ZERO, script_pubkey: good_script }));
+		assert!(notifier.notify_pending());
 		network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).unwrap();
 		network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).unwrap();
 
@@ -681,7 +701,8 @@ mod tests {
 		// Test an async lookup which returns an incorrect script
 		let (valid_announcement, chain_source, network_graph, ..) = get_test_objects();
 
-		let future = UtxoFuture::new();
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
@@ -691,6 +712,7 @@ mod tests {
 
 		future.resolve_without_forwarding(&network_graph,
 			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: bitcoin::ScriptBuf::new() }));
+		assert!(notifier.notify_pending());
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 	}
 
@@ -700,7 +722,8 @@ mod tests {
 		// Test an async lookup which returns an error
 		let (valid_announcement, chain_source, network_graph, ..) = get_test_objects();
 
-		let future = UtxoFuture::new();
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
@@ -709,6 +732,7 @@ mod tests {
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 
 		future.resolve_without_forwarding(&network_graph, Err(UtxoLookupError::UnknownTx));
+		assert!(notifier.notify_pending());
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 	}
 
@@ -720,7 +744,8 @@ mod tests {
 		let (valid_announcement, chain_source, network_graph, good_script, node_a_announce,
 			node_b_announce, chan_update_a, chan_update_b, ..) = get_test_objects();
 
-		let future = UtxoFuture::new();
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
@@ -740,8 +765,10 @@ mod tests {
 		assert_eq!(network_graph.update_channel(&chan_update_b).unwrap_err().err,
 			"Awaiting channel_announcement validation to accept channel_update");
 
+		assert!(!notifier.notify_pending());
 		future.resolve_without_forwarding(&network_graph,
 			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		assert!(notifier.notify_pending());
 
 		assert!(network_graph.read_only().channels()
 			.get(&valid_announcement.contents.short_channel_id).unwrap().one_to_two.is_some());
@@ -762,7 +789,8 @@ mod tests {
 		let (valid_announcement, chain_source, network_graph, good_script, _,
 			_, chan_update_a, chan_update_b, chan_update_c, ..) = get_test_objects();
 
-		let future = UtxoFuture::new();
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
@@ -777,8 +805,10 @@ mod tests {
 		assert_eq!(network_graph.update_channel(&chan_update_c).unwrap_err().err,
 			"Awaiting channel_announcement validation to accept channel_update");
 
+		assert!(!notifier.notify_pending());
 		future.resolve_without_forwarding(&network_graph,
 			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		assert!(notifier.notify_pending());
 
 		assert_eq!(chan_update_a.contents.timestamp, chan_update_b.contents.timestamp);
 		let graph_lock = network_graph.read_only();
@@ -797,7 +827,8 @@ mod tests {
 		// only if the channel_announcement message is identical.
 		let (valid_announcement, chain_source, network_graph, good_script, ..) = get_test_objects();
 
-		let future = UtxoFuture::new();
+		let notifier_a = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier_a));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
@@ -806,7 +837,8 @@ mod tests {
 		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 1);
 
 		// If we make a second request with the same message, the call count doesn't increase...
-		let future_b = UtxoFuture::new();
+		let notifier_b = Arc::new(Notifier::new());
+		let future_b = UtxoFuture::new(Arc::clone(&notifier_b));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future_b.clone());
 		assert_eq!(
 			network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err().err,
@@ -827,6 +859,8 @@ mod tests {
 		// Still, if we resolve the original future, the original channel will be accepted.
 		future.resolve_without_forwarding(&network_graph,
 			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		assert!(notifier_a.notify_pending());
+		assert!(!notifier_b.notify_pending());
 		assert!(!network_graph.read_only().channels()
 			.get(&valid_announcement.contents.short_channel_id).unwrap()
 			.announcement_message.as_ref().unwrap()
@@ -842,7 +876,8 @@ mod tests {
 		let (chain_source, network_graph) = get_network();
 
 		// We cheat and use a single future for all the lookups to complete them all at once.
-		let future = UtxoFuture::new();
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -862,6 +897,7 @@ mod tests {
 
 		// Once the future completes the "too many checks" flag should reset.
 		future.resolve_without_forwarding(&network_graph, Err(UtxoLookupError::UnknownTx));
+		assert!(notifier.notify_pending());
 		assert!(!network_graph.pending_checks.too_many_checks_pending());
 	}
 
@@ -874,7 +910,8 @@ mod tests {
 		let (chain_source, network_graph) = get_network();
 
 		// We cheat and use a single future for all the lookups to complete them all at once.
-		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(UtxoFuture::new());
+		let notifier = Arc::new(Notifier::new());
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(UtxoFuture::new(notifier));
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
