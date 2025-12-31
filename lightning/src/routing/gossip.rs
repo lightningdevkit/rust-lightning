@@ -328,7 +328,10 @@ where
 	L::Target: Logger,
 {
 	network_graph: G,
-	utxo_lookup: RwLock<Option<U>>,
+	#[cfg(any(feature = "_test_utils", test))]
+	pub(super) utxo_lookup: Option<U>,
+	#[cfg(not(any(feature = "_test_utils", test)))]
+	utxo_lookup: Option<U>,
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,
 	logger: L,
@@ -341,23 +344,17 @@ where
 {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
 	/// assuming an existing [`NetworkGraph`].
+	///
 	/// UTXO lookup is used to make sure announced channels exist on-chain, channel data is
 	/// correct, and the announcement is signed with channel owners' keys.
 	pub fn new(network_graph: G, utxo_lookup: Option<U>, logger: L) -> Self {
 		P2PGossipSync {
 			network_graph,
 			full_syncs_requested: AtomicUsize::new(0),
-			utxo_lookup: RwLock::new(utxo_lookup),
+			utxo_lookup,
 			pending_events: Mutex::new(vec![]),
 			logger,
 		}
-	}
-
-	/// Adds a provider used to check new announcements. Does not affect
-	/// existing announcements unless they are updated.
-	/// Add, update or remove the provider would replace the current one.
-	pub fn add_utxo_lookup(&self, utxo_lookup: Option<U>) {
-		*self.utxo_lookup.write().unwrap() = utxo_lookup;
 	}
 
 	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
@@ -564,8 +561,7 @@ where
 	fn handle_channel_announcement(
 		&self, _their_node_id: Option<PublicKey>, msg: &msgs::ChannelAnnouncement,
 	) -> Result<bool, LightningError> {
-		self.network_graph
-			.update_channel_from_announcement(msg, &*self.utxo_lookup.read().unwrap())?;
+		self.network_graph.update_channel_from_announcement(msg, &self.utxo_lookup)?;
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 

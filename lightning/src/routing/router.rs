@@ -3943,10 +3943,7 @@ mod tests {
 		ChannelUsage, FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringDecayParameters,
 		ProbabilisticScoringFeeParameters, ScoreLookUp,
 	};
-	use crate::routing::test_utils::{
-		add_channel, add_or_update_node, build_graph, build_line_graph, get_nodes,
-		id_to_feature_flags, update_channel,
-	};
+	use crate::routing::test_utils::*;
 	use crate::routing::utxo::UtxoResult;
 	use crate::types::features::{BlindedHopFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
 	use crate::util::config::UserConfig;
@@ -5368,7 +5365,7 @@ mod tests {
 	fn available_amount_while_routing_test() {
 		// Tests whether we choose the correct available channel amount while routing.
 
-		let (secp_ctx, network_graph, gossip_sync, chain_monitor, logger) = build_graph();
+		let (secp_ctx, network_graph, gossip_sync, chain_monitor, logger) = build_graph_with_gossip_validation();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
 		let random_seed_bytes = [42; 32];
@@ -5588,11 +5585,10 @@ mod tests {
 		.push_opcode(opcodes::all::OP_PUSHNUM_2)
 		.push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_p2wsh();
 
+
 		*chain_monitor.utxo_ret.lock().unwrap() =
 			UtxoResult::Sync(Ok(TxOut { value: Amount::from_sat(15), script_pubkey: good_script.clone() }));
-		gossip_sync.add_utxo_lookup(Some(chain_monitor));
-
-		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 333);
+		add_channel_skipping_utxo_update(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 333);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 333,
