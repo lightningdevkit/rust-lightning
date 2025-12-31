@@ -21,7 +21,7 @@ use bitcoin::hex::DisplayHex;
 
 use crate::ln::chan_utils::make_funding_redeemscript_from_slices;
 use crate::ln::msgs::{self, ErrorAction, LightningError, MessageSendEvent};
-use crate::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
+use crate::routing::gossip::{NetworkGraph, NodeId};
 use crate::util::logger::{Level, Logger};
 use crate::util::wakers::Notifier;
 
@@ -157,176 +157,17 @@ impl UtxoFuture {
 		}
 	}
 
-	/// Resolves this future against the given `graph` and with the given `result`.
-	///
-	/// This is identical to calling [`UtxoFuture::resolve`] with a dummy `gossip`, disabling
-	/// forwarding the validated gossip message onwards to peers.
-	///
-	/// Because this may cause the [`NetworkGraph`]'s [`processing_queue_high`] to flip, in order
-	/// to allow us to interact with peers again, you should call [`PeerManager::process_events`]
-	/// after this.
-	///
-	/// [`processing_queue_high`]: crate::ln::msgs::RoutingMessageHandler::processing_queue_high
-	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
-	pub fn resolve_without_forwarding<L: Deref>(
-		&self, graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>,
-	) where
-		L::Target: Logger,
-	{
-		self.do_resolve(graph, result);
-	}
-
-	/// Resolves this future against the given `graph` and with the given `result`.
-	///
-	/// The given `gossip` is used to broadcast any validated messages onwards to all peers which
-	/// have available buffer space.
-	///
-	/// Because this may cause the [`NetworkGraph`]'s [`processing_queue_high`] to flip, in order
-	/// to allow us to interact with peers again, you should call [`PeerManager::process_events`]
-	/// after this.
-	///
-	/// [`processing_queue_high`]: crate::ln::msgs::RoutingMessageHandler::processing_queue_high
-	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
-	pub fn resolve<
-		L: Deref,
-		G: Deref<Target = NetworkGraph<L>>,
-		U: Deref,
-		GS: Deref<Target = P2PGossipSync<G, U, L>>,
-	>(
-		&self, graph: &NetworkGraph<L>, gossip: GS, result: Result<TxOut, UtxoLookupError>,
-	) where
-		L::Target: Logger,
-		U::Target: UtxoLookup,
-	{
-		let mut res = self.do_resolve(graph, result);
-		for msg_opt in res.iter_mut() {
-			if let Some(msg) = msg_opt.take() {
-				gossip.forward_gossip_msg(msg);
-			}
-		}
-	}
-
-	#[rustfmt::skip]
-	fn do_resolve<L: Deref>(&self, graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>)
-	-> [Option<MessageSendEvent>; 5] where L::Target: Logger {
-		let (announcement, node_a, node_b, update_a, update_b) = {
-			let mut pending_checks = graph.pending_checks.internal.lock().unwrap();
-			let mut async_messages = self.state.lock().unwrap();
-			async_messages.notifier.notify();
-
-			if async_messages.channel_announce.is_none() {
-				// We raced returning to `check_channel_announcement` which hasn't updated
-				// `channel_announce` yet. That's okay, we can set the `complete` field which it will
-				// check once it gets control again.
-				async_messages.complete = Some(result);
-				return [None, None, None, None, None];
-			}
-
-			let announcement_msg = match async_messages.channel_announce.as_ref().unwrap() {
-				ChannelAnnouncement::Full(signed_msg) => &signed_msg.contents,
-				ChannelAnnouncement::Unsigned(msg) => &msg,
-			};
-
-			pending_checks.lookup_completed(announcement_msg, &Arc::downgrade(&self.state));
-
-			(async_messages.channel_announce.take().unwrap(),
-				async_messages.latest_node_announce_a.take(),
-				async_messages.latest_node_announce_b.take(),
-				async_messages.latest_channel_update_a.take(),
-				async_messages.latest_channel_update_b.take())
-		};
-
-		let mut res = [None, None, None, None, None];
-		let mut res_idx = 0;
-
-		// Now that we've updated our internal state, pass the pending messages back through the
-		// network graph with a different `UtxoLookup` which will resolve immediately.
-		// Note that we ignore errors as we don't disconnect peers anyway, so there's nothing to do
-		// with them.
-		let resolver = UtxoResolver(result);
-		let (node_id_1, node_id_2) = match &announcement {
-			ChannelAnnouncement::Full(signed_msg) => (signed_msg.contents.node_id_1, signed_msg.contents.node_id_2),
-			ChannelAnnouncement::Unsigned(msg) => (msg.node_id_1, msg.node_id_2),
-		};
-		match announcement {
-			ChannelAnnouncement::Full(signed_msg) => {
-				if graph.update_channel_from_announcement(&signed_msg, &Some(&resolver)).is_ok() {
-					res[res_idx] = Some(MessageSendEvent::BroadcastChannelAnnouncement {
-						msg: signed_msg, update_msg: None,
-					});
-					res_idx += 1;
-				}
-			},
-			ChannelAnnouncement::Unsigned(msg) => {
-				let _ = graph.update_channel_from_unsigned_announcement(&msg, &Some(&resolver));
-			},
-		}
-
-		for announce in core::iter::once(node_a).chain(core::iter::once(node_b)) {
-			match announce {
-				Some(NodeAnnouncement::Full(signed_msg)) => {
-					if graph.update_node_from_announcement(&signed_msg).is_ok() {
-						res[res_idx] = Some(MessageSendEvent::BroadcastNodeAnnouncement {
-							msg: signed_msg,
-						});
-						res_idx += 1;
-					}
-				},
-				Some(NodeAnnouncement::Unsigned(msg)) => {
-					let _ = graph.update_node_from_unsigned_announcement(&msg);
-				},
-				None => {},
-			}
-		}
-
-		for update in core::iter::once(update_a).chain(core::iter::once(update_b)) {
-			match update {
-				Some(ChannelUpdate::Full(signed_msg)) => {
-					if graph.update_channel(&signed_msg).is_ok() {
-						res[res_idx] = Some(MessageSendEvent::BroadcastChannelUpdate {
-							msg: signed_msg,
-							node_id_1,
-							node_id_2,
-						});
-						res_idx += 1;
-					}
-				},
-				Some(ChannelUpdate::Unsigned(msg)) => {
-					let _ = graph.update_channel_unsigned(&msg);
-				},
-				None => {},
-			}
-		}
-
-		res
+	/// Resolves this future with the given result.
+	pub fn resolve(&self, result: Result<TxOut, UtxoLookupError>) {
+		let mut state = self.state.lock().unwrap();
+		state.complete = Some(result);
+		state.notifier.notify();
 	}
 }
 
 struct PendingChecksContext {
 	channels: HashMap<u64, Weak<Mutex<UtxoMessages>>>,
 	nodes: HashMap<NodeId, Vec<Weak<Mutex<UtxoMessages>>>>,
-}
-
-impl PendingChecksContext {
-	#[rustfmt::skip]
-	fn lookup_completed(&mut self,
-		msg: &msgs::UnsignedChannelAnnouncement, completed_state: &Weak<Mutex<UtxoMessages>>
-	) {
-		if let hash_map::Entry::Occupied(e) = self.channels.entry(msg.short_channel_id) {
-			if Weak::ptr_eq(e.get(), &completed_state) {
-				e.remove();
-			}
-		}
-
-		if let hash_map::Entry::Occupied(mut e) = self.nodes.entry(msg.node_id_1) {
-			e.get_mut().retain(|elem| !Weak::ptr_eq(&elem, &completed_state));
-			if e.get().is_empty() { e.remove(); }
-		}
-		if let hash_map::Entry::Occupied(mut e) = self.nodes.entry(msg.node_id_2) {
-			e.get_mut().retain(|elem| !Weak::ptr_eq(&elem, &completed_state));
-			if e.get().is_empty() { e.remove(); }
-		}
-	}
 }
 
 /// A set of messages which are pending UTXO lookups for processing.
@@ -597,6 +438,142 @@ impl PendingChecks {
 			false
 		}
 	}
+
+	fn resolve_single_future<L: Deref>(
+		&self, graph: &NetworkGraph<L>, entry: Arc<Mutex<UtxoMessages>>,
+		new_messages: &mut Vec<MessageSendEvent>,
+	) where
+		L::Target: Logger,
+	{
+		let (announcement, result, announce_a, announce_b, update_a, update_b);
+		{
+			let mut state = entry.lock().unwrap();
+			announcement = if let Some(announcement) = state.channel_announce.take() {
+				announcement
+			} else {
+				// We raced returning to `check_channel_announcement` which hasn't updated
+				// `channel_announce` yet. That's okay, we can set the `complete` field which it will
+				// check once it gets control again.
+				return;
+			};
+
+			result = if let Some(result) = state.complete.take() {
+				result
+			} else {
+				debug_assert!(false, "Future should have been resolved");
+				return;
+			};
+
+			announce_a = state.latest_node_announce_a.take();
+			announce_b = state.latest_node_announce_b.take();
+			update_a = state.latest_channel_update_a.take();
+			update_b = state.latest_channel_update_b.take();
+		}
+
+		// Now that we've updated our internal state, pass the pending messages back through the
+		// network graph with a different `UtxoLookup` which will resolve immediately.
+		// Note that we ignore errors as we don't disconnect peers anyway, so there's nothing to do
+		// with them.
+		let resolver = UtxoResolver(result);
+		let (node_id_1, node_id_2) = match &announcement {
+			ChannelAnnouncement::Full(signed_msg) => {
+				(signed_msg.contents.node_id_1, signed_msg.contents.node_id_2)
+			},
+			ChannelAnnouncement::Unsigned(msg) => (msg.node_id_1, msg.node_id_2),
+		};
+		match announcement {
+			ChannelAnnouncement::Full(signed_msg) => {
+				if graph.update_channel_from_announcement(&signed_msg, &Some(&resolver)).is_ok() {
+					new_messages.push(MessageSendEvent::BroadcastChannelAnnouncement {
+						msg: signed_msg,
+						update_msg: None,
+					});
+				}
+			},
+			ChannelAnnouncement::Unsigned(msg) => {
+				let _ = graph.update_channel_from_unsigned_announcement(&msg, &Some(&resolver));
+			},
+		}
+
+		for announce in [announce_a, announce_b] {
+			match announce {
+				Some(NodeAnnouncement::Full(signed_msg)) => {
+					if graph.update_node_from_announcement(&signed_msg).is_ok() {
+						new_messages
+							.push(MessageSendEvent::BroadcastNodeAnnouncement { msg: signed_msg });
+					}
+				},
+				Some(NodeAnnouncement::Unsigned(msg)) => {
+					let _ = graph.update_node_from_unsigned_announcement(&msg);
+				},
+				None => {},
+			}
+		}
+
+		for update in [update_a, update_b] {
+			match update {
+				Some(ChannelUpdate::Full(signed_msg)) => {
+					if graph.update_channel(&signed_msg).is_ok() {
+						new_messages.push(MessageSendEvent::BroadcastChannelUpdate {
+							msg: signed_msg,
+							node_id_1,
+							node_id_2,
+						});
+					}
+				},
+				Some(ChannelUpdate::Unsigned(msg)) => {
+					let _ = graph.update_channel_unsigned(&msg);
+				},
+				None => {},
+			}
+		}
+	}
+
+	pub(super) fn check_resolved_futures<L: Deref>(
+		&self, graph: &NetworkGraph<L>,
+	) -> Vec<MessageSendEvent>
+	where
+		L::Target: Logger,
+	{
+		let mut completed_states = Vec::new();
+		{
+			let mut lck = self.internal.lock().unwrap();
+			lck.channels.retain(|_, state| {
+				if let Some(state) = state.upgrade() {
+					if state.lock().unwrap().complete.is_some() {
+						completed_states.push(state);
+						false
+					} else {
+						true
+					}
+				} else {
+					// The UtxoFuture has been dropped, drop the pending-lookup state.
+					false
+				}
+			});
+			lck.nodes.retain(|_, lookups| {
+				lookups.retain(|state| {
+					if let Some(state) = state.upgrade() {
+						if state.lock().unwrap().complete.is_some() {
+							completed_states.push(state);
+							false
+						} else {
+							true
+						}
+					} else {
+						// The UtxoFuture has been dropped, drop the pending-lookup state.
+						false
+					}
+				});
+				!lookups.is_empty()
+			});
+		}
+		let mut res = Vec::with_capacity(completed_states.len() * 5);
+		for state in completed_states {
+			self.resolve_single_future(graph, state, &mut res);
+		}
+		res
+	}
 }
 
 #[cfg(test)]
@@ -654,9 +631,10 @@ mod tests {
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		future
+			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 		assert!(notifier.notify_pending());
+		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap();
@@ -679,9 +657,9 @@ mod tests {
 			"Channel being checked async");
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: Amount::ZERO, script_pubkey: good_script }));
+		future.resolve(Ok(TxOut { value: Amount::ZERO, script_pubkey: good_script }));
 		assert!(notifier.notify_pending());
+		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).unwrap();
 		network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).unwrap();
 
@@ -710,9 +688,10 @@ mod tests {
 			"Channel being checked async");
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: bitcoin::ScriptBuf::new() }));
+		let value = Amount::from_sat(1_000_000);
+		future.resolve(Ok(TxOut { value, script_pubkey: bitcoin::ScriptBuf::new() }));
 		assert!(notifier.notify_pending());
+		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 	}
 
@@ -731,8 +710,9 @@ mod tests {
 			"Channel being checked async");
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 
-		future.resolve_without_forwarding(&network_graph, Err(UtxoLookupError::UnknownTx));
+		future.resolve(Err(UtxoLookupError::UnknownTx));
 		assert!(notifier.notify_pending());
+		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 	}
 
@@ -766,9 +746,10 @@ mod tests {
 			"Awaiting channel_announcement validation to accept channel_update");
 
 		assert!(!notifier.notify_pending());
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		future
+			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 		assert!(notifier.notify_pending());
+		network_graph.pending_checks.check_resolved_futures(&network_graph);
 
 		assert!(network_graph.read_only().channels()
 			.get(&valid_announcement.contents.short_channel_id).unwrap().one_to_two.is_some());
@@ -806,9 +787,9 @@ mod tests {
 			"Awaiting channel_announcement validation to accept channel_update");
 
 		assert!(!notifier.notify_pending());
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		future.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 		assert!(notifier.notify_pending());
+		network_graph.pending_checks.check_resolved_futures(&network_graph);
 
 		assert_eq!(chan_update_a.contents.timestamp, chan_update_b.contents.timestamp);
 		let graph_lock = network_graph.read_only();
@@ -857,10 +838,11 @@ mod tests {
 		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 2);
 
 		// Still, if we resolve the original future, the original channel will be accepted.
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		future
+			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 		assert!(notifier_a.notify_pending());
 		assert!(!notifier_b.notify_pending());
+		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		assert!(!network_graph.read_only().channels()
 			.get(&valid_announcement.contents.short_channel_id).unwrap()
 			.announcement_message.as_ref().unwrap()
@@ -896,8 +878,9 @@ mod tests {
 		assert!(network_graph.pending_checks.too_many_checks_pending());
 
 		// Once the future completes the "too many checks" flag should reset.
-		future.resolve_without_forwarding(&network_graph, Err(UtxoLookupError::UnknownTx));
+		future.resolve(Err(UtxoLookupError::UnknownTx));
 		assert!(notifier.notify_pending());
+		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		assert!(!network_graph.pending_checks.too_many_checks_pending());
 	}
 

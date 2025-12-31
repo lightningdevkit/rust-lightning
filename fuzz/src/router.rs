@@ -89,11 +89,10 @@ impl InputData {
 	}
 }
 
-struct FuzzChainSource<'a, 'b, Out: test_logger::Output> {
+struct FuzzChainSource {
 	input: Arc<InputData>,
-	net_graph: &'a NetworkGraph<&'b test_logger::TestLogger<Out>>,
 }
-impl<Out: test_logger::Output> UtxoLookup for FuzzChainSource<'_, '_, Out> {
+impl UtxoLookup for FuzzChainSource {
 	fn get_utxo(&self, _chain_hash: &ChainHash, _scid: u64, notifier: Arc<Notifier>) -> UtxoResult {
 		let input_slice = self.input.get_slice(2);
 		if input_slice.is_none() {
@@ -109,12 +108,12 @@ impl<Out: test_logger::Output> UtxoLookup for FuzzChainSource<'_, '_, Out> {
 			&[1, _] => UtxoResult::Sync(Err(UtxoLookupError::UnknownTx)),
 			&[2, _] => {
 				let future = UtxoFuture::new(notifier);
-				future.resolve_without_forwarding(self.net_graph, Ok(txo_res));
+				future.resolve(Ok(txo_res));
 				UtxoResult::Async(future.clone())
 			},
 			&[3, _] => {
 				let future = UtxoFuture::new(notifier);
-				future.resolve_without_forwarding(self.net_graph, Err(UtxoLookupError::UnknownTx));
+				future.resolve(Err(UtxoLookupError::UnknownTx));
 				UtxoResult::Async(future.clone())
 			},
 			&[4, _] => {
@@ -198,7 +197,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 	let our_pubkey = get_pubkey!();
 	let net_graph = NetworkGraph::new(Network::Bitcoin, &logger);
-	let chain_source = FuzzChainSource { input: Arc::clone(&input), net_graph: &net_graph };
+	let chain_source = FuzzChainSource { input: Arc::clone(&input) };
 
 	let mut node_pks = new_hash_map();
 	let mut scid = 42;
@@ -336,9 +335,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_1), ());
 				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_2), ());
 				let _ = net_graph
-					.update_channel_from_unsigned_announcement::<&FuzzChainSource<'_, '_, Out>>(
-						&msg, &None,
-					);
+					.update_channel_from_unsigned_announcement::<&FuzzChainSource>(&msg, &None);
 			},
 			2 => {
 				let msg =

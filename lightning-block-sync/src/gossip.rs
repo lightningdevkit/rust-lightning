@@ -283,7 +283,7 @@ where
 		let pmw = Arc::clone(&self.peer_manager_wake);
 		self.spawn.spawn(async move {
 			let res = Self::retrieve_utxo(source, block_cache, scid).await;
-			fut.resolve(gossiper.network_graph(), &*gossiper, res);
+			fut.resolve(res);
 			(pmw)();
 		});
 		UtxoResult::Async(res)

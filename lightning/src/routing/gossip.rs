@@ -378,39 +378,42 @@ where
 		}
 	}
 
-	/// Used to broadcast forward gossip messages which were validated async.
-	///
-	/// Note that this will ignore events other than `Broadcast*` or messages with too much excess
-	/// data.
-	pub(super) fn forward_gossip_msg(&self, mut ev: MessageSendEvent) {
-		match &mut ev {
-			MessageSendEvent::BroadcastChannelAnnouncement { msg, ref mut update_msg } => {
-				if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY {
-					return;
-				}
-				if update_msg.as_ref().map(|msg| msg.contents.excess_data.len()).unwrap_or(0)
-					> MAX_EXCESS_BYTES_FOR_RELAY
-				{
-					*update_msg = None;
-				}
-			},
-			MessageSendEvent::BroadcastChannelUpdate { msg, .. } => {
-				if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY {
-					return;
-				}
-			},
-			MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
-				if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY
-					|| msg.contents.excess_address_data.len() > MAX_EXCESS_BYTES_FOR_RELAY
-					|| msg.contents.excess_data.len() + msg.contents.excess_address_data.len()
+	/// Walks the list of pending UTXO validations and removes completed ones, adding any messages
+	/// we should forward as a result to [`Self::pending_events`].
+	fn process_completed_checks(&self) {
+		let msgs = self.network_graph.pending_checks.check_resolved_futures(&*self.network_graph);
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.reserve(msgs.len());
+		for mut message in msgs {
+			match &mut message {
+				MessageSendEvent::BroadcastChannelAnnouncement { msg, ref mut update_msg } => {
+					if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY {
+						continue;
+					}
+					if update_msg.as_ref().map(|msg| msg.contents.excess_data.len()).unwrap_or(0)
 						> MAX_EXCESS_BYTES_FOR_RELAY
-				{
-					return;
-				}
-			},
-			_ => return,
+					{
+						*update_msg = None;
+					}
+				},
+				MessageSendEvent::BroadcastChannelUpdate { msg, .. } => {
+					if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY {
+						continue;
+					}
+				},
+				MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
+					if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY
+						|| msg.contents.excess_address_data.len() > MAX_EXCESS_BYTES_FOR_RELAY
+						|| msg.contents.excess_data.len() + msg.contents.excess_address_data.len()
+							> MAX_EXCESS_BYTES_FOR_RELAY
+					{
+						continue;
+					}
+				},
+				_ => continue,
+			}
+			pending_events.push(message);
 		}
-		self.pending_events.lock().unwrap().push(ev);
 	}
 }
 
@@ -884,6 +887,7 @@ where
 	}
 
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		self.process_completed_checks();
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();
 		core::mem::swap(&mut ret, &mut pending_events);
