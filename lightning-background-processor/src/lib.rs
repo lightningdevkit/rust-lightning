@@ -1635,28 +1635,17 @@ impl BackgroundProcessor {
 					log_trace!(logger, "Terminating background processor.");
 					break;
 				}
-				let sleeper = match (onion_messenger.as_ref(), liquidity_manager.as_ref()) {
-					(Some(om), Some(lm)) => Sleeper::from_four_futures(
-						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-						&chain_monitor.get_update_future(),
-						&om.get_om().get_update_future(),
-						&lm.get_lm().get_pending_msgs_or_needs_persist_future(),
-					),
-					(Some(om), None) => Sleeper::from_three_futures(
-						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-						&chain_monitor.get_update_future(),
-						&om.get_om().get_update_future(),
-					),
-					(None, Some(lm)) => Sleeper::from_three_futures(
-						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-						&chain_monitor.get_update_future(),
-						&lm.get_lm().get_pending_msgs_or_needs_persist_future(),
-					),
-					(None, None) => Sleeper::from_two_futures(
-						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-						&chain_monitor.get_update_future(),
-					),
-				};
+				let om_fut = onion_messenger.as_ref().map(|om| om.get_om().get_update_future());
+				let lm_fut = liquidity_manager
+					.as_ref()
+					.map(|lm| lm.get_lm().get_pending_msgs_or_needs_persist_future());
+				let always_futures = [
+					channel_manager.get_cm().get_event_or_persistence_needed_future(),
+					chain_monitor.get_update_future(),
+				];
+				let futures = always_futures.into_iter().chain(om_fut).chain(lm_fut);
+				let sleeper = Sleeper::from_futures(futures);
+
 				let batch_delay = if channel_manager.get_cm().needs_pending_htlc_processing() {
 					batch_delay.get()
 				} else {
