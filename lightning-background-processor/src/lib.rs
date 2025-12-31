@@ -64,6 +64,7 @@ use lightning::util::persist::{
 	SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use lightning::util::sweep::{OutputSweeper, OutputSweeperSync};
+use lightning::util::wakers::Future;
 #[cfg(feature = "std")]
 use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
@@ -232,6 +233,14 @@ where
 					None
 				}
 			},
+			GossipSync::None => None,
+		}
+	}
+
+	fn validation_completion_future(&self) -> Option<Future> {
+		match self {
+			GossipSync::P2P(gossip_sync) => Some(gossip_sync.validation_completion_future()),
+			GossipSync::Rapid(_) => None,
 			GossipSync::None => None,
 		}
 	}
@@ -520,12 +529,14 @@ pub(crate) mod futures_util {
 		C: Future<Output = ()> + Unpin,
 		D: Future<Output = ()> + Unpin,
 		E: Future<Output = ()> + Unpin,
+		F: Future<Output = ()> + Unpin,
 	> {
 		pub a: A,
 		pub b: B,
 		pub c: C,
 		pub d: D,
 		pub e: E,
+		pub f: F,
 	}
 
 	pub(crate) enum SelectorOutput {
@@ -534,6 +545,7 @@ pub(crate) mod futures_util {
 		C,
 		D,
 		E,
+		F,
 	}
 
 	impl<
@@ -542,7 +554,8 @@ pub(crate) mod futures_util {
 			C: Future<Output = ()> + Unpin,
 			D: Future<Output = ()> + Unpin,
 			E: Future<Output = ()> + Unpin,
-		> Future for Selector<A, B, C, D, E>
+			F: Future<Output = ()> + Unpin,
+		> Future for Selector<A, B, C, D, E, F>
 	{
 		type Output = SelectorOutput;
 		fn poll(
@@ -580,6 +593,12 @@ pub(crate) mod futures_util {
 				},
 				Poll::Pending => {},
 			}
+			match Pin::new(&mut self.f).poll(ctx) {
+				Poll::Ready(()) => {
+					return Poll::Ready(SelectorOutput::F);
+				},
+				Poll::Pending => {},
+			}
 			Poll::Pending
 		}
 	}
@@ -603,6 +622,12 @@ pub(crate) mod futures_util {
 				},
 				None => Poll::Pending,
 			}
+		}
+	}
+
+	impl<F: Future<Output = ()> + Unpin> From<Option<F>> for OptionalSelector<F> {
+		fn from(optional_future: Option<F>) -> Self {
+			Self { optional_future }
 		}
 	}
 
@@ -1058,18 +1083,13 @@ where
 		if mobile_interruptable_platform {
 			await_start = Some(sleeper(Duration::from_secs(1)));
 		}
-		let om_fut = if let Some(om) = onion_messenger.as_ref() {
-			let fut = om.get_om().get_update_future();
-			OptionalSelector { optional_future: Some(fut) }
-		} else {
-			OptionalSelector { optional_future: None }
-		};
-		let lm_fut = if let Some(lm) = liquidity_manager.as_ref() {
-			let fut = lm.get_lm().get_pending_msgs_or_needs_persist_future();
-			OptionalSelector { optional_future: Some(fut) }
-		} else {
-			OptionalSelector { optional_future: None }
-		};
+		let om_fut: OptionalSelector<_> =
+			onion_messenger.as_ref().map(|om| om.get_om().get_update_future()).into();
+		let lm_fut: OptionalSelector<_> = liquidity_manager
+			.as_ref()
+			.map(|lm| lm.get_lm().get_pending_msgs_or_needs_persist_future())
+			.into();
+		let gv_fut: OptionalSelector<_> = gossip_sync.validation_completion_future().into();
 		let needs_processing = channel_manager.get_cm().needs_pending_htlc_processing();
 		let sleep_delay = match (needs_processing, mobile_interruptable_platform) {
 			(true, true) => batch_delay.get().min(Duration::from_millis(100)),
@@ -1083,9 +1103,14 @@ where
 			c: chain_monitor.get_update_future(),
 			d: om_fut,
 			e: lm_fut,
+			f: gv_fut,
 		};
 		match fut.await {
-			SelectorOutput::B | SelectorOutput::C | SelectorOutput::D | SelectorOutput::E => {},
+			SelectorOutput::B
+			| SelectorOutput::C
+			| SelectorOutput::D
+			| SelectorOutput::E
+			| SelectorOutput::F => {},
 			SelectorOutput::A(exit) => {
 				if exit {
 					break;
@@ -1639,11 +1664,12 @@ impl BackgroundProcessor {
 				let lm_fut = liquidity_manager
 					.as_ref()
 					.map(|lm| lm.get_lm().get_pending_msgs_or_needs_persist_future());
+				let gv_fut = gossip_sync.validation_completion_future();
 				let always_futures = [
 					channel_manager.get_cm().get_event_or_persistence_needed_future(),
 					chain_monitor.get_update_future(),
 				];
-				let futures = always_futures.into_iter().chain(om_fut).chain(lm_fut);
+				let futures = always_futures.into_iter().chain(om_fut).chain(lm_fut).chain(gv_fut);
 				let sleeper = Sleeper::from_futures(futures);
 
 				let batch_delay = if channel_manager.get_cm().needs_pending_htlc_processing() {

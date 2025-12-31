@@ -43,6 +43,7 @@ use crate::util::indexed_map::{
 use crate::util::logger::{Level, Logger};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 use crate::util::ser::{MaybeReadable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
+use crate::util::wakers::Future;
 
 use crate::io;
 use crate::io_extras::{copy, sink};
@@ -365,6 +366,17 @@ where
 	/// This is not exported to bindings users as bindings don't support a reference-to-a-reference yet
 	pub fn network_graph(&self) -> &G {
 		&self.network_graph
+	}
+
+	/// Gets a [`Future`] which will resolve the next time an async validation of gossip data
+	/// completes.
+	///
+	/// If the [`UtxoLookup`] provided in [`P2PGossipSync::new`] does not return
+	/// [`UtxoResult::Async`] values, the returned [`Future`] will never resolve
+	///
+	/// [`UtxoResult::Async`]: crate::routing::utxo::UtxoResult::Async
+	pub fn validation_completion_future(&self) -> Future {
+		self.network_graph.pending_checks.completion_notifier.get_future()
 	}
 
 	/// Returns true when a full routing table sync should be performed with a peer.
