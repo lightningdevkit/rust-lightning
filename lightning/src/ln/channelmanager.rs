@@ -6967,7 +6967,53 @@ where
 					incoming_accept_underpaying_htlcs,
 					next_packet_details_opt.map(|d| d.next_packet_pubkey),
 				) {
-					Ok(info) => htlc_forwards.push((info, update_add_htlc.htlc_id)),
+					Ok(info) => {
+						if info.routing.should_hold_htlc() {
+							let intercept_id = InterceptId::from_htlc_id_and_chan_id(
+								update_add_htlc.htlc_id,
+								&incoming_channel_id,
+								&incoming_counterparty_node_id,
+							);
+							let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
+							match held_htlcs.entry(intercept_id) {
+								hash_map::Entry::Vacant(entry) => {
+									log_trace!(
+										self.logger,
+										"Intercepted held HTLC with id {}, holding until the recipient is online",
+										intercept_id
+									);
+									let pending_add = PendingAddHTLCInfo {
+										prev_outbound_scid_alias: incoming_scid_alias,
+										prev_counterparty_node_id: incoming_counterparty_node_id,
+										prev_funding_outpoint: incoming_funding_txo,
+										prev_channel_id: incoming_channel_id,
+										prev_htlc_id: update_add_htlc.htlc_id,
+										prev_user_channel_id: incoming_user_channel_id,
+										forward_info: info,
+									};
+									entry.insert(pending_add);
+								},
+								hash_map::Entry::Occupied(_) => {
+									debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
+									let reason = LocalHTLCFailureReason::TemporaryNodeFailure;
+									let htlc_fail = self.htlc_failure_from_update_add_err(
+										&update_add_htlc,
+										&incoming_counterparty_node_id,
+										reason,
+										is_intro_node_blinded_forward,
+										&shared_secret,
+									);
+									let failure_type = get_htlc_failure_type(
+										outgoing_scid_opt,
+										update_add_htlc.payment_hash,
+									);
+									htlc_fails.push((htlc_fail, failure_type, reason.into()));
+								},
+							}
+						} else {
+							htlc_forwards.push((info, update_add_htlc.htlc_id))
+						}
+					},
 					Err(inbound_err) => {
 						let failure_type =
 							get_htlc_failure_type(outgoing_scid_opt, update_add_htlc.payment_hash);
@@ -6991,7 +7037,7 @@ where
 				incoming_funding_txo,
 				incoming_channel_id,
 				incoming_user_channel_id,
-				htlc_forwards.drain(..).collect(),
+				htlc_forwards,
 			);
 			self.forward_htlcs(&mut [pending_forwards]);
 			for (htlc_fail, failure_type, failure_reason) in htlc_fails.drain(..) {
@@ -11902,35 +11948,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						));
 					};
 
-					// In the case that we have an HTLC that we're supposed to hold onto until the
-					// recipient comes online *and* the outbound scid is encoded as
-					// `fake_scid::is_valid_intercept`, we should first wait for the recipient to come
-					// online before generating an `HTLCIntercepted` event, since the event cannot be
-					// acted on until the recipient is online to cooperatively open the JIT channel. Once
-					// we receive the `ReleaseHeldHtlc` message from the recipient, we will circle back
-					// here and resume generating the event below.
-					if pending_add.forward_info.routing.should_hold_htlc() {
-						let intercept_id = InterceptId::from_htlc_id_and_chan_id(
-							prev_htlc_id,
-							&prev_channel_id,
-							&prev_counterparty_node_id,
-						);
-						let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
-						match held_htlcs.entry(intercept_id) {
-							hash_map::Entry::Vacant(entry) => {
-								log_trace!(
-									logger,
-									"Intercepted held HTLC with id {}, holding until the recipient is online",
-									intercept_id
-								);
-								entry.insert(pending_add);
-							},
-							hash_map::Entry::Occupied(_) => {
-								debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
-								fail_intercepted_htlc(pending_add);
-							},
-						}
-					} else if !is_our_scid
+					if !is_our_scid
 						&& pending_add.forward_info.incoming_amt_msat.is_some()
 						&& fake_scid::is_valid_intercept(
 							&self.fake_scid_rand_bytes,
