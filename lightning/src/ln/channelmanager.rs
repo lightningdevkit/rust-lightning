@@ -4807,6 +4807,8 @@ where
 		if !chan.context.is_live() {
 			if !chan.context.is_enabled() {
 				return Err(LocalHTLCFailureReason::ChannelDisabled);
+			} else if !chan.context.is_connected() {
+				return Err(LocalHTLCFailureReason::PeerOffline);
 			} else {
 				return Err(LocalHTLCFailureReason::ChannelNotReady);
 			}
