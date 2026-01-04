@@ -58,6 +58,10 @@ const TLV_INVOICE_NODE_ID: u64 = 176;
 /// Human-readable prefix for payer proofs in bech32 encoding.
 pub const PAYER_PROOF_HRP: &str = "lnp";
 
+/// Tag for payer signature computation per BOLT 12 signature calculation.
+/// Format: "lightning" || messagename || fieldname
+const PAYER_SIGNATURE_TAG: &str = concat!("lightning", "payer_proof", "payer_signature");
+
 /// Error when building or verifying a payer proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PayerProofError {
@@ -156,8 +160,7 @@ impl<'a> PayerProofBuilder<'a> {
 	///
 	/// Returns an error if the preimage doesn't match the invoice's payment hash.
 	pub fn new(
-		invoice: &'a Bolt12Invoice,
-		preimage: PaymentPreimage,
+		invoice: &'a Bolt12Invoice, preimage: PaymentPreimage,
 	) -> Result<Self, PayerProofError> {
 		// Verify preimage matches payment_hash
 		let computed_hash = sha256::Hash::hash(&preimage.0);
@@ -326,14 +329,36 @@ impl UnsignedPayerProof {
 		})
 	}
 
+	/// Compute the payer signature message per BOLT 12 signature calculation.
+	///
+	/// The message is computed as:
+	/// 1. inner_msg = SHA256(note || merkle_root)
+	/// 2. tag_hash = SHA256(PAYER_SIGNATURE_TAG)
+	/// 3. final_digest = SHA256(tag_hash || tag_hash || inner_msg)
+	///
+	/// This follows the standard BOLT 12 tagged hash mechanism for signatures,
+	/// where the `msg` parameter is SHA256(note || merkle_root) instead of just
+	/// the merkle root.
 	fn compute_payer_signature_message(note: Option<&str>, merkle_root: &sha256::Hash) -> Message {
-		let mut hasher = sha256::Hash::engine();
+		// Step 1: Compute inner message = SHA256(note || merkle_root)
+		let mut inner_hasher = sha256::Hash::engine();
 		if let Some(n) = note {
-			hasher.input(n.as_bytes());
+			inner_hasher.input(n.as_bytes());
 		}
-		hasher.input(merkle_root.as_ref());
-		let msg_hash = sha256::Hash::from_engine(hasher);
-		Message::from_digest(*msg_hash.as_byte_array())
+		inner_hasher.input(merkle_root.as_ref());
+		let inner_msg = sha256::Hash::from_engine(inner_hasher);
+
+		// Step 2: Compute tag hash
+		let tag_hash = sha256::Hash::hash(PAYER_SIGNATURE_TAG.as_bytes());
+
+		// Step 3: Apply tagged hash: SHA256(tag_hash || tag_hash || inner_msg)
+		let mut final_hasher = sha256::Hash::engine();
+		final_hasher.input(tag_hash.as_ref());
+		final_hasher.input(tag_hash.as_ref());
+		final_hasher.input(inner_msg.as_ref());
+		let final_digest = sha256::Hash::from_engine(final_hasher);
+
+		Message::from_digest(*final_digest.as_byte_array())
 	}
 
 	fn serialize_payer_proof(&self, payer_signature: &Signature, note: Option<&str>) -> Vec<u8> {
@@ -364,7 +389,9 @@ impl UnsignedPayerProof {
 				BigSize(*marker).write(&mut omitted_bytes).expect("Vec write should not fail");
 			}
 			BigSize(TLV_OMITTED_TLVS).write(&mut bytes).expect("Vec write should not fail");
-			BigSize(omitted_bytes.len() as u64).write(&mut bytes).expect("Vec write should not fail");
+			BigSize(omitted_bytes.len() as u64)
+				.write(&mut bytes)
+				.expect("Vec write should not fail");
 			bytes.extend_from_slice(&omitted_bytes);
 		}
 
@@ -546,7 +573,9 @@ impl TryFrom<Vec<u8>> for PayerProof {
 					let _type: BigSize = Readable::read(&mut record_cursor)?;
 					let len: BigSize = Readable::read(&mut record_cursor)?;
 					let mut feature_bytes = vec![0u8; len.0 as usize];
-					record_cursor.read_exact(&mut feature_bytes).map_err(|_| DecodeError::ShortRead)?;
+					record_cursor
+						.read_exact(&mut feature_bytes)
+						.map_err(|_| DecodeError::ShortRead)?;
 					invoice_features = Some(Bolt12InvoiceFeatures::from_le_bytes(feature_bytes));
 					included_types.insert(tlv_type);
 					included_records.push((tlv_type, record.record_bytes.to_vec()));
@@ -570,7 +599,9 @@ impl TryFrom<Vec<u8>> for PayerProof {
 					let _type: BigSize = Readable::read(&mut record_cursor)?;
 					let _len: BigSize = Readable::read(&mut record_cursor)?;
 					let mut preimage_bytes = [0u8; 32];
-					record_cursor.read_exact(&mut preimage_bytes).map_err(|_| DecodeError::ShortRead)?;
+					record_cursor
+						.read_exact(&mut preimage_bytes)
+						.map_err(|_| DecodeError::ShortRead)?;
 					preimage = Some(PaymentPreimage(preimage_bytes));
 				},
 				TLV_OMITTED_TLVS => {
@@ -590,7 +621,9 @@ impl TryFrom<Vec<u8>> for PayerProof {
 					let num_hashes = len.0 / 32;
 					for _ in 0..num_hashes {
 						let mut hash_bytes = [0u8; 32];
-						record_cursor.read_exact(&mut hash_bytes).map_err(|_| DecodeError::ShortRead)?;
+						record_cursor
+							.read_exact(&mut hash_bytes)
+							.map_err(|_| DecodeError::ShortRead)?;
 						missing_hashes.push(sha256::Hash::from_byte_array(hash_bytes));
 					}
 				},
@@ -601,7 +634,9 @@ impl TryFrom<Vec<u8>> for PayerProof {
 					let num_hashes = len.0 / 32;
 					for _ in 0..num_hashes {
 						let mut hash_bytes = [0u8; 32];
-						record_cursor.read_exact(&mut hash_bytes).map_err(|_| DecodeError::ShortRead)?;
+						record_cursor
+							.read_exact(&mut hash_bytes)
+							.map_err(|_| DecodeError::ShortRead)?;
 						leaf_hashes.push(sha256::Hash::from_byte_array(hash_bytes));
 					}
 				},
@@ -614,14 +649,19 @@ impl TryFrom<Vec<u8>> for PayerProof {
 					let note_len = len.0.saturating_sub(64);
 					if note_len > 0 {
 						let mut note_bytes = vec![0u8; note_len as usize];
-						record_cursor.read_exact(&mut note_bytes).map_err(|_| DecodeError::ShortRead)?;
+						record_cursor
+							.read_exact(&mut note_bytes)
+							.map_err(|_| DecodeError::ShortRead)?;
 						payer_note = Some(
-							String::from_utf8(note_bytes)
-								.map_err(|_| DecodeError::InvalidValue)?
+							String::from_utf8(note_bytes).map_err(|_| DecodeError::InvalidValue)?,
 						);
 					}
 				},
 				_ => {
+					// Per spec: payer proofs MUST NOT include invreq_metadata (type 0)
+					if tlv_type == TLV_INVREQ_METADATA {
+						return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
+					}
 					// Other invoice TLV fields - collect for merkle reconstruction
 					if !SIGNATURE_TYPES.contains(&tlv_type) {
 						included_types.insert(tlv_type);
@@ -632,18 +672,22 @@ impl TryFrom<Vec<u8>> for PayerProof {
 		}
 
 		// Validate required fields are present
-		let payer_id = payer_id
-			.ok_or(Bolt12ParseError::InvalidSemantics(crate::offers::parse::Bolt12SemanticError::MissingPayerSigningPubkey))?;
-		let payment_hash = payment_hash
-			.ok_or(Bolt12ParseError::InvalidSemantics(crate::offers::parse::Bolt12SemanticError::MissingPaymentHash))?;
-		let invoice_node_id = invoice_node_id
-			.ok_or(Bolt12ParseError::InvalidSemantics(crate::offers::parse::Bolt12SemanticError::MissingSigningPubkey))?;
-		let invoice_signature = invoice_signature
-			.ok_or(Bolt12ParseError::InvalidSemantics(crate::offers::parse::Bolt12SemanticError::MissingSignature))?;
-		let preimage = preimage
-			.ok_or(Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
-		let payer_signature = payer_signature
-			.ok_or(Bolt12ParseError::InvalidSemantics(crate::offers::parse::Bolt12SemanticError::MissingSignature))?;
+		let payer_id = payer_id.ok_or(Bolt12ParseError::InvalidSemantics(
+			crate::offers::parse::Bolt12SemanticError::MissingPayerSigningPubkey,
+		))?;
+		let payment_hash = payment_hash.ok_or(Bolt12ParseError::InvalidSemantics(
+			crate::offers::parse::Bolt12SemanticError::MissingPaymentHash,
+		))?;
+		let invoice_node_id = invoice_node_id.ok_or(Bolt12ParseError::InvalidSemantics(
+			crate::offers::parse::Bolt12SemanticError::MissingSigningPubkey,
+		))?;
+		let invoice_signature = invoice_signature.ok_or(Bolt12ParseError::InvalidSemantics(
+			crate::offers::parse::Bolt12SemanticError::MissingSignature,
+		))?;
+		let preimage = preimage.ok_or(Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
+		let payer_signature = payer_signature.ok_or(Bolt12ParseError::InvalidSemantics(
+			crate::offers::parse::Bolt12SemanticError::MissingSignature,
+		))?;
 
 		// Validate omitted_tlvs (per spec requirements)
 		validate_omitted_tlvs_for_parsing(&omitted_tlvs, &included_types)
@@ -655,16 +699,15 @@ impl TryFrom<Vec<u8>> for PayerProof {
 		}
 
 		// Reconstruct merkle root from selective disclosure
-		let included_refs: Vec<(u64, &[u8])> = included_records
-			.iter()
-			.map(|(t, b)| (*t, b.as_slice()))
-			.collect();
+		let included_refs: Vec<(u64, &[u8])> =
+			included_records.iter().map(|(t, b)| (*t, b.as_slice())).collect();
 		let merkle_root = merkle::reconstruct_merkle_root(
 			&included_refs,
 			&leaf_hashes,
 			&omitted_tlvs,
 			&missing_hashes,
-		).map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
+		)
+		.map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
 
 		Ok(PayerProof {
 			bytes,
@@ -699,8 +742,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 /// - MUST NOT contain the number of an included TLV field
 /// - MUST NOT contain more than one number larger than the largest included non-signature TLV
 fn validate_omitted_tlvs_for_parsing(
-	omitted_tlvs: &[u64],
-	included_types: &BTreeSet<u64>,
+	omitted_tlvs: &[u64], included_types: &BTreeSet<u64>,
 ) -> Result<(), PayerProofError> {
 	let mut prev = 0u64;
 	let mut trailing_count = 0;
