@@ -2610,46 +2610,6 @@ where
 /// [`update_channel`]: chain::Watch::update_channel
 /// [`ChannelUpdate`]: msgs::ChannelUpdate
 /// [`read`]: ReadableArgs::read
-//
-// Lock order:
-// The tree structure below illustrates the lock order requirements for the different locks of the
-// `ChannelManager`. Locks can be held at the same time if they are on the same branch in the tree,
-// and should then be taken in the order of the lowest to the highest level in the tree.
-// Note that locks on different branches shall not be taken at the same time, as doing so will
-// create a new lock order for those specific locks in the order they were taken.
-//
-// Lock order tree:
-//
-// `pending_offers_messages`
-//
-// `pending_async_payments_messages`
-//
-// `total_consistency_lock`
-//  |
-//  |__`forward_htlcs`
-//  |
-//  |__`pending_intercepted_htlcs`
-//  |
-//  |__`decode_update_add_htlcs`
-//  |
-//  |__`per_peer_state`
-//      |
-//      |__`claimable_payments`
-//      |
-//      |__`pending_outbound_payments` // This field's struct contains a map of pending outbounds
-//         |
-//         |__`peer_state`
-//            |
-//            |__`short_to_chan_info`
-//            |
-//            |__`outbound_scid_aliases`
-//            |
-//            |__`best_block`
-//            |
-//            |__`pending_events`
-//               |
-//               |__`pending_background_events`
-//
 pub struct ChannelManager<
 	M: Deref,
 	T: Deref,
