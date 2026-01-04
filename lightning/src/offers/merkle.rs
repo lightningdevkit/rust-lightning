@@ -341,17 +341,6 @@ pub(super) fn compute_selective_disclosure(
 	tlv_bytes: &[u8], included_types: &BTreeSet<u64>,
 ) -> Result<SelectiveDisclosure, SelectiveDisclosureError> {
 	let mut tlv_stream = TlvStream::new(tlv_bytes).peekable();
-
-	// Get TLV0 for nonce tag computation
-	//
-	// TODO(spec-clarification): The spec notation H("LnNonce"||TLV0,type) is ambiguous.
-	// It could mean either:
-	// 1. Tagged hash: H(H("LnNonce"||TLV0) || H("LnNonce"||TLV0) || type) - BIP340 style
-	// 2. Simple concatenation: H("LnNonce" || TLV0 || type)
-	//
-	// We use interpretation (1) - tagged hash style - which is consistent with how
-	// LnLeaf and LnBranch are computed in the existing BOLT 12 merkle implementation.
-	// This should be confirmed with spec authors or test vectors when available.
 	let first_record = tlv_stream.peek().ok_or(SelectiveDisclosureError::EmptyTlvStream)?;
 	let nonce_tag_hash = sha256::Hash::from_engine({
 		let mut engine = sha256::Hash::engine();
@@ -364,7 +353,6 @@ pub(super) fn compute_selective_disclosure(
 	let nonce_tag = tagged_hash_engine(nonce_tag_hash);
 	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
 
-	// Build per-TLV data
 	let mut tlv_data: Vec<TlvMerkleData> = Vec::new();
 	for record in tlv_stream.filter(|r| !SIGNATURE_TYPES.contains(&r.r#type)) {
 		let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record.record_bytes);
@@ -385,37 +373,15 @@ pub(super) fn compute_selective_disclosure(
 		return Err(SelectiveDisclosureError::EmptyTlvStream);
 	}
 
-	// Compute leaf_hashes (nonce hashes for included TLVs)
 	let leaf_hashes: Vec<_> =
 		tlv_data.iter().filter(|d| d.is_included).map(|d| d.nonce_hash).collect();
-
-	// Compute omitted_tlvs markers
 	let omitted_tlvs = compute_omitted_markers(&tlv_data);
-
-	// Build tree and compute missing_hashes
 	let (merkle_root, missing_hashes) = build_tree_with_disclosure(&tlv_data, &branch_tag);
 
 	Ok(SelectiveDisclosure { leaf_hashes, omitted_tlvs, missing_hashes, merkle_root })
 }
 
 /// Compute omitted_tlvs marker numbers per BOLT 12 payer proof spec.
-///
-/// The marker algorithm (from spec):
-/// - TLV0 is always omitted and implicit (not in markers)
-/// - For omitted TLV after an included one: marker = prev_included_type + 1
-/// - For consecutive omitted TLVs: marker > last_marker (we use last_marker + 1 as minimal value)
-///
-/// The spec says "marker > last_marker" which we satisfy by using the minimal strictly greater
-/// value (last_marker + 1). This produces minimal markers that hide real TLV type numbers while
-/// preserving ordering information needed for merkle reconstruction.
-///
-/// Example from spec:
-/// TLVs: 0(omit), 10(incl), 20(omit), 30(omit), 40(incl), 50(omit), 60(omit)
-/// Markers: [11, 12, 41, 42]
-/// - After 10 (included), omitted 20 gets marker 11 (= 10 + 1)
-/// - Next omitted 30 gets marker 12 (> 11)
-/// - After 40 (included), omitted 50 gets marker 41 (= 40 + 1)
-/// - Next omitted 60 gets marker 42 (> 41)
 fn compute_omitted_markers(tlv_data: &[TlvMerkleData]) -> Vec<u64> {
 	let mut markers = Vec::new();
 	let mut prev_included_type: Option<u64> = None;
@@ -423,20 +389,15 @@ fn compute_omitted_markers(tlv_data: &[TlvMerkleData]) -> Vec<u64> {
 
 	for data in tlv_data {
 		if data.tlv_type == 0 {
-			// TLV0 is always omitted and implicit - skip
 			continue;
 		}
 
 		if !data.is_included {
-			// Compute marker for this omitted TLV
 			let marker = if let Some(prev_type) = prev_included_type {
-				// Previous was included: marker = prev_type + 1
 				prev_type + 1
 			} else if let Some(last_marker) = prev_marker {
-				// Previous was also omitted: marker > last_marker
 				last_marker + 1
 			} else {
-				// First omitted after implicit 0
 				1
 			};
 
@@ -454,34 +415,19 @@ fn compute_omitted_markers(tlv_data: &[TlvMerkleData]) -> Vec<u64> {
 
 /// Build merkle tree and collect missing_hashes for omitted subtrees.
 ///
-/// The `missing_hashes` are collected during bottom-up tree construction and then
-/// sorted by ascending TLV type as required by the spec:
-/// "MUST include the minimal set of merkle hashes of missing merkle leaves or nodes
-/// in `missing_hashes`, in ascending type order."
-///
-/// For internal nodes (combined branches), the "type" used for ordering is the minimum
-/// TLV type covered by that subtree. This ensures the output matches the recursive
-/// left-to-right traversal order described in the spec.
-///
-/// The algorithm: during bottom-up merkle construction, when combining a node where one side
-/// is included and the other is omitted, we collect the omitted side's hash along with
-/// its minimum type. When both sides are omitted, we combine them (the combined hash will
-/// be collected at a higher level if needed). Finally, we sort by type and return just
-/// the hashes.
+/// Returns hashes sorted by ascending TLV type as required by the spec. For internal
+/// nodes, the type used for ordering is the minimum TLV type in that subtree.
 fn build_tree_with_disclosure(
 	tlv_data: &[TlvMerkleData], branch_tag: &sha256::HashEngine,
 ) -> (sha256::Hash, Vec<sha256::Hash>) {
 	let n = tlv_data.len();
 	debug_assert!(n > 0, "TLV stream must contain at least one record");
 
-	// Initialize: 2 leaves per TLV, but we only use even positions for per-TLV hashes
 	let num_leaves = n * 2;
 	let mut hashes: Vec<Option<sha256::Hash>> = vec![None; num_leaves];
 	let mut is_included: Vec<bool> = vec![false; num_leaves];
-	// Track minimum TLV type covered by each position (for sorting missing_hashes)
 	let mut min_types: Vec<u64> = vec![u64::MAX; num_leaves];
 
-	// Fill in per-TLV hashes at even positions
 	for (i, data) in tlv_data.iter().enumerate() {
 		let pos = i * 2;
 		hashes[pos] = Some(data.per_tlv_hash);
@@ -489,12 +435,8 @@ fn build_tree_with_disclosure(
 		min_types[pos] = data.tlv_type;
 	}
 
-	// Collect (min_type, hash) pairs, will sort by min_type at the end
 	let mut missing_with_types: Vec<(u64, sha256::Hash)> = Vec::new();
 
-	// Bottom-up merkle tree construction (same algorithm as root_hash)
-	// Level 0 is already done (per-TLV hashes at even positions after leaf+nonce combining)
-	// We start from level 1
 	for level in 1.. {
 		let step = 2 << level;
 		let offset = step / 2;
@@ -515,16 +457,13 @@ fn build_tree_with_disclosure(
 
 			match (left_hash, right_hash, left_incl, right_incl) {
 				(Some(l), Some(r), true, false) => {
-					// Left included, right omitted -> collect right with its min_type
 					missing_with_types.push((right_min_type, r));
 					hashes[left_pos] =
 						Some(tagged_branch_hash_from_engine(branch_tag.clone(), l, r));
 					is_included[left_pos] = true;
-					// min_type for combined node is min of both children
 					min_types[left_pos] = core::cmp::min(left_min_type, right_min_type);
 				},
 				(Some(l), Some(r), false, true) => {
-					// Left omitted, right included -> collect left with its min_type
 					missing_with_types.push((left_min_type, l));
 					hashes[left_pos] =
 						Some(tagged_branch_hash_from_engine(branch_tag.clone(), l, r));
@@ -532,31 +471,26 @@ fn build_tree_with_disclosure(
 					min_types[left_pos] = core::cmp::min(left_min_type, right_min_type);
 				},
 				(Some(l), Some(r), true, true) => {
-					// Both included -> just combine
 					hashes[left_pos] =
 						Some(tagged_branch_hash_from_engine(branch_tag.clone(), l, r));
 					is_included[left_pos] = true;
 					min_types[left_pos] = core::cmp::min(left_min_type, right_min_type);
 				},
 				(Some(l), Some(r), false, false) => {
-					// Both omitted -> combine but mark as omitted (will be collected later)
 					hashes[left_pos] =
 						Some(tagged_branch_hash_from_engine(branch_tag.clone(), l, r));
 					is_included[left_pos] = false;
 					min_types[left_pos] = core::cmp::min(left_min_type, right_min_type);
 				},
 				(Some(l), None, incl, _) => {
-					// Odd node - propagate unchanged
 					hashes[left_pos] = Some(l);
 					is_included[left_pos] = incl;
-					// min_type already set from left
 				},
 				_ => unreachable!("Invalid state in merkle tree construction"),
 			}
 		}
 	}
 
-	// Sort by ascending type order as required by spec
 	missing_with_types.sort_by_key(|(min_type, _)| *min_type);
 	let missing_hashes: Vec<sha256::Hash> =
 		missing_with_types.into_iter().map(|(_, h)| h).collect();
@@ -566,56 +500,37 @@ fn build_tree_with_disclosure(
 
 /// Reconstruct merkle root from selective disclosure data.
 ///
-/// This is used during payer proof verification to reconstruct the invoice's
-/// merkle root from the included TLV records and disclosure data.
-///
-/// The `missing_hashes` are expected in ascending type order per spec. This function
-/// first identifies which positions need missing hashes, sorts them by min_type,
-/// and maps the provided hashes accordingly before running the bottom-up reconstruction.
-///
-/// # Arguments
-/// * `included_records` - Iterator of (type, record_bytes) for included TLVs
-/// * `leaf_hashes` - Nonce hashes for included TLVs (from payer_proof)
-/// * `omitted_tlvs` - Marker numbers for omitted TLVs (from payer_proof)
-/// * `missing_hashes` - Merkle hashes for omitted subtrees (from payer_proof), in ascending type order
+/// The `missing_hashes` must be in ascending type order per spec.
 pub(super) fn reconstruct_merkle_root<'a>(
 	included_records: &[(u64, &'a [u8])], leaf_hashes: &[sha256::Hash], omitted_tlvs: &[u64],
 	missing_hashes: &[sha256::Hash],
 ) -> Result<sha256::Hash, SelectiveDisclosureError> {
-	// Validate omitted_tlvs
 	validate_omitted_tlvs(omitted_tlvs)?;
 
-	// Check leaf_hashes count
 	if included_records.len() != leaf_hashes.len() {
 		return Err(SelectiveDisclosureError::LeafHashCountMismatch);
 	}
 
-	// Extract sorted included types for position reconstruction
 	let included_types: Vec<u64> = included_records.iter().map(|(t, _)| *t).collect();
-
-	// Reconstruct position map using the new algorithm
 	let positions = reconstruct_positions(&included_types, omitted_tlvs);
 
 	let total_tlvs = positions.len();
 	let num_leaves = total_tlvs * 2;
 
-	// Compute per-TLV hashes for included TLVs
 	let leaf_tag = tagged_hash_engine(sha256::Hash::hash("LnLeaf".as_bytes()));
 	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
 
 	let mut hashes: Vec<Option<sha256::Hash>> = vec![None; num_leaves];
 	let mut is_included: Vec<bool> = vec![false; num_leaves];
-	// Track minimum position (which corresponds to min type) for each tree position
 	let mut min_positions: Vec<usize> = (0..num_leaves).collect();
 
 	let mut leaf_hash_idx = 0;
 	for (i, &incl) in positions.iter().enumerate() {
 		let pos = i * 2;
 		is_included[pos] = incl;
-		min_positions[pos] = i; // Position i corresponds to type at position i
+		min_positions[pos] = i;
 
 		if incl {
-			// Compute per-TLV hash from included data + leaf_hashes
 			let (_, record_bytes) = included_records[leaf_hash_idx];
 			let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record_bytes);
 			let nonce_hash = leaf_hashes[leaf_hash_idx];
@@ -625,9 +540,8 @@ pub(super) fn reconstruct_merkle_root<'a>(
 		}
 	}
 
-	// First pass: identify all positions that need missing hashes and their min_positions
-	// We simulate the bottom-up algorithm to find these positions
-	let mut needs_hash: Vec<(usize, usize)> = Vec::new(); // (min_position, tree_position)
+	// First pass: identify positions needing missing hashes
+	let mut needs_hash: Vec<(usize, usize)> = Vec::new();
 	{
 		let mut temp_hashes: Vec<Option<()>> = vec![None; num_leaves];
 		let mut temp_included: Vec<bool> = is_included.clone();
@@ -692,21 +606,19 @@ pub(super) fn reconstruct_merkle_root<'a>(
 		}
 	}
 
-	// Sort by min_position (ascending type order) and create position -> hash mapping
 	needs_hash.sort_by_key(|(min_pos, _)| *min_pos);
 
 	if needs_hash.len() != missing_hashes.len() {
 		return Err(SelectiveDisclosureError::InsufficientMissingHashes);
 	}
 
-	// Map tree_position -> hash
 	let mut hash_map: alloc::collections::BTreeMap<usize, sha256::Hash> =
 		alloc::collections::BTreeMap::new();
 	for (i, (_, tree_pos)) in needs_hash.iter().enumerate() {
 		hash_map.insert(*tree_pos, missing_hashes[i]);
 	}
 
-	// Second pass: actual reconstruction using the pre-mapped hashes
+	// Second pass: reconstruction
 	for level in 1.. {
 		let step = 2 << level;
 		let offset = step / 2;
@@ -729,7 +641,6 @@ pub(super) fn reconstruct_merkle_root<'a>(
 
 			match (left_hash, right_hash, left_incl, right_incl) {
 				(Some(l), None, true, false) => {
-					// Left included, right omitted -> get right hash from map
 					let r = hash_map
 						.get(&right_pos)
 						.ok_or(SelectiveDisclosureError::InsufficientMissingHashes)?;
@@ -739,7 +650,6 @@ pub(super) fn reconstruct_merkle_root<'a>(
 					min_positions[left_pos] = core::cmp::min(left_min, right_min);
 				},
 				(None, Some(r), false, true) => {
-					// Left omitted, right included -> get left hash from map
 					let l = hash_map
 						.get(&left_pos)
 						.ok_or(SelectiveDisclosureError::InsufficientMissingHashes)?;
@@ -749,23 +659,18 @@ pub(super) fn reconstruct_merkle_root<'a>(
 					min_positions[left_pos] = core::cmp::min(left_min, right_min);
 				},
 				(Some(l), Some(r), _, _) => {
-					// Both present (either computed or from previous level)
 					hashes[left_pos] =
 						Some(tagged_branch_hash_from_engine(branch_tag.clone(), l, r));
 					is_included[left_pos] = true;
 					min_positions[left_pos] = core::cmp::min(left_min, right_min);
 				},
 				(Some(l), None, false, false) => {
-					// Odd node propagation (left exists, right doesn't)
 					hashes[left_pos] = Some(l);
-					// is_included stays as-is
 				},
 				(None, None, false, false) => {
-					// Both fully omitted - propagate None, combined hash pulled at higher level
 					min_positions[left_pos] = core::cmp::min(left_min, right_min);
 				},
 				_ => {
-					// Unexpected state
 					return Err(SelectiveDisclosureError::InsufficientMissingHashes);
 				},
 			};
