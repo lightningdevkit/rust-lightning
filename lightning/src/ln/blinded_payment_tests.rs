@@ -32,7 +32,7 @@ use crate::routing::router::{
 use crate::sign::{NodeSigner, PeerStorageKey, ReceiveAuthKey, Recipient};
 use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentSecret};
-use crate::util::config::UserConfig;
+use crate::util::config::{HTLCInterceptionFlags, UserConfig};
 use crate::util::ser::{WithoutLength, Writeable};
 use crate::util::test_utils::{self, bytes_from_hex, pubkey_from_hex, secret_from_hex};
 use bitcoin::hex::DisplayHex;
@@ -703,7 +703,8 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut intercept_forwards_config = test_default_channel_config();
-	intercept_forwards_config.accept_intercept_htlcs = true;
+	intercept_forwards_config.htlc_interception_flags =
+		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
