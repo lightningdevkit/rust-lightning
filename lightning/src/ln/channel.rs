@@ -7503,6 +7503,7 @@ where
 					Vec::new(),
 					Vec::new(),
 					Vec::new(),
+					logger,
 				);
 				UpdateFulfillCommitFetch::NewClaim { monitor_update, htlc_value_msat }
 			},
@@ -7912,7 +7913,7 @@ where
 
 		log_info!(logger, "Received initial commitment_signed from peer for channel {}", &self.context.channel_id());
 
-		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new(), logger);
 		self.context.interactive_tx_signing_session.as_mut().expect("signing session should be present").received_commitment_signed();
 		Ok(channel_monitor)
 	}
@@ -8016,7 +8017,15 @@ where
 			.as_mut()
 			.expect("Signing session must exist for negotiated pending splice")
 			.received_commitment_signed();
-		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+		self.monitor_updating_paused(
+			false,
+			false,
+			false,
+			Vec::new(),
+			Vec::new(),
+			Vec::new(),
+			logger,
+		);
 
 		Ok(self.push_ret_blockable_mon_update(monitor_update))
 	}
@@ -8328,6 +8337,7 @@ where
 			Vec::new(),
 			Vec::new(),
 			Vec::new(),
+			logger,
 		);
 		return Ok(self.push_ret_blockable_mon_update(monitor_update));
 	}
@@ -8533,7 +8543,15 @@ where
 				if update_fee.is_some() { "a fee update, " } else { "" },
 				update_add_count, update_fulfill_count, update_fail_count);
 
-			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
+			self.monitor_updating_paused(
+				false,
+				true,
+				false,
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+				logger,
+			);
 			(self.push_ret_blockable_mon_update(monitor_update), htlcs_to_fail)
 		} else {
 			(None, Vec::new())
@@ -8911,6 +8929,7 @@ where
 					to_forward_infos,
 					revoked_htlcs,
 					finalized_claimed_htlcs,
+					logger,
 				);
 				return_with_htlcs_to_fail!(htlcs_to_fail);
 			},
@@ -8956,6 +8975,7 @@ where
 						to_forward_infos,
 						revoked_htlcs,
 						finalized_claimed_htlcs,
+						logger,
 					);
 					return_with_htlcs_to_fail!(htlcs_to_fail);
 				} else {
@@ -8969,6 +8989,7 @@ where
 						to_forward_infos,
 						revoked_htlcs,
 						finalized_claimed_htlcs,
+						logger,
 					);
 					return_with_htlcs_to_fail!(htlcs_to_fail);
 				}
@@ -9369,12 +9390,17 @@ where
 	/// [`ChannelManager`]: super::channelmanager::ChannelManager
 	/// [`chain::Watch`]: crate::chain::Watch
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
-	fn monitor_updating_paused(
+	fn monitor_updating_paused<L: Deref>(
 		&mut self, resend_raa: bool, resend_commitment: bool, resend_channel_ready: bool,
 		mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 		mut pending_finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
-	) {
+		logger: &L,
+	) where
+		L::Target: Logger,
+	{
+		log_trace!(logger, "Pausing channel monitor updates");
+
 		self.context.monitor_pending_revoke_and_ack |= resend_raa;
 		self.context.monitor_pending_commitment_signed |= resend_commitment;
 		self.context.monitor_pending_channel_ready |= resend_channel_ready;
@@ -10425,12 +10451,16 @@ where
 		}
 	}
 
-	pub fn shutdown(
-		&mut self, signer_provider: &SP, their_features: &InitFeatures, msg: &msgs::Shutdown,
+	pub fn shutdown<L: Deref>(
+		&mut self, logger: &L, signer_provider: &SP, their_features: &InitFeatures,
+		msg: &msgs::Shutdown,
 	) -> Result<
 		(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>),
 		ChannelError,
-	> {
+	>
+	where
+		L::Target: Logger,
+	{
 		if self.context.channel_state.is_peer_disconnected() {
 			return Err(ChannelError::close(
 				"Peer sent shutdown when we needed a channel_reestablish".to_owned(),
@@ -10535,7 +10565,15 @@ where
 				}],
 				channel_id: Some(self.context.channel_id()),
 			};
-			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+			self.monitor_updating_paused(
+				false,
+				false,
+				false,
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+				logger,
+			);
 			self.push_ret_blockable_mon_update(monitor_update)
 		} else {
 			None
@@ -11292,7 +11330,15 @@ where
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};
-		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+		self.monitor_updating_paused(
+			false,
+			false,
+			false,
+			Vec::new(),
+			Vec::new(),
+			Vec::new(),
+			logger,
+		);
 		let monitor_update = self.push_ret_blockable_mon_update(monitor_update);
 
 		let announcement_sigs =
@@ -13016,7 +13062,15 @@ where
 		let can_add_htlc = send_res.map_err(|(_, msg)| ChannelError::Ignore(msg))?;
 		if can_add_htlc {
 			let monitor_update = self.build_commitment_no_status_check(logger);
-			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
+			self.monitor_updating_paused(
+				false,
+				true,
+				false,
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+				logger,
+			);
 			Ok(self.push_ret_blockable_mon_update(monitor_update))
 		} else {
 			Ok(None)
@@ -13042,13 +13096,19 @@ where
 
 	/// Begins the shutdown process, getting a message for the remote peer and returning all
 	/// holding cell HTLCs for payment failure.
-	pub fn get_shutdown(
+	pub fn get_shutdown<L: Deref>(
 		&mut self, signer_provider: &SP, their_features: &InitFeatures,
 		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>,
+		logger: &L,
 	) -> Result<
 		(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>),
 		APIError,
-	> {
+	>
+	where
+		L::Target: Logger,
+	{
+		let logger = WithChannelContext::from(logger, &self.context, None);
+
 		if self.context.channel_state.is_local_stfu_sent()
 			|| self.context.channel_state.is_remote_stfu_sent()
 			|| self.context.channel_state.is_quiescent()
@@ -13133,7 +13193,15 @@ where
 				}],
 				channel_id: Some(self.context.channel_id()),
 			};
-			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+			self.monitor_updating_paused(
+				false,
+				false,
+				false,
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+				&&logger,
+			);
 			self.push_ret_blockable_mon_update(monitor_update)
 		} else {
 			None
@@ -13743,7 +13811,7 @@ where
 
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
 			|| channel.context.signer_pending_channel_ready;
-		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
+		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new(), logger);
 		Ok((channel, channel_monitor))
 	}
 
@@ -14030,7 +14098,7 @@ where
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
 			|| channel.context.signer_pending_channel_ready;
-		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
+		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new(), logger);
 
 		Ok((channel, funding_signed, channel_monitor))
 	}
