@@ -50,8 +50,8 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg, HTLCSource,
-	OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus,
+	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg, HTLCPreviousHopData,
+	HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus,
 	RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT,
 	MIN_CLTV_EXPIRY_DELTA,
 };
@@ -1164,6 +1164,10 @@ pub(super) struct MonitorRestoreUpdates {
 	pub channel_ready_order: ChannelReadyOrder,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub tx_signatures: Option<msgs::TxSignatures>,
+	// The sources of outbound HTLCs that were forwarded and irrevocably committed on this channel
+	// (the outbound edge). Useful to prune data that must be persisted in the inbound edge channel
+	// until the HTLC is forwarded.
+	pub committed_outbound_htlc_sources: Vec<HTLCPreviousHopData>,
 }
 
 /// The return value of `signer_maybe_unblocked`
@@ -7793,6 +7797,19 @@ where
 			.collect()
 	}
 
+	/// This inbound HTLC was irrevocably forwarded to the outbound edge, so we no longer need to
+	/// persist its onion.
+	pub(super) fn prune_inbound_htlc_onion(&mut self, htlc_id: u64) {
+		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
+			if htlc.htlc_id == htlc_id {
+				if let InboundHTLCState::Committed { ref mut update_add_htlc_opt } = htlc.state {
+					update_add_htlc_opt.take();
+					return;
+				}
+			}
+		}
+	}
+
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
 	fn mark_outbound_htlc_removed(
@@ -9503,6 +9520,14 @@ where
 		mem::swap(&mut finalized_claimed_htlcs, &mut self.context.monitor_pending_finalized_fulfills);
 		let mut pending_update_adds = Vec::new();
 		mem::swap(&mut pending_update_adds, &mut self.context.monitor_pending_update_adds);
+		let committed_outbound_htlc_sources = self.context.pending_outbound_htlcs.iter().filter_map(|htlc| {
+			if let &OutboundHTLCState::Committed = &htlc.state {
+				if let HTLCSource::PreviousHopData(prev_hop_data) = &htlc.source {
+					return Some(prev_hop_data.clone())
+				}
+			}
+			None
+		}).collect();
 
 		if self.context.channel_state.is_peer_disconnected() {
 			self.context.monitor_pending_revoke_and_ack = false;
@@ -9511,7 +9536,7 @@ where
 				raa: None, commitment_update: None, commitment_order: RAACommitmentOrder::RevokeAndACKFirst,
 				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
 				funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None,
-				channel_ready_order,
+				channel_ready_order, committed_outbound_htlc_sources
 			};
 		}
 
@@ -9542,7 +9567,7 @@ where
 		MonitorRestoreUpdates {
 			raa, commitment_update, commitment_order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
 			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None,
-			channel_ready_order,
+			channel_ready_order, committed_outbound_htlc_sources
 		}
 	}
 
