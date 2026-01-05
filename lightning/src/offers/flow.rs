@@ -1319,6 +1319,7 @@ where
 			num_dummy_hops,
 			self.receive_auth_key,
 			context,
+			false,
 			&*entropy,
 			&self.secp_ctx,
 		)

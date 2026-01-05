@@ -272,7 +272,7 @@ where
 /// ];
 /// let context = MessageContext::Custom(Vec::new());
 /// let receive_key = keys_manager.get_receive_auth_key();
-/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, receive_key, context, &keys_manager, &secp_ctx);
+/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, receive_key, context, false, &keys_manager, &secp_ctx);
 ///
 /// // Send a custom onion message to a blinded path.
 /// let destination = Destination::BlindedPath(blinded_path);
@@ -598,12 +598,12 @@ where
 		let is_recipient_announced =
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
 
-		let (mut compact_paths, dummy_hopd_path_len) = match &context {
+		let (size_constrained, path_len_incl_dummys) = match &context {
 			MessageContext::Offers(OffersContext::InvoiceRequest { .. })
 			| MessageContext::Offers(OffersContext::OutboundPaymentForRefund { .. }) => {
-				// When embedding blinded paths within BOLT 12 objects which are generally embedded
-				// in QR codes, we sadly need to be conservative about size, especially if the QR
-				// code ultimately also includes an on-chain address.
+				// When including blinded paths within BOLT 12 objects that appear in QR codes, we
+				// sadly need to be conservative about size, especially if the QR code ultimately
+				// also includes an on-chain address.
 				(true, QR_CODED_DUMMY_HOPS_PATH_LENGTH)
 			},
 			MessageContext::Offers(OffersContext::StaticInvoiceRequested { .. }) => {
@@ -621,9 +621,7 @@ where
 			},
 		};
 
-		if never_compact_path {
-			compact_paths = false;
-		}
+		let compact_paths = !never_compact_path && size_constrained;
 
 		let has_one_peer = peers.len() == 1;
 		let mut peer_info = peers
@@ -653,7 +651,7 @@ where
 
 		let build_path = |intermediate_hops: &[MessageForwardNode]| {
 			// Calculate the dummy hops given the total hop count target (including the recipient).
-			let dummy_hops_count = dummy_hopd_path_len.saturating_sub(intermediate_hops.len() + 1);
+			let dummy_hops_count = path_len_incl_dummys.saturating_sub(intermediate_hops.len() + 1);
 
 			BlindedMessagePath::new_with_dummy_hops(
 				intermediate_hops,
@@ -661,6 +659,7 @@ where
 				dummy_hops_count,
 				local_node_receive_key,
 				context.clone(),
+				size_constrained,
 				&**entropy_source,
 				secp_ctx,
 			)
