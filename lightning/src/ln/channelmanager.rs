@@ -6887,6 +6887,22 @@ where
 					});
 				let shared_secret = next_hop.shared_secret().secret_bytes();
 
+				macro_rules! fail_htlc_continue_to_next {
+					($reason: expr) => {{
+						let htlc_fail = self.htlc_failure_from_update_add_err(
+							&update_add_htlc,
+							&incoming_counterparty_node_id,
+							$reason,
+							is_intro_node_blinded_forward,
+							&shared_secret,
+						);
+						let failure_type =
+							get_htlc_failure_type(outgoing_scid_opt, update_add_htlc.payment_hash);
+						htlc_fails.push((htlc_fail, failure_type, $reason.into()));
+						continue;
+					}};
+				}
+
 				// Nodes shouldn't expect us to hold HTLCs for them if we don't advertise htlc_hold feature
 				// support.
 				//
@@ -6899,18 +6915,7 @@ where
 				if update_add_htlc.hold_htlc.is_some()
 					&& !BaseMessageHandler::provided_node_features(self).supports_htlc_hold()
 				{
-					let reason = LocalHTLCFailureReason::TemporaryNodeFailure;
-					let htlc_fail = self.htlc_failure_from_update_add_err(
-						&update_add_htlc,
-						&incoming_counterparty_node_id,
-						reason,
-						is_intro_node_blinded_forward,
-						&shared_secret,
-					);
-					let failure_type =
-						get_htlc_failure_type(outgoing_scid_opt, update_add_htlc.payment_hash);
-					htlc_fails.push((htlc_fail, failure_type, reason.into()));
-					continue;
+					fail_htlc_continue_to_next!(LocalHTLCFailureReason::TemporaryNodeFailure);
 				}
 
 				// Process the HTLC on the incoming channel.
@@ -6927,17 +6932,7 @@ where
 				) {
 					Some(Ok(_)) => {},
 					Some(Err(reason)) => {
-						let htlc_fail = self.htlc_failure_from_update_add_err(
-							&update_add_htlc,
-							&incoming_counterparty_node_id,
-							reason,
-							is_intro_node_blinded_forward,
-							&shared_secret,
-						);
-						let failure_type =
-							get_htlc_failure_type(outgoing_scid_opt, update_add_htlc.payment_hash);
-						htlc_fails.push((htlc_fail, failure_type, reason.into()));
-						continue;
+						fail_htlc_continue_to_next!(reason);
 					},
 					// The incoming channel no longer exists, HTLCs should be resolved onchain instead.
 					None => continue 'outer_loop,
@@ -6948,17 +6943,7 @@ where
 					if let Err(reason) =
 						self.can_forward_htlc(&update_add_htlc, next_packet_details)
 					{
-						let htlc_fail = self.htlc_failure_from_update_add_err(
-							&update_add_htlc,
-							&incoming_counterparty_node_id,
-							reason,
-							is_intro_node_blinded_forward,
-							&shared_secret,
-						);
-						let failure_type =
-							get_htlc_failure_type(outgoing_scid_opt, update_add_htlc.payment_hash);
-						htlc_fails.push((htlc_fail, failure_type, reason.into()));
-						continue;
+						fail_htlc_continue_to_next!(reason);
 					}
 				}
 
@@ -6970,6 +6955,12 @@ where
 					next_packet_details_opt.map(|d| d.next_packet_pubkey),
 				) {
 					Ok(info) => {
+						let logger = WithContext::from(
+							&self.logger,
+							None,
+							Some(incoming_channel_id),
+							Some(update_add_htlc.payment_hash),
+						);
 						if info.routing.should_hold_htlc() {
 							let intercept_id = InterceptId::from_htlc_id_and_chan_id(
 								update_add_htlc.htlc_id,
@@ -6979,10 +6970,9 @@ where
 							let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
 							match held_htlcs.entry(intercept_id) {
 								hash_map::Entry::Vacant(entry) => {
-									log_trace!(
-										self.logger,
-										"Intercepted held HTLC with id {}, holding until the recipient is online",
-										intercept_id
+									log_debug!(
+										logger,
+										"Intercepted held HTLC with id {intercept_id}, holding until the recipient is online"
 									);
 									let pending_add = PendingAddHTLCInfo {
 										prev_outbound_scid_alias: incoming_scid_alias,
@@ -6997,19 +6987,11 @@ where
 								},
 								hash_map::Entry::Occupied(_) => {
 									debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
-									let reason = LocalHTLCFailureReason::TemporaryNodeFailure;
-									let htlc_fail = self.htlc_failure_from_update_add_err(
-										&update_add_htlc,
-										&incoming_counterparty_node_id,
-										reason,
-										is_intro_node_blinded_forward,
-										&shared_secret,
+									log_error!(logger, "Duplicate intercept id for HTLC");
+									debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
+									fail_htlc_continue_to_next!(
+										LocalHTLCFailureReason::TemporaryNodeFailure
 									);
-									let failure_type = get_htlc_failure_type(
-										outgoing_scid_opt,
-										update_add_htlc.payment_hash,
-									);
-									htlc_fails.push((htlc_fail, failure_type, reason.into()));
 								},
 							}
 						} else {
