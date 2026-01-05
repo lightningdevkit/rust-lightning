@@ -1408,6 +1408,7 @@ enum PostMonitorUpdateChanResume {
 		decode_update_add_htlcs: Option<(u64, Vec<msgs::UpdateAddHTLC>)>,
 		finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 		failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+		committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
 	},
 }
 
@@ -9586,6 +9587,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		decode_update_add_htlcs: Option<(u64, Vec<msgs::UpdateAddHTLC>)>,
 		finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 		failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+		committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
 	) {
 		// If the channel belongs to a batch funding transaction, the progress of the batch
 		// should be updated as we have received funding_signed and persisted the monitor.
@@ -9656,6 +9658,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			};
 			self.fail_htlc_backwards_internal(&failure.0, &failure.1, &failure.2, receiver, None);
 		}
+		self.prune_persisted_inbound_htlc_onions(committed_outbound_htlc_sources);
 	}
 
 	fn handle_monitor_update_completion_actions<
@@ -10130,6 +10133,33 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				decode_update_add_htlcs,
 				finalized_claimed_htlcs: updates.finalized_claimed_htlcs,
 				failed_htlcs: updates.failed_htlcs,
+				committed_outbound_htlc_sources: updates.committed_outbound_htlc_sources,
+			}
+		}
+	}
+
+	/// We store inbound committed HTLCs' onions in `Channel`s for use in reconstructing the pending
+	/// HTLC set on `ChannelManager` read. If an HTLC has been irrevocably forwarded to the outbound
+	/// edge, we no longer need to persist the inbound edge's onion and can prune it here.
+	fn prune_persisted_inbound_htlc_onions(
+		&self, committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
+	) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		for (source, outbound_amt_msat) in committed_outbound_htlc_sources {
+			let counterparty_node_id = match source.counterparty_node_id.as_ref() {
+				Some(id) => id,
+				None => continue,
+			};
+			let mut peer_state =
+				match per_peer_state.get(counterparty_node_id).map(|state| state.lock().unwrap()) {
+					Some(peer_state) => peer_state,
+					None => continue,
+				};
+
+			if let Some(chan) =
+				peer_state.channel_by_id.get_mut(&source.channel_id).and_then(|c| c.as_funded_mut())
+			{
+				chan.prune_inbound_htlc_onion(source.htlc_id, source, outbound_amt_msat);
 			}
 		}
 	}
@@ -10142,6 +10172,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state = per_peer_state.get(&cp_id).map(|state| state.lock().unwrap()).unwrap();
 		let chan = peer_state.channel_by_id.get(&chan_id).and_then(|c| c.as_funded()).unwrap();
 		chan.test_holding_cell_outbound_htlc_forwards_count()
+	}
+
+	#[cfg(test)]
+	/// Useful to check that we prune inbound HTLC onions once they are irrevocably forwarded to the
+	/// outbound edge, see [`Self::prune_persisted_inbound_htlc_onions`].
+	pub(crate) fn test_get_inbound_committed_htlcs_with_onion(
+		&self, cp_id: PublicKey, chan_id: ChannelId,
+	) -> usize {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state = per_peer_state.get(&cp_id).map(|state| state.lock().unwrap()).unwrap();
+		let chan = peer_state.channel_by_id.get(&chan_id).and_then(|c| c.as_funded()).unwrap();
+		chan.inbound_committed_unresolved_htlcs().len()
 	}
 
 	/// Completes channel resumption after locks have been released.
@@ -10169,6 +10211,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				decode_update_add_htlcs,
 				finalized_claimed_htlcs,
 				failed_htlcs,
+				committed_outbound_htlc_sources,
 			} => {
 				self.post_monitor_update_unlock(
 					channel_id,
@@ -10179,6 +10222,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					decode_update_add_htlcs,
 					finalized_claimed_htlcs,
 					failed_htlcs,
+					committed_outbound_htlc_sources,
 				);
 			},
 		}

@@ -1211,6 +1211,13 @@ fn do_manager_persisted_pre_outbound_edge_forward(intercept_htlc: bool) {
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
+	// While an inbound HTLC is committed in a channel but not yet forwarded, we store its onion in
+	// the `Channel` in case we need to remember it on restart. Once it's irrevocably forwarded to the
+	// outbound edge, we can prune it on the inbound edge.
+	assert_eq!(
+		nodes[1].node.test_get_inbound_committed_htlcs_with_onion(nodes[0].node.get_our_node_id(), chan_id_1),
+		1
+	);
 
 	// Decode the HTLC onion but don't forward it to the next hop, such that the HTLC ends up in
 	// `ChannelManager::forward_htlcs` or `ChannelManager::pending_intercepted_htlcs`.
@@ -1231,6 +1238,13 @@ fn do_manager_persisted_pre_outbound_edge_forward(intercept_htlc: bool) {
 	args_b_c.send_channel_ready = (true, true);
 	args_b_c.send_announcement_sigs = (true, true);
 	reconnect_nodes(args_b_c);
+
+	// Before an inbound HTLC is irrevocably forwarded, its onion should still be persisted within the
+	// inbound edge channel.
+	assert_eq!(
+		nodes[1].node.test_get_inbound_committed_htlcs_with_onion(nodes[0].node.get_our_node_id(), chan_id_1),
+		1
+	);
 
 	// Forward the HTLC and ensure we can claim it post-reload.
 	nodes[1].node.process_pending_htlc_forwards();
@@ -1254,6 +1268,12 @@ fn do_manager_persisted_pre_outbound_edge_forward(intercept_htlc: bool) {
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	do_commitment_signed_dance(&nodes[2], &nodes[1], &updates.commitment_signed, false, false);
 	expect_and_process_pending_htlcs(&nodes[2], false);
+	// After an inbound HTLC is irrevocably forwarded, its onion should be pruned within the inbound
+	// edge channel.
+	assert_eq!(
+		nodes[1].node.test_get_inbound_committed_htlcs_with_onion(nodes[0].node.get_our_node_id(), chan_id_1),
+		0
+	);
 
 	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, amt_msat, None, nodes[2].node.get_our_node_id());
 	let path: &[&[_]] = &[&[&nodes[1], &nodes[2]]];

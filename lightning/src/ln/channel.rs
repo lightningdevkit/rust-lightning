@@ -318,6 +318,18 @@ impl InboundHTLCState {
 enum InboundUpdateAdd {
 	/// The inbound committed HTLC's update_add_htlc message.
 	WithOnion { update_add_htlc: msgs::UpdateAddHTLC },
+	/// This inbound HTLC is a forward that was irrevocably committed to the outbound edge, allowing
+	/// its onion to be pruned and no longer persisted.
+	Forwarded {
+		/// Useful if we need to fail or claim this HTLC backwards after restart, if it's missing in the
+		/// outbound edge.
+		hop_data: HTLCPreviousHopData,
+		/// Useful if we need to claim this HTLC backwards after a restart and it's missing in the
+		/// outbound edge, to generate an accurate [`Event::PaymentForwarded`].
+		///
+		/// [`Event::PaymentForwarded`]: crate::events::Event::PaymentForwarded
+		outbound_amt_msat: u64,
+	},
 	/// This HTLC was received pre-LDK 0.3, before we started persisting the onion for inbound
 	/// committed HTLCs.
 	Legacy,
@@ -328,6 +340,10 @@ impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
 		(0, update_add_htlc, required),
 	},
 	(2, Legacy) => {},
+	(4, Forwarded) => {
+		(0, hop_data, required),
+		(2, outbound_amt_msat, required),
+	},
 );
 
 impl_writeable_for_vec!(&InboundUpdateAdd);
@@ -1177,6 +1193,10 @@ pub(super) struct MonitorRestoreUpdates {
 	pub channel_ready_order: ChannelReadyOrder,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub tx_signatures: Option<msgs::TxSignatures>,
+	/// The sources of outbound HTLCs that were forwarded and irrevocably committed on this channel
+	/// (the outbound edge), along with their outbound amounts. Useful to store in the inbound HTLC
+	/// to ensure it gets resolved.
+	pub committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
 }
 
 /// The return value of `signer_maybe_unblocked`
@@ -7931,6 +7951,22 @@ where
 			.count()
 	}
 
+	/// This inbound HTLC was irrevocably forwarded to the outbound edge, so we no longer need to
+	/// persist its onion.
+	pub(super) fn prune_inbound_htlc_onion(
+		&mut self, htlc_id: u64, hop_data: HTLCPreviousHopData, outbound_amt_msat: u64,
+	) {
+		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
+			if htlc.htlc_id == htlc_id {
+				if let InboundHTLCState::Committed { ref mut update_add_htlc } = htlc.state {
+					*update_add_htlc = InboundUpdateAdd::Forwarded { hop_data, outbound_amt_msat };
+					return;
+				}
+			}
+		}
+		debug_assert!(false, "If we go to prune an inbound HTLC it should be present")
+	}
+
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
 	fn mark_outbound_htlc_removed(
@@ -9532,6 +9568,14 @@ where
 		mem::swap(&mut finalized_claimed_htlcs, &mut self.context.monitor_pending_finalized_fulfills);
 		let mut pending_update_adds = Vec::new();
 		mem::swap(&mut pending_update_adds, &mut self.context.monitor_pending_update_adds);
+		let committed_outbound_htlc_sources = self.context.pending_outbound_htlcs.iter().filter_map(|htlc| {
+			if let &OutboundHTLCState::LocalAnnounced(_) = &htlc.state {
+				if let HTLCSource::PreviousHopData(prev_hop_data) = &htlc.source {
+					return Some((prev_hop_data.clone(), htlc.amount_msat))
+				}
+			}
+			None
+		}).collect();
 
 		if self.context.channel_state.is_peer_disconnected() {
 			self.context.monitor_pending_revoke_and_ack = false;
@@ -9540,7 +9584,7 @@ where
 				raa: None, commitment_update: None, commitment_order: RAACommitmentOrder::RevokeAndACKFirst,
 				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
 				funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None,
-				channel_ready_order,
+				channel_ready_order, committed_outbound_htlc_sources
 			};
 		}
 
@@ -9571,7 +9615,7 @@ where
 		MonitorRestoreUpdates {
 			raa, commitment_update, commitment_order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
 			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures,
-			channel_ready_order,
+			channel_ready_order, committed_outbound_htlc_sources
 		}
 	}
 
