@@ -565,6 +565,12 @@ impl WebhookNotification {
 	pub fn onion_message_incoming() -> Self {
 		Self { method: WebhookNotificationMethod::LSPS5OnionMessageIncoming }
 	}
+
+	/// Encodes this notification into JSON which can be sent as the body of an HTTP request to
+	/// deliver the notification.
+	pub fn to_request_body(&self) -> String {
+		serde_json::to_string(self).unwrap()
+	}
 }
 
 impl Serialize for WebhookNotification {

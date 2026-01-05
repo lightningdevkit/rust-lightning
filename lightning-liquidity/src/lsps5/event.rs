@@ -30,9 +30,9 @@ pub enum LSPS5ServiceEvent {
 	/// via their registered webhook.
 	///
 	/// The LSP should send an HTTP POST to the [`url`], using the
-	/// JSON-serialized [`notification`] as the body and including the `headers`.
-	/// If the HTTP request fails, the LSP may implement a retry policy according to its
-	/// implementation preferences.
+	/// JSON-serialized [`notification`] (via [`WebhookNotification::to_request_body`]) as the body
+	/// and including the `headers`.  If the HTTP request fails, the LSP may implement a retry
+	/// policy according to its implementation preferences.
 	///
 	/// The notification is signed using the LSP's node ID to ensure authenticity
 	/// when received by the client. The client verifies this signature using
