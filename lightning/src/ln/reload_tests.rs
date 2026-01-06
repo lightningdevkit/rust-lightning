@@ -2208,8 +2208,7 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 		&[&mon_0_1_serialized, &mon_1_2_a_serialized, &mon_1_2_b_serialized],
 		persister,
 		new_chain_monitor,
-		nodes_1_deserialized,
-		Some(true)
+		nodes_1_deserialized
 	);
 
 	// When the claims are reconstructed during reload, PaymentForwarded events are regenerated.
