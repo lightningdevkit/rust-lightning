@@ -879,6 +879,16 @@ mod fuzzy_channelmanager {
 		/// channel remains unconfirmed for too long.
 		pub cltv_expiry: Option<u32>,
 	}
+
+	impl From<&HTLCPreviousHopData> for events::HTLCLocator {
+		fn from(value: &HTLCPreviousHopData) -> Self {
+			events::HTLCLocator {
+				channel_id: value.channel_id,
+				user_channel_id: value.user_channel_id,
+				node_id: value.counterparty_node_id,
+			}
+		}
+	}
 }
 #[cfg(fuzzing)]
 pub use self::fuzzy_channelmanager::*;
@@ -9320,18 +9330,16 @@ impl<
 	/// Claims funds for a forwarded HTLC where we are an intermediate hop.
 	///
 	/// Processes attribution data, calculates fees earned, and emits a [`Event::PaymentForwarded`]
-	/// event upon successful claim.
+	/// event upon successful claim. `make_payment_forwarded_event` is responsible for creating a
+	/// single [`Event::PaymentForwarded`] event that represents the forward.
 	fn claim_funds_from_htlc_forward_hop(
-		&self, payment_preimage: PaymentPreimage, forwarded_htlc_value_msat: Option<u64>,
-		skimmed_fee_msat: Option<u64>, from_onchain: bool, startup_replay: bool,
-		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
-		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
-		hop_data: HTLCPreviousHopData, attribution_data: Option<AttributionData>,
-		send_timestamp: Option<Duration>,
+		&self, payment_preimage: PaymentPreimage,
+		make_payment_forwarded_event: impl Fn(Option<u64>) -> Option<events::Event>,
+		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
+		next_channel_outpoint: OutPoint, next_channel_id: ChannelId, hop_data: HTLCPreviousHopData,
+		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
 	) {
-		let prev_channel_id = hop_data.channel_id;
-		let prev_user_channel_id = hop_data.user_channel_id;
-		let prev_node_id = hop_data.counterparty_node_id;
+		let _prev_channel_id = hop_data.channel_id;
 		let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
 
 		// Obtain hold time, if available.
@@ -9407,7 +9415,7 @@ impl<
 									// immediately once we get going.
 									BackgroundEvent::MonitorUpdatesComplete {
 										channel_id, ..
-									} => *channel_id == prev_channel_id,
+									} => *channel_id == _prev_channel_id,
 								}
 							});
 						assert!(channel_closed || matching_bg_event, "{:?}", *background_events);
@@ -9423,38 +9431,16 @@ impl<
 						None,
 					)
 				} else {
-					let total_fee_earned_msat =
-						if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
-							if let Some(claimed_htlc_value) = htlc_claim_value_msat {
-								Some(claimed_htlc_value - forwarded_htlc_value)
-							} else {
-								None
-							}
-						} else {
-							None
-						};
-					debug_assert!(
-						skimmed_fee_msat <= total_fee_earned_msat,
-						"skimmed_fee_msat must always be included in total_fee_earned_msat"
-					);
+					let event = make_payment_forwarded_event(htlc_claim_value_msat);
+					if let Some(ref payment_forwarded) = event {
+						debug_assert!(matches!(
+							payment_forwarded,
+							&events::Event::PaymentForwarded { .. }
+						));
+					}
 					(
 						Some(MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
-							event: Some(events::Event::PaymentForwarded {
-								prev_htlcs: vec![events::HTLCLocator {
-									channel_id: prev_channel_id,
-									user_channel_id: prev_user_channel_id,
-									node_id: prev_node_id,
-								}],
-								next_htlcs: vec![events::HTLCLocator {
-									channel_id: next_channel_id,
-									user_channel_id: next_user_channel_id,
-									node_id: Some(next_channel_counterparty_node_id),
-								}],
-								total_fee_earned_msat,
-								skimmed_fee_msat,
-								claim_from_onchain_tx: from_onchain,
-								outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
-							}),
+							event,
 							downstream_counterparty_and_funding_outpoint: chan_to_release,
 						}),
 						None,
@@ -9859,16 +9845,42 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 			},
 			HTLCSource::PreviousHopData(hop_data) => {
+				let prev_htlcs = vec![events::HTLCLocator::from(&hop_data)];
 				self.claim_funds_from_htlc_forward_hop(
 					payment_preimage,
-					forwarded_htlc_value_msat,
-					skimmed_fee_msat,
-					from_onchain,
+					|htlc_claim_value_msat: Option<u64>| -> Option<events::Event> {
+						let total_fee_earned_msat =
+							if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
+								if let Some(claimed_htlc_value) = htlc_claim_value_msat {
+									Some(claimed_htlc_value - forwarded_htlc_value)
+								} else {
+									None
+								}
+							} else {
+								None
+							};
+						debug_assert!(
+							skimmed_fee_msat <= total_fee_earned_msat,
+							"skimmed_fee_msat must always be included in total_fee_earned_msat"
+						);
+
+						Some(events::Event::PaymentForwarded {
+							prev_htlcs: prev_htlcs.clone(),
+							next_htlcs: vec![events::HTLCLocator {
+								channel_id: next_channel_id,
+								user_channel_id: next_user_channel_id,
+								node_id: Some(next_channel_counterparty_node_id),
+							}],
+							total_fee_earned_msat,
+							skimmed_fee_msat,
+							claim_from_onchain_tx: from_onchain,
+							outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
+						})
+					},
 					startup_replay,
 					next_channel_counterparty_node_id,
 					next_channel_outpoint,
 					next_channel_id,
-					next_user_channel_id,
 					hop_data,
 					attribution_data,
 					send_timestamp,
