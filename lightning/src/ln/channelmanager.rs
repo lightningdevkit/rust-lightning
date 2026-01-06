@@ -9886,7 +9886,47 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					send_timestamp,
 				);
 			},
-			HTLCSource::TrampolineForward { .. } => todo!(),
+			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+				// Only emit a single event for trampoline claims.
+				let prev_htlcs: Vec<events::HTLCLocator> =
+					previous_hop_data.iter().map(Into::into).collect();
+				for (i, current_previous_hop_data) in previous_hop_data.into_iter().enumerate() {
+					self.claim_funds_from_htlc_forward_hop(
+						payment_preimage,
+						|_: Option<u64>| -> Option<events::Event> {
+							if i == 0 {
+								Some(events::Event::PaymentForwarded {
+									prev_htlcs: prev_htlcs.clone(),
+									// TODO: When trampoline payments are tracked in our
+									// pending_outbound_payments, we'll be able to provide all the
+									// outgoing htlcs for this forward.
+									next_htlcs: vec![events::HTLCLocator {
+										channel_id: next_channel_id,
+										user_channel_id: next_user_channel_id,
+										node_id: Some(next_channel_counterparty_node_id),
+									}],
+									// TODO: When trampoline payments are tracked in our
+									// pending_outbound_payments, we'll be able to lookup our total
+									// fee earnings.
+									total_fee_earned_msat: None,
+									skimmed_fee_msat,
+									claim_from_onchain_tx: from_onchain,
+									outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
+								})
+							} else {
+								None
+							}
+						},
+						startup_replay,
+						next_channel_counterparty_node_id,
+						next_channel_outpoint,
+						next_channel_id,
+						current_previous_hop_data,
+						attribution_data.clone(),
+						send_timestamp,
+					);
+				}
+			},
 		}
 	}
 
