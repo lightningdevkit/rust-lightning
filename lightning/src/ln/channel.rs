@@ -50,10 +50,9 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg, HTLCPreviousHopData,
-	HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus,
-	RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT,
-	MIN_CLTV_EXPIRY_DELTA,
+	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCPreviousHopData, HTLCSource,
+	OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, RAACommitmentOrder, SentHTLCId,
+	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::interactivetxs::{
@@ -149,12 +148,6 @@ enum InboundHTLCRemovalReason {
 #[cfg_attr(test, derive(Debug))]
 #[derive(Clone)]
 enum InboundHTLCResolution {
-	/// Resolved implies the action we must take with the inbound HTLC has already been determined,
-	/// i.e., we already know whether it must be failed back or forwarded.
-	//
-	// TODO: Once this variant is removed, we should also clean up
-	// [`MonitorRestoreUpdates::accepted_htlcs`] as the path will be unreachable.
-	Resolved { pending_htlc_status: PendingHTLCStatus },
 	/// Pending implies we will attempt to resolve the inbound HTLC once it has been fully committed
 	/// to by both sides of the channel, i.e., once a `revoke_and_ack` has been processed by both
 	/// nodes for the state update in which it was proposed.
@@ -162,9 +155,7 @@ enum InboundHTLCResolution {
 }
 
 impl_writeable_tlv_based_enum!(InboundHTLCResolution,
-	(0, Resolved) => {
-		(0, pending_htlc_status, required),
-	},
+	// 0 used to be used for InboundHTLCResolution::Resolved in 0.2 and below.
 	(2, Pending) => {
 		(0, update_add_htlc, required),
 	},
@@ -301,7 +292,6 @@ impl InboundHTLCState {
 				InboundHTLCResolution::Pending { update_add_htlc } => {
 					update_add_htlc.hold_htlc.is_some()
 				},
-				InboundHTLCResolution::Resolved { .. } => false,
 			},
 			InboundHTLCState::Committed { .. } | InboundHTLCState::LocalRemoved(_) => false,
 		}
@@ -8734,8 +8724,6 @@ where
 		let mut pending_update_adds = Vec::new();
 		let mut revoked_htlcs = Vec::new();
 		let mut finalized_claimed_htlcs = Vec::new();
-		let mut update_fail_htlcs = Vec::new();
-		let mut update_fail_malformed_htlcs = Vec::new();
 		let mut static_invoices = Vec::new();
 		let mut require_commitment = false;
 		let mut value_to_self_msat_diff: i64 = 0;
@@ -8810,43 +8798,6 @@ where
 						state
 					{
 						match resolution {
-							InboundHTLCResolution::Resolved { pending_htlc_status } => {
-								match pending_htlc_status {
-									PendingHTLCStatus::Fail(fail_msg) => {
-										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", &htlc.payment_hash);
-										require_commitment = true;
-										match fail_msg {
-											HTLCFailureMsg::Relay(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(
-													InboundHTLCRemovalReason::FailRelay(
-														msg.clone().into(),
-													),
-												);
-												update_fail_htlcs.push(msg)
-											},
-											HTLCFailureMsg::Malformed(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(
-													InboundHTLCRemovalReason::FailMalformed {
-														sha256_of_onion: msg.sha256_of_onion,
-														failure_code: msg.failure_code,
-													},
-												);
-												update_fail_malformed_htlcs.push(msg)
-											},
-										}
-									},
-									PendingHTLCStatus::Forward(forward_info) => {
-										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed, attempting to forward", &htlc.payment_hash);
-										to_forward_infos.push((forward_info, htlc.htlc_id));
-										htlc.state = InboundHTLCState::Committed {
-											// HTLCs will only be in state `InboundHTLCResolution::Resolved` if they were
-											// received on an old pre-0.0.123 version of LDK. In this case, the HTLC is
-											// required to be resolved prior to upgrading to 0.1+ per CHANGELOG.md.
-											update_add_htlc_opt: None,
-										};
-									},
-								}
-							},
 							InboundHTLCResolution::Pending { update_add_htlc } => {
 								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
 								pending_update_adds.push(update_add_htlc.clone());
@@ -8997,9 +8948,11 @@ where
 						release_state_str
 					);
 					if self.context.channel_state.can_generate_new_commitment() {
-						log_debug!(logger, "Responding with a commitment update with {} HTLCs failed for channel {}",
-							update_fail_htlcs.len() + update_fail_malformed_htlcs.len(),
-							&self.context.channel_id);
+						log_debug!(
+							logger,
+							"Responding with a commitment update for channel {}",
+							&self.context.channel_id
+						);
 					} else {
 						debug_assert!(htlcs_to_fail.is_empty());
 						let reason = if self.context.channel_state.is_local_stfu_sent() {
@@ -15209,8 +15162,9 @@ where
 		let counterparty_next_commitment_transaction_number = Readable::read(reader)?;
 		let value_to_self_msat = Readable::read(reader)?;
 
-		let pending_inbound_htlc_count: u64 = Readable::read(reader)?;
+		let logger = WithContext::from(logger, None, Some(channel_id), None);
 
+		let pending_inbound_htlc_count: u64 = Readable::read(reader)?;
 		let mut pending_inbound_htlcs = Vec::with_capacity(cmp::min(
 			pending_inbound_htlc_count as usize,
 			DEFAULT_MAX_HTLCS as usize,
@@ -15223,23 +15177,17 @@ where
 				payment_hash: Readable::read(reader)?,
 				state: match <u8 as Readable>::read(reader)? {
 					1 => {
-						let resolution = if ver <= 3 {
-							InboundHTLCResolution::Resolved {
-								pending_htlc_status: Readable::read(reader)?,
-							}
-						} else {
-							Readable::read(reader)?
-						};
+						let resolution = Readable::read(reader).map_err(|e| {
+							log_error!(logger, "Found deprecated HTLC received on LDK 0.0.123 or earlier. HTLC must be resolved before upgrading to LDK 0.3+, see CHANGELOG.md");
+							e
+						})?;
 						InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution)
 					},
 					2 => {
-						let resolution = if ver <= 3 {
-							InboundHTLCResolution::Resolved {
-								pending_htlc_status: Readable::read(reader)?,
-							}
-						} else {
-							Readable::read(reader)?
-						};
+						let resolution = Readable::read(reader).map_err(|e| {
+							log_error!(logger, "Found deprecated HTLC received on LDK 0.0.123 or earlier. HTLC must be resolved before upgrading to LDK 0.3+, see CHANGELOG.md");
+							e
+						})?;
 						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution)
 					},
 					3 => InboundHTLCState::Committed { update_add_htlc_opt: None },
