@@ -9890,7 +9890,50 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					send_timestamp,
 				);
 			},
-			HTLCSource::TrampolineForward { .. } => todo!(),
+			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+				// Only emit a single event for trampoline claims.
+				let prev_htlcs: Vec<events::HTLCLocator> =
+					previous_hop_data.iter().map(Into::into).collect();
+				for (i, current_previous_hop_data) in previous_hop_data.into_iter().enumerate() {
+					self.claim_funds_from_htlc_forward_hop(
+						payment_preimage,
+						|_: Option<u64>| -> Option<events::Event> {
+							if i == 0 {
+								Some(events::Event::PaymentForwarded {
+									prev_htlcs: prev_htlcs.clone(),
+									// TODO: When trampoline payments are tracked in our
+									// pending_outbound_payments, we'll be able to provide all the
+									// outgoing htlcs for this forward.
+									next_htlcs: vec![events::HTLCLocator {
+										channel_id: next_channel_id,
+										user_channel_id: next_user_channel_id,
+										node_id: Some(next_channel_counterparty_node_id),
+									}],
+									// TODO: When trampoline payments are tracked in our
+									// pending_outbound_payments, we'll be able to lookup our total
+									// fee earnings.
+									total_fee_earned_msat: None,
+									skimmed_fee_msat,
+									claim_from_onchain_tx: from_onchain,
+									// TODO: When trampoline payments are tracked in our
+									// pending_outbound_payments, set to the total amount sent (not
+									// just the amount of the outgoing htlc that was first settled).
+									outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
+								})
+							} else {
+								None
+							}
+						},
+						startup_replay,
+						next_channel_counterparty_node_id,
+						next_channel_outpoint,
+						next_channel_id,
+						current_previous_hop_data,
+						attribution_data.clone(),
+						send_timestamp,
+					);
+				}
+			},
 		}
 	}
 
@@ -12282,20 +12325,25 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							chan.update_fulfill_htlc(&msg),
 							chan_entry
 						);
-						if let HTLCSource::PreviousHopData(prev_hop) = &res.0 {
-							let logger =
-								WithChannelContext::from(&self.logger, &chan.context, None);
+						let prev_hops = match &res.0 {
+							HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
+							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+								previous_hop_data.iter().collect()
+							},
+							_ => vec![],
+						};
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						for prev_hop in prev_hops {
 							log_trace!(logger,
 								"Holding the next revoke_and_ack until the preimage is durably persisted in the inbound edge's ChannelMonitor",
-								);
+							);
 							peer_state
 								.actions_blocking_raa_monitor_updates
 								.entry(msg.channel_id)
 								.or_insert_with(Vec::new)
-								.push(RAAMonitorUpdateBlockingAction::from_prev_hop_data(
-									&prev_hop,
-								));
+								.push(RAAMonitorUpdateBlockingAction::from_prev_hop_data(prev_hop));
 						}
+
 						// Note that we do not need to push an `actions_blocking_raa_monitor_updates`
 						// entry here, even though we *do* need to block the next RAA monitor update.
 						// We do this instead in the `claim_funds_internal` by attaching a
