@@ -584,6 +584,10 @@ pub enum HTLCHandlingFailureType {
 		/// The payment hash of the payment we attempted to process.
 		payment_hash: PaymentHash,
 	},
+	/// We were responsible for pathfinding and forwarding of a trampoline payment, but failed to
+	/// do so. An example of such an instance is when we can't find a route to the specified
+	/// trampoline destination.
+	TrampolineForward {},
 }
 
 impl_writeable_tlv_based_enum_upgradable!(HTLCHandlingFailureType,
@@ -601,6 +605,7 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCHandlingFailureType,
 	(4, Receive) => {
 		(0, payment_hash, required),
 	},
+	(5, TrampolineForward) => {},
 );
 
 /// The reason for HTLC failures in [`Event::HTLCHandlingFailed`].
