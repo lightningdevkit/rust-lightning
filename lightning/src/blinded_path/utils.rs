@@ -256,9 +256,12 @@ impl<T: Writeable> Writeable for BlindedPathWithPadding<T> {
 		let tlv_length = self.tlvs.serialized_length();
 		let total_length = tlv_length + TLV_OVERHEAD;
 
-		let padding_length = total_length.div_ceil(self.round_off) * self.round_off - total_length;
-
-		let padding = Some(BlindedPathPadding::new(padding_length));
+		let padding = if self.round_off == 0 || tlv_length % self.round_off == 0 {
+			None
+		} else {
+			let length = total_length.div_ceil(self.round_off) * self.round_off - total_length;
+			Some(BlindedPathPadding::new(length))
+		};
 
 		encode_tlv_stream!(writer, {
 			(1, padding, option),

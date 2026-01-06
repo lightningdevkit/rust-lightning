@@ -272,7 +272,7 @@ where
 /// ];
 /// let context = MessageContext::Custom(Vec::new());
 /// let receive_key = keys_manager.get_receive_auth_key();
-/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, receive_key, context, &keys_manager, &secp_ctx);
+/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, receive_key, context, false, &keys_manager, &secp_ctx);
 ///
 /// // Send a custom onion message to a blinded path.
 /// let destination = Destination::BlindedPath(blinded_path);
@@ -524,9 +524,11 @@ pub trait MessageRouter {
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
 ///
-/// [`DefaultMessageRouter`] constructs compact [`BlindedMessagePath`]s on a best-effort basis.
-/// That is, if appropriate SCID information is available for the intermediate peers, it will
-/// default to creating compact paths.
+/// [`DefaultMessageRouter`] tries to construct compact or private [`BlindedMessagePath`]s based on
+/// the [`MessageContext`] given to [`MessageRouter::create_blinded_paths`]. That is, if the
+/// provided context implies the path may be used in a BOLT 12 object which might appear in a QR
+/// code, it reduces the amount of padding and dummy hops and prefers building compact paths when
+/// short channel IDs (SCIDs) are available for intermediate peers.
 ///
 /// # Compact Blinded Paths
 ///
@@ -545,7 +547,8 @@ pub trait MessageRouter {
 /// Creating [`BlindedMessagePath`]s may affect privacy since, if a suitable path cannot be found,
 /// it will create a one-hop path using the recipient as the introduction node if it is an announced
 /// node. Otherwise, there is no way to find a path to the introduction node in order to send a
-/// message, and thus an `Err` is returned.
+/// message, and thus an `Err` is returned. The impact of this may be somewhat muted when
+/// additional dummy hops are added to the blinded path, but this protection is not complete.
 pub struct DefaultMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref>
 where
 	L::Target: Logger,
@@ -555,13 +558,16 @@ where
 	entropy_source: ES,
 }
 
-// Target total length (in hops) for non-compact blinded paths.
-// We pad with dummy hops until the path reaches this length,
-// obscuring the recipient's true position.
+// Target total length (in hops) for blinded paths used outside of QR codes.
 //
-// Compact paths are optimized for minimal size, so we avoid
-// adding dummy hops to them.
-pub(crate) const PADDED_PATH_LENGTH: usize = 4;
+// We add dummy hops until the path reaches this length (including the recipient).
+pub(crate) const DUMMY_HOPS_PATH_LENGTH: usize = 4;
+
+// Target total length (in hops) for blinded paths included in objects which may appear in a QR
+// code.
+//
+// We add dummy hops until the path reaches this length (including the recipient).
+pub(crate) const QR_CODED_DUMMY_HOPS_PATH_LENGTH: usize = 2;
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> DefaultMessageRouter<G, L, ES>
 where
@@ -574,12 +580,12 @@ where
 	}
 
 	pub(crate) fn create_blinded_paths_from_iter<
-		I: ExactSizeIterator<Item = MessageForwardNode>,
+		I: ExactSizeIterator<Item = MessageForwardNode> + Clone,
 		T: secp256k1::Signing + secp256k1::Verification,
 	>(
 		network_graph: &G, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		context: MessageContext, peers: I, entropy_source: &ES, secp_ctx: &Secp256k1<T>,
-		compact_paths: bool,
+		never_compact_path: bool,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
@@ -591,6 +597,31 @@ where
 		let network_graph = network_graph.deref().read_only();
 		let is_recipient_announced =
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
+
+		let (size_constrained, path_len_incl_dummys) = match &context {
+			MessageContext::Offers(OffersContext::InvoiceRequest { .. })
+			| MessageContext::Offers(OffersContext::OutboundPaymentForRefund { .. }) => {
+				// When including blinded paths within BOLT 12 objects that appear in QR codes, we
+				// sadly need to be conservative about size, especially if the QR code ultimately
+				// also includes an on-chain address.
+				(true, QR_CODED_DUMMY_HOPS_PATH_LENGTH)
+			},
+			MessageContext::Offers(OffersContext::StaticInvoiceRequested { .. }) => {
+				// Async Payments aggressively embeds the entire `InvoiceRequest` in the payment
+				// onion. In a future version it should likely move to embedding only the
+				// `InvoiceRequest`-specific fields instead, but until then we have to be
+				// incredibly strict in the size of the blinded path we include in a static payment
+				// `Offer`.
+				(true, 0)
+			},
+			_ => {
+				// If there's no need to be small, add additional dummy hops and never use
+				// SCID-based next-hops as they carry additional expiry risk.
+				(false, DUMMY_HOPS_PATH_LENGTH)
+			},
+		};
+
+		let compact_paths = !never_compact_path && size_constrained;
 
 		let has_one_peer = peers.len() == 1;
 		let mut peer_info = peers
@@ -619,12 +650,8 @@ where
 		});
 
 		let build_path = |intermediate_hops: &[MessageForwardNode]| {
-			let dummy_hops_count = if compact_paths {
-				0
-			} else {
-				// Add one for the final recipient TLV
-				PADDED_PATH_LENGTH.saturating_sub(intermediate_hops.len() + 1)
-			};
+			// Calculate the dummy hops given the total hop count target (including the recipient).
+			let dummy_hops_count = path_len_incl_dummys.saturating_sub(intermediate_hops.len() + 1);
 
 			BlindedMessagePath::new_with_dummy_hops(
 				intermediate_hops,
@@ -632,6 +659,7 @@ where
 				dummy_hops_count,
 				local_node_receive_key,
 				context.clone(),
+				size_constrained,
 				&**entropy_source,
 				secp_ctx,
 			)
@@ -649,12 +677,6 @@ where
 			} else {
 				return Err(());
 			}
-		}
-
-		// Sanity check: Ones the paths are created for the non-compact case, ensure
-		// each of them are of the length `PADDED_PATH_LENGTH`.
-		if !compact_paths {
-			debug_assert!(paths.iter().all(|path| path.blinded_hops().len() == PADDED_PATH_LENGTH));
 		}
 
 		if compact_paths {
@@ -740,13 +762,18 @@ where
 			peers.into_iter(),
 			&self.entropy_source,
 			secp_ctx,
-			true,
+			false,
 		)
 	}
 }
 
 /// This message router is similar to [`DefaultMessageRouter`], but it always creates
-/// full-length blinded paths, using the peer's [`NodeId`].
+/// non-compact blinded paths, using the peer's [`NodeId`]. It uses the same heuristics as
+/// [`DefaultMessageRouter`] for deciding when to add additional dummy hops to the generated blinded
+/// paths.
+///
+/// This may be useful in cases where you want a long-lived blinded path and anticipate channel(s)
+/// may close, but connections to specific peers will remain stable.
 ///
 /// This message router can only route to a directly connected [`Destination`].
 ///
@@ -755,7 +782,8 @@ where
 /// Creating [`BlindedMessagePath`]s may affect privacy since, if a suitable path cannot be found,
 /// it will create a one-hop path using the recipient as the introduction node if it is an announced
 /// node. Otherwise, there is no way to find a path to the introduction node in order to send a
-/// message, and thus an `Err` is returned.
+/// message, and thus an `Err` is returned. The impact of this may be somewhat muted when
+/// additional dummy hops are added to the blinded path, but this protection is not complete.
 pub struct NodeIdMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref>
 where
 	L::Target: Logger,
@@ -790,8 +818,11 @@ where
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
+		context: MessageContext, mut peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
+		for peer in peers.iter_mut() {
+			peer.short_channel_id = None;
+		}
 		DefaultMessageRouter::create_blinded_paths_from_iter(
 			&self.network_graph,
 			recipient,
@@ -800,7 +831,7 @@ where
 			peers.into_iter(),
 			&self.entropy_source,
 			secp_ctx,
-			false,
+			true,
 		)
 	}
 }

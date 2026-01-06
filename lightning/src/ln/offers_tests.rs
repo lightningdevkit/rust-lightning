@@ -60,7 +60,7 @@ use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
-use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, PADDED_PATH_LENGTH};
+use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{PaymentParameters, RouteParameters, RouteParametersConfig};
@@ -161,6 +161,20 @@ fn check_compact_path_introduction_node<'a, 'b, 'c>(
 	let introduction_node_id = resolve_introduction_node(lookup_node, path);
 	introduction_node_id == expected_introduction_node
 		&& matches!(path.introduction_node(), IntroductionNode::DirectedShortChannelId(..))
+}
+
+fn check_dummy_hopped_path_length<'a, 'b, 'c>(
+	path: &BlindedMessagePath,
+	lookup_node: &Node<'a, 'b, 'c>,
+	expected_introduction_node: PublicKey,
+	expected_path_length: usize,
+) -> bool {
+	let introduction_node_id = resolve_introduction_node(lookup_node, path);
+	let first_hop_len = path.blinded_hops().first().unwrap().encrypted_payload.len();
+	let hops = path.blinded_hops();
+	introduction_node_id == expected_introduction_node
+		&& hops.len() == expected_path_length
+		&& hops.iter().take(hops.len() - 1).all(|hop| hop.encrypted_payload.len() == first_hop_len)
 }
 
 fn route_bolt12_payment<'a, 'b, 'c>(
@@ -455,7 +469,7 @@ fn check_dummy_hop_pattern_in_offer() {
 	let bob_id = bob.node.get_our_node_id();
 
 	// Case 1: DefaultMessageRouter → uses compact blinded paths (via SCIDs)
-	// Expected: No dummy hops; each path contains only the recipient.
+	// Expected: Padded to QR_CODED_DUMMY_HOPS_PATH_LENGTH for QR code size optimization
 	let default_router = DefaultMessageRouter::new(alice.network_graph, alice.keys_manager);
 
 	let compact_offer = alice.node
@@ -467,8 +481,8 @@ fn check_dummy_hop_pattern_in_offer() {
 
 	for path in compact_offer.paths() {
 		assert_eq!(
-			path.blinded_hops().len(), 1,
-			"Compact paths must include only the recipient"
+			path.blinded_hops().len(), QR_CODED_DUMMY_HOPS_PATH_LENGTH,
+			"Compact offer paths are padded to QR_CODED_DUMMY_HOPS_PATH_LENGTH"
 		);
 	}
 
@@ -480,10 +494,10 @@ fn check_dummy_hop_pattern_in_offer() {
 
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
-	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 
 	// Case 2: NodeIdMessageRouter → uses node ID-based blinded paths
-	// Expected: 0 to MAX_DUMMY_HOPS_COUNT dummy hops, followed by recipient.
+	// Expected: Also padded to QR_CODED_DUMMY_HOPS_PATH_LENGTH for QR code size optimization
 	let node_id_router = NodeIdMessageRouter::new(alice.network_graph, alice.keys_manager);
 
 	let padded_offer = alice.node
@@ -492,7 +506,7 @@ fn check_dummy_hop_pattern_in_offer() {
 		.build().unwrap();
 
 	assert!(!padded_offer.paths().is_empty());
-	assert!(padded_offer.paths().iter().all(|path| path.blinded_hops().len() == PADDED_PATH_LENGTH));
+	assert!(padded_offer.paths().iter().all(|path| path.blinded_hops().len() == QR_CODED_DUMMY_HOPS_PATH_LENGTH));
 
 	let payment_id = PaymentId([2; 32]);
 	bob.node.pay_for_offer(&padded_offer, None, payment_id, Default::default()).unwrap();
@@ -502,7 +516,7 @@ fn check_dummy_hop_pattern_in_offer() {
 
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
-	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 }
 
 /// Checks that blinded paths are compact for short-lived offers.
@@ -687,7 +701,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
-	assert!(check_compact_path_introduction_node(&reply_path, bob, charlie_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, bob, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
 	charlie.onion_messenger.handle_onion_message(alice_id, &onion_message);
@@ -706,8 +720,8 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	// to Alice when she's handling the message. Therefore, either Bob or Charlie could
 	// serve as the introduction node for the reply path back to Alice.
 	assert!(
-		check_compact_path_introduction_node(&reply_path, david, bob_id) ||
-		check_compact_path_introduction_node(&reply_path, david, charlie_id)
+		check_dummy_hopped_path_length(&reply_path, david, bob_id, DUMMY_HOPS_PATH_LENGTH) ||
+		check_dummy_hopped_path_length(&reply_path, david, charlie_id, DUMMY_HOPS_PATH_LENGTH)
 	);
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
@@ -790,7 +804,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	for path in invoice.payment_paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
-	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
 	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
@@ -845,7 +859,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
-	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
@@ -857,7 +871,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	for path in invoice.payment_paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
-	assert!(check_compact_path_introduction_node(&reply_path, bob, alice_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, bob, alice_id, DUMMY_HOPS_PATH_LENGTH));
 
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
@@ -913,7 +927,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	for path in invoice.payment_paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
-	assert!(check_compact_path_introduction_node(&reply_path, bob, alice_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, bob, alice_id, DUMMY_HOPS_PATH_LENGTH));
 
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
@@ -1059,6 +1073,7 @@ fn send_invoice_requests_with_distinct_reply_path() {
 	let bob_id = bob.node.get_our_node_id();
 	let charlie_id = charlie.node.get_our_node_id();
 	let david_id = david.node.get_our_node_id();
+	let frank_id = nodes[6].node.get_our_node_id();
 
 	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5], &nodes[6]]);
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
@@ -1089,7 +1104,7 @@ fn send_invoice_requests_with_distinct_reply_path() {
 	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
 
 	let (_, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert!(check_compact_path_introduction_node(&reply_path, alice, charlie_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, alice, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
 	// Send, extract and verify the second Invoice Request message
 	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1099,7 +1114,7 @@ fn send_invoice_requests_with_distinct_reply_path() {
 	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
 
 	let (_, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert!(check_compact_path_introduction_node(&reply_path, alice, nodes[6].node.get_our_node_id()));
+	assert!(check_dummy_hopped_path_length(&reply_path, alice, frank_id, DUMMY_HOPS_PATH_LENGTH));
 }
 
 /// This test checks that when multiple potential introduction nodes are available for the payee,
@@ -1170,7 +1185,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 
 	let (_, reply_path) = extract_invoice(alice, &onion_message);
-	assert!(check_compact_path_introduction_node(&reply_path, alice, charlie_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, alice, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
 	// Send, extract and verify the second Invoice Request message
 	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1179,7 +1194,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 
 	let (_, reply_path) = extract_invoice(alice, &onion_message);
-	assert!(check_compact_path_introduction_node(&reply_path, alice, nodes[6].node.get_our_node_id()));
+	assert!(check_dummy_hopped_path_length(&reply_path, alice, nodes[6].node.get_our_node_id(), DUMMY_HOPS_PATH_LENGTH));
 }
 
 /// Verifies that the invoice request message can be retried if it fails to reach the
@@ -1233,7 +1248,7 @@ fn creates_and_pays_for_offer_with_retry() {
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
-	assert!(check_compact_path_introduction_node(&reply_path, alice, bob_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
 
@@ -1534,7 +1549,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
-	assert!(check_compact_path_introduction_node(&reply_path, david, charlie_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, david, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
 	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
 
@@ -1563,7 +1578,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
-	assert!(check_compact_path_introduction_node(&reply_path, david, charlie_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, david, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
 	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
 }
@@ -1663,7 +1678,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
-	assert!(check_compact_path_introduction_node(&reply_path, david, charlie_id));
+	assert!(check_dummy_hopped_path_length(&reply_path, david, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
 	charlie.onion_messenger.handle_onion_message(alice_id, &onion_message);

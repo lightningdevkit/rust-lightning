@@ -236,6 +236,7 @@ mod test {
 				recipient,
 				local_node_receive_key,
 				context,
+				false,
 				&keys,
 				secp_ctx,
 			)])
@@ -345,6 +346,7 @@ mod test {
 			payer_id,
 			receive_key,
 			query_context,
+			false,
 			&*payer_keys,
 			&secp_ctx,
 		);

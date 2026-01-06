@@ -54,21 +54,38 @@ impl Readable for BlindedMessagePath {
 
 impl BlindedMessagePath {
 	/// Create a one-hop blinded path for a message.
+	///
+	/// `compact_padding` selects between space-inefficient padding which better hides contents and
+	/// a space-constrained padding which does very little to hide the contents, especially for the
+	/// last hop. It should only be set when the blinded path needs to be as compact as possible.
 	pub fn one_hop<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		recipient_node_id: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>,
+		context: MessageContext, compact_padding: bool, entropy_source: ES,
+		secp_ctx: &Secp256k1<T>,
 	) -> Self
 	where
 		ES::Target: EntropySource,
 	{
-		Self::new(&[], recipient_node_id, local_node_receive_key, context, entropy_source, secp_ctx)
+		Self::new(
+			&[],
+			recipient_node_id,
+			local_node_receive_key,
+			context,
+			compact_padding,
+			entropy_source,
+			secp_ctx,
+		)
 	}
 
 	/// Create a path for an onion message, to be forwarded along `node_pks`.
+	///
+	/// `compact_padding` selects between space-inefficient padding which better hides contents and
+	/// a space-constrained padding which does very little to hide the contents, especially for the
+	/// last hop. It should only be set when the blinded path needs to be as compact as possible.
 	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
-		local_node_receive_key: ReceiveAuthKey, context: MessageContext, entropy_source: ES,
-		secp_ctx: &Secp256k1<T>,
+		local_node_receive_key: ReceiveAuthKey, context: MessageContext, compact_padding: bool,
+		entropy_source: ES, secp_ctx: &Secp256k1<T>,
 	) -> Self
 	where
 		ES::Target: EntropySource,
@@ -79,6 +96,7 @@ impl BlindedMessagePath {
 			0,
 			local_node_receive_key,
 			context,
+			compact_padding,
 			entropy_source,
 			secp_ctx,
 		)
@@ -86,12 +104,15 @@ impl BlindedMessagePath {
 
 	/// Same as [`BlindedMessagePath::new`], but allows specifying a number of dummy hops.
 	///
-	/// Note:
-	/// At most [`MAX_DUMMY_HOPS_COUNT`] dummy hops can be added to the blinded path.
+	/// `compact_padding` selects between space-inefficient padding which better hides contents and
+	/// a space-constrained padding which does very little to hide the contents, especially for the
+	/// last hop. It should only be set when the blinded path needs to be as compact as possible.
+	///
+	/// Note: At most [`MAX_DUMMY_HOPS_COUNT`] dummy hops can be added to the blinded path.
 	pub fn new_with_dummy_hops<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
 		dummy_hop_count: usize, local_node_receive_key: ReceiveAuthKey, context: MessageContext,
-		entropy_source: ES, secp_ctx: &Secp256k1<T>,
+		compact_padding: bool, entropy_source: ES, secp_ctx: &Secp256k1<T>,
 	) -> Self
 	where
 		ES::Target: EntropySource,
@@ -114,6 +135,7 @@ impl BlindedMessagePath {
 				context,
 				&blinding_secret,
 				local_node_receive_key,
+				compact_padding,
 			),
 		})
 	}
@@ -416,28 +438,45 @@ pub enum OffersContext {
 		/// Useful to timeout async recipients that are no longer supported as clients.
 		path_absolute_expiry: Duration,
 	},
-	/// Context used by a [`BlindedMessagePath`] within a [`Refund`] or as a reply path for an
-	/// [`InvoiceRequest`].
+	/// Context used by a [`BlindedMessagePath`] within a [`Refund`].
 	///
 	/// This variant is intended to be received when handling a [`Bolt12Invoice`] or an
 	/// [`InvoiceError`].
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
-	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-	OutboundPayment {
-		/// Payment ID used when creating a [`Refund`] or [`InvoiceRequest`].
+	OutboundPaymentForRefund {
+		/// Payment ID used when creating a [`Refund`].
 		///
 		/// [`Refund`]: crate::offers::refund::Refund
-		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		payment_id: PaymentId,
 
-		/// A nonce used for authenticating that a [`Bolt12Invoice`] is for a valid [`Refund`] or
-		/// [`InvoiceRequest`] and for deriving their signing keys.
+		/// A nonce used for authenticating that a [`Bolt12Invoice`] is for a valid [`Refund`] and
+		/// for deriving its signing keys.
 		///
 		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 		/// [`Refund`]: crate::offers::refund::Refund
+		nonce: Nonce,
+	},
+	/// Context used by a [`BlindedMessagePath`] as a reply path for an [`InvoiceRequest`].
+	///
+	/// This variant is intended to be received when handling a [`Bolt12Invoice`] or an
+	/// [`InvoiceError`].
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
+	OutboundPaymentForOffer {
+		/// Payment ID used when creating an [`InvoiceRequest`].
+		///
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		payment_id: PaymentId,
+
+		/// A nonce used for authenticating that a [`Bolt12Invoice`] is for a valid
+		/// [`InvoiceRequest`] and for deriving its signing keys.
+		///
+		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		nonce: Nonce,
 	},
@@ -619,7 +658,7 @@ impl_writeable_tlv_based_enum!(OffersContext,
 	(0, InvoiceRequest) => {
 		(0, nonce, required),
 	},
-	(1, OutboundPayment) => {
+	(1, OutboundPaymentForRefund) => {
 		(0, payment_id, required),
 		(1, nonce, required),
 	},
@@ -630,6 +669,10 @@ impl_writeable_tlv_based_enum!(OffersContext,
 		(0, recipient_id, required),
 		(2, invoice_slot, required),
 		(4, path_absolute_expiry, required),
+	},
+	(4, OutboundPaymentForOffer) => {
+		(0, payment_id, required),
+		(1, nonce, required),
 	},
 );
 
@@ -693,7 +736,7 @@ pub const MAX_DUMMY_HOPS_COUNT: usize = 10;
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[MessageForwardNode],
 	recipient_node_id: PublicKey, dummy_hop_count: usize, context: MessageContext,
-	session_priv: &SecretKey, local_node_receive_key: ReceiveAuthKey,
+	session_priv: &SecretKey, local_node_receive_key: ReceiveAuthKey, compact_padding: bool,
 ) -> Vec<BlindedHop> {
 	let dummy_count = cmp::min(dummy_hop_count, MAX_DUMMY_HOPS_COUNT);
 	let pks = intermediate_nodes
@@ -703,9 +746,8 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 			core::iter::repeat((recipient_node_id, Some(local_node_receive_key))).take(dummy_count),
 		)
 		.chain(core::iter::once((recipient_node_id, Some(local_node_receive_key))));
-	let is_compact = intermediate_nodes.iter().any(|node| node.short_channel_id.is_some());
 
-	let tlvs = pks
+	let intermediate_tlvs = pks
 		.clone()
 		.skip(1) // The first node's TLVs contains the next node's pubkey
 		.zip(intermediate_nodes.iter().map(|node| node.short_channel_id))
@@ -716,18 +758,43 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 		.map(|next_hop| {
 			ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override: None })
 		})
-		.chain((0..dummy_count).map(|_| ControlTlvs::Dummy))
-		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { context: Some(context) })));
+		.chain((0..dummy_count).map(|_| ControlTlvs::Dummy));
 
-	if is_compact {
-		let path = pks.zip(tlvs);
-		utils::construct_blinded_hops(secp_ctx, path, session_priv)
+	let max_intermediate_len =
+		intermediate_tlvs.clone().map(|tlvs| tlvs.serialized_length()).max().unwrap_or(0);
+	let have_intermediate_one_byte_smaller =
+		intermediate_tlvs.clone().any(|tlvs| tlvs.serialized_length() == max_intermediate_len - 1);
+
+	let round_off = if compact_padding {
+		// We can only pad by a minimum of two bytes (we can only go from no-TLV to a type + length
+		// byte). Thus, if there are any intermediate hops that need to be padded by exactly one
+		// byte, we have to instead pad everything by two.
+		if have_intermediate_one_byte_smaller {
+			max_intermediate_len + 2
+		} else {
+			max_intermediate_len
+		}
 	} else {
-		let path =
-			pks.zip(tlvs.map(|tlv| BlindedPathWithPadding {
-				tlvs: tlv,
-				round_off: MESSAGE_PADDING_ROUND_OFF,
-			}));
-		utils::construct_blinded_hops(secp_ctx, path, session_priv)
-	}
+		MESSAGE_PADDING_ROUND_OFF
+	};
+
+	let tlvs = intermediate_tlvs
+		.map(|tlvs| {
+			let res = BlindedPathWithPadding { tlvs, round_off };
+			if compact_padding {
+				debug_assert_eq!(res.serialized_length(), max_intermediate_len);
+			} else {
+				// We don't currently ever push extra fields to intermediate hops, so they should
+				// never go over `MESSAGE_PADDING_ROUND_OFF`.
+				debug_assert_eq!(res.serialized_length(), MESSAGE_PADDING_ROUND_OFF);
+			}
+			res
+		})
+		.chain(core::iter::once(BlindedPathWithPadding {
+			tlvs: ControlTlvs::Receive(ReceiveTlvs { context: Some(context) }),
+			round_off: if compact_padding { 0 } else { MESSAGE_PADDING_ROUND_OFF },
+		}));
+
+	let path = pks.zip(tlvs);
+	utils::construct_blinded_hops(secp_ctx, path, session_priv)
 }
