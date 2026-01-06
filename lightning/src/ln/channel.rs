@@ -15191,13 +15191,13 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 	}
 }
 
-impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
-	ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures)> for FundedChannel<SP>
+impl<'a, 'b, 'c, 'd, ES: EntropySource, SP: SignerProvider, L: Logger>
+	ReadableArgs<(&'a ES, &'b SP, &'c L, &'d ChannelTypeFeatures)> for FundedChannel<SP>
 {
 	fn read<R: io::Read>(
-		reader: &mut R, args: (&'a ES, &'b SP, &'c ChannelTypeFeatures),
+		reader: &mut R, args: (&'a ES, &'b SP, &'c L, &'d ChannelTypeFeatures),
 	) -> Result<Self, DecodeError> {
-		let (entropy_source, signer_provider, our_supported_features) = args;
+		let (entropy_source, signer_provider, logger, our_supported_features) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 		if ver <= 2 {
 			return Err(DecodeError::UnknownVersion);
@@ -16935,9 +16935,11 @@ mod tests {
 		let mut reader =
 			crate::util::ser::FixedLengthReader::new(&mut s, encoded_chan.len() as u64);
 		let features = channelmanager::provided_channel_type_features(&config);
-		let decoded_chan =
-			FundedChannel::read(&mut reader, (&&keys_provider, &&keys_provider, &features))
-				.unwrap();
+		let decoded_chan = FundedChannel::read(
+			&mut reader,
+			(&&keys_provider, &&keys_provider, &&logger, &features),
+		)
+		.unwrap();
 		assert_eq!(decoded_chan.context.pending_outbound_htlcs, pending_outbound_htlcs);
 		assert_eq!(decoded_chan.context.holding_cell_htlc_updates, holding_cell_htlc_updates);
 	}
