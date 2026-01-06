@@ -17670,6 +17670,7 @@ where
 				(
 					&args.entropy_source,
 					&args.signer_provider,
+					&args.logger,
 					&provided_channel_type_features(&args.config),
 				),
 			)?;
