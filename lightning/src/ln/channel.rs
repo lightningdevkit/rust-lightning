@@ -9392,10 +9392,9 @@ where
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	fn monitor_updating_paused<L: Deref>(
 		&mut self, resend_raa: bool, resend_commitment: bool, resend_channel_ready: bool,
-		mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
-		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
-		mut pending_finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
-		logger: &L,
+		pending_forwards: Vec<(PendingHTLCInfo, u64)>,
+		pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+		pending_finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>, logger: &L,
 	) where
 		L::Target: Logger,
 	{
@@ -9404,11 +9403,9 @@ where
 		self.context.monitor_pending_revoke_and_ack |= resend_raa;
 		self.context.monitor_pending_commitment_signed |= resend_commitment;
 		self.context.monitor_pending_channel_ready |= resend_channel_ready;
-		self.context.monitor_pending_forwards.append(&mut pending_forwards);
-		self.context.monitor_pending_failures.append(&mut pending_fails);
-		self.context
-			.monitor_pending_finalized_fulfills
-			.append(&mut pending_finalized_claimed_htlcs);
+		self.context.monitor_pending_forwards.extend(pending_forwards);
+		self.context.monitor_pending_failures.extend(pending_fails);
+		self.context.monitor_pending_finalized_fulfills.extend(pending_finalized_claimed_htlcs);
 		self.context.channel_state.set_monitor_update_in_progress();
 	}
 
