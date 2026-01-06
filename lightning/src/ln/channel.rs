@@ -7494,7 +7494,6 @@ where
 					false,
 					Vec::new(),
 					Vec::new(),
-					Vec::new(),
 					logger,
 				);
 				UpdateFulfillCommitFetch::NewClaim { monitor_update, htlc_value_msat }
@@ -7932,15 +7931,7 @@ where
 			&self.context.channel_id()
 		);
 
-		self.monitor_updating_paused(
-			false,
-			false,
-			false,
-			Vec::new(),
-			Vec::new(),
-			Vec::new(),
-			logger,
-		);
+		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), logger);
 		self.context
 			.interactive_tx_signing_session
 			.as_mut()
@@ -8048,15 +8039,7 @@ where
 			.as_mut()
 			.expect("Signing session must exist for negotiated pending splice")
 			.received_commitment_signed();
-		self.monitor_updating_paused(
-			false,
-			false,
-			false,
-			Vec::new(),
-			Vec::new(),
-			Vec::new(),
-			logger,
-		);
+		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), logger);
 
 		Ok(self.push_ret_blockable_mon_update(monitor_update))
 	}
@@ -8367,7 +8350,6 @@ where
 			false,
 			Vec::new(),
 			Vec::new(),
-			Vec::new(),
 			logger,
 		);
 		return Ok(self.push_ret_blockable_mon_update(monitor_update));
@@ -8574,15 +8556,7 @@ where
 				if update_fee.is_some() { "a fee update, " } else { "" },
 				update_add_count, update_fulfill_count, update_fail_count);
 
-			self.monitor_updating_paused(
-				false,
-				true,
-				false,
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-				logger,
-			);
+			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), logger);
 			(self.push_ret_blockable_mon_update(monitor_update), htlcs_to_fail)
 		} else {
 			(None, Vec::new())
@@ -8717,7 +8691,6 @@ where
 		}
 
 		log_trace!(logger, "Updating HTLCs on receipt of RAA...");
-		let mut to_forward_infos = Vec::new();
 		let mut pending_update_adds = Vec::new();
 		let mut revoked_htlcs = Vec::new();
 		let mut finalized_claimed_htlcs = Vec::new();
@@ -8918,7 +8891,6 @@ where
 					false,
 					true,
 					false,
-					to_forward_infos,
 					revoked_htlcs,
 					finalized_claimed_htlcs,
 					logger,
@@ -8966,7 +8938,6 @@ where
 						false,
 						true,
 						false,
-						to_forward_infos,
 						revoked_htlcs,
 						finalized_claimed_htlcs,
 						logger,
@@ -8980,7 +8951,6 @@ where
 						false,
 						false,
 						false,
-						to_forward_infos,
 						revoked_htlcs,
 						finalized_claimed_htlcs,
 						logger,
@@ -9386,7 +9356,6 @@ where
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	fn monitor_updating_paused<L: Deref>(
 		&mut self, resend_raa: bool, resend_commitment: bool, resend_channel_ready: bool,
-		pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 		pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 		pending_finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>, logger: &L,
 	) where
@@ -9397,7 +9366,6 @@ where
 		self.context.monitor_pending_revoke_and_ack |= resend_raa;
 		self.context.monitor_pending_commitment_signed |= resend_commitment;
 		self.context.monitor_pending_channel_ready |= resend_channel_ready;
-		self.context.monitor_pending_forwards.extend(pending_forwards);
 		self.context.monitor_pending_failures.extend(pending_fails);
 		self.context.monitor_pending_finalized_fulfills.extend(pending_finalized_claimed_htlcs);
 		self.context.channel_state.set_monitor_update_in_progress();
@@ -10564,15 +10532,7 @@ where
 				}],
 				channel_id: Some(self.context.channel_id()),
 			};
-			self.monitor_updating_paused(
-				false,
-				false,
-				false,
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-				logger,
-			);
+			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), logger);
 			self.push_ret_blockable_mon_update(monitor_update)
 		} else {
 			None
@@ -11329,15 +11289,7 @@ where
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};
-		self.monitor_updating_paused(
-			false,
-			false,
-			false,
-			Vec::new(),
-			Vec::new(),
-			Vec::new(),
-			logger,
-		);
+		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), logger);
 		let monitor_update = self.push_ret_blockable_mon_update(monitor_update);
 
 		let announcement_sigs =
@@ -13061,15 +13013,7 @@ where
 		let can_add_htlc = send_res.map_err(|(_, msg)| ChannelError::Ignore(msg))?;
 		if can_add_htlc {
 			let monitor_update = self.build_commitment_no_status_check(logger);
-			self.monitor_updating_paused(
-				false,
-				true,
-				false,
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-				logger,
-			);
+			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), logger);
 			Ok(self.push_ret_blockable_mon_update(monitor_update))
 		} else {
 			Ok(None)
@@ -13192,15 +13136,7 @@ where
 				}],
 				channel_id: Some(self.context.channel_id()),
 			};
-			self.monitor_updating_paused(
-				false,
-				false,
-				false,
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-				&&logger,
-			);
+			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), &&logger);
 			self.push_ret_blockable_mon_update(monitor_update)
 		} else {
 			None
@@ -13835,7 +13771,6 @@ where
 			need_channel_ready,
 			Vec::new(),
 			Vec::new(),
-			Vec::new(),
 			logger,
 		);
 		Ok((channel, channel_monitor))
@@ -14155,7 +14090,6 @@ where
 			false,
 			false,
 			need_channel_ready,
-			Vec::new(),
 			Vec::new(),
 			Vec::new(),
 			logger,
