@@ -1179,6 +1179,7 @@ pub(super) struct MonitorRestoreUpdates {
 	/// A `CommitmentUpdate` to be sent to our channel peer.
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
 	pub commitment_order: RAACommitmentOrder,
+	// TODO: get rid of this
 	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	pub finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
@@ -3089,7 +3090,6 @@ pub(super) struct ChannelContext<SP: SignerProvider> {
 	// responsible for some of the HTLCs here or not - we don't know whether the update in question
 	// completed or not. We currently ignore these fields entirely when force-closing a channel,
 	// but need to handle this somehow or we run the risk of losing HTLCs!
-	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	monitor_pending_finalized_fulfills: Vec<(HTLCSource, Option<AttributionData>)>,
 	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
@@ -3786,7 +3786,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			monitor_pending_channel_ready: false,
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
-			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
 			monitor_pending_update_adds: Vec::new(),
@@ -4020,7 +4019,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			monitor_pending_channel_ready: false,
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
-			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
 			monitor_pending_update_adds: Vec::new(),
@@ -9545,8 +9543,6 @@ where
 
 		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block_height, logger);
 
-		let mut accepted_htlcs = Vec::new();
-		mem::swap(&mut accepted_htlcs, &mut self.context.monitor_pending_forwards);
 		let mut failed_htlcs = Vec::new();
 		mem::swap(&mut failed_htlcs, &mut self.context.monitor_pending_failures);
 		let mut finalized_claimed_htlcs = Vec::new();
@@ -9567,7 +9563,7 @@ where
 			self.context.monitor_pending_commitment_signed = false;
 			return MonitorRestoreUpdates {
 				raa: None, commitment_update: None, commitment_order: RAACommitmentOrder::RevokeAndACKFirst,
-				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
+				accepted_htlcs: Vec::new(), failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
 				funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None,
 				channel_ready_order, committed_outbound_htlc_sources
 			};
@@ -9598,7 +9594,7 @@ where
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
 			match commitment_order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
-			raa, commitment_update, commitment_order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
+			raa, commitment_update, commitment_order, accepted_htlcs: Vec::new(), failed_htlcs, finalized_claimed_htlcs,
 			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures,
 			channel_ready_order, committed_outbound_htlc_sources
 		}
@@ -14856,11 +14852,8 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 		self.context.monitor_pending_revoke_and_ack.write(writer)?;
 		self.context.monitor_pending_commitment_signed.write(writer)?;
 
-		(self.context.monitor_pending_forwards.len() as u64).write(writer)?;
-		for &(ref pending_forward, ref htlc_id) in self.context.monitor_pending_forwards.iter() {
-			pending_forward.write(writer)?;
-			htlc_id.write(writer)?;
-		}
+		// Previously used for monitor_pending_forwards prior to LDK 0.5.
+		0u64.write(writer)?;
 
 		(self.context.monitor_pending_failures.len() as u64).write(writer)?;
 		for &(ref htlc_source, ref payment_hash, ref fail_reason) in
@@ -15282,13 +15275,10 @@ impl<'a, 'b, 'c, 'd, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let monitor_pending_revoke_and_ack = Readable::read(reader)?;
 		let monitor_pending_commitment_signed = Readable::read(reader)?;
 
-		let monitor_pending_forwards_count: u64 = Readable::read(reader)?;
-		let mut monitor_pending_forwards = Vec::with_capacity(cmp::min(
-			monitor_pending_forwards_count as usize,
-			DEFAULT_MAX_HTLCS as usize,
-		));
-		for _ in 0..monitor_pending_forwards_count {
-			monitor_pending_forwards.push((Readable::read(reader)?, Readable::read(reader)?));
+		let monitor_pending_forwards_count_legacy: u64 = Readable::read(reader)?;
+		if monitor_pending_forwards_count_legacy != 0 {
+			log_error!(logger, "Found deprecated HTLC received on LDK 0.1 or earlier. HTLC must be resolved before upgrading to LDK 0.5+, see CHANGELOG.md");
+			return Err(DecodeError::InvalidValue);
 		}
 
 		let monitor_pending_failures_count: u64 = Readable::read(reader)?;
@@ -15892,7 +15882,6 @@ impl<'a, 'b, 'c, 'd, ES: EntropySource, SP: SignerProvider, L: Logger>
 				monitor_pending_channel_ready,
 				monitor_pending_revoke_and_ack,
 				monitor_pending_commitment_signed,
-				monitor_pending_forwards,
 				monitor_pending_failures,
 				monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
 				monitor_pending_update_adds: monitor_pending_update_adds.unwrap_or_default(),
