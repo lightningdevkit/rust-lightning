@@ -1914,13 +1914,8 @@ where
 				.handle_tx_complete(msg)
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))?,
 			None => {
-				return Err((
-					ChannelError::WarnAndDisconnect(
-						"Received unexpected interactive transaction negotiation message"
-							.to_owned(),
-					),
-					None,
-				))
+				let err = "Received unexpected interactive transaction negotiation message";
+				return Err((ChannelError::WarnAndDisconnect(err.to_owned()), None));
 			},
 		};
 
@@ -13806,28 +13801,20 @@ where
 		L::Target: Logger,
 	{
 		if !self.funding.is_outbound() {
-			return Err((
-				self,
-				ChannelError::close("Received funding_signed for an inbound channel?".to_owned()),
-			));
+			let err = "Received funding_signed for an inbound channel?";
+			return Err((self, ChannelError::close(err.to_owned())));
 		}
 		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated(_)) {
-			return Err((
-				self,
-				ChannelError::close("Received funding_signed in strange state!".to_owned()),
-			));
+			let err = "Received funding_signed in strange state!";
+			return Err((self, ChannelError::close(err.to_owned())));
 		}
-		let mut holder_commitment_point =
-			match self.unfunded_context.holder_commitment_point {
-				Some(point) => point,
-				None => return Err((
-					self,
-					ChannelError::close(
-						"Received funding_signed before our first commitment point was available"
-							.to_owned(),
-					),
-				)),
-			};
+		let mut holder_commitment_point = match self.unfunded_context.holder_commitment_point {
+			Some(point) => point,
+			None => {
+				let err = "Received funding_signed before our first commitment point was available";
+				return Err((self, ChannelError::close(err.to_owned())));
+			},
+		};
 		self.context.assert_no_commitment_advancement(
 			holder_commitment_point.next_transaction_number(),
 			"funding_signed",
@@ -14117,10 +14104,8 @@ where
 		L::Target: Logger,
 	{
 		if self.funding.is_outbound() {
-			return Err((
-				self,
-				ChannelError::close("Received funding_created for an outbound channel?".to_owned()),
-			));
+			let err = "Received funding_created for an outbound channel?";
+			return Err((self, ChannelError::close(err.to_owned())));
 		}
 		if !matches!(
 			self.context.channel_state, ChannelState::NegotiatingFunding(flags)
@@ -14129,24 +14114,17 @@ where
 			// BOLT 2 says that if we disconnect before we send funding_signed we SHOULD NOT
 			// remember the channel, so it's safe to just send an error_message here and drop the
 			// channel.
-			return Err((
-				self,
-				ChannelError::close(
-					"Received funding_created after we got the channel!".to_owned(),
-				),
-			));
+			let err = "Received funding_created after we got the channel!";
+			return Err((self, ChannelError::close(err.to_owned())));
 		}
-		let mut holder_commitment_point =
-			match self.unfunded_context.holder_commitment_point {
-				Some(point) => point,
-				None => return Err((
-					self,
-					ChannelError::close(
-						"Received funding_created before our first commitment point was available"
-							.to_owned(),
-					),
-				)),
-			};
+		let mut holder_commitment_point = match self.unfunded_context.holder_commitment_point {
+			Some(point) => point,
+			None => {
+				let err =
+					"Received funding_created before our first commitment point was available";
+				return Err((self, ChannelError::close(err.to_owned())));
+			},
+		};
 		self.context.assert_no_commitment_advancement(
 			holder_commitment_point.next_transaction_number(),
 			"funding_created",
