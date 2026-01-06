@@ -51,8 +51,8 @@ use crate::ln::channel_state::{
 };
 use crate::ln::channelmanager::{
 	self, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage, HTLCPreviousHopData,
-	HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, RAACommitmentOrder,
-	SentHTLCId, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
+	HTLCSource, OpenChannelMessage, PaymentClaimDetails, RAACommitmentOrder, SentHTLCId,
+	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::interactivetxs::{
@@ -1179,8 +1179,6 @@ pub(super) struct MonitorRestoreUpdates {
 	/// A `CommitmentUpdate` to be sent to our channel peer.
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
 	pub commitment_order: RAACommitmentOrder,
-	// TODO: get rid of this
-	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	pub finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 	/// Inbound update_adds that are now irrevocably committed to this channel and are ready for the
@@ -9563,9 +9561,9 @@ where
 			self.context.monitor_pending_commitment_signed = false;
 			return MonitorRestoreUpdates {
 				raa: None, commitment_update: None, commitment_order: RAACommitmentOrder::RevokeAndACKFirst,
-				accepted_htlcs: Vec::new(), failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
-				funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None,
-				channel_ready_order, committed_outbound_htlc_sources
+				failed_htlcs, finalized_claimed_htlcs, pending_update_adds, funding_broadcastable,
+				channel_ready, announcement_sigs, tx_signatures: None, channel_ready_order,
+				committed_outbound_htlc_sources
 			};
 		}
 
@@ -9594,7 +9592,7 @@ where
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
 			match commitment_order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
-			raa, commitment_update, commitment_order, accepted_htlcs: Vec::new(), failed_htlcs, finalized_claimed_htlcs,
+			raa, commitment_update, commitment_order, failed_htlcs, finalized_claimed_htlcs,
 			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures,
 			channel_ready_order, committed_outbound_htlc_sources
 		}
