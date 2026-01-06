@@ -144,28 +144,11 @@ enum InboundHTLCRemovalReason {
 	Fulfill { preimage: PaymentPreimage, attribution_data: Option<AttributionData> },
 }
 
-/// Represents the resolution status of an inbound HTLC.
-#[cfg_attr(test, derive(Debug))]
-#[derive(Clone)]
-enum InboundHTLCResolution {
-	/// Pending implies we will attempt to resolve the inbound HTLC once it has been fully committed
-	/// to by both sides of the channel, i.e., once a `revoke_and_ack` has been processed by both
-	/// nodes for the state update in which it was proposed.
-	Pending { update_add_htlc: msgs::UpdateAddHTLC },
-}
-
-impl_writeable_tlv_based_enum!(InboundHTLCResolution,
-	// 0 used to be used for InboundHTLCResolution::Resolved in 0.4 and below.
-	(2, Pending) => {
-		(0, update_add_htlc, required),
-	},
-);
-
 #[cfg_attr(test, derive(Debug))]
 enum InboundHTLCState {
 	/// Offered by remote, to be included in next local commitment tx. I.e., the remote sent an
 	/// update_add_htlc message for this HTLC.
-	RemoteAnnounced(InboundHTLCResolution),
+	RemoteAnnounced(msgs::UpdateAddHTLC),
 	/// Included in a received commitment_signed message (implying we've
 	/// revoke_and_ack'd it), but the remote hasn't yet revoked their previous
 	/// state (see the example below). We have not yet included this HTLC in a
@@ -195,13 +178,13 @@ enum InboundHTLCState {
 	/// Implies AwaitingRemoteRevoke.
 	///
 	/// [BOLT #2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
-	AwaitingRemoteRevokeToAnnounce(InboundHTLCResolution),
+	AwaitingRemoteRevokeToAnnounce(msgs::UpdateAddHTLC),
 	/// Included in a received commitment_signed message (implying we've revoke_and_ack'd it).
 	/// We have also included this HTLC in our latest commitment_signed and are now just waiting
 	/// on the remote's revoke_and_ack to make this HTLC an irrevocable part of the state of the
 	/// channel (before it can then get forwarded and/or removed).
 	/// Implies AwaitingRemoteRevoke.
-	AwaitingAnnouncedRemoteRevoke(InboundHTLCResolution),
+	AwaitingAnnouncedRemoteRevoke(msgs::UpdateAddHTLC),
 	/// An HTLC irrevocably committed in the latest commitment transaction, ready to be forwarded or
 	/// removed.
 	Committed {
@@ -286,12 +269,10 @@ impl InboundHTLCState {
 	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
 	fn should_hold_htlc(&self) -> bool {
 		match self {
-			InboundHTLCState::RemoteAnnounced(res)
-			| InboundHTLCState::AwaitingRemoteRevokeToAnnounce(res)
-			| InboundHTLCState::AwaitingAnnouncedRemoteRevoke(res) => match res {
-				InboundHTLCResolution::Pending { update_add_htlc } => {
-					update_add_htlc.hold_htlc.is_some()
-				},
+			InboundHTLCState::RemoteAnnounced(update_add_htlc)
+			| InboundHTLCState::AwaitingRemoteRevokeToAnnounce(update_add_htlc)
+			| InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add_htlc) => {
+				update_add_htlc.hold_htlc.is_some()
 			},
 			InboundHTLCState::Committed { .. } | InboundHTLCState::LocalRemoved(_) => false,
 		}
@@ -7890,9 +7871,7 @@ where
 			amount_msat: msg.amount_msat,
 			payment_hash: msg.payment_hash,
 			cltv_expiry: msg.cltv_expiry,
-			state: InboundHTLCState::RemoteAnnounced(InboundHTLCResolution::Pending {
-				update_add_htlc: msg.clone(),
-			}),
+			state: InboundHTLCState::RemoteAnnounced(msg.clone())
 		});
 		Ok(())
 	}
@@ -8496,11 +8475,10 @@ where
 		}
 
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
-			if let &InboundHTLCState::RemoteAnnounced(ref htlc_resolution) = &htlc.state {
+			if let &InboundHTLCState::RemoteAnnounced(ref update_add) = &htlc.state {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToAnnounce due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
-				htlc.state =
-					InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution.clone());
+				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(update_add.clone());
 				need_commitment = true;
 			}
 		}
@@ -9011,24 +8989,22 @@ where
 						InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy };
 					mem::swap(&mut state, &mut htlc.state);
 
-					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution) = state {
+					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(update_add) = state {
 						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
-						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution);
+						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add);
 						require_commitment = true;
-					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution) =
+					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add_htlc) =
 						state
 					{
-						match resolution {
-							InboundHTLCResolution::Pending { update_add_htlc } => {
-								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
-								pending_update_adds.push(update_add_htlc.clone());
-								htlc.state = InboundHTLCState::Committed {
-									update_add_htlc: InboundUpdateAdd::WithOnion {
-										update_add_htlc,
-									},
-								};
-							},
-						}
+						log_trace!(
+							logger,
+							" ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed",
+							&htlc.payment_hash
+						);
+						pending_update_adds.push(update_add_htlc.clone());
+						htlc.state = InboundHTLCState::Committed {
+							update_add_htlc: InboundUpdateAdd::WithOnion { update_add_htlc },
+						};
 					}
 				}
 			}
@@ -12942,10 +12918,10 @@ where
 		// is acceptable.
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
 			let new_state =
-				if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref forward_info) =
+				if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref update_add) =
 					&htlc.state
 				{
-					Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info.clone()))
+					Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add.clone()))
 				} else {
 					None
 				};
@@ -14655,6 +14631,41 @@ impl Readable for AnnouncementSigsState {
 	}
 }
 
+/// Represents the resolution status of an inbound HTLC. Previously we had multiple variants here,
+/// now we only use it for backwards compatibility when (de)serializing [`InboundHTLCState`]s.
+enum WriteableLegacyHTLCResolution<'a> {
+	Pending { update_add_htlc: &'a msgs::UpdateAddHTLC },
+}
+
+// We can't use `impl_writeable_tlv_based_enum` due to the lifetime.
+impl<'a> Writeable for WriteableLegacyHTLCResolution<'a> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		match self {
+			Self::Pending { update_add_htlc } => {
+				2u8.write(writer)?;
+				crate::_encode_varint_length_prefixed_tlv!(writer, {
+					(0, update_add_htlc, required)
+				});
+			},
+		}
+
+		Ok(())
+	}
+}
+
+/// Represents the resolution status of an inbound HTLC. Previously we had multiple variants here,
+/// now we only use it for backwards compatibility when (de)serializing [`InboundHTLCState`]s.
+enum ReadableLegacyHTLCResolution {
+	Pending { update_add_htlc: msgs::UpdateAddHTLC },
+}
+
+impl_writeable_tlv_based_enum!(ReadableLegacyHTLCResolution,
+	// 0 used to be used for the ::Resolved variant in 0.2 and below.
+	(2, Pending) => {
+		(0, update_add_htlc, required),
+	},
+);
+
 impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
@@ -14739,13 +14750,13 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 			htlc.payment_hash.write(writer)?;
 			match &htlc.state {
 				&InboundHTLCState::RemoteAnnounced(_) => unreachable!(),
-				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_resolution) => {
+				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref update_add_htlc) => {
 					1u8.write(writer)?;
-					htlc_resolution.write(writer)?;
+					WriteableLegacyHTLCResolution::Pending { update_add_htlc }.write(writer)?;
 				},
-				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_resolution) => {
+				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref update_add_htlc) => {
 					2u8.write(writer)?;
-					htlc_resolution.write(writer)?;
+					WriteableLegacyHTLCResolution::Pending { update_add_htlc }.write(writer)?;
 				},
 				&InboundHTLCState::Committed { ref update_add_htlc } => {
 					3u8.write(writer)?;
@@ -15200,18 +15211,20 @@ impl<'a, 'b, 'c, 'd, ES: EntropySource, SP: SignerProvider, L: Logger>
 				payment_hash: Readable::read(reader)?,
 				state: match <u8 as Readable>::read(reader)? {
 					1 => {
-						let resolution = Readable::read(reader).map_err(|e| {
-							log_error!(logger, "Found deprecated HTLC received on LDK 0.1 or earlier. HTLC must be resolved before upgrading to LDK 0.5+, see CHANGELOG.md");
-							e
-						})?;
-						InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution)
+						let ReadableLegacyHTLCResolution::Pending { update_add_htlc } =
+							Readable::read(reader).map_err(|e| {
+								log_error!(logger, "Found deprecated HTLC received on LDK 0.1 or earlier. HTLC must be resolved before upgrading to LDK 0.5+, see CHANGELOG.md");
+								e
+							})?;
+						InboundHTLCState::AwaitingRemoteRevokeToAnnounce(update_add_htlc)
 					},
 					2 => {
-						let resolution = Readable::read(reader).map_err(|e| {
-							log_error!(logger, "Found deprecated HTLC received on LDK 0.1 or earlier. HTLC must be resolved before upgrading to LDK 0.5+, see CHANGELOG.md");
-							e
-						})?;
-						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution)
+						let ReadableLegacyHTLCResolution::Pending { update_add_htlc } =
+							Readable::read(reader).map_err(|e| {
+								log_error!(logger, "Found deprecated HTLC received on LDK 0.1 or earlier. HTLC must be resolved before upgrading to LDK 0.5+, see CHANGELOG.md");
+								e
+							})?;
+						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add_htlc)
 					},
 					3 => InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy },
 					4 => {
