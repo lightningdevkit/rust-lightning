@@ -190,6 +190,8 @@ welcomed.
   * `FULL_BLOCK_VIA_LISTEN`
   * `FULL_BLOCK_DISCONNECTIONS_SKIPPING_VIA_LISTEN`
 
+* `LDK_TEST_DETERMINISTIC_HASHES` - When set to `1`, uses deterministic hash map iteration order in tests. This ensures consistent test output across runs, useful for comparing logs before and after changes.
+
 C/C++ Bindings
 --------------
 

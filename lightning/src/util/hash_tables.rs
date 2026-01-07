@@ -6,9 +6,74 @@
 pub use hashbrown::hash_map;
 
 mod hashbrown_tables {
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(test)))]
 	mod hasher {
 		pub use std::collections::hash_map::RandomState;
+	}
+	#[cfg(all(feature = "std", test))]
+	mod hasher {
+		#![allow(deprecated)] // hash::SipHasher was deprecated in favor of something only in std.
+		use core::hash::{BuildHasher, Hasher};
+
+		/// A [`BuildHasher`] for tests that supports deterministic behavior via environment variable.
+		///
+		/// When `LDK_TEST_DETERMINISTIC_HASHES` is set, uses fixed keys for deterministic iteration.
+		/// Otherwise, delegates to std's RandomState for random hashing.
+		#[derive(Clone)]
+		pub enum RandomState {
+			Std(std::collections::hash_map::RandomState),
+			Deterministic,
+		}
+
+		impl RandomState {
+			pub fn new() -> RandomState {
+				if std::env::var("LDK_TEST_DETERMINISTIC_HASHES").map(|v| v == "1").unwrap_or(false)
+				{
+					RandomState::Deterministic
+				} else {
+					RandomState::Std(std::collections::hash_map::RandomState::new())
+				}
+			}
+		}
+
+		impl Default for RandomState {
+			fn default() -> RandomState {
+				RandomState::new()
+			}
+		}
+
+		/// A hasher wrapper that delegates to either std's DefaultHasher or a deterministic SipHasher.
+		pub enum RandomStateHasher {
+			Std(std::collections::hash_map::DefaultHasher),
+			Deterministic(core::hash::SipHasher),
+		}
+
+		impl Hasher for RandomStateHasher {
+			fn finish(&self) -> u64 {
+				match self {
+					RandomStateHasher::Std(h) => h.finish(),
+					RandomStateHasher::Deterministic(h) => h.finish(),
+				}
+			}
+			fn write(&mut self, bytes: &[u8]) {
+				match self {
+					RandomStateHasher::Std(h) => h.write(bytes),
+					RandomStateHasher::Deterministic(h) => h.write(bytes),
+				}
+			}
+		}
+
+		impl BuildHasher for RandomState {
+			type Hasher = RandomStateHasher;
+			fn build_hasher(&self) -> RandomStateHasher {
+				match self {
+					RandomState::Std(s) => RandomStateHasher::Std(s.build_hasher()),
+					RandomState::Deterministic => {
+						RandomStateHasher::Deterministic(core::hash::SipHasher::new_with_keys(0, 0))
+					},
+				}
+			}
+		}
 	}
 	#[cfg(not(feature = "std"))]
 	mod hasher {
