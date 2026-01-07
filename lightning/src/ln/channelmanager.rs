@@ -1392,7 +1392,7 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// completes a monitor update containing the payment preimage. In that case, after the inbound
 	/// edge completes, we will surface an [`Event::PaymentForwarded`] as well as unblock the
 	/// outbound edge.
-	EmitEventAndFreeOtherChannel {
+	EmitEventOptionAndFreeOtherChannel {
 		event: Option<events::Event>,
 		downstream_counterparty_and_funding_outpoint: Option<EventUnblockedChannel>,
 	},
@@ -1403,8 +1403,8 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// This is usually generated when we've forwarded an HTLC and want to block the outbound edge
 	/// from completing a monitor update which removes the payment preimage until the inbound edge
 	/// completes a monitor update containing the payment preimage. However, we use this variant
-	/// instead of [`Self::EmitEventAndFreeOtherChannel`] when we discover that the claim was in
-	/// fact duplicative and we simply want to resume the outbound edge channel immediately.
+	/// instead of [`Self::EmitEventOptionAndFreeOtherChannel`] when we discover that the claim was
+	/// in fact duplicative and we simply want to resume the outbound edge channel immediately.
 	///
 	/// This variant should thus never be written to disk, as it is processed inline rather than
 	/// stored for later processing.
@@ -1427,7 +1427,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		(4, blocking_action, upgradable_required),
 		(5, downstream_channel_id, required),
 	},
-	(2, EmitEventAndFreeOtherChannel) => {
+	(2, EmitEventOptionAndFreeOtherChannel) => {
 		// LDK prior to 0.3 required this field. It will not be present for trampoline payments
 		// with multiple incoming HTLCS, so nodes cannot downgrade while trampoline payments
 		// are in the process of being resolved.
@@ -9757,7 +9757,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								"skimmed_fee_msat must always be included in total_fee_earned_msat"
 							);
 							(
-								Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+								Some(MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
 									event: Some(events::Event::PaymentForwarded {
 										prev_htlcs: vec![events::HTLCLocator {
 											channel_id: prev_channel_id,
@@ -9999,7 +9999,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					}
 				},
-				MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+				MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
 					event,
 					downstream_counterparty_and_funding_outpoint,
 				} => {
@@ -19511,7 +19511,7 @@ impl<
 					let logger =
 						WithContext::from(&args.logger, Some(node_id), Some(*channel_id), None);
 					for action in actions.iter() {
-						if let MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+						if let MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
 							downstream_counterparty_and_funding_outpoint:
 								Some(EventUnblockedChannel {
 									counterparty_node_id: blocked_node_id,
