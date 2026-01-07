@@ -7423,7 +7423,7 @@ impl<
 					.push(failure);
 				self.pending_events.lock().unwrap().push_back((
 					events::Event::HTLCHandlingFailed {
-						prev_channel_id: incoming_channel_id,
+						prev_channel_ids: vec![incoming_channel_id],
 						failure_type,
 						failure_reason: Some(failure_reason),
 					},
@@ -9018,7 +9018,7 @@ impl<
 				let mut pending_events = self.pending_events.lock().unwrap();
 				pending_events.push_back((
 					events::Event::HTLCHandlingFailed {
-						prev_channel_id: *channel_id,
+						prev_channel_ids: vec![*channel_id],
 						failure_type,
 						failure_reason: Some(onion_error.into()),
 					},
