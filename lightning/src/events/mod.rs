@@ -1663,8 +1663,9 @@ pub enum Event {
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
 	HTLCHandlingFailed {
-		/// The channel over which the HTLC was received.
-		prev_channel_id: ChannelId,
+		/// The channel(s) over which the HTLC(s) was received. May contain multiple entries for
+		/// trampoline forwards.
+		prev_channel_ids: Vec<ChannelId>,
 		/// The type of HTLC handling that failed.
 		failure_type: HTLCHandlingFailureType,
 		/// The reason that the HTLC failed.
@@ -2197,15 +2198,16 @@ impl Writeable for Event {
 				})
 			},
 			&Event::HTLCHandlingFailed {
-				ref prev_channel_id,
+				ref prev_channel_ids,
 				ref failure_type,
 				ref failure_reason,
 			} => {
 				25u8.write(writer)?;
 				write_tlv_fields!(writer, {
-					(0, prev_channel_id, required),
+					// Type 0 was prev_channel_id in 0.2 and earlier.
 					(1, failure_reason, option),
 					(2, failure_type, required),
+					(3, *prev_channel_ids, required),
 				})
 			},
 			&Event::BumpTransaction(ref event) => {
@@ -2789,13 +2791,19 @@ impl MaybeReadable for Event {
 			},
 			25u8 => {
 				let mut f = || {
-					let mut prev_channel_id = ChannelId::new_zero();
+					let mut prev_channel_id_legacy = None;
 					let mut failure_reason = None;
 					let mut failure_type_opt = UpgradableRequired(None);
+					let mut prev_channel_ids = vec![];
 					read_tlv_fields!(reader, {
-						(0, prev_channel_id, required),
+						(0, prev_channel_id_legacy, option),
 						(1, failure_reason, option),
 						(2, failure_type_opt, upgradable_required),
+						// If our new prev_channel_ids field is not present, the legacy field
+						// must be because it used to be required.
+						(3, prev_channel_ids, (default_value, vec![
+							prev_channel_id_legacy.ok_or(msgs::DecodeError::InvalidValue)?,
+						])),
 					});
 
 					// If a legacy HTLCHandlingFailureType::UnknownNextHop was written, upgrade
@@ -2809,8 +2817,9 @@ impl MaybeReadable for Event {
 						});
 						failure_reason = Some(LocalHTLCFailureReason::UnknownNextPeer.into());
 					}
+
 					Ok(Some(Event::HTLCHandlingFailed {
-						prev_channel_id,
+						prev_channel_ids,
 						failure_type: _init_tlv_based_struct_field!(
 							failure_type_opt,
 							upgradable_required
