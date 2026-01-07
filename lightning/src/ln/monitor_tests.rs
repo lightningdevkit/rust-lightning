@@ -3780,8 +3780,8 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 			Event::PaymentFailed { payment_hash, .. } => {
 				assert_eq!(payment_hash, Some(hash_b));
 			},
-			Event::HTLCHandlingFailed { prev_channel_id, .. } => {
-				assert_eq!(prev_channel_id, chan_a);
+			Event::HTLCHandlingFailed { prev_channel_ids, .. } => {
+				assert_eq!(prev_channel_ids[0], chan_a);
 			},
 			_ => panic!("Wrong event {ev:?}"),
 		}
