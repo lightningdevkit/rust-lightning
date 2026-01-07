@@ -189,23 +189,6 @@ pub use crate::ln::outbound_payment::{
 };
 use crate::ln::script::ShutdownScript;
 
-// We hold various information about HTLC relay in the HTLC objects in Channel itself:
-//
-// Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should
-// forward the HTLC with information it will give back to us when it does so, or if it should Fail
-// the HTLC with the relevant message for the Channel to handle giving to the remote peer.
-//
-// Once said HTLC is committed in the Channel, if the PendingHTLCStatus indicated Forward, the
-// Channel will return the PendingHTLCInfo back to us, and we will create an HTLCForwardInfo
-// with it to track where it came from (in case of onwards-forward error), waiting a random delay
-// before we forward it.
-//
-// We will then use HTLCForwardInfo's PendingHTLCInfo to construct an outbound HTLC, with a
-// relevant HTLCSource::PreviousHopData filled in to indicate where it came from (which we can use
-// to either fail-backwards or fulfill the HTLC backwards along the relevant path).
-// Alternatively, we can fill an outbound HTLC with a HTLCSource::OutboundRoute indicating this is
-// our payment, which we can use to decode errors or inform the user that the payment was sent.
-
 /// Information about where a received HTLC('s onion) has indicated the HTLC should go.
 #[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(Debug, PartialEq))]
@@ -436,14 +419,6 @@ pub struct PendingHTLCInfo {
 pub(super) enum HTLCFailureMsg {
 	Relay(msgs::UpdateFailHTLC),
 	Malformed(msgs::UpdateFailMalformedHTLC),
-}
-
-/// Stores whether we can't forward an HTLC or relevant forwarding info
-#[cfg_attr(test, derive(Debug))]
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
-pub(super) enum PendingHTLCStatus {
-	Forward(PendingHTLCInfo),
-	Fail(HTLCFailureMsg),
 }
 
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
@@ -16373,11 +16348,6 @@ impl Readable for HTLCFailureMsg {
 		}
 	}
 }
-
-impl_writeable_tlv_based_enum_legacy!(PendingHTLCStatus, ;
-	(0, Forward),
-	(1, Fail),
-);
 
 impl_writeable_tlv_based_enum!(BlindedFailure,
 	(0, FromIntroductionNode) => {},
