@@ -3291,41 +3291,23 @@ macro_rules! emit_initial_channel_ready_event {
 	};
 }
 
-/// Handles the completion steps for when a [`ChannelMonitorUpdate`] is applied to a live channel.
-///
-/// You should not add new direct calls to this, generally, rather rely on
-/// `handle_new_monitor_update` or [`ChannelManager::channel_monitor_updated`] to call it for you.
-///
-/// Requires that  the in-flight monitor update set for this channel is empty!
-macro_rules! handle_monitor_update_completion {
-	($self: ident, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => {{
-		let completion_data = $self.try_resume_channel_post_monitor_update(
-			&mut $peer_state.in_flight_monitor_updates,
-			&mut $peer_state.monitor_update_blocked_actions,
-			&mut $peer_state.pending_msg_events,
-			$peer_state.is_connected,
-			$chan,
-		);
-
-		mem::drop($peer_state_lock);
-		mem::drop($per_peer_state_lock);
-
-		$self.handle_post_monitor_update_chan_resume(completion_data);
-	}};
-}
-
 macro_rules! handle_initial_monitor {
 	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => {
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
 		let update_completed = $self.handle_monitor_update_res($update_res, logger);
 		if update_completed {
-			handle_monitor_update_completion!(
-				$self,
-				$peer_state_lock,
-				$peer_state,
-				$per_peer_state_lock,
-				$chan
+			let completion_data = $self.try_resume_channel_post_monitor_update(
+				&mut $peer_state.in_flight_monitor_updates,
+				&mut $peer_state.monitor_update_blocked_actions,
+				&mut $peer_state.pending_msg_events,
+				$peer_state.is_connected,
+				$chan,
 			);
+
+			mem::drop($peer_state_lock);
+			mem::drop($per_peer_state_lock);
+
+			$self.handle_post_monitor_update_chan_resume(completion_data);
 		}
 	};
 }
@@ -3394,13 +3376,18 @@ macro_rules! handle_new_monitor_update {
 			$update,
 		);
 		if all_updates_complete {
-			handle_monitor_update_completion!(
-				$self,
-				$peer_state_lock,
-				$peer_state,
-				$per_peer_state_lock,
-				$chan
+			let completion_data = $self.try_resume_channel_post_monitor_update(
+				&mut $peer_state.in_flight_monitor_updates,
+				&mut $peer_state.monitor_update_blocked_actions,
+				&mut $peer_state.pending_msg_events,
+				$peer_state.is_connected,
+				$chan,
 			);
+
+			mem::drop($peer_state_lock);
+			mem::drop($per_peer_state_lock);
+
+			$self.handle_post_monitor_update_chan_resume(completion_data);
 		}
 		update_completed
 	}};
@@ -10146,7 +10133,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.and_then(Channel::as_funded_mut)
 		{
 			if chan.is_awaiting_monitor_update() {
-				handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+				let completion_data = self.try_resume_channel_post_monitor_update(
+					&mut peer_state.in_flight_monitor_updates,
+					&mut peer_state.monitor_update_blocked_actions,
+					&mut peer_state.pending_msg_events,
+					peer_state.is_connected,
+					chan,
+				);
+
+				mem::drop(peer_state_lock);
+				mem::drop(per_peer_state);
+
+				self.handle_post_monitor_update_chan_resume(completion_data);
 			} else {
 				log_trace!(logger, "Channel is open but not awaiting update");
 			}
