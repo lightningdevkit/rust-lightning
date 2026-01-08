@@ -3291,32 +3291,6 @@ macro_rules! emit_initial_channel_ready_event {
 	};
 }
 
-macro_rules! handle_post_close_monitor_update {
-	(
-		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
-		$per_peer_state_lock: expr, $counterparty_node_id: expr, $channel_id: expr
-	) => {{
-		let (update_completed, all_updates_complete) = $self.update_channel_monitor(
-			&mut $peer_state.in_flight_monitor_updates,
-			$channel_id,
-			$funding_txo,
-			$counterparty_node_id,
-			$update,
-		);
-		if all_updates_complete {
-			let update_actions = $peer_state
-				.monitor_update_blocked_actions
-				.remove(&$channel_id)
-				.unwrap_or(Vec::new());
-
-			mem::drop($peer_state_lock);
-			mem::drop($per_peer_state_lock);
-
-			$self.handle_monitor_update_completion_actions(update_actions);
-		}
-		update_completed
-	}};
-}
 macro_rules! handle_new_monitor_update {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
@@ -4151,10 +4125,18 @@ where
 			hash_map::Entry::Vacant(_) => {},
 		}
 
-		handle_post_close_monitor_update!(
-			self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state,
-			counterparty_node_id, channel_id
-		);
+		if let Some(actions) = self.handle_post_close_monitor_update(
+			&mut peer_state.in_flight_monitor_updates,
+			&mut peer_state.monitor_update_blocked_actions,
+			funding_txo,
+			monitor_update,
+			counterparty_node_id,
+			channel_id,
+		) {
+			mem::drop(peer_state_lock);
+			mem::drop(per_peer_state);
+			self.handle_monitor_update_completion_actions(actions);
+		}
 	}
 
 	/// When a channel is removed, two things need to happen:
@@ -9120,16 +9102,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				.push(action);
 		}
 
-		handle_post_close_monitor_update!(
-			self,
+		if let Some(actions) = self.handle_post_close_monitor_update(
+			&mut peer_state.in_flight_monitor_updates,
+			&mut peer_state.monitor_update_blocked_actions,
 			prev_hop.funding_txo,
 			preimage_update,
-			peer_state_lock,
-			peer_state,
-			per_peer_state,
 			prev_hop.counterparty_node_id,
-			chan_id
-		);
+			chan_id,
+		) {
+			mem::drop(peer_state_lock);
+			mem::drop(per_peer_state);
+			self.handle_monitor_update_completion_actions(actions);
+		}
 	}
 
 	fn finalize_claims(&self, sources: Vec<(HTLCSource, Option<AttributionData>)>) {
@@ -9651,6 +9635,34 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			// twice.
 			self.pending_background_events.lock().unwrap().push(event);
 			(false, false)
+		}
+	}
+
+	/// Handles a monitor update for a closed channel, returning optionally the completion actions
+	/// to process after locks are released.
+	///
+	/// Returns `Some` if all in-flight updates are complete.
+	fn handle_post_close_monitor_update(
+		&self,
+		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
+		monitor_update_blocked_actions: &mut BTreeMap<
+			ChannelId,
+			Vec<MonitorUpdateCompletionAction>,
+		>,
+		funding_txo: OutPoint, update: ChannelMonitorUpdate, counterparty_node_id: PublicKey,
+		channel_id: ChannelId,
+	) -> Option<Vec<MonitorUpdateCompletionAction>> {
+		let (_update_completed, all_updates_complete) = self.update_channel_monitor(
+			in_flight_monitor_updates,
+			channel_id,
+			funding_txo,
+			counterparty_node_id,
+			update,
+		);
+		if all_updates_complete {
+			Some(monitor_update_blocked_actions.remove(&channel_id).unwrap_or(Vec::new()))
+		} else {
+			None
 		}
 	}
 
@@ -14083,10 +14095,11 @@ where
 					},
 				) => {
 					let per_peer_state = self.per_peer_state.read().unwrap();
-					let mut peer_state = per_peer_state
+					let mut peer_state_lock = per_peer_state
 						.get(&counterparty_node_id)
 						.map(|state| state.lock().unwrap())
 						.expect("Channels originating a payment resolution must have peer state");
+					let peer_state = &mut *peer_state_lock;
 					let update_id = peer_state
 						.closed_channel_monitor_update_ids
 						.get_mut(&channel_id)
@@ -14113,16 +14126,18 @@ where
 						};
 						self.pending_background_events.lock().unwrap().push(event);
 					} else {
-						handle_post_close_monitor_update!(
-							self,
+						if let Some(actions) = self.handle_post_close_monitor_update(
+							&mut peer_state.in_flight_monitor_updates,
+							&mut peer_state.monitor_update_blocked_actions,
 							channel_funding_outpoint,
 							update,
-							peer_state,
-							peer_state,
-							per_peer_state,
 							counterparty_node_id,
-							channel_id
-						);
+							channel_id,
+						) {
+							mem::drop(peer_state_lock);
+							mem::drop(per_peer_state);
+							self.handle_monitor_update_completion_actions(actions);
+						}
 					}
 				},
 			}
