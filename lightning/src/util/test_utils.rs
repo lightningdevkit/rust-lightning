@@ -61,6 +61,7 @@ use crate::util::mut_global::MutGlobal;
 use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
+use crate::util::wakers::Notifier;
 
 use bitcoin::amount::Amount;
 use bitcoin::block::Block;
@@ -2101,7 +2102,7 @@ impl TestChainSource {
 }
 
 impl UtxoLookup for TestChainSource {
-	fn get_utxo(&self, chain_hash: &ChainHash, _short_channel_id: u64) -> UtxoResult {
+	fn get_utxo(&self, chain_hash: &ChainHash, _scid: u64, _notifier: Arc<Notifier>) -> UtxoResult {
 		self.get_utxo_call_count.fetch_add(1, Ordering::Relaxed);
 		if self.chain_hash != *chain_hash {
 			return UtxoResult::Sync(Err(UtxoLookupError::UnknownChain));

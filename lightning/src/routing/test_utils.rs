@@ -10,7 +10,9 @@
 // licenses.
 
 use crate::routing::gossip::{NetworkGraph, NodeAlias, P2PGossipSync};
+use crate::routing::utxo::UtxoResult;
 use crate::types::features::{ChannelFeatures, NodeFeatures};
+use crate::ln::chan_utils::make_funding_redeemscript;
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, MAX_VALUE_MSAT, NodeAnnouncement, RoutingMessageHandler, SocketAddress, UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
@@ -22,6 +24,7 @@ use bitcoin::hex::FromHex;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1, All};
+use bitcoin::{Amount, TxOut};
 
 #[allow(unused)]
 use crate::prelude::*;
@@ -58,17 +61,32 @@ pub(crate) fn channel_announcement(
 }
 
 // Using the same keys for LN and BTC ids
-pub(crate) fn add_channel(
+pub(crate) fn add_channel_skipping_utxo_update(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
-	secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64
+	secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64,
 ) {
 	let valid_announcement =
 		channel_announcement(node_1_privkey, node_2_privkey, features, short_channel_id, secp_ctx);
-	let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+
+	let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, &node_1_privkey);
 	match gossip_sync.handle_channel_announcement(Some(node_1_pubkey), &valid_announcement) {
 		Ok(res) => assert!(res),
-		_ => panic!()
+		Err(e) => panic!("{:?}", e),
 	};
+}
+
+pub(crate) fn add_channel(
+	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
+	secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64,
+) {
+	gossip_sync.utxo_lookup.as_ref().map(|checker| {
+		let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, &node_1_privkey);
+		let node_2_pubkey = PublicKey::from_secret_key(&secp_ctx, &node_2_privkey);
+		let script_pubkey = make_funding_redeemscript(&node_1_pubkey, &node_2_pubkey).to_p2wsh();
+		*checker.utxo_ret.lock().unwrap() =
+			UtxoResult::Sync(Ok(TxOut { value: Amount::from_sat(21_000_000_0000_0000), script_pubkey }));
+	});
+	add_channel_skipping_utxo_update(gossip_sync, secp_ctx, node_1_privkey, node_2_privkey, features, short_channel_id);
 }
 
 pub(crate) fn add_or_update_node(
@@ -197,7 +215,27 @@ pub(super) fn build_line_graph() -> (
 	(secp_ctx, network_graph, gossip_sync, chain_monitor, logger)
 }
 
+pub(super) fn build_graph_with_gossip_validation() -> (
+	Secp256k1<All>,
+	sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+	P2PGossipSync<sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>>,
+	sync::Arc<test_utils::TestChainSource>,
+	sync::Arc<test_utils::TestLogger>,
+) {
+	do_build_graph(true)
+}
+
 pub(super) fn build_graph() -> (
+	Secp256k1<All>,
+	sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+	P2PGossipSync<sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>>,
+	sync::Arc<test_utils::TestChainSource>,
+	sync::Arc<test_utils::TestLogger>,
+) {
+	do_build_graph(false)
+}
+
+fn do_build_graph(with_validation: bool) -> (
 	Secp256k1<All>,
 	sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 	P2PGossipSync<sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>>,
@@ -208,7 +246,12 @@ pub(super) fn build_graph() -> (
 	let logger = Arc::new(test_utils::TestLogger::new());
 	let chain_monitor = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
-	let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
+	let checker = if with_validation {
+		Some(Arc::clone(&chain_monitor))
+	} else {
+		None
+	};
+	let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), checker, Arc::clone(&logger));
 	// Build network from our_id to node6:
 	//
 	//        -1(1)2-  node0  -1(3)2-

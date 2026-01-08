@@ -253,37 +253,13 @@ impl Sleeper {
 	pub fn from_single_future(future: &Future) -> Self {
 		Self { notifiers: vec![Arc::clone(&future.state)] }
 	}
-	/// Constructs a new sleeper from two futures, allowing blocking on both at once.
-	pub fn from_two_futures(fut_a: &Future, fut_b: &Future) -> Self {
-		Self { notifiers: vec![Arc::clone(&fut_a.state), Arc::clone(&fut_b.state)] }
-	}
-	/// Constructs a new sleeper from three futures, allowing blocking on all three at once.
-	///
-	// Note that this is the common case - a ChannelManager, a ChainMonitor, and an
-	// OnionMessenger.
-	pub fn from_three_futures(fut_a: &Future, fut_b: &Future, fut_c: &Future) -> Self {
-		let notifiers =
-			vec![Arc::clone(&fut_a.state), Arc::clone(&fut_b.state), Arc::clone(&fut_c.state)];
-		Self { notifiers }
-	}
-	/// Constructs a new sleeper from four futures, allowing blocking on all four at once.
-	///
-	// Note that this is another common case - a ChannelManager, a ChainMonitor, an
-	// OnionMessenger, and a LiquidityManager.
-	pub fn from_four_futures(
-		fut_a: &Future, fut_b: &Future, fut_c: &Future, fut_d: &Future,
-	) -> Self {
-		let notifiers = vec![
-			Arc::clone(&fut_a.state),
-			Arc::clone(&fut_b.state),
-			Arc::clone(&fut_c.state),
-			Arc::clone(&fut_d.state),
-		];
-		Self { notifiers }
+	/// Constructs an iterator of futures, allowing blocking on all at once.
+	pub fn from_futures<I: IntoIterator<Item = Future>>(futures: I) -> Self {
+		Self { notifiers: futures.into_iter().map(|f| Arc::clone(&f.state)).collect() }
 	}
 	/// Constructs a new sleeper on many futures, allowing blocking on all at once.
 	pub fn new(futures: Vec<Future>) -> Self {
-		Self { notifiers: futures.into_iter().map(|f| Arc::clone(&f.state)).collect() }
+		Self::from_futures(futures)
 	}
 	/// Prepares to go into a wait loop body, creating a condition variable which we can block on
 	/// and an `Arc<Mutex<Option<_>>>` which gets set to the waking `Future`'s state prior to the
@@ -506,15 +482,13 @@ mod tests {
 
 		// Wait on the other thread to finish its sleep, note that the leak only happened if we
 		// actually have to sleep here, not if we immediately return.
-		Sleeper::from_two_futures(&future_a, &future_b).wait();
+		Sleeper::from_futures([future_a, future_b]).wait();
 
 		join_handle.join().unwrap();
 
 		// then drop the notifiers and make sure the future states are gone.
 		mem::drop(notifier_a);
 		mem::drop(notifier_b);
-		mem::drop(future_a);
-		mem::drop(future_b);
 
 		assert!(future_state_a.upgrade().is_none() && future_state_b.upgrade().is_none());
 	}
@@ -736,18 +710,18 @@ mod tests {
 		// Set both notifiers as woken without sleeping yet.
 		notifier_a.notify();
 		notifier_b.notify();
-		Sleeper::from_two_futures(&notifier_a.get_future(), &notifier_b.get_future()).wait();
+		Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()]).wait();
 
 		// One future has woken us up, but the other should still have a pending notification.
-		Sleeper::from_two_futures(&notifier_a.get_future(), &notifier_b.get_future()).wait();
+		Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()]).wait();
 
 		// However once we've slept twice, we should no longer have any pending notifications
-		assert!(!Sleeper::from_two_futures(&notifier_a.get_future(), &notifier_b.get_future())
+		assert!(!Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()])
 			.wait_timeout(Duration::from_millis(10)));
 
 		// Test ordering somewhat more.
 		notifier_a.notify();
-		Sleeper::from_two_futures(&notifier_a.get_future(), &notifier_b.get_future()).wait();
+		Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()]).wait();
 	}
 
 	#[test]
@@ -765,7 +739,7 @@ mod tests {
 
 		// After sleeping one future (not guaranteed which one, however) will have its notification
 		// bit cleared.
-		Sleeper::from_two_futures(&notifier_a.get_future(), &notifier_b.get_future()).wait();
+		Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()]).wait();
 
 		// By registering a callback on the futures for both notifiers, one will complete
 		// immediately, but one will remain tied to the notifier, and will complete once the
@@ -788,8 +762,8 @@ mod tests {
 		notifier_b.notify();
 
 		assert!(callback_a.load(Ordering::SeqCst) && callback_b.load(Ordering::SeqCst));
-		Sleeper::from_two_futures(&notifier_a.get_future(), &notifier_b.get_future()).wait();
-		assert!(!Sleeper::from_two_futures(&notifier_a.get_future(), &notifier_b.get_future())
+		Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()]).wait();
+		assert!(!Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()])
 			.wait_timeout(Duration::from_millis(10)));
 	}
 

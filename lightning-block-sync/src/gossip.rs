@@ -9,11 +9,9 @@ use bitcoin::constants::ChainHash;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::transaction::{OutPoint, TxOut};
 
-use lightning::ln::peer_handler::APeerManager;
-use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::{UtxoFuture, UtxoLookup, UtxoLookupError, UtxoResult};
-use lightning::util::logger::Logger;
 use lightning::util::native_async::FutureSpawner;
+use lightning::util::wakers::Notifier;
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -127,46 +125,28 @@ impl<
 /// value of 1024 should more than suffice), and ensure you have sufficient file descriptors
 /// available on both Bitcoin Core and your LDK application for each request to hold its own
 /// connection.
-pub struct GossipVerifier<
-	S: FutureSpawner,
-	Blocks: Deref + Send + Sync + 'static + Clone,
-	L: Deref + Send + Sync + 'static,
-> where
+pub struct GossipVerifier<S: FutureSpawner, Blocks: Deref + Send + Sync + 'static + Clone>
+where
 	Blocks::Target: UtxoSource,
-	L::Target: Logger,
 {
 	source: Blocks,
-	peer_manager_wake: Arc<dyn Fn() + Send + Sync>,
-	gossiper: Arc<P2PGossipSync<Arc<NetworkGraph<L>>, Arc<Self>, L>>,
 	spawn: S,
 	block_cache: Arc<Mutex<VecDeque<(u32, Block)>>>,
 }
 
 const BLOCK_CACHE_SIZE: usize = 5;
 
-impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone, L: Deref + Send + Sync>
-	GossipVerifier<S, Blocks, L>
+impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone> GossipVerifier<S, Blocks>
 where
 	Blocks::Target: UtxoSource,
-	L::Target: Logger,
 {
-	/// Constructs a new [`GossipVerifier`].
+	/// Constructs a new [`GossipVerifier`] for use in a [`P2PGossipSync`].
 	///
-	/// This is expected to be given to a [`P2PGossipSync`] (initially constructed with `None` for
-	/// the UTXO lookup) via [`P2PGossipSync::add_utxo_lookup`].
-	pub fn new<APM: Deref + Send + Sync + Clone + 'static>(
-		source: Blocks, spawn: S, gossiper: Arc<P2PGossipSync<Arc<NetworkGraph<L>>, Arc<Self>, L>>,
-		peer_manager: APM,
-	) -> Self
-	where
-		APM::Target: APeerManager,
-	{
-		let peer_manager_wake = Arc::new(move || peer_manager.as_ref().process_events());
+	/// [`P2PGossipSync`]: lightning::routing::gossip::P2PGossipSync
+	pub fn new(source: Blocks, spawn: S) -> Self {
 		Self {
 			source,
 			spawn,
-			gossiper,
-			peer_manager_wake,
 			block_cache: Arc::new(Mutex::new(VecDeque::with_capacity(BLOCK_CACHE_SIZE))),
 		}
 	}
@@ -255,11 +235,9 @@ where
 	}
 }
 
-impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone, L: Deref + Send + Sync> Deref
-	for GossipVerifier<S, Blocks, L>
+impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone> Deref for GossipVerifier<S, Blocks>
 where
 	Blocks::Target: UtxoSource,
-	L::Target: Logger,
 {
 	type Target = Self;
 	fn deref(&self) -> &Self {
@@ -267,23 +245,18 @@ where
 	}
 }
 
-impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone, L: Deref + Send + Sync> UtxoLookup
-	for GossipVerifier<S, Blocks, L>
+impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone> UtxoLookup for GossipVerifier<S, Blocks>
 where
 	Blocks::Target: UtxoSource,
-	L::Target: Logger,
 {
-	fn get_utxo(&self, _chain_hash: &ChainHash, short_channel_id: u64) -> UtxoResult {
-		let res = UtxoFuture::new();
+	fn get_utxo(&self, _chain_hash: &ChainHash, scid: u64, notifier: Arc<Notifier>) -> UtxoResult {
+		let res = UtxoFuture::new(notifier);
 		let fut = res.clone();
 		let source = self.source.clone();
-		let gossiper = Arc::clone(&self.gossiper);
 		let block_cache = Arc::clone(&self.block_cache);
-		let pmw = Arc::clone(&self.peer_manager_wake);
 		self.spawn.spawn(async move {
-			let res = Self::retrieve_utxo(source, block_cache, short_channel_id).await;
-			fut.resolve(gossiper.network_graph(), &*gossiper, res);
-			(pmw)();
+			let res = Self::retrieve_utxo(source, block_cache, scid).await;
+			fut.resolve(res);
 		});
 		UtxoResult::Async(res)
 	}

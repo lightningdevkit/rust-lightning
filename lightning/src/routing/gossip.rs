@@ -43,6 +43,7 @@ use crate::util::indexed_map::{
 use crate::util::logger::{Level, Logger};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 use crate::util::ser::{MaybeReadable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
+use crate::util::wakers::Future;
 
 use crate::io;
 use crate::io_extras::{copy, sink};
@@ -327,7 +328,10 @@ where
 	L::Target: Logger,
 {
 	network_graph: G,
-	utxo_lookup: RwLock<Option<U>>,
+	#[cfg(any(feature = "_test_utils", test))]
+	pub(super) utxo_lookup: Option<U>,
+	#[cfg(not(any(feature = "_test_utils", test)))]
+	utxo_lookup: Option<U>,
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,
 	logger: L,
@@ -340,23 +344,17 @@ where
 {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
 	/// assuming an existing [`NetworkGraph`].
+	///
 	/// UTXO lookup is used to make sure announced channels exist on-chain, channel data is
 	/// correct, and the announcement is signed with channel owners' keys.
 	pub fn new(network_graph: G, utxo_lookup: Option<U>, logger: L) -> Self {
 		P2PGossipSync {
 			network_graph,
 			full_syncs_requested: AtomicUsize::new(0),
-			utxo_lookup: RwLock::new(utxo_lookup),
+			utxo_lookup,
 			pending_events: Mutex::new(vec![]),
 			logger,
 		}
-	}
-
-	/// Adds a provider used to check new announcements. Does not affect
-	/// existing announcements unless they are updated.
-	/// Add, update or remove the provider would replace the current one.
-	pub fn add_utxo_lookup(&self, utxo_lookup: Option<U>) {
-		*self.utxo_lookup.write().unwrap() = utxo_lookup;
 	}
 
 	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
@@ -365,6 +363,17 @@ where
 	/// This is not exported to bindings users as bindings don't support a reference-to-a-reference yet
 	pub fn network_graph(&self) -> &G {
 		&self.network_graph
+	}
+
+	/// Gets a [`Future`] which will resolve the next time an async validation of gossip data
+	/// completes.
+	///
+	/// If the [`UtxoLookup`] provided in [`P2PGossipSync::new`] does not return
+	/// [`UtxoResult::Async`] values, the returned [`Future`] will never resolve
+	///
+	/// [`UtxoResult::Async`]: crate::routing::utxo::UtxoResult::Async
+	pub fn validation_completion_future(&self) -> Future {
+		self.network_graph.pending_checks.completion_notifier.get_future()
 	}
 
 	/// Returns true when a full routing table sync should be performed with a peer.
@@ -378,39 +387,42 @@ where
 		}
 	}
 
-	/// Used to broadcast forward gossip messages which were validated async.
-	///
-	/// Note that this will ignore events other than `Broadcast*` or messages with too much excess
-	/// data.
-	pub(super) fn forward_gossip_msg(&self, mut ev: MessageSendEvent) {
-		match &mut ev {
-			MessageSendEvent::BroadcastChannelAnnouncement { msg, ref mut update_msg } => {
-				if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY {
-					return;
-				}
-				if update_msg.as_ref().map(|msg| msg.contents.excess_data.len()).unwrap_or(0)
-					> MAX_EXCESS_BYTES_FOR_RELAY
-				{
-					*update_msg = None;
-				}
-			},
-			MessageSendEvent::BroadcastChannelUpdate { msg, .. } => {
-				if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY {
-					return;
-				}
-			},
-			MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
-				if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY
-					|| msg.contents.excess_address_data.len() > MAX_EXCESS_BYTES_FOR_RELAY
-					|| msg.contents.excess_data.len() + msg.contents.excess_address_data.len()
+	/// Walks the list of pending UTXO validations and removes completed ones, adding any messages
+	/// we should forward as a result to [`Self::pending_events`].
+	fn process_completed_checks(&self) {
+		let msgs = self.network_graph.pending_checks.check_resolved_futures(&*self.network_graph);
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.reserve(msgs.len());
+		for mut message in msgs {
+			match &mut message {
+				MessageSendEvent::BroadcastChannelAnnouncement { msg, ref mut update_msg } => {
+					if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY {
+						continue;
+					}
+					if update_msg.as_ref().map(|msg| msg.contents.excess_data.len()).unwrap_or(0)
 						> MAX_EXCESS_BYTES_FOR_RELAY
-				{
-					return;
-				}
-			},
-			_ => return,
+					{
+						*update_msg = None;
+					}
+				},
+				MessageSendEvent::BroadcastChannelUpdate { msg, .. } => {
+					if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY {
+						continue;
+					}
+				},
+				MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
+					if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY
+						|| msg.contents.excess_address_data.len() > MAX_EXCESS_BYTES_FOR_RELAY
+						|| msg.contents.excess_data.len() + msg.contents.excess_address_data.len()
+							> MAX_EXCESS_BYTES_FOR_RELAY
+					{
+						continue;
+					}
+				},
+				_ => continue,
+			}
+			pending_events.push(message);
 		}
-		self.pending_events.lock().unwrap().push(ev);
 	}
 }
 
@@ -549,8 +561,7 @@ where
 	fn handle_channel_announcement(
 		&self, _their_node_id: Option<PublicKey>, msg: &msgs::ChannelAnnouncement,
 	) -> Result<bool, LightningError> {
-		self.network_graph
-			.update_channel_from_announcement(msg, &*self.utxo_lookup.read().unwrap())?;
+		self.network_graph.update_channel_from_announcement(msg, &self.utxo_lookup)?;
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
@@ -884,6 +895,7 @@ where
 	}
 
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		self.process_completed_checks();
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();
 		core::mem::swap(&mut ret, &mut pending_events);
