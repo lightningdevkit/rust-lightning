@@ -4193,6 +4193,7 @@ where
 							their_features,
 							target_feerate_sats_per_1000_weight,
 							override_shutdown_script,
+							&self.logger,
 						)?;
 						failed_htlcs = htlcs;
 
@@ -11214,7 +11215,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let (shutdown, monitor_update_opt, htlcs) = try_channel_entry!(
 							self,
 							peer_state,
-							chan.shutdown(&self.signer_provider, &peer_state.latest_features, &msg),
+							chan.shutdown(
+								&self.logger,
+								&self.signer_provider,
+								&peer_state.latest_features,
+								&msg
+							),
 							chan_entry
 						);
 						dropped_htlcs = htlcs;

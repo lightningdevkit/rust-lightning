@@ -1914,13 +1914,8 @@ where
 				.handle_tx_complete(msg)
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))?,
 			None => {
-				return Err((
-					ChannelError::WarnAndDisconnect(
-						"Received unexpected interactive transaction negotiation message"
-							.to_owned(),
-					),
-					None,
-				))
+				let err = "Received unexpected interactive transaction negotiation message";
+				return Err((ChannelError::WarnAndDisconnect(err.to_owned()), None));
 			},
 		};
 
@@ -7503,6 +7498,7 @@ where
 					Vec::new(),
 					Vec::new(),
 					Vec::new(),
+					logger,
 				);
 				UpdateFulfillCommitFetch::NewClaim { monitor_update, htlc_value_msat }
 			},
@@ -7885,11 +7881,12 @@ where
 		Ok(())
 	}
 
-	#[rustfmt::skip]
 	pub fn initial_commitment_signed_v2<L: Deref>(
-		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
+		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP,
+		logger: &L,
 	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError>
-	where L::Target: Logger
+	where
+		L::Target: Logger,
 	{
 		if let Some(signing_session) = self.context.interactive_tx_signing_session.as_ref() {
 			if signing_session.has_received_tx_signatures() {
@@ -7904,16 +7901,41 @@ where
 		};
 
 		let holder_commitment_point = &mut self.holder_commitment_point.clone();
-		self.context.assert_no_commitment_advancement(holder_commitment_point.next_transaction_number(), "initial commitment_signed");
+		self.context.assert_no_commitment_advancement(
+			holder_commitment_point.next_transaction_number(),
+			"initial commitment_signed",
+		);
 
 		let (channel_monitor, _) = self.initial_commitment_signed(
-			self.context.channel_id(), msg.signature, holder_commitment_point, best_block, signer_provider, logger)?;
+			self.context.channel_id(),
+			msg.signature,
+			holder_commitment_point,
+			best_block,
+			signer_provider,
+			logger,
+		)?;
 		self.holder_commitment_point = *holder_commitment_point;
 
-		log_info!(logger, "Received initial commitment_signed from peer for channel {}", &self.context.channel_id());
+		log_info!(
+			logger,
+			"Received initial commitment_signed from peer for channel {}",
+			&self.context.channel_id()
+		);
 
-		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
-		self.context.interactive_tx_signing_session.as_mut().expect("signing session should be present").received_commitment_signed();
+		self.monitor_updating_paused(
+			false,
+			false,
+			false,
+			Vec::new(),
+			Vec::new(),
+			Vec::new(),
+			logger,
+		);
+		self.context
+			.interactive_tx_signing_session
+			.as_mut()
+			.expect("signing session should be present")
+			.received_commitment_signed();
 		Ok(channel_monitor)
 	}
 
@@ -8016,7 +8038,15 @@ where
 			.as_mut()
 			.expect("Signing session must exist for negotiated pending splice")
 			.received_commitment_signed();
-		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+		self.monitor_updating_paused(
+			false,
+			false,
+			false,
+			Vec::new(),
+			Vec::new(),
+			Vec::new(),
+			logger,
+		);
 
 		Ok(self.push_ret_blockable_mon_update(monitor_update))
 	}
@@ -8328,6 +8358,7 @@ where
 			Vec::new(),
 			Vec::new(),
 			Vec::new(),
+			logger,
 		);
 		return Ok(self.push_ret_blockable_mon_update(monitor_update));
 	}
@@ -8533,7 +8564,15 @@ where
 				if update_fee.is_some() { "a fee update, " } else { "" },
 				update_add_count, update_fulfill_count, update_fail_count);
 
-			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
+			self.monitor_updating_paused(
+				false,
+				true,
+				false,
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+				logger,
+			);
 			(self.push_ret_blockable_mon_update(monitor_update), htlcs_to_fail)
 		} else {
 			(None, Vec::new())
@@ -8911,6 +8950,7 @@ where
 					to_forward_infos,
 					revoked_htlcs,
 					finalized_claimed_htlcs,
+					logger,
 				);
 				return_with_htlcs_to_fail!(htlcs_to_fail);
 			},
@@ -8956,6 +8996,7 @@ where
 						to_forward_infos,
 						revoked_htlcs,
 						finalized_claimed_htlcs,
+						logger,
 					);
 					return_with_htlcs_to_fail!(htlcs_to_fail);
 				} else {
@@ -8969,6 +9010,7 @@ where
 						to_forward_infos,
 						revoked_htlcs,
 						finalized_claimed_htlcs,
+						logger,
 					);
 					return_with_htlcs_to_fail!(htlcs_to_fail);
 				}
@@ -9369,20 +9411,22 @@ where
 	/// [`ChannelManager`]: super::channelmanager::ChannelManager
 	/// [`chain::Watch`]: crate::chain::Watch
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
-	fn monitor_updating_paused(
+	fn monitor_updating_paused<L: Deref>(
 		&mut self, resend_raa: bool, resend_commitment: bool, resend_channel_ready: bool,
-		mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
-		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
-		mut pending_finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
-	) {
+		pending_forwards: Vec<(PendingHTLCInfo, u64)>,
+		pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+		pending_finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>, logger: &L,
+	) where
+		L::Target: Logger,
+	{
+		log_trace!(logger, "Pausing channel monitor updates");
+
 		self.context.monitor_pending_revoke_and_ack |= resend_raa;
 		self.context.monitor_pending_commitment_signed |= resend_commitment;
 		self.context.monitor_pending_channel_ready |= resend_channel_ready;
-		self.context.monitor_pending_forwards.append(&mut pending_forwards);
-		self.context.monitor_pending_failures.append(&mut pending_fails);
-		self.context
-			.monitor_pending_finalized_fulfills
-			.append(&mut pending_finalized_claimed_htlcs);
+		self.context.monitor_pending_forwards.extend(pending_forwards);
+		self.context.monitor_pending_failures.extend(pending_fails);
+		self.context.monitor_pending_finalized_fulfills.extend(pending_finalized_claimed_htlcs);
 		self.context.channel_state.set_monitor_update_in_progress();
 	}
 
@@ -10425,12 +10469,16 @@ where
 		}
 	}
 
-	pub fn shutdown(
-		&mut self, signer_provider: &SP, their_features: &InitFeatures, msg: &msgs::Shutdown,
+	pub fn shutdown<L: Deref>(
+		&mut self, logger: &L, signer_provider: &SP, their_features: &InitFeatures,
+		msg: &msgs::Shutdown,
 	) -> Result<
 		(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>),
 		ChannelError,
-	> {
+	>
+	where
+		L::Target: Logger,
+	{
 		if self.context.channel_state.is_peer_disconnected() {
 			return Err(ChannelError::close(
 				"Peer sent shutdown when we needed a channel_reestablish".to_owned(),
@@ -10535,7 +10583,15 @@ where
 				}],
 				channel_id: Some(self.context.channel_id()),
 			};
-			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+			self.monitor_updating_paused(
+				false,
+				false,
+				false,
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+				logger,
+			);
 			self.push_ret_blockable_mon_update(monitor_update)
 		} else {
 			None
@@ -11292,7 +11348,15 @@ where
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};
-		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+		self.monitor_updating_paused(
+			false,
+			false,
+			false,
+			Vec::new(),
+			Vec::new(),
+			Vec::new(),
+			logger,
+		);
 		let monitor_update = self.push_ret_blockable_mon_update(monitor_update);
 
 		let announcement_sigs =
@@ -13016,7 +13080,15 @@ where
 		let can_add_htlc = send_res.map_err(|(_, msg)| ChannelError::Ignore(msg))?;
 		if can_add_htlc {
 			let monitor_update = self.build_commitment_no_status_check(logger);
-			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
+			self.monitor_updating_paused(
+				false,
+				true,
+				false,
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+				logger,
+			);
 			Ok(self.push_ret_blockable_mon_update(monitor_update))
 		} else {
 			Ok(None)
@@ -13042,13 +13114,19 @@ where
 
 	/// Begins the shutdown process, getting a message for the remote peer and returning all
 	/// holding cell HTLCs for payment failure.
-	pub fn get_shutdown(
+	pub fn get_shutdown<L: Deref>(
 		&mut self, signer_provider: &SP, their_features: &InitFeatures,
 		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>,
+		logger: &L,
 	) -> Result<
 		(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>),
 		APIError,
-	> {
+	>
+	where
+		L::Target: Logger,
+	{
+		let logger = WithChannelContext::from(logger, &self.context, None);
+
 		if self.context.channel_state.is_local_stfu_sent()
 			|| self.context.channel_state.is_remote_stfu_sent()
 			|| self.context.channel_state.is_quiescent()
@@ -13133,7 +13211,15 @@ where
 				}],
 				channel_id: Some(self.context.channel_id()),
 			};
-			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+			self.monitor_updating_paused(
+				false,
+				false,
+				false,
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+				&&logger,
+			);
 			self.push_ret_blockable_mon_update(monitor_update)
 		} else {
 			None
@@ -13704,34 +13790,53 @@ where
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	#[rustfmt::skip]
 	pub fn funding_signed<L: Deref>(
-		mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(FundedChannel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), (OutboundV1Channel<SP>, ChannelError)>
+		mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP,
+		logger: &L,
+	) -> Result<
+		(FundedChannel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>),
+		(OutboundV1Channel<SP>, ChannelError),
+	>
 	where
-		L::Target: Logger
+		L::Target: Logger,
 	{
 		if !self.funding.is_outbound() {
-			return Err((self, ChannelError::close("Received funding_signed for an inbound channel?".to_owned())));
+			let err = "Received funding_signed for an inbound channel?";
+			return Err((self, ChannelError::close(err.to_owned())));
 		}
 		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated(_)) {
-			return Err((self, ChannelError::close("Received funding_signed in strange state!".to_owned())));
+			let err = "Received funding_signed in strange state!";
+			return Err((self, ChannelError::close(err.to_owned())));
 		}
 		let mut holder_commitment_point = match self.unfunded_context.holder_commitment_point {
 			Some(point) => point,
-			None => return Err((self, ChannelError::close("Received funding_signed before our first commitment point was available".to_owned()))),
+			None => {
+				let err = "Received funding_signed before our first commitment point was available";
+				return Err((self, ChannelError::close(err.to_owned())));
+			},
 		};
-		self.context.assert_no_commitment_advancement(holder_commitment_point.next_transaction_number(), "funding_signed");
+		self.context.assert_no_commitment_advancement(
+			holder_commitment_point.next_transaction_number(),
+			"funding_signed",
+		);
 
 		let (channel_monitor, _) = match self.initial_commitment_signed(
-			self.context.channel_id(), msg.signature,
-			&mut holder_commitment_point, best_block, signer_provider, logger
+			self.context.channel_id(),
+			msg.signature,
+			&mut holder_commitment_point,
+			best_block,
+			signer_provider,
+			logger,
 		) {
 			Ok(channel_monitor) => channel_monitor,
 			Err(err) => return Err((self, err)),
 		};
 
-		log_info!(logger, "Received funding_signed from peer for channel {}", &self.context.channel_id());
+		log_info!(
+			logger,
+			"Received funding_signed from peer for channel {}",
+			&self.context.channel_id()
+		);
 
 		let mut channel = FundedChannel {
 			funding: self.funding,
@@ -13743,7 +13848,15 @@ where
 
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
 			|| channel.context.signer_pending_channel_ready;
-		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
+		channel.monitor_updating_paused(
+			false,
+			false,
+			need_channel_ready,
+			Vec::new(),
+			Vec::new(),
+			Vec::new(),
+			logger,
+		);
 		Ok((channel, channel_monitor))
 	}
 
@@ -13976,15 +14089,23 @@ where
 		self.generate_accept_channel_message(logger)
 	}
 
-	#[rustfmt::skip]
 	pub fn funding_created<L: Deref>(
-		mut self, msg: &msgs::FundingCreated, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(FundedChannel<SP>, Option<msgs::FundingSigned>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), (Self, ChannelError)>
+		mut self, msg: &msgs::FundingCreated, best_block: BestBlock, signer_provider: &SP,
+		logger: &L,
+	) -> Result<
+		(
+			FundedChannel<SP>,
+			Option<msgs::FundingSigned>,
+			ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+		),
+		(Self, ChannelError),
+	>
 	where
-		L::Target: Logger
+		L::Target: Logger,
 	{
 		if self.funding.is_outbound() {
-			return Err((self, ChannelError::close("Received funding_created for an outbound channel?".to_owned())));
+			let err = "Received funding_created for an outbound channel?";
+			return Err((self, ChannelError::close(err.to_owned())));
 		}
 		if !matches!(
 			self.context.channel_state, ChannelState::NegotiatingFunding(flags)
@@ -13993,31 +14114,50 @@ where
 			// BOLT 2 says that if we disconnect before we send funding_signed we SHOULD NOT
 			// remember the channel, so it's safe to just send an error_message here and drop the
 			// channel.
-			return Err((self, ChannelError::close("Received funding_created after we got the channel!".to_owned())));
+			let err = "Received funding_created after we got the channel!";
+			return Err((self, ChannelError::close(err.to_owned())));
 		}
 		let mut holder_commitment_point = match self.unfunded_context.holder_commitment_point {
 			Some(point) => point,
-			None => return Err((self, ChannelError::close("Received funding_created before our first commitment point was available".to_owned()))),
+			None => {
+				let err =
+					"Received funding_created before our first commitment point was available";
+				return Err((self, ChannelError::close(err.to_owned())));
+			},
 		};
-		self.context.assert_no_commitment_advancement(holder_commitment_point.next_transaction_number(), "funding_created");
+		self.context.assert_no_commitment_advancement(
+			holder_commitment_point.next_transaction_number(),
+			"funding_created",
+		);
 
 		let funding_txo = OutPoint { txid: msg.funding_txid, index: msg.funding_output_index };
 		self.funding.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 
-		let (channel_monitor, counterparty_initial_commitment_tx) = match self.initial_commitment_signed(
-			ChannelId::v1_from_funding_outpoint(funding_txo), msg.signature,
-			&mut holder_commitment_point, best_block, signer_provider, logger
-		) {
+		let (channel_monitor, counterparty_initial_commitment_tx) = match self
+			.initial_commitment_signed(
+				ChannelId::v1_from_funding_outpoint(funding_txo),
+				msg.signature,
+				&mut holder_commitment_point,
+				best_block,
+				signer_provider,
+				logger,
+			) {
 			Ok(channel_monitor) => channel_monitor,
 			Err(err) => return Err((self, err)),
 		};
 
 		let funding_signed = self.context.get_funding_signed_msg(
-			&self.funding.channel_transaction_parameters, logger, counterparty_initial_commitment_tx
+			&self.funding.channel_transaction_parameters,
+			logger,
+			counterparty_initial_commitment_tx,
 		);
 
-		log_info!(logger, "{} funding_signed for peer for channel {}",
-			if funding_signed.is_some() { "Generated" } else { "Waiting for signature on" }, &self.context.channel_id());
+		log_info!(
+			logger,
+			"{} funding_signed for peer for channel {}",
+			if funding_signed.is_some() { "Generated" } else { "Waiting for signature on" },
+			&self.context.channel_id()
+		);
 
 		// Promote the channel to a full-fledged one now that we have updated the state and have a
 		// `ChannelMonitor`.
@@ -14030,7 +14170,15 @@ where
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
 			|| channel.context.signer_pending_channel_ready;
-		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
+		channel.monitor_updating_paused(
+			false,
+			false,
+			need_channel_ready,
+			Vec::new(),
+			Vec::new(),
+			Vec::new(),
+			logger,
+		);
 
 		Ok((channel, funding_signed, channel_monitor))
 	}
