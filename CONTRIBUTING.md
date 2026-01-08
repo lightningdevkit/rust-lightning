@@ -176,6 +176,22 @@ Fuzzing is heavily encouraged: you will find all related material under `fuzz/`
 Mutation testing is work-in-progress; any contribution there would be warmly
 welcomed.
 
+### Environment Variables
+
+* `LDK_TEST_CONNECT_STYLE` - Override the random block connect style used in tests for deterministic runs. Valid values:
+  * `BEST_BLOCK_FIRST`
+  * `BEST_BLOCK_FIRST_SKIPPING_BLOCKS`
+  * `BEST_BLOCK_FIRST_REORGS_ONLY_TIP`
+  * `TRANSACTIONS_FIRST`
+  * `TRANSACTIONS_FIRST_SKIPPING_BLOCKS`
+  * `TRANSACTIONS_DUPLICATIVELY_FIRST_SKIPPING_BLOCKS`
+  * `HIGHLY_REDUNDANT_TRANSACTIONS_FIRST_SKIPPING_BLOCKS`
+  * `TRANSACTIONS_FIRST_REORGS_ONLY_TIP`
+  * `FULL_BLOCK_VIA_LISTEN`
+  * `FULL_BLOCK_DISCONNECTIONS_SKIPPING_VIA_LISTEN`
+
+* `LDK_TEST_DETERMINISTIC_HASHES` - When set to `1`, uses deterministic hash map iteration order in tests. This ensures consistent test output across runs, useful for comparing logs before and after changes.
+
 C/C++ Bindings
 --------------
 

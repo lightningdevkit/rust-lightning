@@ -4563,7 +4563,29 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(
 	let mut nodes = Vec::new();
 	let chan_count = Rc::new(RefCell::new(0));
 	let payment_count = Rc::new(RefCell::new(0));
-	let connect_style = Rc::new(RefCell::new(ConnectStyle::random_style()));
+
+	let connect_style = Rc::new(RefCell::new(match std::env::var("LDK_TEST_CONNECT_STYLE") {
+		Ok(val) => match val.as_str() {
+			"BEST_BLOCK_FIRST" => ConnectStyle::BestBlockFirst,
+			"BEST_BLOCK_FIRST_SKIPPING_BLOCKS" => ConnectStyle::BestBlockFirstSkippingBlocks,
+			"BEST_BLOCK_FIRST_REORGS_ONLY_TIP" => ConnectStyle::BestBlockFirstReorgsOnlyTip,
+			"TRANSACTIONS_FIRST" => ConnectStyle::TransactionsFirst,
+			"TRANSACTIONS_FIRST_SKIPPING_BLOCKS" => ConnectStyle::TransactionsFirstSkippingBlocks,
+			"TRANSACTIONS_DUPLICATIVELY_FIRST_SKIPPING_BLOCKS" => {
+				ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks
+			},
+			"HIGHLY_REDUNDANT_TRANSACTIONS_FIRST_SKIPPING_BLOCKS" => {
+				ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks
+			},
+			"TRANSACTIONS_FIRST_REORGS_ONLY_TIP" => ConnectStyle::TransactionsFirstReorgsOnlyTip,
+			"FULL_BLOCK_VIA_LISTEN" => ConnectStyle::FullBlockViaListen,
+			"FULL_BLOCK_DISCONNECTIONS_SKIPPING_VIA_LISTEN" => {
+				ConnectStyle::FullBlockDisconnectionsSkippingViaListen
+			},
+			_ => panic!("Unknown ConnectStyle '{}'", val),
+		},
+		Err(_) => ConnectStyle::random_style(),
+	}));
 
 	for i in 0..node_count {
 		let dedicated_entropy = DedicatedEntropy(RandomBytes::new([i as u8; 32]));
