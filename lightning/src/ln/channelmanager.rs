@@ -3338,31 +3338,6 @@ macro_rules! handle_post_close_monitor_update {
 		update_completed
 	}};
 }
-
-/// Handles a new monitor update without dropping peer_state locks and calling
-/// [`ChannelManager::handle_monitor_update_completion_actions`] if the monitor update completed
-/// synchronously.
-///
-/// Useful because monitor updates need to be handled in the same mutex where the channel generated
-/// them (otherwise they can end up getting applied out-of-order) but it's not always possible to
-/// drop the aforementioned peer state locks at a given callsite. In this situation, use this macro
-/// to apply the monitor update immediately and handle the monitor update completion actions at a
-/// later time.
-macro_rules! handle_new_monitor_update_locked_actions_handled_by_caller {
-	(
-		$self: ident, $funding_txo: expr, $update: expr, $in_flight_monitor_updates: expr, $chan_context: expr
-	) => {{
-		let (update_completed, _all_updates_complete) = $self.update_channel_monitor(
-			$in_flight_monitor_updates,
-			$chan_context.channel_id(),
-			$funding_txo,
-			$chan_context.get_counterparty_node_id(),
-			$update,
-		);
-		update_completed
-	}};
-}
-
 macro_rules! handle_new_monitor_update {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
@@ -4546,12 +4521,12 @@ where
 			log_error!(logger, "Closed channel due to close-required error: {}", msg);
 
 			if let Some((_, funding_txo, _, update)) = shutdown_res.monitor_update.take() {
-				handle_new_monitor_update_locked_actions_handled_by_caller!(
-					self,
-					funding_txo,
-					update,
+				self.update_channel_monitor(
 					in_flight_monitor_updates,
-					chan.context
+					chan.context.channel_id(),
+					funding_txo,
+					chan.context.get_counterparty_node_id(),
+					update,
 				);
 			}
 			// If there's a possibility that we need to generate further monitor updates for this
@@ -14853,12 +14828,12 @@ where
 											insert_short_channel_id!(short_to_chan_info, funded_channel);
 
 											if let Some(monitor_update) = monitor_update_opt {
-												handle_new_monitor_update_locked_actions_handled_by_caller!(
-													self,
-													funding_txo,
-													monitor_update,
+												self.update_channel_monitor(
 													&mut peer_state.in_flight_monitor_updates,
-													funded_channel.context
+													funded_channel.context.channel_id(),
+													funding_txo,
+													funded_channel.context.get_counterparty_node_id(),
+													monitor_update,
 												);
 												to_process_monitor_update_actions.push((
 													counterparty_node_id, channel_id
