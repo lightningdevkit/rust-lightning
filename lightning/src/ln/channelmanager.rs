@@ -1366,6 +1366,25 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 	},
 );
 
+/// Result of attempting to resume a channel after a monitor update completes while locks are held.
+/// Contains remaining work to be processed after locks are released.
+#[must_use]
+enum PostMonitorUpdateChanResume {
+	/// Channel still has blocked monitor updates pending. Contains only update actions to process.
+	Blocked { update_actions: Vec<MonitorUpdateCompletionAction> },
+	/// Channel was fully unblocked and has been resumed. Contains remaining data to process.
+	Unblocked {
+		channel_id: ChannelId,
+		counterparty_node_id: PublicKey,
+		unbroadcasted_batch_funding_txid: Option<Txid>,
+		update_actions: Vec<MonitorUpdateCompletionAction>,
+		htlc_forwards: Option<PerSourcePendingForward>,
+		decode_update_add_htlcs: Option<(u64, Vec<msgs::UpdateAddHTLC>)>,
+		finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
+		failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+	},
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PaymentCompleteUpdate {
 	counterparty_node_id: PublicKey,
@@ -3280,93 +3299,18 @@ macro_rules! emit_initial_channel_ready_event {
 /// Requires that  the in-flight monitor update set for this channel is empty!
 macro_rules! handle_monitor_update_completion {
 	($self: ident, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => {{
-		let chan_id = $chan.context.channel_id();
-		let outbound_alias = $chan.context().outbound_scid_alias();
-		let cp_node_id = $chan.context.get_counterparty_node_id();
+		let completion_data = $self.try_resume_channel_post_monitor_update(
+			&mut $peer_state.in_flight_monitor_updates,
+			&mut $peer_state.monitor_update_blocked_actions,
+			&mut $peer_state.pending_msg_events,
+			$peer_state.is_connected,
+			$chan,
+		);
 
-		#[cfg(debug_assertions)]
-		{
-			let in_flight_updates = $peer_state.in_flight_monitor_updates.get(&chan_id);
-			assert!(in_flight_updates.map(|(_, updates)| updates.is_empty()).unwrap_or(true));
-			assert!($chan.is_awaiting_monitor_update());
-		}
+		mem::drop($peer_state_lock);
+		mem::drop($per_peer_state_lock);
 
-		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
-
-		let update_actions =
-			$peer_state.monitor_update_blocked_actions.remove(&chan_id).unwrap_or(Vec::new());
-
-		if $chan.blocked_monitor_updates_pending() != 0 {
-			mem::drop($peer_state_lock);
-			mem::drop($per_peer_state_lock);
-
-			log_debug!(logger, "Channel has blocked monitor updates, completing update actions but leaving channel blocked");
-			$self.handle_monitor_update_completion_actions(update_actions);
-		} else {
-			log_debug!(logger, "Channel is open and awaiting update, resuming it");
-			let updates = $chan.monitor_updating_restored(
-				&&logger,
-				&$self.node_signer,
-				$self.chain_hash,
-				&*$self.config.read().unwrap(),
-				$self.best_block.read().unwrap().height,
-				|htlc_id| {
-					$self.path_for_release_held_htlc(htlc_id, outbound_alias, &chan_id, &cp_node_id)
-				},
-			);
-			let channel_update = if updates.channel_ready.is_some()
-				&& $chan.context.is_usable()
-				&& $peer_state.is_connected
-			{
-				// We only send a channel_update in the case where we are just now sending a
-				// channel_ready and the channel is in a usable state. We may re-send a
-				// channel_update later through the announcement_signatures process for public
-				// channels, but there's no reason not to just inform our counterparty of our fees
-				// now.
-				if let Ok((msg, _, _)) = $self.get_channel_update_for_unicast($chan) {
-					Some(MessageSendEvent::SendChannelUpdate { node_id: cp_node_id, msg })
-				} else {
-					None
-				}
-			} else {
-				None
-			};
-
-			let (htlc_forwards, decode_update_add_htlcs) = $self.handle_channel_resumption(
-				&mut $peer_state.pending_msg_events,
-				$chan,
-				updates.raa,
-				updates.commitment_update,
-				updates.commitment_order,
-				updates.accepted_htlcs,
-				updates.pending_update_adds,
-				updates.funding_broadcastable,
-				updates.channel_ready,
-				updates.announcement_sigs,
-				updates.tx_signatures,
-				None,
-				updates.channel_ready_order,
-			);
-			if let Some(upd) = channel_update {
-				$peer_state.pending_msg_events.push(upd);
-			}
-
-			let unbroadcasted_batch_funding_txid =
-				$chan.context.unbroadcasted_batch_funding_txid(&$chan.funding);
-			core::mem::drop($peer_state_lock);
-			core::mem::drop($per_peer_state_lock);
-
-			$self.post_monitor_update_unlock(
-				chan_id,
-				cp_node_id,
-				unbroadcasted_batch_funding_txid,
-				update_actions,
-				htlc_forwards,
-				decode_update_add_htlcs,
-				updates.finalized_claimed_htlcs,
-				updates.failed_htlcs,
-			);
-		}
+		$self.handle_post_monitor_update_chan_resume(completion_data);
 	}};
 }
 
@@ -9797,6 +9741,147 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
 				}
 				true
+			},
+		}
+	}
+
+	/// Attempts to resume a channel after a monitor update completes, while locks are still held.
+	///
+	/// If the channel has no more blocked monitor updates, this resumes normal operation by
+	/// calling [`Self::handle_channel_resumption`] and returns the remaining work to process
+	/// after locks are released. If blocked updates remain, only the update actions are returned.
+	///
+	/// Note: This method takes individual fields from [`PeerState`] rather than the whole struct
+	/// to avoid borrow checker issues when the channel is borrowed from `peer_state.channel_by_id`.
+	fn try_resume_channel_post_monitor_update(
+		&self,
+		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
+		monitor_update_blocked_actions: &mut BTreeMap<
+			ChannelId,
+			Vec<MonitorUpdateCompletionAction>,
+		>,
+		pending_msg_events: &mut Vec<MessageSendEvent>, is_connected: bool,
+		chan: &mut FundedChannel<SP>,
+	) -> PostMonitorUpdateChanResume {
+		let chan_id = chan.context.channel_id();
+		let outbound_alias = chan.context.outbound_scid_alias();
+		let counterparty_node_id = chan.context.get_counterparty_node_id();
+
+		#[cfg(debug_assertions)]
+		{
+			let in_flight_updates = in_flight_monitor_updates.get(&chan_id);
+			assert!(in_flight_updates.map(|(_, updates)| updates.is_empty()).unwrap_or(true));
+			assert!(chan.is_awaiting_monitor_update());
+		}
+
+		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+
+		let update_actions = monitor_update_blocked_actions.remove(&chan_id).unwrap_or(Vec::new());
+
+		if chan.blocked_monitor_updates_pending() != 0 {
+			log_debug!(logger, "Channel has blocked monitor updates, completing update actions but leaving channel blocked");
+			PostMonitorUpdateChanResume::Blocked { update_actions }
+		} else {
+			log_debug!(logger, "Channel is open and awaiting update, resuming it");
+			let updates = chan.monitor_updating_restored(
+				&&logger,
+				&self.node_signer,
+				self.chain_hash,
+				&*self.config.read().unwrap(),
+				self.best_block.read().unwrap().height,
+				|htlc_id| {
+					self.path_for_release_held_htlc(
+						htlc_id,
+						outbound_alias,
+						&chan_id,
+						&counterparty_node_id,
+					)
+				},
+			);
+			let channel_update = if updates.channel_ready.is_some()
+				&& chan.context.is_usable()
+				&& is_connected
+			{
+				if let Ok((msg, _, _)) = self.get_channel_update_for_unicast(chan) {
+					Some(MessageSendEvent::SendChannelUpdate { node_id: counterparty_node_id, msg })
+				} else {
+					None
+				}
+			} else {
+				None
+			};
+
+			let (htlc_forwards, decode_update_add_htlcs) = self.handle_channel_resumption(
+				pending_msg_events,
+				chan,
+				updates.raa,
+				updates.commitment_update,
+				updates.commitment_order,
+				updates.accepted_htlcs,
+				updates.pending_update_adds,
+				updates.funding_broadcastable,
+				updates.channel_ready,
+				updates.announcement_sigs,
+				updates.tx_signatures,
+				None,
+				updates.channel_ready_order,
+			);
+			if let Some(upd) = channel_update {
+				pending_msg_events.push(upd);
+			}
+
+			let unbroadcasted_batch_funding_txid =
+				chan.context.unbroadcasted_batch_funding_txid(&chan.funding);
+
+			PostMonitorUpdateChanResume::Unblocked {
+				channel_id: chan_id,
+				counterparty_node_id,
+				unbroadcasted_batch_funding_txid,
+				update_actions,
+				htlc_forwards,
+				decode_update_add_htlcs,
+				finalized_claimed_htlcs: updates.finalized_claimed_htlcs,
+				failed_htlcs: updates.failed_htlcs,
+			}
+		}
+	}
+
+	/// Completes channel resumption after locks have been released.
+	///
+	/// Processes the [`PostMonitorUpdateChanResume`] returned by
+	/// [`Self::try_resume_channel_post_monitor_update`], handling update actions and any
+	/// remaining work that requires locks to be released (e.g., forwarding HTLCs, failing HTLCs).
+	fn handle_post_monitor_update_chan_resume(&self, data: PostMonitorUpdateChanResume) {
+		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
+		#[cfg(debug_assertions)]
+		for (_, peer) in self.per_peer_state.read().unwrap().iter() {
+			debug_assert_ne!(peer.held_by_thread(), LockHeldState::HeldByThread);
+		}
+
+		match data {
+			PostMonitorUpdateChanResume::Blocked { update_actions } => {
+				self.handle_monitor_update_completion_actions(update_actions);
+			},
+			PostMonitorUpdateChanResume::Unblocked {
+				channel_id,
+				counterparty_node_id,
+				unbroadcasted_batch_funding_txid,
+				update_actions,
+				htlc_forwards,
+				decode_update_add_htlcs,
+				finalized_claimed_htlcs,
+				failed_htlcs,
+			} => {
+				self.post_monitor_update_unlock(
+					channel_id,
+					counterparty_node_id,
+					unbroadcasted_batch_funding_txid,
+					update_actions,
+					htlc_forwards,
+					decode_update_add_htlcs,
+					finalized_claimed_htlcs,
+					failed_htlcs,
+				);
 			},
 		}
 	}
