@@ -3291,27 +3291,6 @@ macro_rules! emit_initial_channel_ready_event {
 	};
 }
 
-macro_rules! handle_initial_monitor {
-	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => {
-		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
-		let update_completed = $self.handle_monitor_update_res($update_res, logger);
-		if update_completed {
-			let completion_data = $self.try_resume_channel_post_monitor_update(
-				&mut $peer_state.in_flight_monitor_updates,
-				&mut $peer_state.monitor_update_blocked_actions,
-				&mut $peer_state.pending_msg_events,
-				$peer_state.is_connected,
-				$chan,
-			);
-
-			mem::drop($peer_state_lock);
-			mem::drop($per_peer_state_lock);
-
-			$self.handle_post_monitor_update_chan_resume(completion_data);
-		}
-	};
-}
-
 macro_rules! handle_post_close_monitor_update {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
@@ -9707,6 +9686,36 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	/// Handles the initial monitor persistence, returning optionally data to process after locks
+	/// are released.
+	///
+	/// Note: This method takes individual fields from `PeerState` rather than the whole struct
+	/// to avoid borrow checker issues when the channel is borrowed from `peer_state.channel_by_id`.
+	fn handle_initial_monitor(
+		&self,
+		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
+		monitor_update_blocked_actions: &mut BTreeMap<
+			ChannelId,
+			Vec<MonitorUpdateCompletionAction>,
+		>,
+		pending_msg_events: &mut Vec<MessageSendEvent>, is_connected: bool,
+		chan: &mut FundedChannel<SP>, update_res: ChannelMonitorUpdateStatus,
+	) -> Option<PostMonitorUpdateChanResume> {
+		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+		let update_completed = self.handle_monitor_update_res(update_res, logger);
+		if update_completed {
+			Some(self.try_resume_channel_post_monitor_update(
+				in_flight_monitor_updates,
+				monitor_update_blocked_actions,
+				pending_msg_events,
+				is_connected,
+				chan,
+			))
+		} else {
+			None
+		}
+	}
+
 	/// Attempts to resume a channel after a monitor update completes, while locks are still held.
 	///
 	/// If the channel has no more blocked monitor updates, this resumes normal operation by
@@ -10735,14 +10744,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 
 					if let Some(funded_chan) = e.insert(Channel::from(chan)).as_funded_mut() {
-						handle_initial_monitor!(
-							self,
+						if let Some(data) = self.handle_initial_monitor(
+							&mut peer_state.in_flight_monitor_updates,
+							&mut peer_state.monitor_update_blocked_actions,
+							&mut peer_state.pending_msg_events,
+							peer_state.is_connected,
+							funded_chan,
 							persist_state,
-							peer_state_lock,
-							peer_state,
-							per_peer_state,
-							funded_chan
-						);
+						) {
+							mem::drop(peer_state_lock);
+							mem::drop(per_peer_state);
+							self.handle_post_monitor_update_chan_resume(data);
+						}
 					} else {
 						unreachable!("This must be a funded channel as we just inserted it.");
 					}
@@ -10905,7 +10918,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					})
 				{
 					Ok((funded_chan, persist_status)) => {
-						handle_initial_monitor!(self, persist_status, peer_state_lock, peer_state, per_peer_state, funded_chan);
+						if let Some(data) = self.handle_initial_monitor(
+							&mut peer_state.in_flight_monitor_updates,
+							&mut peer_state.monitor_update_blocked_actions,
+							&mut peer_state.pending_msg_events,
+							peer_state.is_connected,
+							funded_chan,
+							persist_status,
+						) {
+							mem::drop(peer_state_lock);
+							mem::drop(per_peer_state);
+							self.handle_post_monitor_update_chan_resume(data);
+						}
 						Ok(())
 					},
 					Err(e) => try_channel_entry!(self, peer_state, Err(e), chan_entry),
@@ -11611,8 +11635,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					if let Some(monitor) = monitor_opt {
 						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
-							handle_initial_monitor!(self, persist_state, peer_state_lock, peer_state,
-								per_peer_state, chan);
+							if let Some(data) = self.handle_initial_monitor(
+								&mut peer_state.in_flight_monitor_updates,
+								&mut peer_state.monitor_update_blocked_actions,
+								&mut peer_state.pending_msg_events,
+								peer_state.is_connected,
+								chan,
+								persist_state,
+							) {
+								mem::drop(peer_state_lock);
+								mem::drop(per_peer_state);
+								self.handle_post_monitor_update_chan_resume(data);
+							}
 						} else {
 							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 							log_error!(logger, "Persisting initial ChannelMonitor failed, implying the channel ID was duplicated");
