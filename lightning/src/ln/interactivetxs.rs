@@ -98,7 +98,7 @@ pub(crate) struct NegotiationError {
 	pub contributed_outputs: Vec<TxOut>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AbortReason {
 	InvalidStateTransition,
 	UnexpectedCounterpartyMessage,
@@ -550,7 +550,7 @@ impl ConstructedTransaction {
 	}
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SharedInputSignature {
 	holder_signature_first: bool,
 	witness_script: ScriptBuf,
@@ -568,7 +568,7 @@ impl_writeable_tlv_based!(SharedInputSignature, {
 /// See the specification for more details:
 /// https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-commitment_signed-message
 /// https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#sharing-funding-signatures-tx_signatures
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InteractiveTxSigningSession {
 	unsigned_tx: ConstructedTransaction,
 	holder_sends_tx_signatures_first: bool,
@@ -919,7 +919,7 @@ impl_writeable_tlv_based!(InteractiveTxSigningSession, {
 	(11, shared_input_signature, required),
 });
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NegotiationContext {
 	holder_node_id: PublicKey,
 	counterparty_node_id: PublicKey,
@@ -1398,7 +1398,7 @@ macro_rules! define_state {
 	};
 	($state: ident, $inner: ident, $doc: expr) => {
 		#[doc = $doc]
-		#[derive(Debug)]
+		#[derive(Debug, Clone, PartialEq, Eq)]
 		struct $state($inner);
 		impl State for $state {}
 	};
@@ -1527,7 +1527,7 @@ define_state_transitions!(RECEIVED_MSG_STATE, [
 define_state_transitions!(TX_COMPLETE, SentChangeMsg, ReceivedTxComplete);
 define_state_transitions!(TX_COMPLETE, ReceivedChangeMsg, SentTxComplete);
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum StateMachine {
 	Indeterminate,
 	SentChangeMsg(SentChangeMsg),
@@ -1941,7 +1941,7 @@ impl InteractiveTxInput {
 	}
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct InteractiveTxConstructor {
 	state_machine: StateMachine,
 	is_initiator: bool,
@@ -1954,7 +1954,7 @@ pub(super) struct InteractiveTxConstructor {
 }
 
 #[allow(clippy::enum_variant_names)] // Clippy doesn't like the repeated `Tx` prefix here
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InteractiveTxMessageSend {
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),

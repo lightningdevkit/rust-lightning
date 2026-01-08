@@ -772,7 +772,7 @@ impl From<ChannelConfig> for ChannelConfigUpdate {
 /// Legacy version of [`ChannelConfig`] that stored the static
 /// [`ChannelHandshakeConfig::announce_for_forwarding`] and
 /// [`ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`] fields.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LegacyChannelConfig {
 	pub(crate) options: ChannelConfig,
 	/// Deprecated but may still be read from. See [`ChannelHandshakeConfig::announce_for_forwarding`] to

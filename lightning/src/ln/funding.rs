@@ -88,7 +88,7 @@ impl SpliceContribution {
 
 /// An input to contribute to a channel's funding transaction either when using the v2 channel
 /// establishment protocol or when splicing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FundingTxInput {
 	/// The unspent [`TxOut`] that the input spends.
 	///

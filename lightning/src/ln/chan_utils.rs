@@ -400,8 +400,7 @@ pub fn build_closing_transaction(to_holder_value_sat: Amount, to_counterparty_va
 ///
 /// Allows us to keep track of all of the revocation secrets of our counterparty in just 50*32 bytes
 /// or so.
-#[derive(Clone)]
-#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Debug)]
 pub struct CounterpartyCommitmentSecrets {
 	old_secrets: [([u8; 32], u64); 49],
 }

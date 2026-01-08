@@ -41,6 +41,8 @@ use crate::chain;
 use crate::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
 };
+#[cfg(feature = "safe_channels")]
+use crate::chain::channelmonitor::UpdateChannelState;
 use crate::chain::channelmonitor::{
 	Balance, ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 	WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER,
@@ -207,8 +209,7 @@ use crate::ln::script::ShutdownScript;
 // our payment, which we can use to decode errors or inform the user that the payment was sent.
 
 /// Information about where a received HTLC('s onion) has indicated the HTLC should go.
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub enum PendingHTLCRouting {
 	/// An HTLC which should be forwarded on to another node.
 	Forward {
@@ -386,8 +387,7 @@ impl PendingHTLCRouting {
 
 /// Information about an incoming HTLC, including the [`PendingHTLCRouting`] describing where it
 /// should go next.
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub struct PendingHTLCInfo {
 	/// Further routing details based on whether the HTLC is being forwarded or received.
 	pub routing: PendingHTLCRouting,
@@ -429,15 +429,14 @@ pub struct PendingHTLCInfo {
 	pub skimmed_fee_msat: Option<u64>,
 }
 
-#[derive(Clone, Debug)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum HTLCFailureMsg {
 	Relay(msgs::UpdateFailHTLC),
 	Malformed(msgs::UpdateFailMalformedHTLC),
 }
 
 /// Stores whether we can't forward an HTLC or relevant forwarding info
-#[cfg_attr(test, derive(Debug))]
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone, Debug, PartialEq, Eq)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum PendingHTLCStatus {
 	Forward(PendingHTLCInfo),
 	Fail(HTLCFailureMsg),
@@ -1009,13 +1008,18 @@ impl MsgHandleErrInternal {
 /// be sent in the order they appear in the return value, however sometimes the order needs to be
 /// variable at runtime (eg FundedChannel::channel_reestablish needs to re-send messages in the order
 /// they were originally sent). In those cases, this enum is also returned.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) enum RAACommitmentOrder {
 	/// Send the CommitmentUpdate messages first
 	CommitmentFirst,
 	/// Send the RevokeAndACK message first
 	RevokeAndACKFirst,
 }
+
+impl_writeable_tlv_based_enum!(RAACommitmentOrder,
+	(0, CommitmentFirst) => {},
+	(1, RevokeAndACKFirst) => {},
+);
 
 /// Similar to scenarios used by [`RAACommitmentOrder`], this determines whether a `channel_ready`
 /// message should be sent first (i.e., prior to a `commitment_update`) or after the initial
@@ -3370,42 +3374,10 @@ macro_rules! handle_monitor_update_completion {
 	}};
 }
 
-/// Returns whether the monitor update is completed, `false` if the update is in-progress.
-fn handle_monitor_update_res<CM: AChannelManager, LG: Logger>(
-	cm: &CM, update_res: ChannelMonitorUpdateStatus, logger: LG,
-) -> bool {
-	debug_assert!(cm.get_cm().background_events_processed_since_startup.load(Ordering::Acquire));
-	match update_res {
-		ChannelMonitorUpdateStatus::UnrecoverableError => {
-			let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
-			log_error!(logger, "{}", err_str);
-			panic!("{}", err_str);
-		},
-		ChannelMonitorUpdateStatus::InProgress => {
-			#[cfg(not(any(test, feature = "_externalize_tests")))]
-			if cm.get_cm().monitor_update_type.swap(1, Ordering::Relaxed) == 2 {
-				panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
-			}
-			log_debug!(
-				logger,
-				"ChannelMonitor update in flight, holding messages until the update completes.",
-			);
-			false
-		},
-		ChannelMonitorUpdateStatus::Completed => {
-			#[cfg(not(any(test, feature = "_externalize_tests")))]
-			if cm.get_cm().monitor_update_type.swap(2, Ordering::Relaxed) == 1 {
-				panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
-			}
-			true
-		},
-	}
-}
-
 macro_rules! handle_initial_monitor {
 	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => {
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
-		let update_completed = handle_monitor_update_res($self, $update_res, logger);
+		let update_completed = $self.handle_monitor_update_res($update_res, logger);
 		if update_completed {
 			handle_monitor_update_completion!(
 				$self,
@@ -3418,69 +3390,17 @@ macro_rules! handle_initial_monitor {
 	};
 }
 
-fn handle_new_monitor_update_internal<CM: AChannelManager, LG: Logger>(
-	cm: &CM,
-	in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
-	channel_id: ChannelId, funding_txo: OutPoint, counterparty_node_id: PublicKey,
-	new_update: ChannelMonitorUpdate, logger: LG,
-) -> (bool, bool) {
-	let in_flight_updates = &mut in_flight_monitor_updates
-		.entry(channel_id)
-		.or_insert_with(|| (funding_txo, Vec::new()))
-		.1;
-	// During startup, we push monitor updates as background events through to here in
-	// order to replay updates that were in-flight when we shut down. Thus, we have to
-	// filter for uniqueness here.
-	let update_idx =
-		in_flight_updates.iter().position(|upd| upd == &new_update).unwrap_or_else(|| {
-			in_flight_updates.push(new_update);
-			in_flight_updates.len() - 1
-		});
-
-	if cm.get_cm().background_events_processed_since_startup.load(Ordering::Acquire) {
-		let update_res =
-			cm.get_cm().chain_monitor.update_channel(channel_id, &in_flight_updates[update_idx]);
-		let update_completed = handle_monitor_update_res(cm, update_res, logger);
-		if update_completed {
-			let _ = in_flight_updates.remove(update_idx);
-		}
-		(update_completed, update_completed && in_flight_updates.is_empty())
-	} else {
-		// We blindly assume that the ChannelMonitorUpdate will be regenerated on startup if we
-		// fail to persist it. This is a fairly safe assumption, however, since anything we do
-		// during the startup sequence should be replayed exactly if we immediately crash.
-		let event = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-			counterparty_node_id,
-			funding_txo,
-			channel_id,
-			update: in_flight_updates[update_idx].clone(),
-		};
-		// We want to track the in-flight update both in `in_flight_monitor_updates` and in
-		// `pending_background_events` to avoid a race condition during
-		// `pending_background_events` processing where we complete one
-		// `ChannelMonitorUpdate` (but there are more pending as background events) but we
-		// conclude that all pending `ChannelMonitorUpdate`s have completed and its safe to
-		// run post-completion actions.
-		// We could work around that with some effort, but its simpler to just track updates
-		// twice.
-		cm.get_cm().pending_background_events.lock().unwrap().push(event);
-		(false, false)
-	}
-}
-
 macro_rules! handle_post_close_monitor_update {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
 		$per_peer_state_lock: expr, $counterparty_node_id: expr, $channel_id: expr
 	) => {{
-		let (update_completed, all_updates_complete) = handle_new_monitor_update_internal(
-			$self,
+		let (update_completed, all_updates_complete) = $self.handle_new_monitor_update_internal(
 			&mut $peer_state.in_flight_monitor_updates,
 			$channel_id,
 			$funding_txo,
 			$counterparty_node_id,
 			$update,
-			WithContext::from(&$self.logger, Some($counterparty_node_id), Some($channel_id), None),
 		);
 		if all_updates_complete {
 			let update_actions = $peer_state
@@ -3510,14 +3430,12 @@ macro_rules! handle_new_monitor_update_locked_actions_handled_by_caller {
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $in_flight_monitor_updates: expr, $chan_context: expr
 	) => {{
-		let (update_completed, _all_updates_complete) = handle_new_monitor_update_internal(
-			$self,
+		let (update_completed, _all_updates_complete) = $self.handle_new_monitor_update_internal(
 			$in_flight_monitor_updates,
 			$chan_context.channel_id(),
 			$funding_txo,
 			$chan_context.get_counterparty_node_id(),
 			$update,
-			WithChannelContext::from(&$self.logger, &$chan_context, None),
 		);
 		update_completed
 	}};
@@ -3528,14 +3446,12 @@ macro_rules! handle_new_monitor_update {
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
 		$per_peer_state_lock: expr, $chan: expr
 	) => {{
-		let (update_completed, all_updates_complete) = handle_new_monitor_update_internal(
-			$self,
+		let (update_completed, all_updates_complete) = $self.handle_new_monitor_update_internal(
 			&mut $peer_state.in_flight_monitor_updates,
 			$chan.context.channel_id(),
 			$funding_txo,
 			$chan.context.get_counterparty_node_id(),
 			$update,
-			WithChannelContext::from(&$self.logger, &$chan.context, None),
 		);
 		if all_updates_complete {
 			handle_monitor_update_completion!(
@@ -9266,6 +9182,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				payment_info,
 			}],
 			channel_id: Some(prev_hop.channel_id),
+			#[cfg(feature = "safe_channels")]
+			channel_state: None,
 		};
 
 		// We don't have any idea if this is a duplicate claim without interrogating the
@@ -9775,6 +9693,90 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		for (node_id, channel_id, blocker) in freed_channels {
 			self.handle_monitor_update_release(node_id, channel_id, Some(blocker));
+		}
+	}
+
+	fn handle_new_monitor_update_internal(
+		&self,
+		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
+		channel_id: ChannelId, funding_txo: OutPoint, counterparty_node_id: PublicKey,
+		new_update: ChannelMonitorUpdate,
+	) -> (bool, bool) {
+		let in_flight_updates = &mut in_flight_monitor_updates
+			.entry(channel_id)
+			.or_insert_with(|| (funding_txo, Vec::new()))
+			.1;
+		// During startup, we push monitor updates as background events through to here in
+		// order to replay updates that were in-flight when we shut down. Thus, we have to
+		// filter for uniqueness here.
+		let update_idx =
+			in_flight_updates.iter().position(|upd| upd == &new_update).unwrap_or_else(|| {
+				in_flight_updates.push(new_update);
+				in_flight_updates.len() - 1
+			});
+
+		if self.background_events_processed_since_startup.load(Ordering::Acquire) {
+			let update_res =
+				self.chain_monitor.update_channel(channel_id, &in_flight_updates[update_idx]);
+			let logger =
+				WithContext::from(&self.logger, Some(counterparty_node_id), Some(channel_id), None);
+			let update_completed = self.handle_monitor_update_res(update_res, logger);
+			if update_completed {
+				let _ = in_flight_updates.remove(update_idx);
+			}
+			(update_completed, update_completed && in_flight_updates.is_empty())
+		} else {
+			// We blindly assume that the ChannelMonitorUpdate will be regenerated on startup if we
+			// fail to persist it. This is a fairly safe assumption, however, since anything we do
+			// during the startup sequence should be replayed exactly if we immediately crash.
+			let event = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+				counterparty_node_id,
+				funding_txo,
+				channel_id,
+				update: in_flight_updates[update_idx].clone(),
+			};
+			// We want to track the in-flight update both in `in_flight_monitor_updates` and in
+			// `pending_background_events` to avoid a race condition during
+			// `pending_background_events` processing where we complete one
+			// `ChannelMonitorUpdate` (but there are more pending as background events) but we
+			// conclude that all pending `ChannelMonitorUpdate`s have completed and its safe to
+			// run post-completion actions.
+			// We could work around that with some effort, but its simpler to just track updates
+			// twice.
+			self.pending_background_events.lock().unwrap().push(event);
+			(false, false)
+		}
+	}
+
+	/// Returns whether the monitor update is completed, `false` if the update is in-progress.
+	fn handle_monitor_update_res<LG: Logger>(
+		&self, update_res: ChannelMonitorUpdateStatus, logger: LG,
+	) -> bool {
+		debug_assert!(self.background_events_processed_since_startup.load(Ordering::Acquire));
+		match update_res {
+			ChannelMonitorUpdateStatus::UnrecoverableError => {
+				let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
+				log_error!(logger, "{}", err_str);
+				panic!("{}", err_str);
+			},
+			ChannelMonitorUpdateStatus::InProgress => {
+				#[cfg(not(any(test, feature = "_externalize_tests")))]
+				if self.monitor_update_type.swap(1, Ordering::Relaxed) == 2 {
+					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
+				}
+				log_debug!(
+					logger,
+					"ChannelMonitor update in flight, holding messages until the update completes.",
+				);
+				false
+			},
+			ChannelMonitorUpdateStatus::Completed => {
+				#[cfg(not(any(test, feature = "_externalize_tests")))]
+				if self.monitor_update_type.swap(2, Ordering::Relaxed) == 1 {
+					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
+				}
+				true
+			},
 		}
 	}
 
@@ -10640,6 +10642,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				fail_chan!("Already had channel with the new channel_id");
 			},
 			hash_map::Entry::Vacant(e) => {
+				#[cfg(feature = "safe_channels")]
+				{
+					monitor.update_channel_state(UpdateChannelState::Funded((&mut chan).into()));
+				}
 				let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 				if let Ok(persist_state) = monitor_res {
 					// There's no problem signing a counterparty's funding transaction if our monitor
@@ -10810,6 +10816,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				match chan
 					.funding_signed(&msg, best_block, &self.signer_provider, &self.logger)
 					.and_then(|(funded_chan, monitor)| {
+						#[cfg(feature = "safe_channels")]
+						{
+							monitor.update_channel_state(UpdateChannelState::Funded(funded_chan.into()));
+						}
 						self.chain_monitor
 							.watch_channel(funded_chan.context.channel_id(), monitor)
 							.map_err(|()| {
@@ -11528,6 +11538,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 				if let Some(chan) = chan.as_funded_mut() {
 					if let Some(monitor) = monitor_opt {
+						#[cfg(feature = "safe_channels")]
+						{
+							monitor.update_channel_state(UpdateChannelState::Funded(chan.into()));
+						}
 						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
 							handle_initial_monitor!(self, persist_state, peer_state_lock, peer_state,
@@ -13985,6 +13999,8 @@ where
 						updates: vec![ChannelMonitorUpdateStep::ReleasePaymentComplete {
 							htlc: htlc_id,
 						}],
+						#[cfg(feature = "safe_channels")]
+						channel_state: None,
 					};
 
 					let during_startup =
@@ -17455,6 +17471,8 @@ where
 						should_broadcast: true,
 					}],
 					channel_id: Some(monitor.channel_id()),
+					#[cfg(feature = "safe_channels")]
+					channel_state: Some(UpdateChannelState::Closed),
 				};
 				log_info!(
 					logger,
@@ -18119,6 +18137,8 @@ where
 												updates: vec![ChannelMonitorUpdateStep::ReleasePaymentComplete {
 													htlc: htlc_id,
 												}],
+												#[cfg(feature = "safe_channels")]
+												channel_state: None,
 											},
 										});
 									}
