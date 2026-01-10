@@ -2868,6 +2868,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				let outbound_payment = match source {
 					None => panic!("Outbound HTLCs should have a source"),
 					Some(&HTLCSource::PreviousHopData(_)) => false,
+					Some(&HTLCSource::TrampolineForward { .. }) => false,
 					Some(&HTLCSource::OutboundRoute { .. }) => true,
 				};
 				return Some(Balance::MaybeTimeoutClaimableHTLC {
@@ -3080,6 +3081,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					let outbound_payment = match source {
 						None => panic!("Outbound HTLCs should have a source"),
 						Some(HTLCSource::PreviousHopData(_)) => false,
+						Some(HTLCSource::TrampolineForward { .. }) => false,
 						Some(HTLCSource::OutboundRoute { .. }) => true,
 					};
 					if outbound_payment {
