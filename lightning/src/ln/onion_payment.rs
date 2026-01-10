@@ -106,6 +106,10 @@ enum RoutingInfo {
 		new_packet_bytes: [u8; ONION_DATA_LEN],
 		next_hop_hmac: [u8; 32],
 	},
+	Dummy {
+		new_packet_bytes: [u8; ONION_DATA_LEN],
+		next_hop_hmac: [u8; 32],
+	},
 	Trampoline {
 		next_trampoline: PublicKey,
 		// Trampoline onions are currently variable length
@@ -148,6 +152,9 @@ pub(super) fn create_fwd_pending_htlc_info(
 			})?;
 			(RoutingInfo::Direct { short_channel_id, new_packet_bytes, next_hop_hmac }, amt_to_forward, outgoing_cltv_value, intro_node_blinding_point,
 				next_blinding_override)
+		},
+		onion_utils::Hop::Dummy { intro_node_blinding_point, next_hop_hmac, new_packet_bytes, .. } => {
+			(RoutingInfo::Dummy { new_packet_bytes, next_hop_hmac }, msg.amount_msat, msg.cltv_expiry, intro_node_blinding_point, None)
 		},
 		onion_utils::Hop::Receive { .. } | onion_utils::Hop::BlindedReceive { .. } =>
 			return Err(InboundHTLCErr {
@@ -226,7 +233,33 @@ pub(super) fn create_fwd_pending_htlc_info(
 							.unwrap_or(BlindedFailure::FromBlindedNode),
 					}),
 			}
-		}
+		},
+		RoutingInfo::Dummy { new_packet_bytes, next_hop_hmac } => {
+			let outgoing_packet = msgs::OnionPacket {
+				version: 0,
+				public_key: next_packet_pubkey_opt.unwrap_or(Err(secp256k1::Error::InvalidPublicKey)),
+				hop_data: new_packet_bytes,
+				hmac: next_hop_hmac,
+			};
+
+			PendingHTLCRouting::Dummy {
+				onion_packet: outgoing_packet,
+				incoming_cltv_expiry: Some(msg.cltv_expiry),
+				blinded: {
+					let inbound_blinding_point =
+						intro_node_blinding_point.or(msg.blinding_point)
+							.expect("Dummy HTLCs only occur within blinded paths");
+
+					BlindedForward {
+						inbound_blinding_point,
+						next_blinding_override: None,
+						failure: intro_node_blinding_point
+							.map(|_| BlindedFailure::FromIntroductionNode)
+							.unwrap_or(BlindedFailure::FromBlindedNode),
+					}
+				},
+			}
+		},
 		RoutingInfo::Trampoline { next_trampoline, new_packet_bytes, next_hop_hmac, shared_secret, current_path_key } => {
 			let next_trampoline_packet_pubkey = match next_packet_pubkey_opt {
 				Some(Ok(pubkey)) => pubkey,
@@ -365,6 +398,14 @@ pub(super) fn create_recv_pending_htlc_info(
 				msg: "Got blinded non final data with an HMAC of 0",
 			})
 		},
+		onion_utils::Hop::Dummy { .. } => {
+			debug_assert!(false, "Dummy hop should have been peeled earlier");
+			return Err(InboundHTLCErr {
+				reason: LocalHTLCFailureReason::InvalidOnionBlinding,
+				err_data: vec![0; 32],
+				msg: "Got blinded non final data with an HMAC of 0",
+			})
+		}
 		onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 			return Err(InboundHTLCErr {
 				reason: LocalHTLCFailureReason::InvalidOnionPayload,
@@ -532,6 +573,8 @@ where
 pub(super) enum HopConnector {
 	// scid-based routing
 	ShortChannelId(u64),
+	// Dummy hop for path padding
+	Dummy,
 	// Trampoline-based routing
 	#[allow(unused)]
 	Trampoline(PublicKey),
@@ -635,7 +678,13 @@ where
 				next_packet_pubkey, outgoing_connector: HopConnector::ShortChannelId(short_channel_id), outgoing_amt_msat: amt_to_forward,
 				outgoing_cltv_value
 			})
-		}
+		},
+		onion_utils::Hop::Dummy { shared_secret, .. } => {
+			let next_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
+				msg.onion_routing_packet.public_key.unwrap(), &shared_secret.secret_bytes());
+
+			Some(NextPacketDetails { next_packet_pubkey, outgoing_connector: HopConnector::Dummy, outgoing_amt_msat: msg.amount_msat, outgoing_cltv_value: msg.cltv_expiry })
+		},
 		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload { amt_to_forward, outgoing_cltv_value, next_trampoline }, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
 			let next_trampoline_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());

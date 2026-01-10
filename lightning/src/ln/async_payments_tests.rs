@@ -55,7 +55,7 @@ use crate::onion_message::messenger::{
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
 use crate::prelude::*;
-use crate::routing::router::{Payee, PaymentParameters};
+use crate::routing::router::{Payee, PaymentParameters, DEFAULT_PAYMENT_DUMMY_HOPS};
 use crate::sign::NodeSigner;
 use crate::sync::Mutex;
 use crate::types::features::Bolt12InvoiceFeatures;
@@ -1858,6 +1858,13 @@ fn expired_static_invoice_payment_path() {
 		blinded_path
 			.advance_path_by_one(&nodes[1].keys_manager, &nodes[1].node, &secp_ctx)
 			.unwrap();
+
+		for _ in 0..DEFAULT_PAYMENT_DUMMY_HOPS {
+			blinded_path
+				.advance_path_by_one(&nodes[2].keys_manager, &nodes[2].node, &secp_ctx)
+				.unwrap();
+		}
+
 		match blinded_path.decrypt_intro_payload(&nodes[2].keys_manager).unwrap().0 {
 			BlindedPaymentTlvs::Receive(tlvs) => tlvs.payment_constraints.max_cltv_expiry,
 			_ => panic!(),
