@@ -1572,7 +1572,8 @@ pub enum LocalHTLCFailureReason {
 	///
 	/// The forwarding node has tampered with this value, or has a bug in its implementation.
 	FinalIncorrectHTLCAmount,
-	/// The channel has been marked as disabled because the channel peer is offline.
+	/// The HTLC couldn't be forwarded because the channel counterparty has been offline for some
+	/// time.
 	ChannelDisabled,
 	/// The HTLC expires too far in the future, so it is rejected to avoid the worst-case outcome
 	/// of funds being held for extended periods of time.

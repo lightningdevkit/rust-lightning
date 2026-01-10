@@ -26,7 +26,7 @@ use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils;
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
-use crate::util::config::UserConfig;
+use crate::util::config::{HTLCInterceptionFlags, UserConfig};
 
 use bitcoin::hashes::Hash;
 use bitcoin::hash_types::BlockHash;
@@ -931,7 +931,8 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	let new_chain_monitor;
 
 	let mut intercept_forwards_config = test_default_channel_config();
-	intercept_forwards_config.accept_intercept_htlcs = true;
+	intercept_forwards_config.htlc_interception_flags =
+		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), None]);
 	let nodes_1_deserialized;
 
@@ -1189,7 +1190,8 @@ fn do_manager_persisted_pre_outbound_edge_forward(intercept_htlc: bool) {
 	let persister;
 	let new_chain_monitor;
 	let mut intercept_forwards_config = test_default_channel_config();
-	intercept_forwards_config.accept_intercept_htlcs = true;
+	intercept_forwards_config.htlc_interception_flags =
+		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), None]);
 	let nodes_1_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
