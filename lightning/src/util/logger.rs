@@ -15,6 +15,7 @@
 
 use bitcoin::secp256k1::PublicKey;
 
+use core::cell::RefCell;
 use core::cmp;
 use core::fmt;
 use core::fmt::Display;
@@ -130,6 +131,11 @@ pub struct Record<$($args)?> {
 	/// Note that this is only filled in for logs pertaining to a specific payment, and will be
 	/// `None` for logs which are not directly related to a payment.
 	pub payment_hash: Option<PaymentHash>,
+
+	/// The names of the surrounding spans, if any.
+	///
+	/// TODO: Use fixed size array to avoid allocations?
+	pub spans: Vec<&'static str>,
 }
 
 impl<$($args)?> Record<$($args)?> {
@@ -138,7 +144,7 @@ impl<$($args)?> Record<$($args)?> {
 	/// This is not exported to bindings users as fmt can't be used in C
 	#[inline]
 	pub fn new<$($nonstruct_args)?>(
-		level: Level, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
+		level: Level, spans: Vec<&'static str>, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
 		args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32,
 		payment_hash: Option<PaymentHash>
 	) -> Record<$($args)?> {
@@ -154,6 +160,7 @@ impl<$($args)?> Record<$($args)?> {
 			file,
 			line,
 			payment_hash,
+			spans,
 		}
 	}
 }
@@ -189,9 +196,22 @@ impl<$($args)?> Display for Record<$($args)?> {
 
 		#[cfg(test)]
 		{
-			write!(f, " {}", self.args)?;
+			write!(f, " ")?;
+			if !self.spans.is_empty() {
+				write!(f, "[")?;
+				for (i, span) in self.spans.iter().enumerate() {
+					if i > 0 {
+						write!(f, "->")?;
+					}
+					write!(f, "{}", span)?;
+				}
+				write!(f, "] ")?;
+			}
+
+			write!(f, "{}", self.args)?;
 
 			let mut open_bracket_written = false;
+
 			if let Some(peer_id) = self.peer_id {
 				write!(f, " [")?;
 				open_bracket_written = true;
@@ -384,14 +404,81 @@ impl<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone> fmt::Display fo
 	}
 }
 
+/// A wrapper to allow getting a dyn Logger from a deref type.
+///
+/// TODO: Propagate up the dyn Logger type to avoid this wrapper.
+pub struct LoggerWrapper<'a, L: Deref>(pub &'a L)
+where
+	L::Target: Logger;
+
+impl<'a, L: Deref> Logger for LoggerWrapper<'a, L>
+where
+	L::Target: Logger,
+{
+	fn log(&self, record: Record) {
+		self.0.log(record)
+	}
+}
+
+/// A span in the TLS logger stack.
+pub struct Span {
+	/// The Logger instance for this span.
+	pub logger: &'static dyn Logger,
+
+	/// The name of this span.
+	pub name: &'static str,
+}
+
+thread_local! {
+	/// The thread-local stack of loggers.
+	pub static TLS_LOGGER: RefCell<Vec<Span>> = RefCell::new(Vec::new());
+}
+
+/// A scope which pushes a logger on a thread-local stack for the duration of the scope.
+pub struct LoggerScope<'a> {
+	_marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> LoggerScope<'a> {
+	/// Pushes a logger onto the thread-local logger stack.
+	pub fn new(logger: &'a dyn Logger, span: &'static str) -> Self {
+		TLS_LOGGER.with(|cell| {
+			let mut stack = cell.borrow_mut();
+
+			let logger_ref_static: &'static dyn Logger =
+				unsafe { std::mem::transmute::<&'a dyn Logger, &'static dyn Logger>(logger) };
+
+			stack.push(Span { logger: logger_ref_static, name: span });
+		});
+
+		LoggerScope { _marker: std::marker::PhantomData }
+	}
+}
+
+impl<'a> Drop for LoggerScope<'a> {
+	fn drop(&mut self) {
+		TLS_LOGGER.with(|cell| {
+			let mut stack = cell.borrow_mut();
+			stack.pop();
+		});
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::sync::Arc;
 	use crate::types::payment::PaymentHash;
-	use crate::util::logger::{Level, Logger, WithContext};
+	use crate::util::logger::{Level, Logger, LoggerScope, WithContext};
 	use crate::util::test_utils::TestLogger;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+	#[test]
+	fn logger_scope() {
+		let logger = TestLogger::new();
+		let _scope = LoggerScope::new(&logger, "test_logger_scope");
+		log_info!("Info");
+	}
 
 	#[test]
 	fn test_level_show() {
