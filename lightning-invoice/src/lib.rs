@@ -54,7 +54,7 @@ use core::time::Duration;
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 
 #[doc(no_inline)]
-pub use lightning_types::payment::PaymentSecret;
+pub use lightning_types::payment::{PaymentHash, PaymentSecret};
 #[doc(no_inline)]
 pub use lightning_types::routing::{RouteHint, RouteHintHop, RoutingFees};
 use lightning_types::string::UntrustedString;
@@ -1460,8 +1460,9 @@ impl Bolt11Invoice {
 	}
 
 	/// Returns the hash to which we will receive the preimage on completion of the payment
-	pub fn payment_hash(&self) -> &sha256::Hash {
-		&self.signed_invoice.payment_hash().expect("checked by constructor").0
+	pub fn payment_hash(&self) -> PaymentHash {
+		let hash = self.signed_invoice.payment_hash().expect("checked by constructor").0;
+		PaymentHash(hash.to_byte_array())
 	}
 
 	/// Return the description or a hash of it for longer ones
@@ -2339,7 +2340,7 @@ mod test {
 				sha256::Hash::from_slice(&[3; 32][..]).unwrap()
 			))
 		);
-		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&[21; 32][..]).unwrap());
+		assert_eq!(invoice.payment_hash(), PaymentHash([21; 32]));
 		assert_eq!(invoice.payment_secret(), &PaymentSecret([42; 32]));
 
 		let mut expected_features = Bolt11InvoiceFeatures::empty();
