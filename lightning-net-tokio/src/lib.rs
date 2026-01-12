@@ -51,6 +51,9 @@ use std::time::Duration;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+const CONNECT_OUTBOUND_TIMEOUT: u64 = 10;
+const SOCKS5_CONNECT_OUTBOUND_TIMEOUT: u64 = 30;
+
 // We only need to select over multiple futures in one place, and taking on the full `tokio/macros`
 // dependency tree in order to do so (which has broken our MSRV before) is excessive. Instead, we
 // define a trivial two- and three- select macro with the specific types we need and just use that.
@@ -462,11 +465,154 @@ where
 	PM::Target: APeerManager<Descriptor = SocketDescriptor>,
 {
 	let connect_fut = async { TcpStream::connect(&addr).await.map(|s| s.into_std().unwrap()) };
-	if let Ok(Ok(stream)) = time::timeout(Duration::from_secs(10), connect_fut).await {
+	if let Ok(Ok(stream)) =
+		time::timeout(Duration::from_secs(CONNECT_OUTBOUND_TIMEOUT), connect_fut).await
+	{
 		Some(setup_outbound(peer_manager, their_node_id, stream))
 	} else {
 		None
 	}
+}
+
+/// Same as [`connect_outbound`], using a SOCKS5 proxy
+pub async fn socks5_connect_outbound<PM: Deref + 'static + Send + Sync + Clone>(
+	peer_manager: PM, their_node_id: PublicKey, socks5_proxy_addr: SocketAddr, addr: SocketAddress,
+	user_pass: Option<(&str, &str)>,
+) -> Option<impl std::future::Future<Output = ()>>
+where
+	PM::Target: APeerManager<Descriptor = SocketDescriptor>,
+{
+	let connect_fut = async {
+		socks5_connect(socks5_proxy_addr, addr, user_pass).await.map(|s| s.into_std().unwrap())
+	};
+	if let Ok(Ok(stream)) =
+		time::timeout(Duration::from_secs(SOCKS5_CONNECT_OUTBOUND_TIMEOUT), connect_fut).await
+	{
+		Some(setup_outbound(peer_manager, their_node_id, stream))
+	} else {
+		None
+	}
+}
+
+async fn socks5_connect(
+	socks5_proxy_addr: SocketAddr, addr: SocketAddress, user_pass: Option<(&str, &str)>,
+) -> Result<TcpStream, ()> {
+	use std::io::{Cursor, Write};
+	use tokio::io::AsyncReadExt;
+
+	const IPV4_ADDR_LEN: usize = 4;
+	const IPV6_ADDR_LEN: usize = 16;
+	const HOSTNAME_MAX_LEN: usize = 255;
+
+	// Constants defined in RFC 1928 and RFC 1929
+	const VERSION: u8 = 5;
+	const NMETHODS: u8 = 1;
+	const NO_AUTH: u8 = 0;
+	const USERNAME_PASSWORD_AUTH: u8 = 2;
+	const METHOD_SELECT_REPLY_LEN: usize = 2;
+	const USERNAME_PASSWORD_VERSION: u8 = 1;
+	const USERNAME_PASSWORD_REPLY_LEN: usize = 2;
+	const CMD_CONNECT: u8 = 1;
+	const RSV: u8 = 0;
+	const ATYP_IPV4: u8 = 1;
+	const ATYP_DOMAINNAME: u8 = 3;
+	const ATYP_IPV6: u8 = 4;
+	const SUCCESS: u8 = 0;
+	const USERNAME_MAX_LEN: usize = 255;
+	const PASSWORD_MAX_LEN: usize = 255;
+
+	const USERNAME_PASSWORD_REQUEST_MAX_LEN: usize = 1 /* VER */ + 1 /* ULEN */ + USERNAME_MAX_LEN /* UNAME max len */
+		+ 1 /* PLEN */ + PASSWORD_MAX_LEN /* PASSWD max len */;
+	const SOCKS5_REQUEST_MAX_LEN: usize = 1 /* VER */ + 1 /* CMD */ + 1 /* RSV */ + 1 /* ATYP */
+		+ 1 /* HOSTNAME len */ + HOSTNAME_MAX_LEN /* HOSTNAME */ + 2 /* PORT */;
+
+	let selected_auth = if user_pass.is_some() { USERNAME_PASSWORD_AUTH } else { NO_AUTH };
+	let method_selection_request = [VERSION, NMETHODS, selected_auth];
+	let mut tcp_stream = TcpStream::connect(&socks5_proxy_addr).await.map_err(|_| ())?;
+	tokio::io::AsyncWriteExt::write_all(&mut tcp_stream, &method_selection_request)
+		.await
+		.map_err(|_| ())?;
+
+	let mut method_selection_reply = [0u8; METHOD_SELECT_REPLY_LEN];
+	tcp_stream.read_exact(&mut method_selection_reply).await.map_err(|_| ())?;
+	if method_selection_reply != [VERSION, selected_auth] {
+		return Err(());
+	}
+
+	if let Some((username, password)) = user_pass {
+		if username.len() > USERNAME_MAX_LEN || password.len() > PASSWORD_MAX_LEN {
+			return Err(());
+		}
+
+		let mut username_password_request = [0u8; USERNAME_PASSWORD_REQUEST_MAX_LEN];
+		let mut writer = Cursor::new(&mut username_password_request[..]);
+		writer.write_all(&[USERNAME_PASSWORD_VERSION, username.len() as u8]).map_err(|_| ())?;
+		writer.write_all(username.as_bytes()).map_err(|_| ())?;
+		writer.write_all(&[password.len() as u8]).map_err(|_| ())?;
+		writer.write_all(password.as_bytes()).map_err(|_| ())?;
+		let pos = writer.position() as usize;
+		tokio::io::AsyncWriteExt::write_all(&mut tcp_stream, &username_password_request[..pos])
+			.await
+			.map_err(|_| ())?;
+
+		let mut username_password_reply = [0u8; USERNAME_PASSWORD_REPLY_LEN];
+		tcp_stream.read_exact(&mut username_password_reply).await.map_err(|_| ())?;
+		if username_password_reply != [USERNAME_PASSWORD_VERSION, SUCCESS] {
+			return Err(());
+		}
+	}
+
+	let mut socks5_request = [0u8; SOCKS5_REQUEST_MAX_LEN];
+	let mut writer = Cursor::new(&mut socks5_request[..]);
+	writer.write_all(&[VERSION, CMD_CONNECT, RSV]).map_err(|_| ())?;
+	match addr {
+		SocketAddress::TcpIpV4 { addr, port } => {
+			writer.write_all(&[ATYP_IPV4]).map_err(|_| ())?;
+			writer.write_all(&addr).map_err(|_| ())?;
+			writer.write_all(&port.to_be_bytes()).map_err(|_| ())?;
+		},
+		SocketAddress::TcpIpV6 { addr, port } => {
+			writer.write_all(&[ATYP_IPV6]).map_err(|_| ())?;
+			writer.write_all(&addr).map_err(|_| ())?;
+			writer.write_all(&port.to_be_bytes()).map_err(|_| ())?;
+		},
+		ref onion_v3 @ SocketAddress::OnionV3 { port, .. } => {
+			let onion_v3_url = onion_v3.to_string();
+			let hostname = onion_v3_url.split_once(':').ok_or(())?.0.as_bytes();
+			writer.write_all(&[ATYP_DOMAINNAME, hostname.len() as u8]).map_err(|_| ())?;
+			writer.write_all(hostname).map_err(|_| ())?;
+			writer.write_all(&port.to_be_bytes()).map_err(|_| ())?;
+		},
+		SocketAddress::Hostname { hostname, port } => {
+			writer.write_all(&[ATYP_DOMAINNAME, hostname.len()]).map_err(|_| ())?;
+			writer.write_all(hostname.as_bytes()).map_err(|_| ())?;
+			writer.write_all(&port.to_be_bytes()).map_err(|_| ())?;
+		},
+		SocketAddress::OnionV2 { .. } => return Err(()),
+	};
+	let pos = writer.position() as usize;
+	tokio::io::AsyncWriteExt::write_all(&mut tcp_stream, &socks5_request[..pos])
+		.await
+		.map_err(|_| ())?;
+
+	let mut reply_buffer = [0u8; 4];
+	tcp_stream.read_exact(&mut reply_buffer).await.map_err(|_| ())?;
+	if reply_buffer[..3] != [VERSION, SUCCESS, RSV] {
+		return Err(());
+	}
+	match reply_buffer[3] {
+		ATYP_IPV4 => tcp_stream.read_exact(&mut [0u8; IPV4_ADDR_LEN]).await.map_err(|_| ())?,
+		ATYP_DOMAINNAME => {
+			let hostname_len = tcp_stream.read_u8().await.map_err(|_| ())? as usize;
+			let mut hostname_buffer = [0u8; HOSTNAME_MAX_LEN];
+			tcp_stream.read_exact(&mut hostname_buffer[..hostname_len]).await.map_err(|_| ())?
+		},
+		ATYP_IPV6 => tcp_stream.read_exact(&mut [0u8; IPV6_ADDR_LEN]).await.map_err(|_| ())?,
+		_ => return Err(()),
+	};
+	tcp_stream.read_u16().await.map_err(|_| ())?;
+
+	Ok(tcp_stream)
 }
 
 const SOCK_WAKER_VTABLE: task::RawWakerVTable = task::RawWakerVTable::new(
@@ -608,6 +754,9 @@ impl Hash for SocketDescriptor {
 
 #[cfg(test)]
 mod tests {
+	#[cfg(tor_socks5)]
+	use super::socks5_connect;
+
 	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use bitcoin::Network;
@@ -621,6 +770,8 @@ mod tests {
 	use tokio::sync::mpsc;
 
 	use std::mem;
+	#[cfg(tor_socks5)]
+	use std::net::SocketAddr;
 	use std::sync::atomic::{AtomicBool, Ordering};
 	use std::sync::{Arc, Mutex};
 	use std::time::Duration;
@@ -940,5 +1091,71 @@ mod tests {
 	#[tokio::test]
 	async fn unthreaded_race_disconnect_accept() {
 		race_disconnect_accept().await;
+	}
+
+	#[cfg(tor_socks5)]
+	#[tokio::test]
+	async fn test_socks5_connect() {
+		// Set TOR_SOCKS5_PROXY=127.0.0.1:9050
+		let socks5_proxy_addr: SocketAddr = std::env!("TOR_SOCKS5_PROXY").parse().unwrap();
+
+		// Success cases
+
+		for (addr_str, user_pass) in [
+			// google.com
+			("142.250.189.196:80", None),
+			// google.com
+			("[2607:f8b0:4005:813::2004]:80", None),
+			// torproject.org
+			("torproject.org:80", None),
+			// torproject.org
+			("2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80", None),
+			// Same vectors as above, with a username and password
+			("142.250.189.196:80", Some(("<torS0X>0", ""))),
+			("[2607:f8b0:4005:813::2004]:80", Some(("<torS0X>0", "123"))),
+			("torproject.org:80", Some(("<torS0X>1abc", ""))),
+			(
+				"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80",
+				Some(("<torS0X>1abc", "123")),
+			),
+		] {
+			let addr: SocketAddress = addr_str.parse().unwrap();
+			let tcp_stream = socks5_connect(socks5_proxy_addr, addr, user_pass).await.unwrap();
+			assert_eq!(
+				tcp_stream.try_read(&mut [0u8; 1]).unwrap_err().kind(),
+				std::io::ErrorKind::WouldBlock
+			);
+		}
+
+		// Failure cases
+
+		for (addr_str, user_pass) in [
+			// google.com, with some invalid port
+			("142.250.189.196:1234", None),
+			// google.com, with some invalid port
+			("[2607:f8b0:4005:813::2004]:1234", None),
+			// torproject.org, with some invalid port
+			("torproject.org:1234", None),
+			// torproject.org, with a typo
+			("3gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80", None),
+			// Same vectors as above, with a username and password
+			("142.250.189.196:1234", Some(("<torS0X>0", ""))),
+			("[2607:f8b0:4005:813::2004]:1234", Some(("<torS0X>0", "123"))),
+			("torproject.org:1234", Some(("<torS0X>1abc", ""))),
+			(
+				"3gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80",
+				Some(("<torS0X>1abc", "123")),
+			),
+			/* TODO: Uncomment when format types 30 and 31 land in tor stable, see https://spec.torproject.org/socks-extensions.html,
+			   these are invalid usernames according to those standards.
+			("142.250.189.196:80", Some(("<torS0X>0abc", "123"))),
+			("[2607:f8b0:4005:813::2004]:80", Some(("<torS0X>1", "123"))),
+			("torproject.org:80", Some(("<torS0X>9", "123"))),
+			("2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80", Some(("<torS0X>", "123"))),
+			*/
+		] {
+			let addr: SocketAddress = addr_str.parse().unwrap();
+			assert!(socks5_connect(socks5_proxy_addr, addr, user_pass).await.is_err());
+		}
 	}
 }
