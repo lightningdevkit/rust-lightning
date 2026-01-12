@@ -1772,13 +1772,15 @@ where
 	}
 }
 
-// In Jan, 2025 there were about 49K channels.
-// We over-allocate by a bit because 20% more is better than the double we get if we're slightly
-// too low
-const CHAN_COUNT_ESTIMATE: usize = 60_000;
-// In Jan, 2025 there were about 15K nodes
-// We over-allocate by a bit because 33% more is better than the double we get if we're slightly
-// too low
+/// In Jan, 2026 there were about 54K channels.
+///
+/// We over-allocate by a bit because ~15% more is better than the double we get if we're slightly
+/// too low.
+const CHAN_COUNT_ESTIMATE: usize = 63_000;
+/// In Jan, 2026 there were about 17K nodes
+///
+/// We over-allocate by a bit because 15% more is better than the double we get if we're slightly
+/// too low.
 const NODE_COUNT_ESTIMATE: usize = 20_000;
 
 impl<L: Deref> NetworkGraph<L>
