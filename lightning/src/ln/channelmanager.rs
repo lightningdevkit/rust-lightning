@@ -18074,9 +18074,10 @@ where
 							}
 							// The ChannelMonitor is now responsible for this HTLC's
 							// failure/success and will let us know what its outcome is. If we
-							// still have an entry for this HTLC in `forward_htlcs`,
-							// `pending_intercepted_htlcs`, or `decode_update_add_htlcs`, we were apparently not
-							// persisted after the monitor was when forwarding the payment.
+							// still have an entry for this HTLC in `forward_htlcs_legacy`,
+							// `pending_intercepted_htlcs_legacy`, or
+							// `decode_update_add_htlcs_legacy`, we were apparently not persisted
+							// after the monitor was when forwarding the payment.
 							dedup_decode_update_add_htlcs(
 								&mut decode_update_add_htlcs_legacy,
 								&prev_hop_data,
