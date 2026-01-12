@@ -1,8 +1,3 @@
-# 0.3
-
-## Backwards Compatibility
-* Downgrade is not possible while the node has in-flight trampoline forwards.
-
 # 0.2 - Dec 2, 2025 - "Natively Asynchronous Splicing"
 
 ## API Updates
