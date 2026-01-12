@@ -1682,9 +1682,17 @@ where
 	fn read<R: io::Read>(reader: &mut R, logger: L) -> Result<NetworkGraph<L>, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
+		const MAX_CHAN_COUNT_LIMIT: usize = 100_000_000;
+		const MAX_NODE_COUNT_LIMIT: usize = 10_000_000;
+
 		let chain_hash: ChainHash = Readable::read(reader)?;
 		let channels_count: u64 = Readable::read(reader)?;
-		let mut channels = IndexedMap::with_capacity(CHAN_COUNT_ESTIMATE);
+		// Pre-allocate 115% of the known channel count to avoid unnecessary reallocations.
+		let channels_map_capacity = (channels_count as u128 * 115 / 100)
+			.try_into()
+			.map(|v: usize| v.min(MAX_CHAN_COUNT_LIMIT))
+			.map_err(|_| DecodeError::InvalidValue)?;
+		let mut channels = IndexedMap::with_capacity(channels_map_capacity);
 		for _ in 0..channels_count {
 			let chan_id: u64 = Readable::read(reader)?;
 			let chan_info: ChannelInfo = Readable::read(reader)?;
@@ -1696,7 +1704,12 @@ where
 		if nodes_count > u32::max_value() as u64 / 2 {
 			return Err(DecodeError::InvalidValue);
 		}
-		let mut nodes = IndexedMap::with_capacity(NODE_COUNT_ESTIMATE);
+		// Pre-allocate 115% of the known channel count to avoid unnecessary reallocations.
+		let nodes_map_capacity: usize = (nodes_count as u128 * 115 / 100)
+			.try_into()
+			.map(|v: usize| v.min(MAX_NODE_COUNT_LIMIT))
+			.map_err(|_| DecodeError::InvalidValue)?;
+		let mut nodes = IndexedMap::with_capacity(nodes_map_capacity);
 		for i in 0..nodes_count {
 			let node_id = Readable::read(reader)?;
 			let mut node_info: NodeInfo = Readable::read(reader)?;
